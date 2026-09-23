@@ -1,7 +1,7 @@
 //! `SqliteStore` methods — relationships concern (split from the god-object per ADR-053 prep).
 use super::*;
 use crate::models::schema::{
-    SchemaRelationship, BUILTIN_RELATIONSHIPS, BUILTIN_RELATIONSHIP_NAMES,
+    SchemaRelationship, BUILTIN_RELATIONSHIPS, BUILTIN_RELATIONSHIP_NAMES, EXTENDS_RELATIONSHIP,
 };
 
 /// The recursive `extends` closure query, for a given endpoint direction.
@@ -432,8 +432,9 @@ impl SqliteStore {
     }
 
     /// ADR-059 §2 — a content node may hold a `member_of` edge only when it is a
-    /// **root** node (no `has_child` parent). Collections (nesting) and person
-    /// nodes (grantee membership, ADR-037 §4) are exempt. Enforced at the store's
+    /// **root** node (no `has_child` parent). Person nodes (grantee
+    /// membership, ADR-037 §4) are exempt. A collection needs no exemption: it
+    /// is always a root (see `collection_not_root`). Enforced at the store's
     /// three `member_of` INSERT sites (`add_to_collection`,
     /// `bulk_add_to_collections`, and the generic `create_generic_relationship`
     /// when its `rel_type` is `member_of`), so every write path is covered without
@@ -474,7 +475,7 @@ impl SqliteStore {
                 let id: String = row.get(0)?;
                 let node_type: String = row.get(1)?;
                 let has_parent: i64 = row.get(2)?;
-                if has_parent != 0 && node_type != "collection" && node_type != "person" {
+                if has_parent != 0 && node_type != "person" {
                     return Err(anyhow::anyhow!(
                         "member_of_not_root: content node '{}' (type '{}') has a parent, so it cannot be a member of a collection directly — file its root node instead",
                         id,
@@ -2303,6 +2304,23 @@ impl SqliteStore {
     /// it or targeting it). Used to block deleting a schema node out from under
     /// its declarations — `relationship.in_node`/`out_node` carry `ON DELETE
     /// CASCADE`, so an unguarded node delete would silently destroy them.
+    ///
+    /// `extends` is deliberately asymmetric here, unlike every other
+    /// declaration type: a row where `schema_id` is the declaring (child)
+    /// side (`in_node`) is excluded from the count, because deleting the
+    /// schema deletes that row right along with it — nothing else refers to
+    /// *this* schema's own `extends` declaration once this schema is gone.
+    /// A row where `schema_id` is the target (parent, `out_node`) side still
+    /// counts: some other, still-live schema extends it, and cascading that
+    /// row away would silently strand that child with no parent, exactly the
+    /// kind of silent corruption this guard exists to prevent. Without this
+    /// asymmetry, any schema ever given a parent via `extends` would become
+    /// permanently undeletable — `update_schema`'s dedicated `extends`
+    /// parameter re-targets the edge but, unlike `remove_relationships`
+    /// (which is rejected for `extends`/`extended_by`, see
+    /// `reject_reserved_relationship_removal_names`), never clears it, so a
+    /// schema's own declaration could otherwise never be cleared any other
+    /// way than deleting the schema itself.
     pub async fn count_schema_declaration_edges(&self, schema_id: &str) -> Result<i64> {
         let sql = format!(
             "SELECT COUNT(*) FROM relationship r \
@@ -2310,8 +2328,10 @@ impl SqliteStore {
              JOIN node b ON b.id = r.out_node \
              WHERE (r.in_node = ?1 OR r.out_node = ?1) \
                AND a.node_type = 'schema' AND b.node_type = 'schema' \
-               AND {}",
-            builtin_exclusion_sql("r.relationship_type")
+               AND {} \
+               AND NOT (r.relationship_type = '{}' AND r.in_node = ?1)",
+            builtin_exclusion_sql("r.relationship_type"),
+            EXTENDS_RELATIONSHIP
         );
         let mut rows = self
             .read()

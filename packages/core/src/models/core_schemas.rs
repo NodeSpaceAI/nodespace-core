@@ -1217,9 +1217,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
         // `UniqueFieldCollision` conflict record (ADR-068), not stored as a
         // property on the node. Display identity is composed by
         // title_template below, the single place the first/last composition
-        // rule lives — PersonNodeBehavior::compute_display_name mirrors it
-        // for the embedding-content fallback, which title_template doesn't
-        // reach.
+        // rule lives.
         SchemaNode {
             id: "person".to_string(),
             content: "Person".to_string(),

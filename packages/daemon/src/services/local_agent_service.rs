@@ -2847,7 +2847,7 @@ async fn build_workspace_context(
     }
 
     let mentioned_entities = match &context.resolved_entities {
-        nodespace_core::ops::context_ops::EntityResolution::Resolved(entities) => entities
+        nodespace_core::ops::context_ops::EntityResolution::Resolved { entities, .. } => entities
             .iter()
             .map(|e| MentionedEntity {
                 id: e.id.clone(),

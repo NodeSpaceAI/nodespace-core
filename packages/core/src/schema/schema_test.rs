@@ -5221,8 +5221,7 @@ async fn test_extends_retarget_rejects_a_relationship_colliding_with_the_new_par
 }
 
 #[tokio::test]
-async fn test_removing_extends_and_adding_a_relationship_in_the_same_call_is_not_checked_against_the_detached_parent(
-) {
+async fn test_remove_relationships_cannot_clear_extends() {
     let (svc, _tmp) = create_test_service().await;
     handle_create_schema(&svc, json!({ "name": "Widget", "fields": [] }))
         .await
@@ -5244,13 +5243,13 @@ async fn test_removing_extends_and_adding_a_relationship_in_the_same_call_is_not
     .await
     .expect("bug extends ticket should succeed");
 
-    // A single call that BOTH drops the extends edge AND adds a relationship
-    // whose name collides only with the (now-detached) former parent's
-    // relationship must succeed — by the time this call finishes, "bug" no
-    // longer extends "ticket", so there is nothing left to collide with. The
-    // ancestor-collision gate must read the LIVE relationship list (already
-    // reflecting this same call's own `remove_relationships`), not the
-    // pre-update snapshot.
+    // `remove_relationships` is a generic by-name removal over the same
+    // relationship-table-backed declaration list `extends` is stored in.
+    // Naming it here must not be a back door around
+    // `UpdateSchemaParams::extends`'s documented contract that the edge can
+    // be re-targeted but never cleared — even when paired with an addition
+    // that would only be legal once detached, the whole call must be
+    // rejected before anything is persisted.
     let result = handle_update_schema(
         &svc,
         json!({
@@ -5261,21 +5260,21 @@ async fn test_removing_extends_and_adding_a_relationship_in_the_same_call_is_not
     )
     .await;
 
+    let err = result.expect_err("remove_relationships: [\"extends\"] must be rejected");
+    let msg = format!("{err:?}");
     assert!(
-        result.is_ok(),
-        "dropping extends and adding a relationship colliding only with the just-detached \
-         parent should succeed, not be rejected against a parent no longer in effect: {result:?}"
+        msg.contains("extends") && msg.contains("remove_relationships"),
+        "error should name the relationship and explain it can't be removed this way: {msg}"
     );
     assert_eq!(
-        persisted_extends_target(&svc, "bug").await,
-        None,
-        "the extends edge should be gone after remove_relationships: [\"extends\"]"
+        persisted_extends_target(&svc, "bug").await.as_deref(),
+        Some("ticket"),
+        "a rejected call must leave the extends edge untouched"
     );
 }
 
 #[tokio::test]
-async fn test_removing_extends_and_adding_a_field_in_the_same_call_is_not_checked_against_the_detached_parent(
-) {
+async fn test_remove_relationships_cannot_clear_extends_via_reverse_name() {
     let (svc, _tmp) = create_test_service().await;
     create_base_schema(&svc, "Ticket", &["status"]).await;
     handle_create_schema(
@@ -5285,13 +5284,44 @@ async fn test_removing_extends_and_adding_a_field_in_the_same_call_is_not_checke
     .await
     .expect("bug extends ticket should succeed");
 
-    // Same scenario as the relationship-side regression above, on the field
-    // path: dropping the extends edge and adding a field colliding only with
-    // the just-detached parent's field, in the SAME call, must succeed. The
-    // `add_fields` ancestor check runs before relationship processing in
-    // `handle_update_schema`, so it must consult the extends parent as it
-    // will stand AFTER this call's own `remove_relationships` — not the
-    // pre-call snapshot, which would still show "ticket" as the parent.
+    // The reverse spelling must be rejected too — `extended_by` names the
+    // same type-system edge from the other end.
+    let result = handle_update_schema(
+        &svc,
+        json!({
+            "schema_id": "bug",
+            "remove_relationships": ["extended_by"]
+        }),
+    )
+    .await;
+
+    let err = result.expect_err("remove_relationships: [\"extended_by\"] must be rejected");
+    let msg = format!("{err:?}");
+    assert!(
+        msg.contains("extended_by"),
+        "error should name the rejected reverse spelling: {msg}"
+    );
+    assert_eq!(
+        persisted_extends_target(&svc, "bug").await.as_deref(),
+        Some("ticket"),
+        "a rejected call must leave the extends edge untouched"
+    );
+}
+
+#[tokio::test]
+async fn test_remove_relationships_cannot_clear_extends_via_add_fields_collision() {
+    let (svc, _tmp) = create_test_service().await;
+    create_base_schema(&svc, "Ticket", &["status"]).await;
+    handle_create_schema(
+        &svc,
+        json!({ "name": "Bug", "extends": "ticket", "fields": [] }),
+    )
+    .await
+    .expect("bug extends ticket should succeed");
+
+    // Same attempted back door on the field path: pairing the (rejected)
+    // `extends` removal with an `add_fields` entry that would only be legal
+    // once detached from "ticket" must not somehow let the removal through.
     let result = handle_update_schema(
         &svc,
         json!({
@@ -5304,14 +5334,43 @@ async fn test_removing_extends_and_adding_a_field_in_the_same_call_is_not_checke
     )
     .await;
 
+    let err = result.expect_err("remove_relationships: [\"extends\"] must be rejected");
+    let msg = format!("{err:?}");
     assert!(
-        result.is_ok(),
-        "dropping extends and adding a field colliding only with the just-detached parent \
-         should succeed, not be rejected against a parent no longer in effect: {result:?}"
+        msg.contains("extends") && msg.contains("remove_relationships"),
+        "error should name the relationship and explain it can't be removed this way: {msg}"
     );
     assert_eq!(
-        persisted_extends_target(&svc, "bug").await,
-        None,
-        "the extends edge should be gone after remove_relationships: [\"extends\"]"
+        persisted_extends_target(&svc, "bug").await.as_deref(),
+        Some("ticket"),
+        "a rejected call must leave the extends edge untouched"
+    );
+}
+
+#[tokio::test]
+async fn test_remove_relationships_rejects_a_builtin_structural_name() {
+    let (svc, _tmp) = create_test_service().await;
+    handle_create_schema(&svc, json!({ "name": "Widget", "fields": [] }))
+        .await
+        .expect("widget schema should be created");
+
+    // Built-in structural relationships (`has_child`, …) are never stored as
+    // declarations, so naming one here would otherwise be a silent no-op.
+    // Reject it instead, the same way `add_relationships` rejects a
+    // hand-declared relationship using a built-in name.
+    let result = handle_update_schema(
+        &svc,
+        json!({
+            "schema_id": "widget",
+            "remove_relationships": ["has_child"]
+        }),
+    )
+    .await;
+
+    let err = result.expect_err("remove_relationships: [\"has_child\"] must be rejected");
+    let msg = format!("{err:?}");
+    assert!(
+        msg.contains("has_child") && msg.contains("reserved"),
+        "error should name the reserved built-in and explain why: {msg}"
     );
 }

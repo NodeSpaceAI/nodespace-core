@@ -688,11 +688,30 @@ pub async fn search_semantic(
         input.scope.is_none(),
     );
 
+    // User-defined types belong to the `Knowledge` scope but aren't known
+    // statically, so read them from the schema list — only when that scope
+    // will actually be applied.
+    let user_types: HashSet<String> =
+        if !skip_scope_filter && matches!(scope, SearchScope::Knowledge) {
+            node_service
+                .get_all_schemas()
+                .await
+                .map_err(|e| OpsError::Internal(format!("Failed to load schemas: {}", e)))?
+                .into_iter()
+                .filter(|s| !s.is_core)
+                .map(|s| s.id)
+                .collect()
+        } else {
+            HashSet::new()
+        };
+
     // Apply filters
     let filtered_results: Vec<_> = results
         .into_iter()
         .filter(|(node, _)| {
-            if !skip_scope_filter && !NodeEmbeddingService::matches_scope(&node.node_type, &scope) {
+            if !skip_scope_filter
+                && !NodeEmbeddingService::matches_scope(&node.node_type, &scope, &user_types)
+            {
                 return false;
             }
             if node.lifecycle_status == "archived" && !include_archived {

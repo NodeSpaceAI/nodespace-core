@@ -378,7 +378,7 @@ impl AiChatNode {
             properties: serde_json::Value::Object(properties),
             mentions: Vec::new(),
             mentioned_in: Vec::new(),
-            title: None, // ai-chat nodes have no indexed title
+            title: None, // derived on write by `NodeService::compute_title` (a root's title is its content)
             lifecycle_status: "active".to_string(),
         }
     }

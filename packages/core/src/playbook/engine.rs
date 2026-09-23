@@ -1042,6 +1042,19 @@ impl PlaybookEngine {
     pub fn lifecycle(&self) -> &Arc<RwLock<PlaybookLifecycleManager>> {
         &self.lifecycle
     }
+
+    /// The `extends` ancestry cache's staleness flag (ADR-078), for a host to
+    /// hand to `NodeService` (see `NodeService::set_playbook_ancestry_dirty`)
+    /// the same way it hands over `lifecycle()`. Lets an out-of-band consumer
+    /// with no other access to `PlaybookEngine` — e.g. `get_workflow_state`,
+    /// which only ever receives `lifecycle` and `node_service` — detect the
+    /// one class of `ancestor_cache` staleness that's both unbounded in
+    /// duration and cheaply detectable: a failed refresh that hasn't yet been
+    /// retried. See the field's own doc comment for why nothing shorter-lived
+    /// (ordinary event-processing lag) is covered.
+    pub fn ancestry_dirty(&self) -> &Arc<std::sync::atomic::AtomicBool> {
+        &self.ancestry_dirty
+    }
 }
 
 // ---------------------------------------------------------------------------

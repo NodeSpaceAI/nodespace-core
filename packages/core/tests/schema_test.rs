@@ -57,7 +57,7 @@ async fn fresh_database_gets_the_complete_current_schema() {
         "embedding",
         "conflict",
         "conflict_participant",
-        "node_fts",
+        "node_title_fts",
         "vec_embeddings",
     ] {
         assert!(
@@ -108,7 +108,11 @@ async fn fresh_database_gets_the_complete_current_schema() {
     }
 
     let triggers = names_of(&conn, "trigger").await;
-    for expected in ["node_fts_insert", "node_fts_update", "node_fts_delete"] {
+    for expected in [
+        "node_title_fts_insert",
+        "node_title_fts_update",
+        "node_title_fts_delete",
+    ] {
         assert!(
             triggers.iter().any(|t| t == expected),
             "missing trigger {expected}; got {triggers:?}"

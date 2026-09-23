@@ -3,6 +3,58 @@
 use super::*;
 
 impl NodeService {
+    /// Attach each bulk row's title, derived by the same rule as single-node
+    /// creation ([`Self::derive_title`]), with one schema lookup per type.
+    pub(crate) async fn with_titles(
+        &self,
+        rows: Vec<(
+            String,
+            String,
+            String,
+            Option<String>,
+            f64,
+            serde_json::Value,
+        )>,
+    ) -> Vec<crate::db::BulkNodeRow> {
+        let mut schemas: std::collections::HashMap<String, Option<crate::models::SchemaNode>> =
+            std::collections::HashMap::new();
+        let mut out = Vec::with_capacity(rows.len());
+        for (id, node_type, content, parent_id, order, properties) in rows {
+            if !schemas.contains_key(&node_type) {
+                let schema = self.title_schema(&node_type).await;
+                schemas.insert(node_type.clone(), schema);
+            }
+            let node = Node {
+                id,
+                node_type,
+                content,
+                version: 1,
+                properties,
+                mentions: vec![],
+                mentioned_in: vec![],
+                created_at: chrono::Utc::now(),
+                modified_at: chrono::Utc::now(),
+                title: None,
+                lifecycle_status: "active".to_string(),
+            };
+            let title = Self::derive_title(
+                &node,
+                parent_id.is_none(),
+                schemas.get(&node.node_type).and_then(Option::as_ref),
+            );
+            out.push((
+                node.id,
+                node.node_type,
+                node.content,
+                parent_id,
+                order,
+                node.properties,
+                title,
+            ));
+        }
+        out
+    }
+
     /// Bulk create multiple nodes in a transaction
     ///
     /// Creates multiple nodes atomically. If any node fails validation or insertion,
@@ -113,10 +165,12 @@ impl NodeService {
             return Ok(Vec::new());
         };
 
-        // Find the root ID once - all nodes in a bulk import share the same root
+        // Find the embedding root once: every node in a bulk import sits under
+        // the first node's parent, and a bulk import writes no `member_of`
+        // edge that could cut an access boundary between them (ADR-059 §7).
         // Performance optimization: Single DB query instead of N queries
         let root_id = if let Some((_, _, _, Some(first_parent), _, _)) = nodes_normalized.first() {
-            self.get_root_id(first_parent).await.ok()
+            self.get_embedding_root_id(first_parent).await.ok()
         } else {
             None
         };
@@ -124,7 +178,7 @@ impl NodeService {
         // Delegate to store for atomic batch insert
         let result = self
             .store
-            .bulk_create_hierarchy(nodes_normalized)
+            .bulk_create_hierarchy(self.with_titles(nodes_normalized).await)
             .await
             .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
 
@@ -277,7 +331,7 @@ impl NodeService {
 
         let result = self
             .store
-            .bulk_create_hierarchy_in_tx(tx.store_tx(), nodes_normalized)
+            .bulk_create_hierarchy_in_tx(tx.store_tx(), self.with_titles(nodes_normalized).await)
             .await
             .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
 
@@ -372,9 +426,9 @@ impl NodeService {
             }
         }
 
-        // Find the root ID once
+        // Find the embedding root once (see `bulk_create_hierarchy`)
         let root_id = if let Some((_, _, _, Some(first_parent), _, _)) = nodes_normalized.first() {
-            self.get_root_id(first_parent).await.ok()
+            self.get_embedding_root_id(first_parent).await.ok()
         } else {
             None
         };
@@ -382,7 +436,7 @@ impl NodeService {
         // Delegate to store - use root-only notify variant
         let result = self
             .store
-            .bulk_create_hierarchy_root_notify(nodes_normalized, vec![])
+            .bulk_create_hierarchy_root_notify(self.with_titles(nodes_normalized).await, vec![])
             .await
             .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
 
@@ -490,7 +544,7 @@ impl NodeService {
         // layer; the batch guard above coalesces them into a single flush on drop).
         let result = self
             .store
-            .bulk_create_hierarchy_root_notify(nodes_normalized, vec![])
+            .bulk_create_hierarchy_root_notify(self.with_titles(nodes_normalized).await, vec![])
             .await
             .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
 

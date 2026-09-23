@@ -13,7 +13,7 @@ const { invoke } = await import('@tauri-apps/api/core');
 const mockInvoke = vi.mocked(invoke);
 
 function report(steps: StepReport[], success = true): InstallReport {
-  return { recipeId: 'linear', steps, success };
+  return { playbookId: 'linear', steps, success };
 }
 
 const created = (label: string, id: string): StepReport => ({

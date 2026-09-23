@@ -765,7 +765,7 @@
               </span>
               <span>
                 {#if methodologyChosen && methodologyReport !== null}
-                  Work tracking — {methodologyReport.recipeId}
+                  Work tracking — {methodologyReport.playbookId}
                 {:else}
                   Work tracking
                 {/if}

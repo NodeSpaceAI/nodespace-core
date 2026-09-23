@@ -628,6 +628,46 @@ async fn deleting_a_schema_with_declarations_is_blocked_on_both_ends() -> Result
     Ok(())
 }
 
+#[tokio::test]
+async fn deleting_an_extending_schema_succeeds_but_deleting_its_parent_is_still_blocked(
+) -> Result<()> {
+    let (svc, _t) = create_test_service().await?;
+    handle_create_schema(&svc, json!({ "name": "Ticket", "fields": [] }))
+        .await
+        .map_err(|e| anyhow::anyhow!("ticket schema: {e}"))?;
+    handle_create_schema(
+        &svc,
+        json!({ "name": "Bug", "extends": "ticket", "fields": [] }),
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("bug schema: {e}"))?;
+
+    // "ticket" is still extended by "bug" — deleting it would cascade away
+    // "bug"'s `extends` declaration and silently strand "bug" with no parent,
+    // the same hazard blocking an ordinary declaration's target guards
+    // against. Still blocked, same as before this change.
+    let err = svc
+        .store()
+        .delete_node("ticket", None)
+        .await
+        .expect_err("deleting a schema other schemas still extend must be blocked");
+    assert!(
+        err.to_string().contains("schema_has_declarations"),
+        "got: {err}"
+    );
+
+    // "bug"'s OWN `extends` declaration is not a reason to block deleting
+    // "bug" itself — nothing else refers to that declaration once "bug" is
+    // gone, and unlike an ordinary relationship, `remove_relationships`
+    // cannot clear `extends` first (that back door is closed), so deleting
+    // the extending schema directly must be the working path.
+    svc.store().delete_node("bug", None).await?;
+
+    // Now that no schema extends it, "ticket" deletes cleanly too.
+    svc.store().delete_node("ticket", None).await?;
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Instance/declaration write scoping
 // ---------------------------------------------------------------------------

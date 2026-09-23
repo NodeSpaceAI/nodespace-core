@@ -577,6 +577,18 @@ impl NodeService {
                 }
             }
 
+            if relationship_name == "has_child" {
+                let target = self
+                    .get_node(target_id)
+                    .await?
+                    .ok_or_else(|| NodeServiceError::node_not_found(target_id))?;
+                if target.node_type == "collection" {
+                    return Err(NodeServiceError::hierarchy_violation(
+                        crate::db::collection_not_root(Some(target_id)),
+                    ));
+                }
+            }
+
             // The outline is single-parent, and every read path assumes it:
             // `get_parent`/`get_parent_id` resolve with `LIMIT 1`, so a second
             // parent does not produce an error — it silently hides one of them
@@ -761,6 +773,7 @@ impl NodeService {
                 .map_err(|e| {
                     NodeServiceError::query_failed(format!("Failed to append child edge: {}", e))
                 })?;
+            self.refresh_for_rootness(target_id, false).await;
 
             self.emit_event(DomainEvent::RelationshipCreated {
                 relationship: crate::db::events::RelationshipEvent::new(
@@ -798,6 +811,9 @@ impl NodeService {
             .map_err(|e| {
                 NodeServiceError::query_failed(format!("Failed to create relationship: {}", e))
             })?;
+        if relationship_name == "has_child" {
+            self.refresh_for_rootness(target_id, false).await;
+        }
 
         self.emit_event(DomainEvent::RelationshipCreated {
             relationship: crate::db::events::RelationshipEvent::new(
@@ -1005,6 +1021,10 @@ impl NodeService {
         .map_err(|e| {
             NodeServiceError::query_failed(format!("Failed to create relationship: {}", e))
         })?;
+        if relationship_name == "has_child" {
+            self.refresh_for_rootness_in_tx(tx, target_id, false)
+                .await?;
+        }
 
         self.emit_event(DomainEvent::RelationshipCreated {
             relationship: crate::db::events::RelationshipEvent::new(
@@ -1110,6 +1130,9 @@ impl NodeService {
         .map_err(|e| {
             NodeServiceError::query_failed(format!("Failed to delete relationship: {}", e))
         })?;
+        if relationship_name == "has_child" && rel_id.is_some() {
+            self.refresh_for_rootness_in_tx(tx, target_id, true).await?;
+        }
 
         if let Some(id) = rel_id {
             self.emit_event(DomainEvent::RelationshipDeleted {
@@ -1301,6 +1324,9 @@ impl NodeService {
             .map_err(|e| {
                 NodeServiceError::query_failed(format!("Failed to delete relationship: {}", e))
             })?;
+        if relationship_name == "has_child" && rel_id.is_some() {
+            self.refresh_for_rootness(target_id, true).await;
+        }
 
         // Emit RelationshipDeleted event. Normalize ids — same
         // rationale as the other `RelationshipDeleted` sites; see

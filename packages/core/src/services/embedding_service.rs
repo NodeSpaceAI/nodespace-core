@@ -3,8 +3,10 @@
 //! ## Overview
 //!
 //! This service implements root-aggregate embedding for semantic search:
-//! - Only ROOT nodes (no parent edge) of embeddable types get embedded
-//! - Embeddings represent the semantic content of the entire subtree
+//! - Only ROOT nodes (no parent edge) of embeddable types get embedded, plus
+//!   any descendant re-rooted at an access boundary (ADR-059 §7)
+//! - Embeddings represent the semantic content of the entire subtree, never
+//!   across an access boundary
 //! - Uses the dedicated `embedding` table (not node.embedding_vector)
 //! - Supports chunking for content > 512 tokens
 //!
@@ -32,14 +34,26 @@ use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::sync::Arc;
 
+/// Built-in types the default `Knowledge` search scope returns: the user's own
+/// documents and records. User-defined types are admitted too, but are not
+/// known statically — see [`NodeEmbeddingService::matches_scope`].
+pub const KNOWLEDGE_CORE_TYPES: &[&str] = &[
+    "text",
+    "header",
+    "code-block",
+    "schema",
+    "table",
+    "task",
+    "date",
+    "project",
+    "person",
+];
+
 // Re-export embedding dimension from nlp-engine as single source of truth
 pub use nodespace_nlp_engine::EMBEDDING_DIMENSION;
 
 /// Default batch size for processing stale embeddings
 pub const DEFAULT_BATCH_SIZE: usize = 50;
-
-/// Maximum depth for parent chain traversal (safety limit to prevent infinite loops)
-pub const MAX_PARENT_CHAIN_DEPTH: usize = 100;
 
 /// Title keyword boost added to composite score when any query term matches the node title
 ///
@@ -55,7 +69,8 @@ pub const TITLE_BOOST: f64 = 0.1;
 /// Root-aggregate embedding service (behavior-driven)
 ///
 /// Manages semantic embeddings using the root-aggregate model where only
-/// root nodes get embedded. Whether a node is embeddable is decided by its
+/// embedding roots get embedded: tree roots, plus a descendant re-rooted at
+/// an access boundary (ADR-059 §7). Whether a node is embeddable is decided by its
 /// `NodeBehavior::get_embeddable_content()` — no hardcoded type list.
 ///
 /// Content extraction uses a two-phase approach:
@@ -154,31 +169,13 @@ impl NodeEmbeddingService {
         Ok(parent.is_none())
     }
 
-    /// Find the root node ID for any node in a tree
-    ///
-    /// Traverses up the parent chain until finding a node with no parent.
-    pub async fn find_root_id(&self, node_id: &str) -> Result<String, NodeServiceError> {
-        let mut current_id = node_id.to_string();
-
-        for _ in 0..MAX_PARENT_CHAIN_DEPTH {
-            let parent = self.store.get_parent(&current_id).await.map_err(|e| {
-                NodeServiceError::query_failed(format!("Failed to get parent: {}", e))
-            })?;
-
-            match parent {
-                Some(parent_node) => {
-                    current_id = parent_node.id;
-                }
-                None => {
-                    return Ok(current_id);
-                }
-            }
-        }
-
-        Err(NodeServiceError::query_failed(format!(
-            "Max parent chain depth ({}) exceeded",
-            MAX_PARENT_CHAIN_DEPTH
-        )))
+    /// Find the embedding root of any node: its tree root, or the nearest
+    /// access-boundary descendant above it (ADR-059 §7). See
+    /// [`SqliteStore::embedding_root_id`].
+    pub async fn find_embedding_root_id(&self, node_id: &str) -> Result<String, NodeServiceError> {
+        self.store.embedding_root_id(node_id).await.map_err(|e| {
+            NodeServiceError::query_failed(format!("Failed to find embedding root: {}", e))
+        })
     }
 
     // =========================================================================
@@ -372,6 +369,8 @@ impl NodeEmbeddingService {
             .await?
             .ok_or_else(|| NodeServiceError::node_not_found(root_id))?;
 
+        self.queue_access_boundaries(root_id).await;
+
         // Behavior-driven content extraction (replaces should_embed_root + aggregate_subtree_content)
         let content = match self.extract_content_for_embedding(&root).await? {
             Some(c) => c,
@@ -450,6 +449,33 @@ impl NodeEmbeddingService {
         );
 
         Ok(())
+    }
+
+    /// Queue each access-boundary descendant of `root_id` (ADR-059 §7) that
+    /// has no embedding yet. Aggregation leaves them out of the root's vector,
+    /// and nothing else queues them: the edge that made them a boundary edited
+    /// no content. Best-effort, like every other queueing path.
+    async fn queue_access_boundaries(&self, root_id: &str) {
+        let boundaries = match self.store.access_boundaries_under(root_id).await {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::warn!(root_id = %root_id, error = %e, "failed to read access boundaries");
+                return;
+            }
+        };
+        for boundary in boundaries {
+            match self.store.has_embeddings(&boundary).await {
+                Ok(true) => {}
+                Ok(false) => {
+                    if let Err(e) = self.queue_for_embedding(&boundary).await {
+                        tracing::warn!(descendant_id = %boundary, error = %e, "failed to queue access boundary");
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(descendant_id = %boundary, error = %e, "failed to check embeddings");
+                }
+            }
+        }
     }
 
     /// Process all stale embeddings
@@ -539,11 +565,11 @@ impl NodeEmbeddingService {
     /// Queue a node for embedding
     ///
     /// If the node is a root of an embeddable type, marks its embedding as stale.
-    /// If the node is a child, finds its root and marks that as stale.
+    /// If the node is a child, finds its embedding root and marks that as stale.
     /// Embeddability is determined by `NodeBehavior::get_embeddable_content()`.
     pub async fn queue_for_embedding(&self, node_id: &str) -> Result<(), NodeServiceError> {
-        // Find the root of this node's tree
-        let root_id = self.find_root_id(node_id).await?;
+        // Find this node's embedding root
+        let root_id = self.find_embedding_root_id(node_id).await?;
 
         // Get the root node to check its type via behavior
         let root = match self.node_accessor.get_node(&root_id).await? {
@@ -608,7 +634,7 @@ impl NodeEmbeddingService {
 
         // Find unique roots
         for node_id in node_ids {
-            match self.find_root_id(node_id).await {
+            match self.find_embedding_root_id(node_id).await {
                 Ok(root_id) => {
                     roots_to_queue.insert(root_id);
                 }
@@ -634,12 +660,14 @@ impl NodeEmbeddingService {
 
     /// Search for nodes using hybrid BM25 + KNN scoring
     ///
-    /// Runs BM25 full-text search and KNN vector search in parallel, then tiers results:
+    /// Runs a BM25 title search and KNN vector search in parallel, then tiers results:
     /// - **Tier 1** (highest confidence): roots in BOTH BM25 and KNN results
     /// - **Tier 2**: roots in KNN only (semantic relevance without keyword match)
-    /// - **Tier 3**: roots in BM25 only (keyword match without semantic relevance)
+    /// - **Tier 3**: roots in BM25 only (title match without semantic relevance)
     ///
-    /// Within each tier, results are sorted by composite score (existing density formula).
+    /// The keyword half matches root titles only (`node_title_fts`), so it never
+    /// surfaces a child line. Tiers 1 and 2 are sorted by composite score
+    /// (existing density formula); Tier 3 by bm25 rank.
     /// This avoids fragile score normalization between BM25 and cosine similarity.
     pub async fn semantic_search(
         &self,
@@ -669,9 +697,8 @@ impl NodeEmbeddingService {
         // BM25 is O(log n) via inverted index — sub-millisecond
         // KNN is ~50-100ms via HNSW — total latency = max(bm25, knn) ≈ same as before
         let search_start = std::time::Instant::now();
-        // With tokenized OR search, results are already ranked by combined BM25 score so
-        // fewer candidates are needed (top roots bubble up). 2x gives enough headroom after
-        // root resolution deduplication without the cost of resolving 5x nodes.
+        // Title hits are already ranked by bm25 and every hit is a root, so 2x
+        // the limit is enough headroom for Tier 3 after KNN overlap is removed.
         let bm25_limit = (limit as i64) * 2;
         // Each leg is timed inside the join so the profile attributes cost to KNN vs
         // BM25 individually — they run concurrently, so the wall-clock `search_time`
@@ -687,7 +714,7 @@ impl NodeEmbeddingService {
             },
             async {
                 let start = std::time::Instant::now();
-                let r = self.store.bm25_search_roots(query, bm25_limit).await;
+                let r = self.store.bm25_search_titles(query, bm25_limit).await;
                 (r, start.elapsed())
             }
         );
@@ -697,6 +724,7 @@ impl NodeEmbeddingService {
             .map_err(|e| NodeServiceError::query_failed(format!("KNN search failed: {}", e)))?;
         let bm25_roots = bm25_roots
             .map_err(|e| NodeServiceError::query_failed(format!("BM25 search failed: {}", e)))?;
+        let bm25_ids: HashSet<&str> = bm25_roots.iter().map(|(id, _)| id.as_str()).collect();
 
         // Apply title keyword boost to KNN results
         // Punctuation is stripped from tokens so queries like "persistence?" still match.
@@ -708,8 +736,14 @@ impl NodeEmbeddingService {
             })
             .filter(|t| !t.is_empty())
             .collect();
+        // Not for schemas: a schema's title is its type name, which common
+        // queries contain, so the boost would lift a type over the user's own
+        // documents (see `bm25_search_titles`).
         for result in &mut knn_results {
             if let Some(ref node) = result.node {
+                if node.node_type == "schema" {
+                    continue;
+                }
                 if let Some(ref title) = node.title {
                     let title_lower = title.to_lowercase();
                     if query_terms
@@ -732,7 +766,7 @@ impl NodeEmbeddingService {
         let (mut tier1, mut tier2): (Vec<EmbeddingSearchResult>, Vec<EmbeddingSearchResult>) =
             knn_results
                 .into_iter()
-                .partition(|r| bm25_roots.contains(&r.node_id));
+                .partition(|r| bm25_ids.contains(r.node_id.as_str()));
 
         tier1.sort_by(|a, b| {
             b.score
@@ -752,7 +786,7 @@ impl NodeEmbeddingService {
             .map(|r| r.node_id.clone())
             .collect();
 
-        // Tier 3: BM25-only roots (not in KNN results)
+        // Tier 3: BM25-only roots (not in KNN results), already in bm25 rank order
         // These need node data fetched separately since they bypassed the KNN+FETCH query.
         // Only include if we have remaining capacity.
         let knn_count = tier1.len() + tier2.len();
@@ -765,20 +799,18 @@ impl NodeEmbeddingService {
         let tier3_start = std::time::Instant::now();
         if knn_count < limit {
             let remaining = limit - knn_count;
-            // Sort by node_id for deterministic ordering within Tier 3
-            // (no embedding score available to rank by, so stable key prevents non-reproducible results)
-            let mut bm25_only_roots: Vec<String> = bm25_roots
+            let bm25_only_roots: Vec<String> = bm25_roots
                 .into_iter()
+                .map(|(id, _)| id)
                 .filter(|id| !knn_node_ids.contains(id))
+                .take(remaining)
                 .collect();
-            bm25_only_roots.sort();
-            bm25_only_roots.truncate(remaining);
 
             if !bm25_only_roots.is_empty() {
                 // Fetch node data for BM25-only results in one batched query rather than
                 // a `get_node` per root — each of those checks out (and on a pool miss,
                 // opens) its own reader connection.
-                // Score is set to 0.0 to indicate keyword-only match (ranked last within tier 3)
+                // Score is set to 0.0 to indicate keyword-only match; order is bm25 rank.
                 let mut nodes = self
                     .store
                     .get_nodes_by_ids(&bm25_only_roots)
@@ -830,48 +862,21 @@ impl NodeEmbeddingService {
         Ok(results)
     }
 
-    /// Search and return full nodes
+    /// Check if a node type matches the given search scope.
     ///
-    /// Convenience method that fetches the full Node objects for search results.
-    /// Search with scope filtering
-    ///
-    /// Wraps `semantic_search` and applies post-result filtering based on the
-    /// `SearchScope`. The scope determines which node types are included in
-    /// results — callers declare intent rather than enumerating types.
-    ///
-    /// Defaults to `SearchScope::Knowledge` when no scope is provided.
-    pub async fn semantic_search_scoped(
-        &self,
-        query: &str,
-        limit: usize,
-        threshold: f32,
+    /// `user_types` is the set of user-defined (non-core schema) type names,
+    /// which `Knowledge` admits alongside [`KNOWLEDGE_CORE_TYPES`]. System
+    /// types (`agent-guidance`, `skill`, `tool`, `play`, …) are core and not
+    /// on that list, so they stay out of the default scope.
+    pub fn matches_scope(
+        node_type: &str,
         scope: &SearchScope,
-    ) -> Result<Vec<EmbeddingSearchResult>, NodeServiceError> {
-        // Fetch extra results to compensate for post-filtering
-        let overfetch = limit * 2;
-        let mut results = self.semantic_search(query, overfetch, threshold).await?;
-
-        // Apply scope filter
-        results.retain(|r| {
-            if let Some(ref node) = r.node {
-                Self::matches_scope(&node.node_type, scope)
-            } else {
-                // No node data — keep the result (we can't filter it)
-                true
-            }
-        });
-
-        results.truncate(limit);
-        Ok(results)
-    }
-
-    /// Check if a node type matches the given search scope
-    pub fn matches_scope(node_type: &str, scope: &SearchScope) -> bool {
+        user_types: &HashSet<String>,
+    ) -> bool {
         match scope {
-            SearchScope::Knowledge => matches!(
-                node_type,
-                "text" | "header" | "code-block" | "schema" | "table"
-            ),
+            SearchScope::Knowledge => {
+                KNOWLEDGE_CORE_TYPES.contains(&node_type) || user_types.contains(node_type)
+            }
             // ai-chat nodes are no longer embedded (ADR-029, as revised), so no
             // ai-chat rows exist in the vector index — this scope is effectively
             // a no-op that returns no results.
@@ -1059,6 +1064,33 @@ mod tests {
         assert_eq!(NodeEmbeddingService::find_char_boundary(s, 0), 0);
         assert_eq!(NodeEmbeddingService::find_char_boundary(s, 5), 5);
         assert_eq!(NodeEmbeddingService::find_char_boundary(s, 100), s.len());
+    }
+
+    /// The default scope returns the user's documents and records — including
+    /// tasks, date pages and user-defined types, which the keyword half finds
+    /// by title — and never system content.
+    #[test]
+    fn test_knowledge_scope_admits_user_knowledge_and_excludes_system_types() {
+        let user_types: HashSet<String> = ["company".to_string()].into();
+        let knowledge =
+            |t: &str| NodeEmbeddingService::matches_scope(t, &SearchScope::Knowledge, &user_types);
+
+        for t in [
+            "text", "header", "schema", "task", "date", "project", "person", "company",
+        ] {
+            assert!(knowledge(t), "{t} must be in the default scope");
+        }
+        for t in [
+            "agent-guidance",
+            "skill",
+            "tool",
+            "play",
+            "database-settings",
+            "ai-chat",
+            "invoice", // not a known user type in this set
+        ] {
+            assert!(!knowledge(t), "{t} must be outside the default scope");
+        }
     }
 
     #[test]
@@ -1292,6 +1324,13 @@ mod tests {
                 .iter()
                 .filter_map(|id| self.nodes.get(*id).cloned())
                 .collect())
+        }
+
+        async fn access_boundaries_under(
+            &self,
+            _root_id: &str,
+        ) -> Result<HashSet<String>, crate::services::error::NodeServiceError> {
+            Ok(HashSet::new())
         }
     }
 
