@@ -84,6 +84,10 @@ describe("build-pkg.sh spctl exit-code handling", () => {
 
       expect(result.exitCode).toBe(0);
       expect(result.stdout).toContain("Gatekeeper: OK");
+      // spctl's own --verbose assessment output must still surface in the
+      // build log on success, not just on failure.
+      expect(result.stdout).toContain("ACCEPTED stdout");
+      expect(result.stdout).toContain("ACCEPTED stderr");
     } finally {
       rmSync(binDir, { recursive: true, force: true });
     }
@@ -97,8 +101,11 @@ describe("build-pkg.sh spctl exit-code handling", () => {
 
       expect(result.exitCode).not.toBe(0);
       expect(result.stderr).toContain("Gatekeeper rejected");
-      expect(result.stderr).toContain("REJECTED stdout");
-      expect(result.stderr).toContain("REJECTED stderr");
+      // spctl's own --verbose assessment output is printed unconditionally
+      // (before the exit-code branch), so it lands on stdout regardless of
+      // outcome -- not duplicated into the stderr error message.
+      expect(result.stdout).toContain("REJECTED stdout");
+      expect(result.stdout).toContain("REJECTED stderr");
       // Must not be conflated with the generic "not a Gatekeeper verdict" path.
       expect(result.stderr).not.toContain("not a Gatekeeper verdict");
     } finally {
@@ -115,7 +122,7 @@ describe("build-pkg.sh spctl exit-code handling", () => {
       expect(result.exitCode).not.toBe(0);
       expect(result.stderr).toContain("not a Gatekeeper verdict");
       expect(result.stderr).toContain("spctl exited 2");
-      expect(result.stderr).toContain("TOOLERROR stdout");
+      expect(result.stdout).toContain("TOOLERROR stdout");
       // The bug this guards against: misreporting a tool error as a rejection.
       expect(result.stderr).not.toContain("Gatekeeper rejected");
     } finally {

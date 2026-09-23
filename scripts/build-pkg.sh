@@ -252,15 +252,18 @@ else
     SPCTL_OUTPUT=$(spctl --assess --type install --verbose "${FINAL_PKG}" 2>&1)
     SPCTL_EXIT=$?
     set -e
+    # Print spctl's own assessment output unconditionally -- the previous
+    # unredirected `spctl ... && echo OK` always surfaced it in the build log
+    # regardless of outcome, and this preserves that visibility now that the
+    # output is captured into a variable to inspect the exit code first.
+    echo "${SPCTL_OUTPUT}"
     if [[ ${SPCTL_EXIT} -eq 0 ]]; then
         echo "    ✓ Gatekeeper: OK"
     elif [[ ${SPCTL_EXIT} -eq 3 ]]; then
-        echo "error: Gatekeeper rejected ${FINAL_PKG} (spctl exited 3):" >&2
-        echo "${SPCTL_OUTPUT}" >&2
+        echo "error: Gatekeeper rejected ${FINAL_PKG} (spctl exited 3)" >&2
         exit 1
     else
-        echo "error: spctl exited ${SPCTL_EXIT} (expected 0 or 3) -- not a Gatekeeper verdict:" >&2
-        echo "${SPCTL_OUTPUT}" >&2
+        echo "error: spctl exited ${SPCTL_EXIT} (expected 0 or 3) -- not a Gatekeeper verdict" >&2
         exit 1
     fi
     # --- END spctl-exit-code ---
