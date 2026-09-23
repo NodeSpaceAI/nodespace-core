@@ -890,10 +890,12 @@ fn schema_already_created_this_turn(executions: &[ToolExecutionRecord]) -> bool 
 /// "feature writeups") — so it lowercases both sides, and for a multi-word
 /// name requires every word to appear rather than the exact phrase.
 ///
-/// Matching is by whole word: both sides are split on non-alphanumeric
-/// characters, so a name buried inside an unrelated word ("Ask" in "tasks",
-/// "Boo" in "books") does not count. Plural tolerance is handled per word by
-/// [`words_match_modulo_plural`].
+/// Matching is by whole word (see [`lowercase_words`]), so a name buried
+/// inside an unrelated word ("Ask" in "tasks", "Boo" in "books") does not
+/// count. Because both sides split at camelCase boundaries, "ReadingList"
+/// and "Reading List" are the same two words; a multi-word name written as
+/// one lowercase word ("readinglist") also matches. Plural tolerance is
+/// handled per word by [`words_match_modulo_plural`].
 ///
 /// Loose in this direction is the safe way round, on *severity* rather than
 /// likelihood. Word matching still says yes to some things the user did not
@@ -905,34 +907,60 @@ fn schema_already_created_this_turn(executions: &[ToolExecutionRecord]) -> bool 
 /// which is the failure this relaxation exists to remove. Single characters
 /// are ignored so a stray "a" or "I" cannot match everything.
 fn user_message_names_type(user_message: &str, schema_name: &str) -> bool {
-    let haystack = user_message.to_lowercase();
-    let message_words: Vec<&str> = haystack
-        .split(|c: char| !c.is_alphanumeric())
-        .filter(|w| !w.is_empty())
-        .collect();
-    let name = schema_name.to_lowercase();
-    let mut words = name
-        .split(|c: char| !c.is_alphanumeric())
+    let message_words = lowercase_words(user_message);
+    let name_words: Vec<String> = lowercase_words(schema_name)
+        .into_iter()
         .filter(|w| w.chars().count() > 1)
-        .peekable();
-    if words.peek().is_none() {
+        .collect();
+    if name_words.is_empty() {
         return false;
     }
-    words.all(|word| {
+    let appears = |word: &str| {
         message_words
             .iter()
             .any(|candidate| words_match_modulo_plural(candidate, word))
-    })
+    };
+    name_words.iter().all(|word| appears(word)) || appears(&name_words.concat())
+}
+
+/// Split `text` into lowercase words: at every non-alphanumeric character,
+/// and at each lowercase-to-uppercase boundary so "FeatureWriteup" yields
+/// "feature" and "writeup".
+fn lowercase_words(text: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    let mut current = String::new();
+    let mut prev_lower = false;
+    for c in text.chars() {
+        let boundary = !c.is_alphanumeric() || (prev_lower && c.is_uppercase());
+        if boundary && !current.is_empty() {
+            words.push(std::mem::take(&mut current));
+        }
+        if c.is_alphanumeric() {
+            current.extend(c.to_lowercase());
+        }
+        prev_lower = c.is_lowercase();
+    }
+    if !current.is_empty() {
+        words.push(current);
+    }
+    words
 }
 
 /// Whether two lowercase words are the same word, allowing either to carry a
-/// trailing plural "s" or "es" the other lacks ("invoice"/"invoices",
-/// "box"/"boxes").
+/// trailing plural the other lacks: "s" always ("invoice"/"invoices"), "es"
+/// only after a stem that takes it ("box"/"boxes", "class"/"classes"), so
+/// "not" does not pair with "notes".
+///
+/// Deliberately regular plurals only: "-ies" ("category"/"categories") and
+/// other inflections ("invoiced") are not recognised.
 fn words_match_modulo_plural(a: &str, b: &str) -> bool {
     let (shorter, longer) = if a.len() <= b.len() { (a, b) } else { (b, a) };
     match longer.strip_prefix(shorter) {
-        Some(suffix) => matches!(suffix, "" | "s" | "es"),
-        None => false,
+        Some("" | "s") => true,
+        Some("es") => ["s", "x", "z", "ch", "sh", "o"]
+            .iter()
+            .any(|ending| shorter.ends_with(ending)),
+        _ => false,
     }
 }
 
@@ -9588,6 +9616,33 @@ mod tests {
             "Customer, Invoice (linked).",
             "Invoice"
         ));
+
+        // "es" pairs only with stems that take it: "not" is not "Notes".
+        assert!(!user_message_names_type("I do not want that", "Notes"));
+        assert!(user_message_names_type("track classes", "Class"));
+    }
+
+    /// A multi-word name is found however the user joins its words —
+    /// camelCase, spaced, or run together — and vice versa.
+    #[test]
+    fn user_message_names_type_matches_concatenated_names() {
+        assert!(user_message_names_type(
+            "create a ReadingList and a Book type",
+            "Reading List"
+        ));
+        assert!(user_message_names_type(
+            "create a feature writeup type",
+            "FeatureWriteup"
+        ));
+        assert!(user_message_names_type(
+            "add a readinglist type",
+            "Reading List"
+        ));
+        assert!(user_message_names_type("add a followup type", "Follow-up"));
+        assert!(user_message_names_type("add some bugreports", "Bug Report"));
+
+        // Joining words does not relax whole-word matching.
+        assert!(!user_message_names_type("track my tasks", "T Ask"));
     }
 
     /// A single `create_schema` call in a turn must execute normally — the
