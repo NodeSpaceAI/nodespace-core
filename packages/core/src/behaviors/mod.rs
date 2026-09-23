@@ -819,24 +819,16 @@ impl NodeBehavior for ProjectNodeBehavior {
         })
     }
 
-    /// Projects carry semantic content (their name/description) worth embedding as
-    /// a standalone root — unlike Task, which overrides these to `None`. This is an
-    /// intentional divergence, so it is stated explicitly here rather than left to
-    /// the trait default.
-    fn get_embeddable_content(&self, node: &Node) -> Option<String> {
-        if node.content.trim().is_empty() {
-            None
-        } else {
-            Some(node.content.clone())
-        }
+    /// Projects are not embedded. Like a task, a project is a named record found
+    /// by its title (general search's keyword half), not by the meaning of a
+    /// body; its content is only its name.
+    fn get_embeddable_content(&self, _node: &Node) -> Option<String> {
+        None
     }
 
-    fn get_parent_contribution(&self, node: &Node) -> Option<String> {
-        if node.content.trim().is_empty() {
-            None
-        } else {
-            Some(node.content.clone())
-        }
+    /// Projects don't contribute to a parent's embedding either.
+    fn get_parent_contribution(&self, _node: &Node) -> Option<String> {
+        None
     }
 }
 
@@ -3002,12 +2994,6 @@ mod tests {
             json!({ "project": { "start_date": "2026-03-03", "end_date": "2026-03-03" } }),
         );
         assert!(behavior.validate(&same_day).is_ok());
-
-        // Projects are embeddable roots (unlike Task): content is returned.
-        assert_eq!(
-            behavior.get_embeddable_content(&full),
-            Some("Launch v1".to_string())
-        );
     }
 
     #[test]
@@ -3098,6 +3084,14 @@ mod tests {
             behavior.validate(&null_namespace),
             Err(NodeValidationError::InvalidProperties(_))
         ));
+    }
+
+    #[test]
+    fn test_project_node_behavior_is_not_embedded() {
+        let behavior = ProjectNodeBehavior;
+        let node = Node::new("project".to_string(), "Launch v1".to_string(), json!({}));
+        assert_eq!(behavior.get_embeddable_content(&node), None);
+        assert_eq!(behavior.get_parent_contribution(&node), None);
     }
 
     #[test]
