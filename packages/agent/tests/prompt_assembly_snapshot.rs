@@ -294,12 +294,17 @@ fn fixture_workspace_context() -> WorkspaceContext {
         // snapshot pins actually contains the entity tier. A `NotRun` fixture
         // renders nothing, which would let the tier's wording and its position
         // relative to EXISTING SCHEMAS drift without the golden file noticing.
-        resolved_entities: EntityResolution::Resolved(vec![ResolvedEntity {
-            id: "01J8ZQ3K7X2N4P6R8T0V2W4Y6A".to_string(),
-            title: "Northwind Trading".to_string(),
-            node_type: "company_sold_to".to_string(),
-            score: -2.31,
-        }]),
+        // Cut (`not_shown` > 0) for the same reason: the truncation note is
+        // model-facing text, and an uncut fixture would leave it unpinned.
+        resolved_entities: EntityResolution::Resolved {
+            entities: vec![ResolvedEntity {
+                id: "01J8ZQ3K7X2N4P6R8T0V2W4Y6A".to_string(),
+                title: "Northwind Trading".to_string(),
+                node_type: "company_sold_to".to_string(),
+                score: -2.31,
+            }],
+            not_shown: 1,
+        },
     }
 }
 

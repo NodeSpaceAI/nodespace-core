@@ -89,8 +89,19 @@ pub enum EntityResolution {
     NotRun,
     /// Resolution ran and matched no node. Renders an explicit "none found".
     NoMatch,
-    /// Resolution ran and matched. Never empty — an empty match is `NoMatch`.
-    Resolved(Vec<crate::db::ResolvedEntity>),
+    /// Resolution ran and matched. `entities` is never empty — an empty match
+    /// is `NoMatch`.
+    ///
+    /// `not_shown` counts comparable matches the cap cut: candidates that
+    /// cleared the score cutoff but did not fit. It is carried rather
+    /// than recomputed downstream because only the resolver knows the list was
+    /// cut, and a cut list rendered without saying so reads as complete: the
+    /// model acts on the one "Fabrikam Industries" it was shown with no signal
+    /// that a second one of another type existed.
+    Resolved {
+        entities: Vec<crate::db::ResolvedEntity>,
+        not_shown: usize,
+    },
 }
 
 /// An active playbook.
@@ -185,6 +196,24 @@ pub const RESOLVED_ENTITIES_HEADER: &str =
 pub const NO_ENTITIES_LINE: &str =
     "MENTIONED ENTITIES: none found — anything named in this message does not exist yet.";
 
+/// The phrase that marks a resolved-entity list as cut. The model-facing
+/// guidance (ALREADY IN THE GRAPH) refers to the list by this phrase, so the
+/// two share it rather than each wording it.
+pub const ENTITIES_NOT_SHOWN_MARKER: &str = "more matches not shown";
+
+/// Rendered under the entity list when the list does not hold every match.
+///
+/// "At least", because the count is a lower bound: the index pull is
+/// `ENTITY_CANDIDATE_LIMIT` wide, so when that pull was full there may be
+/// further matches nobody fetched. The line states that the list is not
+/// exhaustive, not how many matches exist.
+fn entities_not_shown_line(not_shown: usize) -> String {
+    format!(
+        "({ENTITIES_NOT_SHOWN_MARKER}: at least {not_shown} — this list is not exhaustive; \
+         look a name up before treating it as unique or absent)\n"
+    )
+}
+
 /// Most entities rendered into one turn's context.
 ///
 /// The other two context tiers are naturally small (skills ~11, schemas capped
@@ -192,6 +221,18 @@ pub const NO_ENTITIES_LINE: &str =
 /// own cap or a common word could flood a block the others keep deliberately
 /// short. Small on purpose: past a handful, a list of names stops being a
 /// constraint and becomes noise the model has to filter.
+///
+/// Measured against multi-entity messages, and kept at 5. Three names that
+/// each exist as two types ("link Northwind Trading, Contoso Holdings and
+/// Fabrikam Industries to the Q3 plan", each seeded as a text and a task) score
+/// six candidates identically (-2.89 in a 16-node workspace, -12.42 in a
+/// 206-node one), so the cap cuts one of them — which one is decided by tie
+/// order alone. That is an intended entity being cut, but raising the cap does
+/// not fix it: a cap of N is reached by any N/2 + 1 two-type names, so a larger
+/// cap only moves the boundary while making every list noisier. What holds at
+/// any N is saying the list was cut, which `Resolved::not_shown` now does.
+/// It counts only the cap's cut, not the cutoff's, so the note stays specific to
+/// comparable matches rather than firing on every word-sharing decoy.
 pub const MAX_RESOLVED_ENTITIES: usize = 5;
 
 /// How many candidates to pull from FTS5 before applying the relative cutoff.
@@ -239,6 +280,24 @@ const ENTITY_CANDIDATE_LIMIT: i64 = 12;
 /// calibrated on 51 indexed rows would drift as the workspace grows. The
 /// relative form asks "is this candidate comparable to the best match", which
 /// is scale-free; the probe calibrates the factor, not a raw score.
+///
+/// Also measured for a common-word name beside a rare-word one ("link Main
+/// Office to Northwind Trading", with filler titles sharing "main" and
+/// "office"), and kept at 0.45:
+///
+/// ```text
+///                        Northwind Trading   Main Office   bar
+///   14 nodes, 12 filler        -5.19            -0.18      -2.34   (cut)
+///   208 nodes, 6 filler       -13.90           -10.48      -6.26   (kept)
+/// ```
+///
+/// The cut happens only when the common words sit in about half of all titles,
+/// which drives their bm25 idf to roughly zero. At that point "Main Office"
+/// ties with "Main backlog", so no factor separates the intended name from
+/// filler: one loose enough to keep it admits everything sharing "main". The
+/// cut is not a cutoff problem that a different factor fixes, so the factor
+/// stays, and the guidance covers the gap instead: a name in the message that
+/// is absent from MENTIONED ENTITIES gets looked up before it is created.
 const ENTITY_SCORE_CUTOFF_FACTOR: f64 = 0.45;
 
 /// Character budget applied to each blended prior turn.
@@ -486,11 +545,15 @@ async fn resolve_entities(
     // multiplying by a factor < 1 moves the bar toward zero — i.e. loosens it.
     let bar = best * ENTITY_SCORE_CUTOFF_FACTOR;
     let candidates_len = candidates.len();
-    let kept: Vec<_> = candidates
-        .into_iter()
-        .filter(|c| c.score <= bar)
-        .take(MAX_RESOLVED_ENTITIES)
-        .collect();
+    let mut kept: Vec<_> = candidates.into_iter().filter(|c| c.score <= bar).collect();
+    // Only what the CAP cuts counts as not shown. A candidate under the bar
+    // is, by the cutoff's own definition, not a comparable match: the OR'd
+    // lookup returns every title sharing one word with a name, so counting
+    // those would put the note on nearly every populated list and teach the
+    // model to ignore it. A real name the cutoff drops is caught instead by
+    // the guidance to check each name in the message against the list.
+    let not_shown = kept.len().saturating_sub(MAX_RESOLVED_ENTITIES);
+    kept.truncate(MAX_RESOLVED_ENTITIES);
 
     if kept.is_empty() {
         tracing::debug!(
@@ -502,10 +565,14 @@ async fn resolve_entities(
     } else {
         tracing::debug!(
             count = kept.len(),
+            not_shown,
             query = q,
             "workspace_context: entity resolution"
         );
-        EntityResolution::Resolved(kept)
+        EntityResolution::Resolved {
+            entities: kept,
+            not_shown,
+        }
     }
 }
 
@@ -733,7 +800,10 @@ impl WorkspaceContext {
                     out.push_str(&line);
                 }
             }
-            EntityResolution::Resolved(entities) => {
+            EntityResolution::Resolved {
+                entities,
+                not_shown,
+            } => {
                 // Lines are built BEFORE the header is emitted, so the header
                 // never appears alone. Writing it first and then discovering
                 // the first line does not fit would leave a heading that
@@ -742,20 +812,61 @@ impl WorkspaceContext {
                 // rendering nothing: the model is told entities were resolved
                 // and then shown none.
                 let header = format!("\n{RESOLVED_ENTITIES_HEADER}\n");
-                let mut lines = String::new();
+                let mut lines: Vec<String> = Vec::new();
+                let mut used = out.len() + header.len();
                 for e in entities {
                     // id last and unquoted so it is copyable verbatim; the
                     // type is what lets the model tell two same-named
                     // entities apart.
                     let line = format!("- \"{}\" ({}) id={}\n", e.title, e.node_type, e.id);
-                    if out.len() + header.len() + lines.len() + line.len() > max_chars {
+                    if used + line.len() > max_chars {
                         break;
                     }
-                    lines.push_str(&line);
+                    used += line.len();
+                    lines.push(line);
                 }
+
+                // A line the budget dropped is as hidden as one the resolver
+                // dropped, so both count toward the note. The note is part of
+                // the section, not optional trim: a cut list without it reads
+                // as complete. When it does not fit, entity lines give way to
+                // it one at a time, and if none are left the section renders
+                // nothing — a note promising hidden matches beneath an empty
+                // list is the same missing fourth state as a lone header.
+                let mut hidden = not_shown + (entities.len() - lines.len());
+                let note = loop {
+                    if hidden == 0 {
+                        break String::new();
+                    }
+                    // Rebuilt each pass, not hoisted: its length depends on
+                    // `hidden`, which grows as lines give way (9 -> 10 adds a
+                    // character).
+                    let note = entities_not_shown_line(hidden);
+                    if used + note.len() <= max_chars {
+                        break note;
+                    }
+                    match lines.pop() {
+                        Some(line) => {
+                            used -= line.len();
+                            hidden += 1;
+                        }
+                        None => {
+                            // Logged, not silent: from the prompt alone this
+                            // is indistinguishable from `NotRun`.
+                            tracing::debug!(
+                                hidden,
+                                max_chars,
+                                "workspace_context: entity tier omitted — budget fits no entity beside the truncation note"
+                            );
+                            break String::new();
+                        }
+                    }
+                };
+
                 if !lines.is_empty() {
                     out.push_str(&header);
-                    out.push_str(&lines);
+                    out.push_str(&lines.concat());
+                    out.push_str(&note);
                 }
             }
         }
@@ -1691,6 +1802,14 @@ mod tests {
         }
     }
 
+    /// A resolution the resolver did not cut.
+    fn resolved(entities: Vec<crate::db::ResolvedEntity>) -> EntityResolution {
+        EntityResolution::Resolved {
+            entities,
+            not_shown: 0,
+        }
+    }
+
     fn ctx_with(resolution: EntityResolution) -> WorkspaceContext {
         WorkspaceContext {
             resolved_entities: resolution,
@@ -1702,7 +1821,7 @@ mod tests {
     /// removes was a turn stalling to ask for one it could have been handed.
     #[test]
     fn a_resolved_entity_renders_with_its_id_and_type() {
-        let out = ctx_with(EntityResolution::Resolved(vec![entity(
+        let out = ctx_with(resolved(vec![entity(
             "Northwind Trading",
             "company_sold_to",
             "abc123",
@@ -1743,7 +1862,7 @@ mod tests {
     /// project?" is the case the turn most needs to see.
     #[test]
     fn ambiguous_entities_all_render() {
-        let out = ctx_with(EntityResolution::Resolved(vec![
+        let out = ctx_with(resolved(vec![
             entity("Acme", "customer", "c1", -2.0),
             entity("Acme", "project", "p1", -1.9),
         ]))
@@ -1760,7 +1879,7 @@ mod tests {
     /// constrains which schema applies rather than the other way round.
     #[test]
     fn entities_render_before_schemas() {
-        let mut ctx = ctx_with(EntityResolution::Resolved(vec![entity(
+        let mut ctx = ctx_with(resolved(vec![entity(
             "Northwind Trading",
             "company_sold_to",
             "abc123",
@@ -1812,24 +1931,29 @@ mod tests {
     /// a budget that admits only SOME entities renders those, not none.
     #[test]
     fn entity_tier_respects_the_char_budget() {
+        // The second title is long enough that its line outweighs the note,
+        // so dropping it leaves room for the note it earns. With a short line
+        // the note would not fit in the space freed, and the first line would
+        // give way too — see `entity_lines_give_way_to_the_note`.
+        let long_title = format!("Contoso{}", " Ltd".repeat(50));
         let two = vec![
             entity("Northwind Trading", "company_sold_to", "abc123", -2.5),
-            entity("Contoso Ltd", "customer", "def456", -2.4),
+            entity(&long_title, "customer", "def456", -2.4),
         ];
-        let full = ctx_with(EntityResolution::Resolved(two.clone())).format_for_prompt(4000);
+        let full = ctx_with(resolved(two.clone())).format_for_prompt(4000);
 
-        // A budget one line short of the full rendering: the first entity must
+        // A budget with room for the first entity and the note its dropped
+        // sibling earns, but not the second line: the first entity must
         // survive and the second must be dropped. Exercises the partial-
         // truncation path rather than the all-or-nothing ends.
         //
-        // Derived from the dropped line's own length rather than a fixed
-        // offset, so the boundary stays correct if the rendered line format
-        // changes.
-        let second_line = format!("- \"{}\" ({}) id={}\n", "Contoso Ltd", "customer", "def456");
-        let one_line_short = full.len() - second_line.len();
-        let out = ctx_with(EntityResolution::Resolved(two)).format_for_prompt(one_line_short);
+        // Derived from the rendered pieces' own lengths rather than a fixed
+        // offset, so the boundary stays correct if the line format changes.
+        let second_line = format!("- \"{}\" ({}) id={}\n", long_title, "customer", "def456");
+        let budget = full.len() - second_line.len() + entities_not_shown_line(1).len();
+        let out = ctx_with(resolved(two)).format_for_prompt(budget);
 
-        assert!(out.len() <= one_line_short, "budget exceeded: {out}");
+        assert!(out.len() <= budget, "budget exceeded: {out}");
         assert!(
             out.contains("abc123"),
             "the first entity must still render when the budget admits it: {out}"
@@ -1837,6 +1961,97 @@ mod tests {
         assert!(
             !out.contains("def456"),
             "the second entity must be dropped by the budget: {out}"
+        );
+        assert!(
+            out.contains(&entities_not_shown_line(1)),
+            "a line the budget dropped is hidden too, and must be counted in the note: {out}"
+        );
+    }
+
+    /// An uncut list carries no note: the note means "not exhaustive", and on
+    /// a complete list that would send the model searching for nothing.
+    #[test]
+    fn an_uncut_list_renders_no_truncation_note() {
+        let out = ctx_with(resolved(vec![entity("Acme", "customer", "c1", -2.0)]))
+            .format_for_prompt(4000);
+
+        assert!(out.contains("id=c1"));
+        assert!(
+            !out.contains(ENTITIES_NOT_SHOWN_MARKER),
+            "nothing was dropped, so nothing may claim otherwise: {out}"
+        );
+    }
+
+    /// Candidates the resolver dropped are announced under the list, as a
+    /// lower bound rather than an exact total.
+    #[test]
+    fn a_resolver_cut_renders_the_truncation_note_under_the_list() {
+        let out = ctx_with(EntityResolution::Resolved {
+            entities: vec![entity("Acme", "customer", "c1", -2.0)],
+            not_shown: 2,
+        })
+        .format_for_prompt(4000);
+
+        let line_at = out.find("id=c1").expect("entity line");
+        let note_at = out
+            .find(&entities_not_shown_line(2))
+            .unwrap_or_else(|| panic!("the cut must be announced: {out}"));
+        assert!(line_at < note_at, "the note belongs under the list: {out}");
+        assert!(
+            out.contains("at least 2"),
+            "the count is a lower bound and must be worded as one: {out}"
+        );
+    }
+
+    /// The note is never rendered without an entity above it.
+    ///
+    /// Here the budget holds the header and the one entity line but not the
+    /// note. Dropping the note would render a cut list as complete; keeping
+    /// it by dropping the line would leave a note promising hidden matches
+    /// under an empty list. Neither is a state the tier has, so the section
+    /// renders nothing, the same way a lone header is refused.
+    #[test]
+    fn a_budget_without_room_for_the_note_renders_nothing() {
+        let ctx = ctx_with(EntityResolution::Resolved {
+            entities: vec![entity("Acme", "customer", "c1", -2.0)],
+            not_shown: 1,
+        });
+        let uncut = ctx_with(resolved(vec![entity("Acme", "customer", "c1", -2.0)]))
+            .format_for_prompt(4000);
+        let out = ctx.format_for_prompt(uncut.len());
+
+        assert!(
+            !out.contains(RESOLVED_ENTITIES_HEADER) && !out.contains(ENTITIES_NOT_SHOWN_MARKER),
+            "a cut list must carry its note or not render at all: {out}"
+        );
+    }
+
+    /// When the note does not fit beside every line, entity lines give way to
+    /// it, and each line given up is counted in it.
+    #[test]
+    fn entity_lines_give_way_to_the_note() {
+        let two = vec![
+            entity("Northwind Trading", "company_sold_to", "abc123", -2.5),
+            entity("Contoso Ltd", "customer", "def456", -2.4),
+        ];
+        let ctx = ctx_with(EntityResolution::Resolved {
+            entities: two.clone(),
+            not_shown: 1,
+        });
+        // Room for both lines, or for the first line and the note, but not
+        // for both lines and the note: the second line yields to the note,
+        // which counts it.
+        let second_line = format!("- \"{}\" ({}) id={}\n", "Contoso Ltd", "customer", "def456");
+        let budget = ctx_with(resolved(two)).format_for_prompt(4000).len() - second_line.len()
+            + entities_not_shown_line(2).len();
+        let out = ctx.format_for_prompt(budget);
+
+        assert!(out.len() <= budget, "budget exceeded: {out}");
+        assert!(out.contains("abc123"), "the first line must stay: {out}");
+        assert!(!out.contains("def456"), "the second line must yield: {out}");
+        assert!(
+            out.contains(&entities_not_shown_line(2)),
+            "the yielded line joins the resolver's one in the count: {out}"
         );
     }
 
@@ -1849,7 +2064,7 @@ mod tests {
     /// before committing to the header is what prevents it.
     #[test]
     fn a_budget_too_small_for_any_entity_renders_no_header() {
-        let out = ctx_with(EntityResolution::Resolved(vec![entity(
+        let out = ctx_with(resolved(vec![entity(
             "Northwind Trading",
             "company_sold_to",
             "abc123",
