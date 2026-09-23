@@ -127,10 +127,11 @@ fn record_degradation(
 /// membership in this node's type is the same eligibility test.
 ///
 /// The scheduled/cron eligibility test resolves `node.node_type`'s `extends`
-/// ancestry live (`NodeService::resolve_type_chain`), the same mechanism the
-/// candidate field enumeration below already uses, rather than consulting
-/// `PlaybookLifecycleManager::ancestor_cache` directly. That cache is
-/// refreshed asynchronously by `PlaybookEngine` and can be stale after a
+/// ancestry live (`NodeService::resolve_type_chain`, via the same
+/// `resolve_field_owners` call the candidate field enumeration below already
+/// makes — its returned chain is reused rather than re-resolved), rather
+/// than consulting `PlaybookLifecycleManager::ancestor_cache` directly. That
+/// cache is refreshed asynchronously by `PlaybookEngine` and can be stale after a
 /// failed refresh — acceptable for the zero-I/O hot trigger-dispatch path it
 /// exists to serve, but this function has no access to `PlaybookEngine`'s
 /// `ancestry_dirty` flag or its refresh routine to detect or repair that, and
@@ -191,54 +192,45 @@ pub async fn get_workflow_state(
     // key built for it, or a genuinely active, satisfied rule silently never
     // shows up here. `resolve_field_owners` already walks that chain and
     // merges it; reuse it rather than re-deriving the merge from `schema`.
-    let effective_fields = match node_service.resolve_field_owners(&node.node_type).await {
-        Ok((fields, _owners, _chain)) => fields,
-        Err(e) => {
-            let msg = format!(
-                "effective-field resolution for '{}' failed ({e}); property_changed \
-                 candidates degraded to this node's own directly-declared schema fields",
-                node.node_type
-            );
-            record_degradation(
-                &mut degraded,
-                &node.node_type,
-                &e,
-                "get_workflow_state",
-                msg,
-            );
-            schema
-                .as_ref()
-                .map(|s| s.fields.clone())
-                .unwrap_or_default()
-        }
-    };
-
-    // Live-resolved `extends` ancestry (ADR-078) for the scheduled/cron
-    // candidate fan-out below — resolved once, here, rather than read from
-    // `PlaybookLifecycleManager::ancestor_cache` inside the lock-held block.
-    // See this function's doc comment for why: that cache can be stale in a
-    // way this function cannot detect or self-heal, and this is a read-only,
-    // out-of-band diagnostic call with no hot-path budget that would justify
-    // trusting it anyway.
-    let ancestry = match node_service.resolve_type_chain(&node.node_type).await {
-        Ok(chain) => chain,
-        Err(e) => {
-            let msg = format!(
-                "extends-chain resolution for '{}' failed ({e}); scheduled/cron candidate \
-                 fan-out degraded to this node's own type only — a scheduled Play registered \
-                 on an ancestor type may be missing from this response",
-                node.node_type
-            );
-            record_degradation(
-                &mut degraded,
-                &node.node_type,
-                &e,
-                "get_workflow_state",
-                msg,
-            );
-            vec![node.node_type.clone()]
-        }
-    };
+    //
+    // Its third return value is the same live-resolved chain
+    // `NodeService::resolve_type_chain` computes (`resolve_field_owners`
+    // calls it internally and returns the result verbatim) — reused below as
+    // `ancestry` for the scheduled/cron candidate fan-out rather than issuing
+    // a second, independent call that would re-walk the same `extends` edges
+    // and could observe a different, concurrently-written snapshot of them.
+    let (effective_fields, ancestry) =
+        match node_service.resolve_field_owners(&node.node_type).await {
+            Ok((fields, _owners, chain)) => (fields, chain),
+            Err(e) => {
+                // One resolution failure degrades both consumers together: the
+                // property_changed candidate fields (see below) and, via
+                // `ancestry`'s fallback, the scheduled/cron candidate fan-out —
+                // both ultimately depend on the same underlying extends-chain
+                // walk, so reporting them as two unrelated failures would be
+                // misleading, not more informative.
+                let msg = format!(
+                    "effective-field/extends-chain resolution for '{}' failed ({e}); \
+                 property_changed candidates degraded to this node's own directly-declared \
+                 schema fields, and the scheduled/cron candidate fan-out degraded to this \
+                 node's own type only — a scheduled Play registered on an ancestor type may \
+                 be missing from this response",
+                    node.node_type
+                );
+                record_degradation(
+                    &mut degraded,
+                    &node.node_type,
+                    &e,
+                    "get_workflow_state",
+                    msg,
+                );
+                let fields = schema
+                    .as_ref()
+                    .map(|s| s.fields.clone())
+                    .unwrap_or_default();
+                (fields, vec![node.node_type.clone()])
+            }
+        };
 
     let candidate_refs = {
         let lm = lifecycle.read().expect("lifecycle lock poisoned");
