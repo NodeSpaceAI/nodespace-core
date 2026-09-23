@@ -5822,3 +5822,219 @@ async fn test_add_fields_and_add_relationships_in_the_same_call_rejects_a_shared
         "error should name the colliding name: {msg}"
     );
 }
+
+// ============================================================================
+// ADR-078 write-time collision enforcement: rename_fields destination names
+// ============================================================================
+
+#[tokio::test]
+async fn test_rename_fields_rejects_a_destination_colliding_with_an_inherited_relationship() {
+    let (svc, _tmp) = create_test_service().await;
+    create_base_schema(&svc, "Widget", &[]).await;
+    handle_create_schema(
+        &svc,
+        json!({
+            "name": "Ticket",
+            "fields": [],
+            "relationships": [widget_relationship("owner", "widget", "owned_tickets")]
+        }),
+    )
+    .await
+    .expect("ticket schema should be created");
+    handle_create_schema(
+        &svc,
+        json!({
+            "name": "Bug",
+            "extends": "ticket",
+            "fields": [
+                { "name": "notes", "type": "string", "protection": "user", "indexed": false }
+            ]
+        }),
+    )
+    .await
+    .expect("bug extends ticket should succeed");
+
+    // Without an ancestor-chain check on the rename path, this previously
+    // succeeded with no error, silently shadowing ticket's inherited
+    // relationship — exactly the ambiguity ADR-078 exists to prevent.
+    let result = handle_update_schema(
+        &svc,
+        json!({
+            "schema_id": "bug",
+            "rename_fields": [{ "from": "notes", "to": "owner" }]
+        }),
+    )
+    .await;
+
+    let err = result.expect_err(
+        "renaming a field to a name an ancestor already declares as a relationship must be \
+         rejected, not silently succeed",
+    );
+    let msg = format!("{err:?}");
+    assert!(
+        msg.contains("owner"),
+        "error should name the colliding destination: {msg}"
+    );
+
+    // Confirm the rename genuinely did not apply.
+    let schema = svc
+        .get_schema_node("bug")
+        .await
+        .unwrap()
+        .expect("bug schema should still exist");
+    assert!(
+        schema.fields.iter().any(|f| f.name == "notes"),
+        "field should still be named 'notes' after the rejected rename: {:?}",
+        schema.fields
+    );
+}
+
+#[tokio::test]
+async fn test_rename_fields_rejects_a_destination_colliding_with_an_existing_relationship_before_migrating(
+) {
+    let (svc, _tmp) = create_test_service().await;
+    create_base_schema(&svc, "Widget", &[]).await;
+    handle_create_schema(
+        &svc,
+        json!({
+            "name": "Bug",
+            "fields": [
+                { "name": "notes", "type": "string", "protection": "user", "indexed": false }
+            ],
+            "relationships": [widget_relationship("owner", "widget", "owned_bugs")]
+        }),
+    )
+    .await
+    .expect("bug schema should be created");
+
+    // Without a pre-Phase-1 check, `rename_schema_field` would migrate every
+    // node's data and rewrite the schema definition BEFORE the end-of-call
+    // same-schema collision check ran — a rejection that looks like nothing
+    // happened, but the rename would already be durably applied.
+    let result = handle_update_schema(
+        &svc,
+        json!({
+            "schema_id": "bug",
+            "rename_fields": [{ "from": "notes", "to": "owner" }]
+        }),
+    )
+    .await;
+
+    let err = result.expect_err(
+        "renaming a field to a name this schema's own relationship already uses must be \
+         rejected before any data migrates, not accepted and only caught afterward",
+    );
+    let msg = format!("{err:?}");
+    assert!(
+        msg.contains("owner"),
+        "error should name the colliding destination: {msg}"
+    );
+
+    // The critical assertion: no partial write. The field must still exist
+    // under its original name.
+    let schema = svc
+        .get_schema_node("bug")
+        .await
+        .unwrap()
+        .expect("bug schema should still exist");
+    assert!(
+        schema.fields.iter().any(|f| f.name == "notes"),
+        "field should still be named 'notes' — the rename must not have partially applied: {:?}",
+        schema.fields
+    );
+}
+
+#[tokio::test]
+async fn test_rename_fields_still_allows_a_genuinely_new_destination_name() {
+    let (svc, _tmp) = create_test_service().await;
+    create_base_schema(&svc, "Widget", &[]).await;
+    handle_create_schema(
+        &svc,
+        json!({
+            "name": "Ticket",
+            "fields": [],
+            "relationships": [widget_relationship("owner", "widget", "owned_tickets")]
+        }),
+    )
+    .await
+    .expect("ticket schema should be created");
+    handle_create_schema(
+        &svc,
+        json!({
+            "name": "Bug",
+            "extends": "ticket",
+            "fields": [
+                { "name": "notes", "type": "string", "protection": "user", "indexed": false }
+            ]
+        }),
+    )
+    .await
+    .expect("bug extends ticket should succeed");
+
+    let result = handle_update_schema(
+        &svc,
+        json!({
+            "schema_id": "bug",
+            "rename_fields": [{ "from": "notes", "to": "comments" }]
+        }),
+    )
+    .await;
+
+    assert!(
+        result.is_ok(),
+        "renaming to a non-colliding destination should still succeed: {result:?}"
+    );
+}
+
+#[tokio::test]
+async fn test_rename_fields_rejects_a_destination_colliding_with_a_same_call_add_relationships() {
+    let (svc, _tmp) = create_test_service().await;
+    create_base_schema(&svc, "Widget", &[]).await;
+    handle_create_schema(
+        &svc,
+        json!({
+            "name": "Bug",
+            "fields": [
+                { "name": "notes", "type": "string", "protection": "user", "indexed": false }
+            ]
+        }),
+    )
+    .await
+    .expect("bug schema should be created");
+
+    // "owner" doesn't exist anywhere before this call — the collision is
+    // between the rename's destination and a relationship this SAME call
+    // also adds. Combining a rename with other field/relationship changes in
+    // one call is exactly what the agent-facing skill docs recommend, so
+    // this shape is expected to be common, not an edge case.
+    let result = handle_update_schema(
+        &svc,
+        json!({
+            "schema_id": "bug",
+            "rename_fields": [{ "from": "notes", "to": "owner" }],
+            "add_relationships": [widget_relationship("owner", "widget", "owned_bugs")]
+        }),
+    )
+    .await;
+
+    let err = result.expect_err(
+        "a rename destination colliding with a relationship added in the SAME call must be \
+         rejected before the rename migrates any data",
+    );
+    let msg = format!("{err:?}");
+    assert!(
+        msg.contains("owner"),
+        "error should name the colliding destination: {msg}"
+    );
+
+    let schema = svc
+        .get_schema_node("bug")
+        .await
+        .unwrap()
+        .expect("bug schema should still exist");
+    assert!(
+        schema.fields.iter().any(|f| f.name == "notes"),
+        "field should still be named 'notes' — the rename must not have partially applied: {:?}",
+        schema.fields
+    );
+}

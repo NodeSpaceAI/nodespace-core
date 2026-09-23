@@ -810,6 +810,18 @@ async fn validate_extends_target(
     Ok(())
 }
 
+/// Whether `rel` is a real, user-authored relationship declaration rather
+/// than NodeSpace's own `extends`/`extended_by` bookkeeping row (see
+/// [`crate::models::schema::is_type_system_relationship`]). Every
+/// field-vs-relationship cross-domain name comparison against a schema's own
+/// `relationships` — same-schema or ancestor-chain — must exclude these: a
+/// schema's own not-yet-replaced `extends` row is a real entry in that list
+/// right up until an `extends` re-target replaces it, and an ordinary field
+/// legally named "extends" must never be rejected for colliding with it.
+fn is_declared_relationship(rel: &crate::models::schema::SchemaRelationship) -> bool {
+    !crate::models::schema::is_type_system_relationship(&rel.name)
+}
+
 /// [`NodeService::resolve_relationships`], mapping a storage-layer failure
 /// to the same `MarkdownError::internal_error` shape both redeclaration
 /// checks need. Shared because both the field-side and relationship-side
@@ -831,6 +843,31 @@ async fn resolve_relationships_or_error(
         .map_err(|e| {
             MarkdownError::internal_error(format!(
                 "Failed to resolve relationships for '{parent_id}': {e}"
+            ))
+        })
+}
+
+/// [`NodeService::resolve_field_owners`], mapping a storage-layer failure the
+/// same way [`resolve_relationships_or_error`] does — the field-owner
+/// counterpart, used by the cross-domain half of
+/// [`validate_no_relationship_redeclaration`].
+async fn resolve_field_owners_or_error(
+    node_service: &Arc<NodeService>,
+    parent_id: &str,
+) -> Result<
+    (
+        Vec<SchemaField>,
+        std::collections::HashMap<String, String>,
+        Vec<String>,
+    ),
+    MarkdownError,
+> {
+    node_service
+        .resolve_field_owners(parent_id)
+        .await
+        .map_err(|e| {
+            MarkdownError::internal_error(format!(
+                "Failed to resolve field owners for '{parent_id}': {e}"
             ))
         })
 }
@@ -985,7 +1022,7 @@ async fn validate_no_relationship_redeclaration(
     // falsely reject an otherwise-legal re-target.
     let own_relationships: Vec<&crate::models::schema::SchemaRelationship> = own_relationships
         .iter()
-        .filter(|r| !crate::models::schema::is_type_system_relationship(&r.name))
+        .filter(|r| is_declared_relationship(r))
         .collect();
 
     let (inherited, owners) = resolve_relationships_or_error(node_service, parent_id).await?;
@@ -1015,14 +1052,7 @@ async fn validate_no_relationship_redeclaration(
         }
     }
 
-    let (_, field_owners, _) = node_service
-        .resolve_field_owners(parent_id)
-        .await
-        .map_err(|e| {
-            MarkdownError::internal_error(format!(
-                "Failed to resolve field owners for '{parent_id}': {e}"
-            ))
-        })?;
+    let (_, field_owners, _) = resolve_field_owners_or_error(node_service, parent_id).await?;
 
     for rel in &own_relationships {
         if let Some(owner) = field_owners.get(&rel.name) {
@@ -1058,12 +1088,16 @@ fn validate_no_same_schema_field_relationship_collision(
     fields: &[SchemaField],
     relationships: &[crate::models::schema::SchemaRelationship],
 ) -> Result<(), MarkdownError> {
+    // Filtered once, ahead of the loop — the same list is checked against
+    // every field, so re-filtering per iteration would cost an extra pass
+    // and allocation per field for no benefit.
+    let declared_relationships: Vec<&crate::models::schema::SchemaRelationship> = relationships
+        .iter()
+        .filter(|r| is_declared_relationship(r))
+        .collect();
+
     for field in fields {
-        if let Some(rel) = relationships
-            .iter()
-            .filter(|r| !crate::models::schema::is_type_system_relationship(&r.name))
-            .find(|r| r.name == field.name)
-        {
+        if let Some(rel) = declared_relationships.iter().find(|r| r.name == field.name) {
             return Err(MarkdownError::invalid_params(format!(
                 "'{}' cannot be declared as both a field and a relationship on the same \
                  schema — a name must resolve unambiguously as one or the other, the same \
@@ -1074,6 +1108,53 @@ fn validate_no_same_schema_field_relationship_collision(
                 rel.target_type.as_deref().unwrap_or("*"),
             )));
         }
+    }
+
+    Ok(())
+}
+
+/// Reject a `rename_fields` destination name the schema's `extends` ancestor
+/// chain already claims — same-domain (an inherited field) or cross-domain
+/// (an inherited relationship).
+///
+/// `rename_fields` has no ancestor-chain check of its own the way
+/// `add_fields`/`add_relationships` do via
+/// [`validate_no_field_redeclaration`]/[`validate_no_relationship_redeclaration`]:
+/// a rename introduces a newly-declared name exactly as those paths do, and
+/// left unchecked, a rename colliding with an inherited relationship
+/// succeeds with no error at all (permanently shadowing the ancestor's
+/// declaration with no way for the caller to detect it), since
+/// `rename_schema_field` only ever checks the destination against this
+/// schema's own fields. Takes a bare name rather than a `SchemaField` (what
+/// the two functions above take) because the caller has no complete
+/// `SchemaField` to hand — `rename_fields` renames an existing field in
+/// place, it does not construct a new one — so this mirrors just the name
+/// lookup those two do, over the same two resolvers.
+async fn validate_rename_destination_against_ancestors(
+    node_service: &Arc<NodeService>,
+    parent_id: &str,
+    to: &str,
+) -> Result<(), MarkdownError> {
+    let inherited_fields = resolve_effective_fields(node_service, parent_id).await?;
+    if let Some(existing) = inherited_fields.iter().find(|f| f.name == to) {
+        return Err(MarkdownError::invalid_params(format!(
+            "rename_fields: destination '{}' is already declared by '{}' (inherited via \
+             extends) and cannot be reused — composition is additive only, with no override \
+             or narrowing. The inherited field is type '{}'. Choose a different destination \
+             name.",
+            to, parent_id, existing.field_type,
+        )));
+    }
+
+    let (_, relationship_owners) = resolve_relationships_or_error(node_service, parent_id).await?;
+    if let Some(owner) = relationship_owners.get(to) {
+        return Err(MarkdownError::invalid_params(format!(
+            "rename_fields: destination '{}' is already declared as a relationship by '{}' \
+             (inherited via extends) — composition is additive only across both domains, so a \
+             name claimed by either a field or a relationship cannot be reused as the other. \
+             Choose a different destination name.",
+            to, owner,
+        )));
     }
 
     Ok(())
@@ -1981,6 +2062,69 @@ pub async fn handle_update_schema(
                     rename.to, e
                 ))
             })?;
+
+            // ADR-078 cross-domain (and same-domain) collision check for the
+            // destination name — same reasoning as the grammar check just
+            // above: this must run here, before Phase 1, not after.
+            // `rename_schema_field` only checks `to` against this schema's
+            // OWN fields; it has no ancestor-chain awareness and no
+            // relationship awareness at all, so left unchecked here a rename
+            // colliding with an inherited relationship would succeed with no
+            // error (permanent, undetectable corruption), and one colliding
+            // with this schema's own relationship would migrate every node's
+            // data and rewrite the schema BEFORE any later check could catch
+            // it. Skipped for a display-only rename (`from == to`): that
+            // introduces no new name, so there is nothing new to collide.
+            if rename.from != rename.to {
+                if let Some(rel) = schema_before
+                    .relationships
+                    .iter()
+                    .filter(|r| is_declared_relationship(r))
+                    .find(|r| r.name == rename.to)
+                {
+                    return Err(MarkdownError::invalid_params(format!(
+                        "rename_fields: destination '{}' collides with this schema's own \
+                         relationship '{}' (targets '{}') — a name must resolve unambiguously \
+                         as either a field or a relationship, never both. Choose a different \
+                         destination name.",
+                        rename.to,
+                        rel.name,
+                        rel.target_type.as_deref().unwrap_or("*"),
+                    )));
+                }
+
+                // Also check against a relationship THIS SAME call adds via
+                // `add_relationships`. That section runs well after Phase 1
+                // folds renames in (and after Phase 1 has already committed
+                // its own transaction), so a destination colliding only with
+                // a same-call addition — not anything pre-existing — would
+                // otherwise reach only the end-of-function same-schema
+                // check, by which point the rename has already migrated
+                // every node's data.
+                if let Some(ref add_rels) = params.add_relationships {
+                    if let Some(rel) = add_rels.iter().find(|r| r.name == rename.to) {
+                        return Err(MarkdownError::invalid_params(format!(
+                            "rename_fields: destination '{}' collides with a relationship '{}' \
+                             this same call also adds (targets '{}') — a name must resolve \
+                             unambiguously as either a field or a relationship, never both. \
+                             Choose a different destination name, or make the rename and the \
+                             addition two separate calls.",
+                            rename.to,
+                            rel.name,
+                            rel.target_type.as_deref().unwrap_or("*"),
+                        )));
+                    }
+                }
+
+                if let Some(parent) = declared_extends_parent(&schema_before.relationships) {
+                    validate_rename_destination_against_ancestors(
+                        node_service,
+                        &parent,
+                        &rename.to,
+                    )
+                    .await?;
+                }
+            }
         }
     }
 
