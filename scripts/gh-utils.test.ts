@@ -170,6 +170,46 @@ describe("GitHubClient project-board membership", () => {
     expect(issue.addedToProject).toBe(false);
   });
 
+  // Regression coverage for the silent-no-op gap: scheduled CI workflows
+  // (verify-macos-installer.yml, homebrew-drift-check.yml) reach this via
+  // NodeSpaceGitHubManager.findOrCreateTrackingIssue with a token that can
+  // never carry Projects v2 write scope, so the board add above fails on
+  // every one of those runs. `createIssue` is the one place that actually
+  // knows the add failed, so it -- not any particular caller -- must warn,
+  // otherwise a scheduled run's log reports clean success while quietly
+  // leaving the tracking issue off the board.
+  test("warns when the created issue could not be added to the project board", async () => {
+    const { client } = makeClientWithStubbedOctokit({ alreadyOnBoard: false });
+    (client as unknown as { octokit: { graphql: unknown } }).octokit.graphql = mock(async () => {
+      throw new Error("board unreachable");
+    });
+    const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+
+    try {
+      const issue = await client.createIssue("Title", "Body");
+
+      expect(issue.addedToProject).toBe(false);
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining(`#${ISSUE_NUMBER}`));
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("project board"));
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  test("does not warn when the created issue is added to the project board successfully", async () => {
+    const { client } = makeClientWithStubbedOctokit({ alreadyOnBoard: false });
+    const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+
+    try {
+      const issue = await client.createIssue("Title", "Body");
+
+      expect(issue.addedToProject).toBe(true);
+      expect(warnSpy).not.toHaveBeenCalled();
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
   test("a status update adds a missing issue to the board instead of failing", async () => {
     const { client, graphqlCalls } = makeClientWithStubbedOctokit({ alreadyOnBoard: false });
 
@@ -277,58 +317,6 @@ describe("NodeSpaceGitHubManager.findOrCreateTrackingIssue", () => {
       ["foundation"],
     );
     expect(result).toEqual({ number: 4242, url: "https://example.test/issues/4242", action: "created" });
-  });
-
-  // Regression coverage for the silent-no-op gap: scheduled CI workflows
-  // (verify-macos-installer.yml, homebrew-drift-check.yml) invoke this path
-  // with a token that can never have Projects v2 write scope, so
-  // `createIssue`'s best-effort board add fails every time. That failure is
-  // swallowed by `createIssue` itself (by design, for the human/PAT case),
-  // so this helper must surface it via a warning instead of staying silent.
-  test("warns when the created issue could not be added to the project board", async () => {
-    const { client, createIssue } = makeStubClient([]);
-    createIssue.mockImplementation(async (_title: string, _body: string, _labels?: string[]) => ({
-      number: 4243,
-      url: "https://example.test/issues/4243",
-      addedToProject: false,
-    }));
-    const manager = new NodeSpaceGitHubManager(client);
-    const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
-
-    try {
-      const result = await manager.findOrCreateTrackingIssue({
-        title: "Homebrew tap drift check failed (cask)",
-        body: "Run: https://example.test/run/7",
-      });
-
-      expect(result).toEqual({ number: 4243, url: "https://example.test/issues/4243", action: "created" });
-      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("#4243"));
-      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("project board"));
-    } finally {
-      warnSpy.mockRestore();
-    }
-  });
-
-  test("does not warn when the created issue is added to the project board successfully", async () => {
-    const { client, createIssue } = makeStubClient([]);
-    createIssue.mockImplementation(async (_title: string, _body: string, _labels?: string[]) => ({
-      number: 4244,
-      url: "https://example.test/issues/4244",
-      addedToProject: true,
-    }));
-    const manager = new NodeSpaceGitHubManager(client);
-    const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
-
-    try {
-      await manager.findOrCreateTrackingIssue({
-        title: "Homebrew tap drift check failed (cask)",
-        body: "Run: https://example.test/run/8",
-      });
-
-      expect(warnSpy).not.toHaveBeenCalled();
-    } finally {
-      warnSpy.mockRestore();
-    }
   });
 
   test("requires an exact title match -- a title that merely contains or starts with it does not count", async () => {

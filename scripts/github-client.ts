@@ -499,6 +499,24 @@ export class GitHubClient {
       .then(() => true)
       .catch(() => false);
 
+    // Warn here rather than leaving it to each caller to re-derive from
+    // `addedToProject` -- this is the one place that actually knows the add
+    // failed, so every current and future caller gets the warning "for
+    // free". Notably, `findOrCreateTrackingIssue` (scripts/gh-utils.ts) is
+    // invoked from scheduled CI workflows (verify-macos-installer.yml,
+    // homebrew-drift-check.yml) using the workflow's plain
+    // `secrets.GITHUB_TOKEN`, which can never carry Projects v2 write
+    // scope -- the add above silently no-ops on every one of those runs
+    // without this.
+    if (!addedToProject) {
+      console.warn(
+        `⚠️  Issue #${response.data.number} was created but could not be added to the project board ` +
+          "(likely a token without Projects v2 write scope, e.g. a scheduled workflow's " +
+          "GITHUB_TOKEN). It will be added automatically the next time `gh:status` is run " +
+          "on it with a token that has project write access.",
+      );
+    }
+
     return {
       number: response.data.number,
       url: response.data.html_url,
