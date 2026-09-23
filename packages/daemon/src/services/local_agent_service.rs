@@ -2354,15 +2354,14 @@ pub fn completed_writes_from(executions: &[ToolExecutionRecord]) -> Vec<AiChatCo
 /// any of the others, returns a short note to append to the turn's response
 /// text so the gap is visible to the user rather than passing silently.
 ///
-/// This closes a state PR #2818 made reachable: the old guard refused any
-/// second `create_schema` in a turn outright, so "two new types, one turn"
-/// could not happen at all. It was narrowed to refuse only types the user
-/// never named, which is what lets a legitimately-requested linked pair land
-/// as two sequential calls — but nothing requires the second call to actually
-/// declare the relationship back to the first. `targetType: None` is
-/// deliberately unvalidated (`validate_relationship_targets_exist` in
-/// `nodespace-core`'s schema module) because a relationship-free schema is
-/// legitimate on its own, so two unlinked types is a silent, valid outcome.
+/// This closes a state the second-`create_schema` guard leaves reachable: it
+/// refuses a repeat call only for a type the user never named, which is what
+/// lets a legitimately-requested linked pair land as two sequential calls —
+/// but nothing requires the second call to actually declare the relationship
+/// back to the first. `targetType: None` is deliberately unvalidated
+/// (`validate_relationship_targets_exist` in `nodespace-core`'s schema
+/// module) because a relationship-free schema is legitimate on its own, so
+/// two unlinked types is a silent, valid outcome.
 ///
 /// This does not try to infer whether the user actually asked for a *linked*
 /// pair — that signal lives in the user's phrasing, not in the tool calls,
@@ -3117,14 +3116,14 @@ mod tests {
     }
 
     /// Two schemas created in the same turn, neither declaring a relationship
-    /// to the other, is exactly the gap issue #2839 describes: PR #2818
-    /// narrowed the old "refuse any second `create_schema` in a turn" guard
-    /// to "refuse only types the user never named", which lets a
-    /// legitimately-requested linked pair land as two sequential calls — but
-    /// nothing requires either call to actually declare the relationship
-    /// back to the other. `targetType: None` stays a legitimate, unvalidated
-    /// choice on its own (`validate_relationship_targets_exist`), so this has
-    /// to be caught here, not in the tool layer.
+    /// to the other, is exactly the gap `unlinked_pair_note` exists to catch:
+    /// the guard that refuses a second `create_schema` in a turn only refuses
+    /// types the user never named, which lets a legitimately-requested linked
+    /// pair land as two sequential calls — but nothing requires either call
+    /// to actually declare the relationship back to the other. `targetType:
+    /// None` stays a legitimate, unvalidated choice on its own
+    /// (`validate_relationship_targets_exist`), so this has to be caught
+    /// here, not in the tool layer.
     #[tokio::test]
     async fn unlinked_pair_note_flags_two_schemas_created_without_a_relationship() {
         let (_svc, node_service, _tempdir) = test_service().await;
