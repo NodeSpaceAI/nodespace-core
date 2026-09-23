@@ -789,6 +789,46 @@ pub async fn resolve_effective_fields(
     Ok(extends_chain::flatten_chain_fields(&chain_fields))
 }
 
+/// Reject a relationship this schema would inherit.
+///
+/// Composition is additive only (ADR-078): an extending schema may add
+/// relationships but never redeclare one an ancestor already declares, with
+/// any attribute differing or not — the relationship counterpart to
+/// [`validate_no_field_redeclaration`]. Checked against the **full resolved
+/// effective set**, not just the parent's own directly-declared
+/// relationships, via [`NodeService::resolve_relationships`], so a collision
+/// two levels up is caught as readily as one with the immediate parent.
+async fn validate_no_relationship_redeclaration(
+    node_service: &Arc<NodeService>,
+    parent_id: &str,
+    own_relationships: &[crate::models::schema::SchemaRelationship],
+) -> Result<(), MarkdownError> {
+    let (inherited, _owners) = node_service
+        .resolve_relationships(parent_id)
+        .await
+        .map_err(|e| {
+            MarkdownError::internal_error(format!(
+                "Failed to resolve relationships for '{parent_id}': {e}"
+            ))
+        })?;
+
+    for rel in own_relationships {
+        if let Some(existing) = inherited.iter().find(|r| r.name == rel.name) {
+            return Err(MarkdownError::invalid_params(format!(
+                "Relationship '{}' is already declared by '{}' (inherited via extends) and \
+                 cannot be redeclared — composition is additive only, with no override or \
+                 narrowing. The inherited relationship targets '{}'. Either drop it from this \
+                 schema and use the inherited one, or give this relationship a different name.",
+                rel.name,
+                parent_id,
+                existing.target_type.as_deref().unwrap_or("*"),
+            )));
+        }
+    }
+
+    Ok(())
+}
+
 /// Validate the `edgeFields` declared on each relationship.
 ///
 /// Mirrors the node-side `validate_schema_field` enum rule (an enum must
@@ -1173,6 +1213,7 @@ pub async fn handle_create_schema(
     if let Some(parent_id) = extends_parent {
         validate_extends_target(node_service, &schema_id, parent_id).await?;
         validate_no_field_redeclaration(node_service, parent_id, &stored_fields).await?;
+        validate_no_relationship_redeclaration(node_service, parent_id, &relationships).await?;
     }
 
     // Check if schema already exists — return a clear error so the agent knows
@@ -1875,6 +1916,24 @@ pub async fn handle_update_schema(
                 )));
             }
         }
+        // Also reject a field this schema would inherit via an
+        // already-declared `extends` edge (ADR-078) — the same additive-only
+        // rule `validate_no_field_redeclaration` enforces at schema creation
+        // and at `extends` re-target, closing the gap where a later,
+        // separate `add_fields`-only call on an already-extending schema
+        // could otherwise silently redeclare an inherited field. Skipped
+        // when this same call is ALSO re-targeting `extends`
+        // (`params.extends.is_some()`): that path re-checks the full merged
+        // field list — including these `add_fields`, folded in below —
+        // against the NEW parent further down, so checking against the
+        // parent as it stands before this call here would be redundant at
+        // best, and wrong if the call is deliberately moving away from a
+        // parent this field happens to collide with.
+        if params.extends.is_none() {
+            if let Some(parent) = declared_extends_parent(&schema.relationships) {
+                validate_no_field_redeclaration(node_service, &parent, add_fields).await?;
+            }
+        }
         // Write-boundary friendly_name defaulting, with the current field
         // set (existing + removals already applied) as collision context —
         // see `apply_friendly_name_defaults`.
@@ -2021,6 +2080,21 @@ pub async fn handle_update_schema(
                 )));
             }
         }
+        // Also reject a relationship this schema would inherit via an
+        // already-declared `extends` edge (ADR-078) — the relationship
+        // counterpart to the `add_fields` ancestor check above, closing the
+        // same gap `resolve_relationships`'s own doc comment describes: no
+        // write path previously checked a new relationship's name against
+        // the ancestor chain, only against this schema's own current
+        // relationships. Same `params.extends.is_none()` gate and reasoning
+        // as the field check: an `extends` re-target in this same call is
+        // checked against the NEW parent further down, using the
+        // fully-merged relationship list.
+        if params.extends.is_none() {
+            if let Some(parent) = declared_extends_parent(&schema.relationships) {
+                validate_no_relationship_redeclaration(node_service, &parent, add_rels).await?;
+            }
+        }
         reject_reserved_relationship_names(add_rels)?;
         validate_edge_field_declarations(add_rels)?;
         // Reject a targetType that doesn't exist yet — see
@@ -2047,6 +2121,11 @@ pub async fn handle_update_schema(
         // stand after this call's add/remove/rename, not as they were loaded —
         // a call that both re-parents and drops the colliding field is legal.
         validate_no_field_redeclaration(node_service, new_parent, &fields).await?;
+        // Same check for relationships, against the fully-merged
+        // relationship list (existing declarations plus this call's own
+        // `add_relationships`/`remove_relationships`, already applied
+        // above) — mirrors the field check immediately above.
+        validate_no_relationship_redeclaration(node_service, new_parent, &relationships).await?;
 
         let replacing = relationships
             .iter_mut()
