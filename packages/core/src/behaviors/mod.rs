@@ -150,23 +150,6 @@ pub enum ProcessingError {
 ///     }
 /// }
 /// ```
-/// Built-in node types that are **non-embeddable AND can contain children** — the
-/// containers an embedding root walk must stop *below* (a bullet directly under one
-/// of these is its own embedding root; its content must not roll up into the
-/// container, which is excluded from the default `Knowledge` search scope).
-///
-/// This is the pure-SQL twin of the behavior probe `behavior_is_embeddable`: the
-/// BM25 ancestor CTE in `db/sqlite_store/embeddings.rs` can't run a behavior, so it
-/// refuses to traverse into any parent whose `node_type` is in this list, which
-/// makes the keyword-search root resolve to the same node the embedding root does.
-/// The two MUST agree or a bullet embeds on itself but search resolves it to an
-/// out-of-scope container (silently unfindable).
-/// `container_type_parity_tests::non_embeddable_container_types_match_behaviors`
-/// asserts this list is exactly the set of built-in behaviors that are both
-/// non-embeddable and child-bearing, so a new such type can't silently drift.
-pub const NON_EMBEDDABLE_CONTAINER_TYPES: &[&str] =
-    &["date", "task", "collection", "agent-guidance"];
-
 pub trait NodeBehavior: Send + Sync {
     /// Returns the unique type identifier for this node type
     ///

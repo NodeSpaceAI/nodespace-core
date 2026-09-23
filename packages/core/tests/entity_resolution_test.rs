@@ -162,6 +162,23 @@ mod entity_resolution_tests {
         Ok(())
     }
 
+    /// A schema is titled by its type name so search can find it, but a type is
+    /// not an entity: "the list" must not resolve to the Ordered List schema.
+    #[tokio::test]
+    async fn schema_type_names_are_not_resolved() -> Result<()> {
+        let (store, _service, _t) = create_test_store().await?;
+
+        let hits = store
+            .resolve_entities_by_title("Add a task to the ordered list", 12)
+            .await?;
+
+        assert!(
+            hits.iter().all(|h| h.node_type != "schema"),
+            "a schema must not resolve as an entity, got: {hits:?}"
+        );
+        Ok(())
+    }
+
     /// A body node that merely MENTIONS a name is not an entity. A node with a
     /// parent carries no title (`compute_title` returns None for a non-root
     /// node of a content-titled type), so it never enters `node_title_fts` and

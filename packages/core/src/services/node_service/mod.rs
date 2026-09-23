@@ -2770,46 +2770,6 @@ impl NodeAccessor for NodeService {
 }
 
 #[cfg(test)]
-mod container_type_parity_tests {
-    use super::behavior_is_embeddable;
-    use crate::behaviors::{NodeBehaviorRegistry, NON_EMBEDDABLE_CONTAINER_TYPES};
-    use std::collections::HashSet;
-
-    /// `NON_EMBEDDABLE_CONTAINER_TYPES` is the hand-maintained SQL twin of the
-    /// behavior probe: the BM25 ancestor CTE (`db/sqlite_store/embeddings.rs`) can't
-    /// run `behavior_is_embeddable`, so it hardcodes this list to decide which
-    /// parents to stop below. If a new built-in type is non-embeddable AND can bear
-    /// children but isn't in the const, the embedding-root walk (behavior-driven)
-    /// and the search-root walk (list-driven) diverge and that type's nested content
-    /// becomes silently unfindable. This test fails the moment they drift.
-    #[test]
-    fn non_embeddable_container_types_match_behaviors() {
-        let registry = NodeBehaviorRegistry::new();
-        let actual: HashSet<String> = registry
-            .get_all_types()
-            .into_iter()
-            .filter(|t| {
-                !behavior_is_embeddable(&registry, t)
-                    && registry
-                        .get(t)
-                        .map(|b| b.can_have_children())
-                        .unwrap_or(false)
-            })
-            .collect();
-        let expected: HashSet<String> = NON_EMBEDDABLE_CONTAINER_TYPES
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
-        assert_eq!(
-            actual, expected,
-            "NON_EMBEDDABLE_CONTAINER_TYPES (behaviors/mod.rs) drifted from the \
-             non-embeddable child-bearing behaviors. Update BOTH the const and the \
-             BM25 CTE stop-set, or embedding-root and search-root resolution diverge."
-        );
-    }
-}
-
-#[cfg(test)]
 mod tests {
     use super::*;
     use crate::db::SqliteStore;

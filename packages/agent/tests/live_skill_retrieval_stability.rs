@@ -172,44 +172,20 @@ async fn scenario_8a_routes_schema_creation_every_rep() {
     );
 }
 
-/// Diagnostic: dump which skill roots BM25 matches directly for the literal
-/// scenario 8a query, to see whether Tier 1 (BM25 ∩ KNN) is what's promoting
-/// Bulk Import / Research & Search ahead of Schema Creation's higher raw
-/// embedding score — `semantic_search` orders tier1 ++ tier2 ++ tier3, so a
-/// Tier-1 keyword hit outranks a much better Tier-2 embedding match
-/// regardless of score magnitude. `find_skills` now calls
+/// Scenario 8a: `find_skills` ranks by KNN score alone. It calls
 /// `semantic_search_nodes_of_type` (pure KNN over `node_type = 'skill'`
-/// roots) instead of the hybrid `semantic_search_nodes`, specifically to
-/// avoid this. This test pins that invariant: `bm25_search_roots` still
-/// matches Research & Search / Bulk Import on this query (BM25 itself is
-/// untouched — it still indexes a skill's full guidance-markdown subtree),
-/// but that must no longer influence `find_skills`'s ranking at all, so
-/// Schema Creation — the highest raw embedding score of the whole
-/// registry on this query — must rank first, not merely survive top-K.
+/// roots) rather than the hybrid `semantic_search_nodes`, whose tiering puts
+/// any keyword hit ahead of a better embedding match. Schema Creation — the
+/// highest raw embedding score of the whole registry on this query — must
+/// rank first, not merely survive top-K.
 #[tokio::test]
 #[ignore = "requires the locked nomic-embed-text-v1.5 GGUF on disk"]
-async fn find_skills_ranking_is_unaffected_by_bm25_keyword_collisions() {
+async fn find_skills_ranks_by_knn_score_alone() {
     let Some((embedding_service, node_service, _temp_dir)) = seed_and_embed().await else {
         return;
     };
 
     let query = "Start keeping the calls we make on how the system is built, and who made each one";
-
-    // Sanity check on the premise: BM25 alone, uninvolved in `find_skills`
-    // today, still matches unrelated skills on this query via their guidance
-    // markdown — proving the collision this test guards against is real, not
-    // hypothetical.
-    let bm25_roots = embedding_service
-        .store()
-        .bm25_search_roots(query, 20)
-        .await
-        .expect("bm25 must succeed");
-    assert!(
-        !bm25_roots.is_empty(),
-        "expected this query to still trigger a BM25 keyword collision against \
-         guidance-markdown content — if this now matches nothing, the fixture \
-         prompt may need updating to keep exercising the regression"
-    );
 
     let output = find_skills(
         &embedding_service,
@@ -231,8 +207,8 @@ async fn find_skills_ranking_is_unaffected_by_bm25_keyword_collisions() {
     assert_eq!(
         top_name, "Schema Creation",
         "Schema Creation has the highest raw embedding score for this query but \
-         ranked below a BM25-only keyword collision — find_skills must rank by \
-         KNN score alone, not the hybrid BM25+KNN tiering. Full ranking: {:?}",
+         ranked below another skill — find_skills must rank by KNN score \
+         alone, not the hybrid BM25+KNN tiering. Full ranking: {:?}",
         output.skills
     );
 }

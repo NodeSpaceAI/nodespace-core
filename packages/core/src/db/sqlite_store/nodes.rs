@@ -389,6 +389,34 @@ impl SqliteStore {
     /// execution (ADR-060 §1): an invariant rule's action very often targets
     /// the very node whose creation triggered it, which exists only inside
     /// this transaction until commit.
+    /// Write a node's derived `title` alone. `title` is an index column derived
+    /// from content and rootness, not user data, so it bumps neither `version`
+    /// nor `modified_at`; the `node_title_fts` update trigger keeps the index
+    /// in step.
+    pub async fn set_title(&self, id: &str, title: Option<&str>) -> Result<()> {
+        self.write()
+            .await
+            .execute(
+                "UPDATE node SET title = ?1 WHERE id = ?2",
+                libsql::params![title.map(str::to_string), id.to_string()],
+            )
+            .await
+            .context("Failed to set title")?;
+        Ok(())
+    }
+
+    /// `_in_tx` twin of [`Self::set_title`].
+    pub(crate) async fn set_title_in_tx(tx: &Tx<'_>, id: &str, title: Option<&str>) -> Result<()> {
+        tx.conn()
+            .execute(
+                "UPDATE node SET title = ?1 WHERE id = ?2",
+                libsql::params![title.map(str::to_string), id.to_string()],
+            )
+            .await
+            .context("Failed to set title")?;
+        Ok(())
+    }
+
     pub(crate) async fn get_node_in_tx(tx: &Tx<'_>, id: &str) -> Result<Option<Node>> {
         let mut rows = tx
             .conn()
@@ -1871,10 +1899,10 @@ impl SqliteStore {
 
     /// Stem-token fallback for `title_contains` when the exact-substring
     /// match returns zero rows. Reuses the same tokenization/stop-word rules
-    /// `bm25_search_roots` applies for FTS queries, but compares word-to-word
-    /// by shared stem rather than via FTS5 (titles aren't in `node_fts`,
-    /// which indexes only `content`) or via substring-of-whole-title (which
-    /// can't match a word variant like "groceries" against "grocery store").
+    /// `bm25_search_titles` applies for FTS queries, but compares word-to-word
+    /// by shared stem rather than via FTS5 (whose `unicode61` tokenizer does
+    /// no stemming) or via substring-of-whole-title (which can't match a word
+    /// variant like "groceries" against "grocery store").
     ///
     /// Candidates are narrowed by `node_type` in SQL (cheap, exact), then the
     /// stem comparison runs in Rust over that set — SQL has no clean way to
@@ -3267,7 +3295,7 @@ impl SqliteStore {
         parent_id: Option<&str>,
         content: &str,
     ) -> Option<String> {
-        if matches!(node_type, "date" | "schema" | "checkbox") {
+        if node_type == "checkbox" {
             None
         } else if parent_id.is_none() || matches!(node_type, "task" | "collection") {
             let stripped = crate::utils::strip_markdown(content);
@@ -3686,12 +3714,11 @@ impl SqliteStore {
     /// Resolve entity names in `message` to nodes, via the `node_title_fts`
     /// index over `node.title`.
     ///
-    /// This answers "which node IS X?", not "which nodes mention X?" — every
-    /// row in that index is a nameable thing and its indexed text is that
-    /// thing's own name. `bm25_search_roots` answers the other question over
-    /// `node.content` and resolves hits up to an embedding root; this one
-    /// deliberately does neither, because the node that bears the name is the
-    /// answer, not its ancestor.
+    /// This answers "which node IS X?" — every row in that index is a
+    /// nameable thing and its indexed text is that thing's own name. It reads
+    /// the same index as `bm25_search_titles` (general search's keyword half)
+    /// but selects tokens differently, since its input is a whole chat message
+    /// rather than a search query — see below.
     ///
     /// Ranked by FTS5 `rank` (bm25), best first, capped at `limit`. Returns
     /// every match rather than only unambiguous ones: a name resolving to two
@@ -3701,13 +3728,18 @@ impl SqliteStore {
     ///
     /// Archived nodes are excluded — resolving a name to a node the user has
     /// archived would reintroduce it into the turn as if it were live.
+    ///
+    /// Schema nodes are excluded too. A schema is titled by its type name
+    /// ("Task", "Ordered List") so general search can find it, but a type is not
+    /// an entity: "add it to the list" must not resolve to the Ordered List
+    /// schema. The agent reaches schemas through schema retrieval instead.
     pub async fn resolve_entities_by_title(
         &self,
         message: &str,
         limit: i64,
     ) -> Result<Vec<ResolvedEntity>> {
-        // Same tokenization as `bm25_search_roots`, and deliberately the same
-        // stop-word list: the words that make a content search noisy ("the",
+        // Same tokenization as `bm25_search_titles`, and deliberately the same
+        // stop-word list: the words that make a search query noisy ("the",
         // "what", "how") make a title search noisy for the same reason. The
         // token cap bounds a long message to a fixed query cost.
         //
@@ -3788,6 +3820,7 @@ impl SqliteStore {
              FROM node_title_fts f \
              JOIN node n ON n.id = f.id \
              WHERE node_title_fts MATCH ?1 AND n.lifecycle_status != 'archived' \
+             AND n.node_type != 'schema' \
              ORDER BY rank LIMIT {}",
             limit
         );
@@ -4861,8 +4894,8 @@ mod query_nodes_wildcard_type_tests {
 ///
 /// **Gated behind `RUN_LONG_TESTS=1`** (the env var `rust:test:long` already
 /// wires up) and skipped otherwise: creating 30k+ nodes and deleting them
-/// again runs each `node` INSERT/DELETE through the `node_fts` FTS5 sync
-/// triggers (`db::schema`), which dominates the cost at this row
+/// again runs each `node` INSERT/DELETE through the FTS5 sync triggers
+/// (`db::schema`), which dominates the cost at this row
 /// count — measured ~90-390s per test depending on machine load, far past
 /// what belongs in the default `cargo test` / `bun run test:all` / pre-push
 /// path. Run explicitly before merging a change to this chunking:

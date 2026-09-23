@@ -115,7 +115,7 @@ Use this to pick the right command for the task at hand.
 | Goal | Command |
 |------|---------|
 | Find a specific record you know by name (a task, a company, any typed record) | `nodespace node query --title-contains "<name>"` |
-| Find notes and documents by meaning | `nodespace search "<query>"` |
+| Find notes, documents and records by topic or name | `nodespace search "<query>"` |
 | List all nodes of a type | `nodespace search "" --type <type>` |
 | Filter by property values (status, due_date, priority, etc.) | `nodespace query --type <type> --filters '<json>'` |
 | Filter with comparison operators (gt, lt, gte, lte, in) | `nodespace query --type <type> --filters '<json>'` |
@@ -126,9 +126,9 @@ Use this to pick the right command for the task at hand.
 
 **`nodespace query` is the command for structured property queries** — status, due_date, priority, or any comparison operator. Worked examples: `references/cli.md`, *Structured property query*.
 
-**A name is not an ID — resolve it before you act.** When the user names a record you haven't looked up ("mark the Northwind contract signed", "add Fabrikam"), run `nodespace node query --title-contains "<name>"` first. Not `nodespace search`: a name search only matches prose, never tasks or typed records. Judge the results by whether one *is* the named record — same name, same type — not by whether the list is empty, since the lookup also matches on a shared word. One match: act on its ID; if asked to *add* it, say it already exists and ask before creating a duplicate. Several: ask which one. None: it doesn't exist — create it if they're adding it, otherwise tell them. Don't keep searching.
+**A name is not an ID — resolve it before you act.** When the user names a record you haven't looked up ("mark the Northwind contract signed", "add Fabrikam"), run `nodespace node query --title-contains "<name>"` first. `nodespace search` does find records by name, but it also returns documents that are only similar in meaning, so its list can't tell you whether the named record exists. Judge the results by whether one *is* the named record — same name, same type — not by whether the list is empty, since the lookup also matches on a shared word. One match: act on its ID; if asked to *add* it, say it already exists and ask before creating a duplicate. Several: ask which one. None: it doesn't exist — create it if they're adding it, otherwise tell them. Don't keep searching.
 
-**`nodespace search` is semantic** (embedding-based similarity over prose nodes), ranked by relevance. Pass `--type` to narrow to one or more node types, `--limit` to cap results (default 20), `--include-content` to also read the top 5 hits (a bare result is just its heading). No graph-boost, cross-collection exclusion, or edge-inclusion — fall back to `nodespace query` plus `nodespace relationship get` for those.
+**`nodespace search` finds documents and records**, ranked by relevance. It matches on meaning (embedding similarity over each document with its body) and on title keywords, so a task, a date page or a typed record comes back when you search its name. It returns whole documents, never a single line from inside one: a word that appears only in a document's body is found through that document's meaning, not as a keyword. Pass `--type` to narrow to one or more node types, `--limit` to cap results (default 20), `--include-content` to also read the top 5 hits (a bare result is just its heading). No graph-boost, cross-collection exclusion, or edge-inclusion — fall back to `nodespace query` plus `nodespace relationship get` for those.
 
 **Multiple topics:** run `nodespace search` once per topic rather than one broad search plus per-result fetches.
 

@@ -2765,16 +2765,15 @@ impl NodeService {
     }
 
     /// Compute the indexed title for a node.
+    ///
+    /// Every root carries a title — it is what general search's keyword half
+    /// matches. A `date` page or `schema` has no template, so it falls through
+    /// to its content (`2026-09-23`, `Task`), like any other root.
     pub(crate) async fn compute_title(
         &self,
         node: &Node,
         is_root: Option<bool>,
     ) -> Result<Option<String>, NodeServiceError> {
-        // date/schema nodes never get titles regardless of template
-        if node.node_type == "date" || node.node_type == "schema" {
-            return Ok(None);
-        }
-
         // Check for title_template in the schema for this node type
         match self.get_schema_node(&node.node_type).await {
             Ok(Some(schema)) => {
@@ -2825,6 +2824,58 @@ impl NodeService {
             }
         };
         Ok(title)
+    }
+
+    /// Re-derive `node_id`'s title after an edge write set whether it is a root.
+    ///
+    /// A title follows rootness for every type without a template — a root's
+    /// is its content, a child's is none — so every path that gains or drops a
+    /// `has_child` edge calls this. Without it an indented root keeps its title
+    /// and title search returns it as a document, and an outdented child stays
+    /// unfindable by name.
+    pub(crate) async fn refresh_title_for_rootness(
+        &self,
+        node_id: &str,
+        is_root: bool,
+    ) -> Result<(), NodeServiceError> {
+        let Some(node) = self
+            .store
+            .get_node(node_id)
+            .await
+            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?
+        else {
+            return Ok(());
+        };
+        let title = self.compute_title(&node, Some(is_root)).await?;
+        if title != node.title {
+            self.store
+                .set_title(node_id, title.as_deref())
+                .await
+                .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+        }
+        Ok(())
+    }
+
+    /// `_in_tx` twin of [`Self::refresh_title_for_rootness`].
+    pub(crate) async fn refresh_title_for_rootness_in_tx(
+        &self,
+        tx: &NodeServiceTx<'_>,
+        node_id: &str,
+        is_root: bool,
+    ) -> Result<(), NodeServiceError> {
+        let Some(node) = crate::db::SqliteStore::get_node_in_tx(tx.store_tx(), node_id)
+            .await
+            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?
+        else {
+            return Ok(());
+        };
+        let title = self.compute_title(&node, Some(is_root)).await?;
+        if title != node.title {
+            crate::db::SqliteStore::set_title_in_tx(tx.store_tx(), node_id, title.as_deref())
+                .await
+                .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+        }
+        Ok(())
     }
 
     /// Check if a node exists

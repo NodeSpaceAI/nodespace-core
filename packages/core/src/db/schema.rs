@@ -209,44 +209,11 @@ async fn create_schema_body(conn: &libsql::Connection) -> Result<()> {
             .with_context(|| format!("Failed to execute DDL: {}", &stmt[..stmt.len().min(80)]))?;
     }
 
-    // FTS5 external-content index over `node.content`, kept in sync by the
-    // triggers below.
-    conn.execute(
-        "CREATE VIRTUAL TABLE IF NOT EXISTS node_fts USING fts5(id UNINDEXED, content, content='node', content_rowid='rowid')",
-        ()
-    ).await.context("Failed to create FTS5 table")?;
-
-    conn.execute(
-        r#"CREATE TRIGGER IF NOT EXISTS node_fts_insert AFTER INSERT ON node BEGIN
-            INSERT INTO node_fts(rowid, id, content) VALUES (new.rowid, new.id, new.content);
-        END"#,
-        (),
-    )
-    .await
-    .context("Failed to create FTS5 insert trigger")?;
-
-    conn.execute(
-        r#"CREATE TRIGGER IF NOT EXISTS node_fts_update AFTER UPDATE ON node BEGIN
-            INSERT INTO node_fts(node_fts, rowid, id, content) VALUES('delete', old.rowid, old.id, old.content);
-            INSERT INTO node_fts(rowid, id, content) VALUES (new.rowid, new.id, new.content);
-        END"#,
-        ()
-    ).await.context("Failed to create FTS5 update trigger")?;
-
-    conn.execute(
-        r#"CREATE TRIGGER IF NOT EXISTS node_fts_delete AFTER DELETE ON node BEGIN
-            INSERT INTO node_fts(node_fts, rowid, id, content) VALUES('delete', old.rowid, old.id, old.content);
-        END"#,
-        ()
-    ).await.context("Failed to create FTS5 delete trigger")?;
-
-    // FTS5 index over `node.title` — a SEPARATE table from `node_fts` above,
-    // not a second column on it, because the two answer different questions:
-    // `node_fts` over `content` answers "which nodes *discuss* X?" (one long row
-    // per node, the whole body), while this one answers "which node *is* X?"
-    // (one short row per nameable node, whose text is that node's own name).
-    // Sharing a table would degrade both — a query for an entity name would rank
-    // every node whose body merely mentions it alongside the node itself.
+    // FTS5 index over `node.title`. It answers "which node *is* X?" (one short
+    // row per nameable node, whose text is that node's own name), and it is the
+    // only full-text index: general search's keyword half matches documents by
+    // title, never body text — body text is reached through the root's
+    // embedding.
     //
     // `title` is the system's own maintained answer to "is this a nameable
     // thing": `NodeService::compute_title()` sets it for title-templated schema
@@ -276,13 +243,12 @@ async fn create_schema_body(conn: &libsql::Connection) -> Result<()> {
     // the old rowid. None exists in the codebase today; adding one means
     // maintaining this index explicitly.
     //
-    // NOT an external-content table (no `content='node'`), unlike `node_fts`.
-    // That is deliberate and load-bearing: FTS5 has no partial-index syntax, so
+    // NOT an external-content table (no `content='node'`). That is deliberate
+    // and load-bearing: FTS5 has no partial-index syntax, so
     // "only when title IS NOT NULL" lives in the triggers below — but an
     // external-content table's `'rebuild'` command re-derives every row from the
     // content table, which would silently reinstate exactly the NULL-title rows
-    // the triggers skip. (`backfill_fts_if_stale` in `sqlite_store/mod.rs` issues
-    // that rebuild for `node_fts`.) A standalone table owns its own rows, so the
+    // the triggers skip. A standalone table owns its own rows, so the
     // partial invariant survives; the cost is that it duplicates the title text,
     // which is a short string per nameable node.
     conn.execute(

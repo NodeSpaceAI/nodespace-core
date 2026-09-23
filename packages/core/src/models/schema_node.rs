@@ -221,6 +221,10 @@ impl SchemaNode {
             properties["propertiesHeaderSummaryTemplate"] = serde_json::Value::String(template);
         }
 
+        // A schema is a root, so it carries its name as its title like any
+        // other root — the same value `NodeService::compute_title` derives.
+        let title = Some(crate::utils::strip_markdown(&self.content));
+
         Node {
             id: self.id,
             node_type: "schema".to_string(),
@@ -231,7 +235,7 @@ impl SchemaNode {
             properties,
             mentions: Vec::new(),
             mentioned_in: Vec::new(),
-            title: None, // Schema nodes don't have indexed titles
+            title,
             lifecycle_status: "active".to_string(),
         }
     }
