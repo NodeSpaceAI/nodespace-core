@@ -273,10 +273,8 @@ mod entity_resolution_tests {
     }
 
     /// Three two-token names fill the token cap exactly, and the third is
-    /// searched whole. Selected per token, the sentence-opening "Link" took a
-    /// slot and Riverside Hall was searched as `riverside` alone — which ties
-    /// with any other node sharing that word. Searched whole, the named node
-    /// outranks its namesake.
+    /// searched whole, so the named node outranks another node sharing one of
+    /// its words. Searched as `riverside` alone, the two would tie.
     #[tokio::test]
     async fn the_third_name_in_a_message_outranks_a_node_sharing_one_word() -> Result<()> {
         let (store, service, _t) = create_test_store().await?;

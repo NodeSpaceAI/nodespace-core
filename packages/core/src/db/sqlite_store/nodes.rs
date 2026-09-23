@@ -10,11 +10,12 @@ use super::*;
 /// Riverside Hall event"), or a three-token name plus a two-token one. Pinned
 /// by `entity_token_selection_tests`.
 ///
-/// Past that the cap is the accepted limit: names are kept whole in message
-/// order while they fit, any leftover budget goes to a partial of the next,
-/// and a name beyond that is not searched at all ("Link Northwind Trading,
-/// Contoso Ltd, Fabrikam Inc and Riverside Hall" never searches Riverside
-/// Hall). That name is absent from the resolution rather than reported as
+/// Past that the cap is the accepted limit: each name, in message order, is
+/// kept whole if it still fits and skipped otherwise — so a later short name
+/// can win over an earlier long one — leftover budget goes to a partial of the
+/// first skipped name, and a name beyond that is not searched at all ("Link
+/// Northwind Trading, Contoso Ltd, Fabrikam Inc and Riverside Hall" never
+/// searches Riverside Hall). That name is absent from the resolution rather than reported as
 /// nonexistent: the other names still resolve, so the tier is `Resolved`, not
 /// the `NoMatch` that renders as "does not exist". Four-name messages were
 /// judged rare enough not to justify a larger query.
@@ -73,6 +74,14 @@ const ENTITY_RESOLUTION_MAX_TOKENS: usize = 6;
 /// with the real name, first come first served: "Could You Update The
 /// Customer Record For The Billing Team At Northwind Trading" keeps only
 /// `northwind` of the name.
+///
+/// Over budget, a name that OPENS the message can be searched by its second
+/// word alone, since its demoted first word is refilled after the skipped
+/// names' tokens: "Northwind Trading asked about Contoso Ltd, Fabrikam Inc
+/// and Riverside Hall" searches `trading`, not `northwind`. Refilling a
+/// demoted word that directly precedes a run first would fix this but trade
+/// it for the opposite error — "Link" before "Acme Holdings International"
+/// would then take the slot a skipped name's token should get.
 fn select_entity_tokens(message: &str) -> Vec<String> {
     struct Token<'a> {
         text: &'a str,
@@ -3915,8 +3924,8 @@ mod entity_token_selection_tests {
         );
     }
 
-    /// The case the cap was sized for, and until now unguarded: a future cap
-    /// or stop-word change could have dropped the second name silently.
+    /// The case the cap is sized for: two names in one message both fit
+    /// whole, so a cap or stop-word change that drops the second fails here.
     #[test]
     fn two_names_are_both_kept_whole() {
         keeps(
@@ -3934,8 +3943,8 @@ mod entity_token_selection_tests {
         );
     }
 
-    /// Selected per token, this dropped `Hall`: the sentence-opening "Link"
-    /// took a capitalised slot, and Riverside Hall's second token lost to it.
+    /// Three two-token names fill the cap exactly. The sentence-opening "Link"
+    /// must not take a slot, or Riverside Hall's second token is the one cut.
     #[test]
     fn three_two_token_names_are_all_kept_whole() {
         let message = "Link Northwind Trading and Contoso Ltd to the Riverside Hall event";
