@@ -273,9 +273,17 @@ pub const FIND_THEN_ACT: InteractionRule = InteractionRule {
 /// would first trail the local one. The judgment is on sameness rather than
 /// emptiness because both lookups also return records that merely share a
 /// word with the name.
+///
+/// On the local surface only "none found" is complete. A populated
+/// MENTIONED ENTITIES list can be cut by the tier's cap or score cutoff; the
+/// cut is announced by the "more matches not shown" note, but the note does
+/// not say which records were cut. When the cutoff drops a common-word name
+/// beside a rare-word one, the one sign of which name it was is that name's
+/// absence from the list. That is why the imperative has the model check
+/// every name in the message against the list.
 pub const NAMED_RECORD_RESOLUTION: InteractionRule = InteractionRule {
     id: "named-record-resolution",
-    imperative: "ALREADY IN THE GRAPH? Before creating, check MENTIONED ENTITIES in your context. If a record listed there is the same thing the user is asking you to add — same name, same type — do NOT call create_node. \"Add X\" when X already exists is ambiguous: it can mean they want a second, genuinely distinct record, or it can mean they did not know X was already there. You cannot tell which from the message, and guessing wrong either duplicates their data or refuses work they wanted done. Call route_clarify instead, naming the existing record as an option with its id from MENTIONED ENTITIES, and say plainly that it already exists. Let them choose. If MENTIONED ENTITIES says \"none found\", nothing by that name exists and create_node is right.",
+    imperative: "ALREADY IN THE GRAPH? Before creating, check MENTIONED ENTITIES in your context. If a record listed there is the same thing the user is asking you to add — same name, same type — do NOT call create_node. \"Add X\" when X already exists is ambiguous: it can mean they want a second, genuinely distinct record, or it can mean they did not know X was already there. You cannot tell which from the message, and guessing wrong either duplicates their data or refuses work they wanted done. Call route_clarify instead, naming the existing record as an option with its id from MENTIONED ENTITIES, and say plainly that it already exists. Let them choose. If MENTIONED ENTITIES says \"none found\", nothing by that name exists and create_node is right — that line is always complete. A list of records is not always complete. If it carries a \"more matches not shown\" line, other records matched too: before treating a name as unique or as new, look it up with search_nodes. And check every name in the message against the list: a name the user gave that is not listed may still exist, so look it up with search_nodes before creating it.",
     prose: "**A name is not an ID — resolve it before you act.** When the user names a record you haven't looked up (\"mark the Northwind contract signed\", \"add Fabrikam\"), run `nodespace node query --title-contains \"<name>\"` first. Not `nodespace search`: a name search only matches prose, never tasks or typed records. Judge the results by whether one *is* the named record — same name, same type — not by whether the list is empty, since the lookup also matches on a shared word. One match: act on its ID; if asked to *add* it, say it already exists and ask before creating a duplicate. Several: ask which one. None: it doesn't exist — create it if they're adding it, otherwise tell them. Don't keep searching.",
     skill_md_key_phrase: "same name, same type",
 };
@@ -385,6 +393,20 @@ mod tests {
         ids.sort_unstable();
         ids.dedup();
         assert_eq!(ids.len(), SCHEMA_RULES.len(), "duplicate SchemaRule id");
+    }
+
+    /// The rule tells the model what the truncation note means, so it has to
+    /// name the note by the phrase the entity tier renders. A reworded note
+    /// the rule no longer quotes leaves the model with a line it has no
+    /// instruction for.
+    #[test]
+    fn named_record_rule_quotes_the_truncation_marker() {
+        assert!(
+            NAMED_RECORD_RESOLUTION
+                .imperative
+                .contains(nodespace_core::ops::context_ops::ENTITIES_NOT_SHOWN_MARKER),
+            "ALREADY IN THE GRAPH must quote the entity tier's truncation marker"
+        );
     }
 
     #[test]

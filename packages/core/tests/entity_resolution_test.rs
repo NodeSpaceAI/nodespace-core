@@ -17,6 +17,9 @@ mod entity_resolution_tests {
     use anyhow::Result;
     use nodespace_core::db::SqliteStore;
     use nodespace_core::models::Node;
+    use nodespace_core::ops::context_ops::{
+        build_workspace_context, EntityResolution, ENTITIES_NOT_SHOWN_MARKER, MAX_RESOLVED_ENTITIES,
+    };
     use nodespace_core::services::NodeService;
     use serde_json::json;
     use std::sync::Arc;
@@ -336,6 +339,43 @@ mod entity_resolution_tests {
             !hits.is_empty(),
             "the residual degrades ranking, not resolution — an empty result here \
              would mean a false 'does not exist': {hits:?}"
+        );
+        Ok(())
+    }
+
+    /// Three names that each exist as two types tie on six candidates, one
+    /// more than the cap, so the cap drops one by tie order alone. The
+    /// rendered tier must say so: without the note, the surviving copy of the
+    /// cut name reads as the only one, and the model acts on it unprompted.
+    #[tokio::test]
+    async fn a_same_name_candidate_cut_by_the_cap_is_announced() -> Result<()> {
+        let (_store, service, _t) = create_test_store().await?;
+        for name in [
+            "Northwind Trading",
+            "Contoso Holdings",
+            "Fabrikam Industries",
+        ] {
+            seed_entity(&service, "text", name).await?;
+            seed_entity(&service, "task", name).await?;
+        }
+        let q = "link Northwind Trading, Contoso Holdings and Fabrikam Industries to the Q3 plan";
+
+        let ctx = build_workspace_context(&service, None, Some(q), Some(q)).await?;
+
+        let EntityResolution::Resolved {
+            entities,
+            not_shown,
+        } = &ctx.resolved_entities
+        else {
+            panic!("all three names exist: {:?}", ctx.resolved_entities);
+        };
+        assert_eq!(entities.len(), MAX_RESOLVED_ENTITIES, "{entities:?}");
+        assert_eq!(*not_shown, 1, "the sixth tied candidate is the one cut");
+
+        let out = ctx.format_for_prompt(4000);
+        assert!(
+            out.contains(ENTITIES_NOT_SHOWN_MARKER),
+            "a cut list must say it was cut: {out}"
         );
         Ok(())
     }
