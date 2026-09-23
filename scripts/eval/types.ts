@@ -609,10 +609,12 @@ export interface ScenarioReliability {
   /** Scored reps in which it passed. */
   passedReps: number;
   /**
-   * Reps excluded as degenerate empty generations. Counted toward neither
-   * `passedReps` nor the pass^k denominator — an inference bug is not evidence
-   * either way about the scenario, so a rep that hit one must not make a
-   * scenario look unreliable.
+   * Reps excluded from scoring, for any reason `partitionExcluded` excludes a
+   * turn: a degenerate empty generation, an asserted tool that was never
+   * offered, or a failed setup earlier in the group. Counted toward neither
+   * `passedReps` nor the pass^k denominator — none of these is evidence either
+   * way about the scenario, so a rep that hit one must not make a scenario look
+   * unreliable.
    */
   excludedReps: number;
   /**

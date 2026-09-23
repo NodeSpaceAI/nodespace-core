@@ -602,12 +602,13 @@ export function aggregateReps(reps: ScenarioResult[][]): RunAggregate {
     // turn that flipped would be reported as an unreliable SCENARIO, when what
     // it actually means is that its successors' reps are not comparable.
     const setup = results.length > 0 && results.every((r) => r.excludedAsSetup);
-    const excludedReps = results.filter(
-      (r) => r.excludedAsEmptyGeneration,
-    ).length;
-    const scored = setup
-      ? []
-      : results.filter((r) => !r.excludedAsEmptyGeneration && !r.excludedAsSetup && !r.excludedAsToolNotOffered);
+    // The scored set comes from `partitionExcluded`, the same function a single
+    // run's denominator uses, so the two cannot disagree about what counts. A
+    // hand-copied filter here once missed `excludedAsSetupFailed`, and a rep
+    // excluded because its group's setup failed was scored as a failure — a
+    // FLIPPED marker on a scenario that was never sent.
+    const scored = setup ? [] : partitionExcluded(results).scored;
+    const excludedReps = setup ? 0 : results.length - scored.length;
     const passedReps = scored.filter((r) => r.passed).length;
     return {
       id,
