@@ -162,8 +162,11 @@ const _: () = assert!(
 
 /// Whether `name` is a type-system relationship name, in either direction.
 ///
-/// Used to reject caller-supplied declarations; never used to exclude rows
-/// from declaration queries (see [`TYPE_SYSTEM_RELATIONSHIPS`]).
+/// Used to reject caller-supplied declarations, and to exclude the
+/// `extends`/`extended_by` row from declaration-query results that describe
+/// a node type's real, data-carrying relationships -- it is a statement
+/// about the schema graph itself, not a relationship any node instance ever
+/// carries an edge for (see [`TYPE_SYSTEM_RELATIONSHIPS`]).
 pub fn is_type_system_relationship(name: &str) -> bool {
     TYPE_SYSTEM_RELATIONSHIP_NAMES.contains(&name)
 }
