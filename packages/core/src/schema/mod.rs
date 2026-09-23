@@ -849,8 +849,8 @@ async fn resolve_relationships_or_error(
 
 /// [`NodeService::resolve_field_owners`], mapping a storage-layer failure the
 /// same way [`resolve_relationships_or_error`] does — the field-owner
-/// counterpart, used by the cross-domain half of
-/// [`validate_no_relationship_redeclaration`].
+/// counterpart, used by [`validate_no_field_redeclaration`]'s same-domain
+/// half and [`validate_no_relationship_redeclaration`]'s cross-domain half.
 async fn resolve_field_owners_or_error(
     node_service: &Arc<NodeService>,
     parent_id: &str,
@@ -866,8 +866,13 @@ async fn resolve_field_owners_or_error(
         .resolve_field_owners(parent_id)
         .await
         .map_err(|e| {
+            // `e` already names whichever schema in the chain the underlying
+            // lookup actually failed on (see `NodeService::get_schema_node`'s
+            // own error context) — this wrapper describes the chain walk
+            // `parent_id` kicked off, not the failing schema itself, so it
+            // doesn't repeat `parent_id` as if it were that schema.
             MarkdownError::internal_error(format!(
-                "Failed to resolve field owners for '{parent_id}': {e}"
+                "Failed to resolve the field-owner chain starting from '{parent_id}': {e}"
             ))
         })
 }
@@ -895,20 +900,7 @@ async fn validate_no_field_redeclaration(
     own_fields: &[SchemaField],
 ) -> Result<(), MarkdownError> {
     let (inherited, owners, _chain) =
-        node_service
-            .resolve_field_owners(parent_id)
-            .await
-            .map_err(|e| {
-                // `e` already names whichever schema in the chain the
-                // underlying lookup actually failed on (see
-                // `NodeService::get_schema_node`'s own error context) — this
-                // wrapper describes the chain walk `parent_id` kicked off,
-                // not the failing schema itself, so it doesn't repeat
-                // `parent_id` as if it were that schema.
-                MarkdownError::internal_error(format!(
-                    "Failed to resolve the field-owner chain starting from '{parent_id}': {e}"
-                ))
-            })?;
+        resolve_field_owners_or_error(node_service, parent_id).await?;
 
     for field in own_fields {
         if let Some(existing) = inherited.iter().find(|f| f.name == field.name) {
