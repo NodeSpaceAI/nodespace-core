@@ -815,23 +815,50 @@ async fn validate_extends_target(
 /// Composition is additive only (ADR-078): an extending schema may add fields
 /// but never redeclare one an ancestor already declares, with any attribute
 /// differing or not. Checked against the **full resolved effective set**, not
-/// just the parent's own directly-declared fields, so a collision two levels
-/// up is caught as readily as one with the immediate parent.
+/// just the parent's own directly-declared fields, via
+/// [`NodeService::resolve_field_owners`], so a collision two levels up is
+/// caught as readily as one with the immediate parent — and blamed on the
+/// schema that actually declares it, not just the nearest ancestor.
 async fn validate_no_field_redeclaration(
     node_service: &Arc<NodeService>,
     parent_id: &str,
     own_fields: &[SchemaField],
 ) -> Result<(), MarkdownError> {
-    let inherited = resolve_effective_fields(node_service, parent_id).await?;
+    let (inherited, owners, _chain) =
+        node_service
+            .resolve_field_owners(parent_id)
+            .await
+            .map_err(|e| {
+                // `e` already names whichever schema in the chain the
+                // underlying lookup actually failed on (see
+                // `NodeService::get_schema_node`'s own error context) — this
+                // wrapper describes the chain walk `parent_id` kicked off,
+                // not the failing schema itself, so it doesn't repeat
+                // `parent_id` as if it were that schema.
+                MarkdownError::internal_error(format!(
+                    "Failed to resolve the field-owner chain starting from '{parent_id}': {e}"
+                ))
+            })?;
 
     for field in own_fields {
         if let Some(existing) = inherited.iter().find(|f| f.name == field.name) {
+            // Name the schema that actually DECLARES the field, not
+            // `parent_id` unconditionally — `parent_id` is only the nearest
+            // ancestor, and the collision may be several scopes further up
+            // the chain. `owners` is exactly what `resolve_field_owners`
+            // returns this information for; falling back to `parent_id`
+            // only guards a lookup that should never miss, since `inherited`
+            // and `owners` are built together over the same chain walk.
+            let declaring_schema = owners
+                .get(&field.name)
+                .map(String::as_str)
+                .unwrap_or(parent_id);
             return Err(MarkdownError::invalid_params(format!(
                 "Field '{}' is already declared by '{}' (inherited via extends) and cannot be \
                  redeclared — composition is additive only, with no override or narrowing. \
                  The inherited field is type '{}'. Either drop it from this schema and use the \
                  inherited one, or give this field a different name.",
-                field.name, parent_id, existing.field_type,
+                field.name, declaring_schema, existing.field_type,
             )));
         }
     }
