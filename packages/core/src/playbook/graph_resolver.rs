@@ -442,6 +442,21 @@ impl GraphResolver {
     /// must still be recognized here, the same extends-chain gap fixed for
     /// `resolve_field_owners`/`resolve_relationships`'s other callers.
     ///
+    /// `segment` may spell either side of a relationship, exactly as
+    /// [`fetch_related_nodes`](Self::fetch_related_nodes) resolves it via
+    /// [`rel_ops::resolve_relationship_name`] for the fetch itself: a forward
+    /// `name` declared BY `node_type` (or inherited), or a `reverse_name`
+    /// declared by some OTHER schema whose relationship targets `node_type`
+    /// (or an ancestor of it). Forward is checked first, mirroring
+    /// `resolve_relationship_name`'s precedence -- a forward name always
+    /// wins over a same-spelled reverse name declared elsewhere, so this
+    /// never disagrees with which direction the fetch actually walked. Each
+    /// side's cardinality comes from that side's own field: forward matches
+    /// read `cardinality`, reverse matches read `reverse_cardinality` -- the
+    /// two are independent (`task.project` can be cardinality "one" while
+    /// its `reverseCardinality` toward `project.tasks` is "many"), so a
+    /// reverse match must never fall back to checking `cardinality`.
+    ///
     /// Only called when a relationship fetch already returned zero or
     /// exactly one row -- the only counts where cardinality can change the
     /// resolved shape (see the call site's doc: for two or more rows the
@@ -452,11 +467,26 @@ impl GraphResolver {
     /// not found, service error) conservatively resolves to `false` -- i.e.
     /// today's existing row-count-only behavior -- rather than guessing.
     async fn is_declared_many_relationship(&self, node_type: &str, segment: &str) -> bool {
+        // Forward first: `node_type`'s own (or inherited) relationship set.
+        match self.node_service.resolve_relationships(node_type).await {
+            Ok((rels, _owners)) => {
+                if let Some(r) = rels.iter().find(|r| r.name == segment) {
+                    return r.cardinality == crate::models::schema::RelationshipCardinality::Many;
+                }
+            }
+            Err(_) => return false,
+        }
+
+        // Reverse: some other schema's relationship declares `segment` as its
+        // `reverse_name` and targets `node_type` (or an ancestor of it, via
+        // `extends`). `get_inbound_relationships` already expands that chain
+        // internally, so a single call covers inheritance too -- no separate
+        // per-scope loop needed.
         matches!(
-            self.node_service.resolve_relationships(node_type).await,
-            Ok((rels, _owners)) if rels.iter().any(|r| {
-                r.name == segment
-                    && r.cardinality == crate::models::schema::RelationshipCardinality::Many
+            self.node_service.get_inbound_relationships(node_type).await,
+            Ok(inbound) if inbound.iter().any(|(_source_type, r)| {
+                r.reverse_name == segment
+                    && r.reverse_cardinality == crate::models::schema::RelationshipCardinality::Many
             })
         )
     }
@@ -2369,6 +2399,111 @@ mod tests {
                 other => panic!(
                     "expected an empty Collection (not Missing) for an inherited many-relationship \
                      with zero current matches, got {:?}",
+                    other
+                ),
+            }
+        }
+
+        /// Regression: `is_declared_many_relationship` must also recognize a
+        /// relationship whose "many" side is the REVERSE-declared end, not
+        /// just the forward-declared end the sibling tests above cover.
+        ///
+        /// `task` declares the forward relationship `project` (cardinality
+        /// "one") with `reverseName: "tasks"` and `reverseCardinality:
+        /// "many"` -- "many tasks belong to one project." Walking
+        /// `project.tasks` on a project with ZERO attached tasks queries by
+        /// the reverse name, so before the fix `is_declared_many_relationship`
+        /// only ever checked `project`'s own forward-declared relationships
+        /// (none), never found `tasks`, and fell through to count-based
+        /// inference -- misclassifying it as not-many and resolving to
+        /// `Missing` instead of an empty `Collection`.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn reverse_declared_many_relationship_with_zero_matches_resolves_to_empty_collection()
+        {
+            let (svc, _tmp) = create_test_service().await;
+
+            create_schema(&svc, "gr_revmany_project", json!([])).await;
+            create_schema(
+                &svc,
+                "gr_revmany_task",
+                json!([{
+                    "name": "project",
+                    "targetType": "gr_revmany_project",
+                    "direction": "out",
+                    "cardinality": "one",
+                    "reverseName": "tasks",
+                    "reverseCardinality": "many"
+                }]),
+            )
+            .await;
+
+            // A project with NO tasks ever attached -- the relationship is
+            // declared on `task` (the forward side), not on `project`, so
+            // `project`'s own schema has no relationships of its own at all.
+            let project = make_node("gr-revmany-p1", "gr_revmany_project", json!({}));
+            svc.create_node(project.clone()).await.unwrap();
+
+            let mut resolver = GraphResolver::new(Arc::clone(&svc));
+            let result = resolver
+                .resolve_path(&project, &["tasks".to_string()])
+                .await;
+            match result {
+                ResolvedValue::Collection(nodes) => assert!(
+                    nodes.is_empty(),
+                    "expected an empty Collection, got {} nodes",
+                    nodes.len()
+                ),
+                other => panic!(
+                    "expected an empty Collection (not Missing) for a reverse-declared \
+                     many-relationship with zero current matches, got {:?}",
+                    other
+                ),
+            }
+        }
+
+        /// Same gap, at exactly ONE current match: before the fix this
+        /// resolved to a bare `Node` (the row-count fallback's single-match
+        /// case) instead of a one-item `Collection`, which is the wrong
+        /// shape for `for_each`/`sum`/`count` to iterate.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn reverse_declared_many_relationship_with_one_match_resolves_to_collection() {
+            let (svc, _tmp) = create_test_service().await;
+
+            create_schema(&svc, "gr_revmany1_project", json!([])).await;
+            create_schema(
+                &svc,
+                "gr_revmany1_task",
+                json!([{
+                    "name": "project",
+                    "targetType": "gr_revmany1_project",
+                    "direction": "out",
+                    "cardinality": "one",
+                    "reverseName": "tasks",
+                    "reverseCardinality": "many"
+                }]),
+            )
+            .await;
+
+            let project = make_node("gr-revmany1-p1", "gr_revmany1_project", json!({}));
+            svc.create_node(project.clone()).await.unwrap();
+            let task = make_node("gr-revmany1-t1", "gr_revmany1_task", json!({}));
+            svc.create_node(task.clone()).await.unwrap();
+            svc.create_relationship("gr-revmany1-t1", "project", "gr-revmany1-p1", json!({}))
+                .await
+                .unwrap();
+
+            let mut resolver = GraphResolver::new(Arc::clone(&svc));
+            let result = resolver
+                .resolve_path(&project, &["tasks".to_string()])
+                .await;
+            match result {
+                ResolvedValue::Collection(nodes) => {
+                    assert_eq!(nodes.len(), 1);
+                    assert_eq!(nodes[0].id, "gr-revmany1-t1");
+                }
+                other => panic!(
+                    "expected a one-item Collection (not a bare Node) for a reverse-declared \
+                     many-relationship with exactly one current match, got {:?}",
                     other
                 ),
             }
