@@ -819,9 +819,7 @@ impl NodeBehavior for ProjectNodeBehavior {
         })
     }
 
-    /// Projects are not embedded. Like a task, a project is a named record found
-    /// by its title (general search's keyword half), not by the meaning of a
-    /// body; its content is only its name.
+    /// Projects are not embedded, like tasks.
     fn get_embeddable_content(&self, _node: &Node) -> Option<String> {
         None
     }

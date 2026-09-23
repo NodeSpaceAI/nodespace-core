@@ -93,8 +93,7 @@ impl NodeService {
     /// Only a root is ever embedded, and its embedding aggregates its
     /// descendants. A child has no meaning outside its root, so it never
     /// carries an embedding of its own — including a child of a
-    /// non-embeddable root such as a `date` page or a `task`, which is found
-    /// by its title instead.
+    /// non-embeddable root such as a `date` page or a `task`.
     pub async fn get_embedding_root_id(&self, node_id: &str) -> Result<String, NodeServiceError> {
         let mut current = node_id.to_string();
         while let Some(pid) = self
