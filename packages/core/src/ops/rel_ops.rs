@@ -438,11 +438,40 @@ pub async fn get_related_nodes(
     // not through one declarer's private reverse spelling, so every schema
     // declaring it is a legitimate answer — and narrowing would change what that
     // spelling returned before this resolver existed.
+    //
+    // Matched against the declarer's whole descendant set (ADR-078), not its
+    // exact type -- the same fix `graph_resolver.rs`'s reverse-segment walk
+    // applies for the identical reason: `task.blocks` declares reverse
+    // `blocked_by` with source_type `task`, and an `issue` IS a task, so an
+    // issue blocking an issue must survive this filter. Comparing the
+    // concrete type alone silently dropped every subtype instance, reading
+    // as "nothing blocks this" rather than as an error. Memoized per
+    // node_type rather than per node, mirroring the same rationale there.
     let nodes: Vec<_> = match &source_type {
-        Some(source_type) => nodes
-            .into_iter()
-            .filter(|n| n.node_type == *source_type)
-            .collect(),
+        Some(source_type) => {
+            let mut verdict: HashMap<String, bool> = HashMap::new();
+            let mut kept = Vec::with_capacity(nodes.len());
+            for n in nodes {
+                let satisfies = match verdict.get(&n.node_type) {
+                    Some(known) => *known,
+                    None => {
+                        let chain = node_service
+                            .resolve_type_chain(&n.node_type)
+                            .await
+                            .map_err(|e| {
+                                OpsError::Internal(format!("Failed to resolve type chain: {}", e))
+                            })?;
+                        let answer = chain.contains(source_type);
+                        verdict.insert(n.node_type.clone(), answer);
+                        answer
+                    }
+                };
+                if satisfies {
+                    kept.push(n);
+                }
+            }
+            kept
+        }
         None => nodes,
     };
 
@@ -607,40 +636,44 @@ pub async fn get_node_relationships(
 
     let mut groups: Vec<RelationshipGroup> = Vec::new();
 
-    // ---- Outbound: relationships declared on this node's own schema ----
-    // Schema nodes have id == node_type. A node whose type has no schema (e.g.
-    // plain text) simply has no outbound typed relationships. Declarations
-    // arrive hydrated from the relationship table — the same consolidated read
-    // path `NodeService::create_relationship` validates against, so the viewer
-    // and the write path can never see different declaration sets.
-    if let Some(schema_node) = node_service
-        .get_schema_node(&node_type)
+    // ---- Outbound: relationships declared on this node's own schema, or
+    // inherited (not redeclared) across the ADR-078 extends chain ----
+    // Resolved via `NodeService::resolve_relationships` rather than a direct
+    // `get_schema_node(&node_type)` lookup: the latter returns only the
+    // type's own directly-declared relationships, so a relationship declared
+    // solely on an ancestor schema never rendered as an outbound group at
+    // all on a subtype instance -- not shown empty, just silently absent --
+    // even though the write path (`create_relationship`) already accepts it.
+    // Same fix pattern as `resolve_relationship_name` above. Declarations
+    // still arrive hydrated from the relationship table, so the viewer and
+    // the write path see the same declaration set; the fix is which schemas
+    // in the chain that set is drawn from.
+    let (own_relationships, _owners) = node_service
+        .resolve_relationships(&node_type)
         .await
-        .map_err(|e| OpsError::Internal(format!("Failed to load schema node: {}", e)))?
-    {
-        for rel in schema_node.relationships {
-            if BUILTIN_RELATIONSHIP_NAMES.contains(&rel.name.as_str()) {
-                continue;
-            }
-            // Emit the group even when it has no edges yet: an empty declared
-            // outbound relationship still needs to render so the viewer can add
-            // its first edge. The inbound branch below is symmetric.
-            let related = collect_related(node_service, node_id, &rel.name, "out").await?;
-            let count = related.len();
-            groups.push(RelationshipGroup {
-                relationship_name: rel.name.clone(),
-                direction: "out".to_string(),
-                target_type: rel.target_type.clone(),
-                reverse_name: rel.reverse_name.clone(),
-                source_type: node_type.clone(),
-                cardinality: rel.cardinality.clone(),
-                required: rel.required,
-                edge_fields: rel.edge_fields.clone(),
-                description: rel.description.clone(),
-                related,
-                count,
-            });
+        .map_err(|e| OpsError::Internal(format!("Failed to resolve relationships: {}", e)))?;
+    for rel in &own_relationships {
+        if BUILTIN_RELATIONSHIP_NAMES.contains(&rel.name.as_str()) {
+            continue;
         }
+        // Emit the group even when it has no edges yet: an empty declared
+        // outbound relationship still needs to render so the viewer can add
+        // its first edge. The inbound branch below is symmetric.
+        let related = collect_related(node_service, node_id, &rel.name, "out").await?;
+        let count = related.len();
+        groups.push(RelationshipGroup {
+            relationship_name: rel.name.clone(),
+            direction: "out".to_string(),
+            target_type: rel.target_type.clone(),
+            reverse_name: rel.reverse_name.clone(),
+            source_type: node_type.clone(),
+            cardinality: rel.cardinality.clone(),
+            required: rel.required,
+            edge_fields: rel.edge_fields.clone(),
+            description: rel.description.clone(),
+            related,
+            count,
+        });
     }
 
     // ---- Inbound: other schemas whose relationship targets this node's type ----
