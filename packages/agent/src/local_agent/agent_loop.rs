@@ -890,17 +890,26 @@ fn schema_already_created_this_turn(executions: &[ToolExecutionRecord]) -> bool 
 /// "feature writeups") — so it lowercases both sides, and for a multi-word
 /// name requires every word to appear rather than the exact phrase.
 ///
+/// Matching is by whole word: both sides are split on non-alphanumeric
+/// characters, so a name buried inside an unrelated word ("Ask" in "tasks",
+/// "Boo" in "books") does not count. Plural tolerance is handled per word by
+/// [`words_match_modulo_plural`].
+///
 /// Loose in this direction is the safe way round, on *severity* rather than
-/// likelihood. Matching is substring-based, so it does say yes to some things
-/// the user did not ask for — a type named "Note" against "make a note of
-/// this", or a negated mention ("don't create a Sprint, just an ADR"). The
-/// asymmetry that justifies it anyway: a false positive creates a visible,
-/// deletable extra type, while a false negative silently delivers half of
-/// what was asked for, which is the failure this relaxation exists to remove.
-/// Single characters are ignored so a stray "a" or "I" cannot match
-/// everything.
+/// likelihood. Word matching still says yes to some things the user did not
+/// ask for — a type named "Note" against "make a note of this", or a negated
+/// mention ("don't create a Sprint, just an ADR") — because telling those
+/// apart takes intent, not tokenization. The asymmetry that justifies
+/// leaving them: a false positive creates a visible, deletable extra type,
+/// while a false negative silently delivers half of what was asked for,
+/// which is the failure this relaxation exists to remove. Single characters
+/// are ignored so a stray "a" or "I" cannot match everything.
 fn user_message_names_type(user_message: &str, schema_name: &str) -> bool {
     let haystack = user_message.to_lowercase();
+    let message_words: Vec<&str> = haystack
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .collect();
     let name = schema_name.to_lowercase();
     let mut words = name
         .split(|c: char| !c.is_alphanumeric())
@@ -910,10 +919,21 @@ fn user_message_names_type(user_message: &str, schema_name: &str) -> bool {
         return false;
     }
     words.all(|word| {
-        // Match the singular stem too, so "Invoice" is found in "invoices".
-        let stem = word.strip_suffix('s').unwrap_or(word);
-        haystack.contains(word) || haystack.contains(stem)
+        message_words
+            .iter()
+            .any(|candidate| words_match_modulo_plural(candidate, word))
     })
+}
+
+/// Whether two lowercase words are the same word, allowing either to carry a
+/// trailing plural "s" or "es" the other lacks ("invoice"/"invoices",
+/// "box"/"boxes").
+fn words_match_modulo_plural(a: &str, b: &str) -> bool {
+    let (shorter, longer) = if a.len() <= b.len() { (a, b) } else { (b, a) };
+    match longer.strip_prefix(shorter) {
+        Some(suffix) => matches!(suffix, "" | "s" | "es"),
+        None => false,
+    }
 }
 
 /// Whether a second `create_schema` this turn should be refused.
@@ -9548,6 +9568,26 @@ mod tests {
         // An empty or punctuation-only name can never match everything.
         assert!(!user_message_names_type("anything at all", ""));
         assert!(!user_message_names_type("anything at all", "-"));
+    }
+
+    /// Matching is by whole word: a type name that only appears inside an
+    /// unrelated word is not something the user asked for, while plural
+    /// forms in either direction and punctuation around the word still match.
+    #[test]
+    fn user_message_names_type_matches_whole_words_only() {
+        // Substrings of unrelated words must not match.
+        assert!(!user_message_names_type("track my tasks", "Ask"));
+        assert!(!user_message_names_type("a list of books", "Boo"));
+        assert!(!user_message_names_type("a notebook for ideas", "Note"));
+
+        // Plural tolerance survives in both directions, including "es".
+        assert!(user_message_names_type("a place for boxes", "Box"));
+        assert!(user_message_names_type("add an invoice type", "Invoices"));
+        // Punctuation next to the word does not hide it.
+        assert!(user_message_names_type(
+            "Customer, Invoice (linked).",
+            "Invoice"
+        ));
     }
 
     /// A single `create_schema` call in a turn must execute normally — the
