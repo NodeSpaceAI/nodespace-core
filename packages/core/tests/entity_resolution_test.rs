@@ -358,6 +358,17 @@ mod entity_resolution_tests {
             seed_entity(&service, "text", name).await?;
             seed_entity(&service, "task", name).await?;
         }
+        // Decoys sharing one word with a name: the OR'd lookup returns them
+        // and the cutoff drops them. They are not comparable matches, so they
+        // must not count toward the note, or it would fire on nearly every
+        // list and stop meaning anything.
+        for decoy in [
+            "Trading terms for new customers",
+            "Quarterly holdings review",
+            "Industries we target",
+        ] {
+            seed_entity(&service, "text", decoy).await?;
+        }
         let q = "link Northwind Trading, Contoso Holdings and Fabrikam Industries to the Q3 plan";
 
         let ctx = build_workspace_context(&service, None, Some(q), Some(q)).await?;
@@ -370,7 +381,10 @@ mod entity_resolution_tests {
             panic!("all three names exist: {:?}", ctx.resolved_entities);
         };
         assert_eq!(entities.len(), MAX_RESOLVED_ENTITIES, "{entities:?}");
-        assert_eq!(*not_shown, 1, "the sixth tied candidate is the one cut");
+        assert_eq!(
+            *not_shown, 1,
+            "only the sixth tied candidate counts — the cutoff's decoys do not"
+        );
 
         let out = ctx.format_for_prompt(4000);
         assert!(

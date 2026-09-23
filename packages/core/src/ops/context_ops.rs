@@ -92,8 +92,8 @@ pub enum EntityResolution {
     /// Resolution ran and matched. `entities` is never empty — an empty match
     /// is `NoMatch`.
     ///
-    /// `not_shown` counts candidates the index returned that the resolver
-    /// dropped (below the score cutoff or past the cap). It is carried rather
+    /// `not_shown` counts comparable matches the cap cut: candidates that
+    /// cleared the score cutoff but did not fit. It is carried rather
     /// than recomputed downstream because only the resolver knows the list was
     /// cut, and a cut list rendered without saying so reads as complete: the
     /// model acts on the one "Fabrikam Industries" it was shown with no signal
@@ -231,6 +231,8 @@ fn entities_not_shown_line(not_shown: usize) -> String {
 /// not fix it: a cap of N is reached by any N/2 + 1 two-type names, so a larger
 /// cap only moves the boundary while making every list noisier. What holds at
 /// any N is saying the list was cut, which `Resolved::not_shown` now does.
+/// It counts only the cap's cut, not the cutoff's, so the note stays specific to
+/// comparable matches rather than firing on every word-sharing decoy.
 pub const MAX_RESOLVED_ENTITIES: usize = 5;
 
 /// How many candidates to pull from FTS5 before applying the relative cutoff.
@@ -543,12 +545,15 @@ async fn resolve_entities(
     // multiplying by a factor < 1 moves the bar toward zero — i.e. loosens it.
     let bar = best * ENTITY_SCORE_CUTOFF_FACTOR;
     let candidates_len = candidates.len();
-    let kept: Vec<_> = candidates
-        .into_iter()
-        .filter(|c| c.score <= bar)
-        .take(MAX_RESOLVED_ENTITIES)
-        .collect();
-    let not_shown = candidates_len - kept.len();
+    let mut kept: Vec<_> = candidates.into_iter().filter(|c| c.score <= bar).collect();
+    // Only what the CAP cuts counts as not shown. A candidate under the bar
+    // is, by the cutoff's own definition, not a comparable match: the OR'd
+    // lookup returns every title sharing one word with a name, so counting
+    // those would put the note on nearly every populated list and teach the
+    // model to ignore it. A real name the cutoff drops is caught instead by
+    // the guidance to check each name in the message against the list.
+    let not_shown = kept.len().saturating_sub(MAX_RESOLVED_ENTITIES);
+    kept.truncate(MAX_RESOLVED_ENTITIES);
 
     if kept.is_empty() {
         tracing::debug!(
@@ -833,6 +838,9 @@ impl WorkspaceContext {
                     if hidden == 0 {
                         break String::new();
                     }
+                    // Rebuilt each pass, not hoisted: its length depends on
+                    // `hidden`, which grows as lines give way (9 -> 10 adds a
+                    // character).
                     let note = entities_not_shown_line(hidden);
                     if used + note.len() <= max_chars {
                         break note;
@@ -842,7 +850,16 @@ impl WorkspaceContext {
                             used -= line.len();
                             hidden += 1;
                         }
-                        None => break String::new(),
+                        None => {
+                            // Logged, not silent: from the prompt alone this
+                            // is indistinguishable from `NotRun`.
+                            tracing::debug!(
+                                hidden,
+                                max_chars,
+                                "workspace_context: entity tier omitted — budget fits no entity beside the truncation note"
+                            );
+                            break String::new();
+                        }
                     }
                 };
 
