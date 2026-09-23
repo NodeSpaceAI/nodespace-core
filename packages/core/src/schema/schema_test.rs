@@ -5004,6 +5004,64 @@ async fn test_add_fields_call_that_also_retargets_extends_still_rejects_a_collis
 }
 
 #[tokio::test]
+async fn test_extends_retarget_rejects_a_field_inherited_from_the_new_parents_grandparent() {
+    let (svc, _tmp) = create_test_service().await;
+    create_base_schema(&svc, "Root", &["shared"]).await;
+    handle_create_schema(
+        &svc,
+        json!({ "name": "New Parent", "extends": "root", "fields": [] }),
+    )
+    .await
+    .expect("new_parent extends root should succeed");
+    create_base_schema(&svc, "Old Parent", &["a"]).await;
+    handle_create_schema(
+        &svc,
+        json!({ "name": "Child", "extends": "old_parent", "fields": [] }),
+    )
+    .await
+    .expect("child extends old_parent should succeed");
+
+    // The collision is two levels up the NEW parent's chain — "new_parent"
+    // itself declares no fields, only inherits "shared" from "root" — so
+    // this only fails if the re-target gate's `validate_no_field_redeclaration`
+    // call resolves the new parent's full effective set rather than just its
+    // own directly-declared fields. It also only tells correct blame from
+    // buggy blame at THIS call site if the assertion below checks that the
+    // error names "root", not "new_parent": a wrong-blame regression here
+    // would still name a real schema (just the wrong one) and could
+    // otherwise hide behind this test's field/additive-only checks alone.
+    let result = handle_update_schema(
+        &svc,
+        json!({
+            "schema_id": "child",
+            "extends": "new_parent",
+            "add_fields": [
+                { "name": "shared", "type": "string", "protection": "user", "indexed": false }
+            ]
+        }),
+    )
+    .await;
+
+    let err = result.expect_err(
+        "a field colliding with the NEW parent's grandparent must be rejected on re-target",
+    );
+    let msg = format!("{err:?}");
+    assert!(
+        msg.contains("shared") && msg.contains("additive"),
+        "error should name the colliding field and the additive-only rule: {msg}"
+    );
+    // "root" is the actual DECLARING schema — "new_parent" merely inherits
+    // it without redeclaring. The error must name the true owner (via
+    // `resolve_field_owners`'s owner map), not the immediate new parent
+    // unconditionally.
+    assert!(
+        msg.contains("root") && !msg.contains("'new_parent'"),
+        "error should blame the schema that actually declares 'shared' (root), not the \
+         immediate new parent (new_parent) it's merely inherited through: {msg}"
+    );
+}
+
+#[tokio::test]
 async fn test_create_schema_rejects_a_relationship_colliding_with_an_inherited_relationship() {
     let (svc, _tmp) = create_test_service().await;
     handle_create_schema(&svc, json!({ "name": "Widget", "fields": [] }))
