@@ -592,6 +592,26 @@ impl NodeService {
     /// `with_transaction`) from inside `f` deadlocks, for the same reason
     /// calling a non-`_in_tx` store method from inside a store transaction
     /// does: the write guard is already held.
+    ///
+    /// `batch_state` is a single service-wide slot (`Arc<Mutex<BatchState>>`,
+    /// shared by every clone of this `NodeService`) — it can hold exactly one
+    /// transaction's buffer at a time, so two calls to this method must never
+    /// both be "active" concurrently, not just never literally nested on the
+    /// same call stack. The check-and-set into `Transactional`, and the
+    /// reset back to `Immediate`, therefore both happen INSIDE the closure
+    /// passed to `self.store.with_transaction` — i.e. only once that call's
+    /// own `self.write().await` has actually acquired the store's single
+    /// writer guard, and completed before that guard is released. A second,
+    /// unrelated concurrent caller's own `self.write().await` blocks until
+    /// this one's guard is released, so it can only reach ITS check once
+    /// `batch_state` has provably already been reset to `Immediate` by this
+    /// one — closing the check-then-set race a version of this method once
+    /// had when the transition happened BEFORE requesting the write guard:
+    /// two concurrent callers could each observe `Immediate`, one would then
+    /// overwrite the other's in-flight buffer with a fresh empty one, and
+    /// events emitted after that point would be appended to (and eventually
+    /// flushed or discarded as) the wrong caller's transaction — not merely a
+    /// debug-assertion trip, but a real risk of misattributed events.
     pub(crate) async fn with_transaction<T, F>(&self, f: F) -> Result<T, NodeServiceError>
     where
         F: for<'t> FnOnce(
@@ -602,41 +622,58 @@ impl NodeService {
             + 'static,
         T: Send,
     {
-        // Nesting guard mirrors `begin_batch_emit`'s: an outer transaction's
-        // buffer would be silently discarded if an inner one reset the
-        // state on either its own commit or its own rollback.
-        {
-            let state = self.batch_state.lock().unwrap_or_else(|e| e.into_inner());
-            debug_assert!(
-                matches!(*state, BatchState::Immediate),
-                "with_transaction called while a batch or transaction is already active"
-            );
-        }
-
         let batch_state = Arc::clone(&self.batch_state);
-        *batch_state.lock().unwrap_or_else(|e| e.into_inner()) =
-            BatchState::Transactional(Vec::new());
 
-        // If the closure itself panics, restore `Immediate` on unwind so a
-        // later caller doesn't inherit a stuck `Transactional` state.
-        struct ResetOnDrop<'a>(&'a Mutex<BatchState>, bool);
-        impl Drop for ResetOnDrop<'_> {
-            fn drop(&mut self) {
-                if !self.1 {
-                    *self.0.lock().unwrap_or_else(|e| e.into_inner()) = BatchState::Immediate;
-                }
-            }
-        }
-        let mut reset_guard = ResetOnDrop(&batch_state, false);
-
-        let result: Result<T, NodeServiceError> = self
+        let result: Result<(T, BatchState), NodeServiceError> = self
             .store
             .with_transaction(move |store_tx| {
                 Box::pin(async move {
+                    // Reaching this point means the write guard above is
+                    // held for the rest of this closure — see this method's
+                    // doc for why the check-and-set must live here rather
+                    // than before requesting it.
+                    {
+                        let mut state = batch_state.lock().unwrap_or_else(|e| e.into_inner());
+                        debug_assert!(
+                            matches!(*state, BatchState::Immediate),
+                            "with_transaction called while a batch or transaction is already active"
+                        );
+                        *state = BatchState::Transactional(Vec::new());
+                    }
+
+                    // If `f` itself panics, restore `Immediate` on unwind —
+                    // scoped to this closure so the reset happens while the
+                    // write guard is still held, same as the success/error
+                    // paths below, rather than racing a caller that acquires
+                    // the guard next.
+                    struct ResetOnDrop<'a>(&'a Mutex<BatchState>, bool);
+                    impl Drop for ResetOnDrop<'_> {
+                        fn drop(&mut self) {
+                            if !self.1 {
+                                *self.0.lock().unwrap_or_else(|e| e.into_inner()) =
+                                    BatchState::Immediate;
+                            }
+                        }
+                    }
+                    let mut reset_guard = ResetOnDrop(&batch_state, false);
+
                     let ns_tx = NodeServiceTx { store_tx };
-                    f(&ns_tx)
-                        .await
-                        .map_err(|e| anyhow::anyhow!(NodeServiceTxError(e)))
+                    let inner_result = f(&ns_tx).await;
+
+                    // Reset to `Immediate` — capturing the buffer — before
+                    // this closure returns, so `self.store.with_transaction`
+                    // never releases the write guard while `batch_state`
+                    // still claims `Transactional`.
+                    let prev = std::mem::replace(
+                        &mut *batch_state.lock().unwrap_or_else(|e| e.into_inner()),
+                        BatchState::Immediate,
+                    );
+                    reset_guard.1 = true; // already reset above; skip the Drop's redundant reset
+
+                    match inner_result {
+                        Ok(value) => Ok((value, prev)),
+                        Err(e) => Err(anyhow::anyhow!(NodeServiceTxError(e))),
+                    }
                 })
             })
             .await
@@ -649,29 +686,27 @@ impl NodeService {
                 Err(e) => NodeServiceError::transaction_failed(e.to_string()),
             });
 
-        // Commit already happened (or didn't) inside `self.store.with_transaction`
-        // by the time we get here — this only decides what to do with the
-        // buffered events.
-        let prev = std::mem::replace(
-            &mut *batch_state.lock().unwrap_or_else(|e| e.into_inner()),
-            BatchState::Immediate,
-        );
-        reset_guard.1 = true; // already reset above; skip the Drop's redundant reset
-
-        if result.is_ok() {
-            if let BatchState::Transactional(buf) = prev {
-                flush_envelopes(
-                    buf,
-                    &self.event_tx,
-                    &self.push_event_tx,
-                    &self.push_excluded_origin,
-                );
+        // Commit (or rollback) already happened inside `self.store.with_transaction`
+        // by the time we get here, and the buffer was already captured —
+        // pre-commit, inside the closure above — so `batch_state` is already
+        // back to `Immediate` for the next caller regardless of which branch
+        // this takes. This only decides what to do with the captured buffer:
+        // flush in order on success, discard on failure, per ADR-069 §2 (an
+        // event is a statement about committed state).
+        match result {
+            Ok((value, prev)) => {
+                if let BatchState::Transactional(buf) = prev {
+                    flush_envelopes(
+                        buf,
+                        &self.event_tx,
+                        &self.push_event_tx,
+                        &self.push_excluded_origin,
+                    );
+                }
+                Ok(value)
             }
+            Err(e) => Err(e),
         }
-        // On error, `prev`'s buffer (if any) is simply dropped — discarded,
-        // per ADR-069 §2: nothing in it describes committed state.
-
-        result
     }
 }
 
@@ -8764,6 +8799,111 @@ mod tests {
             .unwrap();
         assert_eq!(in_group.count, 1);
         assert_eq!(in_group.related[0].id, person2_id);
+    }
+
+    /// Concurrent reassignment must not leave a reverse-cardinality-one target
+    /// with more than one live edge. Several real OS threads race to become
+    /// task1's sole assignee (currently person1's); if the replace's
+    /// read-existing / evict / insert sequence were not fully serialized —
+    /// e.g. two callers each reading "person1 holds it" before either evicts —
+    /// both could evict harmlessly (a no-op the second time) and both insert,
+    /// leaving two live edges despite `reverse_cardinality: One`. The whole
+    /// sequence runs inside one `NodeService::with_transaction`, which takes
+    /// the store's single writer guard for its entire span (see
+    /// `SqliteStore::with_transaction`), so every concurrent
+    /// `create_relationship` call is fully serialized against every other
+    /// one — this asserts that guarantee holds under genuine multi-thread
+    /// contention, not just single-threaded cooperative scheduling.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_reassignment_never_leaves_two_live_edges_into_a_reverse_cardinality_one_target(
+    ) {
+        use crate::services::{CreateNodeParams, InsertPositionOwned};
+
+        let (service, _temp) = create_test_service().await;
+        let service = std::sync::Arc::new(service);
+
+        let make_person = || {
+            let service = std::sync::Arc::clone(&service);
+            async move {
+                service
+                    .create_node_with_parent(CreateNodeParams {
+                        id: None,
+                        node_type: "person".to_string(),
+                        content: String::new(),
+                        parent_id: None,
+                        position: InsertPositionOwned::End,
+                        properties: serde_json::json!({}),
+                        lifecycle_status: None,
+                    })
+                    .await
+                    .unwrap()
+            }
+        };
+
+        let person1_id = make_person().await;
+        const CHALLENGERS: usize = 6;
+        let mut challenger_ids = Vec::with_capacity(CHALLENGERS);
+        for _ in 0..CHALLENGERS {
+            challenger_ids.push(make_person().await);
+        }
+        let task_id = service
+            .create_node_with_parent(CreateNodeParams {
+                id: None,
+                node_type: "task".to_string(),
+                content: "Ship the feature".to_string(),
+                parent_id: None,
+                position: InsertPositionOwned::End,
+                properties: serde_json::json!({}),
+                lifecycle_status: None,
+            })
+            .await
+            .unwrap();
+
+        service
+            .create_relationship(&person1_id, "tasks", &task_id, serde_json::json!({}))
+            .await
+            .unwrap();
+
+        // Every challenger starts at the barrier together, so the store sees
+        // genuinely overlapping attempts rather than a de facto sequence.
+        let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(CHALLENGERS));
+        let mut handles = Vec::with_capacity(CHALLENGERS);
+        for challenger_id in &challenger_ids {
+            let challenger_id = challenger_id.clone();
+            let service = std::sync::Arc::clone(&service);
+            let task_id = task_id.clone();
+            let barrier = std::sync::Arc::clone(&barrier);
+            handles.push(tokio::spawn(async move {
+                barrier.wait().await;
+                service
+                    .create_relationship(&challenger_id, "tasks", &task_id, serde_json::json!({}))
+                    .await
+            }));
+        }
+        for handle in handles {
+            handle
+                .await
+                .expect("task must not panic")
+                .expect("every concurrent reassignment attempt must succeed");
+        }
+
+        let inbound = crate::ops::rel_ops::get_node_relationships(&service, &task_id)
+            .await
+            .unwrap();
+        let in_group = inbound
+            .groups
+            .iter()
+            .find(|g| g.relationship_name == "tasks" && g.direction == "in")
+            .unwrap();
+        assert_eq!(
+            in_group.count, 1,
+            "reverse_cardinality: One must hold even under real concurrent writers — \
+             exactly one edge must survive, not one per racing caller"
+        );
+        assert!(
+            challenger_ids.contains(&in_group.related[0].id),
+            "the survivor must be one of the challengers, not the original (evicted) person1"
+        );
     }
 
     /// The in-place edit path is validated too — otherwise an edge created with
