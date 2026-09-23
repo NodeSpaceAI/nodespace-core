@@ -2786,6 +2786,77 @@ mod tests {
         (service, temp_dir)
     }
 
+    /// @mention autocomplete offers date pages (a date link is a real mention)
+    /// but not schemas (a type is not something to mention), though both are
+    /// titled.
+    #[tokio::test]
+    async fn mention_autocomplete_offers_dates_but_not_schemas() {
+        let (service, _t) = create_test_service().await;
+        service.ensure_date_exists("2026-09-23").await.unwrap();
+
+        let dates = service.mention_autocomplete("2026-09", None).await.unwrap();
+        assert!(dates.iter().any(|n| n.id == "2026-09-23"), "{dates:?}");
+
+        let types = service.mention_autocomplete("task", None).await.unwrap();
+        assert!(
+            types.iter().all(|n| n.node_type != "schema"),
+            "a schema must not be offered as a mention: {types:?}"
+        );
+    }
+
+    /// Single-node creation and bulk hierarchy insert title a node identically,
+    /// for every core type as a root and as a child — both go through
+    /// `derive_title`, and this pins that no path grows a rule of its own.
+    /// Also pins the decided values: templated types interpolate, `task` and
+    /// `collection` are titled at any depth, every other type (`date`,
+    /// `schema` and `checkbox` included) is titled by its content as a root
+    /// and untitled as a child.
+    #[tokio::test]
+    async fn title_rule_agrees_across_write_paths_for_every_core_type() {
+        let (service, _t) = create_test_service().await;
+
+        let mut types: std::collections::BTreeSet<String> =
+            service.behaviors.get_all_types().into_iter().collect();
+        types.extend(
+            crate::models::core_schemas::get_core_schemas()
+                .into_iter()
+                .map(|s| s.id),
+        );
+
+        for node_type in &types {
+            let properties = json!({ "person": { "first_name": "Ada", "last_name": "Lovelace" } });
+            let node = Node::new(node_type.clone(), "**Some** name".to_string(), properties);
+            for is_root in [true, false] {
+                let single = service.compute_title(&node, Some(is_root)).await.unwrap();
+                let parent = (!is_root).then(|| "parent".to_string());
+                let bulk = service
+                    .with_titles(vec![(
+                        node.id.clone(),
+                        node.node_type.clone(),
+                        node.content.clone(),
+                        parent,
+                        0.0,
+                        node.properties.clone(),
+                    )])
+                    .await
+                    .remove(0)
+                    .6;
+                assert_eq!(
+                    single, bulk,
+                    "{node_type} (root: {is_root}): single-node and bulk titles disagree"
+                );
+
+                let expected = match node_type.as_str() {
+                    "person" => Some("Ada Lovelace".to_string()),
+                    "task" | "collection" => Some("Some name".to_string()),
+                    _ if is_root => Some("Some name".to_string()),
+                    _ => None,
+                };
+                assert_eq!(single, expected, "{node_type} (root: {is_root})");
+            }
+        }
+    }
+
     // ========================================================================
     // Protection-level guard on the two schema-field mutation primitives.
     //

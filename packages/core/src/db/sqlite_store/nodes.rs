@@ -1,6 +1,20 @@
 //! `SqliteStore` methods — nodes concern (split from the god-object per ADR-053 prep).
 use super::*;
 
+/// One row of a bulk hierarchy insert: `(id, node_type, content, parent_id,
+/// order, properties, title)`. The title is derived by the caller with
+/// `NodeService::derive_title` — the store applies no title rule of its own,
+/// so bulk and single-node creation cannot disagree.
+pub type BulkNodeRow = (
+    String,
+    String,
+    String,
+    Option<String>,
+    f64,
+    serde_json::Value,
+    Option<String>,
+);
+
 /// Token cap on an entity-resolution query. Matches `BM25_MAX_TOKENS`'s intent
 /// — bound a long message to a fixed query cost — but is its own constant
 /// because the two searches answer different questions.
@@ -3072,17 +3086,7 @@ impl SqliteStore {
     /// **Validation note:** `validate_node_type` is a pure in-memory check against
     /// `self.valid_node_types`; it does not touch the database and therefore cannot read
     /// uncommitted state from `tx`.
-    pub async fn bulk_create_hierarchy(
-        &self,
-        nodes: Vec<(
-            String,
-            String,
-            String,
-            Option<String>,
-            f64,
-            serde_json::Value,
-        )>,
-    ) -> Result<Vec<String>> {
+    pub async fn bulk_create_hierarchy(&self, nodes: Vec<BulkNodeRow>) -> Result<Vec<String>> {
         if nodes.is_empty() {
             return Ok(Vec::new());
         }
@@ -3094,7 +3098,7 @@ impl SqliteStore {
             .await
             .context("Failed to begin bulk hierarchy transaction")?;
 
-        for (id, node_type, content, parent_id, order, properties) in &nodes {
+        for (id, node_type, content, parent_id, order, properties, title) in &nodes {
             self.validate_node_type(node_type)?;
 
             let properties = if properties.is_null() {
@@ -3105,12 +3109,9 @@ impl SqliteStore {
             let props_json =
                 serde_json::to_string(&properties).context("Failed to serialize properties")?;
 
-            let title =
-                Self::compute_title_for_bulk_insert(node_type, parent_id.as_deref(), content);
-
             tx.execute(
                 "INSERT INTO node (id, node_type, content, properties, title, lifecycle_status, version, created_at, modified_at) VALUES (?1, ?2, ?3, ?4, ?5, 'active', 1, ?6, ?7)",
-                libsql::params![id.clone(), node_type.clone(), content.clone(), props_json, title, now.clone(), now.clone()],
+                libsql::params![id.clone(), node_type.clone(), content.clone(), props_json, title.clone(), now.clone(), now.clone()],
             ).await.context("Failed to insert node in bulk hierarchy")?;
 
             if let Some(parent) = parent_id {
@@ -3161,14 +3162,7 @@ impl SqliteStore {
     pub(crate) async fn bulk_create_hierarchy_in_tx(
         &self,
         tx: &Tx<'_>,
-        nodes: Vec<(
-            String,
-            String,
-            String,
-            Option<String>,
-            f64,
-            serde_json::Value,
-        )>,
+        nodes: Vec<BulkNodeRow>,
     ) -> Result<Vec<String>> {
         if nodes.is_empty() {
             return Ok(Vec::new());
@@ -3176,7 +3170,7 @@ impl SqliteStore {
 
         let now = Utc::now().to_rfc3339();
 
-        for (id, node_type, content, parent_id, order, properties) in &nodes {
+        for (id, node_type, content, parent_id, order, properties, title) in &nodes {
             self.validate_node_type(node_type)?;
 
             let properties = if properties.is_null() {
@@ -3187,12 +3181,9 @@ impl SqliteStore {
             let props_json =
                 serde_json::to_string(&properties).context("Failed to serialize properties")?;
 
-            let title =
-                Self::compute_title_for_bulk_insert(node_type, parent_id.as_deref(), content);
-
             tx.conn().execute(
                 "INSERT INTO node (id, node_type, content, properties, title, lifecycle_status, version, created_at, modified_at) VALUES (?1, ?2, ?3, ?4, ?5, 'active', 1, ?6, ?7)",
-                libsql::params![id.clone(), node_type.clone(), content.clone(), props_json, title, now.clone(), now.clone()],
+                libsql::params![id.clone(), node_type.clone(), content.clone(), props_json, title.clone(), now.clone(), now.clone()],
             ).await.context("Failed to insert node in bulk hierarchy")?;
 
             if let Some(parent) = parent_id {
@@ -3210,14 +3201,7 @@ impl SqliteStore {
 
     pub async fn bulk_create_hierarchy_root_notify(
         &self,
-        nodes: Vec<(
-            String,
-            String,
-            String,
-            Option<String>,
-            f64,
-            serde_json::Value,
-        )>,
+        nodes: Vec<BulkNodeRow>,
         root_ids: Vec<String>,
     ) -> Result<Vec<String>> {
         let created = self.bulk_create_hierarchy(nodes).await?;
@@ -3288,21 +3272,6 @@ impl SqliteStore {
         });
 
         Ok(id)
-    }
-
-    fn compute_title_for_bulk_insert(
-        node_type: &str,
-        parent_id: Option<&str>,
-        content: &str,
-    ) -> Option<String> {
-        if node_type == "checkbox" {
-            None
-        } else if parent_id.is_none() || matches!(node_type, "task" | "collection") {
-            let stripped = crate::utils::strip_markdown(content);
-            Some(stripped)
-        } else {
-            None
-        }
     }
 
     /// Convert a raw [`Node`] into a [`crate::models::TaskNode`], reading its
@@ -3729,10 +3698,13 @@ impl SqliteStore {
     /// Archived nodes are excluded — resolving a name to a node the user has
     /// archived would reintroduce it into the turn as if it were live.
     ///
-    /// Schema nodes are excluded too. A schema is titled by its type name
-    /// ("Task", "Ordered List") so general search can find it, but a type is not
-    /// an entity: "add it to the list" must not resolve to the Ordered List
-    /// schema. The agent reaches schemas through schema retrieval instead.
+    /// Schema and date nodes are excluded too, though both are titled so
+    /// general search can find them. A schema's title is its type name
+    /// ("Task", "Ordered List"), and a type is not an entity: "add it to the
+    /// list" must not resolve to the Ordered List schema — the agent reaches
+    /// schemas through schema retrieval instead. A date's title is its ISO
+    /// content, which tokenizes to bare numbers (`2026`, `09`, `23`), so any
+    /// message carrying a number would otherwise resolve to date pages.
     pub async fn resolve_entities_by_title(
         &self,
         message: &str,
@@ -3820,7 +3792,7 @@ impl SqliteStore {
              FROM node_title_fts f \
              JOIN node n ON n.id = f.id \
              WHERE node_title_fts MATCH ?1 AND n.lifecycle_status != 'archived' \
-             AND n.node_type != 'schema' \
+             AND n.node_type NOT IN ('schema', 'date') \
              ORDER BY rank LIMIT {}",
             limit
         );

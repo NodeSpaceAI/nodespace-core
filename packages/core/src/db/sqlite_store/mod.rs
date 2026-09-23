@@ -603,7 +603,7 @@ mod conflicts;
 mod connections;
 mod embeddings;
 mod nodes;
-pub use nodes::ResolvedEntity;
+pub use nodes::{BulkNodeRow, ResolvedEntity};
 mod relationships;
 mod search;
 pub(crate) mod tx;

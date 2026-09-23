@@ -162,19 +162,22 @@ mod entity_resolution_tests {
         Ok(())
     }
 
-    /// A schema is titled by its type name so search can find it, but a type is
-    /// not an entity: "the list" must not resolve to the Ordered List schema.
+    /// Schemas and dates are titled so search can find them, but neither is an
+    /// entity: "the list" must not resolve to the Ordered List schema, and a
+    /// number must not resolve to the date pages whose ISO titles contain it.
     #[tokio::test]
-    async fn schema_type_names_are_not_resolved() -> Result<()> {
-        let (store, _service, _t) = create_test_store().await?;
+    async fn schemas_and_dates_are_not_resolved() -> Result<()> {
+        let (store, service, _t) = create_test_store().await?;
+        service.ensure_date_exists("2026-09-23").await?;
 
         let hits = store
-            .resolve_entities_by_title("Add a task to the ordered list", 12)
+            .resolve_entities_by_title("Add a task for the 23 people on the ordered list", 12)
             .await?;
 
         assert!(
-            hits.iter().all(|h| h.node_type != "schema"),
-            "a schema must not resolve as an entity, got: {hits:?}"
+            hits.iter()
+                .all(|h| h.node_type != "schema" && h.node_type != "date"),
+            "neither a schema nor a date may resolve as an entity, got: {hits:?}"
         );
         Ok(())
     }
