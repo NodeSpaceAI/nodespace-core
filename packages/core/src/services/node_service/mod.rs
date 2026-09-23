@@ -8465,6 +8465,214 @@ mod tests {
         );
     }
 
+    /// `reverse_cardinality` is enforced at the store layer, not merely
+    /// documented: a `reverse_cardinality: One` target end (task's derived
+    /// `assignee`, the inverse of person's outbound `tasks`) must reject a
+    /// second edge from a DIFFERENT source. The forward `cardinality: Many`
+    /// check never fires here — each person's own outgoing `tasks` count is
+    /// 0 before their own call — so without the reverse-side check this
+    /// would silently succeed and leave the task with two assignees.
+    #[tokio::test]
+    async fn create_relationship_rejects_second_edge_into_reverse_cardinality_one_target() {
+        use crate::services::{CreateNodeParams, InsertPositionOwned};
+
+        let (service, _temp) = create_test_service().await;
+        let service = std::sync::Arc::new(service);
+
+        let person1_id = service
+            .create_node_with_parent(CreateNodeParams {
+                id: None,
+                node_type: "person".to_string(),
+                content: String::new(),
+                parent_id: None,
+                position: InsertPositionOwned::End,
+                properties: serde_json::json!({}),
+                lifecycle_status: None,
+            })
+            .await
+            .unwrap();
+        let person2_id = service
+            .create_node_with_parent(CreateNodeParams {
+                id: None,
+                node_type: "person".to_string(),
+                content: String::new(),
+                parent_id: None,
+                position: InsertPositionOwned::End,
+                properties: serde_json::json!({}),
+                lifecycle_status: None,
+            })
+            .await
+            .unwrap();
+        let task_id = service
+            .create_node_with_parent(CreateNodeParams {
+                id: None,
+                node_type: "task".to_string(),
+                content: "Ship the feature".to_string(),
+                parent_id: None,
+                position: InsertPositionOwned::End,
+                properties: serde_json::json!({}),
+                lifecycle_status: None,
+            })
+            .await
+            .unwrap();
+
+        service
+            .create_relationship(&person1_id, "tasks", &task_id, serde_json::json!({}))
+            .await
+            .expect("first assignment must succeed");
+
+        let err = service
+            .create_relationship(&person2_id, "tasks", &task_id, serde_json::json!({}))
+            .await
+            .expect_err("a second edge into a reverse-cardinality-one target must be rejected");
+
+        assert!(
+            matches!(err, NodeServiceError::InvalidUpdate(_)),
+            "expected InvalidUpdate, got {:?}",
+            err
+        );
+        let msg = err.to_string();
+        assert!(
+            msg.contains("assignee") && msg.contains(&task_id),
+            "error should name the reverse relationship ('assignee') and the target end so it \
+             reads correctly from the side the caller is on, got: {}",
+            msg
+        );
+
+        // The task must still show exactly one assignee — the rejected
+        // second call must not have been stored.
+        let inbound = crate::ops::rel_ops::get_node_relationships(&service, &task_id)
+            .await
+            .unwrap();
+        let in_group = inbound
+            .groups
+            .iter()
+            .find(|g| g.relationship_name == "tasks" && g.direction == "in")
+            .expect("task must show the inbound (assignee) side of the relationship");
+        assert_eq!(
+            in_group.count, 1,
+            "the rejected second edge must not have been stored"
+        );
+        assert_eq!(in_group.related[0].id, person1_id);
+    }
+
+    /// The forward `cardinality: One` check is unchanged by the reverse-side
+    /// check added alongside it: a source may still hold at most one edge of
+    /// a relationship type. Uses a dedicated schema pair with
+    /// `reverseCardinality: many` so only the forward check is in play,
+    /// isolating it from `create_relationship_rejects_second_edge_into_reverse_cardinality_one_target`.
+    #[tokio::test]
+    async fn create_relationship_rejects_second_edge_from_cardinality_one_source() {
+        let (service, _temp) = create_test_service().await;
+        let service = std::sync::Arc::new(service);
+        let store = service.store();
+
+        store
+            .create_node(
+                Node::new_with_id(
+                    "widget".to_string(),
+                    "schema".to_string(),
+                    "Widget".to_string(),
+                    serde_json::json!({ "fields": [], "relationships": [] }),
+                ),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        store
+            .create_node(
+                Node::new_with_id(
+                    "gadget".to_string(),
+                    "schema".to_string(),
+                    "Gadget".to_string(),
+                    serde_json::json!({ "fields": [] }),
+                ),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        let declarations: Vec<crate::models::schema::SchemaRelationship> =
+            serde_json::from_value(serde_json::json!([{
+                "name": "primary_widget",
+                "targetType": "widget",
+                "direction": "out",
+                "cardinality": "one",
+                "reverseName": "gadgets",
+                "reverseCardinality": "many"
+            }]))
+            .unwrap();
+        service
+            .set_schema_relationships("gadget", &declarations)
+            .await
+            .unwrap();
+
+        store
+            .create_node(
+                Node::new_with_id(
+                    "g1".to_string(),
+                    "gadget".to_string(),
+                    "Gadget One".to_string(),
+                    serde_json::json!({}),
+                ),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        store
+            .create_node(
+                Node::new_with_id(
+                    "w1".to_string(),
+                    "widget".to_string(),
+                    "Widget One".to_string(),
+                    serde_json::json!({}),
+                ),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        store
+            .create_node(
+                Node::new_with_id(
+                    "w2".to_string(),
+                    "widget".to_string(),
+                    "Widget Two".to_string(),
+                    serde_json::json!({}),
+                ),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+
+        service
+            .create_relationship("g1", "primary_widget", "w1", serde_json::json!({}))
+            .await
+            .expect("first edge from a cardinality-one source must succeed");
+
+        let err = service
+            .create_relationship("g1", "primary_widget", "w2", serde_json::json!({}))
+            .await
+            .expect_err(
+                "a second edge from a cardinality-one source must still be rejected, \
+                 unchanged from before this change",
+            );
+
+        assert!(
+            matches!(err, NodeServiceError::InvalidUpdate(_)),
+            "expected InvalidUpdate, got {:?}",
+            err
+        );
+        assert!(
+            err.to_string().contains("cardinality 'one'"),
+            "error should name the forward cardinality constraint, got: {}",
+            err
+        );
+    }
+
     /// The in-place edit path is validated too — otherwise an edge created with
     /// a legal role could be edited into an illegal one.
     #[tokio::test]

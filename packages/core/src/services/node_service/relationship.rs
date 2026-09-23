@@ -690,6 +690,59 @@ impl NodeService {
                     )));
                 }
             }
+
+            // Check reverse cardinality constraint: `cardinality` above governs
+            // how many edges the SOURCE may send out; `reverse_cardinality`
+            // governs how many edges the TARGET may receive, from any source.
+            // Without this, a target end declared `reverse_cardinality: One`
+            // (e.g. a task's `assignee`, the inverse of person's `tasks`)
+            // silently accepted a second edge from a different source, because
+            // the forward check above only ever looks at `source_id`'s own
+            // edge count and a different source always starts at zero.
+            if relationship.reverse_cardinality
+                == crate::models::schema::RelationshipCardinality::One
+            {
+                // Two schemas may declare the SAME forward name toward the
+                // SAME target type as logically distinct relationships (e.g.
+                // `person.tasks` → reverse `assignee`, `project.tasks` →
+                // reverse `project`, both targeting `task`) — the stored
+                // `relationship_type` alone doesn't distinguish them. Resolve
+                // the schema that actually owns THIS declaration and compare
+                // every existing source against it (ADR-078 subtypes
+                // included, via `type_satisfies`), so an edge from an
+                // unrelated schema that merely happens to share the forward
+                // name doesn't count against this one.
+                let (_, owners) = self.resolve_relationships(schema_id).await?;
+                let declaring_type = owners
+                    .get(relationship_name)
+                    .cloned()
+                    .unwrap_or_else(|| schema_id.clone());
+
+                let existing_source_types = self
+                    .store
+                    .get_relationship_source_types(target_id, relationship_name)
+                    .await
+                    .map_err(|e| {
+                        NodeServiceError::query_failed(format!(
+                            "Failed to check reverse cardinality: {}",
+                            e
+                        ))
+                    })?;
+
+                let mut existing_reverse_count = 0usize;
+                for src_type in &existing_source_types {
+                    if self.type_satisfies(src_type, &declaring_type).await? {
+                        existing_reverse_count += 1;
+                    }
+                }
+                if existing_reverse_count > 0 {
+                    return Err(NodeServiceError::invalid_update(format!(
+                        "Target '{}' already has a '{}' edge (reverse relationship '{}' has \
+                         cardinality 'one'); cannot add another '{}' edge into it",
+                        target_id, relationship_name, relationship.reverse_name, relationship_name
+                    )));
+                }
+            }
         }
 
         // For member_of relationships with auto-order, use the atomic
@@ -965,6 +1018,49 @@ impl NodeService {
                     return Err(NodeServiceError::invalid_update(format!(
                         "Relationship '{}' has cardinality 'one' but an edge already exists",
                         relationship_name
+                    )));
+                }
+            }
+
+            // Reverse cardinality — see the non-tx twin in `create_relationship`
+            // for why this is needed alongside the forward check above, and
+            // for why matches are scoped to the declaring schema (two schemas
+            // may share a forward name toward the same target type as
+            // logically distinct relationships).
+            if relationship.reverse_cardinality
+                == crate::models::schema::RelationshipCardinality::One
+            {
+                let (_, owners) = self.resolve_relationships(schema_id).await?;
+                let declaring_type = owners
+                    .get(relationship_name)
+                    .cloned()
+                    .unwrap_or_else(|| schema_id.clone());
+
+                let existing_source_types =
+                    crate::db::SqliteStore::get_relationship_source_types_in_tx(
+                        tx.store_tx(),
+                        target_id,
+                        relationship_name,
+                    )
+                    .await
+                    .map_err(|e| {
+                        NodeServiceError::query_failed(format!(
+                            "Failed to check reverse cardinality: {}",
+                            e
+                        ))
+                    })?;
+
+                let mut existing_reverse_count = 0usize;
+                for src_type in &existing_source_types {
+                    if self.type_satisfies(src_type, &declaring_type).await? {
+                        existing_reverse_count += 1;
+                    }
+                }
+                if existing_reverse_count > 0 {
+                    return Err(NodeServiceError::invalid_update(format!(
+                        "Target '{}' already has a '{}' edge (reverse relationship '{}' has \
+                         cardinality 'one'); cannot add another '{}' edge into it",
+                        target_id, relationship_name, relationship.reverse_name, relationship_name
                     )));
                 }
             }
