@@ -863,15 +863,19 @@ async fn validate_schema_path(
             // Both a field and a relationship somewhere in the chain
             // declare this name: the nearer (lower chain index) one wins.
             // Equal positions mean the SAME schema declares a field and a
-            // relationship under one name — schema creation does not
-            // currently guard against this (only field-vs-field
-            // redeclaration across the chain is checked), so it is a real,
-            // reachable case, not just a theoretical tie. This picks the
-            // field arm deterministically rather than erroring, consistent
-            // with `is_field` being checked first pre-fix too; a create/
-            // update-time guard rejecting the collision outright would be
-            // the more complete fix, but is a schema-authoring concern
-            // orthogonal to this extends-chain resolution fix.
+            // relationship under one name. `handle_create_schema`/
+            // `handle_update_schema` now reject that outright at write time
+            // (both within one schema and against an inherited name from
+            // the other domain — see `validate_no_same_schema_field_relationship_collision`
+            // and the ancestor-chain cross-domain checks in
+            // `packages/core/src/schema/mod.rs`), so this tie should no
+            // longer be reachable through ordinary schema authoring. It
+            // stays as a defensive fallback rather than an `unreachable!`:
+            // a write path that bypasses those handlers entirely (e.g. core
+            // schema seeding at startup, which writes declarations directly
+            // through the store) is not covered by them, and picking the
+            // field arm deterministically is still preferable to erroring
+            // if such a collision ever does reach this resolver.
             (Some(f), Some(r)) => f <= r,
         };
 
@@ -2889,9 +2893,9 @@ mod tests {
         /// unconditionally prefer "is it a member of the whole merged field
         /// set" over "is it a member of the whole merged relationship set".
         ///
-        /// `vp_prec_target` declares field `label`; `vp_prec_base` declares
-        /// FIELD `owner`; `vp_prec_sub` `extends` `vp_prec_base` and
-        /// declares its OWN RELATIONSHIP also named `owner`, targeting
+        /// `vp_prec_target` declares field `label`; `vp_prec_base` ends up
+        /// declaring FIELD `owner`; `vp_prec_sub` `extends` `vp_prec_base`
+        /// and declares its OWN RELATIONSHIP also named `owner`, targeting
         /// `vp_prec_target` — a name that is a field on an ancestor and a
         /// relationship on the (nearer) subtype itself. A Play condition
         /// `node.owner.label == 'active'` on `vp_prec_sub` must resolve
@@ -2900,6 +2904,22 @@ mod tests {
         /// farther, inherited field declaration — which would wrongly
         /// terminate the path at `owner` and reject `label` as
         /// unreachable/broken.
+        ///
+        /// The collision can no longer be declared directly in one shot:
+        /// ADR-078 write-time enforcement now rejects a new field or
+        /// relationship whose name is already claimed by the ancestor
+        /// chain's *other* domain (the cross-domain counterpart to same-kind
+        /// redeclaration rejection), so `vp_prec_sub` cannot declare
+        /// relationship `owner` while `vp_prec_base` already has field
+        /// `owner`, or vice versa. The one channel ADR-078 leaves genuinely
+        /// open is retroactive: nothing re-validates an existing
+        /// descendant's declarations when an ancestor gains a new one later
+        /// (see `flatten_chain_by_name`'s doc comment on this being the
+        /// explicitly unresolved edge case), so the collision here is
+        /// produced by adding `vp_prec_base`'s `owner` field AFTER
+        /// `vp_prec_sub` already declares its own `owner` relationship —
+        /// still a real, reachable state, just no longer one a single
+        /// declaration can create.
         #[tokio::test]
         async fn test_own_relationship_shadows_inherited_field_of_same_name() {
             let (svc, _tmp) = create_test_service().await;
@@ -2918,12 +2938,7 @@ mod tests {
 
             crate::schema::handle_create_schema(
                 &svc,
-                json!({
-                    "name": "vp_prec_base",
-                    "fields": [
-                        { "name": "owner", "type": "string", "protection": "user", "indexed": false }
-                    ]
-                }),
+                json!({ "name": "vp_prec_base", "fields": [] }),
             )
             .await
             .expect("base schema creation failed");
@@ -2946,6 +2961,25 @@ mod tests {
             )
             .await
             .expect("subtype schema creation failed");
+
+            // Retroactively add the colliding FIELD to the ancestor —
+            // nothing re-validates `vp_prec_sub`'s already-declared
+            // relationship against it, so this succeeds and produces the
+            // cross-domain collision this test exercises.
+            crate::schema::handle_update_schema(
+                &svc,
+                json!({
+                    "schema_id": "vp_prec_base",
+                    "add_fields": [
+                        { "name": "owner", "type": "string", "protection": "user", "indexed": false }
+                    ]
+                }),
+            )
+            .await
+            .expect(
+                "retroactively adding a field to the ancestor that collides with an existing \
+                 descendant's relationship is not write-time checked and must succeed",
+            );
 
             let rules = vec![make_rule(
                 "vp_prec_sub",

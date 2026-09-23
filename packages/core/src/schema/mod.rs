@@ -810,7 +810,75 @@ async fn validate_extends_target(
     Ok(())
 }
 
-/// Reject a field this schema would inherit.
+/// Whether `rel` is a real, user-authored relationship declaration rather
+/// than NodeSpace's own `extends`/`extended_by` bookkeeping row (see
+/// [`crate::models::schema::is_type_system_relationship`]). Every
+/// field-vs-relationship cross-domain name comparison against a schema's own
+/// `relationships` — same-schema or ancestor-chain — must exclude these: a
+/// schema's own not-yet-replaced `extends` row is a real entry in that list
+/// right up until an `extends` re-target replaces it, and an ordinary field
+/// legally named "extends" must never be rejected for colliding with it.
+fn is_declared_relationship(rel: &crate::models::schema::SchemaRelationship) -> bool {
+    !crate::models::schema::is_type_system_relationship(&rel.name)
+}
+
+/// [`NodeService::resolve_relationships`], mapping a storage-layer failure
+/// to the same `MarkdownError::internal_error` shape both redeclaration
+/// checks need. Shared because both the field-side and relationship-side
+/// checks below call this against the same `parent_id` for their
+/// cross-domain half.
+async fn resolve_relationships_or_error(
+    node_service: &Arc<NodeService>,
+    parent_id: &str,
+) -> Result<
+    (
+        Vec<crate::models::schema::SchemaRelationship>,
+        std::collections::HashMap<String, String>,
+    ),
+    MarkdownError,
+> {
+    node_service
+        .resolve_relationships(parent_id)
+        .await
+        .map_err(|e| {
+            MarkdownError::internal_error(format!(
+                "Failed to resolve relationships for '{parent_id}': {e}"
+            ))
+        })
+}
+
+/// [`NodeService::resolve_field_owners`], mapping a storage-layer failure the
+/// same way [`resolve_relationships_or_error`] does — the field-owner
+/// counterpart, used by [`validate_no_field_redeclaration`]'s same-domain
+/// half and [`validate_no_relationship_redeclaration`]'s cross-domain half.
+async fn resolve_field_owners_or_error(
+    node_service: &Arc<NodeService>,
+    parent_id: &str,
+) -> Result<
+    (
+        Vec<SchemaField>,
+        std::collections::HashMap<String, String>,
+        Vec<String>,
+    ),
+    MarkdownError,
+> {
+    node_service
+        .resolve_field_owners(parent_id)
+        .await
+        .map_err(|e| {
+            // `e` already names whichever schema in the chain the underlying
+            // lookup actually failed on (see `NodeService::get_schema_node`'s
+            // own error context) — this wrapper describes the chain walk
+            // `parent_id` kicked off, not the failing schema itself, so it
+            // doesn't repeat `parent_id` as if it were that schema.
+            MarkdownError::internal_error(format!(
+                "Failed to resolve the field-owner chain starting from '{parent_id}': {e}"
+            ))
+        })
+}
+
+/// Reject a field this schema would inherit — same-domain (field vs. field)
+/// or cross-domain (field vs. relationship).
 ///
 /// Composition is additive only (ADR-078): an extending schema may add fields
 /// but never redeclare one an ancestor already declares, with any attribute
@@ -819,26 +887,28 @@ async fn validate_extends_target(
 /// [`NodeService::resolve_field_owners`], so a collision two levels up is
 /// caught as readily as one with the immediate parent — and blamed on the
 /// schema that actually declares it, not just the nearest ancestor.
+///
+/// ADR-078's additive-only rule is per declared *name*, not per field-vs-
+/// relationship kind (see [`NodeService::resolve_relationships`]'s doc
+/// comment) — a descendant declaring a field under a name an ancestor already
+/// uses for a relationship is exactly as much a redeclaration as reusing a
+/// field name would be, so the ancestor chain's relationship owners are
+/// checked too, via [`NodeService::resolve_relationships`].
 async fn validate_no_field_redeclaration(
     node_service: &Arc<NodeService>,
     parent_id: &str,
     own_fields: &[SchemaField],
 ) -> Result<(), MarkdownError> {
-    let (inherited, owners, _chain) =
-        node_service
-            .resolve_field_owners(parent_id)
-            .await
-            .map_err(|e| {
-                // `e` already names whichever schema in the chain the
-                // underlying lookup actually failed on (see
-                // `NodeService::get_schema_node`'s own error context) — this
-                // wrapper describes the chain walk `parent_id` kicked off,
-                // not the failing schema itself, so it doesn't repeat
-                // `parent_id` as if it were that schema.
-                MarkdownError::internal_error(format!(
-                    "Failed to resolve the field-owner chain starting from '{parent_id}': {e}"
-                ))
-            })?;
+    // Concurrent, not sequential: the two resolutions are independent reads
+    // against the same `parent_id` chain, so there is nothing for a
+    // sequential await to buy — matches the same tokio::try_join! pattern
+    // `playbook::validation`'s equivalent pair already uses, and for the
+    // same reason (see that call site's comment on why collapsing to
+    // whichever error arrives first loses nothing here either).
+    let ((inherited, owners, _chain), (_, relationship_owners)) = tokio::try_join!(
+        resolve_field_owners_or_error(node_service, parent_id),
+        resolve_relationships_or_error(node_service, parent_id)
+    )?;
 
     for field in own_fields {
         if let Some(existing) = inherited.iter().find(|f| f.name == field.name) {
@@ -859,6 +929,18 @@ async fn validate_no_field_redeclaration(
                  The inherited field is type '{}'. Either drop it from this schema and use the \
                  inherited one, or give this field a different name.",
                 field.name, declaring_schema, existing.field_type,
+            )));
+        }
+    }
+
+    for field in own_fields {
+        if let Some(owner) = relationship_owners.get(&field.name) {
+            return Err(MarkdownError::invalid_params(format!(
+                "Field '{}' is already declared as a relationship by '{}' (inherited via \
+                 extends) and cannot be redeclared as a field — composition is additive only \
+                 across both domains, so a name claimed by either a field or a relationship \
+                 cannot be reused as the other. Give this field a different name.",
+                field.name, owner,
             )));
         }
     }
@@ -902,7 +984,8 @@ pub async fn resolve_effective_fields(
     Ok(extends_chain::flatten_chain_fields(chain_fields))
 }
 
-/// Reject a relationship this schema would inherit.
+/// Reject a relationship this schema would inherit — same-domain
+/// (relationship vs. relationship) or cross-domain (relationship vs. field).
 ///
 /// Composition is additive only (ADR-078): an extending schema may add
 /// relationships but never redeclare one an ancestor already declares, with
@@ -911,21 +994,43 @@ pub async fn resolve_effective_fields(
 /// effective set**, not just the parent's own directly-declared
 /// relationships, via [`NodeService::resolve_relationships`], so a collision
 /// two levels up is caught as readily as one with the immediate parent.
+///
+/// ADR-078's additive-only rule is per declared *name*, not per field-vs-
+/// relationship kind (see [`NodeService::resolve_relationships`]'s doc
+/// comment) — a descendant declaring a relationship under a name an ancestor
+/// already uses for a field is exactly as much a redeclaration as reusing a
+/// relationship name would be, so the ancestor chain's field owners are
+/// checked too, via [`NodeService::resolve_field_owners`].
 async fn validate_no_relationship_redeclaration(
     node_service: &Arc<NodeService>,
     parent_id: &str,
     own_relationships: &[crate::models::schema::SchemaRelationship],
 ) -> Result<(), MarkdownError> {
-    let (inherited, owners) = node_service
-        .resolve_relationships(parent_id)
-        .await
-        .map_err(|e| {
-            MarkdownError::internal_error(format!(
-                "Failed to resolve relationships for '{parent_id}': {e}"
-            ))
-        })?;
+    // Exclude the schema's own `extends`/`extended_by` bookkeeping row. At
+    // the `extends` re-target call site, `own_relationships` is this
+    // schema's FULL current relationship list, which still carries the OLD
+    // extends declaration at the point this validation runs — it isn't
+    // replaced with the new one until after this call returns. That name is
+    // type-system bookkeeping, not a real declaration a caller could
+    // collide with, and the same-domain check above is safe from it only
+    // because `resolve_relationships` already excludes it from `inherited`.
+    // The cross-domain field-owner map below has no equivalent exclusion
+    // (fields carry no type-system concept), so without filtering it here
+    // an ordinary field literally named "extends" on the new parent would
+    // falsely reject an otherwise-legal re-target.
+    let own_relationships: Vec<&crate::models::schema::SchemaRelationship> = own_relationships
+        .iter()
+        .filter(|r| is_declared_relationship(r))
+        .collect();
 
-    for rel in own_relationships {
+    // Concurrent, not sequential — see `validate_no_field_redeclaration`'s
+    // identical `tokio::try_join!` for why.
+    let ((inherited, owners), (_, field_owners, _)) = tokio::try_join!(
+        resolve_relationships_or_error(node_service, parent_id),
+        resolve_field_owners_or_error(node_service, parent_id)
+    )?;
+
+    for rel in &own_relationships {
         if let Some(existing) = inherited.iter().find(|r| r.name == rel.name) {
             // Name the schema that actually DECLARES the relationship, not
             // `parent_id` unconditionally — `parent_id` is only the nearest
@@ -948,6 +1053,124 @@ async fn validate_no_relationship_redeclaration(
                 existing.target_type.as_deref().unwrap_or("*"),
             )));
         }
+    }
+
+    for rel in &own_relationships {
+        if let Some(owner) = field_owners.get(&rel.name) {
+            return Err(MarkdownError::invalid_params(format!(
+                "Relationship '{}' is already declared as a field by '{}' (inherited via \
+                 extends) and cannot be redeclared as a relationship — composition is additive \
+                 only across both domains, so a name claimed by either a field or a \
+                 relationship cannot be reused as the other. Give this relationship a \
+                 different name.",
+                rel.name, owner,
+            )));
+        }
+    }
+
+    Ok(())
+}
+
+/// Reject a name shared between this schema's own `fields` and its own
+/// `relationships` — the chain-length-one case of the same invariant
+/// [`validate_no_field_redeclaration`]/[`validate_no_relationship_redeclaration`]
+/// enforce across an extends chain. ADR-078's cross-domain rule is per
+/// declared name, not per ancestor scope: a single schema declaring a field
+/// and a relationship under the same name is exactly as ambiguous as a
+/// descendant doing so against an ancestor, just with no chain resolution
+/// needed to see it.
+///
+/// `relationships` is filtered to exclude type-system bookkeeping names
+/// (`extends`/`extended_by`, see [`crate::models::schema::is_type_system_relationship`])
+/// before comparing — those are NodeSpace's own synthesized rows, not real
+/// declarations a caller authored, and an ordinary field legally named
+/// "extends" must never be rejected for colliding with them.
+fn validate_no_same_schema_field_relationship_collision(
+    fields: &[SchemaField],
+    relationships: &[crate::models::schema::SchemaRelationship],
+) -> Result<(), MarkdownError> {
+    // Filtered once, ahead of the loop — the same list is checked against
+    // every field, so re-filtering per iteration would cost an extra pass
+    // and allocation per field for no benefit.
+    let declared_relationships: Vec<&crate::models::schema::SchemaRelationship> = relationships
+        .iter()
+        .filter(|r| is_declared_relationship(r))
+        .collect();
+
+    for field in fields {
+        if let Some(rel) = declared_relationships.iter().find(|r| r.name == field.name) {
+            return Err(MarkdownError::invalid_params(format!(
+                "'{}' cannot be declared as both a field and a relationship on the same \
+                 schema — a name must resolve unambiguously as one or the other, the same \
+                 additive-only rule that applies across an extends chain. This schema's \
+                 relationship '{}' targets '{}'. Rename the field or the relationship.",
+                field.name,
+                rel.name,
+                rel.target_type.as_deref().unwrap_or("*"),
+            )));
+        }
+    }
+
+    Ok(())
+}
+
+/// Reject a `rename_fields` destination name the schema's `extends` ancestor
+/// chain already claims — same-domain (an inherited field) or cross-domain
+/// (an inherited relationship).
+///
+/// `rename_fields` has no ancestor-chain check of its own the way
+/// `add_fields`/`add_relationships` do via
+/// [`validate_no_field_redeclaration`]/[`validate_no_relationship_redeclaration`]:
+/// a rename introduces a newly-declared name exactly as those paths do, and
+/// left unchecked, a rename colliding with an inherited relationship
+/// succeeds with no error at all (permanently shadowing the ancestor's
+/// declaration with no way for the caller to detect it), since
+/// `rename_schema_field` only ever checks the destination against this
+/// schema's own fields. Takes a bare name rather than a `SchemaField` (what
+/// the two functions above take) because the caller has no complete
+/// `SchemaField` to hand — `rename_fields` renames an existing field in
+/// place, it does not construct a new one — so this mirrors just the name
+/// lookup those two do, over the same two resolvers.
+///
+/// Uses [`NodeService::resolve_field_owners`] (not `resolve_effective_fields`)
+/// for the same-domain half specifically so a collision two-or-more scopes up
+/// the chain is attributed to the schema that actually declares it, not
+/// unconditionally to `parent_id` (the nearest ancestor) — this is new code,
+/// not the pre-existing same issue in `validate_no_field_redeclaration`
+/// tracked separately.
+async fn validate_rename_destination_against_ancestors(
+    node_service: &Arc<NodeService>,
+    parent_id: &str,
+    to: &str,
+) -> Result<(), MarkdownError> {
+    // Concurrent, not sequential — see `validate_no_field_redeclaration`'s
+    // identical `tokio::try_join!` for why.
+    let ((inherited_fields, field_owners, _), (_, relationship_owners)) = tokio::try_join!(
+        resolve_field_owners_or_error(node_service, parent_id),
+        resolve_relationships_or_error(node_service, parent_id)
+    )?;
+    if let Some(existing) = inherited_fields.iter().find(|f| f.name == to) {
+        let declaring_schema = field_owners
+            .get(to)
+            .map(String::as_str)
+            .unwrap_or(parent_id);
+        return Err(MarkdownError::invalid_params(format!(
+            "rename_fields: destination '{}' is already declared by '{}' (inherited via \
+             extends) and cannot be reused — composition is additive only, with no override \
+             or narrowing. The inherited field is type '{}'. Choose a different destination \
+             name.",
+            to, declaring_schema, existing.field_type,
+        )));
+    }
+
+    if let Some(owner) = relationship_owners.get(to) {
+        return Err(MarkdownError::invalid_params(format!(
+            "rename_fields: destination '{}' is already declared as a relationship by '{}' \
+             (inherited via extends) — composition is additive only across both domains, so a \
+             name claimed by either a field or a relationship cannot be reused as the other. \
+             Choose a different destination name.",
+            to, owner,
+        )));
     }
 
     Ok(())
@@ -1323,6 +1546,10 @@ pub async fn handle_create_schema(
     reject_reserved_relationship_names(&relationships)?;
     validate_edge_field_declarations(&relationships)?;
     validate_relationship_targets_exist(node_service, &relationships, pending_schema_id).await?;
+    // Cross-domain collision within this SAME schema's own declarations —
+    // no extends chain needed to produce the ambiguity ADR-078 exists to
+    // prevent, so this runs unconditionally, not just when `extends` is set.
+    validate_no_same_schema_field_relationship_collision(&stored_fields, &relationships)?;
 
     // `extends` (ADR-078). Validated before the schema node exists, like the
     // relationship checks above, so a bad parent can't leave a half-created
@@ -1825,6 +2052,73 @@ pub async fn handle_update_schema(
     }
 
     if let Some(ref renames) = params.rename_fields {
+        // Relationships as they'll stand once this SAME call's own
+        // `remove_relationships` applies — not `schema_before`'s raw
+        // snapshot, which would still show a name this call is
+        // simultaneously freeing as colliding. `remove_relationships`
+        // itself is applied later (Phase 2, to a separately-cloned list);
+        // this recomputes just the piece the checks below need, ahead of
+        // any mutation. Computed once for the whole batch: it doesn't vary
+        // per rename entry.
+        let relationships_before_rename: Vec<crate::models::schema::SchemaRelationship> =
+            schema_before
+                .relationships
+                .iter()
+                .filter(|r| {
+                    !params
+                        .remove_relationships
+                        .as_ref()
+                        .is_some_and(|names| names.contains(&r.name))
+                })
+                .cloned()
+                .collect();
+
+        // The ancestor a rename destination must be checked against once
+        // this call completes: the NEW parent when this same call also
+        // retargets `extends` (checking the OLD one would validate against
+        // a parent this schema is simultaneously leaving), otherwise the
+        // schema's current declared parent. Also computed once — the same
+        // ancestor applies to every entry in the batch.
+        //
+        // Deferring entirely when `extends` is set — mirroring how
+        // `current_ancestor_for_additive_check` defers to the retarget
+        // block for `add_fields`/`add_relationships` — is unsafe here
+        // specifically because Phase 1 commits before that later block
+        // runs. And trusting `params.extends` outright is equally unsafe:
+        // a target that doesn't exist (or is self-referential, or would
+        // close a cycle) resolves to an empty ancestor chain rather than
+        // erroring (a missing schema "contributes nothing" to
+        // `resolve_field_owners`/`resolve_relationships`, per their own
+        // doc comments), so an invalid target would let the rename pass
+        // unchecked here and only be caught by the retarget block's own
+        // `validate_extends_target` call much later — after Phase 1 has
+        // already migrated the rename. Validating the target's
+        // existence/self-reference/cycle here first closes that gap; the
+        // retarget block re-validates it again when it actually applies
+        // the edge, which is redundant but harmless (a pure read, not a
+        // write).
+        //
+        // Gated on `params.extends` being `Some` AT ALL — not on whether
+        // it's non-blank after trimming, and not on whether this batch
+        // contains an identity rename. Phase 1 commits eagerly for EVERY
+        // entry in `renames`, not just identity ones: a display-only
+        // rename (`from == to` with `friendlyName`) writes via
+        // `update_schema_field_friendly_name`, itself a separate,
+        // immediately-committing write (see its own comment below). A
+        // blank `extends` value is exactly what `validate_extends_target`
+        // itself rejects — mirroring the later retarget block, which
+        // passes the trimmed value straight through with no emptiness
+        // pre-filter of its own — so pre-filtering it out here would
+        // silently treat it as "no retarget, fall back to the old parent"
+        // and let Phase 1 commit before that rejection ever runs.
+        let rename_ancestor: Option<String> = if let Some(ref new_parent) = params.extends {
+            let new_parent = new_parent.trim();
+            validate_extends_target(node_service, &params.schema_id, new_parent).await?;
+            Some(new_parent.to_string())
+        } else {
+            declared_extends_parent(&relationships_before_rename)
+        };
+
         for rename in renames {
             if let Some(field) = schema_before.get_field(&rename.from) {
                 if !schema_before.can_modify_field(&rename.from) {
@@ -1851,6 +2145,72 @@ pub async fn handle_update_schema(
                     rename.to, e
                 ))
             })?;
+
+            // ADR-078 cross-domain (and same-domain) collision check for the
+            // destination name — same reasoning as the grammar check just
+            // above: this must run here, before Phase 1, not after.
+            // `rename_schema_field` only checks `to` against this schema's
+            // OWN fields; it has no ancestor-chain awareness and no
+            // relationship awareness at all, so left unchecked here a rename
+            // colliding with an inherited relationship would succeed with no
+            // error (permanent, undetectable corruption), and one colliding
+            // with this schema's own relationship would migrate every node's
+            // data and rewrite the schema BEFORE any later check could catch
+            // it. Skipped for a display-only rename (`from == to`): that
+            // introduces no new name, so there is nothing new to collide.
+            if rename.from != rename.to {
+                // Same-schema collision — routes through the same shared
+                // check `create_schema`/`add_fields`/`add_relationships` all
+                // use, via a synthetic single-field slice (a rename has no
+                // complete `SchemaField` to hand; only the name matters
+                // here).
+                let synthetic_field = SchemaField {
+                    name: rename.to.clone(),
+                    ..Default::default()
+                };
+                validate_no_same_schema_field_relationship_collision(
+                    std::slice::from_ref(&synthetic_field),
+                    &relationships_before_rename,
+                )?;
+
+                // Also check against a relationship or field THIS SAME call
+                // adds via `add_relationships`/`add_fields`. Both sections
+                // run well after Phase 1 folds renames in (and after Phase 1
+                // has already committed its own transaction), so a
+                // destination colliding only with a same-call addition —
+                // not anything pre-existing — would otherwise reach only
+                // the end-of-function same-schema check, by which point the
+                // rename has already migrated every node's data.
+                if let Some(ref add_rels) = params.add_relationships {
+                    if let Some(rel) = add_rels.iter().find(|r| r.name == rename.to) {
+                        return Err(MarkdownError::invalid_params(format!(
+                            "rename_fields: destination '{}' collides with a relationship '{}' \
+                             this same call also adds (targets '{}') — a name must resolve \
+                             unambiguously as either a field or a relationship, never both. \
+                             Choose a different destination name, or make the rename and the \
+                             addition two separate calls.",
+                            rename.to,
+                            rel.name,
+                            rel.target_type.as_deref().unwrap_or("*"),
+                        )));
+                    }
+                }
+                if let Some(ref add_fields) = params.add_fields {
+                    if add_fields.iter().any(|f| f.name == rename.to) {
+                        return Err(MarkdownError::invalid_params(format!(
+                            "rename_fields: destination '{}' collides with a field this same \
+                             call also adds via add_fields. Choose a different destination \
+                             name, or make the rename and the addition two separate calls.",
+                            rename.to,
+                        )));
+                    }
+                }
+
+                if let Some(ref parent) = rename_ancestor {
+                    validate_rename_destination_against_ancestors(node_service, parent, &rename.to)
+                        .await?;
+                }
+            }
         }
     }
 
@@ -2292,6 +2652,15 @@ pub async fn handle_update_schema(
             }
         }
     }
+
+    // Cross-domain collision within this SAME schema's own final declaration
+    // set — `fields`/`relationships` are fully resolved at this point (every
+    // add/remove/rename and the extends re-target above already applied), so
+    // this catches a name an `add_fields` call and an `add_relationships`
+    // call in the SAME request both claim, not just a collision against an
+    // ancestor. Runs unconditionally: no extends chain is needed to produce
+    // the ambiguity ADR-078 exists to prevent.
+    validate_no_same_schema_field_relationship_collision(&fields, &relationships)?;
 
     // Resolve title_template: use new value if provided, otherwise keep existing
     let title_template = params.title_template.or(schema.title_template);
