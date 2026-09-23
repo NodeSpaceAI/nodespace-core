@@ -360,6 +360,26 @@ class NodeSpaceGitHubManager {
       const issue = await this.client.createIssue(options.title, options.body, options.labels);
       console.log(`No existing open issue found -- created #${issue.number}`);
       console.log(`URL: ${issue.url}`);
+
+      // `createIssue` best-effort-adds the issue to the project board and
+      // swallows a failure there rather than throwing (see its own doc
+      // comment) -- appropriate for a human running `gh:create` with a
+      // project-scoped PAT, but this helper is also invoked from scheduled
+      // CI workflows (verify-macos-installer.yml, homebrew-drift-check.yml)
+      // using the workflow's plain `secrets.GITHUB_TOKEN`, which cannot be
+      // granted Projects v2 write access via `permissions:` at all. In that
+      // context the add silently no-ops every time, so surface it here --
+      // otherwise a scheduled run reports success in the log while quietly
+      // leaving the new tracking issue off the board until someone notices.
+      if (!issue.addedToProject) {
+        console.warn(
+          `⚠️  Issue #${issue.number} was created but could not be added to the project board ` +
+            "(likely a token without Projects v2 write scope, e.g. a scheduled workflow's " +
+            "GITHUB_TOKEN). It will be added automatically the next time `gh:status` is run " +
+            "on it with a token that has project write access.",
+        );
+      }
+
       return { number: issue.number, url: issue.url, action: "created" };
     } catch (error: unknown) {
       console.error(
