@@ -502,8 +502,19 @@ async fn walk_path_against_schema(
         // still count as a real field here, or a condition referencing it
         // is misclassified as Unresolvable ("likely a typo") instead of the
         // correct NotYetMet.
-        let known_fields: Vec<String> = match node_service.resolve_field_owners(&current_type).await
-        {
+        //
+        // Run concurrently with the relationship resolution below via
+        // `tokio::join!` rather than `tokio::try_join!`: the two calls have
+        // genuinely independent failure handling (each degrades to its own
+        // schema-local fallback and records its own `degraded` entry), so a
+        // failure in one must not discard the other's still-usable result —
+        // `try_join!` would cancel the still-in-flight call and lose it.
+        let (field_owners_result, relationship_result) = tokio::join!(
+            node_service.resolve_field_owners(&current_type),
+            node_service.resolve_relationships(&current_type)
+        );
+
+        let known_fields: Vec<String> = match field_owners_result {
             Ok((fields, _owners, _chain)) => fields.into_iter().map(|f| f.name).collect(),
             Err(e) => {
                 // Degrade to `current_schema`'s own directly-declared fields
@@ -536,24 +547,28 @@ async fn walk_path_against_schema(
         // relationship from an ancestor must still be recognized here, or a
         // condition traversing it is misclassified as a typo the same way an
         // inherited field was before this fix.
-        let relationship: Option<crate::models::schema::SchemaRelationship> = match node_service
-            .resolve_relationships(&current_type)
-            .await
-        {
-            Ok((rels, _owners)) => rels.into_iter().find(|r| r.name == *segment),
-            Err(e) => {
-                let msg = format!(
-                    "effective-relationship resolution for '{current_type}' failed ({e}) \
+        let relationship: Option<crate::models::schema::SchemaRelationship> =
+            match relationship_result {
+                Ok((rels, _owners)) => rels.into_iter().find(|r| r.name == *segment),
+                Err(e) => {
+                    let msg = format!(
+                        "effective-relationship resolution for '{current_type}' failed ({e}) \
                          while walking '{}'; typo detection degraded to this schema's own \
                          directly-declared relationships at this hop",
-                    condition.source
-                );
-                record_degradation(degraded, &current_type, &e, "walk_path_against_schema", msg);
-                current_schema
-                    .and_then(|s| s.relationships.iter().find(|r| r.name == *segment))
-                    .cloned()
-            }
-        };
+                        condition.source
+                    );
+                    record_degradation(
+                        degraded,
+                        &current_type,
+                        &e,
+                        "walk_path_against_schema",
+                        msg,
+                    );
+                    current_schema
+                        .and_then(|s| s.relationships.iter().find(|r| r.name == *segment))
+                        .cloned()
+                }
+            };
 
         let is_field =
             CORE_FIELDS.contains(&segment.as_str()) || known_fields.iter().any(|f| f == segment);

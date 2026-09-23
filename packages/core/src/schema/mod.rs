@@ -786,7 +786,7 @@ pub async fn resolve_effective_fields(
         }
     }
 
-    Ok(extends_chain::flatten_chain_fields(&chain_fields))
+    Ok(extends_chain::flatten_chain_fields(chain_fields))
 }
 
 /// Reject a relationship this schema would inherit.

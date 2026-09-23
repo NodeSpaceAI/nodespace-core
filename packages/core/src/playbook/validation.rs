@@ -822,8 +822,25 @@ async fn validate_schema_path(
         // would reintroduce, under nothing more than a transient DB error,
         // the exact under-reporting bug this fix exists to close. Surfaced
         // as a validation error instead — see `SchemaResolutionFailed`.
-        let (field_owners, chain) = match node_service.resolve_field_owners(&current_type).await {
-            Ok((_fields, owners, chain)) => (owners, chain),
+        //
+        // Run concurrently via `tokio::try_join!`: unlike
+        // `walk_path_against_schema`'s equivalent pair, both arms here react
+        // identically to either call failing (push one `SchemaResolutionFailed`
+        // and return, without using the other call's result), so collapsing
+        // to the first error loses nothing. The *reported* error string can
+        // now vary run to run (whichever of the two calls loses the race),
+        // where a sequential await always blamed `resolve_field_owners`
+        // first — harmless, since both calls fail for the same underlying
+        // reason (the same chain walk against the same `current_type`) and
+        // `SchemaResolutionFailed`'s `node_type`/`location` stay identical
+        // either way.
+        let (field_owners, chain, relationships, rel_owners) = match tokio::try_join!(
+            node_service.resolve_field_owners(&current_type),
+            node_service.resolve_relationships(&current_type)
+        ) {
+            Ok(((_fields, owners, chain), (relationships, rel_owners))) => {
+                (owners, chain, relationships, rel_owners)
+            }
             Err(e) => {
                 errors.push(PlayValidationError::SchemaResolutionFailed {
                     node_type: current_type.clone(),
@@ -833,18 +850,6 @@ async fn validate_schema_path(
                 return;
             }
         };
-        let (relationships, rel_owners) =
-            match node_service.resolve_relationships(&current_type).await {
-                Ok(result) => result,
-                Err(e) => {
-                    errors.push(PlayValidationError::SchemaResolutionFailed {
-                        node_type: current_type.clone(),
-                        error: e.to_string(),
-                        location: location.to_string(),
-                    });
-                    return;
-                }
-            };
 
         let field_pos = field_owners
             .get(segment)
