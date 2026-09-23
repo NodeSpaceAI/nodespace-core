@@ -827,7 +827,13 @@ async fn validate_schema_path(
         // `walk_path_against_schema`'s equivalent pair, both arms here react
         // identically to either call failing (push one `SchemaResolutionFailed`
         // and return, without using the other call's result), so collapsing
-        // to the first error loses nothing.
+        // to the first error loses nothing. The *reported* error string can
+        // now vary run to run (whichever of the two calls loses the race),
+        // where a sequential await always blamed `resolve_field_owners`
+        // first — harmless, since both calls fail for the same underlying
+        // reason (the same chain walk against the same `current_type`) and
+        // `SchemaResolutionFailed`'s `node_type`/`location` stay identical
+        // either way.
         let (field_owners, chain, relationships, rel_owners) = match tokio::try_join!(
             node_service.resolve_field_owners(&current_type),
             node_service.resolve_relationships(&current_type)
