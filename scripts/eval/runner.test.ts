@@ -416,6 +416,28 @@ describe("aggregateReps", () => {
     });
   });
 
+  // Every exclusion cause `partitionExcluded` knows must leave the aggregate's
+  // denominator too. A rep excluded because its group's setup failed was once
+  // scored here as a failure, so a scenario that passed every rep it was sent
+  // in read as FLIPPED.
+  test("a rep excluded for a failed setup or an unoffered tool is not a failure", () => {
+    const agg = aggregateReps([
+      [result({ id: "1" })],
+      [result({ id: "1" })],
+      [result({ id: "1", excludedAsSetupFailed: true, passed: false })],
+      [result({ id: "1", excludedAsToolNotOffered: true, passed: false })],
+    ]);
+    expect(agg.passAtK).toBe(1);
+    expect(agg.flipped).toBe(0);
+    expect(agg.scenarios[0]).toMatchObject({
+      scoredReps: 2,
+      passedReps: 2,
+      excludedReps: 2,
+      passedAll: true,
+      flipped: false,
+    });
+  });
+
   test("a scenario excluded in every rep is counted as neither pass nor fail", () => {
     const agg = aggregateReps([
       [

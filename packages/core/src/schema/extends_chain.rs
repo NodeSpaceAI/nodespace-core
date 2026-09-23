@@ -143,31 +143,58 @@ pub fn detect_cycle(
     }
 }
 
-/// Flatten a resolved chain's field definitions into one effective set.
+/// Flatten a resolved chain's per-schema items into one effective,
+/// name-deduplicated set — the shape shared by [`flatten_chain_fields`] and
+/// [`crate::services::NodeService::resolve_relationships`]'s relationship
+/// merge.
 ///
-/// `chain_fields` is the per-schema field list in [`resolve_ancestor_chain`]
-/// order (own schema first, then each ancestor). A field declared by a nearer
-/// scope shadows a same-named field from a further one.
+/// `chain_items` is the per-schema item list in [`resolve_ancestor_chain`]
+/// order (own schema first, then each ancestor); `name_of` extracts the key
+/// two items are considered "the same declared name" by. An item declared by
+/// a nearer scope shadows a same-named item from a further one.
 ///
 /// **Shadowing here is a backstop, not a feature.** Redeclaration is rejected
 /// at write time (see `validate_no_field_redeclaration`), so a well-formed
 /// chain never produces a collision. Preferring the nearer declaration keeps
 /// resolution total if a collision arises anyway — through a retroactive
-/// ancestor field addition, the unresolved edge case ADR-078 names — rather
-/// than dropping a field or returning both.
-pub fn flatten_chain_fields(chain_fields: &[Vec<SchemaField>]) -> Vec<SchemaField> {
-    let mut out: Vec<SchemaField> = Vec::new();
+/// ancestor addition, the unresolved edge case ADR-078 names — rather than
+/// dropping an item or returning both.
+///
+/// Takes `chain_items` by value and moves surviving items into the result
+/// rather than cloning them: every caller here builds `chain_items` fresh
+/// per call and never reads it again afterward, so there is nothing for a
+/// `&[Vec<T>]` + `Clone` signature to buy — it would only add a clone per
+/// surviving item (and, for `T = SchemaRelationship`, a bound the type
+/// doesn't even need to carry). A shadowed item's name is checked against
+/// `seen` before it is (not) added, so a redeclared name costs one `&str`
+/// comparison rather than a throwaway allocation.
+pub fn flatten_chain_by_name<T>(chain_items: Vec<Vec<T>>, name_of: impl Fn(&T) -> &str) -> Vec<T> {
+    let mut out: Vec<T> = Vec::new();
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
 
-    for fields in chain_fields {
-        for field in fields {
-            if seen.insert(field.name.clone()) {
-                out.push(field.clone());
+    for items in chain_items {
+        for item in items {
+            let name = name_of(&item);
+            if seen.contains(name) {
+                continue;
             }
+            seen.insert(name.to_string());
+            out.push(item);
         }
     }
 
     out
+}
+
+/// Flatten a resolved chain's field definitions into one effective set.
+///
+/// `chain_fields` is the per-schema field list in [`resolve_ancestor_chain`]
+/// order (own schema first, then each ancestor). A field declared by a nearer
+/// scope shadows a same-named field from a further one. Field-specific
+/// wrapper around [`flatten_chain_by_name`] — see its doc for the shadowing
+/// rationale (and the by-value signature), which applies here unchanged.
+pub fn flatten_chain_fields(chain_fields: Vec<Vec<SchemaField>>) -> Vec<SchemaField> {
+    flatten_chain_by_name(chain_fields, |f| f.name.as_str())
 }
 
 /// Resolve one stored enum value to what it means at `target_scope` (ADR-078).
@@ -370,16 +397,46 @@ mod tests {
     fn flatten_keeps_chain_order_and_dedupes_to_nearest() {
         let own = vec![field("severity")];
         let parent = vec![field("status"), field("severity")];
-        let flat = flatten_chain_fields(&[own, parent]);
+        let flat = flatten_chain_fields(vec![own, parent]);
 
         let names: Vec<&str> = flat.iter().map(|f| f.name.as_str()).collect();
         assert_eq!(names, vec!["severity", "status"]);
     }
 
+    fn relationship(name: &str) -> crate::models::schema::SchemaRelationship {
+        use crate::models::schema::{RelationshipCardinality, RelationshipDirection};
+
+        crate::models::schema::SchemaRelationship {
+            name: name.to_string(),
+            target_type: None,
+            direction: RelationshipDirection::Out,
+            cardinality: RelationshipCardinality::Many,
+            required: None,
+            reverse_name: format!("{name}_reverse"),
+            reverse_cardinality: RelationshipCardinality::Many,
+            edge_fields: None,
+            description: None,
+        }
+    }
+
+    #[test]
+    fn flatten_chain_by_name_generalizes_over_relationships() {
+        // Same nearest-scope-wins shadowing as `flatten_chain_fields`, over a
+        // type with no `SchemaField`-shaped data — the generalization
+        // `resolve_relationships` reuses instead of hand-rolling its own
+        // dedup loop.
+        let own = vec![relationship("blocks")];
+        let parent = vec![relationship("assignee"), relationship("blocks")];
+        let flat = flatten_chain_by_name(vec![own, parent], |r| r.name.as_str());
+
+        let names: Vec<&str> = flat.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, vec!["blocks", "assignee"]);
+    }
+
     #[test]
     fn flatten_of_an_unextended_schema_is_its_own_fields() {
         let own = vec![field("status"), field("priority")];
-        let flat = flatten_chain_fields(std::slice::from_ref(&own));
+        let flat = flatten_chain_fields(vec![own]);
         assert_eq!(flat.len(), 2);
     }
 

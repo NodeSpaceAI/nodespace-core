@@ -131,9 +131,8 @@ class MembershipStore {
 	/**
 	 * Resolve human-readable labels for the given person ids from their synced
 	 * person nodes and cache them for {@link displayFor}. `node.title` is the
-	 * person schema's title_template-composed display name (server-computed —
-	 * see PersonNodeBehavior::compute_display_name for the same rule's
-	 * embedding-content fallback); prefer it, then email, then fall back to the
+	 * person schema's title_template-composed display name (server-computed);
+	 * prefer it, then email, then fall back to the
 	 * id (also the fallback when the node isn't synced or a non-co-member can't
 	 * see the email, which is `can_see_person`-gated server-side). Best-effort
 	 * and fire-and-forget.

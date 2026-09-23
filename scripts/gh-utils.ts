@@ -148,13 +148,9 @@ class NodeSpaceGitHubManager {
       console.log("✅ Issue created:");
       console.log(`#${issue.number}: ${title}`);
       console.log(`URL: ${issue.url}`);
-      if (issue.addedToProject) {
-        console.log("📊 Added to the NodeSpace project board");
-      } else {
-        console.log(
-          "⚠️  Could not add it to the project board — `gh:status` will add it on the first status update"
-        );
-      }
+      // GitHubClient.createIssue itself warns (console.warn) when the
+      // board add fails -- no need to re-derive that from
+      // `issue.addedToProject` here too.
 
       return issue;
     } catch (error: unknown) {
@@ -360,6 +356,11 @@ class NodeSpaceGitHubManager {
       const issue = await this.client.createIssue(options.title, options.body, options.labels);
       console.log(`No existing open issue found -- created #${issue.number}`);
       console.log(`URL: ${issue.url}`);
+      // GitHubClient.createIssue itself warns (console.warn) when the
+      // issue could not be added to the project board -- e.g. every
+      // invocation of this helper from a scheduled CI workflow, whose
+      // token can never carry Projects v2 write scope. No need to
+      // re-derive that from `issue.addedToProject` here too.
       return { number: issue.number, url: issue.url, action: "created" };
     } catch (error: unknown) {
       console.error(

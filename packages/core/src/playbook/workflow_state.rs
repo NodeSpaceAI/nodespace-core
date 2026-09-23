@@ -93,6 +93,17 @@ pub struct WorkflowState {
     /// correctly classified as `NotYetMet` or `Satisfied` — a caller should
     /// treat the response as incomplete, not authoritative, until a retry
     /// comes back with an empty `degraded_reasons`.
+    ///
+    /// Covers only *resolution failures* (an `Err` from a live schema/
+    /// extends-chain call), not the separate, narrower staleness the
+    /// graph-event candidate path can still have: `lookup_rules`'s ancestor
+    /// fan-out (`PlaybookLifecycleManager::ancestor_keys`) reads
+    /// `ancestor_cache` directly rather than resolving live, so it can omit a
+    /// Play registered on an ancestor type without that ever registering
+    /// here as a failure — a cache read cannot fail the way a live call can.
+    /// An empty `degraded_reasons` is therefore not a guarantee this
+    /// response's graph-event candidates reflect the current `extends`
+    /// graph, only that no *live* lookup failed while building it.
     pub degraded_reasons: Vec<String>,
     pub rules: Vec<RuleWorkflowState>,
 }
@@ -125,6 +136,18 @@ fn record_degradation(
 /// trigger is `scheduled` rather than `graph_event` are included too: a
 /// scheduled trigger's `node_type` scopes which nodes the engine scans, so
 /// membership in this node's type is the same eligibility test.
+///
+/// The scheduled/cron eligibility test resolves `node.node_type`'s `extends`
+/// ancestry live (`NodeService::resolve_type_chain`, via the same
+/// `resolve_field_owners` call the candidate field enumeration below already
+/// makes — its returned chain is reused rather than re-resolved), rather
+/// than consulting `PlaybookLifecycleManager::ancestor_cache` directly. That
+/// cache is refreshed asynchronously by `PlaybookEngine` and can be stale after a
+/// failed refresh — acceptable for the zero-I/O hot trigger-dispatch path it
+/// exists to serve, but this function has no access to `PlaybookEngine`'s
+/// `ancestry_dirty` flag or its refresh routine to detect or repair that, and
+/// as a read-only out-of-band diagnostic it has no hot-path budget to
+/// protect. See the scheduled-candidate loop below for the full reasoning.
 pub async fn get_workflow_state(
     lifecycle: &Arc<RwLock<PlaybookLifecycleManager>>,
     node_service: &Arc<NodeService>,
@@ -180,27 +203,45 @@ pub async fn get_workflow_state(
     // key built for it, or a genuinely active, satisfied rule silently never
     // shows up here. `resolve_field_owners` already walks that chain and
     // merges it; reuse it rather than re-deriving the merge from `schema`.
-    let effective_fields = match node_service.resolve_field_owners(&node.node_type).await {
-        Ok((fields, _owners, _chain)) => fields,
-        Err(e) => {
-            let msg = format!(
-                "effective-field resolution for '{}' failed ({e}); property_changed \
-                 candidates degraded to this node's own directly-declared schema fields",
-                node.node_type
-            );
-            record_degradation(
-                &mut degraded,
-                &node.node_type,
-                &e,
-                "get_workflow_state",
-                msg,
-            );
-            schema
-                .as_ref()
-                .map(|s| s.fields.clone())
-                .unwrap_or_default()
-        }
-    };
+    //
+    // Its third return value is the same live-resolved chain
+    // `NodeService::resolve_type_chain` computes (`resolve_field_owners`
+    // calls it internally and returns the result verbatim) — reused below as
+    // `ancestry` for the scheduled/cron candidate fan-out rather than issuing
+    // a second, independent call that would re-walk the same `extends` edges
+    // and could observe a different, concurrently-written snapshot of them.
+    let (effective_fields, ancestry) =
+        match node_service.resolve_field_owners(&node.node_type).await {
+            Ok((fields, _owners, chain)) => (fields, chain),
+            Err(e) => {
+                // One resolution failure degrades both consumers together: the
+                // property_changed candidate fields (see below) and, via
+                // `ancestry`'s fallback, the scheduled/cron candidate fan-out —
+                // both ultimately depend on the same underlying extends-chain
+                // walk, so reporting them as two unrelated failures would be
+                // misleading, not more informative.
+                let msg = format!(
+                    "effective-field/extends-chain resolution for '{}' failed ({e}); \
+                 property_changed candidates degraded to this node's own directly-declared \
+                 schema fields, and the scheduled/cron candidate fan-out degraded to this \
+                 node's own type only — a scheduled Play registered on an ancestor type may \
+                 be missing from this response",
+                    node.node_type
+                );
+                record_degradation(
+                    &mut degraded,
+                    &node.node_type,
+                    &e,
+                    "get_workflow_state",
+                    msg,
+                );
+                let fields = schema
+                    .as_ref()
+                    .map(|s| s.fields.clone())
+                    .unwrap_or_default();
+                (fields, vec![node.node_type.clone()])
+            }
+        };
 
     let candidate_refs = {
         let lm = lifecycle.read().expect("lifecycle lock poisoned");
@@ -255,11 +296,12 @@ pub async fn get_workflow_state(
         // `PlaybookLifecycleManager::ancestor_keys`) — an exact-string
         // `node_type` match here would be inconsistent with that and would
         // silently drop a scheduled Play registered on a base type from
-        // this response for every subtype node. `ancestors_of` returns the
-        // same ancestry `lookup_rules` uses internally (nearest first,
-        // including the type itself), so membership in it is the matching
-        // eligibility test for a scheduled trigger too.
-        let ancestry = lm.ancestors_of(&node.node_type);
+        // this response for every subtype node. `ancestry` (resolved live,
+        // above, via `NodeService::resolve_type_chain` — deliberately NOT
+        // `lm.ancestors_of`, see this function's doc comment) is the same
+        // shape `ancestors_of` would have returned had its cache been fresh
+        // (nearest first, including the type itself), so membership in it is
+        // the matching eligibility test for a scheduled trigger too.
         for entry in lm.cron_registry() {
             if ancestry.iter().any(|t| t == &entry.node_type) {
                 for r in &entry.rules {
@@ -460,8 +502,19 @@ async fn walk_path_against_schema(
         // still count as a real field here, or a condition referencing it
         // is misclassified as Unresolvable ("likely a typo") instead of the
         // correct NotYetMet.
-        let known_fields: Vec<String> = match node_service.resolve_field_owners(&current_type).await
-        {
+        //
+        // Run concurrently with the relationship resolution below via
+        // `tokio::join!` rather than `tokio::try_join!`: the two calls have
+        // genuinely independent failure handling (each degrades to its own
+        // schema-local fallback and records its own `degraded` entry), so a
+        // failure in one must not discard the other's still-usable result —
+        // `try_join!` would cancel the still-in-flight call and lose it.
+        let (field_owners_result, relationship_result) = tokio::join!(
+            node_service.resolve_field_owners(&current_type),
+            node_service.resolve_relationships(&current_type)
+        );
+
+        let known_fields: Vec<String> = match field_owners_result {
             Ok((fields, _owners, _chain)) => fields.into_iter().map(|f| f.name).collect(),
             Err(e) => {
                 // Degrade to `current_schema`'s own directly-declared fields
@@ -494,24 +547,28 @@ async fn walk_path_against_schema(
         // relationship from an ancestor must still be recognized here, or a
         // condition traversing it is misclassified as a typo the same way an
         // inherited field was before this fix.
-        let relationship: Option<crate::models::schema::SchemaRelationship> = match node_service
-            .resolve_relationships(&current_type)
-            .await
-        {
-            Ok((rels, _owners)) => rels.into_iter().find(|r| r.name == *segment),
-            Err(e) => {
-                let msg = format!(
-                    "effective-relationship resolution for '{current_type}' failed ({e}) \
+        let relationship: Option<crate::models::schema::SchemaRelationship> =
+            match relationship_result {
+                Ok((rels, _owners)) => rels.into_iter().find(|r| r.name == *segment),
+                Err(e) => {
+                    let msg = format!(
+                        "effective-relationship resolution for '{current_type}' failed ({e}) \
                          while walking '{}'; typo detection degraded to this schema's own \
                          directly-declared relationships at this hop",
-                    condition.source
-                );
-                record_degradation(degraded, &current_type, &e, "walk_path_against_schema", msg);
-                current_schema
-                    .and_then(|s| s.relationships.iter().find(|r| r.name == *segment))
-                    .cloned()
-            }
-        };
+                        condition.source
+                    );
+                    record_degradation(
+                        degraded,
+                        &current_type,
+                        &e,
+                        "walk_path_against_schema",
+                        msg,
+                    );
+                    current_schema
+                        .and_then(|s| s.relationships.iter().find(|r| r.name == *segment))
+                        .cloned()
+                }
+            };
 
         let is_field =
             CORE_FIELDS.contains(&segment.as_str()) || known_fields.iter().any(|f| f == segment);
@@ -1296,17 +1353,33 @@ mod tests {
     #[tokio::test]
     async fn scheduled_trigger_on_ancestor_type_is_returned_for_subtype_node() {
         let (svc, _tmp) = test_service().await;
+
+        crate::schema::handle_create_schema(
+            &svc,
+            json!({
+                "name": "wf_base_cron",
+                "fields": [
+                    { "name": "status", "type": "string", "protection": "user", "indexed": false }
+                ]
+            }),
+        )
+        .await
+        .expect("base schema creation failed");
+
+        crate::schema::handle_create_schema(
+            &svc,
+            json!({
+                "name": "wf_sub_cron",
+                "extends": "wf_base_cron",
+                "fields": []
+            }),
+        )
+        .await
+        .expect("subtype schema creation failed");
+
         let lifecycle = Arc::new(RwLock::new(PlaybookLifecycleManager::new()));
         {
             let mut lm = lifecycle.write().unwrap();
-            // These tests build the lifecycle manager directly rather than
-            // through `PlaybookEngine`, so the ancestor cache — normally kept
-            // fresh by `PlaybookEngine::refresh_ancestor_cache` — must be
-            // seeded by hand to exercise the fan-out path at all.
-            lm.set_ancestor_cache(std::collections::HashMap::from([(
-                "wf_sub_cron".to_string(),
-                vec!["wf_sub_cron".to_string(), "wf_base_cron".to_string()],
-            )]));
             let play = make_play_node(
                 "pb-cron-ancestor",
                 json!([{
@@ -1328,5 +1401,96 @@ mod tests {
              subtype node — before the fix this was silently 0"
         );
         assert!(state.rules[0].all_conditions_satisfied);
+        assert!(
+            state.degraded_reasons.is_empty(),
+            "the live extends-chain resolution succeeded here: {:?}",
+            state.degraded_reasons
+        );
+    }
+
+    /// Regression for the scheduled/cron cache-staleness gap: the fan-out
+    /// that matches a scheduled Play registered on an ancestor type against a
+    /// subtype node must not depend on
+    /// `PlaybookLifecycleManager::ancestor_cache` being fresh.
+    /// `get_workflow_state` is called with only a lifecycle manager and a
+    /// node service — it has no access to `PlaybookEngine`'s
+    /// `ancestry_dirty` flag or its `refresh_ancestor_cache` routine, so
+    /// unlike the live event path it cannot detect or repair a stale cache.
+    /// Before the fix, this candidate lookup read `lm.ancestors_of` directly,
+    /// so a stale or never-populated cache (a failed refresh, or the window
+    /// right after an `extends` edit lands and before the next event
+    /// re-refreshes it) silently dropped a genuinely active, satisfied
+    /// scheduled Play from this response.
+    ///
+    /// The cache below is deliberately seeded to claim `wf_sub_cron_stale`
+    /// has no ancestry at all, even though the real schemas created here
+    /// declare a genuine `extends` edge — simulating exactly that failed/
+    /// not-yet-refreshed state — to prove the fan-out no longer depends on
+    /// the cache being correct.
+    #[tokio::test]
+    async fn scheduled_trigger_on_ancestor_type_survives_stale_ancestor_cache() {
+        let (svc, _tmp) = test_service().await;
+
+        crate::schema::handle_create_schema(
+            &svc,
+            json!({
+                "name": "wf_base_cron_stale",
+                "fields": [
+                    { "name": "status", "type": "string", "protection": "user", "indexed": false }
+                ]
+            }),
+        )
+        .await
+        .expect("base schema creation failed");
+
+        crate::schema::handle_create_schema(
+            &svc,
+            json!({
+                "name": "wf_sub_cron_stale",
+                "extends": "wf_base_cron_stale",
+                "fields": []
+            }),
+        )
+        .await
+        .expect("subtype schema creation failed");
+
+        let lifecycle = Arc::new(RwLock::new(PlaybookLifecycleManager::new()));
+        {
+            let mut lm = lifecycle.write().unwrap();
+            // Deliberately stale: claims `wf_sub_cron_stale` has no ancestry,
+            // contradicting the real schema graph created above.
+            lm.set_ancestor_cache(std::collections::HashMap::from([(
+                "wf_sub_cron_stale".to_string(),
+                vec!["wf_sub_cron_stale".to_string()],
+            )]));
+            let play = make_play_node(
+                "pb-cron-stale-cache",
+                json!([{
+                    "name": "r1",
+                    "trigger": { "type": "scheduled", "cron": "0 9 * * *", "node_type": "wf_base_cron_stale" },
+                    "conditions": ["node.id != ''"],
+                    "actions": []
+                }]),
+            );
+            lm.activate_play(&play).unwrap();
+        }
+
+        let node = make_test_node("wf_sub_cron_stale", json!({}));
+        let state = get_workflow_state(&lifecycle, &svc, &node).await;
+        assert_eq!(
+            state.rules.len(),
+            1,
+            "expected the base-type scheduled rule to be found via a live extends-chain \
+             resolution even though the lifecycle manager's ancestor cache incorrectly \
+             claims this subtype has no ancestry — before the fix this depended on the \
+             cache and was silently 0"
+        );
+        assert!(state.rules[0].all_conditions_satisfied);
+        assert!(
+            state.degraded_reasons.is_empty(),
+            "the live extends-chain resolution succeeded here — the stale cache entry is \
+             irrelevant to it: {:?}",
+            state.degraded_reasons
+        );
     }
 }

@@ -569,7 +569,7 @@ impl NodeService {
         }
 
         Ok((
-            crate::schema::extends_chain::flatten_chain_fields(&chain_fields),
+            crate::schema::extends_chain::flatten_chain_fields(chain_fields),
             owners,
             chain,
         ))
@@ -583,8 +583,10 @@ impl NodeService {
     ///
     /// Nearest-first, first-declared wins on a name collision — the same
     /// shadowing rule [`crate::schema::extends_chain::flatten_chain_fields`]
-    /// applies to fields, kept here rather than reused directly since a
-    /// relationship carries no `SchemaField`-shaped data to flatten.
+    /// applies to fields, via the shared
+    /// [`crate::schema::extends_chain::flatten_chain_by_name`] generalization
+    /// (a relationship carries no `SchemaField`-shaped data, so the two
+    /// merges share the dedup shape rather than a field-specific type).
     ///
     /// Excludes the `extends`/`extended_by` type-system relationship
     /// (`is_type_system_relationship`). A schema that declares `extends` has
@@ -621,26 +623,39 @@ impl NodeService {
     > {
         let chain = self.resolve_type_chain(node_type).await?;
 
-        let mut out: Vec<crate::models::schema::SchemaRelationship> = Vec::new();
         let mut owners: std::collections::HashMap<String, String> =
             std::collections::HashMap::new();
+        let mut chain_relationships: Vec<Vec<crate::models::schema::SchemaRelationship>> =
+            Vec::with_capacity(chain.len());
 
         for schema_id in &chain {
             let Some(schema) = self.get_schema_node(schema_id).await? else {
+                // A missing mid-chain schema contributes nothing rather than
+                // failing the read — same posture as `resolve_field_owners`.
                 continue;
             };
-            for rel in schema.relationships {
-                if crate::models::schema::is_type_system_relationship(&rel.name) {
-                    continue;
-                }
-                if !owners.contains_key(&rel.name) {
-                    owners.insert(rel.name.clone(), schema_id.clone());
-                    out.push(rel);
-                }
+            let relationships: Vec<_> = schema
+                .relationships
+                .into_iter()
+                .filter(|rel| !crate::models::schema::is_type_system_relationship(&rel.name))
+                .collect();
+            for rel in &relationships {
+                // First writer wins, and the chain is nearest-first, so a
+                // relationship declared by a nearer scope keeps ownership —
+                // same rationale as `resolve_field_owners`'s owners loop.
+                owners
+                    .entry(rel.name.clone())
+                    .or_insert_with(|| schema_id.clone());
             }
+            chain_relationships.push(relationships);
         }
 
-        Ok((out, owners))
+        Ok((
+            crate::schema::extends_chain::flatten_chain_by_name(chain_relationships, |r| {
+                r.name.as_str()
+            }),
+            owners,
+        ))
     }
 
     /// Rename a field across all node instances and update the schema definition.

@@ -292,12 +292,45 @@ mod entity_resolution_tests {
         Ok(())
     }
 
+    /// Three two-token names fill the token cap exactly, and the third is
+    /// searched whole, so the named node outranks another node sharing one of
+    /// its words. Searched as `riverside` alone, the two would tie.
+    #[tokio::test]
+    async fn the_third_name_in_a_message_outranks_a_node_sharing_one_word() -> Result<()> {
+        let (store, service, _t) = create_test_store().await?;
+        seed_entity(&service, "text", "Northwind Trading").await?;
+        seed_entity(&service, "text", "Contoso Ltd").await?;
+        let hall = seed_entity(&service, "text", "Riverside Hall").await?;
+        let cafe = seed_entity(&service, "text", "Riverside Cafe").await?;
+
+        let hits = store
+            .resolve_entities_by_title(
+                "Link Northwind Trading and Contoso Ltd to the Riverside Hall event",
+                12,
+            )
+            .await?;
+
+        let score = |id: &str| hits.iter().find(|h| h.id == id).map(|h| h.score);
+        let (Some(hall_score), Some(cafe_score)) = (score(&hall), score(&cafe)) else {
+            panic!("both Riverside nodes share a searched token and must match: {hits:?}");
+        };
+        // bm25 is negative; more negative is better.
+        assert!(
+            hall_score < cafe_score,
+            "Riverside Hall must outrank Riverside Cafe — a tie means the name \
+             was searched as `riverside` alone: {hits:?}"
+        );
+        Ok(())
+    }
+
     /// KNOWN RESIDUAL, pinned so it is visible rather than folklore.
     ///
-    /// The capitalised-first selection fixes the case where the filler
-    /// competing for the token budget is lowercase. When the competing tokens
-    /// are capitalised too — a Title Case register — front-first truncation
-    /// applies within the capitalised class and the entity can still be cut.
+    /// Token selection keeps capitalised runs whole, which fixes the case
+    /// where the filler competing for the budget is lowercase, and skips a
+    /// capitalised filler run too long to fit. It cannot tell a name from
+    /// Title Case filler broken into SHORT runs by stop words: "Update",
+    /// "Customer Record" and "Billing Team" fill the budget first, and
+    /// Northwind Trading gets only its leading token.
     ///
     /// Less severe than the bug it replaced, in the way that matters: this
     /// degrades to a WEAK match rather than to `NoMatch`, so it does not
@@ -314,7 +347,7 @@ mod entity_resolution_tests {
 
         let hits = store
             .resolve_entities_by_title(
-                "Could You Kindly Update The Customer Record And Billing Address For Northwind Trading",
+                "Could You Update The Customer Record For The Billing Team At Northwind Trading",
                 12,
             )
             .await?;

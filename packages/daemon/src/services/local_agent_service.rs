@@ -16,8 +16,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use nodespace_agent::agent_types::{
     AgentToolExecutor, ChatInferenceEngine, ChatMessage, ChatModelSpec, ClarifyPrompt,
-    InferenceError, InferenceUsage, LocalAgentStatus, ModelManager, ModelStatus, PriorWrite, Role,
-    StreamingChunk, ToolExecutionRecord,
+    InferenceError, InferenceUsage, LocalAgentStatus, MentionedEntity, ModelManager, ModelStatus,
+    PriorWrite, Role, StreamingChunk, ToolExecutionRecord,
 };
 use nodespace_agent::local_agent::agent_loop::{
     canonical_args, canonical_args_identity, LocalAgentService,
@@ -786,8 +786,16 @@ impl LocalAgentServiceImpl {
         // Create an ephemeral session seeded with prior history.
         let session_id = service.create_session(None, prior_history).await;
 
-        if let Ok(ctx_str) = ctx {
+        if let Ok((ctx_str, mentioned_entities)) = ctx {
             service.set_session_context(&session_id, ctx_str).await;
+            // What the prompt lists as already existing, handed to the
+            // tool-execution path so a create that duplicates it is refused
+            // rather than left to the model to notice.
+            if !mentioned_entities.is_empty() {
+                service
+                    .set_session_mentioned_entities(&session_id, mentioned_entities)
+                    .await;
+            }
         }
 
         // Carry the currently active model's cached routing-probe verdict
@@ -2721,6 +2729,13 @@ fn terse_assistant_facts(writes: &[AiChatCompletedWrite]) -> Option<String> {
 /// touched: they are the user's own words, not the model's narration, and the
 /// dilution effect this guards against was only ever measured against
 /// assistant-authored prose.
+///
+/// A clarifying question is kept verbatim even when its turn also completed
+/// writes. The question is not narration: it is what the user's next message
+/// answers, and the agent recognises a confirmation turn by finding it in
+/// history. Replacing it with write facts would re-ask the same question on
+/// the answer — the writes themselves still follow as the completed-writes
+/// record below.
 pub fn node_history_from_messages(messages: Vec<AiChatMessage>) -> Vec<ChatMessage> {
     messages
         .into_iter()
@@ -2730,7 +2745,7 @@ pub fn node_history_from_messages(messages: Vec<AiChatMessage>) -> Vec<ChatMessa
                 "assistant" => Role::Assistant,
                 _ => return Vec::new(),
             };
-            let content = if role == Role::Assistant {
+            let content = if role == Role::Assistant && m.question.is_none() {
                 terse_assistant_facts(&m.completed_writes).unwrap_or(m.content)
             } else {
                 m.content
@@ -2768,12 +2783,18 @@ fn schema_retrieval_query(prior_history: &[ChatMessage], user_message: &str) -> 
     nodespace_core::ops::context_ops::build_retrieval_query(&prior_turns, user_message)
 }
 
+/// Build the turn's workspace context: the rendered prompt block, plus the
+/// entities it lists under `MENTIONED ENTITIES` in structured form for the
+/// duplicate-create guard.
+///
+/// Both come from the same `WorkspaceContext`, so the guard refuses against
+/// exactly the resolution the model was shown.
 async fn build_workspace_context(
     node_service: &Arc<NodeService>,
     embedding_service: Option<Arc<NodeEmbeddingService>>,
     query: Option<&str>,
     entity_query: Option<&str>,
-) -> Result<String, ()> {
+) -> Result<(String, Vec<MentionedEntity>), ()> {
     let mut context = nodespace_core::ops::context_ops::build_workspace_context(
         node_service,
         embedding_service.as_ref(),
@@ -2825,7 +2846,18 @@ async fn build_workspace_context(
         }
     }
 
-    Ok(context.format_for_prompt(4000))
+    let mentioned_entities = match &context.resolved_entities {
+        nodespace_core::ops::context_ops::EntityResolution::Resolved(entities) => entities
+            .iter()
+            .map(|e| MentionedEntity {
+                id: e.id.clone(),
+                title: e.title.clone(),
+                node_type: e.node_type.clone(),
+            })
+            .collect(),
+        _ => Vec::new(),
+    };
+    Ok((context.format_for_prompt(4000), mentioned_entities))
 }
 
 #[cfg(test)]
@@ -3023,7 +3055,7 @@ mod tests {
 
         let query = "book the venue, log the customer, raise an invoice, add a \
                      release plan, and file an incident report";
-        let rendered = build_workspace_context(&node_service, None, Some(query), Some(query))
+        let (rendered, _) = build_workspace_context(&node_service, None, Some(query), Some(query))
             .await
             .expect("workspace context");
 
@@ -5075,6 +5107,37 @@ model = "model-b"
              instead of silently omitting it the way it would if this still \
              read the old 'properties' key: {:?}",
             assistant.content
+        );
+    }
+
+    /// A clarifying question survives reload even when its turn also wrote
+    /// something: the next turn's answer is recognised as a confirmation only
+    /// by finding the question in history, so rendering it as write facts
+    /// would re-ask the question on the answer.
+    #[test]
+    fn a_clarification_that_also_wrote_keeps_its_question_on_reload() {
+        let question = "I can take that a couple of ways. \"Northwind Trading\" already exists.";
+        let mut turn = assistant_turn(
+            question,
+            AiChatCompletedWrite {
+                tool: "create_node".to_string(),
+                node_id: Some("nodespace://t1".to_string()),
+                summary: Some("Tailspin Toys".to_string()),
+                canonical_args: r#"{"content":"Tailspin Toys"}"#.to_string(),
+            },
+        );
+        turn.question = Some("\"Northwind Trading\" already exists.".to_string());
+
+        let history = node_history_from_messages(vec![turn]);
+
+        let assistant = history
+            .iter()
+            .find(|m| matches!(m.role, Role::Assistant))
+            .expect("assistant message present");
+        assert_eq!(assistant.content, question);
+        assert!(
+            history.iter().any(|m| m.content.contains("Tailspin Toys")),
+            "the write still reaches the next turn through its own record: {history:?}"
         );
     }
 

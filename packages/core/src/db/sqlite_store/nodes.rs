@@ -19,17 +19,158 @@ pub type BulkNodeRow = (
 /// — bound a long message to a fixed query cost — but is its own constant
 /// because the two searches answer different questions.
 ///
-/// 6 rather than `BM25_MAX_TOKENS`' 4: an entity name is frequently two or
-/// three tokens ("Northwind Trading", "Acme Holdings International"), and a
-/// cap that tight would spend the whole budget on one name and leave nothing
-/// for a second entity in the same message.
+/// Measured to support: up to six name tokens in one message, kept whole —
+/// three two-token names ("Link Northwind Trading and Contoso Ltd to the
+/// Riverside Hall event"), or a three-token name plus a two-token one. Pinned
+/// by `entity_token_selection_tests`.
 ///
-/// WHICH tokens the cap keeps matters more than the number, and that is the
-/// part with a measured failure behind it — see the selection logic in
-/// `resolve_entities_by_title`. Raising this alone would not have fixed it:
-/// the budget was being spent front-first on whatever the sentence opened
-/// with, so a longer prefix simply moved the cliff.
+/// Past that the cap is the accepted limit: each name, in message order, is
+/// kept whole if it still fits and skipped otherwise — so a later short name
+/// can win over an earlier long one — leftover budget goes to a partial of the
+/// first skipped name, and a name beyond that is not searched at all ("Link
+/// Northwind Trading, Contoso Ltd, Fabrikam Inc and Riverside Hall" never
+/// searches Riverside Hall). That name is absent from the resolution rather than reported as
+/// nonexistent: the other names still resolve, so the tier is `Resolved`, not
+/// the `NoMatch` that renders as "does not exist". Four-name messages were
+/// judged rare enough not to justify a larger query.
+///
+/// WHICH tokens the cap keeps matters more than the number — see
+/// `select_entity_tokens`. Raising this alone moves the cliff rather than
+/// removing it: with front-first or per-token selection, a longer budget is
+/// spent the same way, just further along.
 const ENTITY_RESOLUTION_MAX_TOKENS: usize = 6;
+
+/// Choose which of `message`'s tokens an entity-resolution query searches for,
+/// lowercased and in message order.
+///
+/// Same tokenization as `bm25_search_titles`, and deliberately the same
+/// stop-word list: the words that make a search query noisy ("the", "what",
+/// "how") make an entity lookup noisy for the same reason.
+///
+/// Which tokens the cap KEEPS is the part that matters. Taking the first N is
+/// wrong: the budget is spent on whatever the sentence opens with, and a name
+/// late in the message never reaches the index — the tier reports no match,
+/// which renders as a positive claim that the named thing does not exist.
+///
+/// So the budget is spent in three tiers:
+///
+/// 1. **Names, whole.** A name is a run of adjacent capitalised words, ended
+///    by a lowercase word, a stop word, or trailing punctuation ("Northwind
+///    Trading, Contoso Ltd" is two names). Runs are taken in message order,
+///    each only if it fits entirely; a run that does not fit is skipped, not
+///    truncated, so a later shorter name can still be kept whole. Keeping a
+///    run as a unit is what stops one name's second token competing
+///    individually against the next name's first.
+/// 2. **Sentence-initial capitals.** A capital at the start of a sentence is
+///    grammar, not evidence of a name — without this rule "Link" joins
+///    "Link Northwind Trading" into a three-token run, and in a three-entity
+///    message that is the token that pushes the last name out. Demoted, not
+///    dropped: a message that OPENS with a name still gets that word back
+///    here, since it is first in message order.
+/// 3. **Everything else**, in message order — so a message with no capitals
+///    still falls back to the plain order, and a lowercase name is
+///    deprioritised rather than dropped outright.
+///
+/// Leftover budget after tier 1 goes first to the unkept tokens of names that
+/// did not fit, in message order — a partial name can still reach its node,
+/// since the query ORs its tokens.
+///
+/// "Prefer the longest run" was measured and rejected twice: on Title Case
+/// input the whole sentence is one run, and on a multi-entity message the
+/// runs are the same length and the longest is the one a sentence-opening
+/// verb has attached itself to.
+///
+/// RESIDUAL: a Title Case register makes filler look like names. Whole-run
+/// packing rescues "Could You Kindly Update The Customer Record And Billing
+/// Address For Northwind Trading" — the five-token filler run cannot fit, so
+/// it is skipped and the name after it kept whole — but only because that
+/// run is long. Filler split into short runs by stop words competes equally
+/// with the real name, first come first served: "Could You Update The
+/// Customer Record For The Billing Team At Northwind Trading" keeps only
+/// `northwind` of the name.
+///
+/// Over budget, a name that OPENS the message can be searched by its second
+/// word alone, since its demoted first word is refilled after the skipped
+/// names' tokens: "Northwind Trading asked about Contoso Ltd, Fabrikam Inc
+/// and Riverside Hall" searches `trading`, not `northwind`. Refilling a
+/// demoted word that directly precedes a run first would fix this but trade
+/// it for the opposite error — "Link" before "Acme Holdings International"
+/// would then take the slot a skipped name's token should get.
+fn select_entity_tokens(message: &str) -> Vec<String> {
+    struct Token<'a> {
+        text: &'a str,
+        pos: usize,
+        capitalised: bool,
+        sentence_initial: bool,
+        /// The word carried trailing punctuation, so no name continues past it.
+        ends_run: bool,
+    }
+
+    let mut tokens: Vec<Token> = Vec::new();
+    let mut at_sentence_start = true;
+    for (pos, raw) in message.split_whitespace().enumerate() {
+        let sentence_initial = at_sentence_start;
+        at_sentence_start = raw.ends_with(['.', '!', '?']);
+        let text = raw.trim_matches(|c: char| !c.is_alphanumeric());
+        if text.is_empty() || BM25_STOP_WORDS.contains(&text.to_lowercase().as_str()) {
+            continue;
+        }
+        tokens.push(Token {
+            text,
+            pos,
+            capitalised: text.chars().next().is_some_and(char::is_uppercase),
+            sentence_initial,
+            ends_run: raw.ends_with(|c: char| !c.is_alphanumeric()),
+        });
+    }
+
+    let mut runs: Vec<Vec<usize>> = Vec::new();
+    for (i, t) in tokens.iter().enumerate() {
+        if !t.capitalised || t.sentence_initial {
+            continue;
+        }
+        let continues = i > 0 && {
+            let prev = &tokens[i - 1];
+            prev.pos + 1 == t.pos && prev.capitalised && !prev.sentence_initial && !prev.ends_run
+        };
+        match runs.last_mut() {
+            Some(run) if continues => run.push(i),
+            _ => runs.push(vec![i]),
+        }
+    }
+
+    let mut keep = vec![false; tokens.len()];
+    let mut budget = ENTITY_RESOLUTION_MAX_TOKENS;
+    for run in &runs {
+        if run.len() <= budget {
+            run.iter().for_each(|&i| keep[i] = true);
+            budget -= run.len();
+        }
+    }
+
+    let fill = runs
+        .iter()
+        .flatten()
+        .copied()
+        .chain((0..tokens.len()).filter(|&i| tokens[i].capitalised && tokens[i].sentence_initial))
+        .chain((0..tokens.len()).filter(|&i| !tokens[i].capitalised));
+    for i in fill {
+        if budget == 0 {
+            break;
+        }
+        if !keep[i] {
+            keep[i] = true;
+            budget -= 1;
+        }
+    }
+
+    tokens
+        .iter()
+        .zip(keep)
+        .filter(|(_, kept)| *kept)
+        .map(|(t, _)| t.text.to_lowercase())
+        .collect()
+}
 
 /// One node whose `title` matched an entity-resolution query.
 #[derive(Debug, Clone, PartialEq)]
@@ -3728,69 +3869,7 @@ impl SqliteStore {
         message: &str,
         limit: i64,
     ) -> Result<Vec<ResolvedEntity>> {
-        // Same tokenization as `bm25_search_titles`, and deliberately the same
-        // stop-word list: the words that make a search query noisy ("the",
-        // "what", "how") make a title search noisy for the same reason. The
-        // token cap bounds a long message to a fixed query cost.
-        //
-        // Which tokens the cap KEEPS is the part that matters. Taking the
-        // first N is wrong: the budget is then spent on whatever the sentence
-        // opens with, and a name late in the message never reaches the index —
-        // the tier reports no match, which renders as a positive claim that
-        // the named thing does not exist. "Add Northwind Trading to the
-        // companies we sell to", preceded by any other clause, truncated to
-        // the leading words and lost the entity entirely.
-        //
-        // Capitalised tokens are kept in preference instead. An entity's name
-        // in an English message is nearly always capitalised, while the filler
-        // competing for the budget is not — so this is the proper-noun bias as
-        // a SELECTION input, not a pre-filter. A pre-filter would drop a
-        // lowercase name outright; this only deprioritises it, and a message
-        // with no capitalised tokens still falls back to the plain order.
-        //
-        // Order within each class is preserved, so a message whose tokens all
-        // share a class behaves exactly as before.
-        //
-        // RESIDUAL, stated because the argument above does not cover it. The
-        // bias helps when the filler competing for the budget is lowercase. It
-        // does nothing when the competing tokens are capitalised too, because
-        // front-first truncation then applies WITHIN the capitalised class —
-        // the same defect this selection replaced, one level down:
-        //
-        //   "Could You Kindly Update The Customer Record And Billing Address
-        //    For Northwind Trading"
-        //     -> kindly update customer record and billing   (entity dropped)
-        //
-        // Materially less severe than the bug it replaced: it needs an unusual
-        // register rather than merely a second conversational turn, and it
-        // degrades to a weak one-token match rather than to `NoMatch`, so it
-        // does not produce a false "does not exist" claim. Left unfixed rather
-        // than patched with a further heuristic — "prefer the longest run of
-        // adjacent capitalised tokens" was tried and gives no discrimination
-        // here, since a Title Case sentence is one long run.
-        //
-        // Note also that the cap's own justification reasons about the IDEAL
-        // token set (an entity name is two or three tokens), while the cap
-        // actually applies to the SELECTED set. Those coincide only when
-        // selection puts the name first.
-        let all: Vec<String> = message
-            .split_whitespace()
-            .map(|t| t.trim_matches(|c: char| !c.is_alphanumeric()))
-            .filter(|t| !t.is_empty() && !BM25_STOP_WORDS.contains(&t.to_lowercase().as_str()))
-            .map(str::to_string)
-            .collect();
-
-        let (capitalised, rest): (Vec<String>, Vec<String>) = all
-            .into_iter()
-            .partition(|t| t.chars().next().is_some_and(char::is_uppercase));
-
-        let tokens: Vec<String> = capitalised
-            .into_iter()
-            .chain(rest)
-            .take(ENTITY_RESOLUTION_MAX_TOKENS)
-            .map(|t| t.to_lowercase())
-            .collect();
-
+        let tokens = select_entity_tokens(message);
         if tokens.is_empty() {
             return Ok(Vec::new());
         }
@@ -3836,6 +3915,181 @@ impl SqliteStore {
             });
         }
         Ok(out)
+    }
+}
+
+/// What `select_entity_tokens` keeps, asserted at the token level. The
+/// database tests in `entity_resolution_test.rs` cannot tell a whole name from
+/// a truncated one — the query ORs its tokens, so "Riverside" alone still
+/// reaches "Riverside Hall" — which is why the cap's measured support is
+/// pinned here.
+#[cfg(test)]
+mod entity_token_selection_tests {
+    use super::select_entity_tokens;
+
+    fn keeps(message: &str, names: &[&str]) {
+        let got = select_entity_tokens(message);
+        for name in names {
+            for token in name.split_whitespace() {
+                assert!(
+                    got.contains(&token.to_lowercase()),
+                    "{name:?} must be kept whole from {message:?}; selected {got:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn one_name_among_lowercase_filler() {
+        keeps(
+            "Add Northwind Trading to the companies we sell to",
+            &["Northwind Trading"],
+        );
+    }
+
+    /// The case the cap is sized for: two names in one message both fit
+    /// whole, so a cap or stop-word change that drops the second fails here.
+    #[test]
+    fn two_names_are_both_kept_whole() {
+        keeps(
+            "Link Northwind Trading to the Riverside Hall event",
+            &["Northwind Trading", "Riverside Hall"],
+        );
+        keeps(
+            "Please could you connect Northwind Trading with the Riverside Hall \
+             booking for next month",
+            &["Northwind Trading", "Riverside Hall"],
+        );
+        keeps(
+            "move Northwind Trading under Contoso Holdings",
+            &["Northwind Trading", "Contoso Holdings"],
+        );
+    }
+
+    /// Three two-token names fill the cap exactly. The sentence-opening "Link"
+    /// must not take a slot, or Riverside Hall's second token is the one cut.
+    #[test]
+    fn three_two_token_names_are_all_kept_whole() {
+        let message = "Link Northwind Trading and Contoso Ltd to the Riverside Hall event";
+        keeps(
+            message,
+            &["Northwind Trading", "Contoso Ltd", "Riverside Hall"],
+        );
+        assert_eq!(
+            select_entity_tokens(message),
+            [
+                "northwind",
+                "trading",
+                "contoso",
+                "ltd",
+                "riverside",
+                "hall"
+            ],
+            "the whole budget goes to the three names, none to the opening verb"
+        );
+    }
+
+    #[test]
+    fn a_three_token_name_and_a_two_token_name_fit() {
+        keeps(
+            "Link Acme Holdings International to Riverside Hall",
+            &["Acme Holdings International", "Riverside Hall"],
+        );
+    }
+
+    /// Demoting a sentence-initial capital must not lose a name that opens
+    /// the message: the demoted word is refilled first, being first in order.
+    #[test]
+    fn a_name_opening_the_message_is_kept_whole() {
+        keeps(
+            "Northwind Trading should be linked to Contoso Ltd and Riverside Hall",
+            &["Northwind Trading", "Contoso Ltd", "Riverside Hall"],
+        );
+    }
+
+    /// Adjacent names separated only by a comma are two runs. Merged into one
+    /// five-token run, "Acme Holdings International, Contoso Ltd" would not
+    /// fit beside Riverside Hall, be skipped, and have Acme's name truncated
+    /// into the leftover budget.
+    #[test]
+    fn a_comma_separates_names() {
+        keeps(
+            "Book Riverside Hall and Acme Holdings International, Contoso Ltd for Fabrikam Inc",
+            &["Riverside Hall", "Acme Holdings International"],
+        );
+    }
+
+    #[test]
+    fn a_name_late_in_a_long_message_is_kept() {
+        keeps(
+            "set up new type places hold events booking capacity roster venue \
+             schedule then add Northwind Trading",
+            &["Northwind Trading"],
+        );
+    }
+
+    /// Past the budget, the accepted limit: names that fit stay whole, in
+    /// message order, and the leftover goes to a partial of the next.
+    #[test]
+    fn over_budget_keeps_leading_names_whole_and_truncates_the_next() {
+        let message = "Link Northwind Trading, Contoso Ltd, Fabrikam Inc and Riverside Hall";
+        assert_eq!(
+            select_entity_tokens(message),
+            ["northwind", "trading", "contoso", "ltd", "fabrikam", "inc"],
+            "the fourth name is the documented limit"
+        );
+
+        let message = "Link Acme Holdings International and Contoso Ltd to Riverside Hall";
+        keeps(message, &["Acme Holdings International", "Contoso Ltd"]);
+        assert!(
+            select_entity_tokens(message).contains(&"riverside".to_string()),
+            "the name that does not fit gets the leftover budget"
+        );
+    }
+
+    /// A run too long for the remaining budget is skipped whole, so a shorter
+    /// name after it is kept whole rather than the long run being truncated
+    /// into the budget. This is what rescues the Title Case example.
+    #[test]
+    fn a_run_too_long_to_fit_does_not_crowd_out_a_later_name() {
+        keeps(
+            "Could You Kindly Update The Customer Record And Billing Address For Northwind Trading",
+            &["Northwind Trading"],
+        );
+    }
+
+    /// KNOWN RESIDUAL — see `select_entity_tokens`. If a change keeps the
+    /// whole name here, invert this: that is an improvement.
+    #[test]
+    fn title_case_filler_in_short_runs_still_truncates_the_name() {
+        assert_eq!(
+            select_entity_tokens(
+                "Could You Update The Customer Record For The Billing Team At Northwind Trading"
+            ),
+            [
+                "update",
+                "customer",
+                "record",
+                "billing",
+                "team",
+                "northwind"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_message_without_capitals_falls_back_to_message_order() {
+        assert_eq!(
+            select_entity_tokens(
+                "what's happening with the northwind deal and the contoso renewal today"
+            ),
+            ["what's", "happening", "northwind", "deal", "and", "contoso"]
+        );
+    }
+
+    #[test]
+    fn stop_words_alone_select_nothing() {
+        assert!(select_entity_tokens("what is the to of in on").is_empty());
     }
 }
 

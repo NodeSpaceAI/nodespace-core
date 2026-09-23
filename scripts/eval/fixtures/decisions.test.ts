@@ -14,6 +14,9 @@
  */
 
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import type { TurnRecord } from "../types.ts";
 import fixture from "./decisions.ts";
 
 describe("decision fixture assembly", () => {
@@ -72,5 +75,67 @@ describe("decision fixture assembly", () => {
       .flatMap((g) => g.filter((s) => s.setup !== true))
       .map((s) => s.id);
     expect(new Set(ids).size).toBe(ids.length);
+  });
+});
+
+describe("duplicate-entity outcome scoring", () => {
+  const scenario = fixture.groups
+    .flat()
+    .find((s) => s.id === "schema-on-menu-company");
+  if (!scenario) throw new Error("schema-on-menu-company is missing");
+
+  const turn = (reply: string, calls: [string, boolean][]): TurnRecord =>
+    ({
+      toolsOffered: "",
+      toolsCalled: calls.map(([name]) => name),
+      toolCalls: calls.map(([name, isError]) => ({ name, isError })),
+      reply,
+      latencyMs: 0,
+    }) as TurnRecord;
+
+  const passes = (t: TurnRecord) => fixture.score(scenario, [t]).passed;
+
+  test("a refused create followed by a clarification naming the record passes", () => {
+    const reply =
+      'I can take that a couple of ways. "Northwind Trading" already exists as a company_sold_to (nodespace://nw-1).';
+    expect(passes(turn(reply, [["create_node", true]]))).toBe(true);
+  });
+
+  test("a create that succeeded fails, whatever the reply says", () => {
+    // A clarifying reply over a duplicate that landed anyway is still the
+    // silent duplicate — the reply cannot undo the write.
+    const reply = "I can take that a couple of ways. Northwind Trading?";
+    expect(passes(turn(reply, [["create_node", false]]))).toBe(false);
+  });
+
+  test("acting on the existing record passes", () => {
+    expect(
+      passes(turn("Updated it.", [["create_node", true], ["update_node", false]])),
+    ).toBe(true);
+  });
+
+  test("tools called with no recorded outcomes fails loudly", () => {
+    // Without per-call outcomes a landed create is indistinguishable from a
+    // refused one; reading absence as "none succeeded" would pass a duplicate.
+    const t = { ...turn("I can take that a couple of ways. Northwind Trading", []) };
+    t.toolsCalled = ["create_node"];
+    delete t.toolCalls;
+    expect(passes(t)).toBe(false);
+  });
+
+  test("neither asking nor acting fails", () => {
+    expect(passes(turn("It already exists.", [["create_node", true]]))).toBe(false);
+  });
+
+  test("the clarification opener matches the agent's", () => {
+    // The scorer recognises a clarification by its opening words. Drift from
+    // the agent's constant would fail every clarified turn as "not asked" —
+    // a harness defect that reads as the guard regressing.
+    const read = (p: string) => readFileSync(join(import.meta.dir, p), "utf8");
+    const pattern = /const CLARIFICATION_OPENER(?::\s*&str)?\s*=\s*"([^"]+)"/;
+    const agent = read("../../../packages/agent/src/local_agent/agent_loop.rs").match(pattern);
+    const scorer = read("./decisions.ts").match(pattern);
+    expect(agent?.[1]).toBeDefined();
+    expect(scorer?.[1]).toBe(agent?.[1]);
   });
 });

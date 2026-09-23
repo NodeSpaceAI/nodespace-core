@@ -476,6 +476,33 @@ pub struct AgentSession {
     /// preserves today's behavior for everything this was not measured on.
     #[serde(default)]
     pub routing_disabled: bool,
+
+    /// Existing nodes the entity-resolution tier matched against this turn's
+    /// message — the structured form of the prompt's `MENTIONED ENTITIES`
+    /// block.
+    ///
+    /// The prompt tells the model these exist; this lets the tool-execution
+    /// path enforce it. Measured on the locked model, a `create_node` for an
+    /// entity rendered in that block went ahead and duplicated it under every
+    /// instruction channel tried, so the collision is refused structurally
+    /// rather than left to the model's judgment.
+    ///
+    /// Empty when resolution found nothing, did not run, or the caller builds
+    /// no workspace context.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mentioned_entities: Vec<MentionedEntity>,
+}
+
+/// An existing node named in the current message, as the entity-resolution
+/// tier resolved it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MentionedEntity {
+    /// Bare node id, as `MENTIONED ENTITIES` renders it.
+    pub id: String,
+    /// The node's stored title.
+    pub title: String,
+    /// The node's type id.
+    pub node_type: String,
 }
 
 /// A write completed in an earlier turn, as the duplicate guard sees it.

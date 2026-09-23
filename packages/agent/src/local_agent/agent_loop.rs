@@ -634,6 +634,244 @@ fn duplicate_write_result(prior: &crate::agent_types::PriorWrite) -> serde_json:
     })
 }
 
+/// Error code carried by a `create_node` refused for duplicating a mentioned
+/// entity. The turn-end backstop finds the refusal by it, so both sides share
+/// this one constant.
+const DUPLICATE_ENTITY_ERROR: &str = "duplicate_of_mentioned_entity";
+
+/// A title reduced to what the duplicate-entity guard compares: markdown
+/// stripped the way the service derives a stored title from `content`,
+/// whitespace collapsed, case folded.
+///
+/// Deliberately no fuzzier than that. A near-miss ("Northwind Traders" against
+/// "Northwind Trading") may well be a distinct record the user wants, and
+/// refusing it would be a new failure mode for ordinary creates; only a name
+/// that is the same name is treated as the same thing.
+fn comparable_title(s: &str) -> String {
+    nodespace_core::utils::strip_markdown(s)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
+}
+
+/// The mentioned entity a `create_node` call would duplicate, if any.
+///
+/// Matches on the same type and the same title (see [`comparable_title`]).
+/// Consults only `session.mentioned_entities` — what the entity tier resolved
+/// against this turn's message — not the whole graph, so a create naming
+/// something the user did not refer to is never touched.
+///
+/// Compared against the create's `content`, so a type whose stored title comes
+/// from a `title_template` rather than the content never matches. That is the
+/// safe direction — no false refusal — and deliberately not widened into a
+/// fuzzy match to catch it.
+///
+/// Disarmed for an entity that a clarification the user has answered in the
+/// current intent (`answered_clarifications`, taken at turn start) asked
+/// about. That is the confirmation turn, where a user who asked for a second,
+/// separate record must be able to get one; asking again there would make the
+/// duplicate unreachable.
+///
+/// Recognised by the record's id, never its title. A routing question that
+/// happens to name the entity ("should Northwind Trading be a customer or a
+/// company?") is not a confirmation, and a title match could not tell the two
+/// apart — nor respect word boundaries for a short title. Every clarification
+/// raised after a duplicate refusal carries the id, because
+/// `duplicate_entity_backstop` guarantees it.
+///
+/// This cannot tell "create a second one" from "use the existing one" in the
+/// user's answer: both disarm it, and acting on the answer is the model's
+/// call. The guard's job ends once the user has been asked.
+fn mentioned_entity_duplicated_by<'a>(
+    mentioned_entities: &'a [crate::agent_types::MentionedEntity],
+    answered_clarifications: &[String],
+    tool: &str,
+    args: &serde_json::Value,
+) -> Option<&'a crate::agent_types::MentionedEntity> {
+    if tool != "create_node" || mentioned_entities.is_empty() {
+        return None;
+    }
+    let node_type = args.get("node_type")?.as_str()?;
+    let title = comparable_title(args.get("content")?.as_str()?);
+    if title.is_empty() {
+        return None;
+    }
+    mentioned_entities
+        .iter()
+        .find(|e| e.node_type == node_type && comparable_title(&e.title) == title)
+        .filter(|e| {
+            !answered_clarifications
+                .iter()
+                .any(|asked| asked.contains(e.id.as_str()))
+        })
+}
+
+/// Build the tool result returned in place of a `create_node` that would
+/// duplicate a mentioned entity.
+///
+/// Handed back to the model rather than ending the turn outright, so it can
+/// correct itself — ask the user, or act on the existing record if that is
+/// what the message meant. If it does neither, the turn-end backstop
+/// (`duplicate_entity_backstop`) asks the user on its behalf.
+///
+/// Flagged as an error: nothing was created. A non-error result would be
+/// recorded as a completed write and replayed into the next turn's
+/// `prior_writes`, where it would block the very create the user confirms.
+fn duplicate_entity_refused_result(
+    entity: &crate::agent_types::MentionedEntity,
+) -> serde_json::Value {
+    let id = super::tools::node_uri(&entity.id);
+    serde_json::json!({
+        "error": DUPLICATE_ENTITY_ERROR,
+        "existing": {
+            "id": id,
+            "title": entity.title,
+            "node_type": entity.node_type,
+        },
+        "message": format!(
+            "Not executed: \"{}\" already exists as a {} ({id}), so this would create a \
+             second copy. Call route_clarify to ask the user whether they meant that \
+             record or want a second, separate one, offering the existing record's id \
+             as an option. Do not call create_node for it again this turn.",
+            entity.title, entity.node_type
+        ),
+    })
+}
+
+/// Whether `record` is a `create_node` the duplicate-entity guard refused.
+fn is_duplicate_entity_refusal(record: &ToolExecutionRecord) -> bool {
+    record.name == "create_node"
+        && record.is_error
+        && record.result.get("error").and_then(|v| v.as_str()) == Some(DUPLICATE_ENTITY_ERROR)
+}
+
+/// Ask the user about a duplicate the model was told of and did not resolve.
+///
+/// Applied to every completed turn. When a `create_node` was refused for
+/// duplicating a mentioned entity (see [`duplicate_entity_refused_result`])
+/// and the turn then ended without the model asking the user or completing
+/// any write after the refusal, the model's reply is replaced with a
+/// clarification naming the existing record. The model's first chance to
+/// correct itself stays with the model; this only guarantees the question
+/// reaches the user when that chance was not taken — on the locked model it
+/// was not, under every instruction channel measured.
+///
+/// A later successful write is left alone: the model acted on what the
+/// refusal told it (updated the existing record, say), and that correction
+/// stands.
+///
+/// When the model DID ask, its question stands, but is made to carry the
+/// existing record's id if it does not already. The confirmation turn's
+/// escape hatch recognises the question by that id alone (see
+/// [`mentioned_entity_duplicated_by`]), and a model-authored `route_clarify`
+/// reaches the user as labels only — its option ids are dropped.
+///
+/// Only the turn's last refusal is raised. Several refused duplicates in one
+/// turn is a case not yet seen; the others are still refused, just not asked
+/// about by name.
+fn duplicate_entity_backstop(session: &mut AgentSession, result: &mut AgentTurnResult) {
+    let Some(refused_at) = result
+        .tool_calls_made
+        .iter()
+        .rposition(is_duplicate_entity_refusal)
+    else {
+        return;
+    };
+    let existing = &result.tool_calls_made[refused_at].result["existing"];
+    let field = |k: &str| existing.get(k).and_then(|v| v.as_str()).unwrap_or_default();
+    let (id, title, node_type) = (field("id"), field("title"), field("node_type"));
+    let bare_id = id.strip_prefix("nodespace://").unwrap_or(id);
+
+    if let Some(clarify) = result.clarify.as_mut() {
+        if !bare_id.is_empty() && !result.response.contains(bare_id) {
+            clarify
+                .question
+                .push_str(&format!(" (\"{title}\" already exists as {id}.)"));
+            let clarification = format_clarification(&clarify.question, &clarify.options);
+            replace_turn_reply(session, &clarification);
+            result.response = clarification;
+        }
+        return;
+    }
+
+    // Only a write aimed at the EXISTING record counts as the model resolving
+    // the collision. Any write would be too broad: in "add Northwind and
+    // Tailspin", the Tailspin create succeeding says nothing about Northwind,
+    // and releasing on it would let "Added both." through unchallenged. A
+    // write that merely references the record — a child created under it, a
+    // relationship to it — counts too, deliberately: the model has acted on
+    // the existing record rather than duplicating it.
+    let resolved_after = !bare_id.is_empty()
+        && result.tool_calls_made[refused_at + 1..].iter().any(|r| {
+            !r.is_error
+                && super::tools::is_write_tool(&r.name)
+                && r.args.to_string().contains(bare_id)
+        });
+    if resolved_after {
+        return;
+    }
+
+    // The reply being replaced may have been the only report of other writes
+    // this turn did complete, so they are named in the question itself. The
+    // first paragraph is what the chat UI renders above the option chips;
+    // anything after it would reach the model but not the user.
+    let done: Vec<String> = result
+        .tool_calls_made
+        .iter()
+        .filter(|r| !r.is_error && super::tools::is_write_tool(&r.name))
+        .map(|r| {
+            let label = humanize_tool_name(&r.name);
+            ["content", "title", "name"]
+                .iter()
+                .find_map(|k| r.args.get(*k).and_then(|v| v.as_str()))
+                .map_or_else(|| label.to_string(), |name| format!("{label} \"{name}\""))
+        })
+        .collect();
+    let done_note = if done.is_empty() {
+        String::new()
+    } else {
+        format!(" Done this turn: {}.", done.join(", "))
+    };
+    let question = format!(
+        "\"{title}\" already exists as a {node_type} ({id}). Did you mean that record, or \
+         do you want a second, separate one?{done_note}"
+    );
+    let options = vec![
+        format!("Use the existing \"{title}\" ({id})"),
+        format!("Create a second \"{title}\""),
+    ];
+    let clarification = format_clarification(&question, &options);
+    tracing::warn!(
+        session_id = %session.id,
+        existing_id = %id,
+        "Duplicate create refused and left unresolved by the model — asking the user"
+    );
+
+    replace_turn_reply(session, &clarification);
+    result.response = clarification;
+    result.clarify = Some(crate::agent_types::ClarifyPrompt { question, options });
+}
+
+/// Make `reply` the turn's final assistant message in the session history.
+///
+/// The turn's reply is normally the session's last message; replacing it lets
+/// the history carry the question rather than the reply it stands in for.
+/// Only the LAST message is considered — searching further back could
+/// overwrite an earlier turn's answer.
+fn replace_turn_reply(session: &mut AgentSession, reply: &str) {
+    match session.messages.last_mut() {
+        Some(last) if matches!(last.role, Role::Assistant) && last.tool_calls.is_empty() => {
+            last.content = reply.to_string();
+        }
+        _ => {
+            session
+                .messages
+                .push(ChatMessage::text(Role::Assistant, reply.to_string()));
+        }
+    }
+}
+
 /// Whether `all_tool_executions` (this turn's history) already contains a
 /// successful `create_schema` call.
 ///
@@ -652,30 +890,97 @@ fn schema_already_created_this_turn(executions: &[ToolExecutionRecord]) -> bool 
 /// "feature writeups") — so it lowercases both sides, and for a multi-word
 /// name requires every word to appear rather than the exact phrase.
 ///
+/// Matching is by whole word (see [`lowercase_words`]), so a name buried
+/// inside an unrelated word ("Ask" in "tasks", "Boo" in "books") does not
+/// count. Because both sides split at camelCase boundaries, "ReadingList"
+/// and "Reading List" are the same two words; a multi-word name written as
+/// one lowercase word ("readinglist") also matches. Plural tolerance is
+/// handled per word by [`words_match_modulo_plural`]. A name word in a
+/// script without case or spaces between words (Chinese, Japanese, Thai) has
+/// no word boundaries to match on, so it falls back to a substring search.
+///
 /// Loose in this direction is the safe way round, on *severity* rather than
-/// likelihood. Matching is substring-based, so it does say yes to some things
-/// the user did not ask for — a type named "Note" against "make a note of
-/// this", or a negated mention ("don't create a Sprint, just an ADR"). The
-/// asymmetry that justifies it anyway: a false positive creates a visible,
-/// deletable extra type, while a false negative silently delivers half of
-/// what was asked for, which is the failure this relaxation exists to remove.
-/// Single characters are ignored so a stray "a" or "I" cannot match
-/// everything.
+/// likelihood. Word matching still says yes to some things the user did not
+/// ask for — a type named "Note" against "make a note of this", or a negated
+/// mention ("don't create a Sprint, just an ADR") — because telling those
+/// apart takes intent, not tokenization. The asymmetry that justifies
+/// leaving them: a false positive creates a visible, deletable extra type,
+/// while a false negative silently delivers half of what was asked for,
+/// which is the failure this relaxation exists to remove. Single characters
+/// are ignored so a stray "a" or "I" cannot match everything.
 fn user_message_names_type(user_message: &str, schema_name: &str) -> bool {
-    let haystack = user_message.to_lowercase();
-    let name = schema_name.to_lowercase();
-    let mut words = name
-        .split(|c: char| !c.is_alphanumeric())
+    let message_words = lowercase_words(user_message);
+    let name_words: Vec<String> = lowercase_words(schema_name)
+        .into_iter()
         .filter(|w| w.chars().count() > 1)
-        .peekable();
-    if words.peek().is_none() {
+        .collect();
+    if name_words.is_empty() {
         return false;
     }
-    words.all(|word| {
-        // Match the singular stem too, so "Invoice" is found in "invoices".
-        let stem = word.strip_suffix('s').unwrap_or(word);
-        haystack.contains(word) || haystack.contains(stem)
-    })
+    let appears = |word: &str| {
+        if is_uncased_script(word) {
+            return message_words
+                .iter()
+                .any(|candidate| candidate.contains(word));
+        }
+        message_words
+            .iter()
+            .any(|candidate| words_match_modulo_plural(candidate, word))
+    };
+    name_words.iter().all(|word| appears(word)) || appears(&name_words.concat())
+}
+
+/// Whether `word` contains letters from a script without case, where
+/// [`lowercase_words`] cannot find word boundaries inside running text.
+fn is_uncased_script(word: &str) -> bool {
+    word.chars()
+        .any(|c| c.is_alphabetic() && !c.is_lowercase() && !c.is_uppercase())
+}
+
+/// Split `text` into lowercase words: at every non-alphanumeric character,
+/// and at camelCase boundaries — before an uppercase letter that follows a
+/// lowercase one ("Feature|Writeup"), and before the last capital of an
+/// acronym that starts a new word ("HTTP|Request").
+fn lowercase_words(text: &str) -> Vec<String> {
+    let chars: Vec<char> = text.chars().collect();
+    let mut words = Vec::new();
+    let mut current = String::new();
+    for (i, &c) in chars.iter().enumerate() {
+        let prev = i.checked_sub(1).map(|p| chars[p]);
+        let next = chars.get(i + 1);
+        let camel_boundary = c.is_uppercase()
+            && prev.is_some_and(|p| {
+                p.is_lowercase() || (p.is_uppercase() && next.is_some_and(|n| n.is_lowercase()))
+            });
+        if (!c.is_alphanumeric() || camel_boundary) && !current.is_empty() {
+            words.push(std::mem::take(&mut current));
+        }
+        if c.is_alphanumeric() {
+            current.extend(c.to_lowercase());
+        }
+    }
+    if !current.is_empty() {
+        words.push(current);
+    }
+    words
+}
+
+/// Whether two lowercase words are the same word, allowing either to carry a
+/// trailing plural the other lacks: "s" always ("invoice"/"invoices"), "es"
+/// only after a stem that takes it ("box"/"boxes", "class"/"classes"), so
+/// "not" does not pair with "notes".
+///
+/// Deliberately regular plurals only: "-ies" ("category"/"categories") and
+/// other inflections ("invoiced") are not recognised.
+fn words_match_modulo_plural(a: &str, b: &str) -> bool {
+    let (shorter, longer) = if a.len() <= b.len() { (a, b) } else { (b, a) };
+    match longer.strip_prefix(shorter) {
+        Some("" | "s") => true,
+        Some("es") => ["s", "x", "z", "ch", "sh", "o"]
+            .iter()
+            .any(|ending| shorter.ends_with(ending)),
+        _ => false,
+    }
 }
 
 /// Whether a second `create_schema` this turn should be refused.
@@ -910,6 +1215,14 @@ pub fn stage1_query_from_turns(prior_turns: &[&str], user_message: &str) -> Stri
 /// once the agent has resolved something and replied normally, whatever the
 /// user says next starts a fresh intent and the mechanism re-arms.
 fn session_already_clarified(session: &AgentSession) -> bool {
+    !answered_clarifications(session).is_empty()
+}
+
+/// The text of every clarification in the current intent that the user has
+/// since replied to — the intent scoping of [`session_already_clarified`],
+/// exposed for callers that need to know WHAT was asked, not only that
+/// something was.
+fn answered_clarifications(session: &AgentSession) -> Vec<&str> {
     // Everything from the last resolved turn onward is the current intent.
     // A clarification is not a resolution, so it does not close an intent —
     // that is what lets the "already clarified" state survive the user's reply
@@ -929,14 +1242,16 @@ fn session_already_clarified(session: &AgentSession) -> bool {
     // are still waiting on, not a second attempt.
     current_intent
         .iter()
-        .position(|m| {
-            matches!(m.role, Role::Assistant) && m.content.starts_with(CLARIFICATION_OPENER)
+        .enumerate()
+        .filter(|(idx, m)| {
+            matches!(m.role, Role::Assistant)
+                && m.content.starts_with(CLARIFICATION_OPENER)
+                && current_intent[idx + 1..]
+                    .iter()
+                    .any(|m| matches!(m.role, Role::User))
         })
-        .is_some_and(|idx| {
-            current_intent[idx + 1..]
-                .iter()
-                .any(|m| matches!(m.role, Role::User))
-        })
+        .map(|(_, m)| m.content.as_str())
+        .collect()
 }
 
 /// Compose a clarification from Stage 1's question and options.
@@ -1549,6 +1864,24 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
         on_chunk: impl Fn(StreamingChunk) + Send + Sync + 'static,
         cancel: CancellationToken,
     ) -> Result<AgentTurnResult, InferenceError> {
+        let mut result = self
+            .run_turn_unguarded(session, user_message, on_status, on_chunk, cancel)
+            .await?;
+        // Applied here, over the finished turn, because the loop has several
+        // exits (final reply, iteration cap, loop breaks) and the question must
+        // reach the user whichever one the turn took.
+        duplicate_entity_backstop(session, &mut result);
+        Ok(result)
+    }
+
+    async fn run_turn_unguarded(
+        &self,
+        session: &mut AgentSession,
+        user_message: &str,
+        on_status: impl Fn(LocalAgentStatus) + Send + Sync + 'static,
+        on_chunk: impl Fn(StreamingChunk) + Send + Sync + 'static,
+        cancel: CancellationToken,
+    ) -> Result<AgentTurnResult, InferenceError> {
         // Wrap on_chunk in Arc so it can be cloned into each iteration's callback
         let on_chunk = Arc::new(on_chunk);
 
@@ -1567,6 +1900,14 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
         session
             .messages
             .push(ChatMessage::text(Role::User, user_message.to_string()));
+
+        // Taken now, while the history ends at the user's message: every tool
+        // call this turn appends an assistant message, which
+        // `answered_clarifications` reads as the intent being resolved.
+        let answered_clarifications: Vec<String> = answered_clarifications(session)
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
 
         // The model-facing tool surface. `search_skills` is deliberately absent:
         // ADR-038 makes retrieval a deterministic system step (see `route`
@@ -2246,7 +2587,11 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                     .iter()
                     .enumerate()
                     .filter(|(i, r)| {
+                        // A refused duplicate is the guard working, not a tool
+                        // failing; the turn-end backstop owns what the user is
+                        // told about it.
                         r.is_error
+                            && !is_duplicate_entity_refusal(r)
                             && !all_tool_executions[i + 1..]
                                 .iter()
                                 .any(|later| later.name == r.name && !later.is_error)
@@ -2603,6 +2948,36 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                                         // as a failure would invite a repair retry —
                                         // the exact loop this guard exists to stop.
                                         is_error: false,
+                                    })),
+                                )
+                            } else if let Some(entity) = mentioned_entity_duplicated_by(
+                                &session.mentioned_entities,
+                                &answered_clarifications,
+                                &tc.function_name,
+                                &args,
+                            ) {
+                                // Structural backstop for the entity tier: the
+                                // prompt already lists this record under
+                                // MENTIONED ENTITIES, and the locked model
+                                // created it again anyway under every
+                                // instruction channel measured. "Add X" when X
+                                // exists is ambiguous — a second record is a
+                                // real thing to want — so the create is refused
+                                // and the choice goes back to the user.
+                                tracing::warn!(
+                                    session_id = %session.id,
+                                    iteration = iteration,
+                                    existing_id = %entity.id,
+                                    "create_node refused — duplicates an entity resolved for this turn"
+                                );
+                                let refused = duplicate_entity_refused_result(entity);
+                                (
+                                    args,
+                                    Some(Ok(crate::agent_types::ToolResult {
+                                        tool_call_id: tc.id.clone(),
+                                        name: tc.function_name.clone(),
+                                        result: refused,
+                                        is_error: true,
                                     })),
                                 )
                             } else if tc.function_name == "create_schema"
@@ -3196,7 +3571,7 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
             .iter()
             .find_map(|tc| routing::parse_route_decision(&tc.function_name, &tc.arguments_json));
 
-        let mut routing_decision_tag = "none";
+        let routing_decision_tag: &str;
         // A single query for Query/None/clarify-suppressed; two or more for
         // Multi. Retrieval below re-enters once per element — Stage 2's
         // per-candidate trust boundary and score gating are unchanged, only
@@ -3240,9 +3615,10 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                     // path returns before reaching. Both this and that line carry
                     // `routing_decision` as a plain text field (not only an OTel span
                     // attribute) so an eval scraping the daemon's text log — which has
-                    // no OTel exporter attached — can observe which of Stage 1's five
-                    // outcomes (query/multi/clarify/clarify_suppressed/none) fired,
-                    // rather than inferring it from reply text or downstream tool effects.
+                    // no OTel exporter attached — can observe which of Stage 1's
+                    // outcomes (query/multi/multi_rejected/clarify/
+                    // clarify_suppressed/none) fired, rather than inferring it
+                    // from reply text or downstream tool effects.
                     tracing::info!(
                         routing_decision = "clarify",
                         routing_latency_ms = elapsed_ms,
@@ -3252,10 +3628,15 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                 }
             }
             None => {
-                // The model called neither routing tool, or emitted arguments
-                // that would not parse. Retrieve on the raw message rather than
-                // abandoning routing: a weak query still beats none.
-                span.set_attribute(KeyValue::new("routing.decision", "none"));
+                // The model called no routing tool, emitted route_query or
+                // route_clarify arguments that would not parse, or called
+                // route_multi without two usable queries (`multi_rejected`,
+                // parse failures included). Retrieve on the raw message
+                // rather than abandoning routing: a weak query still beats none.
+                routing_decision_tag = routing::undecided_routing_tag(
+                    tool_calls.iter().map(|tc| tc.function_name.as_str()),
+                );
+                span.set_attribute(KeyValue::new("routing.decision", routing_decision_tag));
                 vec![user_message.to_string()]
             }
         };
@@ -3309,9 +3690,9 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
         // two-stage flow adds ahead of the turn that previously ran alone.
         let elapsed_ms = started.elapsed().as_millis() as i64;
         span.set_attribute(KeyValue::new("routing.latency_ms", elapsed_ms));
-        // `routing_decision` here covers the three outcomes that reach this line
-        // (query/clarify_suppressed/none); the plain `clarify` outcome returns
-        // earlier and logs its own "stage-1 routing decision" line above. Both
+        // `routing_decision` here covers the outcomes that reach this line
+        // (query/multi/multi_rejected/clarify_suppressed/none); the plain
+        // `clarify` outcome returns earlier and logs its own "stage-1 routing decision" line above. Both
         // carry the same field name so a log scraper (an eval, a dashboard) can
         // grep one key regardless of which path a turn took.
         // `routed_skills` names the candidates that clear the score gate — the
@@ -3664,6 +4045,7 @@ impl<E: ChatInferenceEngine + ?Sized + 'static, T: AgentToolExecutor + ?Sized + 
             system_prompt_override: None,
             prior_writes: Vec::new(),
             routing_disabled: false,
+            mentioned_entities: Vec::new(),
         };
 
         let cancel = CancellationToken::new();
@@ -3703,6 +4085,25 @@ impl<E: ChatInferenceEngine + ?Sized + 'static, T: AgentToolExecutor + ?Sized + 
         let mut sessions = self.sessions.write().await;
         if let Some(session) = sessions.get_mut(session_id) {
             session.prior_writes = prior_writes;
+        }
+    }
+
+    /// Seed the existing nodes the entity-resolution tier matched against this
+    /// turn's message.
+    ///
+    /// The tool-execution path uses these to refuse a `create_node` that would
+    /// duplicate one of them. The set is this turn's resolution only — it is
+    /// computed from the current message, so it must be re-seeded every turn
+    /// rather than carried over. Callers that build no workspace context simply
+    /// never call this.
+    pub async fn set_session_mentioned_entities(
+        &self,
+        session_id: &str,
+        mentioned_entities: Vec<crate::agent_types::MentionedEntity>,
+    ) {
+        let mut sessions = self.sessions.write().await;
+        if let Some(session) = sessions.get_mut(session_id) {
+            session.mentioned_entities = mentioned_entities;
         }
     }
 
@@ -4143,6 +4544,7 @@ mod tests {
             system_prompt_override: None,
             prior_writes: Vec::new(),
             routing_disabled: false,
+            mentioned_entities: Vec::new(),
         }
     }
 
@@ -8375,6 +8777,444 @@ mod tests {
         assert!(EMPTY_RESPONSE_FALLBACK.contains("try again"));
     }
 
+    // -- Duplicate-entity create guard -----------------------------------
+
+    fn tool_round(id: &str, name: &str, args: &str) -> Vec<StreamingChunk> {
+        vec![
+            StreamingChunk::ToolCallStart {
+                id: id.to_string(),
+                name: name.to_string(),
+                provider_extra: None,
+            },
+            StreamingChunk::ToolCallArgs {
+                id: id.to_string(),
+                args_json: args.to_string(),
+            },
+            StreamingChunk::Done {
+                usage: InferenceUsage::default(),
+            },
+        ]
+    }
+
+    fn text_round(text: &str) -> Vec<StreamingChunk> {
+        vec![
+            StreamingChunk::Token {
+                text: text.to_string(),
+            },
+            StreamingChunk::Done {
+                usage: InferenceUsage::default(),
+            },
+        ]
+    }
+
+    const NORTHWIND_CREATE: &str =
+        r#"{"node_type":"company_sold_to","content":"Northwind Trading"}"#;
+
+    /// A session whose turn resolved "Northwind Trading" to an existing record.
+    fn session_mentioning_northwind() -> AgentSession {
+        let mut session = new_session();
+        session.mentioned_entities = vec![crate::agent_types::MentionedEntity {
+            id: "nw-1".to_string(),
+            title: "Northwind Trading".to_string(),
+            node_type: "company_sold_to".to_string(),
+        }];
+        session
+    }
+
+    fn entity_executor() -> MockToolExecutor {
+        create_node_executor().with_tool(
+            "update_node",
+            json!({"type": "object"}),
+            json!({"id": "nodespace://nw-1", "property_count": 1}),
+        )
+    }
+
+    async fn run_entity_turn(
+        session: &mut AgentSession,
+        rounds: Vec<Vec<StreamingChunk>>,
+    ) -> (AgentTurnResult, Vec<String>) {
+        let engine = Arc::new(MockEngine::new(rounds));
+        let executor = Arc::new(RecordingToolExecutor::new(entity_executor()));
+        let calls = executor.calls_handle();
+        let agent_loop = LocalAgentLoop::new(engine, executor);
+        let result = agent_loop
+            .run_turn(
+                session,
+                "Add Northwind Trading to the companies we sell to.",
+                |_| {},
+                |_| {},
+                CancellationToken::new(),
+            )
+            .await
+            .expect("turn should succeed");
+        let calls = calls.lock().unwrap().clone();
+        (result, calls)
+    }
+
+    /// The acceptance criterion, on the path the locked model actually took:
+    /// it creates the record it was told exists, then reports success. The
+    /// create must not execute, and the user must be asked — naming the
+    /// existing record by id — in place of the model's success claim.
+    #[tokio::test]
+    async fn create_duplicating_a_mentioned_entity_asks_the_user() {
+        let mut session = session_mentioning_northwind();
+        let (result, calls) = run_entity_turn(
+            &mut session,
+            vec![
+                tool_round("tc_1", "create_node", NORTHWIND_CREATE),
+                text_round("Added Northwind Trading."),
+            ],
+        )
+        .await;
+
+        assert!(
+            !calls.iter().any(|c| c == "create_node"),
+            "the duplicate create must never reach the executor, got {calls:?}"
+        );
+        let clarify = result.clarify.expect("the user must be asked");
+        assert!(
+            clarify
+                .options
+                .iter()
+                .any(|o| o.contains("nodespace://nw-1")),
+            "an option must offer the existing record by id, got {:?}",
+            clarify.options
+        );
+        assert!(
+            result.response.starts_with(CLARIFICATION_OPENER),
+            "the success claim must be replaced, got {:?}",
+            result.response
+        );
+        assert_eq!(
+            session.messages.last().map(|m| m.content.as_str()),
+            Some(result.response.as_str()),
+            "history must carry the question, or the confirmation turn cannot see it"
+        );
+    }
+
+    /// The refusal is flagged as an error so it is never persisted as a
+    /// completed write: replayed into the next turn's `prior_writes`, it would
+    /// block the very create the user goes on to confirm.
+    #[tokio::test]
+    async fn refused_entity_duplicate_is_an_error_naming_the_record() {
+        let mut session = session_mentioning_northwind();
+        let (result, _) = run_entity_turn(
+            &mut session,
+            vec![
+                tool_round("tc_1", "create_node", NORTHWIND_CREATE),
+                text_round("Added."),
+            ],
+        )
+        .await;
+
+        let rec = result
+            .tool_calls_made
+            .iter()
+            .find(|r| r.name == "create_node")
+            .expect("the model still receives a result");
+        assert!(
+            rec.is_error,
+            "nothing was created, so it must not read as a write"
+        );
+        assert_eq!(rec.result["existing"]["id"], "nodespace://nw-1");
+        assert!(
+            rec.result["message"]
+                .as_str()
+                .is_some_and(|m| m.contains("route_clarify")),
+            "the model must be told how to hand the choice back, got {}",
+            rec.result
+        );
+    }
+
+    /// The model keeps its chance to correct itself: when it reads the refusal
+    /// and asks the user itself, its own question stands.
+    #[tokio::test]
+    async fn model_clarifying_after_the_refusal_keeps_its_own_question() {
+        let mut session = session_mentioning_northwind();
+        let (result, _) = run_entity_turn(
+            &mut session,
+            vec![
+                tool_round("tc_1", "create_node", NORTHWIND_CREATE),
+                tool_round(
+                    "tc_2",
+                    "route_clarify",
+                    r#"{"question":"Northwind Trading already exists — update it or add another?","options":[{"id":"nodespace://nw-1","label":"Update the existing one"},{"id":"new","label":"Add another"}]}"#,
+                ),
+            ],
+        )
+        .await;
+
+        let clarify = result
+            .clarify
+            .expect("the model's clarification ends the turn");
+        assert!(
+            clarify.question.contains("update it or add another"),
+            "the model's question must not be overwritten, got {:?}",
+            clarify.question
+        );
+        // Its option ids never reach the user, so the record's id is carried
+        // in the question — the confirmation turn recognises it by that id.
+        assert!(
+            result.response.contains("nodespace://nw-1"),
+            "the model's clarification must carry the existing id, got {:?}",
+            result.response
+        );
+        assert_eq!(
+            session.messages.last().map(|m| m.content.as_str()),
+            Some(result.response.as_str())
+        );
+    }
+
+    /// A routing question that merely NAMES the entity is not a confirmation:
+    /// only a clarification carrying the record's id disarms the guard.
+    #[tokio::test]
+    async fn a_clarification_naming_the_entity_without_its_id_does_not_disarm() {
+        let mut session = session_mentioning_northwind();
+        session.messages = vec![
+            ChatMessage::text(Role::User, "Track Northwind Trading for me."),
+            ChatMessage::text(
+                Role::Assistant,
+                format_clarification(
+                    "Should Northwind Trading be a customer or a company you sell to?",
+                    &["A customer".to_string(), "A company we sell to".to_string()],
+                ),
+            ),
+        ];
+        let (_, calls) = run_entity_turn(
+            &mut session,
+            vec![
+                tool_round("tc_1", "create_node", NORTHWIND_CREATE),
+                text_round("Added Northwind Trading."),
+            ],
+        )
+        .await;
+
+        assert!(
+            !calls.iter().any(|c| c == "create_node"),
+            "naming the entity is not confirming a duplicate of it, got {calls:?}"
+        );
+    }
+
+    /// A write after the refusal is the model acting on what it was told —
+    /// updating the existing record, say — and that correction stands.
+    #[tokio::test]
+    async fn a_write_after_the_refusal_is_left_standing() {
+        let mut session = session_mentioning_northwind();
+        let (result, calls) = run_entity_turn(
+            &mut session,
+            vec![
+                tool_round("tc_1", "create_node", NORTHWIND_CREATE),
+                tool_round(
+                    "tc_2",
+                    "update_node",
+                    r#"{"node_id":"nodespace://nw-1","field_values":{"signed_date":"2025-03-14"}}"#,
+                ),
+                text_round("Northwind Trading was already there, so I updated it."),
+            ],
+        )
+        .await;
+
+        assert!(calls.iter().any(|c| c == "update_node"));
+        assert!(
+            result.clarify.is_none(),
+            "a resolved turn must not be re-asked"
+        );
+        assert_eq!(
+            result.response,
+            "Northwind Trading was already there, so I updated it."
+        );
+    }
+
+    /// No new failure mode for ordinary creates: a name the turn did not
+    /// resolve to an existing record is created as before.
+    #[tokio::test]
+    async fn a_create_with_a_different_name_executes() {
+        let mut session = session_mentioning_northwind();
+        let (result, calls) = run_entity_turn(
+            &mut session,
+            vec![
+                tool_round(
+                    "tc_1",
+                    "create_node",
+                    r#"{"node_type":"company_sold_to","content":"Tailspin Toys"}"#,
+                ),
+                text_round("Added Tailspin Toys."),
+            ],
+        )
+        .await;
+
+        assert!(calls.iter().any(|c| c == "create_node"));
+        assert!(result.clarify.is_none());
+    }
+
+    /// The same name under a different type is a different thing: a venue
+    /// called Northwind Trading does not collide with the company.
+    #[tokio::test]
+    async fn a_create_of_the_same_name_as_another_type_executes() {
+        let mut session = session_mentioning_northwind();
+        let (_, calls) = run_entity_turn(
+            &mut session,
+            vec![
+                tool_round(
+                    "tc_1",
+                    "create_node",
+                    r#"{"node_type":"venue","content":"Northwind Trading"}"#,
+                ),
+                text_round("Added."),
+            ],
+        )
+        .await;
+
+        assert!(calls.iter().any(|c| c == "create_node"));
+    }
+
+    /// The confirmation turn: the user was asked and answered, so a create of
+    /// the same record is what they chose and must go through — otherwise a
+    /// second record with the same name would be unreachable.
+    #[tokio::test]
+    async fn the_confirmation_turn_can_create_the_duplicate() {
+        let mut session = session_mentioning_northwind();
+        session.messages = vec![
+            ChatMessage::text(
+                Role::User,
+                "Add Northwind Trading to the companies we sell to.",
+            ),
+            ChatMessage::text(
+                Role::Assistant,
+                format_clarification(
+                    "\"Northwind Trading\" already exists (nodespace://nw-1). Did you mean \
+                     that record?",
+                    &["Create a second \"Northwind Trading\"".to_string()],
+                ),
+            ),
+        ];
+        let (result, calls) = run_entity_turn(
+            &mut session,
+            vec![
+                tool_round("tc_1", "create_node", NORTHWIND_CREATE),
+                text_round("Created a second Northwind Trading."),
+            ],
+        )
+        .await;
+
+        assert!(
+            calls.iter().any(|c| c == "create_node"),
+            "the confirmed duplicate must reach the executor, got {calls:?}"
+        );
+        assert!(result.clarify.is_none(), "asking again would loop");
+    }
+
+    /// A write to a DIFFERENT record does not resolve the collision. In "add
+    /// Northwind and Tailspin", Tailspin landing says nothing about Northwind,
+    /// so "Added both." must still be replaced — and the Tailspin write must
+    /// stay visible in what replaces it.
+    #[tokio::test]
+    async fn a_write_to_another_record_does_not_release_the_backstop() {
+        let mut session = session_mentioning_northwind();
+        let (result, _) = run_entity_turn(
+            &mut session,
+            vec![
+                tool_round("tc_1", "create_node", NORTHWIND_CREATE),
+                tool_round(
+                    "tc_2",
+                    "create_node",
+                    r#"{"node_type":"company_sold_to","content":"Tailspin Toys"}"#,
+                ),
+                text_round("Added both."),
+            ],
+        )
+        .await;
+
+        assert!(
+            result.clarify.is_some(),
+            "an unrelated write must not stand in for resolving Northwind, got {:?}",
+            result.response
+        );
+        // In the question itself: the chat UI renders only the first paragraph
+        // above the option chips.
+        let question = result.clarify.map(|c| c.question).unwrap_or_default();
+        assert!(
+            question.contains("Tailspin Toys"),
+            "the Tailspin write must not vanish from what the user sees, got {question:?}"
+        );
+    }
+
+    /// The escape hatch is scoped to the entity asked about: an earlier,
+    /// unrelated clarification in the same intent must not wave a duplicate
+    /// through.
+    #[tokio::test]
+    async fn an_unrelated_answered_clarification_does_not_disarm_the_guard() {
+        let mut session = session_mentioning_northwind();
+        session.messages = vec![
+            ChatMessage::text(Role::User, "Help me track who we sell to."),
+            ChatMessage::text(
+                Role::Assistant,
+                format_clarification(
+                    "Do you want a new type, or to add a record to one you have?",
+                    &["A new type".to_string(), "A record".to_string()],
+                ),
+            ),
+        ];
+        let (result, calls) = run_entity_turn(
+            &mut session,
+            vec![
+                tool_round("tc_1", "create_node", NORTHWIND_CREATE),
+                text_round("Added Northwind Trading."),
+            ],
+        )
+        .await;
+
+        assert!(
+            !calls.iter().any(|c| c == "create_node"),
+            "a clarification about something else is not a confirmation, got {calls:?}"
+        );
+        assert!(result.clarify.is_some());
+    }
+
+    /// The backstop covers the loop's other exits, not only a plain final
+    /// reply: here the model repeats the refused create, the loop breaker ends
+    /// the tool rounds, and the user must still be asked.
+    #[tokio::test]
+    async fn backstop_applies_when_the_loop_breaker_ends_the_turn() {
+        let mut session = session_mentioning_northwind();
+        let (result, calls) = run_entity_turn(
+            &mut session,
+            vec![
+                tool_round("tc_1", "create_node", NORTHWIND_CREATE),
+                tool_round("tc_2", "create_node", NORTHWIND_CREATE),
+                text_round("Done."),
+            ],
+        )
+        .await;
+
+        assert!(!calls.iter().any(|c| c == "create_node"));
+        assert!(result.clarify.is_some(), "got {:?}", result.response);
+    }
+
+    #[test]
+    fn duplicate_entity_match_ignores_case_whitespace_and_markdown() {
+        let session = session_mentioning_northwind();
+        let args = json!({"node_type": "company_sold_to", "content": "  **northwind   TRADING** "});
+        assert!(mentioned_entity_duplicated_by(
+            &session.mentioned_entities,
+            &[],
+            "create_node",
+            &args
+        )
+        .is_some());
+    }
+
+    #[test]
+    fn duplicate_entity_match_is_exact_not_fuzzy() {
+        let session = session_mentioning_northwind();
+        let args = json!({"node_type": "company_sold_to", "content": "Northwind Traders"});
+        assert!(
+            mentioned_entity_duplicated_by(&session.mentioned_entities, &[], "create_node", &args)
+                .is_none(),
+            "a near-miss may be a distinct record and must not be refused"
+        );
+    }
+
     // -- Cross-turn duplicate-write guard --------------------------------
 
     /// Build a session that already carries one completed `create_node` write,
@@ -8781,6 +9621,71 @@ mod tests {
         // An empty or punctuation-only name can never match everything.
         assert!(!user_message_names_type("anything at all", ""));
         assert!(!user_message_names_type("anything at all", "-"));
+    }
+
+    /// Matching is by whole word: a type name that only appears inside an
+    /// unrelated word is not something the user asked for, while plural
+    /// forms in either direction and punctuation around the word still match.
+    #[test]
+    fn user_message_names_type_matches_whole_words_only() {
+        // Substrings of unrelated words must not match.
+        assert!(!user_message_names_type("track my tasks", "Ask"));
+        assert!(!user_message_names_type("a list of books", "Boo"));
+        assert!(!user_message_names_type("a notebook for ideas", "Note"));
+
+        // Plural tolerance survives in both directions, including "es".
+        assert!(user_message_names_type("a place for boxes", "Box"));
+        assert!(user_message_names_type("add an invoice type", "Invoices"));
+        // Punctuation next to the word does not hide it.
+        assert!(user_message_names_type(
+            "Customer, Invoice (linked).",
+            "Invoice"
+        ));
+
+        // "es" pairs only with stems that take it: "not" is not "Notes".
+        assert!(!user_message_names_type("I do not want that", "Notes"));
+        assert!(user_message_names_type("track classes", "Class"));
+    }
+
+    /// A multi-word name is found however the user joins its words —
+    /// camelCase, spaced, or run together — and vice versa.
+    #[test]
+    fn user_message_names_type_matches_concatenated_names() {
+        assert!(user_message_names_type(
+            "create a ReadingList and a Book type",
+            "Reading List"
+        ));
+        assert!(user_message_names_type(
+            "create a feature writeup type",
+            "FeatureWriteup"
+        ));
+        assert!(user_message_names_type(
+            "add a readinglist type",
+            "Reading List"
+        ));
+        assert!(user_message_names_type("add a followup type", "Follow-up"));
+        assert!(user_message_names_type("add some bugreports", "Bug Report"));
+
+        // An acronym prefix splits off as its own word.
+        assert!(user_message_names_type(
+            "log every http request",
+            "HTTPRequest"
+        ));
+
+        // The joined form is still a whole word, not a substring.
+        assert!(!user_message_names_type(
+            "add a readinglistitem type",
+            "Reading List"
+        ));
+    }
+
+    /// Scripts without case or spaces between words give the tokenizer no
+    /// boundaries, so a name written in one is found by substring instead —
+    /// otherwise it could never match running text.
+    #[test]
+    fn user_message_names_type_matches_uncased_scripts_by_substring() {
+        assert!(user_message_names_type("请创建发票类型", "发票"));
+        assert!(!user_message_names_type("请创建客户类型", "发票"));
     }
 
     /// A single `create_schema` call in a turn must execute normally — the

@@ -170,6 +170,46 @@ describe("GitHubClient project-board membership", () => {
     expect(issue.addedToProject).toBe(false);
   });
 
+  // Regression coverage for the silent-no-op gap: scheduled CI workflows
+  // (verify-macos-installer.yml, homebrew-drift-check.yml) reach this via
+  // NodeSpaceGitHubManager.findOrCreateTrackingIssue with a token that can
+  // never carry Projects v2 write scope, so the board add above fails on
+  // every one of those runs. `createIssue` is the one place that actually
+  // knows the add failed, so it -- not any particular caller -- must warn,
+  // otherwise a scheduled run's log reports clean success while quietly
+  // leaving the tracking issue off the board.
+  test("warns when the created issue could not be added to the project board", async () => {
+    const { client } = makeClientWithStubbedOctokit({ alreadyOnBoard: false });
+    (client as unknown as { octokit: { graphql: unknown } }).octokit.graphql = mock(async () => {
+      throw new Error("board unreachable");
+    });
+    const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+
+    try {
+      const issue = await client.createIssue("Title", "Body");
+
+      expect(issue.addedToProject).toBe(false);
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining(`#${ISSUE_NUMBER}`));
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("project board"));
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  test("does not warn when the created issue is added to the project board successfully", async () => {
+    const { client } = makeClientWithStubbedOctokit({ alreadyOnBoard: false });
+    const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+
+    try {
+      const issue = await client.createIssue("Title", "Body");
+
+      expect(issue.addedToProject).toBe(true);
+      expect(warnSpy).not.toHaveBeenCalled();
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
   test("a status update adds a missing issue to the board instead of failing", async () => {
     const { client, graphqlCalls } = makeClientWithStubbedOctokit({ alreadyOnBoard: false });
 
