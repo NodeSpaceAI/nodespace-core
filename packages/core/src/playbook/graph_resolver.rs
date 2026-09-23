@@ -434,22 +434,29 @@ impl GraphResolver {
     }
 
     /// Whether `segment` is declared as a "many" cardinality relationship on
-    /// `node_type`'s schema (schema node id == node_type, per this
-    /// codebase's convention). Only called when a relationship fetch already
-    /// returned zero or exactly one row -- the only counts where cardinality
-    /// can change the resolved shape (see the call site's doc: for two or
-    /// more rows the outcome is identical regardless of declared
-    /// cardinality, so callers skip this lookup there). Distinguishes "no
-    /// such relationship" from "a declared many-relationship with zero or
-    /// one current matches", which the raw row count alone can't tell apart.
-    /// Any lookup failure (schema not found, service error) conservatively
-    /// resolves to `false` -- i.e. today's existing row-count-only
-    /// behavior -- rather than guessing.
+    /// `node_type`, checked against the *effective* relationship set --
+    /// `node_type`'s own directly-declared relationships plus everything
+    /// inherited across the ADR-078 `extends` chain (`resolve_relationships`),
+    /// not just this schema's own declarations. A relationship declared only
+    /// on an ancestor schema and inherited (not redeclared) by `node_type`
+    /// must still be recognized here, the same extends-chain gap fixed for
+    /// `resolve_field_owners`/`resolve_relationships`'s other callers.
+    ///
+    /// Only called when a relationship fetch already returned zero or
+    /// exactly one row -- the only counts where cardinality can change the
+    /// resolved shape (see the call site's doc: for two or more rows the
+    /// outcome is identical regardless of declared cardinality, so callers
+    /// skip this lookup there). Distinguishes "no such relationship" from "a
+    /// declared many-relationship with zero or one current matches", which
+    /// the raw row count alone can't tell apart. Any lookup failure (schema
+    /// not found, service error) conservatively resolves to `false` -- i.e.
+    /// today's existing row-count-only behavior -- rather than guessing.
     async fn is_declared_many_relationship(&self, node_type: &str, segment: &str) -> bool {
         matches!(
-            self.node_service.get_schema_node(node_type).await,
-            Ok(Some(schema)) if schema
-                .get_relationship(segment)
+            self.node_service.resolve_relationships(node_type).await,
+            Ok((rels, _owners)) if rels
+                .iter()
+                .find(|r| r.name == segment)
                 .is_some_and(|r| r.cardinality == crate::models::schema::RelationshipCardinality::Many)
         )
     }
@@ -2288,6 +2295,83 @@ mod tests {
                 "expected Missing, got {:?}",
                 result
             );
+        }
+
+        /// Regression: a "many" relationship declared only on an ancestor
+        /// schema (ADR-078 `extends`), inherited but never redeclared by the
+        /// subtype, must still be recognized as many-cardinality by
+        /// `is_declared_many_relationship`. Before the fix that check read
+        /// `node_type`'s own directly-declared relationships only
+        /// (`get_schema_node` + `Schema::get_relationship`), so a bare
+        /// subtype schema had nothing to find and the lookup silently
+        /// returned "not many" -- exactly the same extends-chain gap
+        /// `resolve_relationships` was introduced to close for
+        /// `get_workflow_state` and `validate_play`. With zero current
+        /// matches this misclassification resolved the relationship to
+        /// `Missing` instead of an empty `Collection`, which is the wrong
+        /// shape for `for_each`/`sum`/`count` to iterate.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn inherited_many_relationship_with_zero_matches_resolves_to_empty_collection() {
+            let (svc, _tmp) = create_test_service().await;
+
+            crate::schema::handle_create_schema(
+                &svc,
+                json!({
+                    "name": "gr_ext_item",
+                    "fields": []
+                }),
+            )
+            .await
+            .expect("target schema creation failed");
+
+            crate::schema::handle_create_schema(
+                &svc,
+                json!({
+                    "name": "gr_ext_base",
+                    "fields": [],
+                    "relationships": [{
+                        "name": "items",
+                        "targetType": "gr_ext_item",
+                        "direction": "out",
+                        "cardinality": "many",
+                        "reverseName": "parent",
+                        "reverseCardinality": "one"
+                    }]
+                }),
+            )
+            .await
+            .expect("base schema creation failed");
+
+            crate::schema::handle_create_schema(
+                &svc,
+                json!({
+                    "name": "gr_ext_sub",
+                    "extends": "gr_ext_base",
+                    "fields": []
+                }),
+            )
+            .await
+            .expect("subtype schema creation failed");
+
+            // A subtype instance with NO items ever attached -- the relationship
+            // is only declared on the ancestor, never redeclared here.
+            let parent = make_node("gr-ext-p1", "gr_ext_sub", json!({}));
+            svc.create_node(parent.clone()).await.unwrap();
+
+            let mut resolver = GraphResolver::new(Arc::clone(&svc));
+            let result = resolver.resolve_path(&parent, &["items".to_string()]).await;
+            match result {
+                ResolvedValue::Collection(nodes) => assert!(
+                    nodes.is_empty(),
+                    "expected an empty Collection, got {} nodes",
+                    nodes.len()
+                ),
+                other => panic!(
+                    "expected an empty Collection (not Missing) for an inherited many-relationship \
+                     with zero current matches, got {:?}",
+                    other
+                ),
+            }
         }
     }
 }
