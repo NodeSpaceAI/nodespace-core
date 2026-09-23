@@ -457,9 +457,20 @@ impl GraphResolver {
     /// its `reverseCardinality` toward `project.tasks` is "many"), so a
     /// reverse match must never fall back to checking `cardinality`.
     ///
-    /// The reverse check mirrors `resolve_relationship_name`'s reverse
-    /// resolution in two further respects it would otherwise silently
-    /// diverge from:
+    /// The inbound side is checked in the same two passes, same order, as
+    /// `resolve_relationship_name`'s own reverse resolution -- reverse_name
+    /// first (`ResolvedRelName::Reverse`), then, only if nothing matched,
+    /// the SAME forward name walked inbound (`ResolvedRelName::InboundForward`,
+    /// e.g. `project_node.owner_project` where `task` declares `owner_project`
+    /// targeting `project`). Both passes read `reverse_cardinality`, never
+    /// `cardinality`: both ask "how many sources may point at this ONE
+    /// target", which is exactly what `reverse_cardinality` means regardless
+    /// of which name spelling the caller used to walk inbound -- `cardinality`
+    /// describes the declaring schema's own OUTBOUND fan-out instead, a
+    /// different question.
+    ///
+    /// Each pass mirrors `resolve_relationship_name` in two further respects
+    /// it would otherwise silently diverge from:
     /// - The `extends`/`extended_by` type-system relationship is excluded,
     ///   the same exclusion `resolve_relationships` already applies to the
     ///   forward set (see its doc comment) -- `get_inbound_relationships`
@@ -471,9 +482,9 @@ impl GraphResolver {
     ///   actually reaches `node` (probed via `get_related_nodes`), and the
     ///   FIRST name match by `get_inbound_relationships`'s order wins rather
     ///   than any match -- both exactly as `resolve_relationship_name` does,
-    ///   so a same-spelled `reverse_name` collision across schemas, or an
-    ///   untyped declaration that belongs to a different node entirely,
-    ///   can't force the wrong cardinality onto this traversal.
+    ///   so a same-spelled name collision across schemas, or an untyped
+    ///   declaration that belongs to a different node entirely, can't force
+    ///   the wrong cardinality onto this traversal.
     ///
     /// Only called when a relationship fetch already returned zero or
     /// exactly one row -- the only counts where cardinality can change the
@@ -506,11 +517,12 @@ impl GraphResolver {
             }
         }
 
-        // Reverse: some other schema's relationship declares `segment` as its
-        // `reverse_name` and targets `node_type` (or an ancestor of it, via
-        // `extends`). `get_inbound_relationships` already expands that chain
-        // internally, so a single call covers inheritance too -- no separate
-        // per-scope loop needed.
+        // Inbound: some other schema's relationship targets `node_type` (or
+        // an ancestor of it, via `extends`) and `segment` names it -- either
+        // its `reverse_name`, or (checked second, only if nothing matched)
+        // its own forward `name` walked inbound. `get_inbound_relationships`
+        // already expands the `extends` chain internally, so a single call
+        // covers inheritance too -- no separate per-scope loop needed.
         let inbound = match self.node_service.get_inbound_relationships(node_type).await {
             Ok(inbound) => inbound,
             Err(e) => {
@@ -522,37 +534,69 @@ impl GraphResolver {
             }
         };
 
-        for (_source_type, rel) in inbound {
+        for (_source_type, rel) in &inbound {
             if rel.reverse_name != segment {
                 continue;
             }
-            // Never a real data relationship -- see the doc comment above.
-            if crate::models::schema::is_type_system_relationship(&rel.name) {
+            match self.inbound_candidate_applies(node, rel).await {
+                Ok(true) => {
+                    return rel.reverse_cardinality
+                        == crate::models::schema::RelationshipCardinality::Many
+                }
+                Ok(false) => continue,
+                Err(()) => return false,
+            }
+        }
+        for (_source_type, rel) in &inbound {
+            if rel.name != segment {
                 continue;
             }
-            if rel.target_type.is_none() {
-                // Untyped: only counts if it actually reaches THIS node.
-                let reaches_this_node = match self
-                    .node_service
-                    .get_related_nodes(&node.id, &rel.name, "in")
-                    .await
-                {
-                    Ok(nodes) => !nodes.is_empty(),
-                    Err(e) => {
-                        warn!(
-                            "is_declared_many_relationship: failed to probe untyped relationship '{}' for {}: {}",
-                            rel.name, node.id, e
-                        );
-                        return false;
-                    }
-                };
-                if !reaches_this_node {
-                    continue;
+            match self.inbound_candidate_applies(node, rel).await {
+                Ok(true) => {
+                    return rel.reverse_cardinality
+                        == crate::models::schema::RelationshipCardinality::Many
                 }
+                Ok(false) => continue,
+                Err(()) => return false,
             }
-            return rel.reverse_cardinality == crate::models::schema::RelationshipCardinality::Many;
         }
         false
+    }
+
+    /// Whether an inbound relationship candidate (already known to name the
+    /// segment being resolved, by either `reverse_name` or `name`) actually
+    /// applies -- shared by both of
+    /// [`is_declared_many_relationship`](Self::is_declared_many_relationship)'s
+    /// passes. `Err(())` means the underlying lookup failed and has already
+    /// been logged; the caller should treat it the same as "not declared".
+    async fn inbound_candidate_applies(
+        &self,
+        node: &Node,
+        rel: &crate::models::schema::SchemaRelationship,
+    ) -> Result<bool, ()> {
+        // Never a real data relationship -- see is_declared_many_relationship's
+        // doc comment above.
+        if crate::models::schema::is_type_system_relationship(&rel.name) {
+            return Ok(false);
+        }
+        if rel.target_type.is_some() {
+            return Ok(true);
+        }
+        // Untyped: only counts if it actually reaches THIS node.
+        match self
+            .node_service
+            .get_related_nodes(&node.id, &rel.name, "in")
+            .await
+        {
+            Ok(nodes) => Ok(!nodes.is_empty()),
+            Err(e) => {
+                warn!(
+                    "is_declared_many_relationship: failed to probe untyped relationship '{}' for {}: {}",
+                    rel.name, node.id, e
+                );
+                Err(())
+            }
+        }
     }
 
     /// Build an enriched CEL context with graph-resolved paths.
@@ -2629,6 +2673,119 @@ mod tests {
                 "expected Missing for the type-system 'extended_by' segment, got {:?}",
                 result
             );
+        }
+
+        /// Regression: the SAME gap as the reverse-name tests above, but for
+        /// `ResolvedRelName::InboundForward` -- segment is the declaring
+        /// schema's own FORWARD name, walked inbound from the target's side
+        /// (not its `reverse_name`).
+        ///
+        /// `task` declares the forward relationship `owner_project`
+        /// (cardinality "one") targeting `project`, with `reverseName:
+        /// "owned_tasks"` and `reverseCardinality: "many"`. Walking
+        /// `project_node.owner_project` -- the literal forward spelling,
+        /// not the reverse name -- on a project with ZERO currently-owned
+        /// tasks is exactly the traversal `another_schemas_forward_name_walks_inbound`
+        /// above exercises, but with a "many" reverse cardinality instead of
+        /// "one": before this fix, `is_declared_many_relationship` only ever
+        /// matched a segment against `reverse_name`, never against `name`, so
+        /// this resolved to `Missing` instead of an empty `Collection` --
+        /// InboundForward and Reverse are the same "walk inbound" direction
+        /// and must be governed by the same `reverse_cardinality` field
+        /// regardless of which name spelling the caller used.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn inbound_forward_name_many_relationship_with_zero_matches_resolves_to_empty_collection(
+        ) {
+            let (svc, _tmp) = create_test_service().await;
+
+            create_schema(&svc, "gr_infmany_project", json!([])).await;
+            create_schema(
+                &svc,
+                "gr_infmany_task",
+                json!([{
+                    "name": "owner_project",
+                    "targetType": "gr_infmany_project",
+                    "direction": "out",
+                    "cardinality": "one",
+                    "reverseName": "owned_tasks",
+                    "reverseCardinality": "many"
+                }]),
+            )
+            .await;
+
+            // A project with NO tasks ever attached.
+            let project = make_node("gr-infmany-p1", "gr_infmany_project", json!({}));
+            svc.create_node(project.clone()).await.unwrap();
+
+            let mut resolver = GraphResolver::new(Arc::clone(&svc));
+            // The FORWARD spelling ("owner_project"), not the reverse name
+            // ("owned_tasks") the sibling reverse-name tests use.
+            let result = resolver
+                .resolve_path(&project, &["owner_project".to_string()])
+                .await;
+            match result {
+                ResolvedValue::Collection(nodes) => assert!(
+                    nodes.is_empty(),
+                    "expected an empty Collection, got {} nodes",
+                    nodes.len()
+                ),
+                other => panic!(
+                    "expected an empty Collection (not Missing) for an InboundForward-resolved \
+                     many-relationship with zero current matches, got {:?}",
+                    other
+                ),
+            }
+        }
+
+        /// Same gap, at exactly ONE current match -- before the fix this
+        /// resolved to a bare `Node` instead of a one-item `Collection`.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn inbound_forward_name_many_relationship_with_one_match_resolves_to_collection() {
+            let (svc, _tmp) = create_test_service().await;
+
+            create_schema(&svc, "gr_infmany1_project", json!([])).await;
+            create_schema(
+                &svc,
+                "gr_infmany1_task",
+                json!([{
+                    "name": "owner_project",
+                    "targetType": "gr_infmany1_project",
+                    "direction": "out",
+                    "cardinality": "one",
+                    "reverseName": "owned_tasks",
+                    "reverseCardinality": "many"
+                }]),
+            )
+            .await;
+
+            let project = make_node("gr-infmany1-p1", "gr_infmany1_project", json!({}));
+            svc.create_node(project.clone()).await.unwrap();
+            let task = make_node("gr-infmany1-t1", "gr_infmany1_task", json!({}));
+            svc.create_node(task.clone()).await.unwrap();
+            svc.create_relationship(
+                "gr-infmany1-t1",
+                "owner_project",
+                "gr-infmany1-p1",
+                json!({}),
+            )
+            .await
+            .unwrap();
+
+            let mut resolver = GraphResolver::new(Arc::clone(&svc));
+            let result = resolver
+                .resolve_path(&project, &["owner_project".to_string()])
+                .await;
+            match result {
+                ResolvedValue::Collection(nodes) => {
+                    assert_eq!(nodes.len(), 1);
+                    assert_eq!(nodes[0].id, "gr-infmany1-t1");
+                }
+                other => panic!(
+                    "expected a one-item Collection (not a bare Node) for an InboundForward-resolved \
+                     many-relationship with exactly one current match, got {:?}",
+                    other
+                ),
+            }
         }
     }
 }
