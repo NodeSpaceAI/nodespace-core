@@ -93,6 +93,17 @@ pub struct WorkflowState {
     /// correctly classified as `NotYetMet` or `Satisfied` — a caller should
     /// treat the response as incomplete, not authoritative, until a retry
     /// comes back with an empty `degraded_reasons`.
+    ///
+    /// Covers only *resolution failures* (an `Err` from a live schema/
+    /// extends-chain call), not the separate, narrower staleness the
+    /// graph-event candidate path can still have: `lookup_rules`'s ancestor
+    /// fan-out (`PlaybookLifecycleManager::ancestor_keys`) reads
+    /// `ancestor_cache` directly rather than resolving live, so it can omit a
+    /// Play registered on an ancestor type without that ever registering
+    /// here as a failure — a cache read cannot fail the way a live call can.
+    /// An empty `degraded_reasons` is therefore not a guarantee this
+    /// response's graph-event candidates reflect the current `extends`
+    /// graph, only that no *live* lookup failed while building it.
     pub degraded_reasons: Vec<String>,
     pub rules: Vec<RuleWorkflowState>,
 }
