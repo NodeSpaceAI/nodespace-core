@@ -635,6 +635,46 @@ fn reject_reserved_relationship_names(
     Ok(())
 }
 
+/// Reject `extends`/`extended_by` from `remove_relationships`'s by-name
+/// removal list — the same reserved names `add_relationships` blocks via
+/// [`reject_reserved_relationship_names`], applied to the removal side of
+/// `update_schema`.
+///
+/// `remove_relationships` is a generic by-name removal over the same
+/// relationship-table-backed declaration list `extends` is stored in (see
+/// `TYPE_SYSTEM_RELATIONSHIPS`), so without this guard a caller could name
+/// the type-system relationship here and silently clear a schema's `extends`
+/// edge — contradicting `UpdateSchemaParams::extends`'s own contract that the
+/// edge can only ever be re-targeted, never cleared. Built-in structural
+/// names (`has_child`, …) are included too, for the same reason
+/// `add_relationships` rejects them: they are never stored as declarations
+/// (see `builtin_exclusion_sql`), so naming one here is already a no-op, and
+/// rejecting it gives that consistent, early feedback instead of a silent
+/// no-op.
+fn reject_reserved_relationship_removal_names(names: &[String]) -> Result<(), MarkdownError> {
+    for name in names {
+        if crate::models::schema::is_reserved_relationship_name(name) {
+            return Err(MarkdownError::invalid_params(format!(
+                "Relationship name '{}' is reserved for a built-in structural relationship \
+                 ({}) and is never stored as a declaration, so it cannot be removed via \
+                 remove_relationships.",
+                name,
+                crate::models::schema::RESERVED_RELATIONSHIP_NAMES.join(", ")
+            )));
+        }
+        if crate::models::schema::is_type_system_relationship(name) {
+            return Err(MarkdownError::invalid_params(format!(
+                "Relationship name '{}' cannot be removed via remove_relationships: '{}' \
+                 describes the type system itself. Use the schema's own \"extends\" key to \
+                 re-target it to a different parent instead — there is no way to clear it.",
+                name,
+                crate::models::schema::EXTENDS_RELATIONSHIP,
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Snapshot of every schema's `extends` edge, for chain walking.
 ///
 /// Resolution needs a [`ParentLookup`](extends_chain::ParentLookup) that can
@@ -1530,7 +1570,10 @@ pub struct UpdateSchemaParams {
     /// Relationships to add
     #[serde(default)]
     pub add_relationships: Option<Vec<crate::models::schema::SchemaRelationship>>,
-    /// Relationship names to remove (soft-delete: edge table preserved)
+    /// Relationship names to remove (soft-delete: edge table preserved).
+    /// `extends`/`extended_by` are rejected here — see the `extends` field
+    /// above; the parent edge can only be re-targeted, never cleared, and
+    /// this generic by-name path is not a back door around that.
     #[serde(default)]
     pub remove_relationships: Option<Vec<String>>,
     /// New description (optional)
@@ -1618,6 +1661,14 @@ pub async fn handle_update_schema(
 
     let mut params: UpdateSchemaParams = serde_json::from_value(params)
         .map_err(|e| MarkdownError::invalid_params(format!("{e}")))?;
+
+    // `extends`/`extended_by` must not be removable through the generic
+    // by-name path — see `reject_reserved_relationship_removal_names`. The
+    // dedicated `extends` parameter above is the only way to change that
+    // edge, and it can only re-target it, never clear it.
+    if let Some(ref remove_names) = params.remove_relationships {
+        reject_reserved_relationship_removal_names(remove_names)?;
+    }
 
     // --- Phase 0: Verify schema exists, validate renames, run play impact check ---
     // Schema existence is verified upfront so rename/play validation errors are reported
@@ -1906,17 +1957,18 @@ pub async fn handle_update_schema(
             ))
         })?;
 
-    // Relationship removals are resolved here, ahead of field processing,
-    // purely so the extends-parent determination below can see them:
-    // `remove_relationships` can drop THIS call's own `extends` declaration,
-    // and both the `add_fields` and `add_relationships` ancestor-collision
-    // gates below need to know the parent as it stands AFTER that removal,
-    // not the pre-call snapshot — otherwise a call that both detaches from a
-    // parent and adds a field/relationship that only collides with that
-    // now-detached parent would be wrongly rejected. `add_relationships`
-    // itself is still folded in later, in its own "Process relationships"
-    // section below — nothing before that section depends on the ADDED
-    // relationships, only on removals.
+    // Relationship removals are resolved here, ahead of field processing, so
+    // `relationships` reflects them by the time the "Process relationships"
+    // section and the `extends` re-target block below build the final
+    // declaration list. `remove_relationships` can no longer drop THIS
+    // call's own `extends` declaration — see
+    // `reject_reserved_relationship_removal_names`, applied above before any
+    // mutation runs — so unlike ordinary removals, an `extends` removal is
+    // never in play here; the dedicated `extends` parameter is the only way
+    // to change that edge. `add_relationships` itself is still folded in
+    // later, in its own "Process relationships" section below — nothing
+    // before that section depends on the ADDED relationships, only on
+    // removals.
     let mut relationships = schema.relationships.clone();
     let mut relationships_removed = 0;
     if let Some(remove_names) = &params.remove_relationships {
@@ -1931,9 +1983,9 @@ pub async fn handle_update_schema(
     // field/relationship lists against the NEW parent further down, so
     // checking against the old parent here would be redundant at best, and
     // wrong if the call is deliberately moving away from a parent an
-    // addition happens to collide with. Otherwise, the parent as of this
-    // call's own `remove_relationships` (just applied above), which may have
-    // just dropped it.
+    // addition happens to collide with. Otherwise, the parent as declared on
+    // this schema — `remove_relationships` (just applied above) cannot have
+    // changed it, since dropping `extends` through that path is rejected.
     let current_ancestor_for_additive_check: Option<String> = if params.extends.is_none() {
         declared_extends_parent(&relationships)
     } else {
