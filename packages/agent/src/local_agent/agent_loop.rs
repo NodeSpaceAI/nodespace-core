@@ -890,30 +890,97 @@ fn schema_already_created_this_turn(executions: &[ToolExecutionRecord]) -> bool 
 /// "feature writeups") — so it lowercases both sides, and for a multi-word
 /// name requires every word to appear rather than the exact phrase.
 ///
+/// Matching is by whole word (see [`lowercase_words`]), so a name buried
+/// inside an unrelated word ("Ask" in "tasks", "Boo" in "books") does not
+/// count. Because both sides split at camelCase boundaries, "ReadingList"
+/// and "Reading List" are the same two words; a multi-word name written as
+/// one lowercase word ("readinglist") also matches. Plural tolerance is
+/// handled per word by [`words_match_modulo_plural`]. A name word in a
+/// script without case or spaces between words (Chinese, Japanese, Thai) has
+/// no word boundaries to match on, so it falls back to a substring search.
+///
 /// Loose in this direction is the safe way round, on *severity* rather than
-/// likelihood. Matching is substring-based, so it does say yes to some things
-/// the user did not ask for — a type named "Note" against "make a note of
-/// this", or a negated mention ("don't create a Sprint, just an ADR"). The
-/// asymmetry that justifies it anyway: a false positive creates a visible,
-/// deletable extra type, while a false negative silently delivers half of
-/// what was asked for, which is the failure this relaxation exists to remove.
-/// Single characters are ignored so a stray "a" or "I" cannot match
-/// everything.
+/// likelihood. Word matching still says yes to some things the user did not
+/// ask for — a type named "Note" against "make a note of this", or a negated
+/// mention ("don't create a Sprint, just an ADR") — because telling those
+/// apart takes intent, not tokenization. The asymmetry that justifies
+/// leaving them: a false positive creates a visible, deletable extra type,
+/// while a false negative silently delivers half of what was asked for,
+/// which is the failure this relaxation exists to remove. Single characters
+/// are ignored so a stray "a" or "I" cannot match everything.
 fn user_message_names_type(user_message: &str, schema_name: &str) -> bool {
-    let haystack = user_message.to_lowercase();
-    let name = schema_name.to_lowercase();
-    let mut words = name
-        .split(|c: char| !c.is_alphanumeric())
+    let message_words = lowercase_words(user_message);
+    let name_words: Vec<String> = lowercase_words(schema_name)
+        .into_iter()
         .filter(|w| w.chars().count() > 1)
-        .peekable();
-    if words.peek().is_none() {
+        .collect();
+    if name_words.is_empty() {
         return false;
     }
-    words.all(|word| {
-        // Match the singular stem too, so "Invoice" is found in "invoices".
-        let stem = word.strip_suffix('s').unwrap_or(word);
-        haystack.contains(word) || haystack.contains(stem)
-    })
+    let appears = |word: &str| {
+        if is_uncased_script(word) {
+            return message_words
+                .iter()
+                .any(|candidate| candidate.contains(word));
+        }
+        message_words
+            .iter()
+            .any(|candidate| words_match_modulo_plural(candidate, word))
+    };
+    name_words.iter().all(|word| appears(word)) || appears(&name_words.concat())
+}
+
+/// Whether `word` contains letters from a script without case, where
+/// [`lowercase_words`] cannot find word boundaries inside running text.
+fn is_uncased_script(word: &str) -> bool {
+    word.chars()
+        .any(|c| c.is_alphabetic() && !c.is_lowercase() && !c.is_uppercase())
+}
+
+/// Split `text` into lowercase words: at every non-alphanumeric character,
+/// and at camelCase boundaries — before an uppercase letter that follows a
+/// lowercase one ("Feature|Writeup"), and before the last capital of an
+/// acronym that starts a new word ("HTTP|Request").
+fn lowercase_words(text: &str) -> Vec<String> {
+    let chars: Vec<char> = text.chars().collect();
+    let mut words = Vec::new();
+    let mut current = String::new();
+    for (i, &c) in chars.iter().enumerate() {
+        let prev = i.checked_sub(1).map(|p| chars[p]);
+        let next = chars.get(i + 1);
+        let camel_boundary = c.is_uppercase()
+            && prev.is_some_and(|p| {
+                p.is_lowercase() || (p.is_uppercase() && next.is_some_and(|n| n.is_lowercase()))
+            });
+        if (!c.is_alphanumeric() || camel_boundary) && !current.is_empty() {
+            words.push(std::mem::take(&mut current));
+        }
+        if c.is_alphanumeric() {
+            current.extend(c.to_lowercase());
+        }
+    }
+    if !current.is_empty() {
+        words.push(current);
+    }
+    words
+}
+
+/// Whether two lowercase words are the same word, allowing either to carry a
+/// trailing plural the other lacks: "s" always ("invoice"/"invoices"), "es"
+/// only after a stem that takes it ("box"/"boxes", "class"/"classes"), so
+/// "not" does not pair with "notes".
+///
+/// Deliberately regular plurals only: "-ies" ("category"/"categories") and
+/// other inflections ("invoiced") are not recognised.
+fn words_match_modulo_plural(a: &str, b: &str) -> bool {
+    let (shorter, longer) = if a.len() <= b.len() { (a, b) } else { (b, a) };
+    match longer.strip_prefix(shorter) {
+        Some("" | "s") => true,
+        Some("es") => ["s", "x", "z", "ch", "sh", "o"]
+            .iter()
+            .any(|ending| shorter.ends_with(ending)),
+        _ => false,
+    }
 }
 
 /// Whether a second `create_schema` this turn should be refused.
@@ -9548,6 +9615,71 @@ mod tests {
         // An empty or punctuation-only name can never match everything.
         assert!(!user_message_names_type("anything at all", ""));
         assert!(!user_message_names_type("anything at all", "-"));
+    }
+
+    /// Matching is by whole word: a type name that only appears inside an
+    /// unrelated word is not something the user asked for, while plural
+    /// forms in either direction and punctuation around the word still match.
+    #[test]
+    fn user_message_names_type_matches_whole_words_only() {
+        // Substrings of unrelated words must not match.
+        assert!(!user_message_names_type("track my tasks", "Ask"));
+        assert!(!user_message_names_type("a list of books", "Boo"));
+        assert!(!user_message_names_type("a notebook for ideas", "Note"));
+
+        // Plural tolerance survives in both directions, including "es".
+        assert!(user_message_names_type("a place for boxes", "Box"));
+        assert!(user_message_names_type("add an invoice type", "Invoices"));
+        // Punctuation next to the word does not hide it.
+        assert!(user_message_names_type(
+            "Customer, Invoice (linked).",
+            "Invoice"
+        ));
+
+        // "es" pairs only with stems that take it: "not" is not "Notes".
+        assert!(!user_message_names_type("I do not want that", "Notes"));
+        assert!(user_message_names_type("track classes", "Class"));
+    }
+
+    /// A multi-word name is found however the user joins its words —
+    /// camelCase, spaced, or run together — and vice versa.
+    #[test]
+    fn user_message_names_type_matches_concatenated_names() {
+        assert!(user_message_names_type(
+            "create a ReadingList and a Book type",
+            "Reading List"
+        ));
+        assert!(user_message_names_type(
+            "create a feature writeup type",
+            "FeatureWriteup"
+        ));
+        assert!(user_message_names_type(
+            "add a readinglist type",
+            "Reading List"
+        ));
+        assert!(user_message_names_type("add a followup type", "Follow-up"));
+        assert!(user_message_names_type("add some bugreports", "Bug Report"));
+
+        // An acronym prefix splits off as its own word.
+        assert!(user_message_names_type(
+            "log every http request",
+            "HTTPRequest"
+        ));
+
+        // The joined form is still a whole word, not a substring.
+        assert!(!user_message_names_type(
+            "add a readinglistitem type",
+            "Reading List"
+        ));
+    }
+
+    /// Scripts without case or spaces between words give the tokenizer no
+    /// boundaries, so a name written in one is found by substring instead —
+    /// otherwise it could never match running text.
+    #[test]
+    fn user_message_names_type_matches_uncased_scripts_by_substring() {
+        assert!(user_message_names_type("请创建发票类型", "发票"));
+        assert!(!user_message_names_type("请创建客户类型", "发票"));
     }
 
     /// A single `create_schema` call in a turn must execute normally — the
