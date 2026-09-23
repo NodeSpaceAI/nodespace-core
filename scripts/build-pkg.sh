@@ -240,7 +240,30 @@ else
     xcrun stapler staple "${FINAL_PKG}"
 
     echo "==> Verifying Gatekeeper acceptance"
-    spctl --assess --type install --verbose "${FINAL_PKG}" && echo "    ✓ Gatekeeper: OK"
+    # --- BEGIN spctl-exit-code (verified by scripts/build-pkg-spctl-exit-code.test.ts) ---
+    # spctl's documented exit codes: 0 = accepted, 3 = assessment denied -- the
+    # only two verdicts spctl itself defines. Under `set -euo pipefail`, a bare
+    # `spctl ... && echo OK` treats ANY non-zero exit (a transient network/OCSP
+    # hiccup, a bad invocation, spctl crashing) as if it were exit 3, aborting
+    # the release build and misreporting a check failure as a genuine Gatekeeper
+    # rejection. Capture the exit code explicitly instead and branch on it, the
+    # same way scripts/verify-pkg-gatekeeper.ts's assessGatekeeperInstall does.
+    set +e
+    SPCTL_OUTPUT=$(spctl --assess --type install --verbose "${FINAL_PKG}" 2>&1)
+    SPCTL_EXIT=$?
+    set -e
+    if [[ ${SPCTL_EXIT} -eq 0 ]]; then
+        echo "    ✓ Gatekeeper: OK"
+    elif [[ ${SPCTL_EXIT} -eq 3 ]]; then
+        echo "error: Gatekeeper rejected ${FINAL_PKG} (spctl exited 3):" >&2
+        echo "${SPCTL_OUTPUT}" >&2
+        exit 1
+    else
+        echo "error: spctl exited ${SPCTL_EXIT} (expected 0 or 3) -- not a Gatekeeper verdict:" >&2
+        echo "${SPCTL_OUTPUT}" >&2
+        exit 1
+    fi
+    # --- END spctl-exit-code ---
 fi
 
 echo ""
