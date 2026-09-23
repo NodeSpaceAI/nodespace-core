@@ -895,7 +895,9 @@ fn schema_already_created_this_turn(executions: &[ToolExecutionRecord]) -> bool 
 /// count. Because both sides split at camelCase boundaries, "ReadingList"
 /// and "Reading List" are the same two words; a multi-word name written as
 /// one lowercase word ("readinglist") also matches. Plural tolerance is
-/// handled per word by [`words_match_modulo_plural`].
+/// handled per word by [`words_match_modulo_plural`]. A name word in a
+/// script without case or spaces between words (Chinese, Japanese, Thai) has
+/// no word boundaries to match on, so it falls back to a substring search.
 ///
 /// Loose in this direction is the safe way round, on *severity* rather than
 /// likelihood. Word matching still says yes to some things the user did not
@@ -916,6 +918,11 @@ fn user_message_names_type(user_message: &str, schema_name: &str) -> bool {
         return false;
     }
     let appears = |word: &str| {
+        if is_uncased_script(word) {
+            return message_words
+                .iter()
+                .any(|candidate| candidate.contains(word));
+        }
         message_words
             .iter()
             .any(|candidate| words_match_modulo_plural(candidate, word))
@@ -923,22 +930,34 @@ fn user_message_names_type(user_message: &str, schema_name: &str) -> bool {
     name_words.iter().all(|word| appears(word)) || appears(&name_words.concat())
 }
 
+/// Whether `word` contains letters from a script without case, where
+/// [`lowercase_words`] cannot find word boundaries inside running text.
+fn is_uncased_script(word: &str) -> bool {
+    word.chars()
+        .any(|c| c.is_alphabetic() && !c.is_lowercase() && !c.is_uppercase())
+}
+
 /// Split `text` into lowercase words: at every non-alphanumeric character,
-/// and at each lowercase-to-uppercase boundary so "FeatureWriteup" yields
-/// "feature" and "writeup".
+/// and at camelCase boundaries — before an uppercase letter that follows a
+/// lowercase one ("Feature|Writeup"), and before the last capital of an
+/// acronym that starts a new word ("HTTP|Request").
 fn lowercase_words(text: &str) -> Vec<String> {
+    let chars: Vec<char> = text.chars().collect();
     let mut words = Vec::new();
     let mut current = String::new();
-    let mut prev_lower = false;
-    for c in text.chars() {
-        let boundary = !c.is_alphanumeric() || (prev_lower && c.is_uppercase());
-        if boundary && !current.is_empty() {
+    for (i, &c) in chars.iter().enumerate() {
+        let prev = i.checked_sub(1).map(|p| chars[p]);
+        let next = chars.get(i + 1);
+        let camel_boundary = c.is_uppercase()
+            && prev.is_some_and(|p| {
+                p.is_lowercase() || (p.is_uppercase() && next.is_some_and(|n| n.is_lowercase()))
+            });
+        if (!c.is_alphanumeric() || camel_boundary) && !current.is_empty() {
             words.push(std::mem::take(&mut current));
         }
         if c.is_alphanumeric() {
             current.extend(c.to_lowercase());
         }
-        prev_lower = c.is_lowercase();
     }
     if !current.is_empty() {
         words.push(current);
@@ -9641,8 +9660,26 @@ mod tests {
         assert!(user_message_names_type("add a followup type", "Follow-up"));
         assert!(user_message_names_type("add some bugreports", "Bug Report"));
 
-        // Joining words does not relax whole-word matching.
-        assert!(!user_message_names_type("track my tasks", "T Ask"));
+        // An acronym prefix splits off as its own word.
+        assert!(user_message_names_type(
+            "log every http request",
+            "HTTPRequest"
+        ));
+
+        // The joined form is still a whole word, not a substring.
+        assert!(!user_message_names_type(
+            "add a readinglistitem type",
+            "Reading List"
+        ));
+    }
+
+    /// Scripts without case or spaces between words give the tokenizer no
+    /// boundaries, so a name written in one is found by substring instead —
+    /// otherwise it could never match running text.
+    #[test]
+    fn user_message_names_type_matches_uncased_scripts_by_substring() {
+        assert!(user_message_names_type("请创建发票类型", "发票"));
+        assert!(!user_message_names_type("请创建客户类型", "发票"));
     }
 
     /// A single `create_schema` call in a turn must execute normally — the
