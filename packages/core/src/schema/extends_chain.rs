@@ -143,31 +143,49 @@ pub fn detect_cycle(
     }
 }
 
-/// Flatten a resolved chain's field definitions into one effective set.
+/// Flatten a resolved chain's per-schema items into one effective,
+/// name-deduplicated set — the shape shared by [`flatten_chain_fields`] and
+/// [`crate::services::NodeService::resolve_relationships`]'s relationship
+/// merge.
 ///
-/// `chain_fields` is the per-schema field list in [`resolve_ancestor_chain`]
-/// order (own schema first, then each ancestor). A field declared by a nearer
-/// scope shadows a same-named field from a further one.
+/// `chain_items` is the per-schema item list in [`resolve_ancestor_chain`]
+/// order (own schema first, then each ancestor); `name_of` extracts the key
+/// two items are considered "the same declared name" by. An item declared by
+/// a nearer scope shadows a same-named item from a further one.
 ///
 /// **Shadowing here is a backstop, not a feature.** Redeclaration is rejected
 /// at write time (see `validate_no_field_redeclaration`), so a well-formed
 /// chain never produces a collision. Preferring the nearer declaration keeps
 /// resolution total if a collision arises anyway — through a retroactive
-/// ancestor field addition, the unresolved edge case ADR-078 names — rather
-/// than dropping a field or returning both.
-pub fn flatten_chain_fields(chain_fields: &[Vec<SchemaField>]) -> Vec<SchemaField> {
-    let mut out: Vec<SchemaField> = Vec::new();
+/// ancestor addition, the unresolved edge case ADR-078 names — rather than
+/// dropping an item or returning both.
+pub fn flatten_chain_by_name<T: Clone>(
+    chain_items: &[Vec<T>],
+    name_of: impl Fn(&T) -> &str,
+) -> Vec<T> {
+    let mut out: Vec<T> = Vec::new();
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
 
-    for fields in chain_fields {
-        for field in fields {
-            if seen.insert(field.name.clone()) {
-                out.push(field.clone());
+    for items in chain_items {
+        for item in items {
+            if seen.insert(name_of(item).to_string()) {
+                out.push(item.clone());
             }
         }
     }
 
     out
+}
+
+/// Flatten a resolved chain's field definitions into one effective set.
+///
+/// `chain_fields` is the per-schema field list in [`resolve_ancestor_chain`]
+/// order (own schema first, then each ancestor). A field declared by a nearer
+/// scope shadows a same-named field from a further one. Field-specific
+/// wrapper around [`flatten_chain_by_name`] — see its doc for the shadowing
+/// rationale, which applies here unchanged.
+pub fn flatten_chain_fields(chain_fields: &[Vec<SchemaField>]) -> Vec<SchemaField> {
+    flatten_chain_by_name(chain_fields, |f| f.name.as_str())
 }
 
 /// Resolve one stored enum value to what it means at `target_scope` (ADR-078).
@@ -374,6 +392,36 @@ mod tests {
 
         let names: Vec<&str> = flat.iter().map(|f| f.name.as_str()).collect();
         assert_eq!(names, vec!["severity", "status"]);
+    }
+
+    fn relationship(name: &str) -> crate::models::schema::SchemaRelationship {
+        use crate::models::schema::{RelationshipCardinality, RelationshipDirection};
+
+        crate::models::schema::SchemaRelationship {
+            name: name.to_string(),
+            target_type: None,
+            direction: RelationshipDirection::Out,
+            cardinality: RelationshipCardinality::Many,
+            required: None,
+            reverse_name: format!("{name}_reverse"),
+            reverse_cardinality: RelationshipCardinality::Many,
+            edge_fields: None,
+            description: None,
+        }
+    }
+
+    #[test]
+    fn flatten_chain_by_name_generalizes_over_relationships() {
+        // Same nearest-scope-wins shadowing as `flatten_chain_fields`, over a
+        // type with no `SchemaField`-shaped data — the generalization
+        // `resolve_relationships` reuses instead of hand-rolling its own
+        // dedup loop.
+        let own = vec![relationship("blocks")];
+        let parent = vec![relationship("assignee"), relationship("blocks")];
+        let flat = flatten_chain_by_name(&[own, parent], |r| r.name.as_str());
+
+        let names: Vec<&str> = flat.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, vec!["blocks", "assignee"]);
     }
 
     #[test]
