@@ -125,6 +125,17 @@ fn record_degradation(
 /// trigger is `scheduled` rather than `graph_event` are included too: a
 /// scheduled trigger's `node_type` scopes which nodes the engine scans, so
 /// membership in this node's type is the same eligibility test.
+///
+/// The scheduled/cron eligibility test resolves `node.node_type`'s `extends`
+/// ancestry live (`NodeService::resolve_type_chain`), the same mechanism the
+/// candidate field enumeration below already uses, rather than consulting
+/// `PlaybookLifecycleManager::ancestor_cache` directly. That cache is
+/// refreshed asynchronously by `PlaybookEngine` and can be stale after a
+/// failed refresh — acceptable for the zero-I/O hot trigger-dispatch path it
+/// exists to serve, but this function has no access to `PlaybookEngine`'s
+/// `ancestry_dirty` flag or its refresh routine to detect or repair that, and
+/// as a read-only out-of-band diagnostic it has no hot-path budget to
+/// protect. See the scheduled-candidate loop below for the full reasoning.
 pub async fn get_workflow_state(
     lifecycle: &Arc<RwLock<PlaybookLifecycleManager>>,
     node_service: &Arc<NodeService>,
@@ -202,6 +213,33 @@ pub async fn get_workflow_state(
         }
     };
 
+    // Live-resolved `extends` ancestry (ADR-078) for the scheduled/cron
+    // candidate fan-out below — resolved once, here, rather than read from
+    // `PlaybookLifecycleManager::ancestor_cache` inside the lock-held block.
+    // See this function's doc comment for why: that cache can be stale in a
+    // way this function cannot detect or self-heal, and this is a read-only,
+    // out-of-band diagnostic call with no hot-path budget that would justify
+    // trusting it anyway.
+    let ancestry = match node_service.resolve_type_chain(&node.node_type).await {
+        Ok(chain) => chain,
+        Err(e) => {
+            let msg = format!(
+                "extends-chain resolution for '{}' failed ({e}); scheduled/cron candidate \
+                 fan-out degraded to this node's own type only — a scheduled Play registered \
+                 on an ancestor type may be missing from this response",
+                node.node_type
+            );
+            record_degradation(
+                &mut degraded,
+                &node.node_type,
+                &e,
+                "get_workflow_state",
+                msg,
+            );
+            vec![node.node_type.clone()]
+        }
+    };
+
     let candidate_refs = {
         let lm = lifecycle.read().expect("lifecycle lock poisoned");
         let mut keys = vec![
@@ -255,11 +293,12 @@ pub async fn get_workflow_state(
         // `PlaybookLifecycleManager::ancestor_keys`) — an exact-string
         // `node_type` match here would be inconsistent with that and would
         // silently drop a scheduled Play registered on a base type from
-        // this response for every subtype node. `ancestors_of` returns the
-        // same ancestry `lookup_rules` uses internally (nearest first,
-        // including the type itself), so membership in it is the matching
-        // eligibility test for a scheduled trigger too.
-        let ancestry = lm.ancestors_of(&node.node_type);
+        // this response for every subtype node. `ancestry` (resolved live,
+        // above, via `NodeService::resolve_type_chain` — deliberately NOT
+        // `lm.ancestors_of`, see this function's doc comment) is the same
+        // shape `ancestors_of` would have returned had its cache been fresh
+        // (nearest first, including the type itself), so membership in it is
+        // the matching eligibility test for a scheduled trigger too.
         for entry in lm.cron_registry() {
             if ancestry.iter().any(|t| t == &entry.node_type) {
                 for r in &entry.rules {
@@ -1296,17 +1335,33 @@ mod tests {
     #[tokio::test]
     async fn scheduled_trigger_on_ancestor_type_is_returned_for_subtype_node() {
         let (svc, _tmp) = test_service().await;
+
+        crate::schema::handle_create_schema(
+            &svc,
+            json!({
+                "name": "wf_base_cron",
+                "fields": [
+                    { "name": "status", "type": "string", "protection": "user", "indexed": false }
+                ]
+            }),
+        )
+        .await
+        .expect("base schema creation failed");
+
+        crate::schema::handle_create_schema(
+            &svc,
+            json!({
+                "name": "wf_sub_cron",
+                "extends": "wf_base_cron",
+                "fields": []
+            }),
+        )
+        .await
+        .expect("subtype schema creation failed");
+
         let lifecycle = Arc::new(RwLock::new(PlaybookLifecycleManager::new()));
         {
             let mut lm = lifecycle.write().unwrap();
-            // These tests build the lifecycle manager directly rather than
-            // through `PlaybookEngine`, so the ancestor cache — normally kept
-            // fresh by `PlaybookEngine::refresh_ancestor_cache` — must be
-            // seeded by hand to exercise the fan-out path at all.
-            lm.set_ancestor_cache(std::collections::HashMap::from([(
-                "wf_sub_cron".to_string(),
-                vec!["wf_sub_cron".to_string(), "wf_base_cron".to_string()],
-            )]));
             let play = make_play_node(
                 "pb-cron-ancestor",
                 json!([{
@@ -1328,5 +1383,96 @@ mod tests {
              subtype node — before the fix this was silently 0"
         );
         assert!(state.rules[0].all_conditions_satisfied);
+        assert!(
+            state.degraded_reasons.is_empty(),
+            "the live extends-chain resolution succeeded here: {:?}",
+            state.degraded_reasons
+        );
+    }
+
+    /// Regression for the scheduled/cron cache-staleness gap: the fan-out
+    /// that matches a scheduled Play registered on an ancestor type against a
+    /// subtype node must not depend on
+    /// `PlaybookLifecycleManager::ancestor_cache` being fresh.
+    /// `get_workflow_state` is called with only a lifecycle manager and a
+    /// node service — it has no access to `PlaybookEngine`'s
+    /// `ancestry_dirty` flag or its `refresh_ancestor_cache` routine, so
+    /// unlike the live event path it cannot detect or repair a stale cache.
+    /// Before the fix, this candidate lookup read `lm.ancestors_of` directly,
+    /// so a stale or never-populated cache (a failed refresh, or the window
+    /// right after an `extends` edit lands and before the next event
+    /// re-refreshes it) silently dropped a genuinely active, satisfied
+    /// scheduled Play from this response.
+    ///
+    /// The cache below is deliberately seeded to claim `wf_sub_cron_stale`
+    /// has no ancestry at all, even though the real schemas created here
+    /// declare a genuine `extends` edge — simulating exactly that failed/
+    /// not-yet-refreshed state — to prove the fan-out no longer depends on
+    /// the cache being correct.
+    #[tokio::test]
+    async fn scheduled_trigger_on_ancestor_type_survives_stale_ancestor_cache() {
+        let (svc, _tmp) = test_service().await;
+
+        crate::schema::handle_create_schema(
+            &svc,
+            json!({
+                "name": "wf_base_cron_stale",
+                "fields": [
+                    { "name": "status", "type": "string", "protection": "user", "indexed": false }
+                ]
+            }),
+        )
+        .await
+        .expect("base schema creation failed");
+
+        crate::schema::handle_create_schema(
+            &svc,
+            json!({
+                "name": "wf_sub_cron_stale",
+                "extends": "wf_base_cron_stale",
+                "fields": []
+            }),
+        )
+        .await
+        .expect("subtype schema creation failed");
+
+        let lifecycle = Arc::new(RwLock::new(PlaybookLifecycleManager::new()));
+        {
+            let mut lm = lifecycle.write().unwrap();
+            // Deliberately stale: claims `wf_sub_cron_stale` has no ancestry,
+            // contradicting the real schema graph created above.
+            lm.set_ancestor_cache(std::collections::HashMap::from([(
+                "wf_sub_cron_stale".to_string(),
+                vec!["wf_sub_cron_stale".to_string()],
+            )]));
+            let play = make_play_node(
+                "pb-cron-stale-cache",
+                json!([{
+                    "name": "r1",
+                    "trigger": { "type": "scheduled", "cron": "0 9 * * *", "node_type": "wf_base_cron_stale" },
+                    "conditions": ["node.id != ''"],
+                    "actions": []
+                }]),
+            );
+            lm.activate_play(&play).unwrap();
+        }
+
+        let node = make_test_node("wf_sub_cron_stale", json!({}));
+        let state = get_workflow_state(&lifecycle, &svc, &node).await;
+        assert_eq!(
+            state.rules.len(),
+            1,
+            "expected the base-type scheduled rule to be found via a live extends-chain \
+             resolution even though the lifecycle manager's ancestor cache incorrectly \
+             claims this subtype has no ancestry — before the fix this depended on the \
+             cache and was silently 0"
+        );
+        assert!(state.rules[0].all_conditions_satisfied);
+        assert!(
+            state.degraded_reasons.is_empty(),
+            "the live extends-chain resolution succeeded here — the stale cache entry is \
+             irrelevant to it: {:?}",
+            state.degraded_reasons
+        );
     }
 }
