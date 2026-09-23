@@ -2374,10 +2374,10 @@ mod tests {
             }
         }
 
-        /// Regression for core#2868, a sibling to the zero-match case above.
-        /// A REAL edge is attached to a subtype instance via the extends
-        /// chain -- before the fix, this still resolved to an empty
-        /// `Collection`, indistinguishable from "nothing attached".
+        /// A sibling to the zero-match case above, but with a REAL edge
+        /// attached to a subtype instance via the extends chain -- before
+        /// the fix, this still resolved to an empty `Collection`,
+        /// indistinguishable from "nothing attached".
         ///
         /// `resolve_relationship_name`'s forward-name check (in
         /// `ops::rel_ops`, which `fetch_related_nodes` calls into) looked up
@@ -2391,8 +2391,8 @@ mod tests {
         /// not a failure" and short-circuits to an empty result -- even
         /// though the write path (`create_relationship` ->
         /// `resolve_declared_relationship`) is already chain-aware and
-        /// happily attached the edge below. core#2837 fixed the zero-match
-        /// *classification* (the sibling test above), but never touched
+        /// happily attached the edge below. The sibling test above only
+        /// covers the zero-match *classification* fix; it never exercised
         /// this fetch, so a genuinely populated edge on a subtype instance
         /// stayed silently unreadable until now.
         #[tokio::test(flavor = "multi_thread")]
