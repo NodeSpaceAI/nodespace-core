@@ -403,16 +403,34 @@ impl SqliteStore {
     /// execution (ADR-060 §1): an invariant rule's action very often targets
     /// the very node whose creation triggered it, which exists only inside
     /// this transaction until commit.
-    /// Write a node's derived `title` alone. `title` is an index column derived
-    /// from content and rootness, not user data, so it bumps neither `version`
-    /// nor `modified_at`; the `node_title_fts` update trigger keeps the index
+    /// Write a node's derived `title` alone, if the node is still at
+    /// `expected_version`. `title` is an index column derived from content and
+    /// rootness, not user data, so it bumps neither `version` nor `modified_at`
+    /// and emits no event; the `node_title_fts` update trigger keeps the index
     /// in step.
-    pub async fn set_title(&self, id: &str, title: Option<&str>) -> Result<()> {
+    ///
+    /// No event is needed because the only caller re-derives a title after a
+    /// rootness change, and rootness never changes a title the UI renders: the
+    /// UI reads `node.title` only for templated types (whose title ignores
+    /// rootness) or as a `title || content` fallback, which a root/child flip
+    /// leaves showing the same text. Emitting `NodeUpdated` or bumping the
+    /// version here would instead turn every move into an OCC conflict for any
+    /// client holding the node.
+    ///
+    /// The version guard makes the write lose to a concurrent content update
+    /// rather than overwrite that update's own (current) title with one derived
+    /// from the content read before it.
+    pub async fn set_title(
+        &self,
+        id: &str,
+        title: Option<&str>,
+        expected_version: i64,
+    ) -> Result<()> {
         self.write()
             .await
             .execute(
-                "UPDATE node SET title = ?1 WHERE id = ?2",
-                libsql::params![title.map(str::to_string), id.to_string()],
+                "UPDATE node SET title = ?1 WHERE id = ?2 AND version = ?3",
+                libsql::params![title.map(str::to_string), id.to_string(), expected_version],
             )
             .await
             .context("Failed to set title")?;

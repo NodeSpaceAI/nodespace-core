@@ -2844,14 +2844,20 @@ impl NodeService {
         Ok(Self::derive_title(node, is_root, schema.as_ref()))
     }
 
-    /// Re-derive `node_id`'s title after an edge write set whether it is a root.
+    /// Bring `node_id`'s derived state in line after an edge write set whether
+    /// it is a root. Every path that gains or drops a `has_child` edge calls
+    /// this, so "only roots are results" holds for both search indexes:
     ///
-    /// A title follows rootness for every type without a template — a root's
-    /// is its content, a child's is none — so every path that gains or drops a
-    /// `has_child` edge calls this. Without it an indented root keeps its title
-    /// and title search returns it as a document, and an outdented child stays
-    /// unfindable by name.
-    pub(crate) async fn refresh_title_for_rootness(
+    /// - **Title.** A title follows rootness for every type without a template
+    ///   (a root's is its content, a child's is none). Without the refresh an
+    ///   indented root keeps its title and title search returns it as a
+    ///   document, and an outdented child stays unfindable by name.
+    /// - **Embedding.** Only a tree root carries an embedding. A node that
+    ///   becomes a child drops its own, or vector search would still return it
+    ///   bare. Its (new) tree root is queued either way: a new root needs its
+    ///   first embedding, and a tree that gained a child needs its aggregate
+    ///   rebuilt.
+    pub(crate) async fn refresh_for_rootness(
         &self,
         node_id: &str,
         is_root: bool,
@@ -2867,15 +2873,27 @@ impl NodeService {
         let title = self.compute_title(&node, Some(is_root)).await?;
         if title != node.title {
             self.store
-                .set_title(node_id, title.as_deref())
+                .set_title(node_id, title.as_deref(), node.version)
                 .await
                 .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
         }
+        if !is_root {
+            self.store
+                .delete_embeddings(node_id)
+                .await
+                .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+        }
+        #[cfg(feature = "nlp")]
+        self.queue_root_for_embedding(node_id).await;
         Ok(())
     }
 
-    /// `_in_tx` twin of [`Self::refresh_title_for_rootness`].
-    pub(crate) async fn refresh_title_for_rootness_in_tx(
+    /// `_in_tx` twin of [`Self::refresh_for_rootness`], for the title only.
+    /// The tx paths (invariant-rule relationship actions, node merge) rarely
+    /// change rootness, and the embedding store has no transaction-scoped
+    /// writers; a stale embedding there is corrected the next time the node's
+    /// tree is re-embedded.
+    pub(crate) async fn refresh_for_rootness_in_tx(
         &self,
         tx: &NodeServiceTx<'_>,
         node_id: &str,

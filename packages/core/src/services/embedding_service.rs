@@ -686,8 +686,8 @@ impl NodeEmbeddingService {
         // BM25 is O(log n) via inverted index — sub-millisecond
         // KNN is ~50-100ms via HNSW — total latency = max(bm25, knn) ≈ same as before
         let search_start = std::time::Instant::now();
-        // With tokenized OR search, results are already ranked by combined BM25 score so
-        // fewer candidates are needed (top roots bubble up).
+        // Title hits are already ranked by bm25 and every hit is a root, so 2x
+        // the limit is enough headroom for Tier 3 after KNN overlap is removed.
         let bm25_limit = (limit as i64) * 2;
         // Each leg is timed inside the join so the profile attributes cost to KNN vs
         // BM25 individually — they run concurrently, so the wall-clock `search_time`
@@ -725,8 +725,14 @@ impl NodeEmbeddingService {
             })
             .filter(|t| !t.is_empty())
             .collect();
+        // Not for schemas: a schema's title is its type name, which common
+        // queries contain, so the boost would lift a type over the user's own
+        // documents (see `bm25_search_titles`).
         for result in &mut knn_results {
             if let Some(ref node) = result.node {
+                if node.node_type == "schema" {
+                    continue;
+                }
                 if let Some(ref title) = node.title {
                     let title_lower = title.to_lowercase();
                     if query_terms

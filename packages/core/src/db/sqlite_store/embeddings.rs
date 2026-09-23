@@ -631,6 +631,11 @@ impl SqliteStore {
     /// a child line has no title and cannot match. Body text is reachable through
     /// the root's embedding, not through this index.
     ///
+    /// Schemas are left out. A schema's title is its type name ("Task",
+    /// "Project"), a word that turns up in ordinary queries, so matching it
+    /// would rank a type above the user's own documents on "project roadmap".
+    /// A schema is still found by meaning, through its embedding.
+    ///
     /// Returns `(node_id, bm25)` pairs in rank order. FTS5 bm25 is NEGATIVE, more
     /// negative = better, matching `resolve_entities_by_title`.
     pub async fn bm25_search_titles(
@@ -660,8 +665,10 @@ impl SqliteStore {
             .join(" OR ");
 
         let sql = format!(
-            "SELECT id, bm25(node_title_fts) FROM node_title_fts \
-             WHERE node_title_fts MATCH ?1 ORDER BY rank LIMIT {}",
+            "SELECT f.id, bm25(node_title_fts) FROM node_title_fts f \
+             JOIN node n ON n.id = f.id \
+             WHERE node_title_fts MATCH ?1 AND n.node_type != 'schema' \
+             ORDER BY rank LIMIT {}",
             candidate_limit
         );
 

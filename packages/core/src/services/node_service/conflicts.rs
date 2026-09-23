@@ -237,12 +237,14 @@ impl NodeService {
 
         let survivor_id_for_tx = survivor_id.clone();
         let loser_id_for_tx = loser_id.clone();
+        let service_for_tx = self.clone();
 
         let (properties_merged, edges_repointed, edges_dropped) = self
             .with_transaction(move |ns_tx| {
                 let survivor_id = survivor_id_for_tx.clone();
                 let loser_id = loser_id_for_tx.clone();
                 let conflict_id = conflict_id.clone();
+                let service = service_for_tx.clone();
                 Box::pin(async move {
                     let (properties_merged, superseded, edges_repointed, edges_dropped) =
                         crate::db::SqliteStore::merge_nodes_in_tx(
@@ -252,6 +254,17 @@ impl NodeService {
                         )
                         .await
                         .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+
+                    // Re-pointing can hand the survivor the loser's parent edge,
+                    // changing whether it is a root — so its title follows.
+                    let survivor_is_root =
+                        crate::db::SqliteStore::get_parent_id_in_tx(ns_tx.store_tx(), &survivor_id)
+                            .await
+                            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?
+                            .is_none();
+                    service
+                        .refresh_for_rootness_in_tx(ns_tx, &survivor_id, survivor_is_root)
+                        .await?;
 
                     if let Some(conflict_id) = conflict_id {
                         let resolution = crate::models::Resolution::Merge {

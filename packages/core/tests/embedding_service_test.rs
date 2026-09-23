@@ -1429,17 +1429,99 @@ async fn test_bm25_search_titles_finds_task_date_and_record_titles() -> Result<(
     Ok(())
 }
 
-/// A core schema carries its name as its title, so it is findable by name.
+/// A core schema carries its name as its title and is in the title index, but
+/// the keyword half leaves it out: a type name is a common word, so "project
+/// roadmap" must return the user's roadmap, not the Project schema.
 #[tokio::test]
-async fn test_core_schemas_are_titled_and_indexed() -> Result<()> {
-    let (_embedding_service, _node_service, store, _temp_dir) = create_unified_test_env().await?;
+async fn test_core_schemas_are_titled_but_not_keyword_hits() -> Result<()> {
+    let (_embedding_service, node_service, store, _temp_dir) = create_unified_test_env().await?;
 
     let task_schema = store.get_node("task").await?.expect("core task schema");
     assert_eq!(task_schema.title.as_deref(), Some("Task"));
-    assert!(title_hits(&store, "task")
-        .await?
-        .contains(&"task".to_string()));
 
+    let roadmap = create_root_node(&node_service, "text", "Q3 project roadmap").await?;
+    let hits = title_hits(&store, "project roadmap").await?;
+    assert_eq!(
+        hits,
+        vec![roadmap.id],
+        "only the user's document, never the schema"
+    );
+
+    Ok(())
+}
+
+/// A user-defined record is found by its name, by the keyword half and by
+/// general search in the default scope — user-defined types are admitted to
+/// `Knowledge` from the schema list at search time.
+#[tokio::test]
+async fn test_user_defined_record_is_found_by_title() -> Result<()> {
+    let (embedding_service, node_service, store, _temp_dir) = create_unified_test_env().await?;
+    let node_service = Arc::new(node_service);
+    let embedding_service = Arc::new(embedding_service);
+
+    let created = nodespace_core::schema::handle_create_schema(
+        &node_service,
+        json!({ "name": "Company", "fields": [{ "name": "industry", "type": "text" }] }),
+    )
+    .await?;
+    let company_type = created["schemaId"].as_str().expect("schema id").to_string();
+    let record = create_root_node(&node_service, &company_type, "Northwind Trading").await?;
+
+    assert_eq!(
+        title_hits(&store, "Northwind Trading").await?,
+        vec![record.id.clone()]
+    );
+
+    let input = title_search_input("Northwind Trading", None);
+    let output = search_ops::search_semantic(&node_service, &embedding_service, input).await?;
+    assert!(
+        output.matched_nodes.iter().any(|n| n.id == record.id),
+        "the default scope admits a user-defined record"
+    );
+
+    Ok(())
+}
+
+/// Only a tree root carries an embedding: indenting a root under a parent
+/// drops the embedding it had, so vector search can't return it bare.
+#[tokio::test]
+async fn test_indented_root_drops_its_embedding() -> Result<()> {
+    use nodespace_core::models::NewEmbedding;
+
+    let (_embedding_service, node_service, store, _temp_dir) = create_unified_test_env().await?;
+
+    let parent = create_root_node(&node_service, "text", "Parent document").await?;
+    let moved = create_root_node(&node_service, "text", "Standalone note").await?;
+    store
+        .upsert_embeddings(
+            &moved.id,
+            vec![NewEmbedding {
+                node_id: moved.id.clone(),
+                vector: vec![0.5f32; 768],
+                model_name: Some("test-model".to_string()),
+                chunk_index: 0,
+                chunk_start: 0,
+                chunk_end: 15,
+                total_chunks: 1,
+                content_hash: "hash".to_string(),
+                token_count: 3,
+            }],
+        )
+        .await?;
+    assert!(store.has_embeddings(&moved.id).await?);
+
+    node_service
+        .move_node_unchecked(
+            &moved.id,
+            Some(&parent.id),
+            nodespace_core::services::InsertPosition::End,
+        )
+        .await?;
+
+    assert!(
+        !store.has_embeddings(&moved.id).await?,
+        "a node that became a child must not keep its own embedding"
+    );
     Ok(())
 }
 
