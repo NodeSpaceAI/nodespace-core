@@ -5460,9 +5460,7 @@ async fn test_remove_relationships_rejects_a_builtin_structural_name() {
 #[tokio::test]
 async fn test_create_schema_field_colliding_with_inherited_relationship_rejected() {
     let (svc, _tmp) = create_test_service().await;
-    handle_create_schema(&svc, json!({ "name": "Widget", "fields": [] }))
-        .await
-        .expect("widget schema should be created");
+    create_base_schema(&svc, "Widget", &[]).await;
     handle_create_schema(
         &svc,
         json!({
@@ -5501,9 +5499,7 @@ async fn test_create_schema_field_colliding_with_inherited_relationship_rejected
 #[tokio::test]
 async fn test_create_schema_relationship_colliding_with_inherited_field_rejected() {
     let (svc, _tmp) = create_test_service().await;
-    handle_create_schema(&svc, json!({ "name": "Widget", "fields": [] }))
-        .await
-        .expect("widget schema should be created");
+    create_base_schema(&svc, "Widget", &[]).await;
     create_base_schema(&svc, "Ticket", &["status"]).await;
 
     // "status" is a FIELD on the ancestor; declaring it as a RELATIONSHIP
@@ -5532,9 +5528,7 @@ async fn test_create_schema_relationship_colliding_with_inherited_field_rejected
 #[tokio::test]
 async fn test_add_fields_only_call_rejects_a_field_colliding_with_an_inherited_relationship() {
     let (svc, _tmp) = create_test_service().await;
-    handle_create_schema(&svc, json!({ "name": "Widget", "fields": [] }))
-        .await
-        .expect("widget schema should be created");
+    create_base_schema(&svc, "Widget", &[]).await;
     handle_create_schema(
         &svc,
         json!({
@@ -5580,9 +5574,7 @@ async fn test_add_fields_only_call_rejects_a_field_colliding_with_an_inherited_r
 async fn test_add_relationships_only_call_rejects_a_relationship_colliding_with_an_inherited_field()
 {
     let (svc, _tmp) = create_test_service().await;
-    handle_create_schema(&svc, json!({ "name": "Widget", "fields": [] }))
-        .await
-        .expect("widget schema should be created");
+    create_base_schema(&svc, "Widget", &[]).await;
     create_base_schema(&svc, "Ticket", &["status"]).await;
     handle_create_schema(
         &svc,
@@ -5617,9 +5609,7 @@ async fn test_add_relationships_only_call_rejects_a_relationship_colliding_with_
 #[tokio::test]
 async fn test_extends_retarget_rejects_a_field_colliding_with_the_new_parents_relationship() {
     let (svc, _tmp) = create_test_service().await;
-    handle_create_schema(&svc, json!({ "name": "Widget", "fields": [] }))
-        .await
-        .expect("widget schema should be created");
+    create_base_schema(&svc, "Widget", &[]).await;
     handle_create_schema(
         &svc,
         json!({
@@ -5660,5 +5650,42 @@ async fn test_extends_retarget_rejects_a_field_colliding_with_the_new_parents_re
     assert!(
         msg.contains("widgets") && msg.contains("additive"),
         "error should name the colliding name and the additive-only rule: {msg}"
+    );
+}
+
+#[tokio::test]
+async fn test_extends_retarget_is_not_falsely_rejected_by_the_schemas_own_extends_bookkeeping_row()
+{
+    let (svc, _tmp) = create_test_service().await;
+    create_base_schema(&svc, "OldParent", &[]).await;
+    // "extends" is not a reserved core property — only RELATIONSHIP
+    // declarations reject that name (it is NodeSpace's own type-system
+    // bookkeeping name, synthesized from the schema's `extends` key rather
+    // than declared directly). An ordinary field named "extends" is legal.
+    create_base_schema(&svc, "NewParent", &["extends"]).await;
+    handle_create_schema(
+        &svc,
+        json!({ "name": "Child", "extends": "oldparent", "fields": [] }),
+    )
+    .await
+    .expect("child extending oldparent should succeed");
+
+    // Child's own `relationships` list now carries the synthesized "extends"
+    // bookkeeping row targeting oldparent — it is not replaced with the new
+    // parent's until after the redeclaration checks run. Re-targeting to
+    // newparent must not compare that internal bookkeeping row against
+    // newparent's ordinary field also named "extends": it is not a real
+    // relationship declaration and must never be treated as one.
+    let result = handle_update_schema(
+        &svc,
+        json!({ "schema_id": "child", "extends": "newparent" }),
+    )
+    .await;
+
+    assert!(
+        result.is_ok(),
+        "an extends re-target must not be rejected by comparing the schema's own internal \
+         extends bookkeeping relationship row against an ordinary field the new parent \
+         happens to name \"extends\": {result:?}"
     );
 }

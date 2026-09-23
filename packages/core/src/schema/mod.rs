@@ -810,6 +810,31 @@ async fn validate_extends_target(
     Ok(())
 }
 
+/// [`NodeService::resolve_relationships`], mapping a storage-layer failure
+/// to the same `MarkdownError::internal_error` shape both redeclaration
+/// checks need. Shared because both the field-side and relationship-side
+/// checks below call this against the same `parent_id` for their
+/// cross-domain half.
+async fn resolve_relationships_or_error(
+    node_service: &Arc<NodeService>,
+    parent_id: &str,
+) -> Result<
+    (
+        Vec<crate::models::schema::SchemaRelationship>,
+        std::collections::HashMap<String, String>,
+    ),
+    MarkdownError,
+> {
+    node_service
+        .resolve_relationships(parent_id)
+        .await
+        .map_err(|e| {
+            MarkdownError::internal_error(format!(
+                "Failed to resolve relationships for '{parent_id}': {e}"
+            ))
+        })
+}
+
 /// Reject a field this schema would inherit — same-domain (field vs. field)
 /// or cross-domain (field vs. relationship).
 ///
@@ -871,14 +896,7 @@ async fn validate_no_field_redeclaration(
         }
     }
 
-    let (_, relationship_owners) = node_service
-        .resolve_relationships(parent_id)
-        .await
-        .map_err(|e| {
-            MarkdownError::internal_error(format!(
-                "Failed to resolve relationships for '{parent_id}': {e}"
-            ))
-        })?;
+    let (_, relationship_owners) = resolve_relationships_or_error(node_service, parent_id).await?;
 
     for field in own_fields {
         if let Some(owner) = relationship_owners.get(&field.name) {
@@ -953,16 +971,26 @@ async fn validate_no_relationship_redeclaration(
     parent_id: &str,
     own_relationships: &[crate::models::schema::SchemaRelationship],
 ) -> Result<(), MarkdownError> {
-    let (inherited, owners) = node_service
-        .resolve_relationships(parent_id)
-        .await
-        .map_err(|e| {
-            MarkdownError::internal_error(format!(
-                "Failed to resolve relationships for '{parent_id}': {e}"
-            ))
-        })?;
+    // Exclude the schema's own `extends`/`extended_by` bookkeeping row. At
+    // the `extends` re-target call site, `own_relationships` is this
+    // schema's FULL current relationship list, which still carries the OLD
+    // extends declaration at the point this validation runs — it isn't
+    // replaced with the new one until after this call returns. That name is
+    // type-system bookkeeping, not a real declaration a caller could
+    // collide with, and the same-domain check above is safe from it only
+    // because `resolve_relationships` already excludes it from `inherited`.
+    // The cross-domain field-owner map below has no equivalent exclusion
+    // (fields carry no type-system concept), so without filtering it here
+    // an ordinary field literally named "extends" on the new parent would
+    // falsely reject an otherwise-legal re-target.
+    let own_relationships: Vec<&crate::models::schema::SchemaRelationship> = own_relationships
+        .iter()
+        .filter(|r| !crate::models::schema::is_type_system_relationship(&r.name))
+        .collect();
 
-    for rel in own_relationships {
+    let (inherited, owners) = resolve_relationships_or_error(node_service, parent_id).await?;
+
+    for rel in &own_relationships {
         if let Some(existing) = inherited.iter().find(|r| r.name == rel.name) {
             // Name the schema that actually DECLARES the relationship, not
             // `parent_id` unconditionally — `parent_id` is only the nearest
@@ -996,7 +1024,7 @@ async fn validate_no_relationship_redeclaration(
             ))
         })?;
 
-    for rel in own_relationships {
+    for rel in &own_relationships {
         if let Some(owner) = field_owners.get(&rel.name) {
             return Err(MarkdownError::invalid_params(format!(
                 "Relationship '{}' is already declared as a field by '{}' (inherited via \
