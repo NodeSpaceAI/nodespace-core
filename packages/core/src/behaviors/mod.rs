@@ -2253,42 +2253,10 @@ impl NodeBehavior for CustomNodeBehavior {
 /// (optional, format-validated when present). Auth state (`auth_status`) lives
 /// on `DatabaseSettingsNode`; tenant role lives on the `has_role` edge
 /// (PersonNode → DatabaseSettingsNode). Neither is a PersonNode property.
+///
+/// A person can carry child nodes (notes about them). It is not embedded, and
+/// neither are those notes: it is a record found by its title.
 pub struct PersonNodeBehavior;
-
-impl PersonNodeBehavior {
-    /// Returns a display name for the person, falling back gracefully when both
-    /// name fields are absent. Mirrors the person schema's
-    /// `title_template: "{first_name} {last_name}"` (the two must agree — see
-    /// the schema comment), which this doesn't reach: `get_embeddable_content`
-    /// needs a display string without a schema/template lookup in hand.
-    pub fn compute_display_name(&self, node: &Node) -> String {
-        let person = node.properties.get("person");
-        let first = person
-            .and_then(|p| p.get("first_name"))
-            .and_then(|v| v.as_str())
-            .filter(|s| !s.is_empty());
-        let last = person
-            .and_then(|p| p.get("last_name"))
-            .and_then(|v| v.as_str())
-            .filter(|s| !s.is_empty());
-        let composed = [first, last]
-            .into_iter()
-            .flatten()
-            .collect::<Vec<_>>()
-            .join(" ");
-        if !composed.is_empty() {
-            return composed;
-        }
-        if let Some(email) = person
-            .and_then(|p| p.get("email"))
-            .and_then(|v| v.as_str())
-            .filter(|s| !s.is_empty())
-        {
-            return email.to_string();
-        }
-        "Unknown".to_string()
-    }
-}
 
 impl NodeBehavior for PersonNodeBehavior {
     fn type_name(&self) -> &'static str {
@@ -2312,20 +2280,15 @@ impl NodeBehavior for PersonNodeBehavior {
     }
 
     fn can_have_children(&self) -> bool {
-        false
+        true
     }
 
     fn supports_markdown(&self) -> bool {
         false
     }
 
-    fn get_embeddable_content(&self, node: &Node) -> Option<String> {
-        let display = self.compute_display_name(node);
-        if display == "Unknown" {
-            None
-        } else {
-            Some(display)
-        }
+    fn get_embeddable_content(&self, _node: &Node) -> Option<String> {
+        None
     }
 
     fn get_parent_contribution(&self, _node: &Node) -> Option<String> {
@@ -5583,60 +5546,16 @@ mod tests {
     }
 
     #[test]
-    fn person_compute_display_name_with_full_name() {
-        let behavior = PersonNodeBehavior;
-        let node = person_node(json!({"person": {"first_name": "Alice", "last_name": "Example"}}));
-        assert_eq!(behavior.compute_display_name(&node), "Alice Example");
+    fn person_can_have_children() {
+        assert!(PersonNodeBehavior.can_have_children());
     }
 
     #[test]
-    fn person_compute_display_name_with_first_name_only() {
-        let behavior = PersonNodeBehavior;
-        let node = person_node(json!({"person": {"first_name": "Alice"}}));
-        assert_eq!(behavior.compute_display_name(&node), "Alice");
-    }
-
-    #[test]
-    fn person_compute_display_name_with_last_name_only() {
-        let behavior = PersonNodeBehavior;
-        let node = person_node(json!({"person": {"last_name": "Example"}}));
-        assert_eq!(behavior.compute_display_name(&node), "Example");
-    }
-
-    #[test]
-    fn person_compute_display_name_falls_back_to_email() {
-        let behavior = PersonNodeBehavior;
-        let node = person_node(json!({"person": {"email": "alice@example.com"}}));
-        assert_eq!(behavior.compute_display_name(&node), "alice@example.com");
-    }
-
-    #[test]
-    fn person_compute_display_name_empty_is_unknown() {
-        let behavior = PersonNodeBehavior;
-        let node = person_node(json!({}));
-        assert_eq!(behavior.compute_display_name(&node), "Unknown");
-    }
-
-    #[test]
-    fn person_cannot_have_children() {
-        assert!(!PersonNodeBehavior.can_have_children());
-    }
-
-    #[test]
-    fn person_embeddable_content_returns_display_name_when_known() {
+    fn person_is_not_embedded() {
         let behavior = PersonNodeBehavior;
         let node = person_node(json!({"person": {"first_name": "Bob"}}));
-        assert_eq!(
-            behavior.get_embeddable_content(&node),
-            Some("Bob".to_string())
-        );
-    }
-
-    #[test]
-    fn person_embeddable_content_is_none_when_unknown() {
-        let behavior = PersonNodeBehavior;
-        let node = person_node(json!({}));
-        assert!(behavior.get_embeddable_content(&node).is_none());
+        assert_eq!(behavior.get_embeddable_content(&node), None);
+        assert_eq!(behavior.get_parent_contribution(&node), None);
     }
 
     // --- DatabaseSettingsNodeBehavior tests ---
