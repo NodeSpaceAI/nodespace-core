@@ -8467,13 +8467,25 @@ mod tests {
 
     /// `reverse_cardinality` is enforced at the store layer, not merely
     /// documented: a `reverse_cardinality: One` target end (task's derived
-    /// `assignee`, the inverse of person's outbound `tasks`) must reject a
-    /// second edge from a DIFFERENT source. The forward `cardinality: Many`
-    /// check never fires here — each person's own outgoing `tasks` count is
-    /// 0 before their own call — so without the reverse-side check this
-    /// would silently succeed and leave the task with two assignees.
+    /// `assignee`, the inverse of person's outbound `tasks`) must not end up
+    /// with two edges when a DIFFERENT source targets it. The forward
+    /// `cardinality: Many` check never fires here — each person's own
+    /// outgoing `tasks` count is 0 before their own call — so without the
+    /// reverse-side check this would silently succeed and leave the task
+    /// with two assignees.
+    ///
+    /// Enforced as replace, not reject: the second `create_relationship`
+    /// evicts the first person's edge rather than failing. Reject was tried
+    /// first and broke a real, already-shipped caller — the Linear
+    /// `linear-cycle-rollover` recipe reassigns a task between cycles via
+    /// add-then-remove (add the new edge, then remove the old one), which
+    /// requires the add half to succeed while the old edge is still present.
+    /// Rejecting here would make every reverse-cardinality-one reassignment
+    /// a two-step dance (remove, then add) with no way to add-then-remove
+    /// safely, which is exactly the crash-safety property that recipe
+    /// depends on.
     #[tokio::test]
-    async fn create_relationship_rejects_second_edge_into_reverse_cardinality_one_target() {
+    async fn create_relationship_replaces_prior_edge_into_reverse_cardinality_one_target() {
         use crate::services::{CreateNodeParams, InsertPositionOwned};
 
         let (service, _temp) = create_test_service().await;
@@ -8521,26 +8533,12 @@ mod tests {
             .await
             .expect("first assignment must succeed");
 
-        let err = service
+        service
             .create_relationship(&person2_id, "tasks", &task_id, serde_json::json!({}))
             .await
-            .expect_err("a second edge into a reverse-cardinality-one target must be rejected");
+            .expect("a second edge into a reverse-cardinality-one target must replace the first");
 
-        assert!(
-            matches!(err, NodeServiceError::InvalidUpdate(_)),
-            "expected InvalidUpdate, got {:?}",
-            err
-        );
-        let msg = err.to_string();
-        assert!(
-            msg.contains("assignee") && msg.contains(&task_id),
-            "error should name the reverse relationship ('assignee') and the target end so it \
-             reads correctly from the side the caller is on, got: {}",
-            msg
-        );
-
-        // The task must still show exactly one assignee — the rejected
-        // second call must not have been stored.
+        // The task must show exactly one assignee — person2, not both.
         let inbound = crate::ops::rel_ops::get_node_relationships(&service, &task_id)
             .await
             .unwrap();
@@ -8551,18 +8549,32 @@ mod tests {
             .expect("task must show the inbound (assignee) side of the relationship");
         assert_eq!(
             in_group.count, 1,
-            "the rejected second edge must not have been stored"
+            "the replaced edge must not leave the task with two assignees"
         );
-        assert_eq!(in_group.related[0].id, person1_id);
+        assert_eq!(in_group.related[0].id, person2_id);
+
+        // person1's outbound side must no longer show the task.
+        let person1_outbound = crate::ops::rel_ops::get_node_relationships(&service, &person1_id)
+            .await
+            .unwrap();
+        let person1_group = person1_outbound
+            .groups
+            .iter()
+            .find(|g| g.relationship_name == "tasks" && g.direction == "out")
+            .expect("person1 still shows the declared (now empty) tasks group");
+        assert_eq!(
+            person1_group.count, 0,
+            "person1's evicted edge must actually be gone, not merely hidden"
+        );
     }
 
-    /// The forward `cardinality: One` check is unchanged by the reverse-side
-    /// check added alongside it: a source may still hold at most one edge of
-    /// a relationship type. Uses a dedicated schema pair with
-    /// `reverseCardinality: many` so only the forward check is in play,
-    /// isolating it from `create_relationship_rejects_second_edge_into_reverse_cardinality_one_target`.
+    /// The forward `cardinality: One` check is replace, matching the reverse
+    /// side (see `create_relationship_replaces_prior_edge_into_reverse_cardinality_one_target`
+    /// for why reject was rejected as the shared semantics). Uses a dedicated
+    /// schema pair with `reverseCardinality: many` so only the forward check
+    /// is in play.
     #[tokio::test]
-    async fn create_relationship_rejects_second_edge_from_cardinality_one_source() {
+    async fn create_relationship_replaces_prior_edge_from_cardinality_one_source() {
         let (service, _temp) = create_test_service().await;
         let service = std::sync::Arc::new(service);
         let store = service.store();
@@ -8653,24 +8665,105 @@ mod tests {
             .await
             .expect("first edge from a cardinality-one source must succeed");
 
-        let err = service
+        service
             .create_relationship("g1", "primary_widget", "w2", serde_json::json!({}))
             .await
-            .expect_err(
-                "a second edge from a cardinality-one source must still be rejected, \
-                 unchanged from before this change",
-            );
+            .expect("a second edge from a cardinality-one source must replace the first");
 
-        assert!(
-            matches!(err, NodeServiceError::InvalidUpdate(_)),
-            "expected InvalidUpdate, got {:?}",
-            err
+        let targets = service
+            .get_related_nodes("g1", "primary_widget", "out")
+            .await
+            .unwrap();
+        assert_eq!(
+            targets.len(),
+            1,
+            "g1 must hold exactly one primary_widget edge, not both"
         );
-        assert!(
-            err.to_string().contains("cardinality 'one'"),
-            "error should name the forward cardinality constraint, got: {}",
-            err
-        );
+        assert_eq!(targets[0].id, "w2");
+    }
+
+    /// The exact scenario the reassignment machinery
+    /// (`create_relationship_replaces_prior_edge_into_reverse_cardinality_one_target`'s
+    /// doc) depends on: adding a new edge into a reverse-cardinality-one
+    /// target that still has its old edge (add-before-remove) must succeed,
+    /// and the OLD edge must actually be gone afterward — not because the
+    /// caller removed it, but because the add itself replaced it. A
+    /// since-removed `remove_relationship` of the same (now-gone) edge must
+    /// then be a harmless no-op, matching `delete_relationship`'s documented
+    /// idempotency.
+    #[tokio::test]
+    async fn add_then_remove_reassignment_survives_reverse_cardinality_one_replace() {
+        use crate::services::{CreateNodeParams, InsertPositionOwned};
+
+        let (service, _temp) = create_test_service().await;
+        let service = std::sync::Arc::new(service);
+
+        let person1_id = service
+            .create_node_with_parent(CreateNodeParams {
+                id: None,
+                node_type: "person".to_string(),
+                content: String::new(),
+                parent_id: None,
+                position: InsertPositionOwned::End,
+                properties: serde_json::json!({}),
+                lifecycle_status: None,
+            })
+            .await
+            .unwrap();
+        let person2_id = service
+            .create_node_with_parent(CreateNodeParams {
+                id: None,
+                node_type: "person".to_string(),
+                content: String::new(),
+                parent_id: None,
+                position: InsertPositionOwned::End,
+                properties: serde_json::json!({}),
+                lifecycle_status: None,
+            })
+            .await
+            .unwrap();
+        let task_id = service
+            .create_node_with_parent(CreateNodeParams {
+                id: None,
+                node_type: "task".to_string(),
+                content: "Ship the feature".to_string(),
+                parent_id: None,
+                position: InsertPositionOwned::End,
+                properties: serde_json::json!({}),
+                lifecycle_status: None,
+            })
+            .await
+            .unwrap();
+
+        service
+            .create_relationship(&person1_id, "tasks", &task_id, serde_json::json!({}))
+            .await
+            .unwrap();
+
+        // Add before remove — person2's edge is created while person1's is
+        // still live.
+        service
+            .create_relationship(&person2_id, "tasks", &task_id, serde_json::json!({}))
+            .await
+            .expect("add-before-remove reassignment must succeed via replace");
+
+        // The now-redundant remove of person1's already-evicted edge must be
+        // a harmless no-op, not an error.
+        service
+            .delete_relationship(&person1_id, "tasks", &task_id)
+            .await
+            .expect("removing an already-replaced edge must be a no-op, not fail");
+
+        let inbound = crate::ops::rel_ops::get_node_relationships(&service, &task_id)
+            .await
+            .unwrap();
+        let in_group = inbound
+            .groups
+            .iter()
+            .find(|g| g.relationship_name == "tasks" && g.direction == "in")
+            .unwrap();
+        assert_eq!(in_group.count, 1);
+        assert_eq!(in_group.related[0].id, person2_id);
     }
 
     /// The in-place edit path is validated too — otherwise an edge created with

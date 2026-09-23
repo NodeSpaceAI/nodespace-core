@@ -554,26 +554,51 @@ impl SqliteStore {
         Ok(row.get::<i64>(0).unwrap_or(0))
     }
 
-    /// `_in_tx` twin of [`Self::get_relationship_source_types`] (ADR-069 §1a).
-    pub(crate) async fn get_relationship_source_types_in_tx(
+    /// `_in_tx` twin of [`Self::get_relationship_edges_into_target`] (ADR-069 §1a).
+    pub(crate) async fn get_relationship_edges_into_target_in_tx(
         tx: &Tx<'_>,
         target_id: &str,
         rel_type: &str,
-    ) -> Result<Vec<String>> {
+    ) -> Result<Vec<(String, String, String)>> {
         let mut rows = tx
             .conn()
             .query(
-                "SELECT n.node_type FROM node n JOIN relationship r ON r.in_node = n.id \
-             WHERE r.out_node = ?1 AND r.relationship_type = ?2",
+                "SELECT r.id, n.id, n.node_type FROM node n JOIN relationship r ON r.in_node = n.id \
+                 WHERE r.out_node = ?1 AND r.relationship_type = ?2",
                 libsql::params![target_id.to_string(), rel_type.to_string()],
             )
             .await
-            .context("Failed to get reverse relationship source types")?;
-        let mut types = Vec::new();
+            .context("Failed to get reverse relationship edges")?;
+        let mut edges = Vec::new();
         while let Some(row) = rows.next().await? {
-            types.push(row.get::<String>(0)?);
+            edges.push((
+                row.get::<String>(0)?,
+                row.get::<String>(1)?,
+                row.get::<String>(2)?,
+            ));
         }
-        Ok(types)
+        Ok(edges)
+    }
+
+    /// `_in_tx` twin of [`Self::get_relationship_edges_from_source`] (ADR-069 §1a).
+    pub(crate) async fn get_relationship_edges_from_source_in_tx(
+        tx: &Tx<'_>,
+        source_id: &str,
+        rel_type: &str,
+    ) -> Result<Vec<(String, String)>> {
+        let mut rows = tx
+            .conn()
+            .query(
+                "SELECT id, out_node FROM relationship WHERE in_node = ?1 AND relationship_type = ?2",
+                libsql::params![source_id.to_string(), rel_type.to_string()],
+            )
+            .await
+            .context("Failed to get forward relationship edges")?;
+        let mut edges = Vec::new();
+        while let Some(row) = rows.next().await? {
+            edges.push((row.get::<String>(0)?, row.get::<String>(1)?));
+        }
+        Ok(edges)
     }
 
     /// `_in_tx` twin of [`Self::get_parent_id`] (ADR-069 §1a).
@@ -1521,40 +1546,73 @@ impl SqliteStore {
     ///
     /// `check_relationship_exists` counts a SOURCE's outgoing edges
     /// (`in_node = source_id`) to enforce the declaring (forward)
-    /// `cardinality`. This returns the node TYPE of each source with an
-    /// incoming edge into `target_id` (`out_node = target_id`) for the same
-    /// `relationship_type`, so a `reverse_cardinality: One` target end can be
-    /// enforced the same way — but scoped to the declaring schema.
+    /// `cardinality`. This returns `(relationship id, source id, source node
+    /// type)` for every edge into `target_id` (`out_node = target_id`) of the
+    /// same `relationship_type`, so a `reverse_cardinality: One` target end
+    /// can be enforced — and, when violated, the offending edge(s) evicted —
+    /// the same way.
     ///
-    /// Types, not just a count: the store keys an edge on `relationship_type`
-    /// alone, so two schemas that both declare the same forward name toward
-    /// the same target type (e.g. `person.tasks` and `project.tasks`, both
-    /// targeting `task`, with distinct reverse names `assignee`/`project`)
-    /// share the same stored `relationship_type`. A raw count would treat
-    /// them as one relationship and reject a legitimate edge from the second
-    /// schema because the first schema already has one. The caller resolves
-    /// each returned type against the ADR-078 `extends` chain to keep only
-    /// the sources that belong to the same declaration being validated.
-    pub async fn get_relationship_source_types(
+    /// The source's type, not just a count or id list: the store keys an edge
+    /// on `relationship_type` alone, so two schemas that both declare the
+    /// same forward name toward the same target type (e.g. `person.tasks` and
+    /// `project.tasks`, both targeting `task`, with distinct reverse names
+    /// `assignee`/`project`) share the same stored `relationship_type`. A raw
+    /// count would treat them as one relationship and evict/reject a
+    /// legitimate edge from the second schema because the first schema
+    /// already has one. The caller resolves each returned type against the
+    /// ADR-078 `extends` chain to keep only the edges that belong to the same
+    /// declaration being validated.
+    pub async fn get_relationship_edges_into_target(
         &self,
         target_id: &str,
         rel_type: &str,
-    ) -> Result<Vec<String>> {
+    ) -> Result<Vec<(String, String, String)>> {
         let mut rows = self
             .read()
             .await?
             .query(
-                "SELECT n.node_type FROM node n JOIN relationship r ON r.in_node = n.id \
+                "SELECT r.id, n.id, n.node_type FROM node n JOIN relationship r ON r.in_node = n.id \
                  WHERE r.out_node = ?1 AND r.relationship_type = ?2",
                 libsql::params![target_id.to_string(), rel_type.to_string()],
             )
             .await
-            .context("Failed to get reverse relationship source types")?;
-        let mut types = Vec::new();
+            .context("Failed to get reverse relationship edges")?;
+        let mut edges = Vec::new();
         while let Some(row) = rows.next().await? {
-            types.push(row.get::<String>(0)?);
+            edges.push((
+                row.get::<String>(0)?,
+                row.get::<String>(1)?,
+                row.get::<String>(2)?,
+            ));
         }
-        Ok(types)
+        Ok(edges)
+    }
+
+    /// Counterpart to [`Self::get_relationship_edges_into_target`] for the
+    /// SOURCE end: every edge already going out of `source_id` of `rel_type`,
+    /// as `(relationship id, target id)`. Used to evict a source's prior
+    /// edge(s) when replacing a `cardinality: One` relationship's target —
+    /// unlike the reverse case, no cross-schema ambiguity is possible here,
+    /// since a single node has exactly one type.
+    pub async fn get_relationship_edges_from_source(
+        &self,
+        source_id: &str,
+        rel_type: &str,
+    ) -> Result<Vec<(String, String)>> {
+        let mut rows = self
+            .read()
+            .await?
+            .query(
+                "SELECT id, out_node FROM relationship WHERE in_node = ?1 AND relationship_type = ?2",
+                libsql::params![source_id.to_string(), rel_type.to_string()],
+            )
+            .await
+            .context("Failed to get forward relationship edges")?;
+        let mut edges = Vec::new();
+        while let Some(row) = rows.next().await? {
+            edges.push((row.get::<String>(0)?, row.get::<String>(1)?));
+        }
+        Ok(edges)
     }
 
     pub async fn relationship_exists(

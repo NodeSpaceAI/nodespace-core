@@ -671,11 +671,21 @@ impl NodeService {
                 validate_edge_data_against_fields(&edge_data, edge_fields, relationship_name)?;
             }
 
-            // Check cardinality constraint
+            // Cardinality 'one', on either end, means "assigning here replaces
+            // whatever was there" — matching what a single-select "assign"
+            // control in the UI implies, and required for both ends to agree
+            // (a target declared `reverse_cardinality: One` cannot be reject-
+            // enforced while its source-side `cardinality: One` is replace-
+            // enforced; a `linear-cycle-rollover`-style add-then-remove
+            // reassignment needs the add half to evict the prior edge, not
+            // fail because it is still there). Evicting the old edge here,
+            // before the new one is inserted below, is what makes that safe:
+            // the target never gains a second live edge for callers that
+            // read strictly after this call returns.
             if relationship.cardinality == crate::models::schema::RelationshipCardinality::One {
-                let existing_count = self
+                let existing_edges = self
                     .store
-                    .check_relationship_exists(source_id, relationship_name)
+                    .get_relationship_edges_from_source(source_id, relationship_name)
                     .await
                     .map_err(|e| {
                         NodeServiceError::query_failed(format!(
@@ -683,16 +693,37 @@ impl NodeService {
                             e
                         ))
                     })?;
-                if existing_count > 0 {
-                    return Err(NodeServiceError::invalid_update(format!(
-                        "Relationship '{}' has cardinality 'one' but an edge already exists",
-                        relationship_name
-                    )));
+                for (rel_id, existing_target_id) in existing_edges {
+                    // Same target as this call: leave it for the idempotency
+                    // check below to handle as a no-op, rather than evicting
+                    // and immediately recreating it.
+                    if existing_target_id == target_id {
+                        continue;
+                    }
+                    self.store
+                        .delete_generic_relationship(
+                            source_id,
+                            &existing_target_id,
+                            relationship_name,
+                        )
+                        .await
+                        .map_err(|e| {
+                            NodeServiceError::query_failed(format!(
+                                "Failed to replace cardinality-one relationship: {}",
+                                e
+                            ))
+                        })?;
+                    self.emit_event(DomainEvent::RelationshipDeleted {
+                        id: rel_id,
+                        from_id: crate::db::events::node_thing(source_id),
+                        to_id: crate::db::events::node_thing(&existing_target_id),
+                        relationship_type: relationship_name.to_string(),
+                    });
                 }
             }
 
-            // Check reverse cardinality constraint: `cardinality` above governs
-            // how many edges the SOURCE may send out; `reverse_cardinality`
+            // Reverse cardinality constraint: `cardinality` above governs how
+            // many edges the SOURCE may send out; `reverse_cardinality`
             // governs how many edges the TARGET may receive, from any source.
             // Without this, a target end declared `reverse_cardinality: One`
             // (e.g. a task's `assignee`, the inverse of person's `tasks`)
@@ -711,16 +742,16 @@ impl NodeService {
                 // every existing source against it (ADR-078 subtypes
                 // included, via `type_satisfies`), so an edge from an
                 // unrelated schema that merely happens to share the forward
-                // name doesn't count against this one.
+                // name is left untouched.
                 let (_, owners) = self.resolve_relationships(schema_id).await?;
                 let declaring_type = owners
                     .get(relationship_name)
                     .cloned()
                     .unwrap_or_else(|| schema_id.clone());
 
-                let existing_source_types = self
+                let existing_edges = self
                     .store
-                    .get_relationship_source_types(target_id, relationship_name)
+                    .get_relationship_edges_into_target(target_id, relationship_name)
                     .await
                     .map_err(|e| {
                         NodeServiceError::query_failed(format!(
@@ -729,18 +760,37 @@ impl NodeService {
                         ))
                     })?;
 
-                let mut existing_reverse_count = 0usize;
-                for src_type in &existing_source_types {
-                    if self.type_satisfies(src_type, &declaring_type).await? {
-                        existing_reverse_count += 1;
+                for (rel_id, existing_source_id, existing_source_type) in existing_edges {
+                    // The caller's own edge re-asserting itself: leave it for
+                    // the idempotency check below, same as the forward case.
+                    if existing_source_id == source_id {
+                        continue;
                     }
-                }
-                if existing_reverse_count > 0 {
-                    return Err(NodeServiceError::invalid_update(format!(
-                        "Target '{}' already has a '{}' edge (reverse relationship '{}' has \
-                         cardinality 'one'); cannot add another '{}' edge into it",
-                        target_id, relationship_name, relationship.reverse_name, relationship_name
-                    )));
+                    if !self
+                        .type_satisfies(&existing_source_type, &declaring_type)
+                        .await?
+                    {
+                        continue;
+                    }
+                    self.store
+                        .delete_generic_relationship(
+                            &existing_source_id,
+                            target_id,
+                            relationship_name,
+                        )
+                        .await
+                        .map_err(|e| {
+                            NodeServiceError::query_failed(format!(
+                                "Failed to replace reverse-cardinality-one relationship: {}",
+                                e
+                            ))
+                        })?;
+                    self.emit_event(DomainEvent::RelationshipDeleted {
+                        id: rel_id,
+                        from_id: crate::db::events::node_thing(&existing_source_id),
+                        to_id: crate::db::events::node_thing(target_id),
+                        relationship_type: relationship_name.to_string(),
+                    });
                 }
             }
         }
@@ -1004,21 +1054,48 @@ impl NodeService {
                 validate_edge_data_against_fields(&edge_data, edge_fields, relationship_name)?;
             }
 
+            // Replace semantics for cardinality 'one' — see the non-tx twin
+            // in `create_relationship` for the full rationale (agreement
+            // between forward/reverse enforcement, and why an add-then-remove
+            // reassignment needs the add half to evict the prior edge rather
+            // than fail).
             if relationship.cardinality == crate::models::schema::RelationshipCardinality::One {
-                let existing_count = crate::db::SqliteStore::check_relationship_exists_in_tx(
-                    tx.store_tx(),
-                    source_id,
-                    relationship_name,
-                )
-                .await
-                .map_err(|e| {
-                    NodeServiceError::query_failed(format!("Failed to check cardinality: {}", e))
-                })?;
-                if existing_count > 0 {
-                    return Err(NodeServiceError::invalid_update(format!(
-                        "Relationship '{}' has cardinality 'one' but an edge already exists",
-                        relationship_name
-                    )));
+                let existing_edges =
+                    crate::db::SqliteStore::get_relationship_edges_from_source_in_tx(
+                        tx.store_tx(),
+                        source_id,
+                        relationship_name,
+                    )
+                    .await
+                    .map_err(|e| {
+                        NodeServiceError::query_failed(format!(
+                            "Failed to check cardinality: {}",
+                            e
+                        ))
+                    })?;
+                for (rel_id, existing_target_id) in existing_edges {
+                    if existing_target_id == target_id {
+                        continue;
+                    }
+                    crate::db::SqliteStore::delete_generic_relationship_in_tx(
+                        tx.store_tx(),
+                        source_id,
+                        &existing_target_id,
+                        relationship_name,
+                    )
+                    .await
+                    .map_err(|e| {
+                        NodeServiceError::query_failed(format!(
+                            "Failed to replace cardinality-one relationship: {}",
+                            e
+                        ))
+                    })?;
+                    self.emit_event(DomainEvent::RelationshipDeleted {
+                        id: rel_id,
+                        from_id: crate::db::events::node_thing(source_id),
+                        to_id: crate::db::events::node_thing(&existing_target_id),
+                        relationship_type: relationship_name.to_string(),
+                    });
                 }
             }
 
@@ -1036,8 +1113,8 @@ impl NodeService {
                     .cloned()
                     .unwrap_or_else(|| schema_id.clone());
 
-                let existing_source_types =
-                    crate::db::SqliteStore::get_relationship_source_types_in_tx(
+                let existing_edges =
+                    crate::db::SqliteStore::get_relationship_edges_into_target_in_tx(
                         tx.store_tx(),
                         target_id,
                         relationship_name,
@@ -1050,18 +1127,35 @@ impl NodeService {
                         ))
                     })?;
 
-                let mut existing_reverse_count = 0usize;
-                for src_type in &existing_source_types {
-                    if self.type_satisfies(src_type, &declaring_type).await? {
-                        existing_reverse_count += 1;
+                for (rel_id, existing_source_id, existing_source_type) in existing_edges {
+                    if existing_source_id == source_id {
+                        continue;
                     }
-                }
-                if existing_reverse_count > 0 {
-                    return Err(NodeServiceError::invalid_update(format!(
-                        "Target '{}' already has a '{}' edge (reverse relationship '{}' has \
-                         cardinality 'one'); cannot add another '{}' edge into it",
-                        target_id, relationship_name, relationship.reverse_name, relationship_name
-                    )));
+                    if !self
+                        .type_satisfies(&existing_source_type, &declaring_type)
+                        .await?
+                    {
+                        continue;
+                    }
+                    crate::db::SqliteStore::delete_generic_relationship_in_tx(
+                        tx.store_tx(),
+                        &existing_source_id,
+                        target_id,
+                        relationship_name,
+                    )
+                    .await
+                    .map_err(|e| {
+                        NodeServiceError::query_failed(format!(
+                            "Failed to replace reverse-cardinality-one relationship: {}",
+                            e
+                        ))
+                    })?;
+                    self.emit_event(DomainEvent::RelationshipDeleted {
+                        id: rel_id,
+                        from_id: crate::db::events::node_thing(&existing_source_id),
+                        to_id: crate::db::events::node_thing(target_id),
+                        relationship_type: relationship_name.to_string(),
+                    });
                 }
             }
         }
