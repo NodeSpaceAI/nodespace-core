@@ -32,6 +32,7 @@ use crate::playbook::path_extractor;
 use crate::playbook::types::{namespaced_property_key, NodeEventType, TriggerKey};
 use crate::services::NodeService;
 use serde::Serialize;
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
 
 /// One condition's evaluated state within a rule, for a `get-workflow-state` query.
@@ -94,16 +95,32 @@ pub struct WorkflowState {
     /// treat the response as incomplete, not authoritative, until a retry
     /// comes back with an empty `degraded_reasons`.
     ///
-    /// Covers only *resolution failures* (an `Err` from a live schema/
-    /// extends-chain call), not the separate, narrower staleness the
-    /// graph-event candidate path can still have: `lookup_rules`'s ancestor
-    /// fan-out (`PlaybookLifecycleManager::ancestor_keys`) reads
-    /// `ancestor_cache` directly rather than resolving live, so it can omit a
-    /// Play registered on an ancestor type without that ever registering
-    /// here as a failure — a cache read cannot fail the way a live call can.
-    /// An empty `degraded_reasons` is therefore not a guarantee this
-    /// response's graph-event candidates reflect the current `extends`
-    /// graph, only that no *live* lookup failed while building it.
+    /// Covers *resolution failures* (an `Err` from a live schema/
+    /// extends-chain call) AND one specific class of staleness in the
+    /// graph-event candidate path: `lookup_rules`'s ancestor fan-out
+    /// (`PlaybookLifecycleManager::ancestor_keys`) reads `ancestor_cache`
+    /// directly rather than resolving live, and a failed cache refresh that
+    /// hasn't yet succeeded again (`PlaybookEngine::ancestry_dirty`, surfaced
+    /// here via `NodeService::playbook_ancestry_dirty`) is reported the same
+    /// way a live resolution failure is — see the entry pushed near the end
+    /// of `get_workflow_state`.
+    ///
+    /// Not covered: the ordinary, sub-millisecond propagation lag between a
+    /// schema write committing and the play engine's async event loop
+    /// refreshing `ancestor_cache` in response. That window is bounded,
+    /// inherent to the in-process pub/sub architecture, and shared by every
+    /// other in-memory index built the same way (e.g. the TriggerIndex
+    /// itself) — not the unbounded-until-retried staleness a failed refresh
+    /// produces, which is what this field exists to flag. A cache read
+    /// during that ordinary lag cannot fail the way a live call can, so it
+    /// stays invisible here, same as before.
+    ///
+    /// An empty `degraded_reasons` therefore means: every live lookup that
+    /// fed this response succeeded, AND the ancestor-cache refresh most
+    /// recently attempted (if any) also succeeded — not an absolute
+    /// guarantee the graph-event candidates reflect the current `extends`
+    /// graph at this exact instant, but a guarantee against the specific
+    /// failure mode that can otherwise persist indefinitely.
     pub degraded_reasons: Vec<String>,
     pub rules: Vec<RuleWorkflowState>,
 }
@@ -144,10 +161,23 @@ fn record_degradation(
 /// than consulting `PlaybookLifecycleManager::ancestor_cache` directly. That
 /// cache is refreshed asynchronously by `PlaybookEngine` and can be stale after a
 /// failed refresh — acceptable for the zero-I/O hot trigger-dispatch path it
-/// exists to serve, but this function has no access to `PlaybookEngine`'s
-/// `ancestry_dirty` flag or its refresh routine to detect or repair that, and
-/// as a read-only out-of-band diagnostic it has no hot-path budget to
-/// protect. See the scheduled-candidate loop below for the full reasoning.
+/// exists to serve, but as a read-only out-of-band diagnostic this function
+/// has no hot-path budget to protect, so it pays for a live read instead. See
+/// the scheduled-candidate loop below for the full reasoning.
+///
+/// The graph-event candidate path (`lm.lookup_rules` below) is NOT resolved
+/// live the same way — it's the exact code path the live trigger-dispatch
+/// hot path (`engine.rs`/`cel.rs`) also runs through, via
+/// `PlaybookLifecycleManager::ancestor_keys`, which cannot afford a DB read
+/// per live event. It therefore still reads `ancestor_cache` directly and
+/// can be stale in the same way the scheduled/cron path used to be. Unlike
+/// that path, though, this function does have a way to detect the one
+/// unbounded-duration class of that staleness: `PlaybookEngine::ancestry_dirty`
+/// is injected onto `NodeService` (`NodeService::set_playbook_ancestry_dirty`,
+/// wired in `assembly.rs` the same way `playbook_lifecycle` is) and read back
+/// via `NodeService::playbook_ancestry_dirty` — see the check right after
+/// `candidate_refs` is built below, which records a `degraded_reasons` entry
+/// when it's set rather than silently trusting a cache of unknown staleness.
 pub async fn get_workflow_state(
     lifecycle: &Arc<RwLock<PlaybookLifecycleManager>>,
     node_service: &Arc<NodeService>,
@@ -313,6 +343,39 @@ pub async fn get_workflow_state(
         }
         refs
     };
+
+    // The graph-event half of `candidate_refs` just built above (via
+    // `lm.lookup_rules`) fanned out across `ancestor_cache` directly, unlike
+    // the scheduled/cron fan-out a few lines up which resolved live. If the
+    // play engine's most recent cache refresh failed and hasn't yet
+    // succeeded again, that fan-out may have silently missed a Play
+    // registered on an ancestor of `node.node_type` — flag it the same way a
+    // live resolution failure is flagged, rather than staying silent just
+    // because a cache read cannot itself return an `Err`. Process-wide, not
+    // per-node-type (see `WorkflowState::degraded_reasons`): `None` (no
+    // engine wired, e.g. a bare `NodeService` in a unit test) means no
+    // signal is available, not that the cache is known fresh.
+    if node_service
+        .playbook_ancestry_dirty()
+        .is_some_and(|dirty| dirty.load(Ordering::Relaxed))
+    {
+        let msg = format!(
+            "the play engine's extends-ancestry cache most recently failed to refresh and has \
+             not yet succeeded again; the graph-event candidates above were matched against \
+             '{}' via PlaybookLifecycleManager::ancestor_cache (not a live extends-chain \
+             resolution), so a rule registered on an ancestor of '{}' may be missing from this \
+             response's graph-event candidates until the next successful refresh — this does \
+             not affect the scheduled/cron candidates above, which always resolve live",
+            node.node_type, node.node_type
+        );
+        record_degradation(
+            &mut degraded,
+            &node.node_type,
+            "play engine ancestor-cache refresh failed",
+            "get_workflow_state",
+            msg,
+        );
+    }
 
     // Synthetic trigger event: no real mutation occurred, so this is shaped
     // as a NodeCreated event. `trigger.property.*` bindings are therefore
@@ -1490,6 +1553,58 @@ mod tests {
             state.degraded_reasons.is_empty(),
             "the live extends-chain resolution succeeded here — the stale cache entry is \
              irrelevant to it: {:?}",
+            state.degraded_reasons
+        );
+    }
+
+    /// The disagreement window this issue is about: when the play engine's
+    /// `ancestry_dirty` flag is set (a cache refresh most recently failed and
+    /// hasn't yet succeeded again), the graph-event candidate path —
+    /// `lm.lookup_rules`'s ancestor fan-out, which reads `ancestor_cache`
+    /// directly rather than resolving live the way the scheduled/cron path
+    /// does — has no way to know whether it just silently missed a Play
+    /// registered on an ancestor type. `get_workflow_state` must say so via
+    /// `degraded_reasons` rather than returning a response indistinguishable
+    /// from one where the cache was known fresh.
+    #[tokio::test]
+    async fn ancestry_dirty_flag_surfaces_as_a_degraded_reason() {
+        let (svc, _tmp) = test_service().await;
+        svc.set_playbook_ancestry_dirty(Arc::new(std::sync::atomic::AtomicBool::new(true)));
+
+        let lifecycle = Arc::new(RwLock::new(PlaybookLifecycleManager::new()));
+        let node = make_test_node("task", json!({"status": "open"}));
+        let state = get_workflow_state(&lifecycle, &svc, &node).await;
+
+        assert!(
+            state
+                .degraded_reasons
+                .iter()
+                .any(|r| r.contains("extends-ancestry cache") && r.contains("refresh")),
+            "expected a degraded_reasons entry naming the failed ancestor-cache refresh: {:?}",
+            state.degraded_reasons
+        );
+    }
+
+    /// The flip side, and the reason the comparison-based approach
+    /// considered for this issue was rejected: a `NodeService` with no
+    /// playbook engine wired at all (every other test in this module,
+    /// matching most real callers in tests elsewhere in this codebase) must
+    /// NOT have `playbook_ancestry_dirty()` being `None` reported as a
+    /// degradation. `None` means "no signal available", not "known stale" —
+    /// asserted explicitly here since every other test's `degraded_reasons`
+    /// assertion already relies on this holding.
+    #[tokio::test]
+    async fn no_wired_playbook_engine_does_not_report_ancestry_degradation() {
+        let (svc, _tmp) = test_service().await;
+
+        let lifecycle = Arc::new(RwLock::new(PlaybookLifecycleManager::new()));
+        let node = make_test_node("task", json!({"status": "open"}));
+        let state = get_workflow_state(&lifecycle, &svc, &node).await;
+
+        assert!(
+            state.degraded_reasons.is_empty(),
+            "no playbook engine is wired to this NodeService, so there is no ancestry_dirty \
+             signal to report: {:?}",
             state.degraded_reasons
         );
     }

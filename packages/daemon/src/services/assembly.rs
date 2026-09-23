@@ -314,6 +314,12 @@ pub async fn build_database_services(
     // just convenience (the engine object already exists); it carries no
     // ordering requirement of its own.
     node_service.set_playbook_lifecycle(playbook_engine.lifecycle().clone());
+    // Same handle-injection reasoning as the lifecycle line above, for the
+    // engine's `ancestry_dirty` flag: lets `get_workflow_state` (which only
+    // ever receives `node_service`, not the engine itself) report when its
+    // graph-event candidate path's `ancestor_cache` read is of known-bad
+    // staleness, via `NodeService::playbook_ancestry_dirty`.
+    node_service.set_playbook_ancestry_dirty(playbook_engine.ancestry_dirty().clone());
 
     let node_service_grpc = NodeServiceImpl::new(
         node_service.clone(),

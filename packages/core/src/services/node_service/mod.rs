@@ -1052,6 +1052,25 @@ pub struct NodeService {
     pub(crate) playbook_lifecycle:
         Arc<std::sync::OnceLock<Arc<RwLock<crate::playbook::lifecycle::PlaybookLifecycleManager>>>>,
 
+    /// Read-only handle onto the play engine's `ancestry_dirty` flag
+    /// (ADR-078) — set when a refresh of `playbook_lifecycle`'s
+    /// `ancestor_cache` failed and the cache is therefore of unknown
+    /// staleness. Injected once, the same way and at the same time as
+    /// `playbook_lifecycle` (see that field's doc comment for why this can't
+    /// be supplied at `NodeService::new` time) via
+    /// `set_playbook_ancestry_dirty`.
+    ///
+    /// Exists so an out-of-band consumer that only ever receives a
+    /// `&Arc<NodeService>` — `get_workflow_state`'s graph-event candidate
+    /// path in particular, which reads `ancestor_cache` via
+    /// `PlaybookLifecycleManager::lookup_rules` rather than resolving `extends`
+    /// live — can report that staleness instead of silently reading a
+    /// possibly-stale cache with no signal either way. `None` while unset
+    /// (a bare `NodeService` built in a unit test, or before assembly wires
+    /// it) means no signal is available, not that the cache is known fresh.
+    pub(crate) playbook_ancestry_dirty:
+        Arc<std::sync::OnceLock<Arc<std::sync::atomic::AtomicBool>>>,
+
     /// Test-only fault injector for post-commit write verification.
     ///
     /// A write path that confirms its own result by reading the committed row
@@ -1108,6 +1127,7 @@ impl Clone for NodeService {
             embedding_waker: self.embedding_waker.clone(),
             subtree_access_gate: self.subtree_access_gate.clone(),
             playbook_lifecycle: self.playbook_lifecycle.clone(),
+            playbook_ancestry_dirty: self.playbook_ancestry_dirty.clone(),
             // Shared, so a fault armed on one handle is observed by the clone
             // the write path actually runs against.
             write_verification_fault: self.write_verification_fault.clone(),
@@ -1266,6 +1286,7 @@ impl NodeService {
             embedding_waker: std::sync::Arc::new(std::sync::OnceLock::new()),
             subtree_access_gate: Arc::new(std::sync::OnceLock::new()),
             playbook_lifecycle: Arc::new(std::sync::OnceLock::new()),
+            playbook_ancestry_dirty: Arc::new(std::sync::OnceLock::new()),
             write_verification_fault: Arc::new(RwLock::new(None)),
         };
 
@@ -2413,6 +2434,22 @@ impl NodeService {
         &self,
     ) -> Option<&Arc<RwLock<crate::playbook::lifecycle::PlaybookLifecycleManager>>> {
         self.playbook_lifecycle.get()
+    }
+
+    /// Inject the play engine's `ancestry_dirty` flag (ADR-078), the same way
+    /// and at the same time as `set_playbook_lifecycle` — see that method's
+    /// doc comment for why this can't be supplied at construction time and
+    /// why a second call is a silent no-op.
+    pub fn set_playbook_ancestry_dirty(&self, dirty: Arc<std::sync::atomic::AtomicBool>) {
+        let _ = self.playbook_ancestry_dirty.set(dirty);
+    }
+
+    /// The injected play engine `ancestry_dirty` flag, if one has been set.
+    /// `None` means no staleness signal is available for this `NodeService`
+    /// — e.g. a bare `NodeService` built in a unit test — not that the cache
+    /// is known fresh.
+    pub(crate) fn playbook_ancestry_dirty(&self) -> Option<&Arc<std::sync::atomic::AtomicBool>> {
+        self.playbook_ancestry_dirty.get()
     }
 
     /// Arm (or, with `None`, disarm) the post-commit write-verification fault.
