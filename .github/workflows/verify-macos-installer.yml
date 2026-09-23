@@ -45,7 +45,14 @@ jobs:
   verify-pkg-gatekeeper:
     name: bun run pkg:verify-gatekeeper
     runs-on: macos-latest
-    timeout-minutes: 10
+    # 20 (not the original 10): the unconditional install step below
+    # (retried once on failure) can itself eat several minutes on a cold
+    # runner or a slow registry. A cancelled (timed-out) job does NOT run
+    # its `if: failure()` steps -- only a *failed* step does -- so a job
+    # timeout that leaves no headroom past the install would silently
+    # defeat this workflow's loud-failure-reporting guarantee (no tracking
+    # issue filed) instead of triggering it.
+    timeout-minutes: 20
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
