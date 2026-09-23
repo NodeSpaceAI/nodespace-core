@@ -118,6 +118,22 @@ interface DecisionScenario extends Scenario {
    * lookup failure to a judgment the model never made.
    */
   entityResolution?: boolean;
+  /**
+   * Turns on declarative phrasing: a sentence that reports a state rather than
+   * commanding a change.
+   *
+   * Scored as its own dimension because the entity tier is not expected to
+   * help here. Resolution answers *which node*; it says nothing about whether
+   * a change is being requested, and a declarative state-change is
+   * surface-identical to a fact-report. Three independently-measured models
+   * have shown the same asymmetry between imperative and declarative intent,
+   * so a persistent failure on this dimension is a property of the problem
+   * rather than of this agent.
+   *
+   * Always paired: a state-change and a fact-report using the same entity, so
+   * the summary distinguishes "reads intent" from "writes on any declarative".
+   */
+  declarative?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -508,6 +524,57 @@ const FIXTURES: DecisionScenario[] = [
     expected: { decision: "operation", oneOf: ["create_node"] },
     entityResolution: true,
   },
+
+  // ── Declarative state-changes, with the entity resolved ────────────────
+  //
+  // Isolates the one question the entity tier does NOT obviously answer.
+  //
+  // A declarative state-change ("Northwind has moved their booking") is
+  // surface-identical to a fact-report ("Northwind moved offices last year").
+  // The tier tells the model WHICH NODE is meant; it does not tell it that a
+  // CHANGE IS BEING REQUESTED. So resolution may fix the imperative case while
+  // leaving the declarative one exactly as it was.
+  //
+  // This matters beyond the fixture. A prior Laya spike measured the same
+  // asymmetry in a non-autoregressive decision model: imperative-vs-question
+  // AUC 0.974, declarative-vs-question 0.702, with declarative state-changes
+  // scoring 2/14. An in-repo 2025 experiment found it in a fine-tuned Gemma 3
+  // 12B too. Three models, one shape — so it reads as a property of the
+  // problem rather than of any model.
+  //
+  // These scenarios name `Northwind Trading`, which the seeded workspace
+  // contains, so resolution succeeds and the only thing left to judge is
+  // whether a declarative sentence is a request to act. If the agent acts on
+  // these, entity grounding solved more than its own failure and the residual
+  // judgment is smaller than the spike implied; if it still declines, that
+  // residual is isolated and measurable.
+  {
+    id: "declarative-state-change-resolved",
+    scenario: "Declarative: a state change phrased as a report, entity resolves",
+    // Deliberately parallel to `op-read-then-write` — same shape, but that one
+    // ran before the tier existed and could fail for want of an entity. Here
+    // the entity is seeded, so a failure isolates the phrasing.
+    prompt: "Northwind Trading signed on a different date — it was the 20th of March.",
+    expected: {
+      decision: "operation",
+      oneOf: ["update_node", "search_nodes", "resolve_query"],
+    },
+    declarative: true,
+    entityResolution: true,
+  },
+  {
+    id: "declarative-fact-report-resolved",
+    scenario: "Declarative: a fact report that is NOT a change request",
+    // The control, and the reason the pair is scored together. If the agent
+    // writes here it is over-acting on declarative mood rather than reading
+    // intent, which is the opposite failure and equally worth catching. An
+    // agent that passes the scenario above by treating every declarative as a
+    // write would fail this one.
+    prompt: "Northwind Trading has been a customer of ours for a long time.",
+    expected: { decision: "operation", oneOf: [] },
+    declarative: true,
+    entityResolution: true,
+  },
 ];
 
 // ---------------------------------------------------------------------------
@@ -746,6 +813,7 @@ const fixture: EvalFixture = {
       instanceVsType: s.instanceVsType ?? false,
       loadBearing: s.loadBearing ?? false,
       entityResolution: s.entityResolution ?? false,
+      declarative: s.declarative ?? false,
       skillDecision: firstDecision(turns, "skill") ?? null,
       operationDecision: firstDecision(turns, "operation") ?? null,
       schemaDecision: firstDecision(turns, "schema") ?? null,
@@ -778,6 +846,10 @@ const fixture: EvalFixture = {
       `Operation selection: ${count((e) => (e.expected as { decision?: string })?.decision === "operation")}`,
       `Schema selection:    ${count((e) => (e.expected as { decision?: string })?.decision === "schema")}`,
       `Instance-vs-type boundary: ${count((e) => e.instanceVsType === true)}`,
+      // Reported separately from everything else: an aggregate hides the one
+      // asymmetry three independently-measured models have all shown, and this
+      // is the dimension the entity tier is NOT expected to have fixed.
+      `Declarative intent (entity resolved): ${count((e) => e.declarative === true)}`,
       `Ambiguous (several types plausible): ${count((e) => e.ambiguous === true)}`,
       `Entity resolution: ${count((e) => e.entityResolution === true)}`,
       `ADR-056 known failures: ${count((e) => e.adr056 === true)}`,

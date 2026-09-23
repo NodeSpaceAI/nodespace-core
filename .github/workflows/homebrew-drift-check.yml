@@ -38,7 +38,14 @@ jobs:
   drift-check:
     name: bun run homebrew:drift-check (cask)
     runs-on: ubuntu-22.04
-    timeout-minutes: 10
+    # 20 (not the original 10): the unconditional install step below
+    # (retried once on failure) can itself eat several minutes on a cold
+    # runner or a slow registry. A cancelled (timed-out) job does NOT run
+    # its `if: failure()` steps -- only a *failed* step does -- so a job
+    # timeout that leaves no headroom past the install would silently
+    # defeat this workflow's loud-failure-reporting guarantee (no tracking
+    # issue filed) instead of triggering it.
+    timeout-minutes: 20
     # Serializes overlapping runs of this job (the daily schedule landing
     # near a manual workflow_dispatch, or two dispatches close together) so
     # the tracking-issue dedup lookup in the failure step never races two
@@ -135,7 +142,12 @@ jobs:
   formula-drift-check:
     name: bun run homebrew:formula-drift-check (nodespace-cli)
     runs-on: ubuntu-22.04
-    timeout-minutes: 10
+    # 20 (not the original 10) -- same cold-install-headroom reasoning as
+    # drift-check above: a cancelled (timed-out) job skips its
+    # `if: failure()` steps, so a slow `bun install` must not be able to
+    # starve the check + failure-reporting steps of their share of the
+    # budget.
+    timeout-minutes: 20
     # Same per-job serialization (and timeout-minutes, for the same
     # hung-run-blocks-every-later-run reason) as drift-check above, scoped
     # separately so the two independent checks never block each other.

@@ -1871,7 +1871,7 @@ async fn execute_create_node_in_tx(
     // `NodeService::create_node_in_tx`'s doc for the full reasoning.
     let created = txc
         .node_service
-        .insert_node_in_tx_no_invariant_dispatch(txc.tx, node)
+        .insert_node_in_tx_no_invariant_dispatch(txc.tx, node, true)
         .await
         .map_err(|e| ActionError::ServiceError {
             message: e.to_string(),

@@ -252,6 +252,34 @@ pub const FIND_THEN_ACT: InteractionRule = InteractionRule {
     skill_md_key_phrase: "if you don't have its ID",
 };
 
+/// A name is not an id, and whether a named record already exists is decided
+/// by whether one of the lookup's results IS that record, not by whether the
+/// lookup came back empty.
+///
+/// The two surfaces get the lookup from different places. The local agent is
+/// handed it: the entity tier resolves names into MENTIONED ENTITIES before
+/// the turn starts. An external agent has to run it, and the command matters —
+/// a query-bearing `nodespace search` runs under the default `knowledge` scope,
+/// which keeps only text/header/code-block/schema/table rows, and without title
+/// matching. So a task (not embedded at all) or a user-defined entity (embedded,
+/// but outside that scope) is never returned for its own name. Pointed there,
+/// "nothing came back, so create it" duplicates every existing record. `node
+/// query --title-contains` is the lexical title lookup. (The empty-query
+/// `search "" --type <type>` listing skips the scope filter and does list them,
+/// but it enumerates rather than looks up.)
+///
+/// What both surfaces share is the judgment on the result — same name, same
+/// type — which is why that phrase is the key: it is where the external copy
+/// would first trail the local one. The judgment is on sameness rather than
+/// emptiness because both lookups also return records that merely share a
+/// word with the name.
+pub const NAMED_RECORD_RESOLUTION: InteractionRule = InteractionRule {
+    id: "named-record-resolution",
+    imperative: "ALREADY IN THE GRAPH? Before creating, check MENTIONED ENTITIES in your context. If a record listed there is the same thing the user is asking you to add — same name, same type — do NOT call create_node. \"Add X\" when X already exists is ambiguous: it can mean they want a second, genuinely distinct record, or it can mean they did not know X was already there. You cannot tell which from the message, and guessing wrong either duplicates their data or refuses work they wanted done. Call route_clarify instead, naming the existing record as an option with its id from MENTIONED ENTITIES, and say plainly that it already exists. Let them choose. If MENTIONED ENTITIES says \"none found\", nothing by that name exists and create_node is right.",
+    prose: "**A name is not an ID — resolve it before you act.** When the user names a record you haven't looked up (\"mark the Northwind contract signed\", \"add Fabrikam\"), run `nodespace node query --title-contains \"<name>\"` first. Not `nodespace search`: a name search only matches prose, never tasks or typed records. Judge the results by whether one *is* the named record — same name, same type — not by whether the list is empty, since the lookup also matches on a shared word. One match: act on its ID; if asked to *add* it, say it already exists and ask before creating a duplicate. Several: ask which one. None: it doesn't exist — create it if they're adding it, otherwise tell them. Don't keep searching.",
+    skill_md_key_phrase: "same name, same type",
+};
+
 pub const AMBIGUITY_CLARIFY: InteractionRule = InteractionRule {
     id: "ambiguity-clarify",
     // Retargeted from prose ("ask one specific clarifying question") to
@@ -337,6 +365,7 @@ pub const BULK_IMPORT_NO_FOLLOWUP_SEARCH: InteractionRule = InteractionRule {
 /// each is consumed independently by whichever skill/CLI section needs it.
 pub const INTERACTION_RULES: &[InteractionRule] = &[
     FIND_THEN_ACT,
+    NAMED_RECORD_RESOLUTION,
     AMBIGUITY_CLARIFY,
     SUCCESS_NO_REVERIFY,
     TASK_STATUS_DEDICATED_VERB,
