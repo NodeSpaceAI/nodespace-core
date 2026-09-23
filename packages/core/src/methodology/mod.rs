@@ -176,7 +176,7 @@ pub fn all_playbooks() -> Vec<MethodologyPlaybook> {
 
 /// Look up a playbook by its [`MethodologyPlaybook::id`].
 pub fn playbook_by_id(id: &str) -> Option<MethodologyPlaybook> {
-    all_playbooks().into_iter().find(|r| r.id == id)
+    all_playbooks().into_iter().find(|p| p.id == id)
 }
 
 #[cfg(test)]
@@ -186,7 +186,7 @@ mod tests {
     #[test]
     fn every_playbook_has_a_unique_id() {
         let playbooks = all_playbooks();
-        let mut ids: Vec<&str> = playbooks.iter().map(|r| r.id).collect();
+        let mut ids: Vec<&str> = playbooks.iter().map(|p| p.id).collect();
         ids.sort_unstable();
         let before = ids.len();
         ids.dedup();

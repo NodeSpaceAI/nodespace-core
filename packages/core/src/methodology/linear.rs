@@ -840,8 +840,8 @@ mod tests {
 
     #[test]
     fn play_ids_are_unique() {
-        let r = playbook();
-        let mut ids: Vec<&str> = r.plays.iter().map(|p| p.play_id).collect();
+        let pb = playbook();
+        let mut ids: Vec<&str> = pb.plays.iter().map(|p| p.play_id).collect();
         ids.sort_unstable();
         let before = ids.len();
         ids.dedup();
