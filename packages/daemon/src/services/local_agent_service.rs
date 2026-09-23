@@ -2350,9 +2350,10 @@ pub fn completed_writes_from(executions: &[ToolExecutionRecord]) -> Vec<AiChatCo
         .collect()
 }
 
-/// When a turn creates two or more schemas but none of them ends up linked to
-/// any of the others, returns a short note to append to the turn's response
-/// text so the gap is visible to the user rather than passing silently.
+/// When a turn creates two or more schemas and at least one of them ends up
+/// with no relationship to any of the others, returns a short note to append
+/// to the turn's response text so the gap is visible to the user rather than
+/// passing silently.
 ///
 /// This closes a state the second-`create_schema` guard leaves reachable: it
 /// refuses a repeat call only for a type the user never named, which is what
@@ -2361,22 +2362,35 @@ pub fn completed_writes_from(executions: &[ToolExecutionRecord]) -> Vec<AiChatCo
 /// back to the first. `targetType: None` is deliberately unvalidated
 /// (`validate_relationship_targets_exist` in `nodespace-core`'s schema
 /// module) because a relationship-free schema is legitimate on its own, so
-/// two unlinked types is a silent, valid outcome.
+/// one or more unlinked types is a silent, valid outcome.
 ///
 /// This does not try to infer whether the user actually asked for a *linked*
 /// pair — that signal lives in the user's phrasing, not in the tool calls,
 /// and guessing wrong risks flagging two types that were always meant to be
-/// independent. Instead it surfaces the weaker, unambiguous fact (multiple
-/// new types landed this turn with zero edges between them) as an
+/// independent. Instead it surfaces the weaker, unambiguous fact (one or more
+/// of this turn's new types has zero edges to any of the others) as an
 /// informational note, leaving it to the user or a follow-up turn to decide
 /// whether a relationship belongs.
+///
+/// A schema counts as linked to the set the moment ANY relationship connects
+/// it to another schema created this turn, checked in both directions:
+/// either it declares an outbound relationship into the set, or another
+/// member of the set declares one into it (a relationship is stored once, on
+/// the declaring side, so the target's own `relationships` list never carries
+/// it back). With three or more schemas created in one turn, this is a
+/// per-schema check, not a single existential test over the whole batch —
+/// two of the three being linked to each other does not excuse the third
+/// being an orphan.
 ///
 /// Schemas are re-fetched from storage rather than read off the tool calls'
 /// own output so that a relationship added via a same-turn `update_schema`
 /// call (not just one declared at `create_schema` time) still counts as
-/// linked. Returns `None` when fewer than two schemas were created, when any
-/// of them fails to load (stays silent rather than risk a false claim), or
-/// when at least one relationship connects two of them.
+/// linked. Returns `None` when fewer than two schemas were created or when
+/// every one of them has at least one link into the set. A schema that fails
+/// to re-load is logged and excluded from consideration (stays silent on
+/// that schema specifically, rather than risk a false claim about a state no
+/// longer confirmable) — the note still fires over whichever schemas did
+/// load, if warranted.
 async fn unlinked_pair_note(
     node_service: &Arc<NodeService>,
     completed_writes: &[AiChatCompletedWrite],
@@ -2389,34 +2403,77 @@ async fn unlinked_pair_note(
     if created_ids.len() < 2 {
         return None;
     }
+    let created_id_set: HashSet<&str> = created_ids.iter().copied().collect();
 
     let mut schemas = Vec::with_capacity(created_ids.len());
     for id in &created_ids {
         match node_service.get_schema_node(id).await {
             Ok(Some(schema)) => schemas.push(schema),
-            Ok(None) | Err(_) => return None,
+            Ok(None) => {}
+            Err(e) => {
+                tracing::warn!(
+                    schema_id = %id,
+                    error = %e,
+                    "unlinked_pair_note: failed to re-fetch a schema created this turn \
+                     — excluding it from the unlinked-pair check"
+                );
+            }
         }
     }
-
-    let created_id_set: HashSet<&str> = created_ids.iter().copied().collect();
-    let any_linked = schemas.iter().any(|s| {
-        s.relationships.iter().any(|r| {
-            r.target_type
-                .as_deref()
-                .is_some_and(|t| t != s.id && created_id_set.contains(t))
-        })
-    });
-    if any_linked {
+    if schemas.len() < 2 {
         return None;
     }
 
-    Some(format!(
-        "\n\nNote: this turn created {} new types ({}) and none of them declares a \
-         relationship to any of the others. If they were meant to be linked, ask me to \
-         add the relationship.",
-        created_ids.len(),
-        created_ids.join(", ")
-    ))
+    // A schema is linked the moment either end declares the edge: mark BOTH
+    // the declaring schema and its target, since the target's own
+    // `relationships` list never carries the edge back (it's stored once).
+    let mut linked: HashSet<&str> = HashSet::new();
+    for s in &schemas {
+        for r in &s.relationships {
+            if let Some(t) = r.target_type.as_deref() {
+                if t != s.id && created_id_set.contains(t) {
+                    linked.insert(s.id.as_str());
+                    linked.insert(t);
+                }
+            }
+        }
+    }
+
+    let orphans: Vec<&str> = schemas
+        .iter()
+        .map(|s| s.id.as_str())
+        .filter(|id| !linked.contains(id))
+        .collect();
+    if orphans.is_empty() {
+        return None;
+    }
+
+    let all_list = schemas
+        .iter()
+        .map(|s| s.id.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    if orphans.len() == schemas.len() {
+        Some(format!(
+            "\n\nNote: this turn created {} new types ({all_list}) and none of them \
+             declares a relationship to any of the others. If they were meant to be \
+             linked, ask me to add the relationship.",
+            schemas.len(),
+        ))
+    } else {
+        let orphan_list = orphans.join(", ");
+        let be = if orphans.len() == 1 {
+            "isn't"
+        } else {
+            "aren't"
+        };
+        Some(format!(
+            "\n\nNote: this turn created {} new types ({all_list}), but {orphan_list} \
+             {be} linked to any of the others. If that wasn't intentional, ask me to add \
+             the relationship.",
+            schemas.len(),
+        ))
+    }
 }
 
 /// Maximum distinct entities carried forward from one turn's reads.
@@ -3227,6 +3284,72 @@ mod tests {
         let writes = vec![schema_create_write(customer["schemaId"].as_str().unwrap())];
 
         assert!(unlinked_pair_note(&node_service, &writes).await.is_none());
+    }
+
+    /// Three schemas created in one turn, only two of which link to each
+    /// other: the third is still an orphan and must still be flagged. A
+    /// single existential check over the whole batch ("does *any* link exist
+    /// among the created schemas?") would wrongly go silent here just because
+    /// the first pair happens to be linked — this is a per-schema check, not
+    /// a batch-wide one.
+    #[tokio::test]
+    async fn unlinked_pair_note_flags_the_orphan_when_only_some_of_three_are_linked() {
+        let (_svc, node_service, _tempdir) = test_service().await;
+
+        let customer = handle_create_schema(
+            &node_service,
+            serde_json::json!({
+                "name": "Customer",
+                "fields": [{ "name": "first_name", "type": "text" }]
+            }),
+        )
+        .await
+        .expect("create Customer");
+        let invoice = handle_create_schema(
+            &node_service,
+            serde_json::json!({
+                "name": "Invoice",
+                "fields": [{ "name": "amount", "type": "number" }],
+                "relationships": [{
+                    "name": "billed_to",
+                    "targetType": "customer",
+                    "direction": "out",
+                    "cardinality": "one",
+                    "reverseName": "invoices",
+                    "reverseCardinality": "many"
+                }]
+            }),
+        )
+        .await
+        .expect("create Invoice");
+        let venue = handle_create_schema(
+            &node_service,
+            serde_json::json!({
+                "name": "Venue",
+                "fields": [{ "name": "address", "type": "text" }]
+            }),
+        )
+        .await
+        .expect("create Venue");
+
+        let writes = vec![
+            schema_create_write(customer["schemaId"].as_str().unwrap()),
+            schema_create_write(invoice["schemaId"].as_str().unwrap()),
+            schema_create_write(venue["schemaId"].as_str().unwrap()),
+        ];
+
+        let note = unlinked_pair_note(&node_service, &writes)
+            .await
+            .expect("the orphaned third schema must still be flagged");
+        assert!(
+            note.contains("venue"),
+            "note should name the orphan Venue: {note}"
+        );
+        assert!(
+            !note.contains("none of them"),
+            "customer and invoice ARE linked to each other — the note must not claim \
+             nothing is linked: {note}"
+        );
     }
 
     /// End-to-end regression for the starvation bug fixed by
