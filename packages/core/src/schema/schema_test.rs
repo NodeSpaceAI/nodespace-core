@@ -4863,9 +4863,12 @@ async fn test_add_fields_only_call_rejects_a_field_inherited_from_a_grandparent(
 
     let err =
         result.expect_err("an add_fields-only grandparent field collision should be rejected");
+    let msg = format!("{err:?}");
     assert!(
-        format!("{err:?}").contains("shared"),
-        "error should name the colliding field: {err:?}"
+        msg.contains("shared") && msg.contains("additive"),
+        "error should name the colliding field and the additive-only rule — otherwise this test \
+         can't tell a real grandparent-chain check from one that silently degraded to \
+         immediate-parent-only and happened to fail for an unrelated reason: {msg}"
     );
 }
 
@@ -4895,6 +4898,89 @@ async fn test_add_fields_only_call_still_allows_a_genuinely_new_field() {
         result.is_ok(),
         "a non-colliding field added via an add_fields-only call should still be accepted: \
          {result:?}"
+    );
+}
+
+#[tokio::test]
+async fn test_add_fields_call_that_also_retargets_extends_is_checked_against_the_new_parent_not_the_old_one(
+) {
+    let (svc, _tmp) = create_test_service().await;
+    create_base_schema(&svc, "Old Parent", &["status"]).await;
+    create_base_schema(&svc, "New Parent", &["other_field"]).await;
+    handle_create_schema(
+        &svc,
+        json!({ "name": "Child", "extends": "old_parent", "fields": [] }),
+    )
+    .await
+    .expect("child extends old_parent should succeed");
+
+    // A single call that BOTH adds a field colliding with the OLD parent AND
+    // re-targets `extends` onto a NEW, non-colliding parent must succeed:
+    // by the time this call finishes, "child" no longer extends
+    // "old_parent", so "status" is no longer inherited from anywhere. This
+    // is the case the `params.extends.is_some()` skip in the `add_fields`
+    // ancestor gate exists for — the `extends` re-target block re-checks the
+    // fully-merged field list against the NEW parent instead.
+    let result = handle_update_schema(
+        &svc,
+        json!({
+            "schema_id": "child",
+            "extends": "new_parent",
+            "add_fields": [
+                { "name": "status", "type": "string", "protection": "user", "indexed": false }
+            ]
+        }),
+    )
+    .await;
+
+    assert!(
+        result.is_ok(),
+        "adding a field colliding only with the OLD parent, while re-targeting extends onto a \
+         non-colliding NEW parent in the same call, should succeed: {result:?}"
+    );
+    assert_eq!(
+        persisted_extends_target(&svc, "child").await.as_deref(),
+        Some("new_parent"),
+        "the extends edge should now point at the new parent"
+    );
+}
+
+#[tokio::test]
+async fn test_add_fields_call_that_also_retargets_extends_still_rejects_a_collision_with_the_new_parent(
+) {
+    let (svc, _tmp) = create_test_service().await;
+    create_base_schema(&svc, "Old Parent", &["a"]).await;
+    create_base_schema(&svc, "New Parent", &["shared"]).await;
+    handle_create_schema(
+        &svc,
+        json!({ "name": "Child", "extends": "old_parent", "fields": [] }),
+    )
+    .await
+    .expect("child extends old_parent should succeed");
+
+    // The flip side of the test above: a field colliding with the NEW parent
+    // must still be rejected, even though the collision has nothing to do
+    // with the OLD parent this call is moving away from.
+    let result = handle_update_schema(
+        &svc,
+        json!({
+            "schema_id": "child",
+            "extends": "new_parent",
+            "add_fields": [
+                { "name": "shared", "type": "string", "protection": "user", "indexed": false }
+            ]
+        }),
+    )
+    .await;
+
+    let err = result.expect_err(
+        "a field colliding with the NEW parent must be rejected even when combined with an \
+         extends re-target in the same call",
+    );
+    let msg = format!("{err:?}");
+    assert!(
+        msg.contains("shared") && msg.contains("additive"),
+        "error should name the colliding field and the additive-only rule: {msg}"
     );
 }
 
@@ -5027,9 +5113,21 @@ async fn test_add_relationships_only_call_rejects_a_relationship_inherited_from_
     let err = result.expect_err(
         "an add_relationships-only grandparent relationship collision should be rejected",
     );
+    let msg = format!("{err:?}");
     assert!(
-        format!("{err:?}").contains("widgets"),
-        "error should name the colliding relationship: {err:?}"
+        msg.contains("widgets") && msg.contains("additive"),
+        "error should name the colliding relationship and the additive-only rule — otherwise \
+         this test can't tell a real grandparent-chain check from one that silently degraded \
+         to immediate-parent-only and happened to fail for an unrelated reason: {msg}"
+    );
+    // "root" is the actual DECLARING schema — "mid" merely inherits it
+    // without redeclaring. The error must name the true owner (via
+    // `resolve_relationships`'s owner map), not the immediate parent
+    // unconditionally.
+    assert!(
+        msg.contains("root") && !msg.contains("'mid'"),
+        "error should blame the schema that actually declares 'widgets' (root), not the \
+         immediate parent (mid) it's merely inherited through: {msg}"
     );
 }
 
@@ -5115,8 +5213,105 @@ async fn test_extends_retarget_rejects_a_relationship_colliding_with_the_new_par
         "retargeting extends onto a parent that already declares a relationship this schema \
          owns must be rejected",
     );
+    let msg = format!("{err:?}");
     assert!(
-        format!("{err:?}").contains("widgets"),
-        "error should name the colliding relationship: {err:?}"
+        msg.contains("widgets") && msg.contains("additive"),
+        "error should name the colliding relationship and the additive-only rule: {msg}"
+    );
+}
+
+#[tokio::test]
+async fn test_removing_extends_and_adding_a_relationship_in_the_same_call_is_not_checked_against_the_detached_parent(
+) {
+    let (svc, _tmp) = create_test_service().await;
+    handle_create_schema(&svc, json!({ "name": "Widget", "fields": [] }))
+        .await
+        .expect("widget schema should be created");
+    handle_create_schema(
+        &svc,
+        json!({
+            "name": "Ticket",
+            "fields": [],
+            "relationships": [widget_relationship("widgets", "widget", "tickets")]
+        }),
+    )
+    .await
+    .expect("ticket schema should be created");
+    handle_create_schema(
+        &svc,
+        json!({ "name": "Bug", "extends": "ticket", "fields": [] }),
+    )
+    .await
+    .expect("bug extends ticket should succeed");
+
+    // A single call that BOTH drops the extends edge AND adds a relationship
+    // whose name collides only with the (now-detached) former parent's
+    // relationship must succeed — by the time this call finishes, "bug" no
+    // longer extends "ticket", so there is nothing left to collide with. The
+    // ancestor-collision gate must read the LIVE relationship list (already
+    // reflecting this same call's own `remove_relationships`), not the
+    // pre-update snapshot.
+    let result = handle_update_schema(
+        &svc,
+        json!({
+            "schema_id": "bug",
+            "remove_relationships": ["extends"],
+            "add_relationships": [widget_relationship("widgets", "widget", "bugs")]
+        }),
+    )
+    .await;
+
+    assert!(
+        result.is_ok(),
+        "dropping extends and adding a relationship colliding only with the just-detached \
+         parent should succeed, not be rejected against a parent no longer in effect: {result:?}"
+    );
+    assert_eq!(
+        persisted_extends_target(&svc, "bug").await,
+        None,
+        "the extends edge should be gone after remove_relationships: [\"extends\"]"
+    );
+}
+
+#[tokio::test]
+async fn test_removing_extends_and_adding_a_field_in_the_same_call_is_not_checked_against_the_detached_parent(
+) {
+    let (svc, _tmp) = create_test_service().await;
+    create_base_schema(&svc, "Ticket", &["status"]).await;
+    handle_create_schema(
+        &svc,
+        json!({ "name": "Bug", "extends": "ticket", "fields": [] }),
+    )
+    .await
+    .expect("bug extends ticket should succeed");
+
+    // Same scenario as the relationship-side regression above, on the field
+    // path: dropping the extends edge and adding a field colliding only with
+    // the just-detached parent's field, in the SAME call, must succeed. The
+    // `add_fields` ancestor check runs before relationship processing in
+    // `handle_update_schema`, so it must consult the extends parent as it
+    // will stand AFTER this call's own `remove_relationships` — not the
+    // pre-call snapshot, which would still show "ticket" as the parent.
+    let result = handle_update_schema(
+        &svc,
+        json!({
+            "schema_id": "bug",
+            "remove_relationships": ["extends"],
+            "add_fields": [
+                { "name": "status", "type": "number", "protection": "user", "indexed": false }
+            ]
+        }),
+    )
+    .await;
+
+    assert!(
+        result.is_ok(),
+        "dropping extends and adding a field colliding only with the just-detached parent \
+         should succeed, not be rejected against a parent no longer in effect: {result:?}"
+    );
+    assert_eq!(
+        persisted_extends_target(&svc, "bug").await,
+        None,
+        "the extends edge should be gone after remove_relationships: [\"extends\"]"
     );
 }

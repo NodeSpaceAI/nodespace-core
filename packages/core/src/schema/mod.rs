@@ -803,7 +803,7 @@ async fn validate_no_relationship_redeclaration(
     parent_id: &str,
     own_relationships: &[crate::models::schema::SchemaRelationship],
 ) -> Result<(), MarkdownError> {
-    let (inherited, _owners) = node_service
+    let (inherited, owners) = node_service
         .resolve_relationships(parent_id)
         .await
         .map_err(|e| {
@@ -814,13 +814,24 @@ async fn validate_no_relationship_redeclaration(
 
     for rel in own_relationships {
         if let Some(existing) = inherited.iter().find(|r| r.name == rel.name) {
+            // Name the schema that actually DECLARES the relationship, not
+            // `parent_id` unconditionally — `parent_id` is only the nearest
+            // ancestor, and the collision may be several scopes further up
+            // the chain. `owners` is exactly what `resolve_relationships`
+            // returns this information for; falling back to `parent_id`
+            // only guards a lookup that should never miss, since `inherited`
+            // and `owners` are built together over the same chain walk.
+            let declaring_schema = owners
+                .get(&rel.name)
+                .map(String::as_str)
+                .unwrap_or(parent_id);
             return Err(MarkdownError::invalid_params(format!(
                 "Relationship '{}' is already declared by '{}' (inherited via extends) and \
                  cannot be redeclared — composition is additive only, with no override or \
                  narrowing. The inherited relationship targets '{}'. Either drop it from this \
                  schema and use the inherited one, or give this relationship a different name.",
                 rel.name,
-                parent_id,
+                declaring_schema,
                 existing.target_type.as_deref().unwrap_or("*"),
             )));
         }
@@ -1895,6 +1906,40 @@ pub async fn handle_update_schema(
             ))
         })?;
 
+    // Relationship removals are resolved here, ahead of field processing,
+    // purely so the extends-parent determination below can see them:
+    // `remove_relationships` can drop THIS call's own `extends` declaration,
+    // and both the `add_fields` and `add_relationships` ancestor-collision
+    // gates below need to know the parent as it stands AFTER that removal,
+    // not the pre-call snapshot — otherwise a call that both detaches from a
+    // parent and adds a field/relationship that only collides with that
+    // now-detached parent would be wrongly rejected. `add_relationships`
+    // itself is still folded in later, in its own "Process relationships"
+    // section below — nothing before that section depends on the ADDED
+    // relationships, only on removals.
+    let mut relationships = schema.relationships.clone();
+    let mut relationships_removed = 0;
+    if let Some(remove_names) = &params.remove_relationships {
+        let before = relationships.len();
+        relationships.retain(|r| !remove_names.contains(&r.name));
+        relationships_removed = before - relationships.len();
+    }
+
+    // The extends parent this call's OWN field/relationship additions must
+    // be checked against (ADR-078 additive-only). `None` when this same call
+    // is ALSO re-targeting `extends`: that path re-checks the full merged
+    // field/relationship lists against the NEW parent further down, so
+    // checking against the old parent here would be redundant at best, and
+    // wrong if the call is deliberately moving away from a parent an
+    // addition happens to collide with. Otherwise, the parent as of this
+    // call's own `remove_relationships` (just applied above), which may have
+    // just dropped it.
+    let current_ancestor_for_additive_check: Option<String> = if params.extends.is_none() {
+        declared_extends_parent(&relationships)
+    } else {
+        None
+    };
+
     // Process fields
     let mut fields = schema.fields.clone();
     let mut fields_added = 0;
@@ -1921,18 +1966,9 @@ pub async fn handle_update_schema(
         // rule `validate_no_field_redeclaration` enforces at schema creation
         // and at `extends` re-target, closing the gap where a later,
         // separate `add_fields`-only call on an already-extending schema
-        // could otherwise silently redeclare an inherited field. Skipped
-        // when this same call is ALSO re-targeting `extends`
-        // (`params.extends.is_some()`): that path re-checks the full merged
-        // field list — including these `add_fields`, folded in below —
-        // against the NEW parent further down, so checking against the
-        // parent as it stands before this call here would be redundant at
-        // best, and wrong if the call is deliberately moving away from a
-        // parent this field happens to collide with.
-        if params.extends.is_none() {
-            if let Some(parent) = declared_extends_parent(&schema.relationships) {
-                validate_no_field_redeclaration(node_service, &parent, add_fields).await?;
-            }
+        // could otherwise silently redeclare an inherited field.
+        if let Some(ref parent) = current_ancestor_for_additive_check {
+            validate_no_field_redeclaration(node_service, parent, add_fields).await?;
         }
         // Write-boundary friendly_name defaulting, with the current field
         // set (existing + removals already applied) as collision context —
@@ -2057,18 +2093,11 @@ pub async fn handle_update_schema(
         }
     }
 
-    // Process relationships (`schema.relationships` arrives hydrated from the
-    // relationship table; the final set is persisted back through
-    // `set_schema_relationships` below)
-    let mut relationships = schema.relationships.clone();
+    // Process relationships. `relationships` and `relationships_removed` were
+    // already computed above (ahead of field processing, so the extends-
+    // parent determination there could see this call's own removals);
+    // `add_relationships` is the only part left to fold in here.
     let mut relationships_added = 0;
-    let mut relationships_removed = 0;
-
-    if let Some(remove_names) = &params.remove_relationships {
-        let before = relationships.len();
-        relationships.retain(|r| !remove_names.contains(&r.name));
-        relationships_removed = before - relationships.len();
-    }
 
     if let Some(ref add_rels) = params.add_relationships {
         // Check for duplicates before adding
@@ -2086,14 +2115,9 @@ pub async fn handle_update_schema(
         // same gap `resolve_relationships`'s own doc comment describes: no
         // write path previously checked a new relationship's name against
         // the ancestor chain, only against this schema's own current
-        // relationships. Same `params.extends.is_none()` gate and reasoning
-        // as the field check: an `extends` re-target in this same call is
-        // checked against the NEW parent further down, using the
-        // fully-merged relationship list.
-        if params.extends.is_none() {
-            if let Some(parent) = declared_extends_parent(&schema.relationships) {
-                validate_no_relationship_redeclaration(node_service, &parent, add_rels).await?;
-            }
+        // relationships.
+        if let Some(ref parent) = current_ancestor_for_additive_check {
+            validate_no_relationship_redeclaration(node_service, parent, add_rels).await?;
         }
         reject_reserved_relationship_names(add_rels)?;
         validate_edge_field_declarations(add_rels)?;
