@@ -4504,9 +4504,19 @@ async fn test_redeclaring_a_field_inherited_from_a_grandparent_rejected() {
     .await;
 
     let err = result.expect_err("a grandparent field collision should be rejected");
+    let msg = format!("{err:?}");
     assert!(
-        format!("{err:?}").contains("shared"),
-        "error should name the colliding field: {err:?}"
+        msg.contains("shared"),
+        "error should name the colliding field: {msg}"
+    );
+    // "root" is the actual DECLARING schema — "mid" merely inherits it
+    // without redeclaring. The error must name the true owner (via
+    // `resolve_field_owners`'s owner map), not the immediate parent
+    // unconditionally.
+    assert!(
+        msg.contains("root") && !msg.contains("'mid'"),
+        "error should blame the schema that actually declares 'shared' (root), not the \
+         immediate parent (mid) it's merely inherited through: {msg}"
     );
 }
 
@@ -4869,6 +4879,15 @@ async fn test_add_fields_only_call_rejects_a_field_inherited_from_a_grandparent(
         "error should name the colliding field and the additive-only rule — otherwise this test \
          can't tell a real grandparent-chain check from one that silently degraded to \
          immediate-parent-only and happened to fail for an unrelated reason: {msg}"
+    );
+    // "root" is the actual DECLARING schema — "mid" merely inherits it
+    // without redeclaring. The error must name the true owner (via
+    // `resolve_field_owners`'s owner map), not the immediate parent
+    // unconditionally.
+    assert!(
+        msg.contains("root") && !msg.contains("'mid'"),
+        "error should blame the schema that actually declares 'shared' (root), not the \
+         immediate parent (mid) it's merely inherited through: {msg}"
     );
 }
 
