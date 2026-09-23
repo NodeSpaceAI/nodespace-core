@@ -2623,9 +2623,14 @@ impl SqliteStore {
     /// membership` on the `member_of` INSERT sites. (Fresh-node attach sites can't
     /// pre-hold a membership; `move_children_to_parent` only moves already-interior
     /// nodes.) Rejects rather than dropping the membership (a node can hold several
-    /// grants, each an independent access path). `collection` (nesting) and
-    /// `person` (grantee, ADR-037 §4) nodes are exempt. A single chunked query
+    /// grants, each an independent access path). `person` (grantee, ADR-037 §4)
+    /// nodes are exempt. A single chunked query
     /// keeps the bulk/cold-sweep path a single round trip.
+    ///
+    /// Also refuses a `collection`, which is always a root (ADR-059 §2): see
+    /// [`collection_not_root`]. The schema's `collection_is_root_*` triggers
+    /// back this up on every write path; checking here gives the reparent
+    /// paths a readable error.
     pub(crate) async fn assert_may_gain_parent(&self, node_ids: &[&str]) -> Result<()> {
         if node_ids.is_empty() {
             return Ok(());
@@ -2633,6 +2638,16 @@ impl SqliteStore {
         let mut unique: Vec<&str> = node_ids.to_vec();
         unique.sort_unstable();
         unique.dedup();
+
+        let nodes = self
+            .get_nodes_by_ids(&unique.iter().map(|id| id.to_string()).collect::<Vec<_>>())
+            .await?;
+        if let Some(collection) = unique
+            .iter()
+            .find(|id| nodes.get(**id).is_some_and(|n| n.node_type == "collection"))
+        {
+            return Err(anyhow::anyhow!(super::collection_not_root(collection)));
+        }
 
         // Chunk the `IN (...)` under SQLite's compiled SQLITE_MAX_VARIABLE_NUMBER (32766).
         const ID_CHUNK: usize = 900;
@@ -2642,7 +2657,7 @@ impl SqliteStore {
             let sql = format!(
                 "SELECT n.id FROM node n \
                  WHERE n.id IN ({}) \
-                   AND n.node_type NOT IN ('collection', 'person') \
+                   AND n.node_type != 'person' \
                    AND EXISTS(SELECT 1 FROM relationship r \
                               WHERE r.in_node = n.id AND r.relationship_type = 'member_of')",
                 placeholders.join(", ")

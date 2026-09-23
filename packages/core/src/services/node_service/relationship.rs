@@ -577,6 +577,18 @@ impl NodeService {
                 }
             }
 
+            if relationship_name == "has_child" {
+                let target = self
+                    .get_node(target_id)
+                    .await?
+                    .ok_or_else(|| NodeServiceError::node_not_found(target_id))?;
+                if target.node_type == "collection" {
+                    return Err(NodeServiceError::hierarchy_violation(
+                        crate::db::collection_not_root(target_id),
+                    ));
+                }
+            }
+
             // The outline is single-parent, and every read path assumes it:
             // `get_parent`/`get_parent_id` resolve with `LIMIT 1`, so a second
             // parent does not produce an error — it silently hides one of them

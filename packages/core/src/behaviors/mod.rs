@@ -1675,7 +1675,10 @@ impl NodeBehavior for CollectionNodeBehavior {
     }
 
     fn can_have_children(&self) -> bool {
-        true // Collections form hierarchies via has_child edges
+        // A collection may hold has_child children (text, say), but is itself
+        // always a root: collections nest through `member_of`, and the schema's
+        // `collection_is_root_*` triggers refuse a parent (ADR-059 §2).
+        true
     }
 
     fn supports_markdown(&self) -> bool {

@@ -3237,6 +3237,98 @@ mod tests {
         );
     }
 
+    /// ADR-059 §2: a collection is always a root. It nests through
+    /// `member_of`, and it may have `has_child` children, but no write path
+    /// can give it a parent: create, move, relationship create, a raw edge
+    /// insert, or switching a child's type to `collection`.
+    #[tokio::test]
+    async fn collection_is_always_a_root_adr059() {
+        use crate::services::{CreateNodeParams, InsertPositionOwned};
+
+        let (svc, _tmp) = create_test_service().await;
+        let params = |id: &str, node_type: &str, parent: Option<&str>| CreateNodeParams {
+            id: Some(id.into()),
+            node_type: node_type.into(),
+            content: format!("{node_type} {id}"),
+            parent_id: parent.map(Into::into),
+            position: InsertPositionOwned::End,
+            properties: json!({}),
+            lifecycle_status: None,
+        };
+        const TEXT_ROOT: &str = "44444444-4444-4444-4444-4444444444a1";
+        const COLL: &str = "44444444-4444-4444-4444-4444444444c1";
+        const COLL_CHILD: &str = "44444444-4444-4444-4444-4444444444a2";
+        const NESTED: &str = "44444444-4444-4444-4444-4444444444c2";
+        const TEXT_CHILD: &str = "44444444-4444-4444-4444-4444444444a3";
+
+        svc.create_node_with_parent(params(TEXT_ROOT, "text", None))
+            .await
+            .unwrap();
+        svc.create_node_with_parent(params(COLL, "collection", None))
+            .await
+            .unwrap();
+        // A collection may have has_child children.
+        svc.create_node_with_parent(params(COLL_CHILD, "text", Some(COLL)))
+            .await
+            .expect("a collection may have a text child");
+
+        let is_refusal =
+            |e: &dyn std::fmt::Display| format!("{e:#}").contains("collection_not_root");
+
+        // Created under a parent.
+        let err = svc
+            .create_node_with_parent(params(NESTED, "collection", Some(TEXT_ROOT)))
+            .await
+            .expect_err("a collection cannot be created under a parent");
+        assert!(is_refusal(&err), "{err:#}");
+
+        // Moved under a parent.
+        let err = svc
+            .move_node_unchecked(COLL, Some(TEXT_ROOT), crate::services::InsertPosition::End)
+            .await
+            .expect_err("a collection cannot be moved under a parent");
+        assert!(is_refusal(&err), "{err:#}");
+
+        // Given a parent through the relationship API.
+        let err = svc
+            .create_relationship(TEXT_ROOT, "has_child", COLL, json!({}))
+            .await
+            .expect_err("a collection cannot gain a has_child parent");
+        assert!(is_refusal(&err), "{err:#}");
+
+        // Given a parent by a raw edge insert, bypassing every Rust check.
+        let err = svc
+            .store()
+            .write()
+            .await
+            .execute(
+                "INSERT INTO relationship (in_node, out_node, relationship_type, properties, version, created_at, modified_at) \
+                 VALUES (?1, ?2, 'has_child', '{}', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+                libsql::params![TEXT_ROOT, COLL],
+            )
+            .await
+            .expect_err("the schema refuses a collection child edge");
+        assert!(err.to_string().contains("collection_not_root"), "{err}");
+
+        // A child cannot become a collection.
+        svc.create_node_with_parent(params(TEXT_CHILD, "text", Some(TEXT_ROOT)))
+            .await
+            .unwrap();
+        let err = svc
+            .store()
+            .switch_node_type_atomic(TEXT_CHILD, "collection", json!({}), None)
+            .await
+            .expect_err("a child cannot become a collection");
+        assert!(
+            format!("{err:#}").contains("collection_not_root"),
+            "{err:#}"
+        );
+
+        // Nothing above left a parent on a collection.
+        assert!(svc.store().get_parent_id(COLL).await.unwrap().is_none());
+        assert!(svc.store().get_node(NESTED).await.unwrap().is_none());
+    }
+
     /// Which descendants count as ADR-059 §7 access boundaries, shape by
     /// shape. Every shape asserts both `access_boundaries_under` (what
     /// aggregation excludes) and `embedding_root_id` (where a node's embedding
@@ -3337,12 +3429,8 @@ mod tests {
         assert_eq!(boundaries(r.clone()).await, set(&[&narrower]), "(b')");
         assert_eq!(root_of(narrower.clone()).await, narrower, "(b')");
 
-        // (c) A restricted collection inside the subtree gates what is under it.
-        let r = create(next_id(), "text", None, json!({})).await;
-        let inner = create(next_id(), "collection", Some(r.clone()), restricted()).await;
-        let under = create(next_id(), "text", Some(inner.clone()), json!({})).await;
-        assert_eq!(boundaries(r.clone()).await, set(&[&inner]), "(c)");
-        assert_eq!(root_of(under).await, inner, "(c)");
+        // (c) A collection inside an outline cannot be built at all; see
+        // `collection_is_always_a_root_adr059`.
 
         // (d) A person's membership is an RBAC grant, not classification.
         let r = create(next_id(), "text", None, json!({})).await;

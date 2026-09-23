@@ -596,6 +596,17 @@ impl SqliteStore {
     }
 }
 
+/// The refusal for giving a collection a parent (ADR-059 §2): a collection is
+/// always a root and nests through `member_of`. The `collection_not_root`
+/// prefix matches the schema triggers' `RAISE` message, so every path that
+/// refuses it reads the same.
+pub(crate) fn collection_not_root(collection_id: &str) -> String {
+    format!(
+        "collection_not_root: collection '{}' cannot have a parent; collections nest through member_of, not has_child (ADR-059 §2)",
+        collection_id
+    )
+}
+
 // The remaining `impl SqliteStore` methods are split by concern into these
 // child modules; each is an additional `impl SqliteStore` block over the same
 // struct. See ADR-053 groundwork (node CRUD / relationships / embeddings / search).
@@ -1412,16 +1423,25 @@ mod tests {
             "person-node member_of edges are exempt from the root-only rule"
         );
 
-        // Collection-to-collection nesting is EXEMPT — even an interior collection.
-        let interior_coll = store
-            .create_child_node_atomic(&root_id, "collection", "Nested", json!({}), None)
-            .await?;
+        // Collections nest through member_of, and are always roots: an
+        // interior collection cannot be created to file in the first place.
+        let nested_coll = Node::new("collection".to_string(), "Nested".to_string(), json!({}));
+        let nested_coll_id = nested_coll.id.clone();
+        store.create_node(nested_coll, None, None).await?;
         assert!(
             store
-                .add_to_collection(&interior_coll.id, &coll_id, &json!({}))
+                .add_to_collection(&nested_coll_id, &coll_id, &json!({}))
                 .await
                 .is_ok(),
-            "collection nesting is exempt from the root-only rule"
+            "a root collection may nest in another"
+        );
+        let err = store
+            .create_child_node_atomic(&root_id, "collection", "Interior", json!({}), None)
+            .await
+            .expect_err("a collection cannot be created under a parent");
+        assert!(
+            format!("{err:#}").contains("collection_not_root"),
+            "{err:#}"
         );
 
         // End-to-end: a restricted task inside an OPEN project still works. The

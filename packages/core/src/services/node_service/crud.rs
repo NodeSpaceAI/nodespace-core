@@ -466,6 +466,11 @@ impl NodeService {
 
         // Step 3: Validate parent exists and is a container (if provided)
         if let Some(ref parent_id) = params.parent_id {
+            if params.node_type == "collection" {
+                return Err(NodeServiceError::hierarchy_violation(
+                    crate::db::collection_not_root(params.id.as_deref().unwrap_or("new")),
+                ));
+            }
             let parent_node = self
                 .get_node(parent_id)
                 .await?

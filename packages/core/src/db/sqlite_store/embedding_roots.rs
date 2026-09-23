@@ -3,11 +3,13 @@
 //!
 //! An embedding root is normally a tree root: its vector aggregates its whole
 //! `has_child` subtree. The one exception is a descendant whose access differs
-//! from its aggregating root's. Root-only membership (ADR-059 §2, enforced by
-//! `assert_may_gain_parent`) makes that shape unreachable by construction, so
-//! finding one is a defect. The descendant is kept out of the root's vector
-//! and becomes its own embedding root, so authorized readers can still find it
-//! by meaning.
+//! from its aggregating root's. Two constraints make that shape unreachable by
+//! construction (ADR-059 §2): only a root may hold a `member_of` edge
+//! (`assert_may_gain_parent` and the `member_of` insert guards), and a
+//! collection is always a root (the `collection_is_root_*` schema triggers).
+//! Finding one is therefore a defect. The descendant is kept out of the root's
+//! vector and becomes its own embedding root, so authorized readers can still
+//! find it by meaning.
 use super::*;
 use std::collections::BTreeSet;
 
@@ -30,8 +32,9 @@ fn restricted_collection_sql(alias: &str) -> String {
 }
 
 /// SQL for "the node `id_expr` might have access that differs from its outline
-/// ancestry's": it holds a `member_of` edge, or it is a restricted collection
-/// (whose descendants it gates). A `person`'s `member_of` edges are RBAC
+/// ancestry's": it holds a `member_of` edge. That is the only way a node gains
+/// its own classification, since a collection (the only thing that restricts)
+/// can never sit inside an outline. A `person`'s `member_of` edges are RBAC
 /// membership, gated server-side rather than by the reachability walk, so they
 /// do not classify the person node.
 ///
@@ -39,55 +42,37 @@ fn restricted_collection_sql(alias: &str) -> String {
 /// decides. The cheap filter keeps the walk off the common case.
 fn access_candidate_sql(id_expr: &str) -> String {
     format!(
-        "EXISTS (SELECT 1 FROM node cn WHERE cn.id = {id_expr} AND ( \
-            (cn.node_type != 'person' AND EXISTS (SELECT 1 FROM relationship cm \
-                WHERE cm.in_node = cn.id AND cm.relationship_type = 'member_of')) \
-            OR {restricted}))",
-        restricted = restricted_collection_sql("cn"),
+        "EXISTS (SELECT 1 FROM node cn WHERE cn.id = {id_expr} \
+            AND cn.node_type != 'person' \
+            AND EXISTS (SELECT 1 FROM relationship cm \
+                WHERE cm.in_node = cn.id AND cm.relationship_type = 'member_of'))"
     )
 }
 
 impl SqliteStore {
     /// The nearest restricted collections governing `node_id` through its
-    /// **own** classification, ignoring its outline position: the node itself
-    /// if it is a restricted collection, else the walk up from its `member_of`
-    /// edges. Beyond the seed the walk follows ADR-059 §1: `has_child` upward
-    /// unconditionally, `member_of` upward only out of a collection. Of the
-    /// restricted collections found, only the minimum-depth set is returned
-    /// (§3: nearest boundary wins, ties grant). Empty means the node's access
-    /// is inherited from its outline ancestry.
-    ///
-    /// The node counting itself (depth 0) is stricter than the cloud walk,
-    /// which starts at the node's parents. The difference only matters for a
-    /// restricted collection nested inside an embeddable root, and there the
-    /// stricter reading is the safe one: the collection's descendants are gated
-    /// by it, so it is cut off from the root together with them.
+    /// **own** classification, ignoring its outline position: the walk up from
+    /// its `member_of` edges, and on through each collection's own `member_of`
+    /// edges (ADR-059 §1). A collection never has a `has_child` parent, so
+    /// collection nesting is the whole walk. Of the restricted collections
+    /// found, only the minimum-depth set is returned (§3: nearest boundary
+    /// wins, ties grant). Empty means the node's access is inherited from its
+    /// outline ancestry.
     pub(crate) async fn access_boundary(&self, node_id: &str) -> Result<BTreeSet<String>> {
         let restricted = restricted_collection_sql("n");
         let mut seen: HashSet<String> = HashSet::from([node_id.to_string()]);
         let mut frontier: Vec<String> = vec![node_id.to_string()];
 
-        for depth in 0..MAX_ACCESS_WALK_DEPTH {
-            let found = self.restricted_among(&frontier, &restricted).await?;
-            if !found.is_empty() {
-                return Ok(found);
-            }
+        for _ in 0..MAX_ACCESS_WALK_DEPTH {
             let mut next = Vec::new();
             for id in &frontier {
-                // At the seed only its own `member_of` edges count: its outline
-                // parent is the ancestry every boundary is compared against.
                 let mut rows = self
                     .read()
                     .await?
                     .query(
-                        "SELECT r.out_node FROM relationship r \
-                         WHERE r.in_node = ?1 AND r.relationship_type = 'member_of' \
-                           AND (?2 = 0 OR EXISTS (SELECT 1 FROM node n \
-                                WHERE n.id = ?1 AND n.node_type = 'collection')) \
-                         UNION \
-                         SELECT r.in_node FROM relationship r \
-                         WHERE r.out_node = ?1 AND r.relationship_type = 'has_child' AND ?2 = 1",
-                        libsql::params![id.clone(), i64::from(depth > 0)],
+                        "SELECT out_node FROM relationship \
+                         WHERE in_node = ?1 AND relationship_type = 'member_of'",
+                        libsql::params![id.clone()],
                     )
                     .await
                     .context("Failed to walk access ancestry")?;
@@ -100,6 +85,10 @@ impl SqliteStore {
             }
             if next.is_empty() {
                 break;
+            }
+            let found = self.restricted_among(&next, &restricted).await?;
+            if !found.is_empty() {
+                return Ok(found);
             }
             frontier = next;
         }
