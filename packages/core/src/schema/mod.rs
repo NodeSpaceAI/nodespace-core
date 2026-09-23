@@ -600,36 +600,122 @@ fn extend_inherited_field(
     Ok(addition.values.len())
 }
 
+/// Which reserved-name category a relationship name falls into, if any. The
+/// single source of truth for "is this name off-limits and why" — both
+/// [`reject_reserved_relationship_names`] (the `add_relationships`/
+/// `create_schema` side) and [`reject_reserved_relationship_removal_names`]
+/// (the `remove_relationships` side) classify through this one function and
+/// format their own, differently-worded messages from the result, so a
+/// future change to *which* names are reserved only has one place to change
+/// — the two call sites cannot drift apart on the policy itself, only on
+/// wording.
+enum ReservedRelationshipName {
+    /// A built-in structural relationship (`has_child`, …). Never stored as
+    /// a declaration (see `builtin_exclusion_sql`) — naming one is always
+    /// either an outright collision (on the add side) or an inert no-op (on
+    /// the remove side).
+    Builtin,
+    /// A type-system relationship (`extends`/`extended_by`, see
+    /// `TYPE_SYSTEM_RELATIONSHIPS`). Only the forward spelling, `extends`, is
+    /// ever stored as a `relationship_type` value (`set_schema_declarations`
+    /// writes one row per declaration, keyed on the forward name) — so unlike
+    /// `extends`, naming `extended_by` here was always an inert no-op, the
+    /// same situation as the built-in branch above, not a real bypass; it is
+    /// rejected anyway for the same early, consistent-feedback reason. The
+    /// stored `extends` row is settable/clearable only through the schema
+    /// definition's own `extends` key — never through a generic by-name
+    /// relationship path.
+    TypeSystem,
+}
+
+fn classify_reserved_relationship_name(name: &str) -> Option<ReservedRelationshipName> {
+    if crate::models::schema::is_reserved_relationship_name(name) {
+        Some(ReservedRelationshipName::Builtin)
+    } else if crate::models::schema::is_type_system_relationship(name) {
+        Some(ReservedRelationshipName::TypeSystem)
+    } else {
+        None
+    }
+}
+
 fn reject_reserved_relationship_names(
     relationships: &[crate::models::schema::SchemaRelationship],
 ) -> Result<(), MarkdownError> {
     for rel in relationships {
         for (which, name) in [("name", &rel.name), ("reverseName", &rel.reverse_name)] {
-            if crate::models::schema::is_reserved_relationship_name(name) {
+            match classify_reserved_relationship_name(name) {
+                Some(ReservedRelationshipName::Builtin) => {
+                    return Err(MarkdownError::invalid_params(format!(
+                        "Relationship {} '{}' is reserved for a built-in structural relationship \
+                         ({}). Choose a different name.",
+                        which,
+                        name,
+                        crate::models::schema::RESERVED_RELATIONSHIP_NAMES.join(", ")
+                    )));
+                }
+                // Type-system names are rejected here but, unlike the
+                // built-ins above, are still stored and read as ordinary
+                // declarations — see `TYPE_SYSTEM_RELATIONSHIPS`. `extends`
+                // reaches the relationship table only via the schema
+                // definition's own `extends` key, which this handler
+                // synthesizes.
+                Some(ReservedRelationshipName::TypeSystem) => {
+                    return Err(MarkdownError::invalid_params(format!(
+                        "Relationship {} '{}' is reserved: '{}' describes the type system itself \
+                         and is not declared as a relationship. Use the schema's own \"extends\" \
+                         key instead — e.g. {{\"name\": \"Issue\", \"extends\": \"task\", \
+                         \"fields\": [...]}}.",
+                        which,
+                        name,
+                        crate::models::schema::EXTENDS_RELATIONSHIP,
+                    )));
+                }
+                None => {}
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Reject `extends`/`extended_by` from `remove_relationships`'s by-name
+/// removal list — the same reserved names `add_relationships` blocks via
+/// [`reject_reserved_relationship_names`] (both classify through
+/// [`classify_reserved_relationship_name`]), applied to the removal side of
+/// `update_schema`.
+///
+/// `remove_relationships` is a generic by-name removal over the same
+/// relationship-table-backed declaration list `extends` is stored in (see
+/// `TYPE_SYSTEM_RELATIONSHIPS`), so without this guard a caller could name
+/// the type-system relationship here and silently clear a schema's `extends`
+/// edge — contradicting `UpdateSchemaParams::extends`'s own contract that the
+/// edge can only ever be re-targeted, never cleared. Built-in structural
+/// names (`has_child`, …) are included too, for the same reason
+/// `add_relationships` rejects them: they are never stored as declarations
+/// (see `builtin_exclusion_sql`), so naming one here is already a no-op, and
+/// rejecting it gives that consistent, early feedback instead of a silent
+/// no-op.
+fn reject_reserved_relationship_removal_names(names: &[String]) -> Result<(), MarkdownError> {
+    for name in names {
+        match classify_reserved_relationship_name(name) {
+            Some(ReservedRelationshipName::Builtin) => {
                 return Err(MarkdownError::invalid_params(format!(
-                    "Relationship {} '{}' is reserved for a built-in structural relationship \
-                     ({}). Choose a different name.",
-                    which,
+                    "Relationship name '{}' is reserved for a built-in structural relationship \
+                     ({}) and is never stored as a declaration, so it cannot be removed via \
+                     remove_relationships.",
                     name,
                     crate::models::schema::RESERVED_RELATIONSHIP_NAMES.join(", ")
                 )));
             }
-            // Type-system names are rejected here but, unlike the built-ins
-            // above, are still stored and read as ordinary declarations — see
-            // `TYPE_SYSTEM_RELATIONSHIPS`. `extends` reaches the relationship
-            // table only via the schema definition's own `extends` key, which
-            // this handler synthesizes.
-            if crate::models::schema::is_type_system_relationship(name) {
+            Some(ReservedRelationshipName::TypeSystem) => {
                 return Err(MarkdownError::invalid_params(format!(
-                    "Relationship {} '{}' is reserved: '{}' describes the type system itself \
-                     and is not declared as a relationship. Use the schema's own \"extends\" \
-                     key instead — e.g. {{\"name\": \"Issue\", \"extends\": \"task\", \
-                     \"fields\": [...]}}.",
-                    which,
+                    "Relationship name '{}' cannot be removed via remove_relationships: '{}' \
+                     describes the type system itself. Use the schema's own \"extends\" key to \
+                     re-target it to a different parent instead — there is no way to clear it.",
                     name,
                     crate::models::schema::EXTENDS_RELATIONSHIP,
                 )));
             }
+            None => {}
         }
     }
     Ok(())
@@ -1530,7 +1616,10 @@ pub struct UpdateSchemaParams {
     /// Relationships to add
     #[serde(default)]
     pub add_relationships: Option<Vec<crate::models::schema::SchemaRelationship>>,
-    /// Relationship names to remove (soft-delete: edge table preserved)
+    /// Relationship names to remove (soft-delete: edge table preserved).
+    /// `extends`/`extended_by` are rejected here — see the `extends` field
+    /// above; the parent edge can only be re-targeted, never cleared, and
+    /// this generic by-name path is not a back door around that.
     #[serde(default)]
     pub remove_relationships: Option<Vec<String>>,
     /// New description (optional)
@@ -1618,6 +1707,14 @@ pub async fn handle_update_schema(
 
     let mut params: UpdateSchemaParams = serde_json::from_value(params)
         .map_err(|e| MarkdownError::invalid_params(format!("{e}")))?;
+
+    // `extends`/`extended_by` must not be removable through the generic
+    // by-name path — see `reject_reserved_relationship_removal_names`. The
+    // dedicated `extends` parameter above is the only way to change that
+    // edge, and it can only re-target it, never clear it.
+    if let Some(ref remove_names) = params.remove_relationships {
+        reject_reserved_relationship_removal_names(remove_names)?;
+    }
 
     // --- Phase 0: Verify schema exists, validate renames, run play impact check ---
     // Schema existence is verified upfront so rename/play validation errors are reported
@@ -1906,17 +2003,18 @@ pub async fn handle_update_schema(
             ))
         })?;
 
-    // Relationship removals are resolved here, ahead of field processing,
-    // purely so the extends-parent determination below can see them:
-    // `remove_relationships` can drop THIS call's own `extends` declaration,
-    // and both the `add_fields` and `add_relationships` ancestor-collision
-    // gates below need to know the parent as it stands AFTER that removal,
-    // not the pre-call snapshot — otherwise a call that both detaches from a
-    // parent and adds a field/relationship that only collides with that
-    // now-detached parent would be wrongly rejected. `add_relationships`
-    // itself is still folded in later, in its own "Process relationships"
-    // section below — nothing before that section depends on the ADDED
-    // relationships, only on removals.
+    // Relationship removals are resolved here, ahead of field processing, so
+    // `relationships` reflects them by the time the "Process relationships"
+    // section and the `extends` re-target block below build the final
+    // declaration list. `remove_relationships` can no longer drop THIS
+    // call's own `extends` declaration — see
+    // `reject_reserved_relationship_removal_names`, applied above before any
+    // mutation runs — so unlike ordinary removals, an `extends` removal is
+    // never in play here; the dedicated `extends` parameter is the only way
+    // to change that edge. `add_relationships` itself is still folded in
+    // later, in its own "Process relationships" section below — nothing
+    // before that section depends on the ADDED relationships, only on
+    // removals.
     let mut relationships = schema.relationships.clone();
     let mut relationships_removed = 0;
     if let Some(remove_names) = &params.remove_relationships {
@@ -1931,9 +2029,9 @@ pub async fn handle_update_schema(
     // field/relationship lists against the NEW parent further down, so
     // checking against the old parent here would be redundant at best, and
     // wrong if the call is deliberately moving away from a parent an
-    // addition happens to collide with. Otherwise, the parent as of this
-    // call's own `remove_relationships` (just applied above), which may have
-    // just dropped it.
+    // addition happens to collide with. Otherwise, the parent as declared on
+    // this schema — `remove_relationships` (just applied above) cannot have
+    // changed it, since dropping `extends` through that path is rejected.
     let current_ancestor_for_additive_check: Option<String> = if params.extends.is_none() {
         declared_extends_parent(&relationships)
     } else {
