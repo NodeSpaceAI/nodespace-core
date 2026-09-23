@@ -810,7 +810,8 @@ async fn validate_extends_target(
     Ok(())
 }
 
-/// Reject a field this schema would inherit.
+/// Reject a field this schema would inherit — same-domain (field vs. field)
+/// or cross-domain (field vs. relationship).
 ///
 /// Composition is additive only (ADR-078): an extending schema may add fields
 /// but never redeclare one an ancestor already declares, with any attribute
@@ -819,6 +820,13 @@ async fn validate_extends_target(
 /// [`NodeService::resolve_field_owners`], so a collision two levels up is
 /// caught as readily as one with the immediate parent — and blamed on the
 /// schema that actually declares it, not just the nearest ancestor.
+///
+/// ADR-078's additive-only rule is per declared *name*, not per field-vs-
+/// relationship kind (see [`NodeService::resolve_relationships`]'s doc
+/// comment) — a descendant declaring a field under a name an ancestor already
+/// uses for a relationship is exactly as much a redeclaration as reusing a
+/// field name would be, so the ancestor chain's relationship owners are
+/// checked too, via [`NodeService::resolve_relationships`].
 async fn validate_no_field_redeclaration(
     node_service: &Arc<NodeService>,
     parent_id: &str,
@@ -863,6 +871,27 @@ async fn validate_no_field_redeclaration(
         }
     }
 
+    let (_, relationship_owners) = node_service
+        .resolve_relationships(parent_id)
+        .await
+        .map_err(|e| {
+            MarkdownError::internal_error(format!(
+                "Failed to resolve relationships for '{parent_id}': {e}"
+            ))
+        })?;
+
+    for field in own_fields {
+        if let Some(owner) = relationship_owners.get(&field.name) {
+            return Err(MarkdownError::invalid_params(format!(
+                "Field '{}' is already declared as a relationship by '{}' (inherited via \
+                 extends) and cannot be redeclared as a field — composition is additive only \
+                 across both domains, so a name claimed by either a field or a relationship \
+                 cannot be reused as the other. Give this field a different name.",
+                field.name, owner,
+            )));
+        }
+    }
+
     Ok(())
 }
 
@@ -902,7 +931,8 @@ pub async fn resolve_effective_fields(
     Ok(extends_chain::flatten_chain_fields(chain_fields))
 }
 
-/// Reject a relationship this schema would inherit.
+/// Reject a relationship this schema would inherit — same-domain
+/// (relationship vs. relationship) or cross-domain (relationship vs. field).
 ///
 /// Composition is additive only (ADR-078): an extending schema may add
 /// relationships but never redeclare one an ancestor already declares, with
@@ -911,6 +941,13 @@ pub async fn resolve_effective_fields(
 /// effective set**, not just the parent's own directly-declared
 /// relationships, via [`NodeService::resolve_relationships`], so a collision
 /// two levels up is caught as readily as one with the immediate parent.
+///
+/// ADR-078's additive-only rule is per declared *name*, not per field-vs-
+/// relationship kind (see [`NodeService::resolve_relationships`]'s doc
+/// comment) — a descendant declaring a relationship under a name an ancestor
+/// already uses for a field is exactly as much a redeclaration as reusing a
+/// relationship name would be, so the ancestor chain's field owners are
+/// checked too, via [`NodeService::resolve_field_owners`].
 async fn validate_no_relationship_redeclaration(
     node_service: &Arc<NodeService>,
     parent_id: &str,
@@ -946,6 +983,28 @@ async fn validate_no_relationship_redeclaration(
                 rel.name,
                 declaring_schema,
                 existing.target_type.as_deref().unwrap_or("*"),
+            )));
+        }
+    }
+
+    let (_, field_owners, _) = node_service
+        .resolve_field_owners(parent_id)
+        .await
+        .map_err(|e| {
+            MarkdownError::internal_error(format!(
+                "Failed to resolve field owners for '{parent_id}': {e}"
+            ))
+        })?;
+
+    for rel in own_relationships {
+        if let Some(owner) = field_owners.get(&rel.name) {
+            return Err(MarkdownError::invalid_params(format!(
+                "Relationship '{}' is already declared as a field by '{}' (inherited via \
+                 extends) and cannot be redeclared as a relationship — composition is additive \
+                 only across both domains, so a name claimed by either a field or a \
+                 relationship cannot be reused as the other. Give this relationship a \
+                 different name.",
+                rel.name, owner,
             )));
         }
     }
