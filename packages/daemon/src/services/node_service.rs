@@ -1875,7 +1875,7 @@ impl GrpcNodeService for NodeServiceImpl {
     ) -> Result<Response<ListMethodologiesResponse>, Status> {
         // Compiled-in content, so no routing or store access is needed to
         // answer what is on offer.
-        let methodologies = nodespace_core::methodology::all_recipes()
+        let methodologies = nodespace_core::methodology::all_playbooks()
             .into_iter()
             .map(|r| Methodology {
                 id: r.id.to_string(),
@@ -1894,8 +1894,8 @@ impl GrpcNodeService for NodeServiceImpl {
         let this = self.route(&request).await?;
         let req = request.into_inner();
 
-        let recipe =
-            nodespace_core::methodology::recipe_by_id(&req.methodology_id).ok_or_else(|| {
+        let playbook = nodespace_core::methodology::playbook_by_id(&req.methodology_id)
+            .ok_or_else(|| {
                 Status::not_found(format!(
                     "unknown methodology '{}' — call ListMethodologies for what this build ships",
                     req.methodology_id
@@ -1905,7 +1905,8 @@ impl GrpcNodeService for NodeServiceImpl {
         // A partial install returns Ok with `success: false`. The report is
         // the only record of how far it got, and a Status would throw that
         // away at exactly the moment the caller needs it most.
-        let report = nodespace_core::methodology::install_recipe(&this.node_service, &recipe).await;
+        let report =
+            nodespace_core::methodology::install_playbook(&this.node_service, &playbook).await;
 
         let report_json = serde_json::to_string(&report)
             .map_err(|e| Status::internal(format!("failed to encode install report: {e}")))?;

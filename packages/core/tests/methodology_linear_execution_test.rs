@@ -1,9 +1,9 @@
-//! What the Linear recipe's Plays actually DO, against a running engine.
+//! What the Linear playbook's Plays actually DO, against a running engine.
 //!
 //! The install test proves every Play saves. That is a weaker property than it
 //! looks: a rule can validate, activate, and then do nothing, or do the wrong
 //! thing, with every structural assertion still green. Three separate bugs in
-//! this recipe had exactly that shape — a reassignment that re-added each task
+//! this playbook had exactly that shape — a reassignment that re-added each task
 //! to the cycle it was already in, a rollover that moved completed work, and a
 //! condition over a relationship that resolved to an empty set because the
 //! runtime resolver did not walk the `extends` chain the validator did.
@@ -13,7 +13,7 @@
 
 use anyhow::Result;
 use nodespace_core::db::SqliteStore;
-use nodespace_core::methodology::{install_recipe, recipe_by_id};
+use nodespace_core::methodology::{install_playbook, playbook_by_id};
 use nodespace_core::models::Node;
 use nodespace_core::services::NodeService;
 use nodespace_core::PlaybookEngine;
@@ -30,17 +30,17 @@ async fn test_service() -> Result<(Arc<NodeService>, TempDir)> {
     Ok((service, temp_dir))
 }
 
-/// Install the recipe and start the engine, so invariant rules are live on the
+/// Install the playbook and start the engine, so invariant rules are live on the
 /// write path.
-async fn service_with_recipe() -> Result<(
+async fn service_with_playbook() -> Result<(
     Arc<NodeService>,
     TempDir,
     watch::Sender<bool>,
     tokio::task::JoinHandle<Result<()>>,
 )> {
     let (service, tmp) = test_service().await?;
-    let recipe = recipe_by_id("linear").expect("linear recipe ships");
-    let report = install_recipe(&service, &recipe).await;
+    let playbook = playbook_by_id("linear").expect("linear playbook ships");
+    let report = install_playbook(&service, &playbook).await;
     assert!(report.success, "install failed: {:?}", report.failure());
 
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
@@ -87,7 +87,7 @@ fn child_params(
 /// from a silently empty condition.
 #[tokio::test]
 async fn blocker_gate_rejects_starting_an_issue_with_an_open_blocker() -> Result<()> {
-    let (service, _tmp, tx, task) = service_with_recipe().await?;
+    let (service, _tmp, tx, task) = service_with_playbook().await?;
 
     let blocker = service
         .create_node(Node::new(
@@ -148,7 +148,7 @@ async fn blocker_gate_rejects_starting_an_issue_with_an_open_blocker() -> Result
 /// everything" would pass the test above.
 #[tokio::test]
 async fn blocker_gate_allows_starting_when_the_blocker_is_done() -> Result<()> {
-    let (service, _tmp, tx, task) = service_with_recipe().await?;
+    let (service, _tmp, tx, task) = service_with_playbook().await?;
 
     let blocker = service
         .create_node(Node::new(
@@ -185,7 +185,7 @@ async fn blocker_gate_allows_starting_when_the_blocker_is_done() -> Result<()> {
 /// The sub-issue gate must reject closing a parent with an open child.
 #[tokio::test]
 async fn sub_issue_gate_rejects_closing_a_parent_with_an_open_child() -> Result<()> {
-    let (service, _tmp, tx, task) = service_with_recipe().await?;
+    let (service, _tmp, tx, task) = service_with_playbook().await?;
 
     let parent = service
         .create_node(Node::new(
@@ -220,7 +220,7 @@ async fn sub_issue_gate_rejects_closing_a_parent_with_an_open_child() -> Result<
 /// Closing a parent whose children are all done must succeed.
 #[tokio::test]
 async fn sub_issue_gate_allows_closing_when_every_child_is_done() -> Result<()> {
-    let (service, _tmp, tx, task) = service_with_recipe().await?;
+    let (service, _tmp, tx, task) = service_with_playbook().await?;
 
     let parent = service
         .create_node(Node::new(
@@ -263,7 +263,7 @@ async fn sub_issue_gate_allows_closing_when_every_child_is_done() -> Result<()> 
 /// and what is under test is what the actions DO once they run.
 #[tokio::test]
 async fn rollover_moves_a_task_rather_than_leaving_it_in_both_cycles() -> Result<()> {
-    let (service, _tmp, tx, task) = service_with_recipe().await?;
+    let (service, _tmp, tx, task) = service_with_playbook().await?;
 
     let ending = service
         .create_node(Node::new(
@@ -415,7 +415,7 @@ async fn run_rollover(service: &Arc<NodeService>, trigger_id: &str) -> Result<()
 /// as absent. That is why this is worth a test of its own.
 #[tokio::test]
 async fn the_relationship_viewer_counts_an_inherited_edge_between_subtypes() -> Result<()> {
-    let (service, _tmp, tx, task) = service_with_recipe().await?;
+    let (service, _tmp, tx, task) = service_with_playbook().await?;
 
     let blocker = service
         .create_node(Node::new(
@@ -463,7 +463,7 @@ async fn the_relationship_viewer_counts_an_inherited_edge_between_subtypes() -> 
 /// one mean something.
 #[tokio::test]
 async fn rollover_leaves_a_cycle_that_is_not_ending_today_alone() -> Result<()> {
-    let (service, _tmp, tx, task) = service_with_recipe().await?;
+    let (service, _tmp, tx, task) = service_with_playbook().await?;
 
     // Ends well in the future, so the rule's `end_date == today()` is false.
     let ongoing = service
@@ -538,7 +538,7 @@ async fn rollover_leaves_a_cycle_that_is_not_ending_today_alone() -> Result<()> 
 /// Same-named declarers are the whole point.
 #[tokio::test]
 async fn two_declarers_of_one_relationship_name_are_narrowed_separately() -> Result<()> {
-    let (service, _tmp, tx, task) = service_with_recipe().await?;
+    let (service, _tmp, tx, task) = service_with_playbook().await?;
 
     let project = service
         .create_node(Node::new(
@@ -579,8 +579,8 @@ async fn two_declarers_of_one_relationship_name_are_narrowed_separately() -> Res
         .iter()
         .filter(|g| g.relationship_name == "tasks" && g.direction == "in")
         .collect();
-    // Three declarers, not two: `project`, `person`, and this recipe's own
-    // `cycle` all declare `tasks` toward `task`. That the recipe ADDS a third
+    // Three declarers, not two: `project`, `person`, and this playbook's own
+    // `cycle` all declare `tasks` toward `task`. That the playbook ADDS a third
     // is exactly why the key matters more after this PR than before it.
     assert_eq!(
         inbound_tasks.len(),

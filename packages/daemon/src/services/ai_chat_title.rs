@@ -7,9 +7,10 @@
 //!
 //! # Where the title lives
 //!
-//! In `node.content`. The ai-chat schema declares no `title` field
-//! (`AiChatNode::into_node` sets `title: None`), and both display surfaces —
-//! the viewer header and the sidebar list — already read `content`. So the
+//! In `node.content`. The ai-chat schema declares no `title` field, and both
+//! display surfaces — the viewer header and the sidebar list — already read
+//! `content`. A chat is a root, so its derived `title` column follows its
+//! content on every write (`"Untitled"`, then the generated name). So the
 //! write here is a plain `NodeUpdate::with_content`, and the frontend picks it
 //! up through the `node:updated` path it already has for exactly this
 //! ("background titling updated a chat's content").

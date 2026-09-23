@@ -607,6 +607,18 @@ impl NodeService {
             }
         }
 
+        if relationship_name == "has_child" {
+            let target = self
+                .get_node(target_id)
+                .await?
+                .ok_or_else(|| NodeServiceError::node_not_found(target_id))?;
+            if target.node_type == "collection" {
+                return Err(NodeServiceError::hierarchy_violation(
+                    crate::db::collection_not_root(Some(target_id)),
+                ));
+            }
+        }
+
         // The outline is single-parent, and every read path assumes it:
         // `get_parent`/`get_parent_id` resolve with `LIMIT 1`, so a second
         // parent does not produce an error — it silently hides one of them
@@ -708,6 +720,7 @@ impl NodeService {
                 .map_err(|e| {
                     NodeServiceError::query_failed(format!("Failed to append child edge: {}", e))
                 })?;
+            self.refresh_for_rootness(target_id, false).await;
 
             self.emit_event(DomainEvent::RelationshipCreated {
                 relationship: crate::db::events::RelationshipEvent::new(
@@ -723,14 +736,13 @@ impl NodeService {
         }
 
         // Remaining relationships carry the caller's edge_data as-is: the two
-        // auto-ordered builtins (member_of, has_child) returned early above, and
-        // mentions / has_role are unordered. Builtins normalize a non-object
-        // payload to an empty object; custom relationships pass through verbatim.
-        // Only a builtin ever reaches here — a declared (custom) relationship
-        // returned early above, through the transactional `create_relationship_in_tx`
-        // path. Builtins normalize a non-object payload to an empty object and
-        // carry no declared reverse name (the store derives a builtin's
-        // reverse from its forward name).
+        // auto-ordered builtins (member_of, has_child) returned early above
+        // when auto-ordered, and mentions / has_role are unordered. Only a
+        // builtin ever reaches here at all — a declared (custom) relationship
+        // returned early above, through the transactional
+        // `create_relationship_in_tx` path. Builtins normalize a non-object
+        // payload to an empty object and carry no declared reverse name (the
+        // store derives a builtin's reverse from its forward name).
         let final_edge_data = serde_json::json!(edge_data.as_object().cloned().unwrap_or_default());
 
         let rel_id = self
@@ -746,6 +758,9 @@ impl NodeService {
             .map_err(|e| {
                 NodeServiceError::query_failed(format!("Failed to create relationship: {}", e))
             })?;
+        if relationship_name == "has_child" {
+            self.refresh_for_rootness(target_id, false).await;
+        }
 
         self.emit_event(DomainEvent::RelationshipCreated {
             relationship: crate::db::events::RelationshipEvent::new(
@@ -1027,6 +1042,10 @@ impl NodeService {
         .map_err(|e| {
             NodeServiceError::query_failed(format!("Failed to create relationship: {}", e))
         })?;
+        if relationship_name == "has_child" {
+            self.refresh_for_rootness_in_tx(tx, target_id, false)
+                .await?;
+        }
 
         self.emit_event(DomainEvent::RelationshipCreated {
             relationship: crate::db::events::RelationshipEvent::new(
@@ -1132,6 +1151,9 @@ impl NodeService {
         .map_err(|e| {
             NodeServiceError::query_failed(format!("Failed to delete relationship: {}", e))
         })?;
+        if relationship_name == "has_child" && rel_id.is_some() {
+            self.refresh_for_rootness_in_tx(tx, target_id, true).await?;
+        }
 
         if let Some(id) = rel_id {
             self.emit_event(DomainEvent::RelationshipDeleted {
@@ -1323,6 +1345,9 @@ impl NodeService {
             .map_err(|e| {
                 NodeServiceError::query_failed(format!("Failed to delete relationship: {}", e))
             })?;
+        if relationship_name == "has_child" && rel_id.is_some() {
+            self.refresh_for_rootness(target_id, true).await;
+        }
 
         // Emit RelationshipDeleted event. Normalize ids — same
         // rationale as the other `RelationshipDeleted` sites; see

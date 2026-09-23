@@ -1,6 +1,20 @@
 //! `SqliteStore` methods — nodes concern (split from the god-object per ADR-053 prep).
 use super::*;
 
+/// One row of a bulk hierarchy insert: `(id, node_type, content, parent_id,
+/// order, properties, title)`. The title is derived by the caller with
+/// `NodeService::derive_title` — the store applies no title rule of its own,
+/// so bulk and single-node creation cannot disagree.
+pub type BulkNodeRow = (
+    String,
+    String,
+    String,
+    Option<String>,
+    f64,
+    serde_json::Value,
+    Option<String>,
+);
+
 /// Token cap on an entity-resolution query. Matches `BM25_MAX_TOKENS`'s intent
 /// — bound a long message to a fixed query cost — but is its own constant
 /// because the two searches answer different questions.
@@ -29,9 +43,9 @@ const ENTITY_RESOLUTION_MAX_TOKENS: usize = 6;
 /// Choose which of `message`'s tokens an entity-resolution query searches for,
 /// lowercased and in message order.
 ///
-/// Same tokenization as `bm25_search_roots`, and deliberately the same
-/// stop-word list: the words that make a content search noisy ("the", "what",
-/// "how") make a title search noisy for the same reason.
+/// Same tokenization as `bm25_search_titles`, and deliberately the same
+/// stop-word list: the words that make a search query noisy ("the", "what",
+/// "how") make an entity lookup noisy for the same reason.
 ///
 /// Which tokens the cap KEEPS is the part that matters. Taking the first N is
 /// wrong: the budget is spent on whatever the sentence opens with, and a name
@@ -530,6 +544,52 @@ impl SqliteStore {
     /// execution (ADR-060 §1): an invariant rule's action very often targets
     /// the very node whose creation triggered it, which exists only inside
     /// this transaction until commit.
+    /// Write a node's derived `title` alone, if the node is still at
+    /// `expected_version`. `title` is an index column derived from content and
+    /// rootness, not user data, so it bumps neither `version` nor `modified_at`
+    /// and emits no event; the `node_title_fts` update trigger keeps the index
+    /// in step.
+    ///
+    /// No event is needed because the only caller re-derives a title after a
+    /// rootness change, and rootness never changes a title the UI renders: the
+    /// UI reads `node.title` only for templated types (whose title ignores
+    /// rootness) or as a `title || content` fallback, which a root/child flip
+    /// leaves showing the same text. Emitting `NodeUpdated` or bumping the
+    /// version here would instead turn every move into an OCC conflict for any
+    /// client holding the node.
+    ///
+    /// The version guard makes the write lose to a concurrent content update
+    /// rather than overwrite that update's own (current) title with one derived
+    /// from the content read before it.
+    pub async fn set_title(
+        &self,
+        id: &str,
+        title: Option<&str>,
+        expected_version: i64,
+    ) -> Result<()> {
+        self.write()
+            .await
+            .execute(
+                "UPDATE node SET title = ?1 WHERE id = ?2 AND version = ?3",
+                libsql::params![title.map(str::to_string), id.to_string(), expected_version],
+            )
+            .await
+            .context("Failed to set title")?;
+        Ok(())
+    }
+
+    /// `_in_tx` twin of [`Self::set_title`].
+    pub(crate) async fn set_title_in_tx(tx: &Tx<'_>, id: &str, title: Option<&str>) -> Result<()> {
+        tx.conn()
+            .execute(
+                "UPDATE node SET title = ?1 WHERE id = ?2",
+                libsql::params![title.map(str::to_string), id.to_string()],
+            )
+            .await
+            .context("Failed to set title")?;
+        Ok(())
+    }
+
     pub(crate) async fn get_node_in_tx(tx: &Tx<'_>, id: &str) -> Result<Option<Node>> {
         let mut rows = tx
             .conn()
@@ -2012,10 +2072,10 @@ impl SqliteStore {
 
     /// Stem-token fallback for `title_contains` when the exact-substring
     /// match returns zero rows. Reuses the same tokenization/stop-word rules
-    /// `bm25_search_roots` applies for FTS queries, but compares word-to-word
-    /// by shared stem rather than via FTS5 (titles aren't in `node_fts`,
-    /// which indexes only `content`) or via substring-of-whole-title (which
-    /// can't match a word variant like "groceries" against "grocery store").
+    /// `bm25_search_titles` applies for FTS queries, but compares word-to-word
+    /// by shared stem rather than via FTS5 (whose `unicode61` tokenizer does
+    /// no stemming) or via substring-of-whole-title (which can't match a word
+    /// variant like "groceries" against "grocery store").
     ///
     /// Candidates are narrowed by `node_type` in SQL (cheap, exact), then the
     /// stem comparison runs in Rust over that set — SQL has no clean way to
@@ -2563,9 +2623,14 @@ impl SqliteStore {
     /// membership` on the `member_of` INSERT sites. (Fresh-node attach sites can't
     /// pre-hold a membership; `move_children_to_parent` only moves already-interior
     /// nodes.) Rejects rather than dropping the membership (a node can hold several
-    /// grants, each an independent access path). `collection` (nesting) and
-    /// `person` (grantee, ADR-037 §4) nodes are exempt. A single chunked query
-    /// keeps the bulk/cold-sweep path a single round trip.
+    /// grants, each an independent access path). `person` (grantee, ADR-037 §4)
+    /// nodes are exempt.
+    ///
+    /// Also refuses a `collection`, which is always a root (ADR-059 §2): see
+    /// [`super::collection_not_root`]. The schema's `collection_is_root_*`
+    /// triggers back this up on every write path; checking here gives the
+    /// reparent paths a readable error. One chunked query finds both kinds of
+    /// offender, keeping the bulk/cold-sweep path a single round trip per chunk.
     pub(crate) async fn assert_may_gain_parent(&self, node_ids: &[&str]) -> Result<()> {
         if node_ids.is_empty() {
             return Ok(());
@@ -2578,13 +2643,15 @@ impl SqliteStore {
         const ID_CHUNK: usize = 900;
         for chunk in unique.chunks(ID_CHUNK) {
             let placeholders: Vec<String> = (1..=chunk.len()).map(|i| format!("?{}", i)).collect();
-            // Offenders: non-exempt nodes that already hold a `member_of` edge.
+            // Offenders: collections, and non-exempt nodes that already hold a
+            // `member_of` edge.
             let sql = format!(
-                "SELECT n.id FROM node n \
+                "SELECT n.id, n.node_type FROM node n \
                  WHERE n.id IN ({}) \
-                   AND n.node_type NOT IN ('collection', 'person') \
-                   AND EXISTS(SELECT 1 FROM relationship r \
-                              WHERE r.in_node = n.id AND r.relationship_type = 'member_of')",
+                   AND (n.node_type = 'collection' \
+                        OR (n.node_type != 'person' \
+                            AND EXISTS(SELECT 1 FROM relationship r \
+                                       WHERE r.in_node = n.id AND r.relationship_type = 'member_of')))",
                 placeholders.join(", ")
             );
             let params: Vec<libsql::Value> = chunk
@@ -2593,7 +2660,7 @@ impl SqliteStore {
                 .collect();
             // Drain and drop the cursor before `get_node_memberships` checks out a
             // second reader connection — see `ReadRows` in `connections.rs`.
-            let offender: Option<String> = {
+            let offender: Option<(String, String)> = {
                 let mut rows = self
                     .read()
                     .await?
@@ -2601,11 +2668,14 @@ impl SqliteStore {
                     .await
                     .context("Failed to validate root-only membership on reparent")?;
                 match rows.next().await? {
-                    Some(row) => Some(row.get(0)?),
+                    Some(row) => Some((row.get(0)?, row.get(1)?)),
                     None => None,
                 }
             };
-            if let Some(offender) = offender {
+            if let Some((offender, node_type)) = offender {
+                if node_type == "collection" {
+                    return Err(anyhow::anyhow!(super::collection_not_root(Some(&offender))));
+                }
                 let memberships = self.get_node_memberships(&offender).await?;
                 return Err(anyhow::anyhow!(
                     "member_of_not_root: node '{}' holds collection membership ({}) and cannot be moved under a parent — only root nodes may hold collection membership (ADR-059 §2). Remove it from the collection(s) first, or move its root instead.",
@@ -3185,17 +3255,7 @@ impl SqliteStore {
     /// **Validation note:** `validate_node_type` is a pure in-memory check against
     /// `self.valid_node_types`; it does not touch the database and therefore cannot read
     /// uncommitted state from `tx`.
-    pub async fn bulk_create_hierarchy(
-        &self,
-        nodes: Vec<(
-            String,
-            String,
-            String,
-            Option<String>,
-            f64,
-            serde_json::Value,
-        )>,
-    ) -> Result<Vec<String>> {
+    pub async fn bulk_create_hierarchy(&self, nodes: Vec<BulkNodeRow>) -> Result<Vec<String>> {
         if nodes.is_empty() {
             return Ok(Vec::new());
         }
@@ -3207,7 +3267,7 @@ impl SqliteStore {
             .await
             .context("Failed to begin bulk hierarchy transaction")?;
 
-        for (id, node_type, content, parent_id, order, properties) in &nodes {
+        for (id, node_type, content, parent_id, order, properties, title) in &nodes {
             self.validate_node_type(node_type)?;
 
             let properties = if properties.is_null() {
@@ -3218,12 +3278,9 @@ impl SqliteStore {
             let props_json =
                 serde_json::to_string(&properties).context("Failed to serialize properties")?;
 
-            let title =
-                Self::compute_title_for_bulk_insert(node_type, parent_id.as_deref(), content);
-
             tx.execute(
                 "INSERT INTO node (id, node_type, content, properties, title, lifecycle_status, version, created_at, modified_at) VALUES (?1, ?2, ?3, ?4, ?5, 'active', 1, ?6, ?7)",
-                libsql::params![id.clone(), node_type.clone(), content.clone(), props_json, title, now.clone(), now.clone()],
+                libsql::params![id.clone(), node_type.clone(), content.clone(), props_json, title.clone(), now.clone(), now.clone()],
             ).await.context("Failed to insert node in bulk hierarchy")?;
 
             if let Some(parent) = parent_id {
@@ -3274,14 +3331,7 @@ impl SqliteStore {
     pub(crate) async fn bulk_create_hierarchy_in_tx(
         &self,
         tx: &Tx<'_>,
-        nodes: Vec<(
-            String,
-            String,
-            String,
-            Option<String>,
-            f64,
-            serde_json::Value,
-        )>,
+        nodes: Vec<BulkNodeRow>,
     ) -> Result<Vec<String>> {
         if nodes.is_empty() {
             return Ok(Vec::new());
@@ -3289,7 +3339,7 @@ impl SqliteStore {
 
         let now = Utc::now().to_rfc3339();
 
-        for (id, node_type, content, parent_id, order, properties) in &nodes {
+        for (id, node_type, content, parent_id, order, properties, title) in &nodes {
             self.validate_node_type(node_type)?;
 
             let properties = if properties.is_null() {
@@ -3300,12 +3350,9 @@ impl SqliteStore {
             let props_json =
                 serde_json::to_string(&properties).context("Failed to serialize properties")?;
 
-            let title =
-                Self::compute_title_for_bulk_insert(node_type, parent_id.as_deref(), content);
-
             tx.conn().execute(
                 "INSERT INTO node (id, node_type, content, properties, title, lifecycle_status, version, created_at, modified_at) VALUES (?1, ?2, ?3, ?4, ?5, 'active', 1, ?6, ?7)",
-                libsql::params![id.clone(), node_type.clone(), content.clone(), props_json, title, now.clone(), now.clone()],
+                libsql::params![id.clone(), node_type.clone(), content.clone(), props_json, title.clone(), now.clone(), now.clone()],
             ).await.context("Failed to insert node in bulk hierarchy")?;
 
             if let Some(parent) = parent_id {
@@ -3323,14 +3370,7 @@ impl SqliteStore {
 
     pub async fn bulk_create_hierarchy_root_notify(
         &self,
-        nodes: Vec<(
-            String,
-            String,
-            String,
-            Option<String>,
-            f64,
-            serde_json::Value,
-        )>,
+        nodes: Vec<BulkNodeRow>,
         root_ids: Vec<String>,
     ) -> Result<Vec<String>> {
         let created = self.bulk_create_hierarchy(nodes).await?;
@@ -3401,21 +3441,6 @@ impl SqliteStore {
         });
 
         Ok(id)
-    }
-
-    fn compute_title_for_bulk_insert(
-        node_type: &str,
-        parent_id: Option<&str>,
-        content: &str,
-    ) -> Option<String> {
-        if matches!(node_type, "date" | "schema" | "checkbox") {
-            None
-        } else if parent_id.is_none() || matches!(node_type, "task" | "collection") {
-            let stripped = crate::utils::strip_markdown(content);
-            Some(stripped)
-        } else {
-            None
-        }
     }
 
     /// Convert a raw [`Node`] into a [`crate::models::TaskNode`], reading its
@@ -3827,12 +3852,11 @@ impl SqliteStore {
     /// Resolve entity names in `message` to nodes, via the `node_title_fts`
     /// index over `node.title`.
     ///
-    /// This answers "which node IS X?", not "which nodes mention X?" — every
-    /// row in that index is a nameable thing and its indexed text is that
-    /// thing's own name. `bm25_search_roots` answers the other question over
-    /// `node.content` and resolves hits up to an embedding root; this one
-    /// deliberately does neither, because the node that bears the name is the
-    /// answer, not its ancestor.
+    /// This answers "which node IS X?" — every row in that index is a
+    /// nameable thing and its indexed text is that thing's own name. It reads
+    /// the same index as `bm25_search_titles` (general search's keyword half)
+    /// but selects tokens differently, since its input is a whole chat message
+    /// rather than a search query — see below.
     ///
     /// Ranked by FTS5 `rank` (bm25), best first, capped at `limit`. Returns
     /// every match rather than only unambiguous ones: a name resolving to two
@@ -3842,6 +3866,14 @@ impl SqliteStore {
     ///
     /// Archived nodes are excluded — resolving a name to a node the user has
     /// archived would reintroduce it into the turn as if it were live.
+    ///
+    /// Schema and date nodes are excluded too, though both are titled so
+    /// general search can find them. A schema's title is its type name
+    /// ("Task", "Ordered List"), and a type is not an entity: "add it to the
+    /// list" must not resolve to the Ordered List schema — the agent reaches
+    /// schemas through schema retrieval instead. A date's title is its ISO
+    /// content, which tokenizes to bare numbers (`2026`, `09`, `23`), so any
+    /// message carrying a number would otherwise resolve to date pages.
     pub async fn resolve_entities_by_title(
         &self,
         message: &str,
@@ -3867,6 +3899,7 @@ impl SqliteStore {
              FROM node_title_fts f \
              JOIN node n ON n.id = f.id \
              WHERE node_title_fts MATCH ?1 AND n.lifecycle_status != 'archived' \
+             AND n.node_type NOT IN ('schema', 'date') \
              ORDER BY rank LIMIT {}",
             limit
         );
@@ -5115,8 +5148,8 @@ mod query_nodes_wildcard_type_tests {
 ///
 /// **Gated behind `RUN_LONG_TESTS=1`** (the env var `rust:test:long` already
 /// wires up) and skipped otherwise: creating 30k+ nodes and deleting them
-/// again runs each `node` INSERT/DELETE through the `node_fts` FTS5 sync
-/// triggers (`db::schema`), which dominates the cost at this row
+/// again runs each `node` INSERT/DELETE through the FTS5 sync triggers
+/// (`db::schema`), which dominates the cost at this row
 /// count — measured ~90-390s per test depending on machine load, far past
 /// what belongs in the default `cargo test` / `bun run test:all` / pre-push
 /// path. Run explicitly before merging a change to this chunking:

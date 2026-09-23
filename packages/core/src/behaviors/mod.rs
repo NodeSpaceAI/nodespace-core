@@ -150,23 +150,6 @@ pub enum ProcessingError {
 ///     }
 /// }
 /// ```
-/// Built-in node types that are **non-embeddable AND can contain children** — the
-/// containers an embedding root walk must stop *below* (a bullet directly under one
-/// of these is its own embedding root; its content must not roll up into the
-/// container, which is excluded from the default `Knowledge` search scope).
-///
-/// This is the pure-SQL twin of the behavior probe `behavior_is_embeddable`: the
-/// BM25 ancestor CTE in `db/sqlite_store/embeddings.rs` can't run a behavior, so it
-/// refuses to traverse into any parent whose `node_type` is in this list, which
-/// makes the keyword-search root resolve to the same node the embedding root does.
-/// The two MUST agree or a bullet embeds on itself but search resolves it to an
-/// out-of-scope container (silently unfindable).
-/// `container_type_parity_tests::non_embeddable_container_types_match_behaviors`
-/// asserts this list is exactly the set of built-in behaviors that are both
-/// non-embeddable and child-bearing, so a new such type can't silently drift.
-pub const NON_EMBEDDABLE_CONTAINER_TYPES: &[&str] =
-    &["date", "task", "collection", "agent-guidance"];
-
 pub trait NodeBehavior: Send + Sync {
     /// Returns the unique type identifier for this node type
     ///
@@ -375,20 +358,36 @@ fn is_empty_or_whitespace(content: &str) -> bool {
     })
 }
 
+const MAX_AGGREGATION_DEPTH: usize = 20;
+
 /// Recursively collect content from a node's children for embedding aggregation.
 ///
 /// Performs a breadth-first traversal via `NodeAccessor::get_children()`, collecting
 /// each child's `get_parent_contribution()` output. Limits depth to prevent
 /// runaway traversal on deeply nested trees.
 ///
+/// Never spans an access boundary (ADR-059 §7). A descendant whose access
+/// differs from `node`'s is a defect: it is logged, and it and its subtree are
+/// left out. It is embedded as its own root instead. If the boundaries cannot
+/// be read, nothing is aggregated rather than risking a leak.
+///
 /// Used by text and header behaviors for `get_aggregated_content()`.
-const MAX_AGGREGATION_DEPTH: usize = 20;
-
 async fn aggregate_children_content(
     node: &Node,
     accessor: &dyn NodeAccessor,
     registry: &NodeBehaviorRegistry,
 ) -> Option<String> {
+    let boundaries = match accessor.access_boundaries_under(&node.id).await {
+        Ok(b) => b,
+        Err(e) => {
+            tracing::error!(
+                root_id = %node.id,
+                error = %e,
+                "failed to read access boundaries; aggregating no descendants"
+            );
+            return None;
+        }
+    };
     let mut parts = Vec::new();
     let mut stack: Vec<(String, usize)> = vec![(node.id.clone(), 0)];
 
@@ -404,6 +403,15 @@ async fn aggregate_children_content(
             }
         };
         for child in children {
+            if boundaries.contains(&child.id) {
+                tracing::error!(
+                    root_id = %node.id,
+                    descendant_id = %child.id,
+                    "ADR-059 §7 defect: descendant's access differs from its embedding root's; \
+                     excluded from the root's embedding and embedded as its own root"
+                );
+                continue;
+            }
             // Use behavior to get the contribution this child makes to its parent's embedding
             let behavior: Arc<dyn NodeBehavior> = registry
                 .get(&child.node_type)
@@ -836,24 +844,14 @@ impl NodeBehavior for ProjectNodeBehavior {
         })
     }
 
-    /// Projects carry semantic content (their name/description) worth embedding as
-    /// a standalone root — unlike Task, which overrides these to `None`. This is an
-    /// intentional divergence, so it is stated explicitly here rather than left to
-    /// the trait default.
-    fn get_embeddable_content(&self, node: &Node) -> Option<String> {
-        if node.content.trim().is_empty() {
-            None
-        } else {
-            Some(node.content.clone())
-        }
+    /// Projects are not embedded, like tasks.
+    fn get_embeddable_content(&self, _node: &Node) -> Option<String> {
+        None
     }
 
-    fn get_parent_contribution(&self, node: &Node) -> Option<String> {
-        if node.content.trim().is_empty() {
-            None
-        } else {
-            Some(node.content.clone())
-        }
+    /// Projects don't contribute to a parent's embedding either.
+    fn get_parent_contribution(&self, _node: &Node) -> Option<String> {
+        None
     }
 }
 
@@ -1677,7 +1675,10 @@ impl NodeBehavior for CollectionNodeBehavior {
     }
 
     fn can_have_children(&self) -> bool {
-        true // Collections form hierarchies via has_child edges
+        // A collection may hold has_child children (text, say), but is itself
+        // always a root: collections nest through `member_of`, and the schema's
+        // `collection_is_root_*` triggers refuse a parent (ADR-059 §2).
+        true
     }
 
     fn supports_markdown(&self) -> bool {
@@ -2280,42 +2281,10 @@ impl NodeBehavior for CustomNodeBehavior {
 /// (optional, format-validated when present). Auth state (`auth_status`) lives
 /// on `DatabaseSettingsNode`; tenant role lives on the `has_role` edge
 /// (PersonNode → DatabaseSettingsNode). Neither is a PersonNode property.
+///
+/// A person can carry child nodes (notes about them). It is not embedded, and
+/// neither are those notes: it is a record found by its title.
 pub struct PersonNodeBehavior;
-
-impl PersonNodeBehavior {
-    /// Returns a display name for the person, falling back gracefully when both
-    /// name fields are absent. Mirrors the person schema's
-    /// `title_template: "{first_name} {last_name}"` (the two must agree — see
-    /// the schema comment), which this doesn't reach: `get_embeddable_content`
-    /// needs a display string without a schema/template lookup in hand.
-    pub fn compute_display_name(&self, node: &Node) -> String {
-        let person = node.properties.get("person");
-        let first = person
-            .and_then(|p| p.get("first_name"))
-            .and_then(|v| v.as_str())
-            .filter(|s| !s.is_empty());
-        let last = person
-            .and_then(|p| p.get("last_name"))
-            .and_then(|v| v.as_str())
-            .filter(|s| !s.is_empty());
-        let composed = [first, last]
-            .into_iter()
-            .flatten()
-            .collect::<Vec<_>>()
-            .join(" ");
-        if !composed.is_empty() {
-            return composed;
-        }
-        if let Some(email) = person
-            .and_then(|p| p.get("email"))
-            .and_then(|v| v.as_str())
-            .filter(|s| !s.is_empty())
-        {
-            return email.to_string();
-        }
-        "Unknown".to_string()
-    }
-}
 
 impl NodeBehavior for PersonNodeBehavior {
     fn type_name(&self) -> &'static str {
@@ -2339,20 +2308,15 @@ impl NodeBehavior for PersonNodeBehavior {
     }
 
     fn can_have_children(&self) -> bool {
-        false
+        true
     }
 
     fn supports_markdown(&self) -> bool {
         false
     }
 
-    fn get_embeddable_content(&self, node: &Node) -> Option<String> {
-        let display = self.compute_display_name(node);
-        if display == "Unknown" {
-            None
-        } else {
-            Some(display)
-        }
+    fn get_embeddable_content(&self, _node: &Node) -> Option<String> {
+        None
     }
 
     fn get_parent_contribution(&self, _node: &Node) -> Option<String> {
@@ -3019,12 +2983,6 @@ mod tests {
             json!({ "project": { "start_date": "2026-03-03", "end_date": "2026-03-03" } }),
         );
         assert!(behavior.validate(&same_day).is_ok());
-
-        // Projects are embeddable roots (unlike Task): content is returned.
-        assert_eq!(
-            behavior.get_embeddable_content(&full),
-            Some("Launch v1".to_string())
-        );
     }
 
     #[test]
@@ -3115,6 +3073,14 @@ mod tests {
             behavior.validate(&null_namespace),
             Err(NodeValidationError::InvalidProperties(_))
         ));
+    }
+
+    #[test]
+    fn test_project_node_behavior_is_not_embedded() {
+        let behavior = ProjectNodeBehavior;
+        let node = Node::new("project".to_string(), "Launch v1".to_string(), json!({}));
+        assert_eq!(behavior.get_embeddable_content(&node), None);
+        assert_eq!(behavior.get_parent_contribution(&node), None);
     }
 
     #[test]
@@ -5608,60 +5574,16 @@ mod tests {
     }
 
     #[test]
-    fn person_compute_display_name_with_full_name() {
-        let behavior = PersonNodeBehavior;
-        let node = person_node(json!({"person": {"first_name": "Alice", "last_name": "Example"}}));
-        assert_eq!(behavior.compute_display_name(&node), "Alice Example");
+    fn person_can_have_children() {
+        assert!(PersonNodeBehavior.can_have_children());
     }
 
     #[test]
-    fn person_compute_display_name_with_first_name_only() {
-        let behavior = PersonNodeBehavior;
-        let node = person_node(json!({"person": {"first_name": "Alice"}}));
-        assert_eq!(behavior.compute_display_name(&node), "Alice");
-    }
-
-    #[test]
-    fn person_compute_display_name_with_last_name_only() {
-        let behavior = PersonNodeBehavior;
-        let node = person_node(json!({"person": {"last_name": "Example"}}));
-        assert_eq!(behavior.compute_display_name(&node), "Example");
-    }
-
-    #[test]
-    fn person_compute_display_name_falls_back_to_email() {
-        let behavior = PersonNodeBehavior;
-        let node = person_node(json!({"person": {"email": "alice@example.com"}}));
-        assert_eq!(behavior.compute_display_name(&node), "alice@example.com");
-    }
-
-    #[test]
-    fn person_compute_display_name_empty_is_unknown() {
-        let behavior = PersonNodeBehavior;
-        let node = person_node(json!({}));
-        assert_eq!(behavior.compute_display_name(&node), "Unknown");
-    }
-
-    #[test]
-    fn person_cannot_have_children() {
-        assert!(!PersonNodeBehavior.can_have_children());
-    }
-
-    #[test]
-    fn person_embeddable_content_returns_display_name_when_known() {
+    fn person_is_not_embedded() {
         let behavior = PersonNodeBehavior;
         let node = person_node(json!({"person": {"first_name": "Bob"}}));
-        assert_eq!(
-            behavior.get_embeddable_content(&node),
-            Some("Bob".to_string())
-        );
-    }
-
-    #[test]
-    fn person_embeddable_content_is_none_when_unknown() {
-        let behavior = PersonNodeBehavior;
-        let node = person_node(json!({}));
-        assert!(behavior.get_embeddable_content(&node).is_none());
+        assert_eq!(behavior.get_embeddable_content(&node), None);
+        assert_eq!(behavior.get_parent_contribution(&node), None);
     }
 
     // --- DatabaseSettingsNodeBehavior tests ---

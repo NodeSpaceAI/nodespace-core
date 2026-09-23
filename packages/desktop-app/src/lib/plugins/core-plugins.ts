@@ -670,7 +670,8 @@ export const personNodePlugin: PluginDefinition = {
     // No slash command — entity types are not slash-creatable. Person nodes are
     // created via the sidenav's type view (SIDENAV_CORE_TYPES → create instance).
     slashCommands: [],
-    canHaveChildren: false,
+    // Child nodes are notes about the person.
+    canHaveChildren: true,
     canBeChild: true
   },
   // person is a static core plugin (not schema-plugin-loader-driven), so its

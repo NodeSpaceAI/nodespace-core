@@ -2,7 +2,7 @@
  * OnboardingWizard methodology step.
  *
  * The wizard's first non-binary step: the others are act-or-skip, this one
- * asks the user to choose among recipes. These tests cover:
+ * asks the user to choose among playbooks. These tests cover:
  *   - the step appears only when the backend offers something to choose
  *   - nothing is preselected, and the primary action stays disabled until a
  *     choice is made (picking a methodology for someone is worse than asking)
@@ -77,7 +77,7 @@ beforeEach(() => {
 });
 
 describe('OnboardingWizard methodology step', () => {
-  it('offers the step when the backend has recipes to choose from', async () => {
+  it('offers the step when the backend has playbooks to choose from', async () => {
     mountMocks();
     const { container } = render(OnboardingWizard, { props: { open: true, onClose: vi.fn() } });
     await openAtMethodologyStep(container as HTMLElement);
@@ -86,7 +86,7 @@ describe('OnboardingWizard methodology step', () => {
     expect(container.textContent).toContain('Linear-style');
   });
 
-  // A build shipping no recipes must not show an empty question. Unlike the
+  // A build shipping no playbooks must not show an empty question. Unlike the
   // skill step, there is no generic wording that would make sense here.
   it('drops the step entirely when nothing is on offer', async () => {
     mountMocks({ list_methodologies: [] });
@@ -114,10 +114,10 @@ describe('OnboardingWizard methodology step', () => {
     expect(buttonByText(container as HTMLElement, 'Install').hasAttribute('disabled')).toBe(false);
   });
 
-  it('installs the chosen recipe and reports what landed', async () => {
+  it('installs the chosen playbook and reports what landed', async () => {
     mountMocks({
       install_methodology: {
-        recipeId: 'linear',
+        playbookId: 'linear',
         success: true,
         steps: [{ label: 'Create `issue` schema', outcome: { kind: 'created', id: 'issue' } }]
       }
@@ -141,7 +141,7 @@ describe('OnboardingWizard methodology step', () => {
   it('discloses a re-keyed id rather than resolving it silently', async () => {
     mountMocks({
       install_methodology: {
-        recipeId: 'linear',
+        playbookId: 'linear',
         success: true,
         steps: [
           {
@@ -170,7 +170,7 @@ describe('OnboardingWizard methodology step', () => {
   it('reads a partial install as an error even though the call resolved', async () => {
     mountMocks({
       install_methodology: {
-        recipeId: 'linear',
+        playbookId: 'linear',
         success: false,
         steps: [
           { label: 'Create `issue` schema', outcome: { kind: 'created', id: 'issue' } },

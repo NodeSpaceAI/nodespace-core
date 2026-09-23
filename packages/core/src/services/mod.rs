@@ -58,6 +58,14 @@ pub trait NodeAccessor: Send + Sync {
 
     /// Get multiple nodes by IDs (batch)
     async fn get_nodes(&self, ids: &[&str]) -> Result<Vec<Node>, error::NodeServiceError>;
+
+    /// Descendants of embedding root `root_id` whose access differs from the
+    /// root's (ADR-059 §7). Aggregation leaves each one, and its subtree, out
+    /// of the root's vector. Empty whenever root-only membership holds.
+    async fn access_boundaries_under(
+        &self,
+        root_id: &str,
+    ) -> Result<std::collections::HashSet<String>, error::NodeServiceError>;
 }
 
 /// Scope for semantic search queries
@@ -67,7 +75,7 @@ pub trait NodeAccessor: Send + Sync {
 /// about every type; they just declare intent.
 #[derive(Debug, Clone, PartialEq)]
 pub enum SearchScope {
-    /// Default: knowledge nodes (text, header, code-block, schema, table)
+    /// Default: the user's knowledge — `KNOWLEDGE_CORE_TYPES` plus user-defined types
     Knowledge,
     /// Only conversation nodes (ai-chat)
     Conversations,
