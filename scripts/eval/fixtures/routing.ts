@@ -383,11 +383,13 @@ function routedMulti(decision: string | undefined): boolean {
   return decision === "multi" || decision === "multi_rejected";
 }
 
+/**
+ * Stage 1 stopped the turn to ask. Read from the routing decision alone:
+ * Stage-1 chunks are never forwarded, so `route_clarify` cannot appear in
+ * `toolsCalled`.
+ */
 function askedToClarify(turns: TurnRecord[]): boolean {
-  return (
-    routingDecisionOf(turns) === "clarify" ||
-    turns.some((t) => t.toolsCalled.includes("route_clarify"))
-  );
+  return routingDecisionOf(turns) === "clarify";
 }
 
 export function assertFixture(

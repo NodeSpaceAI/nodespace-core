@@ -287,8 +287,9 @@ pub fn parse_route_decision(tool_name: &str, arguments_json: &str) -> Option<Rou
 ///
 /// Both outcomes fall through to retrieval on the raw message, but they are
 /// different model behaviours: `"none"` means the model called no routing tool
-/// (or emitted unparseable arguments), while `"multi_rejected"` means it called
-/// `route_multi` with fewer than two usable queries — splitting a single intent
+/// (or emitted unparseable route_query/route_clarify arguments), while
+/// `"multi_rejected"` means it called `route_multi` without two usable queries
+/// (including arguments that would not parse) — splitting a single intent
 /// into a "compound" one, the exact over-selection route_multi's guard clauses
 /// exist to prevent. Collapsing both into `"none"` would let a routing eval
 /// score that failure as a clean single-intent turn.

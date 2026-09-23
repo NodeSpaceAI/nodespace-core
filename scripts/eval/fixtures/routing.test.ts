@@ -16,6 +16,7 @@ import type { TurnRecord } from "../types.ts";
 import fixture, {
   assertFixture,
   constantAnswerBaseline,
+  stage1Expectation,
   type RoutingScenario,
 } from "./routing.ts";
 
@@ -55,6 +56,14 @@ describe("routing fixture coverage", () => {
     const source = readFileSync(join(import.meta.dir, "routing.ts"), "utf8");
     const m = source.match(/scores (\d+)\/(\d+) = ([\d.]+)%/);
     expect(m).not.toBeNull();
+    const split = source.match(/(\d+) query \/ (\d+)\s+\*?\s*clarify \/ (\d+) multi/);
+    expect(split).not.toBeNull();
+    const counts = { query: 0, clarify: 0, multi: 0 };
+    for (const s of scenarios) {
+      const d = stage1Expectation(s.expected);
+      if (d) counts[d] += 1;
+    }
+    expect(split?.slice(1).map(Number)).toEqual([counts.query, counts.clarify, counts.multi]);
     const base = constantAnswerBaseline(scenarios);
     expect(base.decision).toBe("query");
     expect(Number(m?.[1])).toBe(base.hits);
