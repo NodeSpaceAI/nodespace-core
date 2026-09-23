@@ -592,6 +592,26 @@ impl NodeService {
     /// `with_transaction`) from inside `f` deadlocks, for the same reason
     /// calling a non-`_in_tx` store method from inside a store transaction
     /// does: the write guard is already held.
+    ///
+    /// `batch_state` is a single service-wide slot (`Arc<Mutex<BatchState>>`,
+    /// shared by every clone of this `NodeService`) — it can hold exactly one
+    /// transaction's buffer at a time, so two calls to this method must never
+    /// both be "active" concurrently, not just never literally nested on the
+    /// same call stack. The check-and-set into `Transactional`, and the
+    /// reset back to `Immediate`, therefore both happen INSIDE the closure
+    /// passed to `self.store.with_transaction` — i.e. only once that call's
+    /// own `self.write().await` has actually acquired the store's single
+    /// writer guard, and completed before that guard is released. A second,
+    /// unrelated concurrent caller's own `self.write().await` blocks until
+    /// this one's guard is released, so it can only reach ITS check once
+    /// `batch_state` has provably already been reset to `Immediate` by this
+    /// one — closing the check-then-set race a version of this method once
+    /// had when the transition happened BEFORE requesting the write guard:
+    /// two concurrent callers could each observe `Immediate`, one would then
+    /// overwrite the other's in-flight buffer with a fresh empty one, and
+    /// events emitted after that point would be appended to (and eventually
+    /// flushed or discarded as) the wrong caller's transaction — not merely a
+    /// debug-assertion trip, but a real risk of misattributed events.
     pub(crate) async fn with_transaction<T, F>(&self, f: F) -> Result<T, NodeServiceError>
     where
         F: for<'t> FnOnce(
@@ -602,41 +622,58 @@ impl NodeService {
             + 'static,
         T: Send,
     {
-        // Nesting guard mirrors `begin_batch_emit`'s: an outer transaction's
-        // buffer would be silently discarded if an inner one reset the
-        // state on either its own commit or its own rollback.
-        {
-            let state = self.batch_state.lock().unwrap_or_else(|e| e.into_inner());
-            debug_assert!(
-                matches!(*state, BatchState::Immediate),
-                "with_transaction called while a batch or transaction is already active"
-            );
-        }
-
         let batch_state = Arc::clone(&self.batch_state);
-        *batch_state.lock().unwrap_or_else(|e| e.into_inner()) =
-            BatchState::Transactional(Vec::new());
 
-        // If the closure itself panics, restore `Immediate` on unwind so a
-        // later caller doesn't inherit a stuck `Transactional` state.
-        struct ResetOnDrop<'a>(&'a Mutex<BatchState>, bool);
-        impl Drop for ResetOnDrop<'_> {
-            fn drop(&mut self) {
-                if !self.1 {
-                    *self.0.lock().unwrap_or_else(|e| e.into_inner()) = BatchState::Immediate;
-                }
-            }
-        }
-        let mut reset_guard = ResetOnDrop(&batch_state, false);
-
-        let result: Result<T, NodeServiceError> = self
+        let result: Result<(T, BatchState), NodeServiceError> = self
             .store
             .with_transaction(move |store_tx| {
                 Box::pin(async move {
+                    // Reaching this point means the write guard above is
+                    // held for the rest of this closure — see this method's
+                    // doc for why the check-and-set must live here rather
+                    // than before requesting it.
+                    {
+                        let mut state = batch_state.lock().unwrap_or_else(|e| e.into_inner());
+                        debug_assert!(
+                            matches!(*state, BatchState::Immediate),
+                            "with_transaction called while a batch or transaction is already active"
+                        );
+                        *state = BatchState::Transactional(Vec::new());
+                    }
+
+                    // If `f` itself panics, restore `Immediate` on unwind —
+                    // scoped to this closure so the reset happens while the
+                    // write guard is still held, same as the success/error
+                    // paths below, rather than racing a caller that acquires
+                    // the guard next.
+                    struct ResetOnDrop<'a>(&'a Mutex<BatchState>, bool);
+                    impl Drop for ResetOnDrop<'_> {
+                        fn drop(&mut self) {
+                            if !self.1 {
+                                *self.0.lock().unwrap_or_else(|e| e.into_inner()) =
+                                    BatchState::Immediate;
+                            }
+                        }
+                    }
+                    let mut reset_guard = ResetOnDrop(&batch_state, false);
+
                     let ns_tx = NodeServiceTx { store_tx };
-                    f(&ns_tx)
-                        .await
-                        .map_err(|e| anyhow::anyhow!(NodeServiceTxError(e)))
+                    let inner_result = f(&ns_tx).await;
+
+                    // Reset to `Immediate` — capturing the buffer — before
+                    // this closure returns, so `self.store.with_transaction`
+                    // never releases the write guard while `batch_state`
+                    // still claims `Transactional`.
+                    let prev = std::mem::replace(
+                        &mut *batch_state.lock().unwrap_or_else(|e| e.into_inner()),
+                        BatchState::Immediate,
+                    );
+                    reset_guard.1 = true; // already reset above; skip the Drop's redundant reset
+
+                    match inner_result {
+                        Ok(value) => Ok((value, prev)),
+                        Err(e) => Err(anyhow::anyhow!(NodeServiceTxError(e))),
+                    }
                 })
             })
             .await
@@ -649,29 +686,27 @@ impl NodeService {
                 Err(e) => NodeServiceError::transaction_failed(e.to_string()),
             });
 
-        // Commit already happened (or didn't) inside `self.store.with_transaction`
-        // by the time we get here — this only decides what to do with the
-        // buffered events.
-        let prev = std::mem::replace(
-            &mut *batch_state.lock().unwrap_or_else(|e| e.into_inner()),
-            BatchState::Immediate,
-        );
-        reset_guard.1 = true; // already reset above; skip the Drop's redundant reset
-
-        if result.is_ok() {
-            if let BatchState::Transactional(buf) = prev {
-                flush_envelopes(
-                    buf,
-                    &self.event_tx,
-                    &self.push_event_tx,
-                    &self.push_excluded_origin,
-                );
+        // Commit (or rollback) already happened inside `self.store.with_transaction`
+        // by the time we get here, and the buffer was already captured —
+        // pre-commit, inside the closure above — so `batch_state` is already
+        // back to `Immediate` for the next caller regardless of which branch
+        // this takes. This only decides what to do with the captured buffer:
+        // flush in order on success, discard on failure, per ADR-069 §2 (an
+        // event is a statement about committed state).
+        match result {
+            Ok((value, prev)) => {
+                if let BatchState::Transactional(buf) = prev {
+                    flush_envelopes(
+                        buf,
+                        &self.event_tx,
+                        &self.push_event_tx,
+                        &self.push_excluded_origin,
+                    );
+                }
+                Ok(value)
             }
+            Err(e) => Err(e),
         }
-        // On error, `prev`'s buffer (if any) is simply dropped — discarded,
-        // per ADR-069 §2: nothing in it describes committed state.
-
-        result
     }
 }
 
@@ -8932,6 +8967,412 @@ mod tests {
         assert_eq!(
             out_group_after.count, 0,
             "cleared assignment must not persist"
+        );
+    }
+
+    /// `reverse_cardinality` is enforced at the store layer, not merely
+    /// documented: a `reverse_cardinality: One` target end (task's derived
+    /// `assignee`, the inverse of person's outbound `tasks`) must not end up
+    /// with two edges when a DIFFERENT source targets it. The forward
+    /// `cardinality: Many` check never fires here — each person's own
+    /// outgoing `tasks` count is 0 before their own call — so without the
+    /// reverse-side check this would silently succeed and leave the task
+    /// with two assignees.
+    ///
+    /// Enforced as replace, not reject: the second `create_relationship`
+    /// evicts the first person's edge rather than failing. Reject was tried
+    /// first and broke a real, already-shipped caller — the Linear
+    /// `linear-cycle-rollover` recipe reassigns a task between cycles via
+    /// add-then-remove (add the new edge, then remove the old one), which
+    /// requires the add half to succeed while the old edge is still present.
+    /// Rejecting here would make every reverse-cardinality-one reassignment
+    /// a two-step dance (remove, then add) with no way to add-then-remove
+    /// safely, which is exactly the crash-safety property that recipe
+    /// depends on.
+    #[tokio::test]
+    async fn create_relationship_replaces_prior_edge_into_reverse_cardinality_one_target() {
+        use crate::services::{CreateNodeParams, InsertPositionOwned};
+
+        let (service, _temp) = create_test_service().await;
+        let service = std::sync::Arc::new(service);
+
+        let person1_id = service
+            .create_node_with_parent(CreateNodeParams {
+                id: None,
+                node_type: "person".to_string(),
+                content: String::new(),
+                parent_id: None,
+                position: InsertPositionOwned::End,
+                properties: serde_json::json!({}),
+                lifecycle_status: None,
+            })
+            .await
+            .unwrap();
+        let person2_id = service
+            .create_node_with_parent(CreateNodeParams {
+                id: None,
+                node_type: "person".to_string(),
+                content: String::new(),
+                parent_id: None,
+                position: InsertPositionOwned::End,
+                properties: serde_json::json!({}),
+                lifecycle_status: None,
+            })
+            .await
+            .unwrap();
+        let task_id = service
+            .create_node_with_parent(CreateNodeParams {
+                id: None,
+                node_type: "task".to_string(),
+                content: "Ship the feature".to_string(),
+                parent_id: None,
+                position: InsertPositionOwned::End,
+                properties: serde_json::json!({}),
+                lifecycle_status: None,
+            })
+            .await
+            .unwrap();
+
+        service
+            .create_relationship(&person1_id, "tasks", &task_id, serde_json::json!({}))
+            .await
+            .expect("first assignment must succeed");
+
+        service
+            .create_relationship(&person2_id, "tasks", &task_id, serde_json::json!({}))
+            .await
+            .expect("a second edge into a reverse-cardinality-one target must replace the first");
+
+        // The task must show exactly one assignee — person2, not both.
+        let inbound = crate::ops::rel_ops::get_node_relationships(&service, &task_id)
+            .await
+            .unwrap();
+        let in_group = inbound
+            .groups
+            .iter()
+            .find(|g| g.relationship_name == "tasks" && g.direction == "in")
+            .expect("task must show the inbound (assignee) side of the relationship");
+        assert_eq!(
+            in_group.count, 1,
+            "the replaced edge must not leave the task with two assignees"
+        );
+        assert_eq!(in_group.related[0].id, person2_id);
+
+        // person1's outbound side must no longer show the task.
+        let person1_outbound = crate::ops::rel_ops::get_node_relationships(&service, &person1_id)
+            .await
+            .unwrap();
+        let person1_group = person1_outbound
+            .groups
+            .iter()
+            .find(|g| g.relationship_name == "tasks" && g.direction == "out")
+            .expect("person1 still shows the declared (now empty) tasks group");
+        assert_eq!(
+            person1_group.count, 0,
+            "person1's evicted edge must actually be gone, not merely hidden"
+        );
+    }
+
+    /// The forward `cardinality: One` check is replace, matching the reverse
+    /// side (see `create_relationship_replaces_prior_edge_into_reverse_cardinality_one_target`
+    /// for why reject was rejected as the shared semantics). Uses a dedicated
+    /// schema pair with `reverseCardinality: many` so only the forward check
+    /// is in play.
+    #[tokio::test]
+    async fn create_relationship_replaces_prior_edge_from_cardinality_one_source() {
+        let (service, _temp) = create_test_service().await;
+        let service = std::sync::Arc::new(service);
+        let store = service.store();
+
+        store
+            .create_node(
+                Node::new_with_id(
+                    "widget".to_string(),
+                    "schema".to_string(),
+                    "Widget".to_string(),
+                    serde_json::json!({ "fields": [], "relationships": [] }),
+                ),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        store
+            .create_node(
+                Node::new_with_id(
+                    "gadget".to_string(),
+                    "schema".to_string(),
+                    "Gadget".to_string(),
+                    serde_json::json!({ "fields": [] }),
+                ),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        let declarations: Vec<crate::models::schema::SchemaRelationship> =
+            serde_json::from_value(serde_json::json!([{
+                "name": "primary_widget",
+                "targetType": "widget",
+                "direction": "out",
+                "cardinality": "one",
+                "reverseName": "gadgets",
+                "reverseCardinality": "many"
+            }]))
+            .unwrap();
+        service
+            .set_schema_relationships("gadget", &declarations)
+            .await
+            .unwrap();
+
+        store
+            .create_node(
+                Node::new_with_id(
+                    "g1".to_string(),
+                    "gadget".to_string(),
+                    "Gadget One".to_string(),
+                    serde_json::json!({}),
+                ),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        store
+            .create_node(
+                Node::new_with_id(
+                    "w1".to_string(),
+                    "widget".to_string(),
+                    "Widget One".to_string(),
+                    serde_json::json!({}),
+                ),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        store
+            .create_node(
+                Node::new_with_id(
+                    "w2".to_string(),
+                    "widget".to_string(),
+                    "Widget Two".to_string(),
+                    serde_json::json!({}),
+                ),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+
+        service
+            .create_relationship("g1", "primary_widget", "w1", serde_json::json!({}))
+            .await
+            .expect("first edge from a cardinality-one source must succeed");
+
+        service
+            .create_relationship("g1", "primary_widget", "w2", serde_json::json!({}))
+            .await
+            .expect("a second edge from a cardinality-one source must replace the first");
+
+        let targets = service
+            .get_related_nodes("g1", "primary_widget", "out")
+            .await
+            .unwrap();
+        assert_eq!(
+            targets.len(),
+            1,
+            "g1 must hold exactly one primary_widget edge, not both"
+        );
+        assert_eq!(targets[0].id, "w2");
+    }
+
+    /// The exact scenario the reassignment machinery
+    /// (`create_relationship_replaces_prior_edge_into_reverse_cardinality_one_target`'s
+    /// doc) depends on: adding a new edge into a reverse-cardinality-one
+    /// target that still has its old edge (add-before-remove) must succeed,
+    /// and the OLD edge must actually be gone afterward — not because the
+    /// caller removed it, but because the add itself replaced it. A
+    /// since-removed `remove_relationship` of the same (now-gone) edge must
+    /// then be a harmless no-op, matching `delete_relationship`'s documented
+    /// idempotency.
+    #[tokio::test]
+    async fn add_then_remove_reassignment_survives_reverse_cardinality_one_replace() {
+        use crate::services::{CreateNodeParams, InsertPositionOwned};
+
+        let (service, _temp) = create_test_service().await;
+        let service = std::sync::Arc::new(service);
+
+        let person1_id = service
+            .create_node_with_parent(CreateNodeParams {
+                id: None,
+                node_type: "person".to_string(),
+                content: String::new(),
+                parent_id: None,
+                position: InsertPositionOwned::End,
+                properties: serde_json::json!({}),
+                lifecycle_status: None,
+            })
+            .await
+            .unwrap();
+        let person2_id = service
+            .create_node_with_parent(CreateNodeParams {
+                id: None,
+                node_type: "person".to_string(),
+                content: String::new(),
+                parent_id: None,
+                position: InsertPositionOwned::End,
+                properties: serde_json::json!({}),
+                lifecycle_status: None,
+            })
+            .await
+            .unwrap();
+        let task_id = service
+            .create_node_with_parent(CreateNodeParams {
+                id: None,
+                node_type: "task".to_string(),
+                content: "Ship the feature".to_string(),
+                parent_id: None,
+                position: InsertPositionOwned::End,
+                properties: serde_json::json!({}),
+                lifecycle_status: None,
+            })
+            .await
+            .unwrap();
+
+        service
+            .create_relationship(&person1_id, "tasks", &task_id, serde_json::json!({}))
+            .await
+            .unwrap();
+
+        // Add before remove — person2's edge is created while person1's is
+        // still live.
+        service
+            .create_relationship(&person2_id, "tasks", &task_id, serde_json::json!({}))
+            .await
+            .expect("add-before-remove reassignment must succeed via replace");
+
+        // The now-redundant remove of person1's already-evicted edge must be
+        // a harmless no-op, not an error.
+        service
+            .delete_relationship(&person1_id, "tasks", &task_id)
+            .await
+            .expect("removing an already-replaced edge must be a no-op, not fail");
+
+        let inbound = crate::ops::rel_ops::get_node_relationships(&service, &task_id)
+            .await
+            .unwrap();
+        let in_group = inbound
+            .groups
+            .iter()
+            .find(|g| g.relationship_name == "tasks" && g.direction == "in")
+            .unwrap();
+        assert_eq!(in_group.count, 1);
+        assert_eq!(in_group.related[0].id, person2_id);
+    }
+
+    /// Concurrent reassignment must not leave a reverse-cardinality-one target
+    /// with more than one live edge. Several real OS threads race to become
+    /// task1's sole assignee (currently person1's); if the replace's
+    /// read-existing / evict / insert sequence were not fully serialized —
+    /// e.g. two callers each reading "person1 holds it" before either evicts —
+    /// both could evict harmlessly (a no-op the second time) and both insert,
+    /// leaving two live edges despite `reverse_cardinality: One`. The whole
+    /// sequence runs inside one `NodeService::with_transaction`, which takes
+    /// the store's single writer guard for its entire span (see
+    /// `SqliteStore::with_transaction`), so every concurrent
+    /// `create_relationship` call is fully serialized against every other
+    /// one — this asserts that guarantee holds under genuine multi-thread
+    /// contention, not just single-threaded cooperative scheduling.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_reassignment_never_leaves_two_live_edges_into_a_reverse_cardinality_one_target(
+    ) {
+        use crate::services::{CreateNodeParams, InsertPositionOwned};
+
+        let (service, _temp) = create_test_service().await;
+        let service = std::sync::Arc::new(service);
+
+        let make_person = || {
+            let service = std::sync::Arc::clone(&service);
+            async move {
+                service
+                    .create_node_with_parent(CreateNodeParams {
+                        id: None,
+                        node_type: "person".to_string(),
+                        content: String::new(),
+                        parent_id: None,
+                        position: InsertPositionOwned::End,
+                        properties: serde_json::json!({}),
+                        lifecycle_status: None,
+                    })
+                    .await
+                    .unwrap()
+            }
+        };
+
+        let person1_id = make_person().await;
+        const CHALLENGERS: usize = 6;
+        let mut challenger_ids = Vec::with_capacity(CHALLENGERS);
+        for _ in 0..CHALLENGERS {
+            challenger_ids.push(make_person().await);
+        }
+        let task_id = service
+            .create_node_with_parent(CreateNodeParams {
+                id: None,
+                node_type: "task".to_string(),
+                content: "Ship the feature".to_string(),
+                parent_id: None,
+                position: InsertPositionOwned::End,
+                properties: serde_json::json!({}),
+                lifecycle_status: None,
+            })
+            .await
+            .unwrap();
+
+        service
+            .create_relationship(&person1_id, "tasks", &task_id, serde_json::json!({}))
+            .await
+            .unwrap();
+
+        // Every challenger starts at the barrier together, so the store sees
+        // genuinely overlapping attempts rather than a de facto sequence.
+        let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(CHALLENGERS));
+        let mut handles = Vec::with_capacity(CHALLENGERS);
+        for challenger_id in &challenger_ids {
+            let challenger_id = challenger_id.clone();
+            let service = std::sync::Arc::clone(&service);
+            let task_id = task_id.clone();
+            let barrier = std::sync::Arc::clone(&barrier);
+            handles.push(tokio::spawn(async move {
+                barrier.wait().await;
+                service
+                    .create_relationship(&challenger_id, "tasks", &task_id, serde_json::json!({}))
+                    .await
+            }));
+        }
+        for handle in handles {
+            handle
+                .await
+                .expect("task must not panic")
+                .expect("every concurrent reassignment attempt must succeed");
+        }
+
+        let inbound = crate::ops::rel_ops::get_node_relationships(&service, &task_id)
+            .await
+            .unwrap();
+        let in_group = inbound
+            .groups
+            .iter()
+            .find(|g| g.relationship_name == "tasks" && g.direction == "in")
+            .unwrap();
+        assert_eq!(
+            in_group.count, 1,
+            "reverse_cardinality: One must hold even under real concurrent writers — \
+             exactly one edge must survive, not one per racing caller"
+        );
+        assert!(
+            challenger_ids.contains(&in_group.related[0].id),
+            "the survivor must be one of the challengers, not the original (evicted) person1"
         );
     }
 

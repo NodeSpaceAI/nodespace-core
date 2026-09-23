@@ -447,7 +447,12 @@ impl NodeService {
     /// - `SchemaNotFound` - Source node's schema doesn't exist
     /// - `RelationshipNotFound` - Relationship not defined in schema
     /// - `TargetTypeMismatch` - Target node type doesn't match schema definition
-    /// - `CardinalityViolation` - Cardinality constraint would be violated
+    /// - A `cardinality: One` source or `reverse_cardinality: One` target does NOT
+    ///   error on a second edge — the prior edge is replaced (evicted, then the
+    ///   new one inserted), atomically with the insert. This call can still fail
+    ///   if the evicted edge's own source relationship is declared `required:
+    ///   true` and this was its last edge — the eviction refuses to leave that
+    ///   invariant violated, surfacing an error instead.
     ///
     /// # Examples
     ///
@@ -506,6 +511,47 @@ impl NodeService {
         )))
     }
 
+    /// `_in_tx` equivalent of [`Self::get_node`]'s virtual-date fallback.
+    ///
+    /// A date node (`YYYY-MM-DD`) with no row yet is still a legitimate
+    /// endpoint — it auto-persists the first time something is actually
+    /// filed under it, and until then `get_node` synthesizes it on read
+    /// rather than reporting `NodeNotFound`. The raw
+    /// `SqliteStore::get_node_in_tx` has no such fallback, so a declared
+    /// relationship's tx-scoped source/target lookup needs this wrapper —
+    /// without it, any custom-relationship create touching an
+    /// as-yet-unvisited date page (CLI, agent tool, or the daemon RPC
+    /// surface — everything routed through `create_relationship_in_tx`)
+    /// would fail with a hard `NodeNotFound` that the old non-tx path never
+    /// produced.
+    async fn get_node_in_tx_or_virtual_date(
+        tx: &NodeServiceTx<'_>,
+        id: &str,
+    ) -> Result<Option<crate::models::Node>, NodeServiceError> {
+        if let Some(node) = crate::db::SqliteStore::get_node_in_tx(tx.store_tx(), id)
+            .await
+            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?
+        {
+            return Ok(Some(node));
+        }
+        if is_date_node_id(id) {
+            return Ok(Some(crate::models::Node {
+                id: id.to_string(),
+                node_type: "date".to_string(),
+                content: id.to_string(),
+                version: 1,
+                created_at: chrono::Utc::now(),
+                modified_at: chrono::Utc::now(),
+                properties: serde_json::json!({}),
+                mentions: vec![],
+                mentioned_in: vec![],
+                title: None,
+                lifecycle_status: "active".to_string(),
+            }));
+        }
+        Ok(None)
+    }
+
     /// Whether `node_type` satisfies a declaration expecting `expected_type` —
     /// true when they match, or when `expected_type` is an ancestor of
     /// `node_type` (ADR-078).
@@ -537,168 +583,110 @@ impl NodeService {
         // Built-in type validation
         let is_builtin = crate::models::schema::is_builtin_relationship(relationship_name);
 
-        // The reverse name for a DECLARED relationship's instance edge, captured
-        // during validation below where the declaration is already in hand.
-        // `set_schema_declarations` writes the schema→schema declaration row, not
-        // this instance edge, so without carrying the name here the column would
-        // be left NULL for every user-declared relationship — and reverse
-        // traversal would silently return nothing for exactly those. Built-ins
-        // stay `None` and are derived from their forward name at the store.
-        let mut declared_reverse_name: Option<String> = None;
+        if !is_builtin {
+            // A declared (custom) relationship's full validation — including
+            // the cardinality-one replace on either end — runs against
+            // `create_relationship_in_tx`, wrapped in one transaction here so
+            // a public, non-tx caller (CLI, agent tools, the daemon RPC
+            // surface) gets the same atomicity an invariant Play's
+            // `add_relationship` action already gets by calling that method
+            // directly. Without this, the replace's evict-then-insert was two
+            // separate auto-committed statements: a crash between them left a
+            // cardinality-one end with ZERO live edges — worse than the
+            // all-or-nothing reject this replaced, and the opposite of the
+            // crash-safety this change is meant to provide.
+            let service = self.clone();
+            let service_for_tx = service.clone();
+            let source_id = source_id.to_string();
+            let relationship_name = relationship_name.to_string();
+            let target_id = target_id.to_string();
+            return service
+                .with_transaction(move |tx| {
+                    Box::pin(async move {
+                        service_for_tx
+                            .create_relationship_in_tx(
+                                tx,
+                                &source_id,
+                                &relationship_name,
+                                &target_id,
+                                edge_data,
+                            )
+                            .await
+                    })
+                })
+                .await;
+        }
 
-        if is_builtin {
-            // Built-in type-specific validation
-            if relationship_name == "member_of" {
-                let target = self
-                    .get_node(target_id)
-                    .await?
-                    .ok_or_else(|| NodeServiceError::node_not_found(target_id))?;
-                if target.node_type != "collection" {
-                    return Err(NodeServiceError::invalid_update(format!(
-                        "member_of target must be a collection node, got '{}'",
-                        target.node_type
-                    )));
-                }
-                // Collection hierarchy (collection member_of collection) is a
-                // DAG, but nothing enforced it — `a member_of b` + `b member_of a`
-                // created a cycle that makes the recursive members walk loop. Reject
-                // a hierarchy edge that would close a cycle. Only relevant when the
-                // source is itself a collection; a content node has no member_of
-                // descendants, so the check is a cheap no-op for ordinary membership.
-                let source = self
-                    .get_node(source_id)
-                    .await?
-                    .ok_or_else(|| NodeServiceError::node_not_found(source_id))?;
-                if source.node_type == "collection" {
-                    self.store
-                        .validate_no_member_of_cycle(source_id, target_id)
-                        .await
-                        .map_err(|e| NodeServiceError::collection_cycle(e.to_string()))?;
-                }
-            }
-
-            if relationship_name == "has_child" {
-                let target = self
-                    .get_node(target_id)
-                    .await?
-                    .ok_or_else(|| NodeServiceError::node_not_found(target_id))?;
-                if target.node_type == "collection" {
-                    return Err(NodeServiceError::hierarchy_violation(
-                        crate::db::collection_not_root(Some(target_id)),
-                    ));
-                }
-            }
-
-            // The outline is single-parent, and every read path assumes it:
-            // `get_parent`/`get_parent_id` resolve with `LIMIT 1`, so a second
-            // parent does not produce an error — it silently hides one of them
-            // and makes which parent a node has depend on row order.
-            //
-            // A built-in skips the declared-cardinality check below (it has no
-            // `SchemaRelationship` to carry `cardinality: One`), so until now
-            // nothing rejected the second edge: `relationship create --type
-            // has_child` from the CLI, or the agent's `create_relationship`
-            // tool, would just add it. Enforce at the service entry point,
-            // which every external caller reaches, rather than in each one.
-            //
-            // Mirrored in `create_relationship_in_tx`. The reparenting paths
-            // (`move_node`, `bulk_create_has_child`, `create_parent_edge_in_tx`)
-            // do NOT pass through here and need no guard: each is structurally
-            // single-parent already — delete-then-insert in one transaction, a
-            // skip of already-parented children, or a child created in the same
-            // transaction that cannot yet hold a parent.
-            if relationship_name == "has_child" {
-                if let Some(existing) = self.store.get_parent_id(target_id).await.map_err(|e| {
-                    NodeServiceError::query_failed(format!("Failed to check existing parent: {e}"))
-                })? {
-                    if existing != source_id {
-                        return Err(NodeServiceError::invalid_update(format!(
-                            "Node '{target_id}' already has parent '{existing}'; the outline is \
-                             single-parent. Move the node instead of adding a second `has_child` \
-                             edge."
-                        )));
-                    }
-                }
-            }
-        } else {
-            // Custom relationship: validate against source node's schema
-            let source = self
-                .get_node(source_id)
-                .await?
-                .ok_or_else(|| NodeServiceError::node_not_found(source_id))?;
-
-            // Declarations connect SCHEMA nodes and are written exclusively by
-            // `set_schema_relationships` — an instance-level write must never
-            // produce a declaration-shaped edge (schema node on either end).
-            if source.node_type == "schema" {
-                return Err(NodeServiceError::invalid_update(format!(
-                    "'{}' is a schema node; typed relationships between schemas are declarations \
-                     — declare them via update_schema, not create_relationship",
-                    source_id
-                )));
-            }
-
-            let schema_id = &source.node_type;
-            let relationship = self
-                .resolve_declared_relationship(schema_id, relationship_name)
-                .await?;
-
-            declared_reverse_name = Some(relationship.reverse_name.clone());
-
+        // Built-in type-specific validation. Only a builtin reaches here — a
+        // declared (custom) relationship returned early above.
+        if relationship_name == "member_of" {
             let target = self
                 .get_node(target_id)
                 .await?
                 .ok_or_else(|| NodeServiceError::node_not_found(target_id))?;
-
-            if target.node_type == "schema" {
+            if target.node_type != "collection" {
                 return Err(NodeServiceError::invalid_update(format!(
-                    "'{}' is a schema node; typed relationships between schemas are declarations \
-                     — declare them via update_schema, not create_relationship",
-                    target_id
+                    "member_of target must be a collection node, got '{}'",
+                    target.node_type
                 )));
             }
-
-            // Validate target node type (skip when target_type is None — accepts any type)
-            if let Some(expected_type) = &relationship.target_type {
-                // A subtype satisfies its ancestor's declared target type
-                // (ADR-078): `task.blocks` targets `task`, and an `issue` IS a
-                // task, so an issue is a legal target. Comparing the concrete
-                // type alone made an inherited relationship undeclarable from
-                // one subtype to another.
-                if !self
-                    .type_satisfies(&target.node_type, expected_type)
-                    .await?
-                {
-                    return Err(NodeServiceError::invalid_update(format!(
-                        "Target node type '{}' doesn't match expected type '{}' for relationship '{}'",
-                        target.node_type, expected_type, relationship_name
-                    )));
-                }
-            }
-
-            // Validate edge attributes against the declared edge fields before
-            // any write, so an illegal enum value (e.g. an RBAC role) is
-            // rejected rather than stored.
-            if let Some(edge_fields) = relationship.edge_fields.as_deref() {
-                validate_edge_data_against_fields(&edge_data, edge_fields, relationship_name)?;
-            }
-
-            // Check cardinality constraint
-            if relationship.cardinality == crate::models::schema::RelationshipCardinality::One {
-                let existing_count = self
-                    .store
-                    .check_relationship_exists(source_id, relationship_name)
+            // Collection hierarchy (collection member_of collection) is a
+            // DAG, but nothing enforced it — `a member_of b` + `b member_of a`
+            // created a cycle that makes the recursive members walk loop. Reject
+            // a hierarchy edge that would close a cycle. Only relevant when the
+            // source is itself a collection; a content node has no member_of
+            // descendants, so the check is a cheap no-op for ordinary membership.
+            let source = self
+                .get_node(source_id)
+                .await?
+                .ok_or_else(|| NodeServiceError::node_not_found(source_id))?;
+            if source.node_type == "collection" {
+                self.store
+                    .validate_no_member_of_cycle(source_id, target_id)
                     .await
-                    .map_err(|e| {
-                        NodeServiceError::query_failed(format!(
-                            "Failed to check cardinality: {}",
-                            e
-                        ))
-                    })?;
-                if existing_count > 0 {
+                    .map_err(|e| NodeServiceError::collection_cycle(e.to_string()))?;
+            }
+        }
+
+        if relationship_name == "has_child" {
+            let target = self
+                .get_node(target_id)
+                .await?
+                .ok_or_else(|| NodeServiceError::node_not_found(target_id))?;
+            if target.node_type == "collection" {
+                return Err(NodeServiceError::hierarchy_violation(
+                    crate::db::collection_not_root(Some(target_id)),
+                ));
+            }
+        }
+
+        // The outline is single-parent, and every read path assumes it:
+        // `get_parent`/`get_parent_id` resolve with `LIMIT 1`, so a second
+        // parent does not produce an error — it silently hides one of them
+        // and makes which parent a node has depend on row order.
+        //
+        // A built-in skips the declared-cardinality check below (it has no
+        // `SchemaRelationship` to carry `cardinality: One`), so until now
+        // nothing rejected the second edge: `relationship create --type
+        // has_child` from the CLI, or the agent's `create_relationship`
+        // tool, would just add it. Enforce at the service entry point,
+        // which every external caller reaches, rather than in each one.
+        //
+        // Mirrored in `create_relationship_in_tx`. The reparenting paths
+        // (`move_node`, `bulk_create_has_child`, `create_parent_edge_in_tx`)
+        // do NOT pass through here and need no guard: each is structurally
+        // single-parent already — delete-then-insert in one transaction, a
+        // skip of already-parented children, or a child created in the same
+        // transaction that cannot yet hold a parent.
+        if relationship_name == "has_child" {
+            if let Some(existing) = self.store.get_parent_id(target_id).await.map_err(|e| {
+                NodeServiceError::query_failed(format!("Failed to check existing parent: {e}"))
+            })? {
+                if existing != source_id {
                     return Err(NodeServiceError::invalid_update(format!(
-                        "Relationship '{}' has cardinality 'one' but an edge already exists",
-                        relationship_name
+                        "Node '{target_id}' already has parent '{existing}'; the outline is \
+                         single-parent. Move the node instead of adding a second `has_child` \
+                         edge."
                     )));
                 }
             }
@@ -789,14 +777,14 @@ impl NodeService {
         }
 
         // Remaining relationships carry the caller's edge_data as-is: the two
-        // auto-ordered builtins (member_of, has_child) returned early above, and
-        // mentions / has_role are unordered. Builtins normalize a non-object
-        // payload to an empty object; custom relationships pass through verbatim.
-        let final_edge_data = if is_builtin {
-            serde_json::json!(edge_data.as_object().cloned().unwrap_or_default())
-        } else {
-            edge_data.clone()
-        };
+        // auto-ordered builtins (member_of, has_child) returned early above
+        // when auto-ordered, and mentions / has_role are unordered. Only a
+        // builtin ever reaches here at all — a declared (custom) relationship
+        // returned early above, through the transactional
+        // `create_relationship_in_tx` path. Builtins normalize a non-object
+        // payload to an empty object and carry no declared reverse name (the
+        // store derives a builtin's reverse from its forward name).
+        let final_edge_data = serde_json::json!(edge_data.as_object().cloned().unwrap_or_default());
 
         let rel_id = self
             .store
@@ -804,7 +792,7 @@ impl NodeService {
                 source_id,
                 target_id,
                 relationship_name,
-                declared_reverse_name.as_deref(),
+                None,
                 &final_edge_data,
             )
             .await
@@ -861,6 +849,12 @@ impl NodeService {
         // must carry its declaration's reverse name, or the column lands NULL.
         let mut declared_reverse_name: Option<String> = None;
 
+        // Cardinality-one replace's evictions, gathered below (custom
+        // relationships only — always `None` for a builtin) but not yet
+        // performed — see the comment at the gathering site for why eviction
+        // must wait until after the new edge is inserted.
+        let mut evict_after_insert: Option<(Vec<String>, Vec<String>)> = None;
+
         if is_builtin {
             if relationship_name == "member_of" {
                 let target = crate::db::SqliteStore::get_node_in_tx(tx.store_tx(), target_id)
@@ -913,9 +907,8 @@ impl NodeService {
                 }
             }
         } else {
-            let source = crate::db::SqliteStore::get_node_in_tx(tx.store_tx(), source_id)
-                .await
-                .map_err(|e| NodeServiceError::query_failed(e.to_string()))?
+            let source = Self::get_node_in_tx_or_virtual_date(tx, source_id)
+                .await?
                 .ok_or_else(|| NodeServiceError::node_not_found(source_id))?;
 
             if source.node_type == "schema" {
@@ -933,9 +926,8 @@ impl NodeService {
 
             declared_reverse_name = Some(relationship.reverse_name.clone());
 
-            let target = crate::db::SqliteStore::get_node_in_tx(tx.store_tx(), target_id)
-                .await
-                .map_err(|e| NodeServiceError::query_failed(e.to_string()))?
+            let target = Self::get_node_in_tx_or_virtual_date(tx, target_id)
+                .await?
                 .ok_or_else(|| NodeServiceError::node_not_found(target_id))?;
 
             if target.node_type == "schema" {
@@ -967,23 +959,103 @@ impl NodeService {
                 validate_edge_data_against_fields(&edge_data, edge_fields, relationship_name)?;
             }
 
+            // Replace semantics for cardinality 'one' — see the non-tx twin
+            // in `create_relationship` for the full rationale (agreement
+            // between forward/reverse enforcement, and why an add-then-remove
+            // reassignment needs the add half to evict the prior edge rather
+            // than fail). This only GATHERS which edges to evict — the
+            // actual eviction happens AFTER the new edge is inserted below,
+            // not here. Evicting first would mean `remove_relationship_in_tx`'s
+            // required-relationship last-edge check counts `source_id`'s
+            // edges for this relationship type while it still has exactly
+            // the one about to be replaced (cardinality: One guarantees at
+            // most one), so it would ALWAYS conclude "this is the last
+            // edge" and reject — even though a replacement is about to land
+            // in the very same transaction and the invariant would never
+            // actually be violated. Reject-first was tried and confirmed
+            // broken by review: a `cardinality: One` relationship that is
+            // ALSO `required: true` could never be reassigned at all. Insert
+            // first, then evict: at that point `source_id` briefly holds
+            // both edges, so the required-check correctly sees more than
+            // one and evicts the old one cleanly. The store's unique index
+            // is on `(in_node, out_node, relationship_type)`, not
+            // `(out_node, relationship_type)`, so briefly holding both is
+            // not a constraint violation — and it is invisible to any
+            // reader outside this transaction regardless.
+            let mut forward_targets_to_evict: Vec<String> = Vec::new();
             if relationship.cardinality == crate::models::schema::RelationshipCardinality::One {
-                let existing_count = crate::db::SqliteStore::check_relationship_exists_in_tx(
-                    tx.store_tx(),
-                    source_id,
-                    relationship_name,
-                )
-                .await
-                .map_err(|e| {
-                    NodeServiceError::query_failed(format!("Failed to check cardinality: {}", e))
-                })?;
-                if existing_count > 0 {
-                    return Err(NodeServiceError::invalid_update(format!(
-                        "Relationship '{}' has cardinality 'one' but an edge already exists",
-                        relationship_name
-                    )));
+                let existing_edges =
+                    crate::db::SqliteStore::get_relationship_edges_from_source_in_tx(
+                        tx.store_tx(),
+                        source_id,
+                        relationship_name,
+                    )
+                    .await
+                    .map_err(|e| {
+                        NodeServiceError::query_failed(format!(
+                            "Failed to check cardinality: {}",
+                            e
+                        ))
+                    })?;
+                for (_, existing_target_id) in existing_edges {
+                    if existing_target_id == target_id {
+                        continue;
+                    }
+                    forward_targets_to_evict.push(existing_target_id);
                 }
             }
+
+            // Reverse cardinality — see the non-tx twin in `create_relationship`
+            // for why this is needed alongside the forward check above, and
+            // for why matches are scoped to the declaring schema (two schemas
+            // may share a forward name toward the same target type as
+            // logically distinct relationships). Also gather-only, for
+            // symmetry with the forward case — though the required-relationship
+            // trap above is specific to the forward direction: an evicted
+            // reverse-side edge belongs to a DIFFERENT node than the one
+            // gaining the new edge, so inserting first cannot help it the
+            // same way (that node's own edge count is genuinely unaffected
+            // by this insert), and a real "last required edge" there
+            // correctly stays rejected either way.
+            let mut reverse_sources_to_evict: Vec<String> = Vec::new();
+            if relationship.reverse_cardinality
+                == crate::models::schema::RelationshipCardinality::One
+            {
+                let (_, owners) = self.resolve_relationships(schema_id).await?;
+                let declaring_type = owners
+                    .get(relationship_name)
+                    .cloned()
+                    .unwrap_or_else(|| schema_id.clone());
+
+                let existing_edges =
+                    crate::db::SqliteStore::get_relationship_edges_into_target_in_tx(
+                        tx.store_tx(),
+                        target_id,
+                        relationship_name,
+                    )
+                    .await
+                    .map_err(|e| {
+                        NodeServiceError::query_failed(format!(
+                            "Failed to check reverse cardinality: {}",
+                            e
+                        ))
+                    })?;
+
+                for (_, existing_source_id, existing_source_type) in existing_edges {
+                    if existing_source_id == source_id {
+                        continue;
+                    }
+                    if !self
+                        .type_satisfies(&existing_source_type, &declaring_type)
+                        .await?
+                    {
+                        continue;
+                    }
+                    reverse_sources_to_evict.push(existing_source_id);
+                }
+            }
+
+            evict_after_insert = Some((forward_targets_to_evict, reverse_sources_to_evict));
         }
 
         // Idempotency check (mirrors `create_relationship`'s generic path;
@@ -1035,6 +1107,31 @@ impl NodeService {
                 final_edge_data,
             ),
         });
+
+        // Now that the new edge is durably inserted (above), evict whatever
+        // cardinality-one replace gathered earlier — see the gathering
+        // site's comment for why this must happen AFTER the insert rather
+        // than before it.
+        if let Some((forward_targets_to_evict, reverse_sources_to_evict)) = evict_after_insert {
+            for existing_target_id in forward_targets_to_evict {
+                self.remove_relationship_in_tx(
+                    tx,
+                    source_id,
+                    relationship_name,
+                    &existing_target_id,
+                )
+                .await?;
+            }
+            for existing_source_id in reverse_sources_to_evict {
+                self.remove_relationship_in_tx(
+                    tx,
+                    &existing_source_id,
+                    relationship_name,
+                    target_id,
+                )
+                .await?;
+            }
+        }
 
         Ok(())
     }

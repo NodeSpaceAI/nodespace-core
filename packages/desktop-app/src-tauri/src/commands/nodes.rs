@@ -1064,7 +1064,12 @@ pub async fn get_node_relationships(
 /// Create a schema-declared typed relationship edge between two nodes.
 ///
 /// Wraps `rel_ops::create_relationship`: the daemon validates the relationship
-/// against the source node's schema (target type, cardinality) before writing.
+/// against the source node's schema (target type, edge fields) before writing.
+/// A `cardinality: One` source or `reverse_cardinality: One` target does not
+/// reject a second edge — the prior edge is replaced — so a write here can
+/// silently supersede an existing assignment with no conflict signal returned
+/// to the frontend; the caller is responsible for confirming a reassignment
+/// before calling this if that matters to the surface it's driving.
 /// `edge_data` carries the edge's `edge_fields` values as a JSON object; omit or
 /// pass `null` for a bare edge. Returns `()` — the frontend reloads via
 /// `get_node_relationships` to see the new edge in context.

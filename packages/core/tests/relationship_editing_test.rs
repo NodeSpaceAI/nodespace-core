@@ -169,6 +169,65 @@ async fn required_relationship_blocks_deleting_its_last_edge() -> Result<()> {
     Ok(())
 }
 
+/// A `cardinality: One` relationship that is ALSO `required: true` must
+/// still be reassignable to a different target in one call — the whole
+/// point of `cardinality: One`'s replace semantics.
+///
+/// This is the trap a naive evict-then-insert ordering falls into:
+/// `remove_relationship_in_tx`'s required-last-edge guard counts the
+/// source's current edges for this relationship type, which under
+/// `cardinality: One` is always exactly 1 at eviction time (the
+/// replacement has not landed yet) — so evicting first always looks like
+/// "this is the last edge" and always gets rejected, even though a
+/// replacement is about to be inserted in the very same transaction and
+/// the invariant is never actually violated. The fix is ordering (insert
+/// the new edge, THEN evict the old one), not a special case — a real
+/// deletion with no replacement (`required_relationship_blocks_deleting_its_last_edge`,
+/// above) must still correctly stay rejected.
+#[tokio::test]
+async fn required_cardinality_one_relationship_can_still_be_reassigned() -> Result<()> {
+    let (svc, _t) = service_with_gizmo_schema("one", true).await?;
+    make_node(&svc, "gizmo-1", "gizmo", "Ship it").await?;
+    make_node(&svc, "person-1", "person", "Alice").await?;
+    make_node(&svc, "person-2", "person", "Bob").await?;
+
+    svc.create_relationship("gizmo-1", "assigned_to", "person-1", json!({}))
+        .await?;
+
+    svc.create_relationship("gizmo-1", "assigned_to", "person-2", json!({}))
+        .await
+        .expect(
+            "reassigning a required, cardinality-one relationship to a different \
+             target must succeed, not be rejected as \"deleting the last edge\"",
+        );
+
+    let edges = svc
+        .get_related_nodes("gizmo-1", "assigned_to", "out")
+        .await?;
+    assert_eq!(
+        edges.len(),
+        1,
+        "exactly one edge must remain after reassignment"
+    );
+    assert_eq!(
+        edges[0].id, "person-2",
+        "the survivor must be the new target"
+    );
+
+    // The relationship is still genuinely required and still protected once
+    // there is again exactly one edge — the fix must not have accidentally
+    // disabled the guard rather than just reordering around it.
+    let last = svc
+        .delete_relationship("gizmo-1", "assigned_to", "person-2")
+        .await;
+    assert!(
+        last.is_err(),
+        "a plain delete (no replacement) of the last edge must still be rejected"
+    );
+
+    Ok(())
+}
+
 #[tokio::test]
 async fn non_required_relationship_allows_deleting_its_last_edge() -> Result<()> {
     let (svc, _t) = service_with_gizmo_schema("many", false).await?;
