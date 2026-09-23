@@ -841,17 +841,33 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
       // structureTree already updated above — at CREATE time, persistence path will derive
       // parentId from structureTree.getParent(nodeId). Re-trigger setNode to cancel the pending
       // CREATE and schedule a new one (with cleared insertPosition so it appends to new parent).
+      // This is a local user action re-triggering its OWN pending write, not a foreign write —
+      // it must use `viewerSource`, never a `database` source (a `database` source tells
+      // `setNode`'s skip-while-editing guard this is a foreign broadcast, which it isn't; a
+      // just-created, just-indented node is by definition focused/pending, so a `database`
+      // source would always be declined there).
       const updatedNode = sharedNodeStore.getNode(nodeId);
-      if (updatedNode) {
-        const nodeWithClearedInsert = {
-          ...updatedNode,
-          insertPosition: { type: 'end' } as InsertPosition // clear stale sibling ref — append to new parent
-        } as typeof updatedNode & { insertPosition?: InsertPosition | null };
-        sharedNodeStore.setNode(nodeWithClearedInsert, viewerSource);
+      const reCreateApplied = updatedNode
+        ? sharedNodeStore.setNode(
+            {
+              ...updatedNode,
+              insertPosition: { type: 'end' } as InsertPosition // clear stale sibling ref — append to new parent
+            } as typeof updatedNode & { insertPosition?: InsertPosition | null },
+            viewerSource
+          )
+        : false;
+
+      if (reCreateApplied) {
+        // No moveOperation needed - the CREATE will include the correct parent
+        return true;
       }
 
-      // No moveOperation needed - the CREATE will include the correct parent
-      return true;
+      // setNode declined the re-trigger (or the node vanished under us) — do NOT report
+      // success as though the CREATE was rescheduled. Fall through to the MOVE path below
+      // instead of silently continuing as if the optimization had landed.
+      log.warn(
+        `[indentNode] Re-triggered CREATE for ${nodeId.substring(0, 8)} was not applied; falling through to MOVE path`
+      );
     }
 
     // If operation is executing but node not marked persisted yet, fall through to MOVE logic.
@@ -984,22 +1000,35 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
 
         // Re-trigger setNode to cancel the pending CREATE and schedule a new one.
         // Persistence path derives parentId from structureTree.getParent(nodeId) at CREATE time.
+        // This is a local user action re-triggering its OWN pending write, not a foreign write —
+        // it must use `viewerSource` (matching indentNode's equivalent re-trigger), never a
+        // `database` source. A `database` source tells `setNode`'s skip-while-editing guard this
+        // is a foreign broadcast; a just-created, just-outdented node is by definition
+        // focused/pending, so a `database` source is always declined there, silently dropping
+        // the CREATE and leaving the node's own bookkeeping falsely marked as persisted.
         const updatedNode = sharedNodeStore.getNode(nodeId);
-        if (updatedNode) {
-          const nodeWithClearedInsert = {
-            ...updatedNode,
-            insertPosition: { type: 'end' } as InsertPosition // clear stale sibling ref — append to new parent
-          } as typeof updatedNode & { insertPosition?: InsertPosition | null };
-          sharedNodeStore.setNode(nodeWithClearedInsert, {
-            type: 'database',
-            reason: 'outdent-node'
-          });
+        const reCreateApplied = updatedNode
+          ? sharedNodeStore.setNode(
+              {
+                ...updatedNode,
+                insertPosition: { type: 'end' } as InsertPosition // clear stale sibling ref — append to new parent
+              } as typeof updatedNode & { insertPosition?: InsertPosition | null },
+              viewerSource
+            )
+          : false;
+
+        if (reCreateApplied) {
+          events.hierarchyChanged();
+          // No moveOperation needed - the CREATE will include the correct parent
+          return true;
         }
 
-        events.hierarchyChanged();
-
-        // No moveOperation needed - the CREATE will include the correct parent
-        return true;
+        // setNode declined the re-trigger (or the node vanished under us) — do NOT report
+        // success as though the CREATE was rescheduled. Fall through to the persisted-node
+        // MOVE path below instead of silently continuing as if the optimization had landed.
+        log.warn(
+          `[outdentNode] Re-triggered CREATE for ${nodeId.substring(0, 8)} was not applied; falling through to MOVE path`
+        );
       } else {
         // CREATE is in-flight! Update structureTree now so the in-flight CREATE closure reads
         // the correct parentId from structureTree.getParent(nodeId) at execution time.
