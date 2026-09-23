@@ -3571,7 +3571,7 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
             .iter()
             .find_map(|tc| routing::parse_route_decision(&tc.function_name, &tc.arguments_json));
 
-        let mut routing_decision_tag = "none";
+        let routing_decision_tag: &str;
         // A single query for Query/None/clarify-suppressed; two or more for
         // Multi. Retrieval below re-enters once per element — Stage 2's
         // per-candidate trust boundary and score gating are unchanged, only
@@ -3615,9 +3615,10 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                     // path returns before reaching. Both this and that line carry
                     // `routing_decision` as a plain text field (not only an OTel span
                     // attribute) so an eval scraping the daemon's text log — which has
-                    // no OTel exporter attached — can observe which of Stage 1's five
-                    // outcomes (query/multi/clarify/clarify_suppressed/none) fired,
-                    // rather than inferring it from reply text or downstream tool effects.
+                    // no OTel exporter attached — can observe which of Stage 1's
+                    // outcomes (query/multi/multi_rejected/clarify/
+                    // clarify_suppressed/none) fired, rather than inferring it
+                    // from reply text or downstream tool effects.
                     tracing::info!(
                         routing_decision = "clarify",
                         routing_latency_ms = elapsed_ms,
@@ -3627,10 +3628,15 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                 }
             }
             None => {
-                // The model called neither routing tool, or emitted arguments
-                // that would not parse. Retrieve on the raw message rather than
-                // abandoning routing: a weak query still beats none.
-                span.set_attribute(KeyValue::new("routing.decision", "none"));
+                // The model called no routing tool, emitted route_query or
+                // route_clarify arguments that would not parse, or called
+                // route_multi without two usable queries (`multi_rejected`,
+                // parse failures included). Retrieve on the raw message
+                // rather than abandoning routing: a weak query still beats none.
+                routing_decision_tag = routing::undecided_routing_tag(
+                    tool_calls.iter().map(|tc| tc.function_name.as_str()),
+                );
+                span.set_attribute(KeyValue::new("routing.decision", routing_decision_tag));
                 vec![user_message.to_string()]
             }
         };
@@ -3684,9 +3690,9 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
         // two-stage flow adds ahead of the turn that previously ran alone.
         let elapsed_ms = started.elapsed().as_millis() as i64;
         span.set_attribute(KeyValue::new("routing.latency_ms", elapsed_ms));
-        // `routing_decision` here covers the three outcomes that reach this line
-        // (query/clarify_suppressed/none); the plain `clarify` outcome returns
-        // earlier and logs its own "stage-1 routing decision" line above. Both
+        // `routing_decision` here covers the outcomes that reach this line
+        // (query/multi/multi_rejected/clarify_suppressed/none); the plain
+        // `clarify` outcome returns earlier and logs its own "stage-1 routing decision" line above. Both
         // carry the same field name so a log scraper (an eval, a dashboard) can
         // grep one key regardless of which path a turn took.
         // `routed_skills` names the candidates that clear the score gate — the

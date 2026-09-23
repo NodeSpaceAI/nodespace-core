@@ -283,6 +283,24 @@ pub fn parse_route_decision(tool_name: &str, arguments_json: &str) -> Option<Rou
     }
 }
 
+/// The `routing_decision` log tag for a Stage-1 turn that yielded no decision.
+///
+/// Both outcomes fall through to retrieval on the raw message, but they are
+/// different model behaviours: `"none"` means the model called no routing tool
+/// (or emitted unparseable route_query/route_clarify arguments), while
+/// `"multi_rejected"` means it called `route_multi` without two usable queries
+/// (including arguments that would not parse) — splitting a single intent
+/// into a "compound" one, the exact over-selection route_multi's guard clauses
+/// exist to prevent. Collapsing both into `"none"` would let a routing eval
+/// score that failure as a clean single-intent turn.
+pub fn undecided_routing_tag<'a>(called_tools: impl IntoIterator<Item = &'a str>) -> &'static str {
+    if called_tools.into_iter().any(|t| t == ROUTE_MULTI_TOOL) {
+        "multi_rejected"
+    } else {
+        "none"
+    }
+}
+
 /// Whether a skill can change graph state, derived from the tools it may fire.
 ///
 /// Blast radius is not a stored property. It is computed from the skill's
@@ -998,6 +1016,20 @@ mod tests {
             parse_route_decision(ROUTE_MULTI_TOOL, r#"{"queries":["one thing","   "]}"#).is_none()
         );
         assert!(parse_route_decision(ROUTE_MULTI_TOOL, r#"{"queries":[]}"#).is_none());
+    }
+
+    #[test]
+    fn a_rejected_route_multi_is_tagged_apart_from_no_decision() {
+        // The over-called route_multi above yields no decision, but the log tag
+        // must still say route_multi was attempted — otherwise the routing eval
+        // scores a single intent split into "multi" as a clean turn.
+        assert_eq!(undecided_routing_tag([ROUTE_MULTI_TOOL]), "multi_rejected");
+        assert_eq!(
+            undecided_routing_tag(["search_nodes", ROUTE_MULTI_TOOL]),
+            "multi_rejected"
+        );
+        assert_eq!(undecided_routing_tag([ROUTE_QUERY_TOOL]), "none");
+        assert_eq!(undecided_routing_tag(std::iter::empty()), "none");
     }
 
     #[test]
