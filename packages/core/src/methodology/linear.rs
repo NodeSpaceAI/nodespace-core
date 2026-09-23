@@ -27,7 +27,7 @@
 //! to `open`.
 
 use crate::markdown::{NodeTemplate, SeedTier};
-use crate::methodology::{FieldValueExtension, MethodologyRecipe, PlayStep, SchemaStep};
+use crate::methodology::{FieldValueExtension, MethodologyPlaybook, PlayStep, SchemaStep};
 use serde_json::json;
 
 /// Days a cycle spans unless the user edits `cycle.duration_days`.
@@ -47,9 +47,9 @@ const DEFAULT_CYCLE_DAYS: i64 = 14;
 /// exact firing time is best-effort, not guaranteed.
 const DAILY_AFTER_MIDNIGHT: &str = "0 5 0 * * * *";
 
-/// The Linear-style recipe.
-pub fn recipe() -> MethodologyRecipe {
-    MethodologyRecipe {
+/// The Linear-style playbook.
+pub fn playbook() -> MethodologyPlaybook {
+    MethodologyPlaybook {
         id: "linear",
         name: "Linear-style",
         description:
@@ -740,7 +740,7 @@ mod tests {
     /// to veto. Both gates must therefore declare `class: invariant`.
     #[test]
     fn rules_using_reject_are_declared_invariant() {
-        for play in recipe().plays {
+        for play in playbook().plays {
             for rule in play.rules.as_array().expect("rules array") {
                 let uses_reject = rule["actions"]
                     .as_array()
@@ -759,7 +759,7 @@ mod tests {
 
     #[test]
     fn scheduled_rules_declare_a_cron_and_a_node_type() {
-        for play in recipe().plays {
+        for play in playbook().plays {
             for rule in play.rules.as_array().expect("rules array") {
                 if rule["trigger"]["type"] == "scheduled" {
                     assert!(rule["trigger"]["cron"].is_string());
@@ -840,8 +840,8 @@ mod tests {
 
     #[test]
     fn play_ids_are_unique() {
-        let r = recipe();
-        let mut ids: Vec<&str> = r.plays.iter().map(|p| p.play_id).collect();
+        let pb = playbook();
+        let mut ids: Vec<&str> = pb.plays.iter().map(|p| p.play_id).collect();
         ids.sort_unstable();
         let before = ids.len();
         ids.dedup();
@@ -852,7 +852,7 @@ mod tests {
     /// skill would score below it for every specific intent.
     #[test]
     fn skills_are_narrow_and_carry_guidance() {
-        let skills = recipe().skills;
+        let skills = playbook().skills;
         assert!(skills.len() >= 3, "expected several narrow skills");
 
         for s in &skills {
@@ -874,11 +874,11 @@ mod tests {
         }
     }
 
-    /// Recipe content is opt-in, so it must not be seeded at startup with the
+    /// Playbook content is opt-in, so it must not be seeded at startup with the
     /// System-tier content.
     #[test]
-    fn recipe_skills_are_starter_tier() {
-        for s in recipe().skills {
+    fn playbook_skills_are_starter_tier() {
+        for s in playbook().skills {
             assert!(matches!(s.tier, SeedTier::Starter), "{}", s.title);
         }
     }

@@ -1,4 +1,4 @@
-# Linear-style methodology recipe
+# Linear-style methodology playbook
 
 A canned setup for Linear-style work tracking: Issues with point estimates and a
 richer status vocabulary, time-boxed Cycles that roll their work into a
@@ -23,7 +23,7 @@ Everything below is a composition of ordinary NodeSpace primitives. Nothing here
 is special-cased in the engine, and a user can inspect, edit or delete any of it
 afterwards exactly as if they had authored it by hand.
 
-<!-- BEGIN GENERATED: linear-recipe (see packages/core/src/methodology/linear.rs, packages/cli/examples/gen_skill_md.rs) -->
+<!-- BEGIN GENERATED: linear-playbook (see packages/core/src/methodology/linear.rs, packages/cli/examples/gen_skill_md.rs) -->
 ## Linear-style
 
 Issues with point estimates and a richer status vocabulary, time-boxed Cycles with automatic creation and rollover, and validation gates that stop an issue closing with open sub-issues or starting with an unresolved blocker.
@@ -96,7 +96,7 @@ Skill nodes carrying usage guidance, discovered through the ordinary skill-searc
 **Issue Validation Rules** — Why a status change on an issue was rejected: the sub-issue completion gate and the blocker gate, what each checks, and how to proceed when one fires.
 
 Create each with `nodespace node create --type skill`, then add its guidance as markdown children. The bodies are long-form prose; read them from `packages/core/src/methodology/linear.rs` rather than reproducing them here.
-<!-- END GENERATED: linear-recipe -->
+<!-- END GENERATED: linear-playbook -->
 
 ## After installing
 

@@ -1,12 +1,12 @@
-//! End-to-end install of the Linear-style recipe against a real service.
+//! End-to-end install of the Linear-style playbook against a real service.
 //!
-//! The unit tests in `methodology::linear` assert the *shape* of the recipe's
+//! The unit tests in `methodology::linear` assert the *shape* of the playbook's
 //! JSON. That is not enough on its own: a CEL condition that will not compile,
 //! a cron the parser rejects, a `mapsTo` naming a value that does not exist, or
 //! a relationship missing its reverse half all produce perfectly well-shaped
 //! JSON and fail only when something tries to install it.
 //!
-//! So this installs the whole recipe the way the GUI will — `handle_create_schema`,
+//! So this installs the whole playbook the way the GUI will — `handle_create_schema`,
 //! `handle_update_schema`, then play nodes through `create_node` — and asserts
 //! the result. Every write here runs the same validation a hand-authored call
 //! would, `validate_play_rules` included, so a broken Play is rejected here
@@ -14,7 +14,9 @@
 
 use anyhow::Result;
 use nodespace_core::db::SqliteStore;
-use nodespace_core::methodology::{install_recipe, recipe_by_id, MethodologyRecipe, StepOutcome};
+use nodespace_core::methodology::{
+    install_playbook, playbook_by_id, MethodologyPlaybook, StepOutcome,
+};
 use nodespace_core::models::Node;
 use nodespace_core::schema::{handle_create_schema, handle_update_schema};
 use nodespace_core::services::NodeService;
@@ -29,18 +31,18 @@ async fn test_service() -> Result<(Arc<NodeService>, TempDir)> {
     Ok((service, temp_dir))
 }
 
-fn linear() -> MethodologyRecipe {
-    recipe_by_id("linear").expect("the linear recipe ships")
+fn linear() -> MethodologyPlaybook {
+    playbook_by_id("linear").expect("the linear playbook ships")
 }
 
-/// Install every step, in recipe order, failing loudly on the first rejection.
-async fn install(service: &Arc<NodeService>, recipe: &MethodologyRecipe) -> Result<()> {
-    for step in &recipe.schemas {
+/// Install every step, in playbook order, failing loudly on the first rejection.
+async fn install(service: &Arc<NodeService>, playbook: &MethodologyPlaybook) -> Result<()> {
+    for step in &playbook.schemas {
         handle_create_schema(service, step.params.clone())
             .await
             .map_err(|e| anyhow::anyhow!("create_schema({}) rejected: {e}", step.schema_id))?;
     }
-    for ext in &recipe.field_value_extensions {
+    for ext in &playbook.field_value_extensions {
         handle_update_schema(service, ext.params.clone())
             .await
             .map_err(|e| {
@@ -51,7 +53,7 @@ async fn install(service: &Arc<NodeService>, recipe: &MethodologyRecipe) -> Resu
                 )
             })?;
     }
-    for play in &recipe.plays {
+    for play in &playbook.plays {
         let node = Node::new_with_id(
             play.play_id.to_string(),
             "play".to_string(),
@@ -66,11 +68,11 @@ async fn install(service: &Arc<NodeService>, recipe: &MethodologyRecipe) -> Resu
     Ok(())
 }
 
-/// The whole recipe installs. This is the test that would catch a
+/// The whole playbook installs. This is the test that would catch a
 /// non-compiling CEL condition, an unparseable cron, or a `mapsTo` naming a
 /// value `task.status` does not have.
 #[tokio::test]
-async fn the_linear_recipe_installs_cleanly() -> Result<()> {
+async fn the_linear_playbook_installs_cleanly() -> Result<()> {
     let (service, _tmp) = test_service().await?;
     install(&service, &linear()).await?;
     Ok(())
@@ -138,10 +140,10 @@ async fn extended_status_values_are_accepted_and_unknown_ones_are_not() -> Resul
 #[tokio::test]
 async fn reinstalling_over_an_existing_schema_id_is_refused_not_silent() -> Result<()> {
     let (service, _tmp) = test_service().await?;
-    let recipe = linear();
-    install(&service, &recipe).await?;
+    let playbook = linear();
+    install(&service, &playbook).await?;
 
-    let again = handle_create_schema(&service, recipe.schemas[0].params.clone()).await;
+    let again = handle_create_schema(&service, playbook.schemas[0].params.clone()).await;
     assert!(
         again.is_err(),
         "a colliding schema id must be refused so the caller can disclose and re-key it, \
@@ -156,10 +158,10 @@ async fn reinstalling_over_an_existing_schema_id_is_refused_not_silent() -> Resu
 #[tokio::test]
 async fn installed_plays_are_marked_seeded_with_their_shipped_defaults() -> Result<()> {
     let (service, _tmp) = test_service().await?;
-    let recipe = linear();
-    install(&service, &recipe).await?;
+    let playbook = linear();
+    install(&service, &playbook).await?;
 
-    for play in &recipe.plays {
+    for play in &playbook.plays {
         let node = service
             .get_node(play.play_id)
             .await?
@@ -193,19 +195,19 @@ async fn installed_plays_are_marked_seeded_with_their_shipped_defaults() -> Resu
     Ok(())
 }
 
-/// The recipe must be installable in the order it declares. A Play whose
+/// The playbook must be installable in the order it declares. A Play whose
 /// trigger names a type with no schema is rejected by `validate_play_rules`,
 /// so installing the plays before the schemas would fail — this pins that the
 /// declared order is the working one.
 #[tokio::test]
-async fn plays_reference_types_the_recipe_creates_first() -> Result<()> {
+async fn plays_reference_types_the_playbook_creates_first() -> Result<()> {
     let (service, _tmp) = test_service().await?;
-    let recipe = linear();
+    let playbook = linear();
 
     // Plays first, with no schemas: every play referencing issue/cycle must
     // be refused, proving the ordering requirement is real and enforced.
     let mut refused = 0;
-    for play in &recipe.plays {
+    for play in &playbook.plays {
         let node = Node::new_with_id(
             format!("premature-{}", play.play_id),
             "play".to_string(),
@@ -218,18 +220,18 @@ async fn plays_reference_types_the_recipe_creates_first() -> Result<()> {
     }
     assert_eq!(
         refused,
-        recipe.plays.len(),
-        "every Play references a recipe-created type, so all must be refused before \
+        playbook.plays.len(),
+        "every Play references a playbook-created type, so all must be refused before \
          the schemas exist"
     );
 
     // And the declared order works.
-    install(&service, &recipe).await?;
+    install(&service, &playbook).await?;
     Ok(())
 }
 
 // ---------------------------------------------------------------------------
-// install_recipe: the path the GUI actually calls
+// install_playbook: the path the GUI actually calls
 // ---------------------------------------------------------------------------
 
 /// The report's wire shape is a contract with the desktop app, which decodes
@@ -254,10 +256,10 @@ async fn the_install_report_serializes_to_the_shape_clients_decode() -> Result<(
     .await
     .expect("pre-existing schema");
 
-    let report = install_recipe(&service, &linear()).await;
+    let report = install_playbook(&service, &linear()).await;
     let json: serde_json::Value = serde_json::to_value(&report)?;
 
-    assert_eq!(json["recipeId"], "linear", "camelCase, not recipe_id");
+    assert_eq!(json["playbookId"], "linear", "camelCase, not playbook_id");
     assert_eq!(json["success"], true);
 
     let steps = json["steps"].as_array().expect("steps is an array");
@@ -288,11 +290,11 @@ async fn the_install_report_serializes_to_the_shape_clients_decode() -> Result<(
 /// The installer reports every step as done, with nothing re-keyed, into an
 /// empty workspace.
 #[tokio::test]
-async fn install_recipe_reports_every_step_created_in_a_clean_workspace() -> Result<()> {
+async fn install_playbook_reports_every_step_created_in_a_clean_workspace() -> Result<()> {
     let (service, _tmp) = test_service().await?;
-    let recipe = linear();
+    let playbook = linear();
 
-    let report = install_recipe(&service, &recipe).await;
+    let report = install_playbook(&service, &playbook).await;
 
     assert!(
         report.success,
@@ -304,10 +306,10 @@ async fn install_recipe_reports_every_step_created_in_a_clean_workspace() -> Res
         "nothing should be re-keyed when no id is taken"
     );
 
-    let expected = recipe.schemas.len()
-        + recipe.field_value_extensions.len()
-        + recipe.plays.len()
-        + recipe.skills.len();
+    let expected = playbook.schemas.len()
+        + playbook.field_value_extensions.len()
+        + playbook.plays.len()
+        + playbook.skills.len();
     assert_eq!(report.steps.len(), expected, "one report row per step");
 
     for step in &report.steps {
@@ -321,7 +323,7 @@ async fn install_recipe_reports_every_step_created_in_a_clean_workspace() -> Res
     Ok(())
 }
 
-/// A workspace that already has a `cycle` keeps it. The recipe's own cycle
+/// A workspace that already has a `cycle` keeps it. The playbook's own cycle
 /// lands under a suffixed id, and the report says so.
 ///
 /// This is the acceptance criterion's core case: never silent adoption (the
@@ -343,7 +345,7 @@ async fn an_existing_schema_id_is_re_keyed_and_disclosed_not_adopted() -> Result
     .await
     .expect("the pre-existing schema should be created");
 
-    let report = install_recipe(&service, &linear()).await;
+    let report = install_playbook(&service, &linear()).await;
     assert!(
         report.success,
         "a collision must be resolved, not fatal; first failure: {:?}",
@@ -366,7 +368,7 @@ async fn an_existing_schema_id_is_re_keyed_and_disclosed_not_adopted() -> Result
     );
     assert!(
         existing.get_field("start_date").is_none(),
-        "the recipe must not have written its fields into someone else's schema"
+        "the playbook must not have written its fields into someone else's schema"
     );
     Ok(())
 }
@@ -388,7 +390,7 @@ async fn re_keying_follows_through_to_the_plays_that_reference_it() -> Result<()
     .await
     .expect("pre-existing schema");
 
-    let report = install_recipe(&service, &linear()).await;
+    let report = install_playbook(&service, &linear()).await;
     assert!(report.success, "first failure: {:?}", report.failure());
 
     let new_id = report.suffixed()[0].1.to_string();
@@ -417,13 +419,13 @@ async fn re_keying_follows_through_to_the_plays_that_reference_it() -> Result<()
 #[tokio::test]
 async fn installing_twice_re_keys_rather_than_failing_or_overwriting() -> Result<()> {
     let (service, _tmp) = test_service().await?;
-    let recipe = linear();
+    let playbook = linear();
 
-    let first = install_recipe(&service, &recipe).await;
+    let first = install_playbook(&service, &playbook).await;
     assert!(first.success, "first failure: {:?}", first.failure());
     assert!(first.suffixed().is_empty());
 
-    let second = install_recipe(&service, &recipe).await;
+    let second = install_playbook(&service, &playbook).await;
     assert!(
         second.success,
         "a second install should resolve collisions, not fail: {:?}",
@@ -435,13 +437,13 @@ async fn installing_twice_re_keys_rather_than_failing_or_overwriting() -> Result
     // seed key rather than colliding.
     assert_eq!(
         second.suffixed().len(),
-        recipe.schemas.len() + recipe.plays.len(),
+        playbook.schemas.len() + playbook.plays.len(),
         "each schema and play collides on a second install and must be re-keyed; got {:?}",
         second.suffixed()
     );
 
     // The originals still exist, unchanged.
-    for step in &recipe.schemas {
+    for step in &playbook.schemas {
         assert!(
             service.get_schema_node(step.schema_id).await?.is_some(),
             "{} from the first install must survive the second",
@@ -472,7 +474,7 @@ async fn a_re_key_is_disclosed_in_the_seeded_guidance() -> Result<()> {
     .await
     .expect("pre-existing schema");
 
-    let report = install_recipe(&service, &linear()).await;
+    let report = install_playbook(&service, &linear()).await;
     assert!(report.success, "first failure: {:?}", report.failure());
     let new_id = report.suffixed()[0].1.to_string();
 
@@ -490,7 +492,7 @@ async fn a_re_key_is_disclosed_in_the_seeded_guidance() -> Result<()> {
 #[tokio::test]
 async fn a_clean_install_leaves_the_guidance_unannotated() -> Result<()> {
     let (service, _tmp) = test_service().await?;
-    let report = install_recipe(&service, &linear()).await;
+    let report = install_playbook(&service, &linear()).await;
     assert!(report.success);
     assert!(report.suffixed().is_empty());
 
@@ -525,42 +527,42 @@ async fn seeded_guidance(service: &Arc<NodeService>, title_fragment: &str) -> Re
 /// step's re-key.
 ///
 /// Exercises `create_schema_resolving_collisions`' own rewrite, which the
-/// shipped Linear recipe cannot reach: `issue` extends core `task` and
+/// shipped Linear playbook cannot reach: `issue` extends core `task` and
 /// `cycle.tasks` targets core `task`, and a core type is never suffixed. A
 /// unit test over `rewrite_schema_ids` does not cover this either — it proves
-/// the helper works, not that this call site invokes it. Only a recipe whose
+/// the helper works, not that this call site invokes it. Only a playbook whose
 /// second schema names its first can tell the difference.
 ///
 /// Without the rewrite the derived schema extends whatever stranger's schema
 /// already held the id: wrong inherited fields, no error anywhere.
 #[tokio::test]
 async fn a_later_schema_step_follows_an_earlier_step_s_re_key() -> Result<()> {
-    use nodespace_core::methodology::{MethodologyRecipe, SchemaStep};
+    use nodespace_core::methodology::{MethodologyPlaybook, SchemaStep};
 
     let (service, _tmp) = test_service().await?;
 
-    // A squatter on the id the recipe's first schema wants, forcing a re-key.
+    // A squatter on the id the playbook's first schema wants, forcing a re-key.
     handle_create_schema(
         &service,
         serde_json::json!({
             "name": "Widget",
-            "description": "Someone else's widget, unrelated to this recipe",
+            "description": "Someone else's widget, unrelated to this playbook",
             "fields": [{ "name": "colour", "type": "string", "protection": "user" }],
         }),
     )
     .await
     .expect("squatter schema");
 
-    let recipe = MethodologyRecipe {
+    let playbook = MethodologyPlaybook {
         id: "two-step",
         name: "Two-step",
-        description: "A recipe whose second schema extends its first.",
+        description: "A playbook whose second schema extends its first.",
         schemas: vec![
             SchemaStep {
                 schema_id: "widget",
                 params: serde_json::json!({
                     "name": "Widget",
-                    "description": "The recipe's own widget",
+                    "description": "The playbook's own widget",
                     "fields": [{ "name": "size", "type": "string", "protection": "user" }],
                 }),
             },
@@ -569,7 +571,7 @@ async fn a_later_schema_step_follows_an_earlier_step_s_re_key() -> Result<()> {
                 params: serde_json::json!({
                     "name": "Gadget",
                     "extends": "widget",
-                    "description": "Extends the recipe's widget, not the stranger's",
+                    "description": "Extends the playbook's widget, not the stranger's",
                     "fields": [],
                 }),
             },
@@ -579,7 +581,7 @@ async fn a_later_schema_step_follows_an_earlier_step_s_re_key() -> Result<()> {
         skills: vec![],
     };
 
-    let report = install_recipe(&service, &recipe).await;
+    let report = install_playbook(&service, &playbook).await;
     assert!(report.success, "install failed: {:?}", report.failure());
 
     let widget_id = report
@@ -601,7 +603,7 @@ async fn a_later_schema_step_follows_an_earlier_step_s_re_key() -> Result<()> {
 
     assert_eq!(
         parent, widget_id,
-        "gadget must extend the recipe's own re-keyed widget ({widget_id}), \
+        "gadget must extend the playbook's own re-keyed widget ({widget_id}), \
          not the stranger's schema that squatted the original id"
     );
 
@@ -619,17 +621,17 @@ async fn a_later_schema_step_follows_an_earlier_step_s_re_key() -> Result<()> {
 /// `reverseName`, enum values and `title_template` tokens.
 ///
 /// Rewriting those renames the author's field behind their back. Here it fails
-/// loudly, because `title_template` cross-checks field names; a recipe with no
-/// template gets the silent version, storing a field under a name the recipe
+/// loudly, because `title_template` cross-checks field names; a playbook with no
+/// template gets the silent version, storing a field under a name the playbook
 /// never wrote — the exact corruption the re-key exists to prevent, arriving
 /// through the fix for it.
 #[tokio::test]
 async fn a_field_named_like_a_re_keyed_schema_is_not_rewritten() -> Result<()> {
-    use nodespace_core::methodology::{MethodologyRecipe, SchemaStep};
+    use nodespace_core::methodology::{MethodologyPlaybook, SchemaStep};
 
     let (service, _tmp) = test_service().await?;
 
-    // Squat the id the recipe's first schema wants, forcing a re-key.
+    // Squat the id the playbook's first schema wants, forcing a re-key.
     handle_create_schema(
         &service,
         serde_json::json!({
@@ -641,16 +643,16 @@ async fn a_field_named_like_a_re_keyed_schema_is_not_rewritten() -> Result<()> {
     .await
     .expect("squatter schema");
 
-    let recipe = MethodologyRecipe {
+    let playbook = MethodologyPlaybook {
         id: "vocab-collision",
         name: "Vocabulary collision",
-        description: "A recipe whose second schema names a field after its first.",
+        description: "A playbook whose second schema names a field after its first.",
         schemas: vec![
             SchemaStep {
                 schema_id: "cycle",
                 params: serde_json::json!({
                     "name": "Cycle",
-                    "description": "The recipe's own cycle",
+                    "description": "The playbook's own cycle",
                     "fields": [{ "name": "length", "type": "string", "protection": "user" }],
                 }),
             },
@@ -672,7 +674,7 @@ async fn a_field_named_like_a_re_keyed_schema_is_not_rewritten() -> Result<()> {
         skills: vec![],
     };
 
-    let report = install_recipe(&service, &recipe).await;
+    let report = install_playbook(&service, &playbook).await;
     assert!(
         report.success,
         "a field named after a re-keyed schema must not break the install: {:?}",
@@ -687,7 +689,7 @@ async fn a_field_named_like_a_re_keyed_schema_is_not_rewritten() -> Result<()> {
 
     assert!(
         field_names.contains(&"cycle"),
-        "the `cycle` field must keep the name the recipe wrote, got {field_names:?}"
+        "the `cycle` field must keep the name the playbook wrote, got {field_names:?}"
     );
     assert_eq!(
         schema.title_template.as_deref(),
@@ -699,7 +701,7 @@ async fn a_field_named_like_a_re_keyed_schema_is_not_rewritten() -> Result<()> {
 }
 
 /// A vocabulary extension naming a field after a re-keyed schema must target
-/// the field the recipe wrote.
+/// the field the playbook wrote.
 ///
 /// The sibling of `a_field_named_like_a_re_keyed_schema_is_not_rewritten`, one
 /// call site over. `UpdateSchemaParams` mixes ids and vocabulary in value
@@ -714,8 +716,8 @@ async fn a_field_named_like_a_re_keyed_schema_is_not_rewritten() -> Result<()> {
 /// rewritten into the user's schema, which is the corruption re-keying exists
 /// to prevent.
 #[tokio::test]
-async fn a_vocabulary_extension_targets_the_field_the_recipe_wrote() -> Result<()> {
-    use nodespace_core::methodology::{FieldValueExtension, MethodologyRecipe, SchemaStep};
+async fn a_vocabulary_extension_targets_the_field_the_playbook_wrote() -> Result<()> {
+    use nodespace_core::methodology::{FieldValueExtension, MethodologyPlaybook, SchemaStep};
 
     let (service, _tmp) = test_service().await?;
 
@@ -731,7 +733,7 @@ async fn a_vocabulary_extension_targets_the_field_the_recipe_wrote() -> Result<(
     .await
     .expect("squatter schema");
 
-    let recipe = MethodologyRecipe {
+    let playbook = MethodologyPlaybook {
         id: "vocab-ext-collision",
         name: "Vocabulary extension collision",
         description: "Extends a field whose name spells an earlier re-keyed id.",
@@ -740,7 +742,7 @@ async fn a_vocabulary_extension_targets_the_field_the_recipe_wrote() -> Result<(
                 schema_id: "cycle",
                 params: serde_json::json!({
                     "name": "Cycle",
-                    "description": "The recipe's own cycle",
+                    "description": "The playbook's own cycle",
                     "fields": [{ "name": "length", "type": "string", "protection": "user" }],
                 }),
             },
@@ -775,7 +777,7 @@ async fn a_vocabulary_extension_targets_the_field_the_recipe_wrote() -> Result<(
         skills: vec![],
     };
 
-    let report = install_recipe(&service, &recipe).await;
+    let report = install_playbook(&service, &playbook).await;
     assert!(
         report.success,
         "a field name that spells a re-keyed id must not be rewritten in an \
@@ -791,7 +793,7 @@ async fn a_vocabulary_extension_targets_the_field_the_recipe_wrote() -> Result<(
         .fields
         .iter()
         .find(|f| f.name == "cycle")
-        .expect("the `cycle` field must keep the name the recipe wrote");
+        .expect("the `cycle` field must keep the name the playbook wrote");
 
     let values: Vec<&str> = field
         .user_values
@@ -801,7 +803,7 @@ async fn a_vocabulary_extension_targets_the_field_the_recipe_wrote() -> Result<(
         .collect();
     assert!(
         values.contains(&"monthly"),
-        "the appended value must land on the recipe's own field, got {values:?}"
+        "the appended value must land on the playbook's own field, got {values:?}"
     );
 
     Ok(())
@@ -830,7 +832,7 @@ async fn a_vocabulary_extension_targets_the_field_the_recipe_wrote() -> Result<(
 async fn a_re_keyed_trigger_keeps_its_property_key_namespace_consistent() -> Result<()> {
     let (service, _tmp) = test_service().await?;
 
-    // Squat `issue`, forcing the recipe's own issue schema to re-key.
+    // Squat `issue`, forcing the playbook's own issue schema to re-key.
     handle_create_schema(
         &service,
         serde_json::json!({
@@ -842,7 +844,7 @@ async fn a_re_keyed_trigger_keeps_its_property_key_namespace_consistent() -> Res
     .await
     .expect("squatter schema");
 
-    let report = install_recipe(&service, &linear()).await;
+    let report = install_playbook(&service, &linear()).await;
     assert!(report.success, "install failed: {:?}", report.failure());
 
     for play_id in ["linear-sub-issue-gate", "linear-blocker-gate"] {

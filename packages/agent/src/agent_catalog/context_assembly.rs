@@ -54,15 +54,15 @@ const SKILL_SHARED_WORKSPACES: &str =
 const SKILL_GRAPH_AUTHORED_GUIDANCE: &str =
     include_str!("../../../skill/references/graph-authored-guidance.md");
 
-/// `packages/skill/references/linear-recipe.md`, embedded for the same reason
+/// `packages/skill/references/linear-playbook.md`, embedded for the same reason
 /// as [`SKILL_MD`].
 ///
 /// SKILL.md links to this when asked to set a workspace up for Linear-style
-/// work tracking — it is the CLI-verb form of the recipe the desktop app
+/// work tracking — it is the CLI-verb form of the playbook the desktop app
 /// installs in-process, generated from `nodespace_core::methodology::linear`.
 /// Embedding it too means a PTY session gets the whole skill rather than a
 /// body pointing at a file that was never written next to it.
-const SKILL_LINEAR_RECIPE: &str = include_str!("../../../skill/references/linear-recipe.md");
+const SKILL_LINEAR_PLAYBOOK: &str = include_str!("../../../skill/references/linear-playbook.md");
 
 /// Default token budget when none is specified by the caller.
 const DEFAULT_TOKEN_BUDGET: u32 = 50_000;
@@ -409,7 +409,7 @@ async fn write_skill_md(session_dir: &Path) -> Result<(), ContextError> {
         SKILL_SHARED_WORKSPACES,
     )
     .await?;
-    tokio::fs::write(references.join("linear-recipe.md"), SKILL_LINEAR_RECIPE).await?;
+    tokio::fs::write(references.join("linear-playbook.md"), SKILL_LINEAR_PLAYBOOK).await?;
     tokio::fs::write(
         references.join("graph-authored-guidance.md"),
         SKILL_GRAPH_AUTHORED_GUIDANCE,

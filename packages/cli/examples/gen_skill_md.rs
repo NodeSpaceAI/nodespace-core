@@ -96,11 +96,11 @@ fn regions() -> Vec<GeneratedRegion> {
             render: render_builtin_relationships_block,
         },
         GeneratedRegion {
-            id: "linear-recipe",
-            file: "references/linear-recipe.md",
+            id: "linear-playbook",
+            file: "references/linear-playbook.md",
             source_note: "packages/core/src/methodology/linear.rs, \
                           packages/cli/examples/gen_skill_md.rs",
-            render: render_linear_recipe_block,
+            render: render_linear_playbook_block,
         },
     ]
 }
@@ -363,12 +363,12 @@ fn render_builtin_relationships_block() -> String {
 }
 
 // ---------------------------------------------------------------------------
-// Region: linear-recipe
+// Region: linear-playbook
 // ---------------------------------------------------------------------------
 
-/// Renders the Linear-style recipe as the CLI calls that reproduce it.
+/// Renders the Linear-style playbook as the CLI calls that reproduce it.
 ///
-/// The recipe itself is typed Rust in `nodespace_core::methodology`, executed
+/// The playbook itself is typed Rust in `nodespace_core::methodology`, executed
 /// in-process by the desktop app. An external agent has no access to that, so
 /// this restates the same content as literal `nodespace` verbs — the transport
 /// every external agent already has, whether over a shell or the MCP
@@ -383,14 +383,14 @@ fn render_builtin_relationships_block() -> String {
 /// `playbook create` verb — a Play is an ordinary node whose `rules` property
 /// the engine reads — and inventing one in the docs would send an agent at a
 /// command that does not exist.
-fn render_linear_recipe_block() -> String {
-    use nodespace_core::methodology::recipe_by_id;
+fn render_linear_playbook_block() -> String {
+    use nodespace_core::methodology::playbook_by_id;
 
-    let recipe = recipe_by_id("linear").expect("the linear recipe ships with this build");
+    let playbook = playbook_by_id("linear").expect("the linear playbook ships with this build");
     let mut out = String::new();
 
-    let _ = writeln!(out, "## {}\n", recipe.name);
-    let _ = writeln!(out, "{}\n", recipe.description);
+    let _ = writeln!(out, "## {}\n", playbook.name);
+    let _ = writeln!(out, "{}\n", playbook.description);
     let _ = writeln!(
         out,
         "Run these in order. Each step depends on the ones before it: a Play whose trigger \
@@ -399,7 +399,7 @@ fn render_linear_recipe_block() -> String {
     );
 
     let _ = writeln!(out, "### 1. Schemas\n");
-    for step in &recipe.schemas {
+    for step in &playbook.schemas {
         let _ = writeln!(out, "Create `{}`:\n", step.schema_id);
         let _ = writeln!(
             out,
@@ -416,7 +416,7 @@ fn render_linear_recipe_block() -> String {
          `task` scope looks at it. Without that a base-scoped Play or query would meet a \
          value it has never heard of.\n"
     );
-    for ext in &recipe.field_value_extensions {
+    for ext in &playbook.field_value_extensions {
         let _ = writeln!(out, "Extend `{}.{}`:\n", ext.schema_id, ext.field);
         let _ = writeln!(
             out,
@@ -432,7 +432,7 @@ fn render_linear_recipe_block() -> String {
          validated on write — conditions are CEL-compiled and every referenced type and \
          path is checked — so a malformed Play is refused here, not at execution time.\n"
     );
-    for play in &recipe.plays {
+    for play in &playbook.plays {
         let _ = writeln!(out, "**{}** — {}\n", play.name, play.description);
         let _ = writeln!(
             out,
@@ -450,7 +450,7 @@ fn render_linear_recipe_block() -> String {
          nodes. Deliberately several narrow skills rather than one broad one: retrieval \
          scores a precise match far better than a skill diluted across every intent.\n"
     );
-    for skill in &recipe.skills {
+    for skill in &playbook.skills {
         let description = skill.root_properties["description"].as_str().unwrap_or("");
         let _ = writeln!(out, "**{}** — {}\n", skill.title, description);
     }
@@ -477,7 +477,7 @@ fn render_linear_recipe_block() -> String {
 /// agent copy-pasting the command with a mangled write rather than a parse
 /// error it could notice.
 fn compact_json(value: &serde_json::Value) -> String {
-    let json = serde_json::to_string(value).expect("recipe JSON is serializable");
+    let json = serde_json::to_string(value).expect("playbook JSON is serializable");
     shell_single_quote_body(&json)
 }
 
