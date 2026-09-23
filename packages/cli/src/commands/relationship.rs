@@ -133,7 +133,7 @@ async fn get(client: &mut NodeClient, args: GetArgs, json_out: bool) -> Result<(
                 "relationship_name": response.relationship_name,
                 "direction": response.direction,
                 "count": response.count,
-                "related_nodes": related,
+                "nodes": related,
             }))?
         );
     } else {
