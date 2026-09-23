@@ -511,6 +511,47 @@ impl NodeService {
         )))
     }
 
+    /// `_in_tx` equivalent of [`Self::get_node`]'s virtual-date fallback.
+    ///
+    /// A date node (`YYYY-MM-DD`) with no row yet is still a legitimate
+    /// endpoint — it auto-persists the first time something is actually
+    /// filed under it, and until then `get_node` synthesizes it on read
+    /// rather than reporting `NodeNotFound`. The raw
+    /// `SqliteStore::get_node_in_tx` has no such fallback, so a declared
+    /// relationship's tx-scoped source/target lookup needs this wrapper —
+    /// without it, any custom-relationship create touching an
+    /// as-yet-unvisited date page (CLI, agent tool, or the daemon RPC
+    /// surface — everything routed through `create_relationship_in_tx`)
+    /// would fail with a hard `NodeNotFound` that the old non-tx path never
+    /// produced.
+    async fn get_node_in_tx_or_virtual_date(
+        tx: &NodeServiceTx<'_>,
+        id: &str,
+    ) -> Result<Option<crate::models::Node>, NodeServiceError> {
+        if let Some(node) = crate::db::SqliteStore::get_node_in_tx(tx.store_tx(), id)
+            .await
+            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?
+        {
+            return Ok(Some(node));
+        }
+        if is_date_node_id(id) {
+            return Ok(Some(crate::models::Node {
+                id: id.to_string(),
+                node_type: "date".to_string(),
+                content: id.to_string(),
+                version: 1,
+                created_at: chrono::Utc::now(),
+                modified_at: chrono::Utc::now(),
+                properties: serde_json::json!({}),
+                mentions: vec![],
+                mentioned_in: vec![],
+                title: None,
+                lifecycle_status: "active".to_string(),
+            }));
+        }
+        Ok(None)
+    }
+
     /// Whether `node_type` satisfies a declaration expecting `expected_type` —
     /// true when they match, or when `expected_type` is an ancestor of
     /// `node_type` (ADR-078).
@@ -808,6 +849,12 @@ impl NodeService {
         // must carry its declaration's reverse name, or the column lands NULL.
         let mut declared_reverse_name: Option<String> = None;
 
+        // Cardinality-one replace's evictions, gathered below (custom
+        // relationships only — always `None` for a builtin) but not yet
+        // performed — see the comment at the gathering site for why eviction
+        // must wait until after the new edge is inserted.
+        let mut evict_after_insert: Option<(Vec<String>, Vec<String>)> = None;
+
         if is_builtin {
             if relationship_name == "member_of" {
                 let target = crate::db::SqliteStore::get_node_in_tx(tx.store_tx(), target_id)
@@ -860,9 +907,8 @@ impl NodeService {
                 }
             }
         } else {
-            let source = crate::db::SqliteStore::get_node_in_tx(tx.store_tx(), source_id)
-                .await
-                .map_err(|e| NodeServiceError::query_failed(e.to_string()))?
+            let source = Self::get_node_in_tx_or_virtual_date(tx, source_id)
+                .await?
                 .ok_or_else(|| NodeServiceError::node_not_found(source_id))?;
 
             if source.node_type == "schema" {
@@ -880,9 +926,8 @@ impl NodeService {
 
             declared_reverse_name = Some(relationship.reverse_name.clone());
 
-            let target = crate::db::SqliteStore::get_node_in_tx(tx.store_tx(), target_id)
-                .await
-                .map_err(|e| NodeServiceError::query_failed(e.to_string()))?
+            let target = Self::get_node_in_tx_or_virtual_date(tx, target_id)
+                .await?
                 .ok_or_else(|| NodeServiceError::node_not_found(target_id))?;
 
             if target.node_type == "schema" {
@@ -918,15 +963,26 @@ impl NodeService {
             // in `create_relationship` for the full rationale (agreement
             // between forward/reverse enforcement, and why an add-then-remove
             // reassignment needs the add half to evict the prior edge rather
-            // than fail). Eviction goes through `remove_relationship_in_tx`,
-            // not a bare store delete: that method reproduces
-            // `delete_relationship`'s required-relationship last-edge
-            // protection, which a raw delete would bypass. Without it, an
-            // eviction here could silently leave the edge's own source
-            // violating ITS schema's `required: true` declaration — e.g.
-            // evicting person1's sole `tasks` edge to hand the task to
-            // person2 would leave person1 with zero edges on a relationship
-            // declared required, with nothing surfaced to any caller.
+            // than fail). This only GATHERS which edges to evict — the
+            // actual eviction happens AFTER the new edge is inserted below,
+            // not here. Evicting first would mean `remove_relationship_in_tx`'s
+            // required-relationship last-edge check counts `source_id`'s
+            // edges for this relationship type while it still has exactly
+            // the one about to be replaced (cardinality: One guarantees at
+            // most one), so it would ALWAYS conclude "this is the last
+            // edge" and reject — even though a replacement is about to land
+            // in the very same transaction and the invariant would never
+            // actually be violated. Reject-first was tried and confirmed
+            // broken by review: a `cardinality: One` relationship that is
+            // ALSO `required: true` could never be reassigned at all. Insert
+            // first, then evict: at that point `source_id` briefly holds
+            // both edges, so the required-check correctly sees more than
+            // one and evicts the old one cleanly. The store's unique index
+            // is on `(in_node, out_node, relationship_type)`, not
+            // `(out_node, relationship_type)`, so briefly holding both is
+            // not a constraint violation — and it is invisible to any
+            // reader outside this transaction regardless.
+            let mut forward_targets_to_evict: Vec<String> = Vec::new();
             if relationship.cardinality == crate::models::schema::RelationshipCardinality::One {
                 let existing_edges =
                     crate::db::SqliteStore::get_relationship_edges_from_source_in_tx(
@@ -945,13 +1001,7 @@ impl NodeService {
                     if existing_target_id == target_id {
                         continue;
                     }
-                    self.remove_relationship_in_tx(
-                        tx,
-                        source_id,
-                        relationship_name,
-                        &existing_target_id,
-                    )
-                    .await?;
+                    forward_targets_to_evict.push(existing_target_id);
                 }
             }
 
@@ -959,10 +1009,15 @@ impl NodeService {
             // for why this is needed alongside the forward check above, and
             // for why matches are scoped to the declaring schema (two schemas
             // may share a forward name toward the same target type as
-            // logically distinct relationships). Eviction goes through
-            // `remove_relationship_in_tx` for the same reason as the forward
-            // case above: a raw delete would bypass the evicted edge's own
-            // required-relationship last-edge protection.
+            // logically distinct relationships). Also gather-only, for
+            // symmetry with the forward case — though the required-relationship
+            // trap above is specific to the forward direction: an evicted
+            // reverse-side edge belongs to a DIFFERENT node than the one
+            // gaining the new edge, so inserting first cannot help it the
+            // same way (that node's own edge count is genuinely unaffected
+            // by this insert), and a real "last required edge" there
+            // correctly stays rejected either way.
+            let mut reverse_sources_to_evict: Vec<String> = Vec::new();
             if relationship.reverse_cardinality
                 == crate::models::schema::RelationshipCardinality::One
             {
@@ -996,15 +1051,11 @@ impl NodeService {
                     {
                         continue;
                     }
-                    self.remove_relationship_in_tx(
-                        tx,
-                        &existing_source_id,
-                        relationship_name,
-                        target_id,
-                    )
-                    .await?;
+                    reverse_sources_to_evict.push(existing_source_id);
                 }
             }
+
+            evict_after_insert = Some((forward_targets_to_evict, reverse_sources_to_evict));
         }
 
         // Idempotency check (mirrors `create_relationship`'s generic path;
@@ -1056,6 +1107,31 @@ impl NodeService {
                 final_edge_data,
             ),
         });
+
+        // Now that the new edge is durably inserted (above), evict whatever
+        // cardinality-one replace gathered earlier — see the gathering
+        // site's comment for why this must happen AFTER the insert rather
+        // than before it.
+        if let Some((forward_targets_to_evict, reverse_sources_to_evict)) = evict_after_insert {
+            for existing_target_id in forward_targets_to_evict {
+                self.remove_relationship_in_tx(
+                    tx,
+                    source_id,
+                    relationship_name,
+                    &existing_target_id,
+                )
+                .await?;
+            }
+            for existing_source_id in reverse_sources_to_evict {
+                self.remove_relationship_in_tx(
+                    tx,
+                    &existing_source_id,
+                    relationship_name,
+                    target_id,
+                )
+                .await?;
+            }
+        }
 
         Ok(())
     }
