@@ -17,6 +17,8 @@ import {
 } from '$lib/services/reactive-node-service.svelte';
 import { SharedNodeStore } from '$lib/services/shared-node-store.svelte';
 import { structureTree } from '$lib/stores/reactive-structure-tree.svelte';
+import { focusManager } from '$lib/services/focus-manager.svelte';
+import { conflictNotifications } from '$lib/stores/conflict-notifications.svelte';
 import type { Node } from '$lib/types';
 
 // vi.hoisted() runs before vi.mock hoisting — safe to reference in factory
@@ -190,5 +192,258 @@ describe('C3a — outdentNode emits no fractional order values', () => {
         expect(order % 1).toBe(0);
       }
     }
+  });
+});
+
+describe('Outdenting/indenting an unpersisted, actively-edited node does not drop its CREATE', () => {
+  let service: ReactiveNodeService;
+  let events: NodeManagerEvents;
+  let sharedNodeStore: SharedNodeStore;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    SharedNodeStore.resetInstance();
+    sharedNodeStore = SharedNodeStore.getInstance();
+    focusManager.clearEditing();
+    conflictNotifications.dismissAll();
+
+    events = {
+      focusRequested: vi.fn(),
+      hierarchyChanged: vi.fn(),
+      nodeCreated: vi.fn(),
+      nodeDeleted: vi.fn()
+    };
+
+    service = createReactiveNodeService(events);
+
+    vi.mocked(structureTree.getParent).mockImplementation((nodeId: string) => {
+      if (nodeId === 'child') return 'parent';
+      if (nodeId === 'parent') return 'grandparent';
+      return null;
+    });
+  });
+
+  afterEach(() => {
+    service.destroy();
+    focusManager.clearEditing();
+    conflictNotifications.dismissAll();
+  });
+
+  function addPersistedNode(id: string) {
+    const node = makeNode(id);
+    sharedNodeStore.setNode(node, { type: 'database', reason: 'test' });
+    return node;
+  }
+
+  it('outdenting a just-created, focused node inside the persistence debounce window re-triggers the CREATE via a viewer source, never a database source, and never marks the node persisted', async () => {
+    const grandparent = addPersistedNode('grandparent');
+    const parent = addPersistedNode('parent');
+
+    // `SharedNodeStore.getParentsForNode` derives from the (mocked, no-op-
+    // applied) structureTree singleton, which this test's hand-rolled mock
+    // does not keep in sync with `moveInMemoryRelationship` calls — see
+    // `getParentsForNode`'s own "may not be initialized in tests" doc
+    // comment. Stub it directly so `validateOutdent` sees the intended
+    // hierarchy: child -> parent -> grandparent.
+    vi.spyOn(sharedNodeStore, 'getParentsForNode').mockImplementation((nodeId: string) => {
+      if (nodeId === 'child') return [parent];
+      if (nodeId === 'parent') return [grandparent];
+      return [];
+    });
+
+    // Create 'child' the same way a real Enter keypress does: a viewer-sourced
+    // setNode schedules a DEBOUNCED create and leaves the node "pending" in
+    // PersistenceCoordinator, and the node keeps focus — matching a
+    // just-created node inside the 500ms persistence debounce window.
+    const child = makeNode('child');
+    sharedNodeStore.setNode(child, { type: 'viewer', viewerId: 'test-viewer' });
+    focusManager.focusNode('child', 'default');
+
+    expect(sharedNodeStore.hasPendingSave('child')).toBe(true);
+    expect(sharedNodeStore.isNodePersisted('child')).toBe(false);
+
+    const setNodeSpy = vi.spyOn(sharedNodeStore, 'setNode');
+
+    // Outdent while the CREATE is still pending (Shift+Tab inside the debounce window).
+    const outdentResult = await service.outdentNode('child');
+    expect(outdentResult).toBe(true);
+
+    // The re-trigger call setNode() makes for 'child' must be the SECOND
+    // call recorded by the spy (the first is the initial viewer-sourced
+    // create above) and must use a `viewer` source — never `database`. A
+    // `database` source is what `decideRemoteUpdate` treats as a foreign
+    // write to skip while the node is actively edited, which is exactly the
+    // defect this test guards: it silently dropped the CREATE and left the
+    // node's own bookkeeping falsely marked as persisted (see the assertion
+    // below).
+    const reTriggerCalls = setNodeSpy.mock.calls.filter((call) => call[0].id === 'child');
+    expect(reTriggerCalls.length).toBeGreaterThanOrEqual(1);
+    const lastReTrigger = reTriggerCalls[reTriggerCalls.length - 1];
+    expect(lastReTrigger[1].type).toBe('viewer');
+    // And it must have actually been APPLIED (not declined) — the whole
+    // point of using a `viewer` source is that `decideRemoteUpdate` never
+    // declines it, so setNode's return value must reflect that.
+    const lastReTriggerIndex = setNodeSpy.mock.calls.indexOf(lastReTrigger);
+    expect(setNodeSpy.mock.results[lastReTriggerIndex].value).toBe(true);
+
+    // The CREATE must still be scheduled (pending), and the node must NOT be
+    // falsely marked as persisted — this is the exact bookkeeping corruption
+    // that made the later debounced write fire as an UPDATE (NODE_NOT_FOUND)
+    // instead of a CREATE in production.
+    expect(sharedNodeStore.hasPendingSave('child')).toBe(true);
+    expect(sharedNodeStore.isNodePersisted('child')).toBe(false);
+
+    // A lost/dropped CREATE must never be misreported as a version conflict.
+    const versionMismatch = conflictNotifications.notifications.find(
+      (n) => n.nodeId === 'child' && n.conflictType === 'version-mismatch'
+    );
+    expect(versionMismatch).toBeUndefined();
+  });
+
+  it('indenting a just-created, focused node inside the persistence debounce window re-triggers the CREATE via a viewer source and never marks the node persisted', async () => {
+    addPersistedNode('parent');
+    // 'sibling' is the indent target's previous sibling — indentNode moves the
+    // new node under it, so it must be able to have children.
+    const sibling = makeNode('sibling');
+    sharedNodeStore.setNode(sibling, { type: 'database', reason: 'test' });
+
+    vi.mocked(structureTree.getParent).mockImplementation((nodeId: string) => {
+      if (nodeId === 'child' || nodeId === 'sibling') return 'parent';
+      return null;
+    });
+    // See the outdent test above: getNodesForParent doesn't reflect this
+    // test's hand-rolled structureTree mock, so stub it directly.
+    vi.spyOn(sharedNodeStore, 'getNodesForParent').mockImplementation((parentId: string | null) => {
+      if (parentId !== 'parent') return [];
+      const child = sharedNodeStore.getNode('child');
+      return child ? [sibling, child] : [sibling];
+    });
+
+    const child = makeNode('child');
+    sharedNodeStore.setNode(child, { type: 'viewer', viewerId: 'test-viewer' });
+    focusManager.focusNode('child', 'default');
+
+    expect(sharedNodeStore.hasPendingSave('child')).toBe(true);
+    expect(sharedNodeStore.isNodePersisted('child')).toBe(false);
+
+    const setNodeSpy = vi.spyOn(sharedNodeStore, 'setNode');
+
+    const indentResult = await service.indentNode('child');
+    expect(indentResult).toBe(true);
+
+    const reTriggerCalls = setNodeSpy.mock.calls.filter((call) => call[0].id === 'child');
+    expect(reTriggerCalls.length).toBeGreaterThanOrEqual(1);
+    const lastReTrigger = reTriggerCalls[reTriggerCalls.length - 1];
+    expect(lastReTrigger[1].type).toBe('viewer');
+    const lastReTriggerIndex = setNodeSpy.mock.calls.indexOf(lastReTrigger);
+    expect(setNodeSpy.mock.results[lastReTriggerIndex].value).toBe(true);
+
+    expect(sharedNodeStore.hasPendingSave('child')).toBe(true);
+    expect(sharedNodeStore.isNodePersisted('child')).toBe(false);
+
+    const versionMismatch = conflictNotifications.notifications.find(
+      (n) => n.nodeId === 'child' && n.conflictType === 'version-mismatch'
+    );
+    expect(versionMismatch).toBeUndefined();
+  });
+
+  it('rolls back the optimistic outdent and reports failure — never falls through to the persisted-node MOVE path — when the CREATE re-trigger is declined', async () => {
+    const grandparent = addPersistedNode('grandparent');
+    const parent = addPersistedNode('parent');
+    vi.spyOn(sharedNodeStore, 'getParentsForNode').mockImplementation((nodeId: string) => {
+      if (nodeId === 'child') return [parent];
+      if (nodeId === 'parent') return [grandparent];
+      return [];
+    });
+
+    const child = makeNode('child');
+    sharedNodeStore.setNode(child, { type: 'viewer', viewerId: 'test-viewer' });
+    focusManager.focusNode('child', 'default');
+
+    // Force the re-trigger to be declined. `viewerSource` makes this
+    // unreachable today (decideRemoteUpdate always applies a `viewer`
+    // source), but the caller must never report success — or fall through
+    // to the already-persisted MOVE path — if this ever changes.
+    vi.spyOn(sharedNodeStore, 'setNode').mockReturnValue(false);
+
+    const { backendAdapter } = await import('$lib/services/backend-adapter');
+    const moveNodeMock = vi.mocked(backendAdapter.moveNode);
+    const moveInMemorySpy = vi.mocked(structureTree.moveInMemoryRelationship);
+    moveInMemorySpy.mockClear();
+
+    const outdentResult = await service.outdentNode('child');
+
+    expect(outdentResult).toBe(false);
+    // No fall-through: moveNode must never be called for a node that was
+    // never created server-side.
+    expect(moveNodeMock).not.toHaveBeenCalled();
+    // The optimistic reparent (child: parent -> grandparent) must be rolled
+    // back (grandparent -> parent), matching rollbackOutdentChanges.
+    expect(moveInMemorySpy).toHaveBeenCalledWith('parent', 'grandparent', 'child');
+    expect(moveInMemorySpy).toHaveBeenCalledWith('grandparent', 'parent', 'child');
+  });
+});
+
+describe('setNode: a re-triggered write to a focused/pending node must use a viewer source', () => {
+  let sharedNodeStore: SharedNodeStore;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    SharedNodeStore.resetInstance();
+    sharedNodeStore = SharedNodeStore.getInstance();
+    focusManager.clearEditing();
+    conflictNotifications.dismissAll();
+  });
+
+  afterEach(() => {
+    focusManager.clearEditing();
+    conflictNotifications.dismissAll();
+  });
+
+  it('a `database`-sourced re-trigger on a focused, pending, unpersisted node is declined and falsely marks it persisted (documents the defect a `viewer` source avoids)', () => {
+    const node = makeNode('child');
+    sharedNodeStore.setNode(node, { type: 'viewer', viewerId: 'test-viewer' });
+    focusManager.focusNode('child', 'default');
+    expect(sharedNodeStore.hasPendingSave('child')).toBe(true);
+    expect(sharedNodeStore.isNodePersisted('child')).toBe(false);
+
+    const applied = sharedNodeStore.setNode(
+      { ...node, insertPosition: { type: 'end' } } as typeof node & {
+        insertPosition?: { type: string };
+      },
+      { type: 'database', reason: 'outdent-node' }
+    );
+
+    // This is the exact defect: a local user action mislabelled as a
+    // `database` source is declined by the skip-while-editing guard, and the
+    // guard's decline path marks the node as persisted anyway (correct for a
+    // genuine foreign write, wrong for re-triggering one's own CREATE).
+    expect(applied).toBe(false);
+    expect(sharedNodeStore.isNodePersisted('child')).toBe(true);
+  });
+
+  it('a `viewer`-sourced re-trigger on a focused, pending, unpersisted node is always applied and never marks it persisted', () => {
+    const node = makeNode('child');
+    sharedNodeStore.setNode(node, { type: 'viewer', viewerId: 'test-viewer' });
+    focusManager.focusNode('child', 'default');
+    expect(sharedNodeStore.hasPendingSave('child')).toBe(true);
+    expect(sharedNodeStore.isNodePersisted('child')).toBe(false);
+
+    const applied = sharedNodeStore.setNode(
+      { ...node, insertPosition: { type: 'end' } } as typeof node & {
+        insertPosition?: { type: string };
+      },
+      { type: 'viewer', viewerId: 'test-viewer' }
+    );
+
+    expect(applied).toBe(true);
+    // Still not persisted — the CREATE is rescheduled, not dropped.
+    expect(sharedNodeStore.isNodePersisted('child')).toBe(false);
+    expect(sharedNodeStore.hasPendingSave('child')).toBe(true);
+
+    const versionMismatch = conflictNotifications.notifications.find(
+      (n) => n.nodeId === 'child' && n.conflictType === 'version-mismatch'
+    );
+    expect(versionMismatch).toBeUndefined();
   });
 });

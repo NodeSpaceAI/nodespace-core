@@ -2298,9 +2298,16 @@ export class SharedNodeStore {
   }
 
   /**
-   * Set a node (create or replace)
+   * Set a node (create or replace).
+   *
+   * Returns whether the update was actually applied to the store. `false`
+   * means the skip-while-editing guard (or the stale ai-chat guard) declined
+   * the write — the caller must not treat that as success. Callers that
+   * re-trigger a CREATE by re-calling `setNode` (indent/outdent's
+   * not-yet-persisted optimization — see `reactive-node-service.svelte.ts`)
+   * check this return value rather than assuming the re-trigger landed.
    */
-  setNode(rawNode: Node, source: UpdateSource, skipPersistence = false): void {
+  setNode(rawNode: Node, source: UpdateSource, skipPersistence = false): boolean {
     // Normalize typed node shapes (e.g. AiChatNode) whenever data arrives from
     // the backend so the store always holds the typed shape, not raw wire data.
     const node = source.type === 'database' ? normalizeNodeData(rawNode) : rawNode;
@@ -2351,7 +2358,7 @@ export class SharedNodeStore {
         nodeId: node.id,
         hasPending
       });
-      return;
+      return false;
     }
 
     const decision = decideRemoteUpdate(node, existingNode, source, { isFocused, hasPending });
@@ -2386,7 +2393,7 @@ export class SharedNodeStore {
       // Do NOT touch this.nodes or notify subscribers — there is no
       // observable change to the local view, and any reactive write here
       // remounts the focused textarea.
-      return;
+      return false;
     }
 
     this.nodesSet(node.id, node);
@@ -2724,6 +2731,8 @@ export class SharedNodeStore {
         });
       }
     }
+
+    return true;
   }
 
   /**
