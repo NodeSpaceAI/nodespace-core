@@ -1,5 +1,5 @@
 /**
- * Methodology recipes — listing what is on offer, and installing one.
+ * Methodology playbooks — listing what is on offer, and installing one.
  *
  * Both the onboarding wizard and the Settings action call through here rather
  * than invoking Tauri directly. Onboarding is expected to be reworked, so the
@@ -8,7 +8,7 @@
  * this without the install logic moving with it.
  *
  * The install itself (step order, id-collision re-keying, per-step reporting)
- * is in `packages/core`, beside the recipe it executes. This module only moves
+ * is in `packages/core`, beside the playbook it executes. This module only moves
  * a choice one way and a report back.
  */
 
@@ -17,7 +17,7 @@ import { createLogger } from '$lib/utils/logger';
 
 const log = createLogger('MethodologyService');
 
-/** A recipe on offer, for the picker. */
+/** A playbook on offer, for the picker. */
 export interface Methodology {
   id: string;
   name: string;
@@ -43,18 +43,18 @@ export interface StepReport {
 }
 
 export interface InstallReport {
-  recipeId: string;
+  playbookId: string;
   steps: StepReport[];
   /** Whether every step landed. False means the install stopped partway. */
   success: boolean;
 }
 
 /**
- * The recipes this build ships.
+ * The playbooks this build ships.
  *
  * Normalizes a missing or malformed response to an empty list rather than
  * letting it through. Callers branch on `length` to decide whether to offer
- * the choice at all, and "no recipes" is the honest answer when the backend
+ * the choice at all, and "no playbooks" is the honest answer when the backend
  * did not give us any — an `undefined` here would surface as a crash in the
  * wizard rather than a step that quietly does not appear.
  */
@@ -64,7 +64,7 @@ export async function listMethodologies(): Promise<Methodology[]> {
 }
 
 /**
- * Install a recipe by id.
+ * Install a playbook by id.
  *
  * Resolves with a report even when a step failed — `success` says whether
  * everything landed. Only a transport failure rejects.
@@ -80,7 +80,7 @@ export async function installMethodology(methodologyId: string): Promise<Install
   return report;
 }
 
-/** Ids that were re-keyed because the recipe's preferred id was taken. */
+/** Ids that were re-keyed because the playbook's preferred id was taken. */
 export function renamedIds(report: InstallReport): Array<{ requested: string; created: string }> {
   return report.steps
     .map((s) => s.outcome)

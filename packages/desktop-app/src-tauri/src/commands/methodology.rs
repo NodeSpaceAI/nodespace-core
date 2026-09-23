@@ -1,8 +1,8 @@
-//! Methodology recipe commands — list what is on offer, install one.
+//! Methodology playbook commands — list what is on offer, install one.
 //!
 //! Both proxy through the in-process gRPC server, like every other data
 //! command here. The install itself (step ordering, id-collision re-keying,
-//! per-step reporting) lives in `packages/core` beside the recipe it executes,
+//! per-step reporting) lives in `packages/core` beside the playbook it executes,
 //! so this layer only moves a choice one way and a report back.
 //!
 //! Deliberately thin: a partial install is a successful RPC carrying a report
@@ -18,7 +18,7 @@ use super::nodes::CommandError;
 use crate::services::GrpcClient;
 use nodespace_proto::nodespace::{InstallMethodologyRequest, ListMethodologiesRequest};
 
-/// A recipe on offer, for the picker.
+/// A playbook on offer, for the picker.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Methodology {
@@ -60,12 +60,12 @@ pub struct StepReport {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InstallReport {
-    pub recipe_id: String,
+    pub playbook_id: String,
     pub steps: Vec<StepReport>,
     pub success: bool,
 }
 
-/// List the methodology recipes this build ships.
+/// List the methodology playbooks this build ships.
 #[tauri::command]
 pub async fn list_methodologies(
     client: State<'_, GrpcClient>,
@@ -93,7 +93,7 @@ pub async fn list_methodologies(
         .collect())
 }
 
-/// Install a methodology recipe by id.
+/// Install a methodology playbook by id.
 ///
 /// Returns the report even when a step failed — `success` says whether every
 /// step landed, and `steps` says how far it got. Only a transport or decode
@@ -134,7 +134,7 @@ mod tests {
     #[test]
     fn install_report_deserializes_the_shape_core_emits() {
         let json = r#"{
-            "recipeId": "linear",
+            "playbookId": "linear",
             "success": true,
             "steps": [
                 { "label": "Create `issue` schema", "outcome": { "kind": "created", "id": "issue" } },
@@ -147,7 +147,7 @@ mod tests {
         }"#;
 
         let report: InstallReport = serde_json::from_str(json).expect("report should decode");
-        assert_eq!(report.recipe_id, "linear");
+        assert_eq!(report.playbook_id, "linear");
         assert!(report.success);
         assert_eq!(report.steps.len(), 4);
 

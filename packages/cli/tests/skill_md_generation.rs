@@ -567,7 +567,7 @@ fn every_schema_rule_reaches_the_skill() {
     );
 }
 
-/// Every `bash` block in the generated recipe doc must survive POSIX word
+/// Every `bash` block in the generated playbook doc must survive POSIX word
 /// splitting.
 ///
 /// The doc exists to be copy-pasted by an external agent, and its Play blocks
@@ -581,9 +581,9 @@ fn every_schema_rule_reaches_the_skill() {
 /// broken doc stay happily in sync. This is what notices that they are both
 /// wrong.
 #[test]
-fn generated_recipe_doc_emits_parseable_shell() {
+fn generated_playbook_doc_emits_parseable_shell() {
     let path =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../skill/references/linear-recipe.md");
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../skill/references/linear-playbook.md");
     let doc = std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
 
@@ -618,7 +618,7 @@ fn generated_recipe_doc_emits_parseable_shell() {
 
     assert!(
         blocks >= 4,
-        "expected the recipe doc to carry several command blocks, found {blocks} — \
+        "expected the playbook doc to carry several command blocks, found {blocks} — \
          if the doc's shape changed, update this test rather than dropping the check"
     );
 }

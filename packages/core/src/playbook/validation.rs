@@ -3009,7 +3009,7 @@ mod tests {
             // vp_reverse_source's unrelated relationship happens to use for
             // its far end, which also lands on vp_trigger. Mirrors the kind
             // of namespace collision `tasks` has among `project`/`person`
-            // (and `cycle`, in the Linear recipe) — dense enough that two
+            // (and `cycle`, in the Linear Playbook) — dense enough that two
             // schemas reach the same relationship name from opposite
             // directions.
             create_schema(&svc, "vp_forward_target", 1, json!([])).await;
@@ -3092,14 +3092,14 @@ mod tests {
         ///
         /// This branch had no unit-level coverage: disabling
         /// `resolve_reverse_segment` entirely left all of this module's tests
-        /// green, because the only thing pinning it was the Linear recipe's
+        /// green, because the only thing pinning it was the Linear Playbook's
         /// integration suite. The sibling precedence test does not help —
         /// it asserts the FORWARD name wins, so it passes whether or not the
         /// reverse branch works at all.
         ///
         /// The fixture routes through a subtype (`vr_child extends vr_task`,
         /// with the reverse name declared toward `vr_task`) because that is
-        /// the shape the Linear recipe needs — `blocked_by` reaching an
+        /// the shape the Linear Playbook needs — `blocked_by` reaching an
         /// `issue` via `task.blocks`.
         ///
         /// It does NOT pin the outer `extends` walk in this function, though.

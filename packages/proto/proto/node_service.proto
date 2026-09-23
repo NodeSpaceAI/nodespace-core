@@ -100,11 +100,11 @@ service NodeService {
 
   // Methodologies
   //
-  // Install a first-party work-tracking recipe (schemas, vocabulary
+  // Install a first-party work-tracking playbook (schemas, vocabulary
   // extensions, Plays and guidance skills) in one call. One RPC rather than
   // the caller driving CreateSchema/UpdateSchema/CreateNode itself, because
   // the steps are ordered and a collision on any id has to re-key every later
-  // reference to it — logic that belongs beside the recipe, not duplicated
+  // reference to it — logic that belongs beside the playbook, not duplicated
   // into each client.
   rpc ListMethodologies(ListMethodologiesRequest) returns (ListMethodologiesResponse);
   rpc InstallMethodology(InstallMethodologyRequest) returns (InstallMethodologyResponse);
@@ -968,7 +968,7 @@ message ListMethodologiesResponse {
   repeated Methodology methodologies = 1;
 }
 
-// A recipe on offer, for a picker to render. Carries no steps: a client
+// A playbook on offer, for a picker to render. Carries no steps: a client
 // chooses by id and the daemon executes, so the step sequence never crosses
 // the wire and cannot be edited in flight.
 message Methodology {
@@ -978,7 +978,7 @@ message Methodology {
 }
 
 message InstallMethodologyRequest {
-  // Which recipe to install, by `Methodology.id`. An unknown id is
+  // Which playbook to install, by `Methodology.id`. An unknown id is
   // NOT_FOUND rather than a silent no-op.
   string methodology_id = 1;
 }

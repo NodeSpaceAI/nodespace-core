@@ -1,12 +1,12 @@
-//! Installing a methodology recipe.
+//! Installing a methodology playbook.
 //!
-//! Executes a recipe's steps in order against a live `NodeService`, resolving
+//! Executes a playbook's steps in order against a live `NodeService`, resolving
 //! id collisions deterministically and reporting what happened per step.
 //!
 //! # Collisions are disclosed, never silent
 //!
 //! A workspace may already contain something called `cycle`. Adopting it would
-//! be wrong — a schema sharing a name need not share a shape, and the recipe's
+//! be wrong — a schema sharing a name need not share a shape, and the playbook's
 //! Plays would then target a type that does not have the fields they read.
 //! Overwriting it would be worse. So a taken id is re-keyed to the first free
 //! deterministic suffix (`cycle` -> `cycle__2`) and reported, letting the
@@ -17,7 +17,7 @@
 //! internally consistent rather than half-pointing at a stranger's schema.
 
 use crate::markdown::{prepare_nodes_from_template, MarkdownError};
-use crate::methodology::{InstallReport, MethodologyRecipe, StepOutcome, StepReport};
+use crate::methodology::{InstallReport, MethodologyPlaybook, StepOutcome, StepReport};
 use crate::models::Node;
 use crate::schema::{handle_create_schema, handle_update_schema};
 use crate::services::NodeService;
@@ -31,26 +31,26 @@ use std::sync::Arc;
 /// seventeenth would compound it.
 const MAX_SUFFIX_ATTEMPTS: u32 = 16;
 
-/// Install `recipe` into the graph.
+/// Install `playbook` into the graph.
 ///
-/// Steps run in the recipe's declared order — schemas, then vocabulary
+/// Steps run in the playbook's declared order — schemas, then vocabulary
 /// extensions, then Plays, then skills — because each tier depends on the one
 /// before it. A Play whose trigger names a type is rejected by
 /// `validate_play_rules` until that type's schema exists, so the order is
 /// enforced by the write path rather than merely conventional.
 ///
 /// Stops at the first failure. Later steps are reported as
-/// [`StepOutcome::Skipped`] rather than attempted, since a recipe missing its
+/// [`StepOutcome::Skipped`] rather than attempted, since a playbook missing its
 /// `issue` schema has nothing coherent to install on top.
-pub async fn install_recipe(
+pub async fn install_playbook(
     node_service: &Arc<NodeService>,
-    recipe: &MethodologyRecipe,
+    playbook: &MethodologyPlaybook,
 ) -> InstallReport {
     let mut steps: Vec<StepReport> = Vec::new();
     let mut renames: HashMap<String, String> = HashMap::new();
     let mut failed = false;
 
-    for step in &recipe.schemas {
+    for step in &playbook.schemas {
         if failed {
             steps.push(StepReport::skipped(format!(
                 "Create `{}` schema",
@@ -68,7 +68,7 @@ pub async fn install_recipe(
         steps.push(StepReport { label, outcome });
     }
 
-    for ext in &recipe.field_value_extensions {
+    for ext in &playbook.field_value_extensions {
         let label = format!("Extend `{}.{}` vocabulary", ext.schema_id, ext.field);
         if failed {
             steps.push(StepReport::skipped(label));
@@ -88,7 +88,7 @@ pub async fn install_recipe(
         steps.push(StepReport { label, outcome });
     }
 
-    for play in &recipe.plays {
+    for play in &playbook.plays {
         let label = format!("Install Play: {}", play.name);
         if failed {
             steps.push(StepReport::skipped(label));
@@ -108,7 +108,7 @@ pub async fn install_recipe(
         steps.push(StepReport { label, outcome });
     }
 
-    for template in &recipe.skills {
+    for template in &playbook.skills {
         let label = format!("Seed skill: {}", template.title);
         if failed {
             steps.push(StepReport::skipped(label));
@@ -148,7 +148,7 @@ pub async fn install_recipe(
     }
 
     InstallReport {
-        recipe_id: recipe.id.to_string(),
+        playbook_id: playbook.id.to_string(),
         success: !failed,
         steps,
     }
@@ -166,8 +166,8 @@ async fn create_schema_resolving_collisions(
 ) -> StepOutcome {
     // Schema params carry ids too — `extends` names a parent, a relationship's
     // `targetType` names a target — so an earlier re-key has to reach them.
-    // The shipped recipe cannot hit this (both point at core `task`, which is
-    // never suffixed), but a recipe whose second schema extends its first
+    // The shipped playbook cannot hit this (both point at core `task`, which is
+    // never suffixed), but a playbook whose second schema extends its first
     // would otherwise silently extend the stranger's schema.
     let params = rewrite_schema_step_ids(&step.params, renames);
 
@@ -189,7 +189,7 @@ async fn create_schema_resolving_collisions(
     // moves the schema to a free id.
     // The author's own name, never a rewritten one: `name` is display text
     // that derives the id, so substituting it would build the suffix ladder on
-    // a string the recipe never wrote.
+    // a string the playbook never wrote.
     let base_name = step.params["name"].as_str().unwrap_or(step.schema_id);
     for n in 2..=MAX_SUFFIX_ATTEMPTS {
         let mut params = params.clone();
@@ -362,7 +362,7 @@ fn rewrite_relationship_targets(
 /// and its `values[].value`, `add_fields[].name`, `remove_fields`,
 /// `rename_fields`, and both template strings are vocabulary. Rewriting them
 /// retargets an extension at a field that does not exist (loud, since
-/// `add_field_values` checks the name) or writes an enum value the recipe
+/// `add_field_values` checks the name) or writes an enum value the playbook
 /// never authored (silent).
 fn rewrite_update_schema_step_ids(
     params: &serde_json::Value,
@@ -389,10 +389,10 @@ fn rewrite_update_schema_step_ids(
 /// Follow a re-key through a play node's properties — every rule's trigger
 /// `node_type`, and each action's `node_type` / `target_type` params.
 ///
-/// A blanket walk over these happens to be safe for the shipped recipe, but
+/// A blanket walk over these happens to be safe for the shipped playbook, but
 /// only by luck: a rule `name` is free-form vocabulary, a CEL condition is a
 /// string, and either could spell a schema id. Twice in this PR a payload was
-/// judged safe by inspecting the recipe rather than the shape, and twice that
+/// judged safe by inspecting the playbook rather than the shape, and twice that
 /// was wrong — so all three payload kinds are key-targeted, and none depends
 /// on what the current content happens to contain.
 fn rewrite_play_step_ids(
@@ -505,7 +505,7 @@ fn rewrite_action_ids(rule: &mut serde_json::Value, renames: &HashMap<String, St
 /// only** — `extends` and each relationship's `targetType`.
 ///
 /// Key-targeted rather than a blanket value walk over the payload, which is
-/// what an earlier version of this did. No recipe payload turned out to
+/// what an earlier version of this did. No playbook payload turned out to
 /// tolerate a blanket walk: each carries user-authored vocabulary in value
 /// position alongside its ids. Here that is `fields[].name`,
 /// `friendlyName`, a relationship's `name` and `reverseName`, enum values,
@@ -515,7 +515,7 @@ fn rewrite_action_ids(rule: &mut serde_json::Value, renames: &HashMap<String, St
 ///
 /// A blanket walk therefore renames the author's fields behind their back. It
 /// fails loudly when a `title_template` references the renamed field, and
-/// silently otherwise — storing a field under a name the recipe never wrote,
+/// silently otherwise — storing a field under a name the playbook never wrote,
 /// which is the corruption re-keying exists to prevent.
 ///
 /// The id-bearing keys were enumerated from `CreateSchemaParams`' six fields:
@@ -650,7 +650,7 @@ mod tests {
         assert_eq!(
             out["add_field_values"][0]["values"][0]["value"], "cycle",
             "an enum value is vocabulary — rewriting it writes a value the \
-             recipe never authored"
+             playbook never authored"
         );
         assert_eq!(
             out["add_relationships"][0]["name"], "cycle",

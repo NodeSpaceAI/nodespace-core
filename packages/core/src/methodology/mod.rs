@@ -1,6 +1,6 @@
-//! Methodology recipes — installable, first-party work-tracking setups.
+//! Methodology playbooks — installable, first-party work-tracking setups.
 //!
-//! A recipe composes NodeSpace's existing authoring primitives (schema
+//! A playbook composes NodeSpace's existing authoring primitives (schema
 //! creation, enum-vocabulary extension, Play installation, skill seeding)
 //! into a setup a user recognizes on day one — "Linear-style", and later
 //! others. It adds no platform capability: every step is a call a user or an
@@ -8,10 +8,10 @@
 //!
 //! # First-party content, installed on demand
 //!
-//! Recipes sit in the same tier as [`crate::models::core_schemas::get_core_schemas`]
+//! Playbooks sit in the same tier as [`crate::models::core_schemas::get_core_schemas`]
 //! and `seed_skill_nodes` — typed Rust shipped with the product. They differ
 //! in *when* they install. Core schemas and seeded skills are written to every
-//! database at daemon startup; a recipe is written only when a user picks one,
+//! database at daemon startup; a playbook is written only when a user picks one,
 //! because a workspace has at most one methodology and the choice is theirs.
 //! Nothing here is reachable from `seed_agent_nodes`.
 //!
@@ -21,19 +21,19 @@
 //! [`crate::schema::handle_update_schema`] in-process, so `extends` cycle
 //! detection, `mapsTo` resolution against the inherited field, reverse-name
 //! validation and relationship-declaration persistence all apply unchanged. A
-//! recipe cannot install a schema a hand-authored call could not.
+//! playbook cannot install a schema a hand-authored call could not.
 
 pub mod install;
 pub mod linear;
 
-pub use install::install_recipe;
+pub use install::install_playbook;
 
 use crate::markdown::NodeTemplate;
 use serde::{Deserialize, Serialize};
 
-/// A methodology recipe: the content to install, plus the identity the GUI
+/// A methodology playbook: the content to install, plus the identity the GUI
 /// picker and the generated reference doc both present it under.
-pub struct MethodologyRecipe {
+pub struct MethodologyPlaybook {
     /// Stable machine id (`linear`) — the GUI picker's key and the generated
     /// reference doc's filename stem.
     pub id: &'static str,
@@ -43,7 +43,7 @@ pub struct MethodologyRecipe {
     pub description: &'static str,
     /// Schemas to create, in order. A schema must precede anything that
     /// targets it: `validate_play_rules` rejects a rule whose trigger names
-    /// a type with no schema, so a mis-ordered recipe fails at install time
+    /// a type with no schema, so a mis-ordered playbook fails at install time
     /// rather than silently half-installing.
     pub schemas: Vec<SchemaStep>,
     /// Vocabulary extensions applied after the schemas exist.
@@ -114,7 +114,7 @@ impl PlayStep {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", tag = "kind")]
 pub enum StepOutcome {
-    /// Created under the id the recipe asked for.
+    /// Created under the id the playbook asked for.
     Created { id: String },
     /// The requested id was taken; created under a suffixed id instead.
     Suffixed { requested: String, created: String },
@@ -132,18 +132,18 @@ pub struct StepReport {
     pub outcome: StepOutcome,
 }
 
-/// The result of installing a recipe: one outcome per step, in execution order.
+/// The result of installing a playbook: one outcome per step, in execution order.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InstallReport {
-    pub recipe_id: String,
+    pub playbook_id: String,
     pub steps: Vec<StepReport>,
     /// Whether every step completed (`Created` or `Suffixed`).
     pub success: bool,
 }
 
 impl InstallReport {
-    /// Ids re-keyed because the recipe's preferred id was taken — the
+    /// Ids re-keyed because the playbook's preferred id was taken — the
     /// disclosure the GUI surfaces without blocking on a confirmation.
     pub fn suffixed(&self) -> Vec<(&str, &str)> {
         self.steps
@@ -166,17 +166,17 @@ impl InstallReport {
     }
 }
 
-/// Every recipe this build ships.
+/// Every playbook this build ships.
 ///
 /// The GUI picker and the reference-doc generator both iterate this, so a
-/// recipe added here is offered and documented with no further wiring.
-pub fn all_recipes() -> Vec<MethodologyRecipe> {
-    vec![linear::recipe()]
+/// playbook added here is offered and documented with no further wiring.
+pub fn all_playbooks() -> Vec<MethodologyPlaybook> {
+    vec![linear::playbook()]
 }
 
-/// Look up a recipe by its [`MethodologyRecipe::id`].
-pub fn recipe_by_id(id: &str) -> Option<MethodologyRecipe> {
-    all_recipes().into_iter().find(|r| r.id == id)
+/// Look up a playbook by its [`MethodologyPlaybook::id`].
+pub fn playbook_by_id(id: &str) -> Option<MethodologyPlaybook> {
+    all_playbooks().into_iter().find(|r| r.id == id)
 }
 
 #[cfg(test)]
@@ -184,19 +184,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn every_recipe_has_a_unique_id() {
-        let recipes = all_recipes();
-        let mut ids: Vec<&str> = recipes.iter().map(|r| r.id).collect();
+    fn every_playbook_has_a_unique_id() {
+        let playbooks = all_playbooks();
+        let mut ids: Vec<&str> = playbooks.iter().map(|r| r.id).collect();
         ids.sort_unstable();
         let before = ids.len();
         ids.dedup();
-        assert_eq!(before, ids.len(), "recipe ids must be unique");
+        assert_eq!(before, ids.len(), "playbook ids must be unique");
     }
 
     #[test]
-    fn recipe_by_id_finds_a_shipped_recipe() {
-        assert!(recipe_by_id("linear").is_some());
-        assert!(recipe_by_id("nonexistent").is_none());
+    fn playbook_by_id_finds_a_shipped_playbook() {
+        assert!(playbook_by_id("linear").is_some());
+        assert!(playbook_by_id("nonexistent").is_none());
     }
 
     /// A seeded play carries its rules twice: live, and as the shipped
@@ -204,8 +204,8 @@ mod tests {
     /// the play loses both reset and the edit/disable warning.
     #[test]
     fn play_properties_carry_a_seed_marker_and_matching_default_rules() {
-        for recipe in all_recipes() {
-            for play in &recipe.plays {
+        for playbook in all_playbooks() {
+            for play in &playbook.plays {
                 let props = play.properties();
                 let seed = props
                     .get("_seed")
