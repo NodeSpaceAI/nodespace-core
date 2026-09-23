@@ -3237,6 +3237,140 @@ mod tests {
         );
     }
 
+    /// Which descendants count as ADR-059 §7 access boundaries, shape by
+    /// shape. Every shape asserts both `access_boundaries_under` (what
+    /// aggregation excludes) and `embedding_root_id` (where a node's embedding
+    /// lives), so the two cannot drift apart.
+    #[tokio::test]
+    async fn access_boundary_shapes_agree_across_exclusion_and_rerooting_adr059() {
+        use crate::services::{CreateNodeParams, InsertPositionOwned};
+        use std::collections::HashSet;
+
+        let (svc, _tmp) = create_test_service().await;
+        let mut seq = 0u32;
+        let mut next_id = || {
+            seq += 1;
+            format!("33333333-3333-3333-3333-{:012}", seq)
+        };
+        let svc = &svc;
+        let create = |id: String, node_type: &'static str, parent: Option<String>, props| async move {
+            svc.create_node_with_parent(CreateNodeParams {
+                id: Some(id.clone()),
+                node_type: node_type.into(),
+                content: format!("{node_type} {id}"),
+                parent_id: parent,
+                position: InsertPositionOwned::End,
+                properties: props,
+                lifecycle_status: None,
+            })
+            .await
+            .unwrap();
+            id
+        };
+        // Written directly: most of these edges are ones `assert_may_gain_parent` refuses.
+        let file = |member: String, collection: String| async move {
+            svc.store()
+                .write()
+                .await
+                .execute(
+                    "INSERT INTO relationship (id, in_node, out_node, relationship_type, properties, version, created_at, modified_at) \
+                     VALUES (?1, ?2, ?3, 'member_of', '{}', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+                    libsql::params![uuid::Uuid::new_v4().to_string(), member, collection],
+                )
+                .await
+                .unwrap();
+        };
+        let restricted = || json!({ "collection": { "restrictedToMembers": true } });
+
+        let c1 = create(next_id(), "collection", None, restricted()).await;
+        let c2 = create(next_id(), "collection", None, restricted()).await;
+        let open = create(next_id(), "collection", None, json!({})).await;
+        // An open collection nested (via member_of) inside a restricted one.
+        let open_in_c1 = create(next_id(), "collection", None, json!({})).await;
+        file(open_in_c1.clone(), c1.clone()).await;
+
+        let boundaries =
+            |root: String| async move { svc.store().access_boundaries_under(&root).await.unwrap() };
+        let root_of = |id: String| async move { svc.get_embedding_root_id(&id).await.unwrap() };
+        let set = |ids: &[&String]| ids.iter().map(|s| (*s).clone()).collect::<HashSet<_>>();
+
+        // (a) A boundary nested inside a boundary: each is its own root, and
+        // each is excluded only from the root directly above it.
+        let r = create(next_id(), "text", None, json!({})).await;
+        let b1 = create(next_id(), "text", Some(r.clone()), json!({})).await;
+        let b2 = create(next_id(), "text", Some(b1.clone()), json!({})).await;
+        let leaf = create(next_id(), "text", Some(b2.clone()), json!({})).await;
+        file(b1.clone(), c1.clone()).await;
+        file(b2.clone(), c2.clone()).await;
+        assert_eq!(boundaries(r.clone()).await, set(&[&b1]), "(a) root");
+        assert_eq!(
+            boundaries(b1.clone()).await,
+            set(&[&b2]),
+            "(a) outer boundary"
+        );
+        assert_eq!(root_of(b1.clone()).await, b1, "(a)");
+        assert_eq!(root_of(b2.clone()).await, b2, "(a)");
+        assert_eq!(root_of(leaf).await, b2, "(a)");
+
+        // (b) A restricted root: a descendant filed into the SAME collection
+        // has the same access; one filed into a different collection does not.
+        let r = create(next_id(), "text", None, json!({})).await;
+        svc.store()
+            .add_to_collection(&r, &c1, &json!({}))
+            .await
+            .expect("a root may be filed");
+        let same = create(next_id(), "text", Some(r.clone()), json!({})).await;
+        let other = create(next_id(), "text", Some(r.clone()), json!({})).await;
+        file(same.clone(), c1.clone()).await;
+        file(other.clone(), c2.clone()).await;
+        assert_eq!(boundaries(r.clone()).await, set(&[&other]), "(b)");
+        assert_eq!(root_of(same).await, r, "(b) same collection");
+        assert_eq!(root_of(other.clone()).await, other, "(b) other collection");
+
+        // (b') Ties: a root in {c1, c2} and a descendant in {c1} alone differ,
+        // since the root admits c2's members too (ADR-059 §3).
+        let r = create(next_id(), "text", None, json!({})).await;
+        file(r.clone(), c1.clone()).await;
+        file(r.clone(), c2.clone()).await;
+        let narrower = create(next_id(), "text", Some(r.clone()), json!({})).await;
+        file(narrower.clone(), c1.clone()).await;
+        assert_eq!(boundaries(r.clone()).await, set(&[&narrower]), "(b')");
+        assert_eq!(root_of(narrower.clone()).await, narrower, "(b')");
+
+        // (c) A restricted collection inside the subtree gates what is under it.
+        let r = create(next_id(), "text", None, json!({})).await;
+        let inner = create(next_id(), "collection", Some(r.clone()), restricted()).await;
+        let under = create(next_id(), "text", Some(inner.clone()), json!({})).await;
+        assert_eq!(boundaries(r.clone()).await, set(&[&inner]), "(c)");
+        assert_eq!(root_of(under).await, inner, "(c)");
+
+        // (d) A person's membership is an RBAC grant, not classification.
+        let r = create(next_id(), "text", None, json!({})).await;
+        let person = create(next_id(), "person", Some(r.clone()), json!({})).await;
+        file(person.clone(), c1.clone()).await;
+        assert!(boundaries(r.clone()).await.is_empty(), "(d)");
+        assert_eq!(root_of(person).await, r, "(d)");
+
+        // (e) Filed into an open collection that is itself inside a restricted
+        // one: restricted two steps up, so a boundary.
+        let r = create(next_id(), "text", None, json!({})).await;
+        let deep = create(next_id(), "text", Some(r.clone()), json!({})).await;
+        file(deep.clone(), open_in_c1.clone()).await;
+        assert_eq!(boundaries(r.clone()).await, set(&[&deep]), "(e)");
+        assert_eq!(root_of(deep.clone()).await, deep, "(e)");
+
+        // (f) A same-access candidate (filed into an open collection) is not a
+        // boundary, but one below it still is.
+        let r = create(next_id(), "text", None, json!({})).await;
+        let mid = create(next_id(), "text", Some(r.clone()), json!({})).await;
+        let below = create(next_id(), "text", Some(mid.clone()), json!({})).await;
+        file(mid.clone(), open.clone()).await;
+        file(below.clone(), c1.clone()).await;
+        assert_eq!(boundaries(r.clone()).await, set(&[&below]), "(f)");
+        assert_eq!(root_of(mid).await, r, "(f)");
+        assert_eq!(root_of(below.clone()).await, below, "(f)");
+    }
+
     /// A schema added to `get_core_schemas()` after a database's first run
     /// must still reach that database on the next start — the same
     /// per-node-not-per-type reconciliation guarantee `06a94eee` established

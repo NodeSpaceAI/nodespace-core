@@ -358,6 +358,8 @@ fn is_empty_or_whitespace(content: &str) -> bool {
     })
 }
 
+const MAX_AGGREGATION_DEPTH: usize = 20;
+
 /// Recursively collect content from a node's children for embedding aggregation.
 ///
 /// Performs a breadth-first traversal via `NodeAccessor::get_children()`, collecting
@@ -370,8 +372,6 @@ fn is_empty_or_whitespace(content: &str) -> bool {
 /// be read, nothing is aggregated rather than risking a leak.
 ///
 /// Used by text and header behaviors for `get_aggregated_content()`.
-const MAX_AGGREGATION_DEPTH: usize = 20;
-
 async fn aggregate_children_content(
     node: &Node,
     accessor: &dyn NodeAccessor,

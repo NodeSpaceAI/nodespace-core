@@ -459,7 +459,7 @@ impl NodeEmbeddingService {
         let boundaries = match self.store.access_boundaries_under(root_id).await {
             Ok(b) => b,
             Err(e) => {
-                tracing::warn!("Failed to read access boundaries under {}: {}", root_id, e);
+                tracing::warn!(root_id = %root_id, error = %e, "failed to read access boundaries");
                 return;
             }
         };
@@ -468,11 +468,11 @@ impl NodeEmbeddingService {
                 Ok(true) => {}
                 Ok(false) => {
                     if let Err(e) = self.queue_for_embedding(&boundary).await {
-                        tracing::warn!("Failed to queue access boundary {}: {}", boundary, e);
+                        tracing::warn!(descendant_id = %boundary, error = %e, "failed to queue access boundary");
                     }
                 }
                 Err(e) => {
-                    tracing::warn!("Failed to check embeddings for {}: {}", boundary, e);
+                    tracing::warn!(descendant_id = %boundary, error = %e, "failed to check embeddings");
                 }
             }
         }
