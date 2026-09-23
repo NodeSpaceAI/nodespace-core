@@ -2889,9 +2889,9 @@ mod tests {
         /// unconditionally prefer "is it a member of the whole merged field
         /// set" over "is it a member of the whole merged relationship set".
         ///
-        /// `vp_prec_target` declares field `label`; `vp_prec_base` declares
-        /// FIELD `owner`; `vp_prec_sub` `extends` `vp_prec_base` and
-        /// declares its OWN RELATIONSHIP also named `owner`, targeting
+        /// `vp_prec_target` declares field `label`; `vp_prec_base` ends up
+        /// declaring FIELD `owner`; `vp_prec_sub` `extends` `vp_prec_base`
+        /// and declares its OWN RELATIONSHIP also named `owner`, targeting
         /// `vp_prec_target` — a name that is a field on an ancestor and a
         /// relationship on the (nearer) subtype itself. A Play condition
         /// `node.owner.label == 'active'` on `vp_prec_sub` must resolve
@@ -2900,6 +2900,22 @@ mod tests {
         /// farther, inherited field declaration — which would wrongly
         /// terminate the path at `owner` and reject `label` as
         /// unreachable/broken.
+        ///
+        /// The collision can no longer be declared directly in one shot:
+        /// ADR-078 write-time enforcement now rejects a new field or
+        /// relationship whose name is already claimed by the ancestor
+        /// chain's *other* domain (the cross-domain counterpart to same-kind
+        /// redeclaration rejection), so `vp_prec_sub` cannot declare
+        /// relationship `owner` while `vp_prec_base` already has field
+        /// `owner`, or vice versa. The one channel ADR-078 leaves genuinely
+        /// open is retroactive: nothing re-validates an existing
+        /// descendant's declarations when an ancestor gains a new one later
+        /// (see `flatten_chain_by_name`'s doc comment on this being the
+        /// explicitly unresolved edge case), so the collision here is
+        /// produced by adding `vp_prec_base`'s `owner` field AFTER
+        /// `vp_prec_sub` already declares its own `owner` relationship —
+        /// still a real, reachable state, just no longer one a single
+        /// declaration can create.
         #[tokio::test]
         async fn test_own_relationship_shadows_inherited_field_of_same_name() {
             let (svc, _tmp) = create_test_service().await;
@@ -2918,12 +2934,7 @@ mod tests {
 
             crate::schema::handle_create_schema(
                 &svc,
-                json!({
-                    "name": "vp_prec_base",
-                    "fields": [
-                        { "name": "owner", "type": "string", "protection": "user", "indexed": false }
-                    ]
-                }),
+                json!({ "name": "vp_prec_base", "fields": [] }),
             )
             .await
             .expect("base schema creation failed");
@@ -2946,6 +2957,25 @@ mod tests {
             )
             .await
             .expect("subtype schema creation failed");
+
+            // Retroactively add the colliding FIELD to the ancestor —
+            // nothing re-validates `vp_prec_sub`'s already-declared
+            // relationship against it, so this succeeds and produces the
+            // cross-domain collision this test exercises.
+            crate::schema::handle_update_schema(
+                &svc,
+                json!({
+                    "schema_id": "vp_prec_base",
+                    "add_fields": [
+                        { "name": "owner", "type": "string", "protection": "user", "indexed": false }
+                    ]
+                }),
+            )
+            .await
+            .expect(
+                "retroactively adding a field to the ancestor that collides with an existing \
+                 descendant's relationship is not write-time checked and must succeed",
+            );
 
             let rules = vec![make_rule(
                 "vp_prec_sub",
