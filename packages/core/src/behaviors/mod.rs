@@ -364,6 +364,11 @@ fn is_empty_or_whitespace(content: &str) -> bool {
 /// each child's `get_parent_contribution()` output. Limits depth to prevent
 /// runaway traversal on deeply nested trees.
 ///
+/// Never spans an access boundary (ADR-059 §7). A descendant whose access
+/// differs from `node`'s is a defect: it is logged, and it and its subtree are
+/// left out. It is embedded as its own root instead. If the boundaries cannot
+/// be read, nothing is aggregated rather than risking a leak.
+///
 /// Used by text and header behaviors for `get_aggregated_content()`.
 const MAX_AGGREGATION_DEPTH: usize = 20;
 
@@ -372,6 +377,17 @@ async fn aggregate_children_content(
     accessor: &dyn NodeAccessor,
     registry: &NodeBehaviorRegistry,
 ) -> Option<String> {
+    let boundaries = match accessor.access_boundaries_under(&node.id).await {
+        Ok(b) => b,
+        Err(e) => {
+            tracing::error!(
+                root_id = %node.id,
+                error = %e,
+                "failed to read access boundaries; aggregating no descendants"
+            );
+            return None;
+        }
+    };
     let mut parts = Vec::new();
     let mut stack: Vec<(String, usize)> = vec![(node.id.clone(), 0)];
 
@@ -387,6 +403,15 @@ async fn aggregate_children_content(
             }
         };
         for child in children {
+            if boundaries.contains(&child.id) {
+                tracing::error!(
+                    root_id = %node.id,
+                    descendant_id = %child.id,
+                    "ADR-059 §7 defect: descendant's access differs from its embedding root's; \
+                     excluded from the root's embedding and embedded as its own root"
+                );
+                continue;
+            }
             // Use behavior to get the contribution this child makes to its parent's embedding
             let behavior: Arc<dyn NodeBehavior> = registry
                 .get(&child.node_type)

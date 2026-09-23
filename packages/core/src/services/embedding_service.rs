@@ -3,8 +3,10 @@
 //! ## Overview
 //!
 //! This service implements root-aggregate embedding for semantic search:
-//! - Only ROOT nodes (no parent edge) of embeddable types get embedded
-//! - Embeddings represent the semantic content of the entire subtree
+//! - Only ROOT nodes (no parent edge) of embeddable types get embedded, plus
+//!   any descendant re-rooted at an access boundary (ADR-059 §7)
+//! - Embeddings represent the semantic content of the entire subtree, never
+//!   across an access boundary
 //! - Uses the dedicated `embedding` table (not node.embedding_vector)
 //! - Supports chunking for content > 512 tokens
 //!
@@ -53,9 +55,6 @@ pub use nodespace_nlp_engine::EMBEDDING_DIMENSION;
 /// Default batch size for processing stale embeddings
 pub const DEFAULT_BATCH_SIZE: usize = 50;
 
-/// Maximum depth for parent chain traversal (safety limit to prevent infinite loops)
-pub const MAX_PARENT_CHAIN_DEPTH: usize = 100;
-
 /// Title keyword boost added to composite score when any query term matches the node title
 ///
 /// Applied as an additive bonus: `composite_score + TITLE_BOOST` when a match is found.
@@ -70,7 +69,8 @@ pub const TITLE_BOOST: f64 = 0.1;
 /// Root-aggregate embedding service (behavior-driven)
 ///
 /// Manages semantic embeddings using the root-aggregate model where only
-/// root nodes get embedded. Whether a node is embeddable is decided by its
+/// embedding roots get embedded: tree roots, plus a descendant re-rooted at
+/// an access boundary (ADR-059 §7). Whether a node is embeddable is decided by its
 /// `NodeBehavior::get_embeddable_content()` — no hardcoded type list.
 ///
 /// Content extraction uses a two-phase approach:
@@ -169,31 +169,13 @@ impl NodeEmbeddingService {
         Ok(parent.is_none())
     }
 
-    /// Find the root node ID for any node in a tree
-    ///
-    /// Traverses up the parent chain until finding a node with no parent.
-    pub async fn find_root_id(&self, node_id: &str) -> Result<String, NodeServiceError> {
-        let mut current_id = node_id.to_string();
-
-        for _ in 0..MAX_PARENT_CHAIN_DEPTH {
-            let parent = self.store.get_parent(&current_id).await.map_err(|e| {
-                NodeServiceError::query_failed(format!("Failed to get parent: {}", e))
-            })?;
-
-            match parent {
-                Some(parent_node) => {
-                    current_id = parent_node.id;
-                }
-                None => {
-                    return Ok(current_id);
-                }
-            }
-        }
-
-        Err(NodeServiceError::query_failed(format!(
-            "Max parent chain depth ({}) exceeded",
-            MAX_PARENT_CHAIN_DEPTH
-        )))
+    /// Find the embedding root of any node: its tree root, or the nearest
+    /// access-boundary descendant above it (ADR-059 §7). See
+    /// [`SqliteStore::embedding_root_id`].
+    pub async fn find_embedding_root_id(&self, node_id: &str) -> Result<String, NodeServiceError> {
+        self.store.embedding_root_id(node_id).await.map_err(|e| {
+            NodeServiceError::query_failed(format!("Failed to find embedding root: {}", e))
+        })
     }
 
     // =========================================================================
@@ -387,6 +369,8 @@ impl NodeEmbeddingService {
             .await?
             .ok_or_else(|| NodeServiceError::node_not_found(root_id))?;
 
+        self.queue_access_boundaries(root_id).await;
+
         // Behavior-driven content extraction (replaces should_embed_root + aggregate_subtree_content)
         let content = match self.extract_content_for_embedding(&root).await? {
             Some(c) => c,
@@ -465,6 +449,33 @@ impl NodeEmbeddingService {
         );
 
         Ok(())
+    }
+
+    /// Queue each access-boundary descendant of `root_id` (ADR-059 §7) that
+    /// has no embedding yet. Aggregation leaves them out of the root's vector,
+    /// and nothing else queues them: the edge that made them a boundary edited
+    /// no content. Best-effort, like every other queueing path.
+    async fn queue_access_boundaries(&self, root_id: &str) {
+        let boundaries = match self.store.access_boundaries_under(root_id).await {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::warn!("Failed to read access boundaries under {}: {}", root_id, e);
+                return;
+            }
+        };
+        for boundary in boundaries {
+            match self.store.has_embeddings(&boundary).await {
+                Ok(true) => {}
+                Ok(false) => {
+                    if let Err(e) = self.queue_for_embedding(&boundary).await {
+                        tracing::warn!("Failed to queue access boundary {}: {}", boundary, e);
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to check embeddings for {}: {}", boundary, e);
+                }
+            }
+        }
     }
 
     /// Process all stale embeddings
@@ -554,11 +565,11 @@ impl NodeEmbeddingService {
     /// Queue a node for embedding
     ///
     /// If the node is a root of an embeddable type, marks its embedding as stale.
-    /// If the node is a child, finds its root and marks that as stale.
+    /// If the node is a child, finds its embedding root and marks that as stale.
     /// Embeddability is determined by `NodeBehavior::get_embeddable_content()`.
     pub async fn queue_for_embedding(&self, node_id: &str) -> Result<(), NodeServiceError> {
-        // Find the root of this node's tree
-        let root_id = self.find_root_id(node_id).await?;
+        // Find this node's embedding root
+        let root_id = self.find_embedding_root_id(node_id).await?;
 
         // Get the root node to check its type via behavior
         let root = match self.node_accessor.get_node(&root_id).await? {
@@ -623,7 +634,7 @@ impl NodeEmbeddingService {
 
         // Find unique roots
         for node_id in node_ids {
-            match self.find_root_id(node_id).await {
+            match self.find_embedding_root_id(node_id).await {
                 Ok(root_id) => {
                     roots_to_queue.insert(root_id);
                 }
@@ -1313,6 +1324,13 @@ mod tests {
                 .iter()
                 .filter_map(|id| self.nodes.get(*id).cloned())
                 .collect())
+        }
+
+        async fn access_boundaries_under(
+            &self,
+            _root_id: &str,
+        ) -> Result<HashSet<String>, crate::services::error::NodeServiceError> {
+            Ok(HashSet::new())
         }
     }
 

@@ -165,10 +165,10 @@ impl NodeService {
             return Ok(Vec::new());
         };
 
-        // Find the root ID once - all nodes in a bulk import share the same root
+        // Find the embedding root once - all nodes in a bulk import share the same root
         // Performance optimization: Single DB query instead of N queries
         let root_id = if let Some((_, _, _, Some(first_parent), _, _)) = nodes_normalized.first() {
-            self.get_root_id(first_parent).await.ok()
+            self.get_embedding_root_id(first_parent).await.ok()
         } else {
             None
         };
@@ -424,9 +424,9 @@ impl NodeService {
             }
         }
 
-        // Find the root ID once
+        // Find the embedding root once
         let root_id = if let Some((_, _, _, Some(first_parent), _, _)) = nodes_normalized.first() {
-            self.get_root_id(first_parent).await.ok()
+            self.get_embedding_root_id(first_parent).await.ok()
         } else {
             None
         };

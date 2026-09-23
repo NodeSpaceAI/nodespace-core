@@ -2767,6 +2767,16 @@ impl NodeAccessor for NodeService {
             .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
         Ok(node_map.into_values().collect())
     }
+
+    async fn access_boundaries_under(
+        &self,
+        root_id: &str,
+    ) -> Result<std::collections::HashSet<String>, NodeServiceError> {
+        self.store
+            .access_boundaries_under(root_id)
+            .await
+            .map_err(|e| NodeServiceError::query_failed(e.to_string()))
+    }
 }
 
 #[cfg(test)]
@@ -3054,6 +3064,176 @@ mod tests {
         assert!(
             err.is_err(),
             "ADR-059 §2: a has_child descendant must be rejected from direct collection membership (member_of is root-only)"
+        );
+    }
+
+    /// ADR-059 §7's defect path: when root-only membership is bypassed and a
+    /// descendant lands behind an access boundary its root does not cross,
+    /// aggregation excludes it and its subtree, logs the violation, and the
+    /// descendant becomes its own embedding root, keeping its embedding.
+    #[tokio::test]
+    async fn access_boundary_descendant_is_excluded_and_rerooted_adr059() {
+        use crate::behaviors::{NodeBehavior, TextNodeBehavior};
+        use crate::services::{CreateNodeParams, InsertPositionOwned};
+        use std::io::Write;
+        use std::sync::Mutex;
+
+        #[derive(Clone, Default)]
+        struct Capture(Arc<Mutex<Vec<u8>>>);
+        impl Write for Capture {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        const RESTRICTED: &str = "22222222-2222-2222-2222-2222222222c1";
+        const OPEN_COLL: &str = "22222222-2222-2222-2222-2222222222c2";
+        const ROOT: &str = "22222222-2222-2222-2222-2222222222a1";
+        const DESC: &str = "22222222-2222-2222-2222-2222222222a2";
+        const GRANDCHILD: &str = "22222222-2222-2222-2222-2222222222a3";
+        const SIBLING: &str = "22222222-2222-2222-2222-2222222222a4";
+        const FILED_OPEN: &str = "22222222-2222-2222-2222-2222222222a5";
+
+        let (svc, _tmp) = create_test_service().await;
+        let create = |id: &str, node_type: &str, content: &str, parent: Option<&str>, props| {
+            svc.create_node_with_parent(CreateNodeParams {
+                id: Some(id.into()),
+                node_type: node_type.into(),
+                content: content.into(),
+                parent_id: parent.map(Into::into),
+                position: InsertPositionOwned::End,
+                properties: props,
+                lifecycle_status: None,
+            })
+        };
+        create(
+            RESTRICTED,
+            "collection",
+            "Restricted",
+            None,
+            json!({ "collection": { "restrictedToMembers": true } }),
+        )
+        .await
+        .unwrap();
+        create(OPEN_COLL, "collection", "Open", None, json!({}))
+            .await
+            .unwrap();
+        create(ROOT, "text", "OPEN_ROOT_TEXT", None, json!({}))
+            .await
+            .unwrap();
+        create(DESC, "text", "RESTRICTED_DESC_TEXT", Some(ROOT), json!({}))
+            .await
+            .unwrap();
+        create(
+            GRANDCHILD,
+            "text",
+            "RESTRICTED_GRANDCHILD_TEXT",
+            Some(DESC),
+            json!({}),
+        )
+        .await
+        .unwrap();
+        create(SIBLING, "text", "OPEN_SIBLING_TEXT", Some(ROOT), json!({}))
+            .await
+            .unwrap();
+        create(FILED_OPEN, "text", "FILED_OPEN_TEXT", Some(ROOT), json!({}))
+            .await
+            .unwrap();
+
+        // The violating shape: `member_of` edges on has_child descendants,
+        // written directly so `assert_may_gain_parent` never sees them.
+        for (member, collection) in [(DESC, RESTRICTED), (FILED_OPEN, OPEN_COLL)] {
+            svc.store()
+                .write()
+                .await
+                .execute(
+                    "INSERT INTO relationship (id, in_node, out_node, relationship_type, properties, version, created_at, modified_at) \
+                     VALUES (?1, ?2, ?3, 'member_of', '{}', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+                    libsql::params![uuid::Uuid::new_v4().to_string(), member, collection],
+                )
+                .await
+                .unwrap();
+        }
+
+        let root = svc.get_node(ROOT).await.unwrap().unwrap();
+        let logs = Capture::default();
+        let aggregated = {
+            let sink = logs.clone();
+            let subscriber = tracing_subscriber::fmt()
+                .with_writer(move || sink.clone())
+                .with_ansi(false)
+                .finish();
+            let _guard = tracing::subscriber::set_default(subscriber);
+            TextNodeBehavior
+                .get_aggregated_content(&root, &svc)
+                .await
+                .unwrap_or_default()
+        };
+
+        // The boundary descendant and its subtree stay out of the root's
+        // vector; open content, including a node filed into an OPEN
+        // collection (same access), stays in.
+        assert!(aggregated.contains("OPEN_SIBLING_TEXT"), "{aggregated}");
+        assert!(aggregated.contains("FILED_OPEN_TEXT"), "{aggregated}");
+        assert!(!aggregated.contains("RESTRICTED_DESC_TEXT"), "{aggregated}");
+        assert!(
+            !aggregated.contains("RESTRICTED_GRANDCHILD_TEXT"),
+            "{aggregated}"
+        );
+
+        // The defect is surfaced at error level, naming both nodes.
+        let logs = String::from_utf8(logs.0.lock().unwrap().clone()).unwrap();
+        let defect = logs
+            .lines()
+            .find(|l| l.contains("ADR-059 §7 defect"))
+            .unwrap_or_else(|| panic!("no defect logged:\n{logs}"));
+        assert!(defect.contains("ERROR"), "{defect}");
+        assert!(defect.contains(ROOT) && defect.contains(DESC), "{defect}");
+
+        // The descendant is its own embedding root, for itself and its subtree.
+        assert_eq!(svc.get_embedding_root_id(DESC).await.unwrap(), DESC);
+        assert_eq!(svc.get_embedding_root_id(GRANDCHILD).await.unwrap(), DESC);
+        assert_eq!(svc.get_embedding_root_id(SIBLING).await.unwrap(), ROOT);
+        assert_eq!(svc.get_embedding_root_id(FILED_OPEN).await.unwrap(), ROOT);
+
+        // The rootness refresh keeps the re-rooted descendant's embedding and
+        // still drops an ordinary child's. Checked by content hash: the
+        // refresh re-queues the embedding root, and a fresh stale marker would
+        // otherwise hide a deleted embedding.
+        for id in [DESC, SIBLING] {
+            svc.store()
+                .upsert_embeddings(
+                    id,
+                    vec![crate::models::NewEmbedding::single_chunk(
+                        id,
+                        vec![0.5; 768],
+                        "kept-hash",
+                        1,
+                        1,
+                    )],
+                )
+                .await
+                .unwrap();
+            svc.refresh_for_rootness(id, false).await;
+        }
+        let kept = |id: &'static str| {
+            let svc = &svc;
+            async move {
+                svc.get_embeddings(id)
+                    .await
+                    .unwrap()
+                    .iter()
+                    .any(|e| e.content_hash.as_deref() == Some("kept-hash"))
+            }
+        };
+        assert!(kept(DESC).await, "re-rooted descendant keeps its embedding");
+        assert!(
+            !kept(SIBLING).await,
+            "an ordinary child's embedding is dropped"
         );
     }
 

@@ -601,6 +601,7 @@ impl SqliteStore {
 // struct. See ADR-053 groundwork (node CRUD / relationships / embeddings / search).
 mod conflicts;
 mod connections;
+mod embedding_roots;
 mod embeddings;
 mod nodes;
 pub use nodes::{BulkNodeRow, ResolvedEntity};
