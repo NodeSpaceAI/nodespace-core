@@ -6,6 +6,7 @@ use anyhow::Result;
 use nodespace_core::db::SqliteStore;
 use nodespace_core::models::conflict::ConflictStatus;
 use nodespace_core::models::{Node, NodeUpdate};
+use nodespace_core::schema::handle_create_schema;
 use nodespace_core::services::NodeService;
 use serde_json::json;
 use std::sync::Arc;
@@ -229,6 +230,136 @@ async fn sweep_result_does_not_depend_on_which_participant_id_sorts_first() -> R
         let after = svc.conflicts_for_node(&alice_id).await?;
         assert_eq!(after[0].status, ConflictStatus::Resolved);
     }
+
+    Ok(())
+}
+
+/// Base type declares `email` as `unique`; the subtype extends the base
+/// without redeclaring the field, so its value is stored in the ancestor's
+/// bucket (`bucket_properties_by_owner`, ADR-078) rather than the subtype's
+/// own.
+async fn create_reconcile_base_and_subtype(svc: &Arc<NodeService>) -> Result<()> {
+    handle_create_schema(
+        svc,
+        json!({
+            "name": "reconcile_ext_base",
+            "fields": [{
+                "name": "email",
+                "type": "string",
+                "protection": "user",
+                "indexed": false,
+                "unique": true
+            }]
+        }),
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("base schema: {e}"))?;
+
+    handle_create_schema(
+        svc,
+        json!({
+            "name": "reconcile_ext_sub",
+            "extends": "reconcile_ext_base",
+            "fields": []
+        }),
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("subtype schema: {e}"))?;
+    Ok(())
+}
+
+/// The bug the fix above closes for an inherited field:
+/// `unique_field_collision_still_holds` used to re-derive each participant's
+/// current value from `node.properties[node_type]`, which is empty for a
+/// field inherited from an ancestor schema (the value lives in the
+/// ancestor's bucket instead). That made the sweep find `None` for every
+/// participant of a `UniqueFieldCollision` record on an inherited field,
+/// fall through to `Ok(false)`, and auto-close a record naming a collision
+/// that was still fully valid and unchanged.
+#[tokio::test]
+async fn sweep_leaves_a_still_colliding_inherited_field_record_open() -> Result<()> {
+    let (svc, _tmp) = service().await?;
+    let svc = Arc::new(svc);
+    create_reconcile_base_and_subtype(&svc).await?;
+
+    let alice_id = svc
+        .create_node(Node::new(
+            "reconcile_ext_sub".to_string(),
+            "Alice".to_string(),
+            json!({ "reconcile_ext_sub": { "email": "alice@example.com" } }),
+        ))
+        .await?;
+    let _bob_id = svc
+        .create_node(Node::new(
+            "reconcile_ext_sub".to_string(),
+            "Bob".to_string(),
+            json!({ "reconcile_ext_sub": { "email": "alice@example.com" } }),
+        ))
+        .await?;
+
+    let records = svc.conflicts_for_node(&alice_id).await?;
+    assert_eq!(
+        records.len(),
+        1,
+        "the colliding inherited-field email must have journaled a conflict"
+    );
+
+    let closed = svc.reconcile_conflicts().await?;
+    assert_eq!(
+        closed, 0,
+        "a real, unresolved collision on an inherited unique field must not \
+         be auto-closed by the sweep"
+    );
+
+    let after = svc.conflicts_for_node(&alice_id).await?;
+    assert_eq!(after[0].status, ConflictStatus::Open);
+
+    Ok(())
+}
+
+/// The no-longer-colliding counterpart: once the inherited field's value
+/// genuinely diverges, the sweep must still correctly close the record (not
+/// just correctly leave a real one open).
+#[tokio::test]
+async fn sweep_closes_an_inherited_field_collision_that_no_longer_holds() -> Result<()> {
+    let (svc, _tmp) = service().await?;
+    let svc = Arc::new(svc);
+    create_reconcile_base_and_subtype(&svc).await?;
+
+    let alice_id = svc
+        .create_node(Node::new(
+            "reconcile_ext_sub".to_string(),
+            "Alice".to_string(),
+            json!({ "reconcile_ext_sub": { "email": "alice@example.com" } }),
+        ))
+        .await?;
+    let bob_id = svc
+        .create_node(Node::new(
+            "reconcile_ext_sub".to_string(),
+            "Bob".to_string(),
+            json!({ "reconcile_ext_sub": { "email": "alice@example.com" } }),
+        ))
+        .await?;
+
+    let records = svc.conflicts_for_node(&alice_id).await?;
+    assert_eq!(records.len(), 1);
+
+    let bob = svc.get_node(&bob_id).await?.unwrap();
+    svc.update_node(
+        &bob_id,
+        bob.version,
+        NodeUpdate::new()
+            .with_properties(json!({ "reconcile_ext_sub": { "email": "bob@example.com" } })),
+    )
+    .await?;
+
+    let closed = svc.reconcile_conflicts().await?;
+    assert_eq!(closed, 1);
+
+    let after = svc.conflicts_for_node(&alice_id).await?;
+    assert_eq!(after[0].status, ConflictStatus::Resolved);
+    let resolution = after[0].resolution.as_ref().unwrap();
+    assert_eq!(resolution["reason"], "no_longer_conflicting");
 
     Ok(())
 }

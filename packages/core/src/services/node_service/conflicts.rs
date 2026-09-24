@@ -135,24 +135,43 @@ impl NodeService {
             return Ok(());
         };
 
-        let schema = self
-            .store
-            .get_schema_node(&node.node_type)
-            .await
-            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
-        let Some(schema) = schema else {
-            return Ok(());
-        };
+        // Resolved via `resolve_field_owners` rather than a direct
+        // `get_schema_node(node.node_type)` lookup: the latter returns only
+        // the type's own directly-declared fields, not the ADR-078
+        // `extends`-chain-merged set. A `unique`/`unique_case_insensitive`
+        // field declared only on an ancestor schema and inherited (not
+        // redeclared) by a subtype was therefore invisible here, so a real
+        // duplicate value on an inherited unique field never got journaled
+        // as a `UniqueFieldCollision` conflict. Same fix pattern as
+        // `workflow_state.rs`, `validation.rs`, `graph_resolver.rs`'s
+        // `is_declared_many_relationship`, and `rel_ops.rs`'s
+        // `resolve_relationship_name`/`get_node_relationships`. When
+        // `node.node_type` has no schema at all, `resolve_field_owners`
+        // returns an empty field set — same "nothing to journal" outcome
+        // the old direct lookup produced for a missing schema.
+        let (fields, owners, _chain) = self.resolve_field_owners(&node.node_type).await?;
 
-        let unique_fields = schema
-            .fields
+        let unique_fields = fields
             .iter()
             .filter(|f| f.unique.unwrap_or(false) || f.unique_case_insensitive.unwrap_or(false));
 
         for field in unique_fields {
+            // An inherited field's value is stored under its *owning*
+            // ancestor schema's bucket (`bucket_properties_by_owner`, ADR-078),
+            // not under `node.node_type`'s own bucket — the two coincide only
+            // for a directly-declared (non-inherited) field. `owners` (from
+            // the same `resolve_field_owners` call above) is exactly the
+            // field-name -> owning-schema-id map that write path used to
+            // bucket this value, so it's reused here to read it back from the
+            // right place. Falls back to `node.node_type` for the (common,
+            // unextended) case where a field owns itself.
+            let bucket = owners
+                .get(&field.name)
+                .map(String::as_str)
+                .unwrap_or(node.node_type.as_str());
             let Some(value) = node
                 .properties
-                .get(&node.node_type)
+                .get(bucket)
                 .and_then(|p| p.get(&field.name))
                 .and_then(|v| v.as_str())
             else {
@@ -167,6 +186,7 @@ impl NodeService {
                 .store
                 .find_conflicting_unique(
                     &node.node_type,
+                    bucket,
                     &field.name,
                     value,
                     Some(&node.id),
@@ -400,6 +420,25 @@ impl NodeService {
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
+        // Resolved via `resolve_field_owners` (ADR-078 extends-chain-merged
+        // set) rather than a direct own-schema-only lookup, mirroring
+        // `detect_unique_field_collisions`: `field` may be inherited from an
+        // ancestor schema, in which case its value is bucketed under that
+        // ancestor's schema id, not under `node_type`'s own bucket
+        // (`bucket_properties_by_owner`). Both participants share the same
+        // `node_type` (a prerequisite for `detect_unique_field_collisions` to
+        // have matched them as conflicting in the first place), so the owning
+        // bucket for `field` is resolved once, outside the loop below, rather
+        // than per participant.
+        let bucket = self
+            .resolve_field_owners(node_type)
+            .await?
+            .1
+            .get(field)
+            .map(String::as_str)
+            .unwrap_or(node_type)
+            .to_string();
+
         // Re-derive from each participant's OWN CURRENT value, not the value
         // recorded at detection time — a participant may have since changed
         // it (as this exact scenario exercises: Bob edits his email away
@@ -413,7 +452,7 @@ impl NodeService {
             };
             let Some(current_value) = node
                 .properties
-                .get(node_type)
+                .get(&bucket)
                 .and_then(|p| p.get(field))
                 .and_then(|v| v.as_str())
             else {
@@ -427,6 +466,7 @@ impl NodeService {
                 .store
                 .find_conflicting_unique(
                     node_type,
+                    &bucket,
                     field,
                     current_value,
                     Some(node_id),
