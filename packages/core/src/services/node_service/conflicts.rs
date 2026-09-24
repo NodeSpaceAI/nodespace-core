@@ -420,6 +420,25 @@ impl NodeService {
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
+        // Resolved via `resolve_field_owners` (ADR-078 extends-chain-merged
+        // set) rather than a direct own-schema-only lookup, mirroring
+        // `detect_unique_field_collisions`: `field` may be inherited from an
+        // ancestor schema, in which case its value is bucketed under that
+        // ancestor's schema id, not under `node_type`'s own bucket
+        // (`bucket_properties_by_owner`). Both participants share the same
+        // `node_type` (a prerequisite for `detect_unique_field_collisions` to
+        // have matched them as conflicting in the first place), so the owning
+        // bucket for `field` is resolved once, outside the loop below, rather
+        // than per participant.
+        let bucket = self
+            .resolve_field_owners(node_type)
+            .await?
+            .1
+            .get(field)
+            .map(String::as_str)
+            .unwrap_or(node_type)
+            .to_string();
+
         // Re-derive from each participant's OWN CURRENT value, not the value
         // recorded at detection time — a participant may have since changed
         // it (as this exact scenario exercises: Bob edits his email away
@@ -433,7 +452,7 @@ impl NodeService {
             };
             let Some(current_value) = node
                 .properties
-                .get(node_type)
+                .get(&bucket)
                 .and_then(|p| p.get(field))
                 .and_then(|v| v.as_str())
             else {
@@ -443,17 +462,11 @@ impl NodeService {
                 continue;
             }
 
-            // NOTE: like the `node.properties.get(node_type)` read above, this
-            // passes `node_type` as `bucket` — the exact own-schema-only
-            // resolution this issue's sibling functions (`find_duplicate_for`,
-            // `detect_unique_field_collisions`) were fixed to stop using. Left
-            // as-is here: reconciliation was out of scope for that fix (see the
-            // follow-up filed for making it extends-chain aware too).
             let conflicting = self
                 .store
                 .find_conflicting_unique(
                     node_type,
-                    node_type,
+                    &bucket,
                     field,
                     current_value,
                     Some(node_id),
