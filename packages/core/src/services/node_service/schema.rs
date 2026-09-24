@@ -1236,7 +1236,7 @@ impl NodeService {
         // an empty relationship set — same "nothing required → complete by
         // definition" outcome the old direct lookup produced for a missing
         // schema.
-        let (relationships, _owners) = self.resolve_relationships(&node.node_type).await?;
+        let (relationships, _) = self.resolve_relationships(&node.node_type).await?;
 
         let mut missing = Vec::new();
 
