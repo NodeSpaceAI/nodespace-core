@@ -1221,21 +1221,26 @@ impl NodeService {
             .await?
             .ok_or_else(|| NodeServiceError::node_not_found(node_id))?;
 
-        // Look up the schema for the node's type
-        let schema_node = self.get_schema_node(&node.node_type).await?;
-
-        let Some(schema) = schema_node else {
-            // No schema → nothing required → complete by definition
-            return Ok(CompletenessResult {
-                node_id: node_id.to_string(),
-                is_complete: true,
-                missing_relationships: vec![],
-            });
-        };
+        // Resolved via `resolve_relationships` rather than a direct
+        // `get_schema_node(node_type)` lookup: the latter returns only
+        // `node_type`'s own directly-declared relationships, not the
+        // ADR-078 `extends`-chain-merged set. A relationship declared
+        // `required: true` only on an ancestor schema and inherited (not
+        // redeclared) by a subtype was therefore invisible here, so a
+        // subtype instance genuinely missing that inherited required
+        // relationship was silently reported complete. Same fix pattern as
+        // `workflow_state.rs`, `validation.rs`, `graph_resolver.rs`'s
+        // `is_declared_many_relationship`, and `rel_ops.rs`'s
+        // `resolve_relationship_name`/relationship graph helpers. When
+        // `node_type` has no schema at all, `resolve_relationships` returns
+        // an empty relationship set — same "nothing required → complete by
+        // definition" outcome the old direct lookup produced for a missing
+        // schema.
+        let (relationships, _) = self.resolve_relationships(&node.node_type).await?;
 
         let mut missing = Vec::new();
 
-        for relationship in &schema.relationships {
+        for relationship in &relationships {
             // Only check relationships explicitly marked as required
             if relationship.required != Some(true) {
                 continue;
