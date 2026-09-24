@@ -1159,48 +1159,48 @@ impl NodeService {
                         source_id, relationship_name
                     )));
                 }
-                if let Some(schema_node) = self.get_schema_node(&source.node_type).await? {
-                    let is_required = schema_node
-                        .relationships
-                        .iter()
-                        .find(|r| r.name == relationship_name)
-                        .map(|r| {
-                            r.required == Some(true)
-                                && r.direction == crate::models::schema::RelationshipDirection::Out
-                        })
-                        .unwrap_or(false);
-                    if is_required {
-                        let edge_exists = crate::db::SqliteStore::relationship_exists_in_tx(
-                            tx.store_tx(),
-                            source_id,
-                            target_id,
-                            relationship_name,
-                        )
-                        .await
-                        .map_err(|e| {
-                            NodeServiceError::query_failed(format!(
-                                "Failed to check relationship existence: {}",
-                                e
-                            ))
-                        })?;
-                        let total = crate::db::SqliteStore::check_relationship_exists_in_tx(
-                            tx.store_tx(),
-                            source_id,
-                            relationship_name,
-                        )
-                        .await
-                        .map_err(|e| {
-                            NodeServiceError::query_failed(format!(
-                                "Failed to count relationship edges: {}",
-                                e
-                            ))
-                        })?;
-                        if edge_exists && total <= 1 {
-                            return Err(NodeServiceError::invalid_update(format!(
-                                "Relationship '{}' is required and this is its last edge; add another target before removing this one",
-                                relationship_name
-                            )));
-                        }
+                // Chain-aware (ADR-078) — see the non-tx twin in
+                // `delete_relationship` for the full rationale.
+                let (relationships, _) = self.resolve_relationships(&source.node_type).await?;
+                let is_required = relationships
+                    .iter()
+                    .find(|r| r.name == relationship_name)
+                    .map(|r| {
+                        r.required == Some(true)
+                            && r.direction == crate::models::schema::RelationshipDirection::Out
+                    })
+                    .unwrap_or(false);
+                if is_required {
+                    let edge_exists = crate::db::SqliteStore::relationship_exists_in_tx(
+                        tx.store_tx(),
+                        source_id,
+                        target_id,
+                        relationship_name,
+                    )
+                    .await
+                    .map_err(|e| {
+                        NodeServiceError::query_failed(format!(
+                            "Failed to check relationship existence: {}",
+                            e
+                        ))
+                    })?;
+                    let total = crate::db::SqliteStore::check_relationship_exists_in_tx(
+                        tx.store_tx(),
+                        source_id,
+                        relationship_name,
+                    )
+                    .await
+                    .map_err(|e| {
+                        NodeServiceError::query_failed(format!(
+                            "Failed to count relationship edges: {}",
+                            e
+                        ))
+                    })?;
+                    if edge_exists && total <= 1 {
+                        return Err(NodeServiceError::invalid_update(format!(
+                            "Relationship '{}' is required and this is its last edge; add another target before removing this one",
+                            relationship_name
+                        )));
                     }
                 }
             }
@@ -1357,51 +1357,49 @@ impl NodeService {
                         source_id, relationship_name
                     )));
                 }
-                if let Some(schema_node) = self.get_schema_node(&source.node_type).await? {
-                    // Declarations come hydrated from the relationship table —
-                    // the same consolidated read path as creation-side
-                    // validation, so the two guards can never see different
-                    // declaration sets.
-                    //
-                    // `required` is an outbound-declaration property; only enforce
-                    // it for a forward (`direction: out`) relationship so an
-                    // inbound-declared one never counts the wrong edge set.
-                    let is_required = schema_node
-                        .relationships
-                        .iter()
-                        .find(|r| r.name == relationship_name)
-                        .map(|r| {
-                            r.required == Some(true)
-                                && r.direction == crate::models::schema::RelationshipDirection::Out
-                        })
-                        .unwrap_or(false);
-                    if is_required {
-                        let edge_exists = self
-                            .store
-                            .relationship_exists(source_id, target_id, relationship_name)
-                            .await
-                            .map_err(|e| {
-                                NodeServiceError::query_failed(format!(
-                                    "Failed to check relationship existence: {}",
-                                    e
-                                ))
-                            })?;
-                        let total = self
-                            .store
-                            .check_relationship_exists(source_id, relationship_name)
-                            .await
-                            .map_err(|e| {
-                                NodeServiceError::query_failed(format!(
-                                    "Failed to count relationship edges: {}",
-                                    e
-                                ))
-                            })?;
-                        if edge_exists && total <= 1 {
-                            return Err(NodeServiceError::invalid_update(format!(
-                                "Relationship '{}' is required and this is its last edge; add another target before removing this one",
-                                relationship_name
-                            )));
-                        }
+                // Chain-aware (ADR-078): an inherited `required: true`
+                // relationship (declared on an ancestor, not redeclared on
+                // this subtype) must still get last-edge protection — the
+                // same merged/effective set `resolve_declared_relationship`
+                // resolves against on the create side.
+                let (relationships, _) = self.resolve_relationships(&source.node_type).await?;
+                // `required` is an outbound-declaration property; only enforce
+                // it for a forward (`direction: out`) relationship so an
+                // inbound-declared one never counts the wrong edge set.
+                let is_required = relationships
+                    .iter()
+                    .find(|r| r.name == relationship_name)
+                    .map(|r| {
+                        r.required == Some(true)
+                            && r.direction == crate::models::schema::RelationshipDirection::Out
+                    })
+                    .unwrap_or(false);
+                if is_required {
+                    let edge_exists = self
+                        .store
+                        .relationship_exists(source_id, target_id, relationship_name)
+                        .await
+                        .map_err(|e| {
+                            NodeServiceError::query_failed(format!(
+                                "Failed to check relationship existence: {}",
+                                e
+                            ))
+                        })?;
+                    let total = self
+                        .store
+                        .check_relationship_exists(source_id, relationship_name)
+                        .await
+                        .map_err(|e| {
+                            NodeServiceError::query_failed(format!(
+                                "Failed to count relationship edges: {}",
+                                e
+                            ))
+                        })?;
+                    if edge_exists && total <= 1 {
+                        return Err(NodeServiceError::invalid_update(format!(
+                            "Relationship '{}' is required and this is its last edge; add another target before removing this one",
+                            relationship_name
+                        )));
                     }
                 }
             }
@@ -1498,14 +1496,19 @@ impl NodeService {
                 // schema or undeclared relationship is not this method's error
                 // to raise — the edge already exists, and the update below
                 // reports a genuinely absent edge on its own.
+                // Chain-aware (ADR-078): an edge-field enum declared only on an
+                // ancestor schema (inherited, not redeclared on this subtype)
+                // must still be validated — same merged/effective set
+                // `resolve_declared_relationship` resolves against on create.
                 // Bound to a local rather than chained off the `await?`: the
-                // borrowed edge fields must outlive the schema node they come
-                // from, and an inline chain only keeps that alive by virtue of
-                // temporary-lifetime extension in the `if let` scrutinee.
-                let schema_node = self.get_schema_node(&source.node_type).await?;
-                if let Some(edge_fields) = schema_node
-                    .as_ref()
-                    .and_then(|schema| schema.get_relationship(relationship_name))
+                // borrowed edge fields must outlive the relationship list they
+                // come from, and an inline chain only keeps that alive by
+                // virtue of temporary-lifetime extension in the `if let`
+                // scrutinee.
+                let (relationships, _) = self.resolve_relationships(&source.node_type).await?;
+                if let Some(edge_fields) = relationships
+                    .iter()
+                    .find(|r| r.name == relationship_name)
                     .and_then(|rel| rel.edge_fields.as_deref())
                 {
                     validate_edge_data_against_fields(&properties, edge_fields, relationship_name)?;
@@ -1736,9 +1739,15 @@ impl NodeService {
     ) -> Result<Vec<(String, String, Option<String>)>, NodeServiceError> {
         let schemas = self.get_all_schemas().await?;
 
+        // Chain-aware (ADR-078): resolve each schema's effective/merged
+        // relationship set rather than its own declarations only, so an
+        // extending type's inherited relationships (e.g. `task.blocks` as
+        // seen from `issue`) show up in the graph exactly as they're
+        // actually creatable via `create_relationship`.
         let mut edges = Vec::new();
         for schema in schemas {
-            for relationship in schema.relationships {
+            let (relationships, _) = self.resolve_relationships(&schema.id).await?;
+            for relationship in relationships {
                 edges.push((
                     schema.id.clone(),
                     relationship.name.clone(),
