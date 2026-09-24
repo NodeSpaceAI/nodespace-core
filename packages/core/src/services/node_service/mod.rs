@@ -2994,6 +2994,152 @@ mod tests {
         assert!(!schema.fields.iter().any(|f| f.name == "priority"));
     }
 
+    // ========================================================================
+    // ADR-078 extends-chain awareness on `NodeService::rename_schema_field`
+    // itself — the data migration must reach descendant instances (they
+    // store the renamed field under the SAME ancestor-owned bucket key), and
+    // the destination-collision check must consult the chain-merged
+    // effective field set, not just this schema's own `fields`.
+    // ========================================================================
+
+    #[tokio::test]
+    async fn rename_schema_field_migrates_descendant_instances_via_extends_chain() {
+        use crate::services::{CreateNodeParams, InsertPositionOwned};
+
+        let (svc, _tmp) = create_test_service().await;
+        let svc = Arc::new(svc);
+
+        crate::schema::handle_create_schema(
+            &svc,
+            json!({
+                "name": "Ticket",
+                "fields": [
+                    { "name": "priority", "type": "string", "protection": "user", "indexed": false }
+                ]
+            }),
+        )
+        .await
+        .expect("ticket schema creation failed");
+
+        crate::schema::handle_create_schema(
+            &svc,
+            json!({
+                "name": "Bug",
+                "extends": "ticket",
+                "fields": [
+                    { "name": "severity", "type": "string", "protection": "user", "indexed": false }
+                ]
+            }),
+        )
+        .await
+        .expect("bug schema creation failed");
+
+        // Flat input properties — `bucket_properties_by_owner` sorts
+        // `priority` into the inherited `ticket` bucket and `severity` into
+        // `bug`'s own, resolving the full extends chain (not just `bug`'s
+        // own schema) exactly as a real create does.
+        let bug_id = svc
+            .create_node_with_parent(CreateNodeParams {
+                id: None,
+                node_type: "bug".to_string(),
+                content: "A bug".to_string(),
+                parent_id: None,
+                position: InsertPositionOwned::End,
+                properties: json!({ "priority": "high", "severity": "critical" }),
+                lifecycle_status: None,
+            })
+            .await
+            .unwrap();
+
+        // The rename targets the ANCESTOR schema ("ticket"), not "bug" —
+        // before this fix, the migration only touched rows with
+        // `node_type = 'ticket'` literally, leaving every `bug` instance's
+        // `ticket` bucket carrying the orphaned old key.
+        let affected = svc
+            .rename_schema_field("ticket", "priority", "urgency")
+            .await
+            .expect("rename should succeed");
+        assert_eq!(
+            affected, 1,
+            "the bug instance inheriting `ticket.priority` must be migrated too"
+        );
+
+        let bug_node = svc.get_node(&bug_id).await.unwrap().unwrap();
+        let ticket_bucket = bug_node
+            .properties
+            .get("ticket")
+            .expect("ticket bucket should still exist on the bug instance");
+        assert_eq!(
+            ticket_bucket.get("urgency").and_then(|v| v.as_str()),
+            Some("high"),
+            "value should have moved to the new key under the inherited bucket: {ticket_bucket:?}"
+        );
+        assert!(
+            ticket_bucket.get("priority").is_none(),
+            "old key must not be left orphaned in the inherited bucket: {ticket_bucket:?}"
+        );
+
+        let bug_schema = svc.get_schema_node("bug").await.unwrap().unwrap();
+        assert!(
+            bug_schema.fields.iter().any(|f| f.name == "severity"),
+            "bug's own field must be untouched by an ancestor's rename"
+        );
+    }
+
+    #[tokio::test]
+    async fn rename_schema_field_rejects_destination_colliding_with_inherited_field() {
+        let (svc, _tmp) = create_test_service().await;
+        let svc = Arc::new(svc);
+
+        crate::schema::handle_create_schema(
+            &svc,
+            json!({
+                "name": "Ticket",
+                "fields": [
+                    { "name": "state", "type": "string", "protection": "user", "indexed": false }
+                ]
+            }),
+        )
+        .await
+        .expect("ticket schema creation failed");
+
+        crate::schema::handle_create_schema(
+            &svc,
+            json!({
+                "name": "Bug",
+                "extends": "ticket",
+                "fields": [
+                    { "name": "notes", "type": "string", "protection": "user", "indexed": false }
+                ]
+            }),
+        )
+        .await
+        .expect("bug schema creation failed");
+
+        // Called directly on the primitive (not through `handle_update_schema`,
+        // which has its own earlier ancestor-chain check) — the guard belongs
+        // at `rename_schema_field` itself too, same rationale as the
+        // protection-level tests above.
+        let result = svc.rename_schema_field("bug", "notes", "state").await;
+        let err = result.expect_err(
+            "renaming to a name an ancestor already declares must be rejected, not silently \
+             shadow the inherited field",
+        );
+        let msg = err.to_string();
+        assert!(
+            msg.contains("state") && msg.contains("ticket"),
+            "error should name the colliding destination and its declaring schema: {msg}"
+        );
+
+        // No partial write: the field must still exist under its original name.
+        let bug_schema = svc.get_schema_node("bug").await.unwrap().unwrap();
+        assert!(
+            bug_schema.fields.iter().any(|f| f.name == "notes"),
+            "field should still be named 'notes' after the rejected rename: {:?}",
+            bug_schema.fields
+        );
+    }
+
     #[tokio::test]
     async fn update_schema_field_friendly_name_rejects_core_protected_field() {
         let (svc, _tmp) = create_test_service().await;

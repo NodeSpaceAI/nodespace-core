@@ -2945,6 +2945,40 @@ impl SqliteStore {
         Ok(node.map(|n| n.properties))
     }
 
+    /// Build the `node_type` filter for `rename_schema_field`/`_in_tx`'s data
+    /// migration: `= ?1` for the common single-type case, `IN (…)` when
+    /// `type_id` has descendants.
+    ///
+    /// Under ADR-078's per-owner property-bucket model, a subtype instance
+    /// (e.g. an `issue` node where `issue extends task`) stores its inherited
+    /// `task` fields under the `task` bucket key — the SAME key a `task`
+    /// instance uses — not under `issue`. Renaming a `task` field must
+    /// therefore rekey every descendant instance's `task` bucket too, not
+    /// just rows whose own `node_type` literally equals `task`. `subtypes` is
+    /// `type_id`'s full descendant closure (including `type_id` itself, per
+    /// [`SqliteStore::get_subtype_closure`]/`_in_tx`'s own contract) — the
+    /// bucket key rewritten below stays `type_id` regardless of which row in
+    /// this set is being touched.
+    fn rename_field_node_type_filter_sql(subtypes: &[String]) -> (String, Vec<libsql::Value>) {
+        if subtypes.len() > 1 {
+            let placeholders: Vec<String> = (1..=subtypes.len()).map(|i| format!("?{i}")).collect();
+            let sql = format!("node_type IN ({})", placeholders.join(", "));
+            let binds = subtypes.iter().cloned().map(libsql::Value::Text).collect();
+            (sql, binds)
+        } else {
+            // `subtypes` always contains at least `type_id` itself — an empty
+            // closure would be a bug in the caller, not a case to special-case
+            // silently — so `.first()` unwrapping the sole/absent element to
+            // this format keeps the common unextended case identical to the
+            // pre-existing equality query.
+            let value = subtypes.first().cloned().unwrap_or_default();
+            (
+                "node_type = ?1".to_string(),
+                vec![libsql::Value::Text(value)],
+            )
+        }
+    }
+
     pub async fn rename_schema_field(&self, type_id: &str, from: &str, to: &str) -> Result<u64> {
         if from.is_empty() || to.is_empty() {
             return Err(anyhow::anyhow!("Field names must not be empty"));
@@ -2955,6 +2989,14 @@ impl SqliteStore {
                 from
             ));
         }
+
+        // Descendant closure (ADR-078): every subtype instance stores this
+        // field under `type_id`'s own bucket key, so the migration below must
+        // touch every type in this set, not just exact `node_type = type_id`
+        // matches. See `rename_field_node_type_filter_sql`'s doc.
+        let subtypes = self.get_subtype_closure(type_id).await?;
+        let (type_filter_sql, type_filter_binds) =
+            Self::rename_field_node_type_filter_sql(&subtypes);
 
         // Guard held across the whole read-modify-write, and every UPDATE runs
         // in ONE transaction.
@@ -2979,8 +3021,8 @@ impl SqliteStore {
         let db = self.write().await;
         let mut rows = db
             .query(
-                "SELECT id, properties FROM node WHERE node_type = ?1",
-                libsql::params![type_id.to_string()],
+                &format!("SELECT id, properties FROM node WHERE {type_filter_sql}"),
+                type_filter_binds,
             )
             .await
             .context("Failed to fetch nodes for field rename")?;
@@ -3071,11 +3113,18 @@ impl SqliteStore {
             ));
         }
 
+        // See `rename_field_node_type_filter_sql`'s doc: every descendant
+        // instance's `type_id` bucket needs the same rewrite, not just rows
+        // whose own `node_type` literally equals `type_id`.
+        let subtypes = Self::get_subtype_closure_in_tx(tx, type_id).await?;
+        let (type_filter_sql, type_filter_binds) =
+            Self::rename_field_node_type_filter_sql(&subtypes);
+
         let mut rows = tx
             .conn()
             .query(
-                "SELECT id, properties FROM node WHERE node_type = ?1",
-                libsql::params![type_id.to_string()],
+                &format!("SELECT id, properties FROM node WHERE {type_filter_sql}"),
+                type_filter_binds,
             )
             .await
             .context("Failed to fetch nodes for field rename")?;

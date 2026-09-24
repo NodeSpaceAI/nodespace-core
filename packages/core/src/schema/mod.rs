@@ -1118,19 +1118,23 @@ fn validate_no_same_schema_field_relationship_collision(
 /// chain already claims — same-domain (an inherited field) or cross-domain
 /// (an inherited relationship).
 ///
-/// `rename_fields` has no ancestor-chain check of its own the way
-/// `add_fields`/`add_relationships` do via
-/// [`validate_no_field_redeclaration`]/[`validate_no_relationship_redeclaration`]:
-/// a rename introduces a newly-declared name exactly as those paths do, and
-/// left unchecked, a rename colliding with an inherited relationship
-/// succeeds with no error at all (permanently shadowing the ancestor's
-/// declaration with no way for the caller to detect it), since
-/// `rename_schema_field` only ever checks the destination against this
-/// schema's own fields. Takes a bare name rather than a `SchemaField` (what
-/// the two functions above take) because the caller has no complete
-/// `SchemaField` to hand — `rename_fields` renames an existing field in
-/// place, it does not construct a new one — so this mirrors just the name
-/// lookup those two do, over the same two resolvers.
+/// `rename_fields` introduces a newly-declared name exactly as `add_fields`/
+/// `add_relationships` do, so it needs the same ancestor-chain awareness
+/// those paths get via
+/// [`validate_no_field_redeclaration`]/[`validate_no_relationship_redeclaration`].
+/// `NodeService::rename_schema_field` now checks its destination against the
+/// chain-merged effective *field* set too (its own defense-in-depth, for any
+/// caller that reaches it directly), but has no relationship awareness at
+/// all — a rename colliding with an inherited relationship would still
+/// succeed with no error there (permanently shadowing the ancestor's
+/// declaration with no way for the caller to detect it). This check runs
+/// first, ahead of `rename_schema_field`, so both halves are caught before
+/// Phase 1 commits any data migration — not just the relationship half.
+/// Takes a bare name rather than a `SchemaField` (what the two functions
+/// above take) because the caller has no complete `SchemaField` to hand —
+/// `rename_fields` renames an existing field in place, it does not construct
+/// a new one — so this mirrors just the name lookup those two do, over the
+/// same two resolvers.
 ///
 /// Uses [`NodeService::resolve_field_owners`] (not `resolve_effective_fields`)
 /// for the same-domain half specifically so a collision two-or-more scopes up
@@ -2149,8 +2153,8 @@ pub async fn handle_update_schema(
             // ADR-078 cross-domain (and same-domain) collision check for the
             // destination name — same reasoning as the grammar check just
             // above: this must run here, before Phase 1, not after.
-            // `rename_schema_field` only checks `to` against this schema's
-            // OWN fields; it has no ancestor-chain awareness and no
+            // `rename_schema_field` checks `to` against its own chain-merged
+            // effective *field* set (own fields plus ancestors'), but has no
             // relationship awareness at all, so left unchecked here a rename
             // colliding with an inherited relationship would succeed with no
             // error (permanent, undetectable corruption), and one colliding

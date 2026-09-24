@@ -727,11 +727,19 @@ impl NodeService {
             )));
         }
 
-        // Validate destination field does not already exist
-        if schema.fields.iter().any(|f| f.name == to) {
+        // Validate destination field does not already exist — checked
+        // against the extends-chain-merged effective set (own fields plus
+        // every ancestor's), not `schema.fields` alone, so a rename cannot
+        // shadow an inherited field the same way `validate_no_field_redeclaration`
+        // (core#2829/PR#2866) already blocks a *new* field declaration from
+        // doing.
+        let (effective_fields, field_owners, _chain) = self.resolve_field_owners(type_id).await?;
+        if effective_fields.iter().any(|f| f.name == to) {
+            let declaring_schema = field_owners.get(to).map(String::as_str).unwrap_or(type_id);
             return Err(NodeServiceError::invalid_update(format!(
-                "Field '{}' already exists in schema '{}'; cannot rename to an existing field",
-                to, type_id
+                "Field '{}' already exists in schema '{}' (declared by '{}' — own field or \
+                 inherited via extends); cannot rename to an existing field",
+                to, type_id, declaring_schema
             )));
         }
 
