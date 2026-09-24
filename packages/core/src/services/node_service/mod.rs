@@ -2921,6 +2921,7 @@ mod tests {
                         node.properties.clone(),
                     )])
                     .await
+                    .unwrap()
                     .remove(0)
                     .6;
                 assert_eq!(
@@ -8467,6 +8468,97 @@ mod tests {
             refetched.title.as_deref(),
             Some("Priority: High"),
             "combined update must compute title from the new (post-merge) priority, not the stale one"
+        );
+    }
+
+    /// A `titleTemplate` on a subtype schema may reference a field
+    /// only an ancestor in its `extends` chain (ADR-078) declares — the field
+    /// is never redeclared on the subtype (redeclaration is itself rejected),
+    /// so its value lives in the ancestor's property bucket, not the node's
+    /// own. `compute_title` must resolve it from there rather than rendering
+    /// it blank.
+    ///
+    /// The node's properties are given already in the bucketed storage shape
+    /// (`{"ticket": {...}, "bug": {...}}`) `bucket_properties_by_owner`
+    /// produces — the shape a fetched node actually has by the time an
+    /// update recomputes its title (`rebucket_and_validate` runs before
+    /// `compute_title`), which is where this bug bit.
+    #[tokio::test]
+    async fn title_template_resolves_an_inherited_field_across_extends_chain() {
+        let (service, _temp) = create_test_service().await;
+        let service = Arc::new(service);
+
+        crate::schema::handle_create_schema(
+            &service,
+            json!({
+                "name": "Ticket",
+                "fields": [
+                    { "name": "state", "type": "string", "protection": "user", "indexed": false }
+                ]
+            }),
+        )
+        .await
+        .expect("ticket schema creation failed");
+
+        crate::schema::handle_create_schema(
+            &service,
+            json!({
+                "name": "Bug",
+                "extends": "ticket",
+                "fields": [
+                    { "name": "severity", "type": "string", "protection": "user", "indexed": false }
+                ]
+            }),
+        )
+        .await
+        .expect("bug schema creation failed");
+
+        // `SchemaNodeBehavior::validate_schema_node` — run by every
+        // NodeService-level write to a schema node, `update_node_unchecked`
+        // included — only ever checks a template's tokens against the
+        // schema's OWN fields, not the extends chain, so it rejects this
+        // exact, valid reference. That chain-blindness is a related but
+        // separate gap from this fix (it's a write-time *validation* check,
+        // not `compute_title`'s *interpolation*) and is out of this issue's
+        // scope. Going straight to the store bypasses it to set up the
+        // fixture — standing in for how such a template could really reach
+        // storage (a relaxed future check, a sync-applied write, ADR-078
+        // groundwork not yet finished everywhere).
+        let bug_schema = service
+            .get_node("bug")
+            .await
+            .unwrap()
+            .expect("bug schema node must exist");
+        let mut properties = bug_schema.properties.clone();
+        properties["titleTemplate"] = json!("{state}: {severity}");
+        service
+            .store
+            .update_node(
+                "bug",
+                NodeUpdate {
+                    properties: Some(properties),
+                    ..Default::default()
+                },
+                None,
+            )
+            .await
+            .unwrap();
+
+        let node = Node::new(
+            "bug".to_string(),
+            "ignored".to_string(),
+            json!({
+                "ticket": { "state": "open" },
+                "bug": { "severity": "high" },
+            }),
+        );
+        let title = service.compute_title(&node, Some(true)).await.unwrap();
+
+        assert_eq!(
+            title.as_deref(),
+            Some("open: high"),
+            "title_template must resolve `state` from the inherited `ticket` bucket, not just \
+             bug's own"
         );
     }
 

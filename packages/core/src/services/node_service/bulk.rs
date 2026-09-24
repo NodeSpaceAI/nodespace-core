@@ -15,7 +15,7 @@ impl NodeService {
             f64,
             serde_json::Value,
         )>,
-    ) -> Vec<crate::db::BulkNodeRow> {
+    ) -> Result<Vec<crate::db::BulkNodeRow>, NodeServiceError> {
         let mut schemas: std::collections::HashMap<String, Option<crate::models::SchemaNode>> =
             std::collections::HashMap::new();
         let mut out = Vec::with_capacity(rows.len());
@@ -37,11 +37,13 @@ impl NodeService {
                 title: None,
                 lifecycle_status: "active".to_string(),
             };
-            let title = Self::derive_title(
-                &node,
-                parent_id.is_none(),
-                schemas.get(&node.node_type).and_then(Option::as_ref),
-            );
+            let title = self
+                .derive_title(
+                    &node,
+                    parent_id.is_none(),
+                    schemas.get(&node.node_type).and_then(Option::as_ref),
+                )
+                .await?;
             out.push((
                 node.id,
                 node.node_type,
@@ -52,7 +54,7 @@ impl NodeService {
                 title,
             ));
         }
-        out
+        Ok(out)
     }
 
     /// Bulk create multiple nodes in a transaction
@@ -178,7 +180,7 @@ impl NodeService {
         // Delegate to store for atomic batch insert
         let result = self
             .store
-            .bulk_create_hierarchy(self.with_titles(nodes_normalized).await)
+            .bulk_create_hierarchy(self.with_titles(nodes_normalized).await?)
             .await
             .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
 
@@ -331,7 +333,7 @@ impl NodeService {
 
         let result = self
             .store
-            .bulk_create_hierarchy_in_tx(tx.store_tx(), self.with_titles(nodes_normalized).await)
+            .bulk_create_hierarchy_in_tx(tx.store_tx(), self.with_titles(nodes_normalized).await?)
             .await
             .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
 
@@ -436,7 +438,7 @@ impl NodeService {
         // Delegate to store - use root-only notify variant
         let result = self
             .store
-            .bulk_create_hierarchy_root_notify(self.with_titles(nodes_normalized).await, vec![])
+            .bulk_create_hierarchy_root_notify(self.with_titles(nodes_normalized).await?, vec![])
             .await
             .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
 
@@ -544,7 +546,7 @@ impl NodeService {
         // layer; the batch guard above coalesces them into a single flush on drop).
         let result = self
             .store
-            .bulk_create_hierarchy_root_notify(self.with_titles(nodes_normalized).await, vec![])
+            .bulk_create_hierarchy_root_notify(self.with_titles(nodes_normalized).await?, vec![])
             .await
             .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
 

@@ -2778,31 +2778,59 @@ impl NodeService {
     /// none for any other child — a child line has no meaning outside its root.
     /// No type is special-cased beyond that: a `date` page or `schema` is a root
     /// titled by its content (`2026-09-23`, `Task`), like any other root.
-    pub(crate) fn derive_title(
+    ///
+    /// The templated branch resolves fields/properties across the node
+    /// type's `extends` chain (ADR-078) via [`Self::resolve_field_owners`],
+    /// mirroring `node_to_cel_value_at_scope`'s chain-aware projection: a
+    /// `titleTemplate` declared on a subtype schema can reference a field an
+    /// ancestor schema declares (and this node's bucket therefore doesn't
+    /// hold) without interpolating blank.
+    pub(crate) async fn derive_title(
+        &self,
         node: &Node,
         is_root: bool,
         schema: Option<&crate::models::SchemaNode>,
-    ) -> Option<String> {
+    ) -> Result<Option<String>, NodeServiceError> {
         if let Some(schema) = schema {
             if let Some(template) = &schema.title_template {
-                // Properties are stored namespaced: { "node_type": { "field": value } }
-                // Unwrap to the inner namespace object for template interpolation
-                let flat_props = node
-                    .properties
-                    .get(&node.node_type)
-                    .unwrap_or(&node.properties);
-                return Some(crate::utils::interpolate_title_template_with_schema(
+                let (fields, _owners, chain) = self.resolve_field_owners(&node.node_type).await?;
+                let flat_props = Self::merge_properties_across_chain(&node.properties, &chain);
+                return Ok(Some(crate::utils::interpolate_title_template_with_schema(
                     template,
-                    flat_props,
-                    &schema.fields,
-                ));
+                    &flat_props,
+                    &fields,
+                )));
             }
         }
         if is_root || matches!(node.node_type.as_str(), "task" | "collection") {
-            Some(crate::utils::strip_markdown(&node.content))
+            Ok(Some(crate::utils::strip_markdown(&node.content)))
         } else {
-            None
+            Ok(None)
         }
+    }
+
+    /// Merge a node's per-scope property buckets across an `extends` chain
+    /// (ADR-078) into one flat map, nearest scope first — the same
+    /// nearest-scope-wins merge [`Self::validate_node_with_fields`] uses to
+    /// read fields across a chain, specialized for title-template
+    /// interpolation's flat-map input.
+    fn merge_properties_across_chain(
+        properties: &serde_json::Value,
+        chain: &[String],
+    ) -> serde_json::Value {
+        let Some(obj) = properties.as_object() else {
+            return properties.clone();
+        };
+        let mut merged = serde_json::Map::new();
+        for scope in chain {
+            let Some(bucket) = obj.get(scope.as_str()).and_then(|v| v.as_object()) else {
+                continue;
+            };
+            for (field, value) in bucket {
+                merged.entry(field.clone()).or_insert_with(|| value.clone());
+            }
+        }
+        serde_json::Value::Object(merged)
     }
 
     /// The schema [`Self::derive_title`] reads for `node_type`. A failed lookup
@@ -2846,7 +2874,7 @@ impl NodeService {
                 .is_none(),
             None => false,
         };
-        Ok(Self::derive_title(node, is_root, schema.as_ref()))
+        self.derive_title(node, is_root, schema.as_ref()).await
     }
 
     /// Bring `node_id`'s derived state in line after an edge write set whether
