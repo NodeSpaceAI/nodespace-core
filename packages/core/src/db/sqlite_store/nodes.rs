@@ -2960,17 +2960,23 @@ impl SqliteStore {
     /// bucket key rewritten below stays `type_id` regardless of which row in
     /// this set is being touched.
     fn rename_field_node_type_filter_sql(subtypes: &[String]) -> (String, Vec<libsql::Value>) {
+        // `subtypes` always contains at least `type_id` itself (both
+        // `get_subtype_closure` and `_in_tx` include the seed in their base
+        // case) — an empty slice would mean that contract broke, not a case
+        // to migrate zero rows for silently. Caught here, in debug/test
+        // builds only, rather than made a hard `Result` error: this is an
+        // internal invariant between two store methods, not a condition a
+        // caller can trigger through any public input.
+        debug_assert!(
+            !subtypes.is_empty(),
+            "rename_field_node_type_filter_sql: descendant closure must include the seed type"
+        );
         if subtypes.len() > 1 {
             let placeholders: Vec<String> = (1..=subtypes.len()).map(|i| format!("?{i}")).collect();
             let sql = format!("node_type IN ({})", placeholders.join(", "));
             let binds = subtypes.iter().cloned().map(libsql::Value::Text).collect();
             (sql, binds)
         } else {
-            // `subtypes` always contains at least `type_id` itself — an empty
-            // closure would be a bug in the caller, not a case to special-case
-            // silently — so `.first()` unwrapping the sole/absent element to
-            // this format keeps the common unextended case identical to the
-            // pre-existing equality query.
             let value = subtypes.first().cloned().unwrap_or_default();
             (
                 "node_type = ?1".to_string(),
@@ -2979,124 +2985,18 @@ impl SqliteStore {
         }
     }
 
-    pub async fn rename_schema_field(&self, type_id: &str, from: &str, to: &str) -> Result<u64> {
-        if from.is_empty() || to.is_empty() {
-            return Err(anyhow::anyhow!("Field names must not be empty"));
-        }
-        if from == to {
-            return Err(anyhow::anyhow!(
-                "Source and destination field names are the same: '{}'",
-                from
-            ));
-        }
-
-        // Descendant closure (ADR-078): every subtype instance stores this
-        // field under `type_id`'s own bucket key, so the migration below must
-        // touch every type in this set, not just exact `node_type = type_id`
-        // matches. See `rename_field_node_type_filter_sql`'s doc.
-        let subtypes = self.get_subtype_closure(type_id).await?;
-        let (type_filter_sql, type_filter_binds) =
-            Self::rename_field_node_type_filter_sql(&subtypes);
-
-        // Guard held across the whole read-modify-write, and every UPDATE runs
-        // in ONE transaction.
-        //
-        // The guard has to span the read: the rewritten properties are computed
-        // from the rows read here, so a concurrent property write landing
-        // between the read and the UPDATE would be silently clobbered.
-        //
-        // It also has to span the whole loop, which does block other writers
-        // for the duration on a type with many instances. Releasing and
-        // re-taking it between batches would trade that for a correctness hole,
-        // not just a weaker guarantee: a concurrent `create_node`/`update_node`
-        // could write an instance carrying the OLD field name after the rename
-        // has already swept past it, leaving the type permanently half-renamed.
-        // A schema field rename is a rare, user-initiated migration, so paying
-        // for it with a bounded write pause is the right side of that trade.
-        //
-        // The transaction earns its place twice over: it makes a partial
-        // failure roll back to a coherent state instead of leaving half the
-        // instances renamed, and it collapses N autocommits into one fsync,
-        // which is what actually keeps the pause bounded.
-        let db = self.write().await;
-        let mut rows = db
-            .query(
-                &format!("SELECT id, properties FROM node WHERE {type_filter_sql}"),
-                type_filter_binds,
-            )
-            .await
-            .context("Failed to fetch nodes for field rename")?;
-
-        let mut nodes: Vec<(String, Value)> = Vec::new();
-        while let Some(row) = rows.next().await? {
-            let id: String = row.get(0)?;
-            let props_str: String = row.get(1)?;
-            let props: Value = serde_json::from_str(&props_str).unwrap_or(serde_json::json!({}));
-            nodes.push((id, props));
-        }
-
-        let mut affected = 0u64;
-        let now = Utc::now().to_rfc3339();
-
-        let tx = db
-            .transaction()
-            .await
-            .context("Failed to begin schema field rename transaction")?;
-
-        for (node_id, mut properties) in nodes {
-            let had_field = if let Some(ns_obj) = properties
-                .as_object_mut()
-                .and_then(|p| p.get_mut(type_id))
-                .and_then(|ns| ns.as_object_mut())
-            {
-                if let Some(value) = ns_obj.remove(from) {
-                    ns_obj.insert(to.to_string(), value);
-                    true
-                } else {
-                    false
-                }
-            } else {
-                false
-            };
-
-            if had_field {
-                let props_json =
-                    serde_json::to_string(&properties).context("Failed to serialize properties")?;
-                tx.execute(
-                    "UPDATE node SET properties = ?1, modified_at = ?2 WHERE id = ?3",
-                    libsql::params![props_json, now.clone(), node_id],
-                )
-                .await
-                .context("Failed to update node during field rename")?;
-                affected += 1;
-            }
-        }
-
-        tx.commit()
-            .await
-            .context("Failed to commit schema field rename")?;
-        drop(db);
-
-        tracing::info!(
-            type_id = %type_id,
-            from = %from,
-            to = %to,
-            affected = affected,
-            "rename_schema_field: migrated {} node(s)",
-            affected
-        );
-
-        Ok(affected)
-    }
-
-    /// `_in_tx` twin of [`Self::rename_schema_field`] (ADR-069 §1a/S3,
-    /// closing F3). Identical migration logic, run against the caller's `tx`
-    /// instead of opening its own — this is what lets `rename_schema_field`'s
-    /// data migration and the schema-definition rewrite that follows it
-    /// (`update_node_unchecked_in_tx`) land in one `NodeService`-level
-    /// transaction, so a failure in the second step rolls back the first
-    /// instead of leaving instance data rekeyed under a name the schema no
-    /// longer declares.
+    /// Migrate a schema field rename's node property data (ADR-069 §1a/S3,
+    /// closing F3), run against the caller's `tx` — this is what lets
+    /// `NodeService::rename_schema_field`'s data migration and the
+    /// schema-definition rewrite that follows it (`update_node_unchecked_in_tx`)
+    /// land in one `NodeService`-level transaction, so a failure in the
+    /// second step rolls back the first instead of leaving instance data
+    /// rekeyed under a name the schema no longer declares.
+    ///
+    /// No non-`_in_tx` sibling exists: `NodeService::rename_schema_field` is
+    /// the only production and test caller, and it always goes through
+    /// `with_transaction`, so a standalone opens-its-own-transaction variant
+    /// would have no caller.
     pub(crate) async fn rename_schema_field_in_tx(
         tx: &Tx<'_>,
         type_id: &str,

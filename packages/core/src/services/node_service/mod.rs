@@ -3084,6 +3084,22 @@ mod tests {
             bug_schema.fields.iter().any(|f| f.name == "severity"),
             "bug's own field must be untouched by an ancestor's rename"
         );
+
+        // The ancestor's own schema definition must be rewritten too — the
+        // presence of a live descendant must not short-circuit Step 2 of
+        // `rename_schema_field` any more than it short-circuits Step 1's
+        // data migration.
+        let ticket_schema = svc.get_schema_node("ticket").await.unwrap().unwrap();
+        assert!(
+            ticket_schema.fields.iter().any(|f| f.name == "urgency"),
+            "ticket's own schema definition must be renamed too: {:?}",
+            ticket_schema.fields
+        );
+        assert!(
+            !ticket_schema.fields.iter().any(|f| f.name == "priority"),
+            "old field name must not survive in ticket's own schema definition: {:?}",
+            ticket_schema.fields
+        );
     }
 
     #[tokio::test]
@@ -3137,6 +3153,65 @@ mod tests {
             bug_schema.fields.iter().any(|f| f.name == "notes"),
             "field should still be named 'notes' after the rejected rename: {:?}",
             bug_schema.fields
+        );
+    }
+
+    #[tokio::test]
+    async fn rename_schema_field_rejects_destination_colliding_with_a_descendants_own_field() {
+        let (svc, _tmp) = create_test_service().await;
+        let svc = Arc::new(svc);
+
+        crate::schema::handle_create_schema(
+            &svc,
+            json!({
+                "name": "Ticket",
+                "fields": [
+                    { "name": "priority", "type": "string", "protection": "user", "indexed": false }
+                ]
+            }),
+        )
+        .await
+        .expect("ticket schema creation failed");
+
+        crate::schema::handle_create_schema(
+            &svc,
+            json!({
+                "name": "Bug",
+                "extends": "ticket",
+                "fields": [
+                    { "name": "severity", "type": "string", "protection": "user", "indexed": false }
+                ]
+            }),
+        )
+        .await
+        .expect("bug schema creation failed");
+
+        // The rename targets the ANCESTOR ("ticket"), and the colliding name
+        // ("severity") is a DESCENDANT's ("bug") own field — the opposite
+        // direction from `..._colliding_with_inherited_field` above. Without
+        // this check, the data migration (which does walk the descendant
+        // closure) would rekey every bug instance's inherited `ticket`
+        // bucket to `severity`, permanently shadowed by that same instance's
+        // own `bug.severity` in every effective-field view.
+        let result = svc
+            .rename_schema_field("ticket", "priority", "severity")
+            .await;
+        let err = result.expect_err(
+            "renaming an ancestor field to a name a descendant already declares as its own must \
+             be rejected, not silently shadow the freshly-renamed ancestor field",
+        );
+        let msg = err.to_string();
+        assert!(
+            msg.contains("severity") && msg.contains("bug"),
+            "error should name the colliding destination and the descendant that declares it: {msg}"
+        );
+
+        // No partial write: the field must still exist under its original name.
+        let ticket_schema = svc.get_schema_node("ticket").await.unwrap().unwrap();
+        assert!(
+            ticket_schema.fields.iter().any(|f| f.name == "priority"),
+            "field should still be named 'priority' after the rejected rename: {:?}",
+            ticket_schema.fields
         );
     }
 
