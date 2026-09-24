@@ -2785,20 +2785,37 @@ impl NodeService {
     /// `titleTemplate` declared on a subtype schema can reference a field an
     /// ancestor schema declares (and this node's bucket therefore doesn't
     /// hold) without interpolating blank.
+    ///
+    /// `chain_fields` lets a caller looping over many nodes of the same type
+    /// (`with_titles`) supply an already-resolved `(fields, chain)` pair and
+    /// skip a redundant `resolve_field_owners` call — and its DB reads — per
+    /// row, the same cache-per-type shape [`Self::title_schema`]'s callers
+    /// already use for the schema lookup. `None` resolves it here instead,
+    /// which every caller but `with_titles` takes.
     pub(crate) async fn derive_title(
         &self,
         node: &Node,
         is_root: bool,
         schema: Option<&crate::models::SchemaNode>,
+        chain_fields: Option<&(Vec<crate::models::SchemaField>, Vec<String>)>,
     ) -> Result<Option<String>, NodeServiceError> {
         if let Some(schema) = schema {
             if let Some(template) = &schema.title_template {
-                let (fields, _owners, chain) = self.resolve_field_owners(&node.node_type).await?;
-                let flat_props = Self::merge_properties_across_chain(&node.properties, &chain);
+                let resolved;
+                let (fields, chain) = match chain_fields {
+                    Some((fields, chain)) => (fields, chain),
+                    None => {
+                        let (fields, _owners, chain) =
+                            self.resolve_field_owners(&node.node_type).await?;
+                        resolved = (fields, chain);
+                        (&resolved.0, &resolved.1)
+                    }
+                };
+                let flat_props = Self::merge_properties_across_chain(&node.properties, chain);
                 return Ok(Some(crate::utils::interpolate_title_template_with_schema(
                     template,
                     &flat_props,
-                    &fields,
+                    fields,
                 )));
             }
         }
@@ -2813,7 +2830,10 @@ impl NodeService {
     /// (ADR-078) into one flat map, nearest scope first — the same
     /// nearest-scope-wins merge [`Self::validate_node_with_fields`] uses to
     /// read fields across a chain, specialized for title-template
-    /// interpolation's flat-map input.
+    /// interpolation's flat-map input. `_`-prefixed bookkeeping keys
+    /// (`_seed`, `_schemaVersion`, ...) are excluded, matching
+    /// `validate_node_with_fields` and `node_to_cel_value_at_scope`'s own
+    /// chain merges.
     fn merge_properties_across_chain(
         properties: &serde_json::Value,
         chain: &[String],
@@ -2827,6 +2847,9 @@ impl NodeService {
                 continue;
             };
             for (field, value) in bucket {
+                if field.starts_with('_') {
+                    continue;
+                }
                 merged.entry(field.clone()).or_insert_with(|| value.clone());
             }
         }
@@ -2874,7 +2897,8 @@ impl NodeService {
                 .is_none(),
             None => false,
         };
-        self.derive_title(node, is_root, schema.as_ref()).await
+        self.derive_title(node, is_root, schema.as_ref(), None)
+            .await
     }
 
     /// Bring `node_id`'s derived state in line after an edge write set whether

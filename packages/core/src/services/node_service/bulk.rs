@@ -4,7 +4,9 @@ use super::*;
 
 impl NodeService {
     /// Attach each bulk row's title, derived by the same rule as single-node
-    /// creation ([`Self::derive_title`]), with one schema lookup per type.
+    /// creation ([`Self::derive_title`]), with one schema lookup per type
+    /// and — for a templated, `extends`-chain type — one
+    /// `resolve_field_owners` chain resolution per type rather than per row.
     pub(crate) async fn with_titles(
         &self,
         rows: Vec<(
@@ -18,11 +20,22 @@ impl NodeService {
     ) -> Result<Vec<crate::db::BulkNodeRow>, NodeServiceError> {
         let mut schemas: std::collections::HashMap<String, Option<crate::models::SchemaNode>> =
             std::collections::HashMap::new();
+        let mut chain_fields: std::collections::HashMap<
+            String,
+            (Vec<crate::models::SchemaField>, Vec<String>),
+        > = std::collections::HashMap::new();
         let mut out = Vec::with_capacity(rows.len());
         for (id, node_type, content, parent_id, order, properties) in rows {
             if !schemas.contains_key(&node_type) {
                 let schema = self.title_schema(&node_type).await;
                 schemas.insert(node_type.clone(), schema);
+            }
+            let schema = schemas.get(&node_type).and_then(Option::as_ref);
+            if schema.and_then(|s| s.title_template.as_ref()).is_some()
+                && !chain_fields.contains_key(&node_type)
+            {
+                let (fields, _owners, chain) = self.resolve_field_owners(&node_type).await?;
+                chain_fields.insert(node_type.clone(), (fields, chain));
             }
             let node = Node {
                 id,
@@ -42,6 +55,7 @@ impl NodeService {
                     &node,
                     parent_id.is_none(),
                     schemas.get(&node.node_type).and_then(Option::as_ref),
+                    chain_fields.get(&node.node_type),
                 )
                 .await?;
             out.push((

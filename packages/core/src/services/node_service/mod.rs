@@ -8373,6 +8373,69 @@ mod tests {
         service.update_node_unchecked("task", update).await.unwrap();
     }
 
+    /// Create a `Ticket` schema (own field `state`) and a `Bug` schema that
+    /// `extends` it (own field `severity`), then set `Bug`'s `title_template`
+    /// to reference BOTH `state` (inherited, not redeclared on `Bug`) and
+    /// `severity` (`Bug`'s own) — the extends-chain title-template scenario.
+    ///
+    /// `SchemaNodeBehavior::validate_schema_node` — run by every
+    /// NodeService-level write to a schema node, `update_node_unchecked`
+    /// included — only ever checks a template's tokens against the schema's
+    /// OWN fields, not the extends chain, so it rejects this exact, valid
+    /// reference. That chain-blindness is a related but separate gap from
+    /// `compute_title`'s (it's a write-time *validation* check, not
+    /// `compute_title`'s *interpolation*). Going straight to the store
+    /// bypasses it to set up the fixture — standing in for how such a
+    /// template could really reach storage (a relaxed future check, a
+    /// sync-applied write, ADR-078 groundwork not yet finished everywhere).
+    #[cfg(test)]
+    async fn seed_bug_extends_ticket_with_title_template(service: &Arc<NodeService>) {
+        crate::schema::handle_create_schema(
+            service,
+            json!({
+                "name": "Ticket",
+                "fields": [
+                    { "name": "state", "type": "string", "protection": "user", "indexed": false }
+                ]
+            }),
+        )
+        .await
+        .expect("ticket schema creation failed");
+
+        crate::schema::handle_create_schema(
+            service,
+            json!({
+                "name": "Bug",
+                "extends": "ticket",
+                "fields": [
+                    { "name": "severity", "type": "string", "protection": "user", "indexed": false }
+                ]
+            }),
+        )
+        .await
+        .expect("bug schema creation failed");
+
+        let bug_schema = service
+            .get_node("bug")
+            .await
+            .unwrap()
+            .expect("bug schema node must exist");
+        let mut properties = bug_schema.properties.clone();
+        properties["titleTemplate"] = json!("{state}: {severity}");
+        service
+            .store
+            .update_node(
+                "bug",
+                NodeUpdate {
+                    properties: Some(properties),
+                    ..Default::default()
+                },
+                None,
+            )
+            .await
+            .unwrap();
+    }
+
     /// #2014: with a `title_template` set on the task schema, a property-only update
     /// (no `content`) must recompute the indexed title from the template — the
     /// #2006 content-only guard would leave it stale.
@@ -8487,62 +8550,7 @@ mod tests {
     async fn title_template_resolves_an_inherited_field_across_extends_chain() {
         let (service, _temp) = create_test_service().await;
         let service = Arc::new(service);
-
-        crate::schema::handle_create_schema(
-            &service,
-            json!({
-                "name": "Ticket",
-                "fields": [
-                    { "name": "state", "type": "string", "protection": "user", "indexed": false }
-                ]
-            }),
-        )
-        .await
-        .expect("ticket schema creation failed");
-
-        crate::schema::handle_create_schema(
-            &service,
-            json!({
-                "name": "Bug",
-                "extends": "ticket",
-                "fields": [
-                    { "name": "severity", "type": "string", "protection": "user", "indexed": false }
-                ]
-            }),
-        )
-        .await
-        .expect("bug schema creation failed");
-
-        // `SchemaNodeBehavior::validate_schema_node` — run by every
-        // NodeService-level write to a schema node, `update_node_unchecked`
-        // included — only ever checks a template's tokens against the
-        // schema's OWN fields, not the extends chain, so it rejects this
-        // exact, valid reference. That chain-blindness is a related but
-        // separate gap from this fix (it's a write-time *validation* check,
-        // not `compute_title`'s *interpolation*) and is out of this issue's
-        // scope. Going straight to the store bypasses it to set up the
-        // fixture — standing in for how such a template could really reach
-        // storage (a relaxed future check, a sync-applied write, ADR-078
-        // groundwork not yet finished everywhere).
-        let bug_schema = service
-            .get_node("bug")
-            .await
-            .unwrap()
-            .expect("bug schema node must exist");
-        let mut properties = bug_schema.properties.clone();
-        properties["titleTemplate"] = json!("{state}: {severity}");
-        service
-            .store
-            .update_node(
-                "bug",
-                NodeUpdate {
-                    properties: Some(properties),
-                    ..Default::default()
-                },
-                None,
-            )
-            .await
-            .unwrap();
+        seed_bug_extends_ticket_with_title_template(&service).await;
 
         let node = Node::new(
             "bug".to_string(),
@@ -8559,6 +8567,52 @@ mod tests {
             Some("open: high"),
             "title_template must resolve `state` from the inherited `ticket` bucket, not just \
              bug's own"
+        );
+    }
+
+    /// `with_titles` (bulk creation) caches a templated, extends-chain
+    /// type's resolved `(fields, chain)` per `node_type` rather than calling
+    /// `resolve_field_owners` again for every row — this exercises that
+    /// cached path directly (`title_template_resolves_an_inherited_field_across_extends_chain`
+    /// above only exercises `compute_title`'s uncached one) with two rows of
+    /// the same templated type, so a caching bug would show on the second.
+    #[tokio::test]
+    async fn with_titles_resolves_an_inherited_field_across_extends_chain_for_every_row() {
+        let (service, _temp) = create_test_service().await;
+        let service = Arc::new(service);
+        seed_bug_extends_ticket_with_title_template(&service).await;
+
+        let rows = service
+            .with_titles(vec![
+                (
+                    "bug-1".to_string(),
+                    "bug".to_string(),
+                    "ignored".to_string(),
+                    None,
+                    0.0,
+                    json!({ "ticket": { "state": "open" }, "bug": { "severity": "high" } }),
+                ),
+                (
+                    "bug-2".to_string(),
+                    "bug".to_string(),
+                    "ignored".to_string(),
+                    None,
+                    1.0,
+                    json!({ "ticket": { "state": "closed" }, "bug": { "severity": "low" } }),
+                ),
+            ])
+            .await
+            .unwrap();
+
+        let titles: Vec<Option<String>> = rows.into_iter().map(|row| row.6).collect();
+        assert_eq!(
+            titles,
+            vec![
+                Some("open: high".to_string()),
+                Some("closed: low".to_string()),
+            ],
+            "every row must resolve `state` from the inherited `ticket` bucket, including rows \
+             served from the per-type chain-resolution cache"
         );
     }
 
