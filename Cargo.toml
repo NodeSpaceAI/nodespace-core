@@ -24,7 +24,7 @@ resolver = "2"
 # for both `nodespaced --version` and the `get_daemon_version` gRPC RPC, and
 # nodespace-cli's `--version` flag reads it via clap's derived `version` field —
 # both are real user/API-facing surfaces, not cosmetic.
-version = "0.3.0"
+version = "0.3.1"
 authors = ["NodeSpace Team"]
 edition = "2021"
 license = "MIT"
