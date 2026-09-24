@@ -1709,7 +1709,14 @@ impl NodeService {
     /// Get relationship graph summary for NLP
     ///
     /// Returns a summary of all relationships in the system, useful for
-    /// NLP to understand the overall data model structure.
+    /// NLP to understand the overall data model structure. Chain-aware
+    /// (ADR-078): each schema's *effective* relationship set is listed, so
+    /// an extending type's inherited relationships appear under it too.
+    ///
+    /// Excludes the `extends`/`extended_by` type-system bookkeeping edge —
+    /// `resolve_relationships` filters it as not a real, instance-carried
+    /// relationship (see its doc). A schema's `extends` declaration is
+    /// therefore never surfaced as a `(child, "extends", parent)` tuple here.
     ///
     /// # Returns
     ///
