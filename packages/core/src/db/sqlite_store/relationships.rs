@@ -1951,6 +1951,43 @@ impl SqliteStore {
             .await
     }
 
+    /// `_in_tx` twin of [`Self::get_subtype_closure`], for a caller already
+    /// inside a write transaction (`rename_schema_field_in_tx`'s data
+    /// migration, which needs `type_id`'s full descendant closure to rekey
+    /// every subtype instance's property data — see `Tx`'s module doc on why
+    /// only [`Tx::conn`] may be touched from inside `with_transaction`, never
+    /// [`Self::read`]/[`Self::write`]). Same query, same `INDEXED BY` plan,
+    /// run against the transaction's own connection instead of a pooled
+    /// reader — which also makes it see the transaction's own uncommitted
+    /// writes, though no `_in_tx` caller of this mutates `extends` edges
+    /// mid-transaction today.
+    pub(crate) async fn get_subtype_closure_in_tx(
+        tx: &Tx<'_>,
+        base_type: &str,
+    ) -> Result<Vec<String>> {
+        let sql = extends_closure_sql(ExtendsDirection::Descendants);
+
+        let mut rows = tx
+            .conn()
+            .query(
+                &sql,
+                libsql::params![
+                    base_type.to_string(),
+                    crate::models::schema::EXTENDS_RELATIONSHIP
+                ],
+            )
+            .await
+            .context("Failed to walk extends closure in transaction")?;
+
+        let mut types = Vec::new();
+        while let Some(row) = rows.next().await? {
+            types.push(row.get(0)?);
+        }
+        types.sort();
+        types.dedup();
+        Ok(types)
+    }
+
     /// Shared recursive walk over `extends` edges.
     ///
     /// Only the descendant direction has a caller: ancestry is resolved

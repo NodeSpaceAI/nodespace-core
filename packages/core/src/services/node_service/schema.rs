@@ -727,12 +727,53 @@ impl NodeService {
             )));
         }
 
-        // Validate destination field does not already exist
-        if schema.fields.iter().any(|f| f.name == to) {
+        // Validate destination field does not already exist — checked
+        // against the extends-chain-merged effective set (own fields plus
+        // every ancestor's), not `schema.fields` alone, so a rename cannot
+        // shadow an inherited field the same way `validate_no_field_redeclaration`
+        // already blocks a *new* field declaration from doing.
+        let (effective_fields, field_owners, _chain) = self.resolve_field_owners(type_id).await?;
+        if effective_fields.iter().any(|f| f.name == to) {
+            let declaring_schema = field_owners.get(to).map(String::as_str).unwrap_or(type_id);
             return Err(NodeServiceError::invalid_update(format!(
-                "Field '{}' already exists in schema '{}'; cannot rename to an existing field",
-                to, type_id
+                "Field '{}' already exists in schema '{}' (declared by '{}' — own field or \
+                 inherited via extends); cannot rename to an existing field",
+                to, type_id, declaring_schema
             )));
+        }
+
+        // Also reject a destination colliding with a DESCENDANT's own field.
+        // The data migration below rekeys every instance in `type_id`'s
+        // descendant closure (ADR-078: a subtype stores an inherited field
+        // under the SAME bucket key as its ancestor), always under `type_id`'s
+        // own bucket. A descendant schema's own field of the same name is a
+        // different DB bucket, but the SAME extends-chain-merged effective
+        // name — and nearest-first shadowing means the descendant's own
+        // declaration would permanently win over the freshly-renamed
+        // ancestor field in every effective-field view (compute_title, CEL,
+        // query filters) for that descendant's instances, with no error ever
+        // raised. Checked against each descendant's own `fields` (not its
+        // resolved effective set): ADR-078 redeclaration checks already
+        // guarantee no descendant redeclares anything `type_id` currently
+        // owns, so only a descendant's OWN name can newly collide here.
+        let subtypes = self.store.get_subtype_closure(type_id).await.map_err(|e| {
+            NodeServiceError::query_failed(format!(
+                "Failed to resolve descendant closure for '{type_id}': {e}"
+            ))
+        })?;
+        for descendant_id in subtypes.iter().filter(|id| id.as_str() != type_id) {
+            let Some(descendant_schema) = self.get_schema_node(descendant_id).await? else {
+                continue;
+            };
+            if descendant_schema.fields.iter().any(|f| f.name == to) {
+                return Err(NodeServiceError::invalid_update(format!(
+                    "Field '{}' already exists as '{}''s own field ('{}' extends '{}'); \
+                     renaming would permanently shadow the ancestor's field in every \
+                     effective-field view for '{}' instances. Choose a different destination \
+                     name.",
+                    to, descendant_id, descendant_id, type_id, descendant_id
+                )));
+            }
         }
 
         // ADR-069 §1b/S3, closing F3: the data migration and the schema
