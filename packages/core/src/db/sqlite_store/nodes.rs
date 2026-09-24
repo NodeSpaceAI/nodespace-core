@@ -3752,25 +3752,33 @@ impl SqliteStore {
     ///
     /// The query is bound to `node_type` so it rides the `idx_node_type` index and
     /// filters to `lifecycle_status = 'active'`, so an archived or deleted duplicate
-    /// is not reported. Property access matches the namespaced storage shape used
-    /// everywhere else: `properties.$.<node_type>.<field>`. When `case_insensitive`
-    /// is set, both sides are folded with `LOWER`. The caller is responsible for
-    /// skipping empty/whitespace values.
+    /// is not reported. `bucket` is separate from `node_type`: it names which
+    /// namespace `properties` stores `field`'s value under —
+    /// `properties.$.<bucket>.<field>`. The two coincide for a field directly
+    /// declared on `node_type`'s own schema, but for a field inherited from an
+    /// `extends` ancestor (ADR-078) the value is bucketed under that ancestor's
+    /// schema id instead (`NodeService::bucket_properties_by_owner`), so a caller
+    /// resolving a field through the extends chain must pass that owning schema
+    /// id as `bucket` — passing `node_type` there would silently never match an
+    /// inherited field's value. When `case_insensitive` is set, both sides are
+    /// folded with `LOWER`. The caller is responsible for skipping empty/whitespace
+    /// values.
     pub async fn find_conflicting_unique(
         &self,
         node_type: &str,
+        bucket: &str,
         field: &str,
         value: &str,
         exclude_id: Option<&str>,
         case_insensitive: bool,
     ) -> Result<Option<String>> {
-        // `node_type`/`field` are interpolated into the SQL text below (SQLite has
-        // no bind-parameter form for identifiers/JSON-path segments). Every
-        // current call path reaches here only after `validate_schema_field_name`
+        // `node_type`/`bucket`/`field` are interpolated into the SQL text below
+        // (SQLite has no bind-parameter form for identifiers/JSON-path segments).
+        // Every current call path reaches here only after `validate_schema_field_name`
         // (behaviors/mod.rs) has already constrained a persisted field name to
         // this exact grammar, and `SqliteStore::validate_node_type` allow-lists
-        // `node_type` outright — so this is defense-in-depth, not the only line
-        // of defense. It is still real defense: this method is `pub` and could
+        // `node_type`/`bucket` outright — so this is defense-in-depth, not the only
+        // line of defense. It is still real defense: this method is `pub` and could
         // gain a less-guarded caller later, so it re-validates rather than trust
         // an upstream check it cannot see from here.
         //
@@ -3784,8 +3792,9 @@ impl SqliteStore {
         fn is_safe_segment(s: &str) -> bool {
             !s.is_empty() && s.chars().all(|c| c.is_alphanumeric() || c == '_')
         }
-        // `node_type` is never namespaced (it's a schema id, e.g. `person`, or a
-        // UUID-shaped extension-schema id — hence `-` is allowed here only).
+        // `node_type`/`bucket` are never namespaced (each is a schema id, e.g.
+        // `person`, or a UUID-shaped extension-schema id — hence `-` is allowed
+        // here only).
         fn is_safe_node_type(s: &str) -> bool {
             !s.is_empty()
                 && s.chars()
@@ -3800,17 +3809,18 @@ impl SqliteStore {
                 _ => false,
             }
         }
-        if !is_safe_node_type(node_type) || !is_safe_field(field) {
+        if !is_safe_node_type(node_type) || !is_safe_node_type(bucket) || !is_safe_field(field) {
             tracing::warn!(
                 node_type,
+                bucket,
                 field,
-                "find_conflicting_unique: rejected a non-identifier node_type/field \
+                "find_conflicting_unique: rejected a non-identifier node_type/bucket/field \
                  rather than build unsafe SQL from it; treating as no-conflict"
             );
             return Ok(None);
         }
 
-        let extract = format!("json_extract(properties, '$.{}.{}')", node_type, field);
+        let extract = format!("json_extract(properties, '$.{}.{}')", bucket, field);
         let (lhs, needle) = if case_insensitive {
             // SQLite LOWER() folds ASCII only, so a value differing solely in the
             // case of a non-ASCII character would not be matched here. Acceptable:
@@ -4140,7 +4150,7 @@ mod find_conflicting_unique_tests {
         let existing = make_person(&store, "a@x.com", "active").await?;
 
         let hit = store
-            .find_conflicting_unique("person", "email", "a@x.com", None, false)
+            .find_conflicting_unique("person", "person", "email", "a@x.com", None, false)
             .await?;
         assert_eq!(hit, Some(existing));
         Ok(())
@@ -4153,13 +4163,13 @@ mod find_conflicting_unique_tests {
 
         // Different casing must still collide when case_insensitive is set.
         let hit = store
-            .find_conflicting_unique("person", "email", "A@x.com", None, true)
+            .find_conflicting_unique("person", "person", "email", "A@x.com", None, true)
             .await?;
         assert_eq!(hit, Some(existing));
 
         // ...and must NOT collide under case-sensitive comparison.
         let miss = store
-            .find_conflicting_unique("person", "email", "A@x.com", None, false)
+            .find_conflicting_unique("person", "person", "email", "A@x.com", None, false)
             .await?;
         assert_eq!(miss, None);
         Ok(())
@@ -4171,7 +4181,7 @@ mod find_conflicting_unique_tests {
         make_person(&store, "a@x.com", "active").await?;
 
         let miss = store
-            .find_conflicting_unique("person", "email", "b@x.com", None, true)
+            .find_conflicting_unique("person", "person", "email", "b@x.com", None, true)
             .await?;
         assert_eq!(miss, None);
         Ok(())
@@ -4184,7 +4194,14 @@ mod find_conflicting_unique_tests {
 
         // The only node with this value is excluded, so there is no conflict.
         let miss = store
-            .find_conflicting_unique("person", "email", "a@x.com", Some(&existing), false)
+            .find_conflicting_unique(
+                "person",
+                "person",
+                "email",
+                "a@x.com",
+                Some(&existing),
+                false,
+            )
             .await?;
         assert_eq!(miss, None);
         Ok(())
@@ -4197,7 +4214,7 @@ mod find_conflicting_unique_tests {
 
         // Only active nodes count toward uniqueness suggestions.
         let miss = store
-            .find_conflicting_unique("person", "email", "a@x.com", None, false)
+            .find_conflicting_unique("person", "person", "email", "a@x.com", None, false)
             .await?;
         assert_eq!(miss, None);
         Ok(())
@@ -4211,7 +4228,14 @@ mod find_conflicting_unique_tests {
         // The predicate is bound to node_type, so a query for a different type
         // never matches a person's value.
         let miss = store
-            .find_conflicting_unique("organization", "email", "a@x.com", None, false)
+            .find_conflicting_unique(
+                "organization",
+                "organization",
+                "email",
+                "a@x.com",
+                None,
+                false,
+            )
             .await?;
         assert_eq!(miss, None);
         Ok(())
@@ -4230,6 +4254,7 @@ mod find_conflicting_unique_tests {
         let attempt = store
             .find_conflicting_unique(
                 "person",
+                "person",
                 "email') OR '1'='1", // would match everything if spliced unguarded
                 "a@x.com",
                 None,
@@ -4241,6 +4266,7 @@ mod find_conflicting_unique_tests {
         let attempt2 = store
             .find_conflicting_unique(
                 "person'; DROP TABLE node; --",
+                "person",
                 "email",
                 "a@x.com",
                 None,
@@ -4254,7 +4280,7 @@ mod find_conflicting_unique_tests {
 
         // And the table must still be intact and queryable afterward.
         let sane = store
-            .find_conflicting_unique("person", "email", "a@x.com", None, false)
+            .find_conflicting_unique("person", "person", "email", "a@x.com", None, false)
             .await?;
         assert!(
             sane.is_some(),
@@ -4281,12 +4307,57 @@ mod find_conflicting_unique_tests {
         store.create_node(node, None, None).await?;
 
         let hit = store
-            .find_conflicting_unique("task", "custom:employee_id", "E-42", None, false)
+            .find_conflicting_unique("task", "task", "custom:employee_id", "E-42", None, false)
             .await?;
         assert!(
             hit.is_some(),
             "a namespaced field name must be usable, not silently rejected \
              as if it were a malicious identifier"
+        );
+        Ok(())
+    }
+
+    /// `bucket` is distinct from `node_type` precisely for a field inherited
+    /// from an `extends` ancestor (ADR-078): the value lives under the
+    /// owning ancestor schema's bucket, not `node_type`'s own bucket
+    /// (`NodeService::bucket_properties_by_owner`). Row selection must still
+    /// filter on the node's real `node_type`, while the JSON extraction path
+    /// must use `bucket` — reading from `node_type`'s own bucket for such a
+    /// field would silently never match.
+    #[tokio::test]
+    async fn bucket_distinct_from_node_type_reads_the_owning_ancestors_bucket() -> Result<()> {
+        let (store, _t) = bare_store().await?;
+        let mut node = Node::new(
+            "person_sub".to_string(),
+            "Inherited email".to_string(),
+            // The value is bucketed under the ANCESTOR schema id ("person"),
+            // not under the node's own type ("person_sub") — exactly as
+            // `bucket_properties_by_owner` stores an inherited field's value.
+            json!({ "person": { "email": "a@x.com" } }),
+        );
+        node.lifecycle_status = "active".to_string();
+        let id = node.id.clone();
+        store.create_node(node, None, None).await?;
+
+        // Row-filtered by the real node_type, extracted from the owner bucket.
+        let hit = store
+            .find_conflicting_unique("person_sub", "person", "email", "a@x.com", None, false)
+            .await?;
+        assert_eq!(
+            hit,
+            Some(id),
+            "extraction must read from `bucket` (the owning ancestor schema), \
+             not from `node_type`'s own bucket"
+        );
+
+        // Extracting from node_type's own bucket instead must NOT match —
+        // pins the exact failure mode this function used to have.
+        let miss = store
+            .find_conflicting_unique("person_sub", "person_sub", "email", "a@x.com", None, false)
+            .await?;
+        assert_eq!(
+            miss, None,
+            "the node's own (empty, for an inherited-only field) bucket must not match"
         );
         Ok(())
     }

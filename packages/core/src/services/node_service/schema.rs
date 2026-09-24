@@ -83,22 +83,28 @@ impl NodeService {
             return Ok(None);
         }
 
-        // Resolve the uniqueness flags from the type's schema fields.
-        let schema = self
-            .store
-            .get_schema_node(node_type)
-            .await
-            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+        // Resolved via `resolve_field_owners` rather than a direct
+        // `get_schema_node(node_type)` lookup: the latter returns only
+        // `node_type`'s own directly-declared fields, not the ADR-078
+        // `extends`-chain-merged set. A `unique`/`uniqueCaseInsensitive`
+        // field declared only on an ancestor schema and inherited (not
+        // redeclared) by a subtype was therefore invisible here, so a real
+        // conflicting value on a subtype instance never surfaced a duplicate
+        // suggestion. Same fix pattern as `workflow_state.rs`,
+        // `validation.rs`, `graph_resolver.rs`'s
+        // `is_declared_many_relationship`, and `rel_ops.rs`'s
+        // `resolve_relationship_name`/`get_node_relationships`. When
+        // `node_type` has no schema at all, `resolve_field_owners` returns
+        // an empty field set — same outcome the old direct lookup produced
+        // for a missing schema.
+        let (fields, owners, _chain) = self.resolve_field_owners(node_type).await?;
 
-        let flags = schema
-            .as_ref()
-            .and_then(|s| s.fields.iter().find(|f| f.name == field))
-            .map(|f| {
-                (
-                    f.unique.unwrap_or(false),
-                    f.unique_case_insensitive.unwrap_or(false),
-                )
-            });
+        let flags = fields.iter().find(|f| f.name == field).map(|f| {
+            (
+                f.unique.unwrap_or(false),
+                f.unique_case_insensitive.unwrap_or(false),
+            )
+        });
 
         let (is_unique, case_insensitive) = match flags {
             Some(flags) => flags,
@@ -109,9 +115,22 @@ impl NodeService {
             return Ok(None);
         }
 
+        // An inherited field's value is stored under its owning ancestor
+        // schema's bucket, not `node_type`'s own bucket
+        // (`bucket_properties_by_owner`, ADR-078) — `owners` (from the same
+        // `resolve_field_owners` call above) says which. Falls back to
+        // `node_type` for the common, unextended case.
+        let bucket = owners.get(field).map(String::as_str).unwrap_or(node_type);
         let conflicting_id = self
             .store
-            .find_conflicting_unique(node_type, field, value, exclude_id, case_insensitive)
+            .find_conflicting_unique(
+                node_type,
+                bucket,
+                field,
+                value,
+                exclude_id,
+                case_insensitive,
+            )
             .await
             .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
 
