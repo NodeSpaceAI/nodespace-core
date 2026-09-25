@@ -32,6 +32,15 @@
 //! writing the aggregate's result is the existing `update_node`/`create_node`
 //! action-writing mechanism, not a new one.
 //!
+//! A collection path may be narrowed with one or more chained
+//! `.where(<predicate>)` calls -- `trigger.node.tasks.where(status != 'done')`
+//! -- wherever a collection path is accepted: `for_each`, `sum(...)`,
+//! `count(...)`, or a bare `{binding}`. The predicate is CEL over the item's
+//! own fields, read at the collection's declared item type (see
+//! `BindingContext::resolve_where_chain`). It is the one place CEL is
+//! reachable from an action binding, and it is confined to a per-item boolean:
+//! it selects items, it never produces a value.
+//!
 //! # Derived Identity (ADR-060 §3, ADR-074)
 //!
 //! `create_node` action outputs get a deterministic id --
@@ -103,7 +112,7 @@
 
 use crate::db::events::{DomainEvent, PlaybookExecutionContext, PLAYBOOK_CHAIN_DEPTH_PROPERTY};
 use crate::models::{Node, NodeUpdate};
-use crate::playbook::graph_resolver::GraphResolver;
+use crate::playbook::graph_resolver::{declared_collection_type, GraphResolver};
 use crate::playbook::types::{ActionType, IterationPath, ParsedAction};
 use crate::services::{NodeService, NodeServiceError};
 use serde_json::{json, Value};
@@ -322,10 +331,19 @@ impl BindingContext {
     /// binding: `(` is not a legal character in any path segment a play
     /// author can write today.
     ///
+    /// A collection path followed by one or more `.where(<predicate>)` calls
+    /// resolves to the collection narrowed to the items every predicate
+    /// accepts -- see [`Self::resolve_where_chain`]. Like the function-call
+    /// form, it can never change an existing bare path's resolution: `(` is
+    /// not legal in a path segment.
+    ///
     /// Handles both `actions[0].result.field` and `actions.0.result.field` formats.
     pub async fn resolve_binding(&mut self, path: &str) -> Result<Value, String> {
         if let Some((name, args)) = parse_function_call(path) {
             return self.resolve_function_call(name, args).await;
+        }
+        if let Some((base, predicates)) = parse_where_chain(path)? {
+            return self.resolve_where_chain(base, &predicates).await;
         }
 
         let segments: Vec<&str> = path.split('.').collect();
@@ -501,6 +519,140 @@ impl BindingContext {
         }
 
         Ok(items)
+    }
+
+    /// `<collection-path>.where(p1).where(p2)...` -- the collection narrowed to
+    /// the items every predicate accepts, in the collection's own order.
+    ///
+    /// Each item is read at the collection's DECLARED item type
+    /// ([`declared_collection_type`]) -- the type the predicate was validated
+    /// against at save time -- not at the item's own concrete type. The Linear
+    /// rollover is the case that needs it: `cycle.tasks` targets `task`, its
+    /// items are `issue`s, and an issue's extended `status` (`backlog`) must
+    /// read as the `task` value it maps to (`open`) for a `task`-authored
+    /// predicate to mean what it says. When the path has no declared item type
+    /// (an array-valued property, or a path that is not rooted at
+    /// `trigger.node`/`item`), each item is read at its own scope -- save-time
+    /// validation refuses a `.where` on such a path, so only an unvalidated
+    /// caller reaches that fallback.
+    ///
+    /// A predicate that fails to evaluate for an item fails the whole binding
+    /// (and so the rule) rather than dropping the item: see
+    /// [`crate::playbook::cel::ItemPredicate`].
+    async fn resolve_where_chain(
+        &mut self,
+        base: &str,
+        predicates: &[&str],
+    ) -> Result<Value, String> {
+        if parse_function_call(base).is_some() {
+            return Err(format!(
+                "where() must follow a collection path, not a function call ('{}')",
+                base
+            ));
+        }
+        let compiled = predicates
+            .iter()
+            .map(|p| crate::playbook::cel::ItemPredicate::compile(p))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let items = match Box::pin(self.resolve_binding(base)).await? {
+            Value::Array(items) => items,
+            other => {
+                return Err(format!(
+                    "where() collection path '{}' did not resolve to an array (got {})",
+                    base,
+                    json_kind(&other)
+                ));
+            }
+        };
+
+        let node_service = self
+            .graph_resolver
+            .as_ref()
+            .map(|r| Arc::clone(r.node_service()));
+        let declared_type = match &node_service {
+            Some(ns) => self.declared_item_type(ns, base).await?,
+            None => None,
+        };
+
+        // One scope per concrete item type: a collection is usually a single
+        // type, and building a scope costs schema reads.
+        let mut scopes: std::collections::HashMap<String, Option<crate::playbook::cel::CelScope>> =
+            std::collections::HashMap::new();
+        let mut kept = Vec::with_capacity(items.len());
+        for item in items {
+            let cel_item = match serde_json::from_value::<Node>(item.clone()) {
+                Ok(node) => {
+                    let scope = match (&node_service, &declared_type) {
+                        (Some(ns), Some(scope_type)) => {
+                            if !scopes.contains_key(&node.node_type) {
+                                let scope =
+                                    crate::playbook::cel::CelScope::resolve(ns, scope_type, &node)
+                                        .await
+                                        .map_err(|e| {
+                                            format!(
+                                        "where(): reading '{}' items at '{}' scope failed: {}",
+                                        node.node_type, scope_type, e
+                                    )
+                                        })?;
+                                scopes.insert(node.node_type.clone(), scope);
+                            }
+                            scopes.get(&node.node_type).cloned().flatten()
+                        }
+                        _ => None,
+                    };
+                    crate::playbook::cel::scoped_node_value(&node, scope.as_ref())
+                }
+                // A plain (non-node) item: its own keys are its fields.
+                Err(_) => crate::playbook::cel::json_to_cel(&item),
+            };
+
+            let mut keep = true;
+            for predicate in &compiled {
+                if !predicate.matches(&cel_item)? {
+                    keep = false;
+                    break;
+                }
+            }
+            if keep {
+                kept.push(item);
+            }
+        }
+        Ok(Value::Array(kept))
+    }
+
+    /// The declared item type of a `.where` base path -- see
+    /// [`declared_collection_type`]. Only `trigger.node.<path>` and
+    /// `item.<path>` have a node to start the walk from.
+    async fn declared_item_type(
+        &self,
+        node_service: &NodeService,
+        base: &str,
+    ) -> Result<Option<String>, String> {
+        let segments: Vec<&str> = base.split('.').collect();
+        let (start_type, rest) = match segments.as_slice() {
+            ["trigger", "node", rest @ ..] => (self.trigger_node_model.node_type.clone(), rest),
+            ["item", rest @ ..] => {
+                let Some(item_type) = self
+                    .current_item
+                    .as_ref()
+                    .and_then(|item| serde_json::from_value::<Node>(item.clone()).ok())
+                    .map(|node| node.node_type)
+                else {
+                    return Ok(None);
+                };
+                (item_type, rest)
+            }
+            _ => return Ok(None),
+        };
+        declared_collection_type(node_service, &start_type, rest)
+            .await
+            .map_err(|e| {
+                format!(
+                    "where(): resolving the item type of '{}' failed: {}",
+                    base, e
+                )
+            })
     }
 
     async fn resolve_trigger_path(&mut self, segments: &[&str]) -> Result<Value, String> {
@@ -909,14 +1061,22 @@ pub(crate) fn parse_function_call(path: &str) -> Option<(&str, &str)> {
 /// anything nested -- it only produces argument-text boundaries; detecting
 /// and rejecting a nested function-call argument is the caller's job (see
 /// `BindingContext::resolve_add_days_call`).
-fn split_top_level_args(args: &str) -> Vec<&str> {
+///
+/// Quote-aware: a `.where(...)` predicate inside an argument
+/// (`sum(trigger.node.tasks.where(content != 'a, b)'), estimate)`) carries
+/// CEL string literals whose commas and parentheses are text, not structure.
+pub(crate) fn split_top_level_args(args: &str) -> Vec<&str> {
     if args.trim().is_empty() {
         return Vec::new();
     }
     let mut parts = Vec::new();
     let mut depth: i32 = 0;
     let mut start = 0usize;
+    let mut scanner = QuoteScanner::default();
     for (i, ch) in args.char_indices() {
+        if scanner.in_literal(ch) {
+            continue;
+        }
         match ch {
             '(' => depth += 1,
             ')' => depth -= 1,
@@ -929,6 +1089,138 @@ fn split_top_level_args(args: &str) -> Vec<&str> {
     }
     parts.push(&args[start..]);
     parts
+}
+
+/// Tracks whether a left-to-right character scan is inside a CEL string
+/// literal (`'...'` or `"..."`, with `\` escapes), so structural characters
+/// inside one are skipped.
+#[derive(Default)]
+struct QuoteScanner {
+    quote: Option<char>,
+    escaped: bool,
+}
+
+impl QuoteScanner {
+    /// Feed the next character; true when it is part of a string literal
+    /// (including the opening and closing quotes themselves).
+    fn in_literal(&mut self, ch: char) -> bool {
+        match self.quote {
+            Some(q) => {
+                if self.escaped {
+                    self.escaped = false;
+                } else if ch == '\\' {
+                    self.escaped = true;
+                } else if ch == q {
+                    self.quote = None;
+                }
+                true
+            }
+            None if ch == '\'' || ch == '"' => {
+                self.quote = Some(ch);
+                true
+            }
+            None => false,
+        }
+    }
+}
+
+const WHERE_CALL: &str = ".where(";
+
+/// Detect a `<collection-path>.where(p1).where(p2)...` binding, returning the
+/// collection path and each predicate's source text.
+///
+/// `Ok(None)` when the path contains no `.where(` outside a string literal --
+/// every existing binding. Once a `.where(` is present the rest of the path
+/// must be nothing but further `.where(...)` calls: `tasks.where(p).count`, an
+/// unbalanced parenthesis, or an empty predicate is an error, never a
+/// silently truncated filter.
+///
+/// `pub(crate)`: save-time validation (`playbook::validation`) finds and
+/// checks every `.where` chain through this same parser, so a chain that
+/// validates is exactly the chain that runs.
+pub(crate) fn parse_where_chain(path: &str) -> Result<Option<(&str, Vec<&str>)>, String> {
+    let path = path.trim();
+    let mut scanner = QuoteScanner::default();
+    let Some(start) = path
+        .char_indices()
+        .find(|&(i, ch)| !scanner.in_literal(ch) && path[i..].starts_with(WHERE_CALL))
+        .map(|(i, _)| i)
+    else {
+        return Ok(None);
+    };
+
+    let base = path[..start].trim_end();
+    if base.is_empty() {
+        return Err(format!(
+            "where() in '{}' has no collection path before it",
+            path
+        ));
+    }
+
+    let mut predicates = Vec::new();
+    let mut rest = &path[start..];
+    while !rest.is_empty() {
+        let Some(after) = rest.strip_prefix(WHERE_CALL) else {
+            return Err(format!(
+                "unexpected '{}' after .where(...) in '{}' -- only further .where(...) calls may follow",
+                rest, path
+            ));
+        };
+        let close = matching_close_paren(after)
+            .ok_or_else(|| format!("unbalanced parentheses in '{}'", path))?;
+        let predicate = after[..close].trim();
+        if predicate.is_empty() {
+            return Err(format!("where() in '{}' has an empty predicate", path));
+        }
+        predicates.push(predicate);
+        rest = after[close + 1..].trim_start();
+    }
+    Ok(Some((base, predicates)))
+}
+
+/// Byte index of the `)` closing an already-opened `(`, skipping parentheses
+/// inside string literals.
+fn matching_close_paren(s: &str) -> Option<usize> {
+    let mut depth = 1i32;
+    let mut scanner = QuoteScanner::default();
+    for (i, ch) in s.char_indices() {
+        if scanner.in_literal(ch) {
+            continue;
+        }
+        match ch {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Every `.where` chain a binding expression can resolve: the expression
+/// itself, or -- for a function-call binding (`sum(...)`, `count(...)`) --
+/// any of its arguments. A malformed chain is returned as its parse error.
+///
+/// `pub(crate)` for save-time validation; see [`parse_where_chain`].
+pub(crate) fn collect_where_chains<'a>(
+    expr: &'a str,
+    out: &mut Vec<Result<(&'a str, Vec<&'a str>), String>>,
+) {
+    if let Some((_name, args)) = parse_function_call(expr) {
+        for arg in split_top_level_args(args) {
+            collect_where_chains(arg, out);
+        }
+        return;
+    }
+    match parse_where_chain(expr) {
+        Ok(Some(chain)) => out.push(Ok(chain)),
+        Ok(None) => {}
+        Err(e) => out.push(Err(e)),
+    }
 }
 
 /// Extract the raw text inside every `{...}` binding template in a param
@@ -2626,6 +2918,230 @@ mod tests {
             .unwrap_err();
         assert!(err.contains("unknown function 'average'"), "{err}");
         assert!(err.contains("sum"), "{err}");
+    }
+
+    // -----------------------------------------------------------------------
+    // .where(...) collection filters
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn parse_where_chain_ignores_a_path_without_where() {
+        assert_eq!(parse_where_chain("trigger.node.tasks"), Ok(None));
+        // `where` as a plain segment name is a path, not a call.
+        assert_eq!(parse_where_chain("trigger.node.where"), Ok(None));
+    }
+
+    #[test]
+    fn parse_where_chain_splits_base_and_chained_predicates() {
+        let (base, predicates) =
+            parse_where_chain("trigger.node.tasks.where(status != 'done').where(estimate > 3)")
+                .unwrap()
+                .unwrap();
+        assert_eq!(base, "trigger.node.tasks");
+        assert_eq!(predicates, vec!["status != 'done'", "estimate > 3"]);
+    }
+
+    #[test]
+    fn parse_where_chain_skips_parentheses_inside_string_literals() {
+        let (base, predicates) =
+            parse_where_chain("trigger.node.tasks.where(content != 'a) .where(b')")
+                .unwrap()
+                .unwrap();
+        assert_eq!(base, "trigger.node.tasks");
+        assert_eq!(predicates, vec!["content != 'a) .where(b'"]);
+    }
+
+    #[test]
+    fn parse_where_chain_rejects_anything_but_where_after_a_where() {
+        let err =
+            parse_where_chain("trigger.node.tasks.where(status == 'done').count").unwrap_err();
+        assert!(
+            err.contains("only further .where(...) calls may follow"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn parse_where_chain_rejects_malformed_calls() {
+        assert!(
+            parse_where_chain("trigger.node.tasks.where(status == 'done'")
+                .unwrap_err()
+                .contains("unbalanced")
+        );
+        assert!(parse_where_chain("trigger.node.tasks.where( )")
+            .unwrap_err()
+            .contains("empty predicate"));
+        assert!(parse_where_chain(".where(status == 'done')")
+            .unwrap_err()
+            .contains("no collection path"));
+    }
+
+    #[test]
+    fn split_top_level_args_ignores_commas_inside_string_literals() {
+        let parts = split_top_level_args("trigger.node.tasks.where(content != 'a, b)'), estimate");
+        assert_eq!(
+            parts,
+            vec!["trigger.node.tasks.where(content != 'a, b)')", " estimate"]
+        );
+    }
+
+    /// A Node-shaped item carrying a `status` (when given) and an `estimate`.
+    fn where_item(id: &str, status: Option<&str>, estimate: i64) -> Value {
+        let mut props = serde_json::Map::new();
+        if let Some(status) = status {
+            props.insert("status".to_string(), json!(status));
+        }
+        props.insert("estimate".to_string(), json!(estimate));
+        serde_json::to_value(Node {
+            id: id.to_string(),
+            node_type: "task".to_string(),
+            content: String::new(),
+            version: 1,
+            created_at: Utc::now(),
+            modified_at: Utc::now(),
+            properties: json!({ "task": props }),
+            mentions: vec![],
+            mentioned_in: vec![],
+            title: None,
+            lifecycle_status: "active".to_string(),
+        })
+        .unwrap()
+    }
+
+    fn where_ctx(items: Vec<Value>) -> BindingContext {
+        let node = make_test_node("node-123", "task");
+        let event = make_node_created_event("node-123", "task");
+        let mut ctx = BindingContext::new(&node, &event, None);
+        ctx.action_results.push(Value::Array(items));
+        ctx
+    }
+
+    fn ids(value: &Value) -> Vec<&str> {
+        value
+            .as_array()
+            .expect("an array")
+            .iter()
+            .map(|i| i["id"].as_str().unwrap())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn where_keeps_only_matching_items_in_collection_order() {
+        let mut ctx = where_ctx(vec![
+            where_item("a", Some("done"), 1),
+            where_item("b", Some("in_progress"), 2),
+            where_item("c", Some("cancelled"), 3),
+            where_item("d", Some("open"), 4),
+        ]);
+        let result = ctx
+            .resolve_binding("actions[0].result.where(status != 'done' && status != 'cancelled')")
+            .await
+            .unwrap();
+        assert_eq!(ids(&result), vec!["b", "d"]);
+    }
+
+    #[tokio::test]
+    async fn chained_wheres_all_apply() {
+        let mut ctx = where_ctx(vec![
+            where_item("a", Some("open"), 1),
+            where_item("b", Some("open"), 5),
+            where_item("c", Some("done"), 8),
+        ]);
+        let result = ctx
+            .resolve_binding("actions[0].result.where(status == 'open').where(estimate > 3)")
+            .await
+            .unwrap();
+        assert_eq!(ids(&result), vec!["b"]);
+    }
+
+    /// An unset field reads as `null`, so a "not done" filter keeps an item
+    /// whose status was never set rather than failing on it.
+    #[tokio::test]
+    async fn where_binds_an_unset_field_to_null() {
+        let mut ctx = where_ctx(vec![
+            where_item("a", None, 1),
+            where_item("b", Some("done"), 2),
+        ]);
+        let result = ctx
+            .resolve_binding("actions[0].result.where(status != 'done')")
+            .await
+            .unwrap();
+        assert_eq!(ids(&result), vec!["a"]);
+    }
+
+    /// `!= null &&` short-circuits, so a comparison that would fail on an
+    /// unset field can be guarded rather than aborting the rule.
+    #[tokio::test]
+    async fn where_null_guard_short_circuits_an_otherwise_failing_comparison() {
+        let mut ctx = where_ctx(vec![
+            where_item("a", None, 1),
+            where_item("b", Some("open"), 2),
+        ]);
+        let result = ctx
+            .resolve_binding("actions[0].result.where(status != null && status > 'm')")
+            .await
+            .unwrap();
+        assert_eq!(ids(&result), vec!["b"]);
+
+        // Unguarded, the same comparison fails on the unset item.
+        let err = ctx
+            .resolve_binding("actions[0].result.where(status > 'm')")
+            .await
+            .unwrap_err();
+        assert!(err.contains("failed to evaluate"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn where_composes_with_sum_and_count() {
+        let mut ctx = where_ctx(vec![
+            where_item("a", Some("done"), 3),
+            where_item("b", Some("done"), 5),
+            where_item("c", Some("open"), 8),
+        ]);
+        assert_eq!(
+            ctx.resolve_binding("sum(actions[0].result.where(status == 'done'), estimate)")
+                .await
+                .unwrap(),
+            json!(8)
+        );
+        assert_eq!(
+            ctx.resolve_binding("count(actions[0].result.where(status == 'done'))")
+                .await
+                .unwrap(),
+            json!(2)
+        );
+    }
+
+    /// A predicate that cannot be evaluated for an item fails the binding —
+    /// dropping the item instead would be a filter that silently narrows.
+    #[tokio::test]
+    async fn where_evaluation_error_fails_the_binding_rather_than_dropping_the_item() {
+        let mut ctx = where_ctx(vec![where_item("a", Some("open"), 1)]);
+        let err = ctx
+            .resolve_binding("actions[0].result.where(status > 3)")
+            .await
+            .unwrap_err();
+        assert!(err.contains("failed to evaluate"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn where_predicate_must_be_boolean() {
+        let mut ctx = where_ctx(vec![where_item("a", Some("open"), 1)]);
+        let err = ctx
+            .resolve_binding("actions[0].result.where(estimate)")
+            .await
+            .unwrap_err();
+        assert!(err.contains("must evaluate to a boolean"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn where_on_a_non_collection_is_an_error() {
+        let mut ctx = where_ctx(vec![]);
+        let err = ctx
+            .resolve_binding("trigger.node.id.where(status == 'done')")
+            .await
+            .unwrap_err();
+        assert!(err.contains("did not resolve to an array"), "{err}");
     }
 
     // -----------------------------------------------------------------------
@@ -4372,6 +4888,20 @@ mod tests {
                 .await
                 .unwrap();
             assert_eq!(sum, json!(8), "sum(...) must reuse this same resolution");
+
+            // `.where` narrows the same relationship collection, reading each
+            // related node's own schema field.
+            let narrowed = ctx
+                .resolve_binding("trigger.node.issues.where(estimate > 3)")
+                .await
+                .unwrap();
+            let narrowed_ids: Vec<&str> = narrowed
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|i| i["id"].as_str().unwrap())
+                .collect();
+            assert_eq!(narrowed_ids, vec!["issue-b"]);
         }
     }
 
