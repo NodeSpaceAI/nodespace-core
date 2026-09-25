@@ -2991,6 +2991,14 @@ impl SqliteStore {
         // branching factor, so the closure is chunked under SQLite's
         // bound-parameter ceiling like this file's `id IN (...)` call sites.
         let subtypes = Self::get_subtype_closure_in_tx(tx, type_id).await?;
+        // The closure always contains the seed itself (the walk's base
+        // case); an empty one would mean that contract broke, and would
+        // silently migrate zero rows while the caller still rewrites the
+        // schema definition.
+        debug_assert!(
+            !subtypes.is_empty(),
+            "rename_schema_field_in_tx: descendant closure must include the seed type"
+        );
 
         let mut affected = 0u64;
         let now = Utc::now().to_rfc3339();
@@ -5461,7 +5469,9 @@ mod large_subtree_chunking_tests {
     /// subtypes plus the base make a closure of 1801 — three chunks — with
     /// one instance per type, so an instance of a type in any chunk that was
     /// dropped (or a chunk whose `affected` count was overwritten rather
-    /// than added) fails the assertions below.
+    /// than added) fails the assertions below. Like the other
+    /// `MULTI_CHUNK_COUNT` tests this proves merge-across-chunks, not the
+    /// bound-parameter ceiling itself — 1801 binds is well under 32766.
     #[tokio::test]
     async fn rename_schema_field_in_tx_migrates_across_multiple_type_chunks() -> Result<()> {
         let (store, _t) = bare_store().await?;

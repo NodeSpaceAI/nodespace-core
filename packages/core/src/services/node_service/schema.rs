@@ -810,6 +810,13 @@ impl NodeService {
     /// and Step 2's wholesale `fields` rewrite then silently discarded
     /// whatever landed in it. Pooled readers cannot see this transaction's
     /// own writes, which is why this runs before any of them.
+    ///
+    /// This closes only the rename's OWN read-then-overwrite window. A
+    /// writer that read the schema before this rename committed and later
+    /// overwrites `fields` from that read (e.g. `handle_update_schema`'s
+    /// post-rename re-fetch, which happens outside its own transaction) can
+    /// still revert the rename's definition change — that writer has to
+    /// close its own window the same way.
     async fn validate_schema_field_rename(
         &self,
         type_id: &str,
