@@ -119,6 +119,17 @@ impl NodeService {
             ));
         }
 
+        // Collapse each node's `extends` chain into its own bucket before the
+        // tree is flattened for the wire, exactly as the single-node read path
+        // does — otherwise inherited fields would be missing from tree nodes.
+        let node_map: HashMap<String, Node> = self
+            .collapse_chain_for_wire(node_map.into_values().collect())
+            .await?
+            .into_iter()
+            .map(|n| (n.id.clone(), n))
+            .collect();
+        let root_node = root_node.and_then(|root| node_map.get(&root.id).cloned());
+
         match root_node {
             Some(root) => {
                 // Backlinks (mentioned_in) are fetched as their own resource via
@@ -1222,6 +1233,45 @@ mod tree_size_limit_tests {
                 .context("Failed to seed relationship chunk")?;
         }
 
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn get_children_tree_serves_flat_properties_like_single_node_reads() -> Result<()> {
+        // A node page populates the frontend store from this tree, so its nodes
+        // must carry the same flattened `properties` a single-node read returns —
+        // not storage's `{ "person": { ... } }` bucket.
+        let (service, _tmp) = create_test_service().await?;
+        let root_id = service
+            .create_node(crate::models::Node::new(
+                "text".to_string(),
+                "root".to_string(),
+                serde_json::json!({}),
+            ))
+            .await?;
+        service
+            .create_node_with_parent(CreateNodeParams {
+                id: None,
+                node_type: "person".to_string(),
+                content: String::new(),
+                parent_id: Some(root_id.clone()),
+                position: crate::services::InsertPositionOwned::End,
+                properties: serde_json::json!({ "first_name": "Ada", "last_name": "Lovelace" }),
+                lifecycle_status: None,
+            })
+            .await?;
+
+        let tree = service.get_children_tree(&root_id).await?;
+        let person = &tree["children"][0];
+
+        assert_eq!(person["nodeType"], "person");
+        assert_eq!(person["properties"]["first_name"], "Ada");
+        assert_eq!(person["properties"]["last_name"], "Lovelace");
+        assert!(
+            person["properties"].get("person").is_none(),
+            "tree nodes must not carry the storage bucket: {}",
+            person["properties"]
+        );
         Ok(())
     }
 

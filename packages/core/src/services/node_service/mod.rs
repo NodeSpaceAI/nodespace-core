@@ -2776,17 +2776,11 @@ fn build_node_tree_guarded(
         )));
     }
 
-    // Raw node serialization (namespaced properties preserved), plus the
-    // nodespace:// URI clients use for rich rendering — mirroring the
-    // single-node read path's contract.
-    let mut json = serde_json::to_value(node.clone())
-        .unwrap_or_else(|_| serde_json::Value::Object(Default::default()));
-    if let Some(obj) = json.as_object_mut() {
-        obj.insert(
-            "uri".to_string(),
-            serde_json::Value::String(format!("nodespace://{}", node.id)),
-        );
-    }
+    // The same typed, flattened shape (plus nodespace:// URI) every other
+    // wire read returns, so a node reaches the frontend in one shape whether
+    // it arrived by a single fetch or inside a tree.
+    let mut json = crate::models::node_to_typed_value(node.clone())
+        .map_err(NodeServiceError::serialization_error)?;
 
     // Build children array (always present, even if empty for consistency)
     let mut children: Vec<serde_json::Value> = Vec::new();
