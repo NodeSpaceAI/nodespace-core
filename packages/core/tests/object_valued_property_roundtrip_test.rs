@@ -134,8 +134,6 @@ async fn object_property_round_trips_through_query() -> Result<()> {
         &svc,
         node_ops::QueryNodesInput {
             node_type: Some("venue".to_string()),
-            parent_id: None,
-            root_id: None,
             limit: None,
             offset: None,
             collection_id: None,

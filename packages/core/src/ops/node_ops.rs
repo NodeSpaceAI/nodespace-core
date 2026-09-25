@@ -107,8 +107,6 @@ pub struct QueryFilterItem {
 #[derive(Debug)]
 pub struct QueryNodesInput {
     pub node_type: Option<String>,
-    pub parent_id: Option<String>,
-    pub root_id: Option<String>,
     pub limit: Option<usize>,
     pub offset: Option<usize>,
     pub collection_id: Option<String>,
@@ -444,15 +442,6 @@ pub async fn query_nodes(
 
     if let Some(node_type) = input.node_type {
         filter = filter.with_node_type(node_type);
-    }
-
-    if input.parent_id.is_some() {
-        tracing::warn!("parent_id filter ignored - use graph queries for relationship traversal");
-    }
-    if input.root_id.is_some() {
-        tracing::warn!(
-            "root_id filter is deprecated - use graph queries for relationship traversal"
-        );
     }
 
     // pagination differs for a collection-scoped query. Pushing offset/limit

@@ -2075,8 +2075,6 @@ mod full_seed_db_tests {
             &ns,
             nodespace_core::ops::node_ops::QueryNodesInput {
                 node_type: Some("tool".to_string()),
-                parent_id: None,
-                root_id: None,
                 limit: Some(256),
                 offset: None,
                 collection_id: None,

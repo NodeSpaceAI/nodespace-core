@@ -35,7 +35,6 @@
 //! );
 //! ```
 
-use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 // Wire types are defined once in nodespace-types and re-exported here.
@@ -226,23 +225,21 @@ impl PropertyFilter {
 /// Node filter for query operations
 ///
 /// Supports common query patterns for filtering nodes by various criteria,
-/// including temporal ranges, JSON property values, and custom sort orders.
+/// including JSON property values and custom sort orders. Date-range
+/// querying lives in `QueryService`'s metadata filters, not here.
 ///
 /// # Examples
 ///
 /// ```rust
 /// # use nodespace_core::models::{NodeFilter, PropertyFilter, FilterOperator, OrderBy};
 /// # use serde_json::json;
-/// # use chrono::{Utc, Duration};
 /// // Filter by node type
 /// let filter = NodeFilter::new()
 ///     .with_node_type("task".to_string());
 ///
-/// // Complex filter: tasks created in last 7 days with high priority
-/// let week_ago = Utc::now() - Duration::days(7);
+/// // Complex filter: newest high-priority tasks
 /// let filter = NodeFilter::new()
 ///     .with_node_type("task".to_string())
-///     .with_created_after(week_ago)
 ///     .with_property_filter(PropertyFilter {
 ///         path: "$.priority".to_string(),
 ///         operator: FilterOperator::Equals,
@@ -269,22 +266,6 @@ pub struct NodeFilter {
     /// Filter by title substring (case-insensitive)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub title_contains: Option<String>,
-
-    /// Filter by creation date - nodes created after this time
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub created_after: Option<DateTime<Utc>>,
-
-    /// Filter by creation date - nodes created before this time
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub created_before: Option<DateTime<Utc>>,
-
-    /// Filter by modification date - nodes modified after this time
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub modified_after: Option<DateTime<Utc>>,
-
-    /// Filter by modification date - nodes modified before this time
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub modified_before: Option<DateTime<Utc>>,
 
     /// Filter by JSON property values (can specify multiple)
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -330,30 +311,6 @@ impl NodeFilter {
     /// Filter by title substring
     pub fn with_title_contains(mut self, title: String) -> Self {
         self.title_contains = Some(title);
-        self
-    }
-
-    /// Filter by creation date - nodes created after this time
-    pub fn with_created_after(mut self, created_after: DateTime<Utc>) -> Self {
-        self.created_after = Some(created_after);
-        self
-    }
-
-    /// Filter by creation date - nodes created before this time
-    pub fn with_created_before(mut self, created_before: DateTime<Utc>) -> Self {
-        self.created_before = Some(created_before);
-        self
-    }
-
-    /// Filter by modification date - nodes modified after this time
-    pub fn with_modified_after(mut self, modified_after: DateTime<Utc>) -> Self {
-        self.modified_after = Some(modified_after);
-        self
-    }
-
-    /// Filter by modification date - nodes modified before this time
-    pub fn with_modified_before(mut self, modified_before: DateTime<Utc>) -> Self {
-        self.modified_before = Some(modified_before);
         self
     }
 
@@ -518,25 +475,6 @@ mod tests {
 
         assert_eq!(filter.node_type, Some("task".to_string()));
         assert_eq!(filter.limit, Some(10));
-    }
-
-    #[test]
-    fn test_node_filter_temporal() {
-        use chrono::Duration;
-
-        let now = Utc::now();
-        let week_ago = now - Duration::days(7);
-        let tomorrow = now + Duration::days(1);
-
-        let filter = NodeFilter::new()
-            .with_created_after(week_ago)
-            .with_created_before(tomorrow)
-            .with_modified_after(week_ago);
-
-        assert_eq!(filter.created_after, Some(week_ago));
-        assert_eq!(filter.created_before, Some(tomorrow));
-        assert_eq!(filter.modified_after, Some(week_ago));
-        assert!(filter.modified_before.is_none());
     }
 
     #[test]

@@ -2556,8 +2556,6 @@ impl GraphToolExecutor {
                 &ns,
                 node_ops::QueryNodesInput {
                     node_type,
-                    parent_id: None,
-                    root_id: None,
                     limit: Some(limit),
                     offset: None,
                     collection_id: None,
@@ -4105,8 +4103,6 @@ impl AgentToolExecutor for GraphToolExecutor {
             ns,
             node_ops::QueryNodesInput {
                 node_type: Some("tool".to_string()),
-                parent_id: None,
-                root_id: None,
                 limit: Some(256),
                 offset: None,
                 collection_id: None,

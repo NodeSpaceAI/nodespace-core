@@ -91,11 +91,13 @@ impl NodeService {
     /// # }
     /// ```
     pub async fn query_nodes(&self, filter: NodeFilter) -> Result<Vec<Node>, NodeServiceError> {
-        // When property filters are present, fetch all matching rows from DB and
-        // filter in memory. Safety cap prevents accidental OOM on large datasets.
-        const PROPERTY_FILTER_FETCH_CAP: usize = 10_000;
+        // Property filters are evaluated in memory (ADR-078 scope resolution
+        // needs per-row schema context SQL can't express), so offset/limit can
+        // only apply AFTER filtering: fetch the whole type-scoped set, unpaged.
+        // A fetch cap here would silently drop every match past it with no
+        // signal to the caller.
         let (db_limit, db_offset) = if filter.property_filters.is_some() {
-            (Some(PROPERTY_FILTER_FETCH_CAP), None)
+            (None, None)
         } else {
             (filter.limit, filter.offset)
         };

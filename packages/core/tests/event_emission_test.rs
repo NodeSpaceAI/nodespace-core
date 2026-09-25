@@ -180,8 +180,6 @@ mod event_emission_tests {
                     &svc,
                     nodespace_core::ops::node_ops::QueryNodesInput {
                         node_type: None,
-                        parent_id: None,
-                        root_id: None,
                         limit,
                         offset,
                         collection_id: Some(coll_id),
@@ -247,8 +245,6 @@ mod event_emission_tests {
             &service,
             nodespace_core::ops::node_ops::QueryNodesInput {
                 node_type: None,
-                parent_id: None,
-                root_id: None,
                 limit: Some(10),
                 offset: None,
                 collection_id: Some(coll_id),

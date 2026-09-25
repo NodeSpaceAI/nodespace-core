@@ -4954,6 +4954,55 @@ mod tests {
         assert_eq!(results[0].content, "Open task");
     }
 
+    /// A property-filtered query must see every row of the type, not a capped
+    /// prefix: filtering happens in memory, so a fetch cap silently dropped any
+    /// match stored past it. The lone match here is inserted after 10,000
+    /// non-matching rows — beyond the old cap.
+    #[tokio::test]
+    async fn test_query_with_property_filters_sees_rows_past_ten_thousand() {
+        let (service, _temp) = create_test_service().await;
+
+        let mut rows: Vec<_> = (0..10_000)
+            .map(|i| {
+                (
+                    format!("done-{i}"),
+                    "task".to_string(),
+                    format!("Done task {i}"),
+                    None,
+                    i as f64,
+                    json!({"status": "done"}),
+                )
+            })
+            .collect();
+        rows.push((
+            "open-last".to_string(),
+            "task".to_string(),
+            "Open task".to_string(),
+            None,
+            10_000.0,
+            json!({"status": "open"}),
+        ));
+        service.bulk_create_hierarchy(rows).await.unwrap();
+
+        let filter = NodeFilter::new()
+            .with_node_type("task".to_string())
+            .with_property_filter(
+                crate::models::PropertyFilter::new(
+                    "$.status".to_string(),
+                    FilterOperator::Equals,
+                    json!("open"),
+                )
+                .unwrap(),
+            );
+
+        let results = service.query_nodes(filter).await.unwrap();
+        assert_eq!(
+            results.iter().map(|n| n.id.as_str()).collect::<Vec<_>>(),
+            vec!["open-last"],
+            "the match past the first 10,000 rows must not be dropped"
+        );
+    }
+
     #[tokio::test]
     async fn test_schema_node_operations() {
         let (service, _temp) = create_test_service().await;
