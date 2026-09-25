@@ -82,6 +82,11 @@ pub enum ConditionResult {
 /// grammar. Expressions here are user-authored, so that panic is caught and
 /// reported as the compile error it is; otherwise one malformed condition or
 /// `.where(...)` predicate takes down whatever task is saving the play.
+///
+/// The default panic hook still prints `panicked at … unreachable` to stderr
+/// before the unwind is caught. In daemon logs that line is a rejected
+/// malformed expression, not a crash; the global hook is deliberately left
+/// alone rather than swapped around this call.
 pub fn compile_condition(expr: &str) -> Result<Program, CelCompileError> {
     let compiled =
         std::panic::catch_unwind(|| Program::compile(expr)).map_err(|_| CelCompileError {

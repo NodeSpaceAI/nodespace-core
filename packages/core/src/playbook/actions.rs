@@ -603,7 +603,18 @@ impl BindingContext {
                     };
                     crate::playbook::cel::scoped_node_value(&node, scope.as_ref())
                 }
-                // A plain (non-node) item: its own keys are its fields.
+                // A declared item type means the items are nodes. One that does
+                // not deserialize would be read with its fields buried under
+                // `properties.<type>`, so every field reads `null` and a
+                // `status != 'done'` filter keeps it -- fail instead.
+                Err(e) if declared_type.is_some() => {
+                    return Err(format!(
+                        "where(): an item of '{}' is not a readable node: {}",
+                        base, e
+                    ));
+                }
+                // An untyped collection (e.g. an array-valued property): a
+                // plain item's own keys are its fields.
                 Err(_) => crate::playbook::cel::json_to_cel(&item),
             };
 

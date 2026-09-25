@@ -716,9 +716,15 @@ fn core_field_value(node: &Node, name: &str) -> Option<serde_json::Value> {
 /// against it at save time (`playbook::validation`) and read at it per item at
 /// run time (`actions::BindingContext`), so an `issue` reached through
 /// `cycle.tasks → task` is read at `task` scope with its extended values
-/// resolved through `maps_to`. Both sides call this one walk, so what a
-/// predicate was validated against and what it is evaluated against cannot
-/// drift apart.
+/// resolved through `maps_to`. Both sides call this one walk, so the segment
+/// resolution rules cannot drift apart.
+///
+/// The START type can differ, though: validation starts from the rule's
+/// registered trigger type, the runtime from the trigger node's concrete type.
+/// Relationships are inherited down the `extends` chain, so the two agree
+/// unless a subtype re-declares a same-named relationship with a different
+/// target — the one case where a predicate could be evaluated at a type other
+/// than the one it was validated against.
 ///
 /// Segments resolve as `validate_schema_path` resolves them: a forward name
 /// from the effective (`extends`-merged) relationship set first, then a

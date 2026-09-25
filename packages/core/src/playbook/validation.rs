@@ -1210,7 +1210,8 @@ async fn validate_where_chain(
                 Ok(Some(item_type)) => (item_type, rest),
                 Ok(None) => {
                     errors.push(invalid(
-                        "an `item.` path needs this action's for_each to iterate a                          `trigger.node.<relationship>` collection with a declared target type"
+                        "an `item.` path needs this action's for_each to iterate a \
+                         `trigger.node.<relationship>` collection with a declared target type"
                             .to_string(),
                     ));
                     return;
@@ -1227,7 +1228,9 @@ async fn validate_where_chain(
         }
         _ => {
             errors.push(invalid(format!(
-                "'{}' is not a filterable collection path — .where() follows                  `trigger.node.<relationship>`, or `item.<relationship>` inside a for_each                  action's params",
+                "'{}' is not a filterable collection path — .where() follows \
+                 `trigger.node.<relationship>`, or `item.<relationship>` inside a for_each \
+                 action's params",
                 base
             )));
             return;
@@ -1256,7 +1259,8 @@ async fn validate_where_chain(
         Ok(Some(t)) => t,
         Ok(None) => {
             errors.push(invalid(format!(
-                "'{}' does not reach a relationship with a declared target type, so its                  items have no schema fields to filter on",
+                "'{}' does not reach a relationship with a declared target type, so its \
+                 items have no schema fields to filter on",
                 base
             )));
             return;
@@ -1298,7 +1302,8 @@ async fn validate_where_chain(
         for variable in variables {
             if !crate::playbook::cel::is_core_key(&variable) && !fields.contains(&variable) {
                 errors.push(invalid(format!(
-                    "'{}' is not a field of '{}' — a .where() predicate reads the item's own                      fields by bare name (e.g. `status != 'done'`)",
+                    "'{}' is not a field of '{}' — a .where() predicate reads the item's own \
+                     fields by bare name (e.g. `status != 'done'`)",
                     variable, item_type
                 )));
             }
@@ -1745,6 +1750,8 @@ fn validate_invariant_eligibility(
             collect_where_chains(&expr, &mut chains);
             for (_base, predicates) in chains.into_iter().flatten() {
                 for predicate in predicates {
+                    // An unparseable predicate is already reported by
+                    // `validate_where_filters`, so skipping it here loses nothing.
                     let Ok(functions) = path_extractor::extract_function_names(predicate) else {
                         continue;
                     };
@@ -2558,7 +2565,12 @@ mod tests {
             match &errors[0] {
                 PlayValidationError::InvalidWhereFilter {
                     message, location, ..
-                } => (message.as_str(), location.as_str()),
+                } => {
+                    // A lost `\` continuation splices source indentation into
+                    // the text an agent or CLI user reads.
+                    assert!(!message.contains("  "), "stray whitespace: {message:?}");
+                    (message.as_str(), location.as_str())
+                }
                 other => panic!("expected InvalidWhereFilter, got {other:?}"),
             }
         }
