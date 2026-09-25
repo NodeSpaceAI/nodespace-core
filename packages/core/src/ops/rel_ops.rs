@@ -666,6 +666,13 @@ pub async fn get_node_relationships(
         if BUILTIN_RELATIONSHIP_NAMES.contains(&rel.name.as_str()) {
             continue;
         }
+        // An own `in` declaration names the far end's forward edge, which the
+        // inbound branch below already renders (labelled by its reverse name).
+        // No edge is ever stored under the `in` name, so an outbound group for
+        // it would be permanently empty yet still offered for adding edges.
+        if rel.direction == RelationshipDirection::In {
+            continue;
+        }
         // Emit the group even when it has no edges yet: an empty declared
         // outbound relationship still needs to render so the viewer can add
         // its first edge. The inbound branch below is symmetric.

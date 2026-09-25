@@ -14,7 +14,7 @@ use nodespace_core::{
     db::SqliteStore,
     models::Node,
     ops::rel_ops::{self, GetRelatedInput},
-    schema::handle_create_schema,
+    schema::{handle_create_schema, handle_update_schema},
     services::NodeService,
 };
 use serde_json::json;
@@ -254,5 +254,213 @@ async fn read_through_in_name_finds_the_forward_edge() -> Result<()> {
     assert_eq!(out.direction, "in");
     assert_eq!(out.count, 1);
     assert_eq!(out.related_nodes[0]["id"], "new");
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// A pair across two types, so a swap that validated or narrowed against the
+// wrong end cannot pass by both ends sharing one type.
+// ---------------------------------------------------------------------------
+
+async fn make_node(svc: &NodeService, id: &str, node_type: &str) -> Result<()> {
+    svc.create_node(Node::new_with_id(
+        id.to_string(),
+        node_type.to_string(),
+        format!("{id} content"),
+        json!({}),
+    ))
+    .await?;
+    Ok(())
+}
+
+/// `in_norm_person.approves` (out) targets `in_norm_doc`, which names the
+/// same edge `approved_by` (in). `in_norm_memo` declares its own `approves`
+/// toward docs — the same stored forward name from a different source type.
+async fn create_cross_type_schemas(svc: &Arc<NodeService>) -> Result<()> {
+    // Each end's declaration names the other as its target, so the doc
+    // exists first and gains its `in` declaration once the person does.
+    handle_create_schema(svc, json!({ "name": "in_norm_doc", "fields": [] }))
+        .await
+        .map_err(|e| anyhow::anyhow!("doc schema: {e}"))?;
+    for source in ["in_norm_person", "in_norm_memo"] {
+        handle_create_schema(
+            svc,
+            json!({
+                "name": source,
+                "fields": [],
+                "relationships": [{
+                    "name": "approves",
+                    "targetType": "in_norm_doc",
+                    "direction": "out",
+                    "cardinality": "many",
+                    "reverseName": "approved_by",
+                    "reverseCardinality": "many"
+                }]
+            }),
+        )
+        .await
+        .map_err(|e| anyhow::anyhow!("{source} schema: {e}"))?;
+    }
+    handle_update_schema(
+        svc,
+        json!({
+            "schema_id": "in_norm_doc",
+            "add_relationships": [{
+                "name": "approved_by",
+                "targetType": "in_norm_person",
+                "direction": "in",
+                "cardinality": "many",
+                "reverseName": "approves",
+                "reverseCardinality": "many"
+            }]
+        }),
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("doc approved_by: {e}"))?;
+    make_node(svc, "doc1", "in_norm_doc").await?;
+    make_node(svc, "p1", "in_norm_person").await?;
+    make_node(svc, "memo1", "in_norm_memo").await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn cross_type_write_through_in_name_stores_forward_edge() -> Result<()> {
+    let (svc, _t) = create_test_service().await?;
+    create_cross_type_schemas(&svc).await?;
+
+    svc.create_relationship("doc1", "approved_by", "p1", json!({}))
+        .await?;
+
+    assert_eq!(related_ids(&svc, "p1", "approves", "out").await?, ["doc1"]);
+    assert!(related_ids(&svc, "doc1", "approved_by", "out")
+        .await?
+        .is_empty());
+    Ok(())
+}
+
+/// After the swap the far end is the forward source, so the forward
+/// declaration is resolved on — and its `targetType` checked against — the
+/// right nodes: neither a non-doc nor a non-person can stand in.
+#[tokio::test]
+async fn cross_type_write_through_in_name_rejects_wrong_types() -> Result<()> {
+    let (svc, _t) = create_test_service().await?;
+    create_cross_type_schemas(&svc).await?;
+    make_node(&svc, "p2", "in_norm_person").await?;
+
+    // p2 is not a doc, so `approved_by` is not declared on its type at all.
+    assert!(svc
+        .create_relationship("p2", "approved_by", "p1", json!({}))
+        .await
+        .is_err());
+    // doc1 -> doc1: the far end is a doc, which does not declare `approves`.
+    assert!(svc
+        .create_relationship("doc1", "approved_by", "doc1", json!({}))
+        .await
+        .is_err());
+    Ok(())
+}
+
+/// Reading through the `in` name narrows to the declaration's `targetType`:
+/// a memo's `approves` edge is the same stored name but not an approval by a
+/// person.
+#[tokio::test]
+async fn cross_type_read_through_in_name_narrows_to_declared_type() -> Result<()> {
+    let (svc, _t) = create_test_service().await?;
+    create_cross_type_schemas(&svc).await?;
+
+    svc.create_relationship("doc1", "approved_by", "p1", json!({}))
+        .await?;
+    svc.create_relationship("memo1", "approves", "doc1", json!({}))
+        .await?;
+
+    let out = rel_ops::get_related_nodes(
+        &svc,
+        GetRelatedInput {
+            node_id: "doc1".to_string(),
+            relationship_name: "approved_by".to_string(),
+            direction: "out".to_string(),
+        },
+    )
+    .await?;
+    assert_eq!(out.count, 1);
+    assert_eq!(out.related_nodes[0]["id"], "p1");
+    Ok(())
+}
+
+/// An `in` declaration whose far type never declares the forward name has no
+/// storage shape to normalize to; the error names what the caller wrote.
+#[tokio::test]
+async fn write_through_unpaired_in_name_is_rejected() -> Result<()> {
+    let (svc, _t) = create_test_service().await?;
+    create_cross_type_schemas(&svc).await?;
+    handle_create_schema(
+        &svc,
+        json!({
+            "name": "in_norm_lone_doc",
+            "fields": [],
+            "relationships": [{
+                "name": "reviewed_by",
+                "targetType": "in_norm_person",
+                "direction": "in",
+                "cardinality": "many",
+                "reverseName": "reviews",
+                "reverseCardinality": "many"
+            }]
+        }),
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("lone doc schema: {e}"))?;
+    make_node(&svc, "lone1", "in_norm_lone_doc").await?;
+
+    let err = svc
+        .create_relationship("lone1", "reviewed_by", "p1", json!({}))
+        .await
+        .expect_err("no forward `reviews` is declared on in_norm_person");
+    let message = err.to_string();
+    assert!(
+        message.contains("'reviewed_by' on 'in_norm_lone_doc'")
+            && message.contains("in_norm_person.reviews"),
+        "error should name the caller's spelling: {message}"
+    );
+    Ok(())
+}
+
+/// The relationship panel renders the edge once, as the forward declaration's
+/// inbound group on the doc; an `in` declaration is never its own group on
+/// either end.
+#[tokio::test]
+async fn panel_renders_in_declaration_edge_once() -> Result<()> {
+    let (svc, _t) = create_test_service().await?;
+    create_cross_type_schemas(&svc).await?;
+    svc.create_relationship("doc1", "approved_by", "p1", json!({}))
+        .await?;
+
+    let doc = rel_ops::get_node_relationships(&svc, "doc1").await?;
+    assert!(
+        !doc.groups
+            .iter()
+            .any(|g| g.relationship_name == "approved_by"),
+        "own `in` declaration must not render as its own group"
+    );
+    let approvals = doc
+        .groups
+        .iter()
+        .find(|g| {
+            g.relationship_name == "approves"
+                && g.direction == "in"
+                && g.source_type == "in_norm_person"
+        })
+        .expect("person.approves inbound group");
+    let ids: Vec<_> = approvals.related.iter().map(|r| r.id.as_str()).collect();
+    assert_eq!(ids, ["p1"]);
+
+    let person = rel_ops::get_node_relationships(&svc, "p1").await?;
+    assert!(
+        !person
+            .groups
+            .iter()
+            .any(|g| g.relationship_name == "approved_by"),
+        "another schema's `in` declaration is not an inbound declaration"
+    );
     Ok(())
 }

@@ -894,6 +894,7 @@ impl NodeService {
         let forward_name = self
             .in_declaration_forward_name(source_type.as_deref(), relationship_name)
             .await?;
+        let requested_name = relationship_name;
         let (source_id, relationship_name, target_id) = forward_endpoints(
             forward_name.as_deref(),
             source_id,
@@ -976,9 +977,33 @@ impl NodeService {
             }
 
             let schema_id = &source.node_type;
-            let relationship = self
+            // A rewritten `in` write must land on a real forward declaration.
+            // Schema save does not pair an `in` declaration with its far end,
+            // so the far type may not declare the forward name at all, or may
+            // declare it as another `in` — storing under that would reintroduce
+            // the second storage shape. Report it in the caller's own terms.
+            let resolved = self
                 .resolve_declared_relationship(schema_id, relationship_name)
-                .await?;
+                .await;
+            let relationship = match (&forward_name, resolved) {
+                (None, resolved) => resolved?,
+                (Some(_), Ok(rel))
+                    if rel.direction == crate::models::schema::RelationshipDirection::Out =>
+                {
+                    rel
+                }
+                (Some(_), _) => {
+                    return Err(NodeServiceError::invalid_update(format!(
+                        "'{}' on '{}' is the inbound view of '{}.{}', which '{}' does not \
+                         declare as an outbound relationship",
+                        requested_name,
+                        source_type.as_deref().unwrap_or_default(),
+                        schema_id,
+                        relationship_name,
+                        schema_id
+                    )));
+                }
+            };
 
             declared_reverse_name = Some(relationship.reverse_name.clone());
 
@@ -1589,6 +1614,8 @@ impl NodeService {
         let forward_name = self
             .in_declaration_forward_name(source_type.as_deref(), relationship_name)
             .await?;
+        // Named as the caller wrote it, for the missing-edge error below.
+        let requested = format!("'{relationship_name}' from '{source_id}' to '{target_id}'");
         let (source_id, relationship_name, target_id) = forward_endpoints(
             forward_name.as_deref(),
             source_id,
@@ -1645,8 +1672,7 @@ impl NodeService {
 
         let Some(rel_id) = rel_id else {
             return Err(NodeServiceError::invalid_update(format!(
-                "Relationship '{}' from '{}' to '{}' does not exist",
-                relationship_name, source_id, target_id
+                "Relationship {requested} does not exist"
             )));
         };
 
@@ -1806,6 +1832,13 @@ impl NodeService {
         let mut inbound = Vec::new();
         for schema in schemas {
             for relationship in schema.relationships {
+                // Only a forward (`out`) declaration describes stored edges. An
+                // `in` declaration is its target's name for another schema's
+                // forward edge — writes through it are stored as that edge — so
+                // it never has instance edges of its own pointing anywhere.
+                if relationship.direction != crate::models::schema::RelationshipDirection::Out {
+                    continue;
+                }
                 // Include typed relationships matching this target or any of
                 // its ancestors, plus untyped (None) relationships.
                 let matches = relationship
