@@ -271,10 +271,10 @@ async fn rollover_moves_a_task_rather_than_leaving_it_in_both_cycles() -> Result
             "Ending cycle".to_string(),
             serde_json::json!({
                 "start_date": "2026-01-01",
-                // Local, matching CEL's `today()` (`cel.rs`, `Local::now()`).
-                // Utc here passes under the host TZ and fails east of it —
-                // inert until the condition gate started evaluating it.
-                "end_date": chrono::Local::now().format("%Y-%m-%d").to_string(),
+                // UTC, matching CEL's `today()` (`cel.rs`). The host-local
+                // date differs from it for part of every day east or west
+                // of UTC, which fails the rule's `end_date == today()`.
+                "end_date": chrono::Utc::now().format("%Y-%m-%d").to_string(),
                 "duration_days": 14,
             }),
         ))
