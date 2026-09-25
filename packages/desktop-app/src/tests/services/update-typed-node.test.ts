@@ -16,7 +16,7 @@ import {
 } from '../../lib/services/shared-node-store.svelte';
 import { backendAdapter } from '../../lib/services/backend-adapter';
 import { conflictNotifications } from '../../lib/stores/conflict-notifications.svelte';
-import type { Node, PersonNode, ProjectNode } from '../../lib/types';
+import type { Node, PersonNode, ProjectNode, TaskNode } from '../../lib/types';
 
 const dbSource = { type: 'database' as const, reason: 'initial-load' };
 const viewerSource = { type: 'viewer' as const, viewerId: 'pane-1' };
@@ -234,17 +234,109 @@ describe('updateNode routing for typed core types', () => {
     ]);
   });
 
-  it('keeps a node awaiting its create on the generic path', () => {
-    // Not persisted yet: a typed update has no server-side node to write to.
+  it('stages typed fields on a node awaiting its create, and sends them once it lands', async () => {
+    // Not persisted yet: there is no server-side row for a typed update, and
+    // an immediate typed write would cancel the node's debounced create. The
+    // field is staged, then sent right after the create.
     // A viewer-sourced setNode with skipPersistence leaves it un-persisted.
     store.setNode(makeNode('pr1', 'project', { status: 'planning' }), viewerSource, true);
-    const typedSpy = vi.spyOn(backendAdapter, 'updateProjectNode');
-    vi.spyOn(backendAdapter, 'createNode').mockImplementation(() => new Promise(() => {}));
+    const order: string[] = [];
+    vi.spyOn(backendAdapter, 'createNode').mockImplementation(async () => {
+      order.push('create');
+      return 'pr1';
+    });
+    vi.spyOn(backendAdapter, 'getNode').mockImplementation(
+      async (id) => makeNode(id, 'project', { status: 'planning' })
+    );
+    const typedSpy = vi.spyOn(backendAdapter, 'updateProjectNode').mockImplementation(
+      async (id, version, update) => {
+        order.push(`typed:${JSON.stringify(update)}`);
+        return { ...makeNode(id, 'project', { ...update }), version: version + 1 } as unknown as ProjectNode;
+      }
+    );
+    const onPersistSuccess = vi.fn();
 
-    store.updateNode('pr1', { status: 'active' } as unknown as Partial<Node>, viewerSource);
-
+    store.updateNode('pr1', { status: 'active' } as unknown as Partial<Node>, viewerSource, {
+      onPersistSuccess
+    });
     expect(typedSpy).not.toHaveBeenCalled();
     expect((store.getNode('pr1') as unknown as ProjectNode).status).toBe('active');
+
+    // The node's create goes out through the generic path (here, a content edit).
+    store.updateNode('pr1', { content: 'Launch' }, viewerSource, { persist: 'immediate' });
+
+    await vi.waitFor(() => expect(order).toEqual(['create', 'typed:{"status":"active"}']), {
+      timeout: 3000
+    });
+    await vi.waitFor(() => expect(onPersistSuccess).toHaveBeenCalledTimes(1));
+  });
+
+  it('an immediate typed write does not discard a still-debounced content edit', async () => {
+    // Typing in a task, then changing its status before the debounce fires:
+    // the pending content write must still go out. It is started at once, and
+    // — like every write — first flushes the typed field already staged.
+    store.setNode(makeNode('t1', 'task', { status: 'open' }), dbSource);
+    const calls: string[] = [];
+    vi.spyOn(backendAdapter, 'updateNode').mockImplementation(async (id, version, update) => {
+      calls.push(`generic:${JSON.stringify(update)}@v${version}`);
+      return {
+        ...makeNode(id, 'task', { status: 'open' }),
+        content: 'Buy milk',
+        version: version + 1
+      } as Node;
+    });
+    vi.spyOn(backendAdapter, 'updateTaskNode').mockImplementation(async (id, version, update) => {
+      calls.push(`typed:${JSON.stringify(update)}@v${version}`);
+      return { ...makeNode(id, 'task', { ...update }), version: version + 1 } as unknown as TaskNode;
+    });
+
+    store.updateNode('t1', { content: 'Buy milk' }, viewerSource); // debounced
+    store.updateTaskNode('t1', { status: 'done' }, viewerSource); // immediate
+
+    await vi.waitFor(() => expect(calls).toHaveLength(2), { timeout: 3000 });
+    expect(calls).toEqual(['typed:{"status":"done"}@v1', 'generic:{"content":"Buy milk"}@v2']);
+  });
+
+  it('a failed typed flush neither blocks the generic write nor reports to its caller', async () => {
+    // A queued typed write superseded by a generic write is flushed by the
+    // generic closure. If that typed update fails, the generic write still
+    // goes out, and the failure is reported to the TYPED caller only.
+    store.setNode(makeNode('pr1', 'project', { status: 'planning' }), dbSource);
+    let releaseFirst!: () => void;
+    let typedCalls = 0;
+    vi.spyOn(backendAdapter, 'updateProjectNode').mockImplementation(async (id, version, update) => {
+      typedCalls++;
+      if (typedCalls === 1) {
+        await new Promise<void>((resolve) => {
+          releaseFirst = resolve;
+        });
+        return { ...makeNode(id, 'project', { ...update }), version: version + 1 } as unknown as ProjectNode;
+      }
+      throw new Error('daemon offline');
+    });
+    const genericSpy = vi.spyOn(backendAdapter, 'updateNode').mockImplementation(
+      async (id, version) => ({ ...makeNode(id, 'project'), version: version + 1 }) as Node
+    );
+    const typedError = vi.fn();
+    const genericError = vi.fn();
+
+    store.updateNode('pr1', { status: 'active' } as unknown as Partial<Node>, viewerSource);
+    await vi.waitFor(() => expect(typedCalls).toBe(1));
+    store.updateNode('pr1', { priority: 'high' } as unknown as Partial<Node>, viewerSource, {
+      onPersistError: typedError
+    });
+    store.updateNode(
+      'pr1',
+      { properties: { 'custom:budget': 5 } },
+      viewerSource,
+      { persist: 'immediate', onPersistError: genericError }
+    );
+    releaseFirst();
+
+    await vi.waitFor(() => expect(genericSpy).toHaveBeenCalledTimes(1), { timeout: 3000 });
+    expect(genericSpy.mock.calls[0][2]).toEqual({ properties: { 'custom:budget': 5 } });
+    await vi.waitFor(() => expect(typedError).toHaveBeenCalledTimes(1));
+    expect(genericError).not.toHaveBeenCalled();
   });
 
   it('calls onPersistError when the typed write fails, so the caller can revert its field', async () => {

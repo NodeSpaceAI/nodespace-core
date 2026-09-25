@@ -105,13 +105,14 @@ export function promoteTypedFields(
 }
 
 /**
- * Mirror `normalize_date_field`: a `YYYY-MM-DD` date passes through, and a
- * datetime carrying an offset (`T`- or space-separated) reduces to its
- * literal date prefix — its date in its own offset, as the RFC 3339 branch
- * does. Anything else, including a datetime with no offset, which neither
- * Rust parse accepts, passes through unchanged.
+ * Mirror `normalize_date_field`: a `YYYY-MM-DD` date passes through, and an
+ * RFC 3339 datetime (`T`- or space-separated, seconds and a `Z`/`±hh:mm`
+ * offset) reduces to its literal date prefix — its date in its own offset, as
+ * that branch does. Rust's lenient UTC fallback parse, which would convert
+ * other forms to a UTC date, is not mirrored: no write path produces them,
+ * and they pass through unchanged here.
  */
-const OFFSET_DATETIME = /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:?\d{2})$/i;
+const OFFSET_DATETIME = /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/i;
 
 function normalizeDate(value: string): string {
   return OFFSET_DATETIME.test(value) ? value.slice(0, 10) : value;

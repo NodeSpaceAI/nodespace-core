@@ -247,7 +247,9 @@ describe('SharedNodeStore - Extended Coverage', () => {
     it('should handle updateTaskNode backend errors', async () => {
       vi.spyOn(backendAdapter, 'updateTaskNode').mockRejectedValue(new Error('Backend error'));
 
-      store.setNode(taskNode, viewerSource, true);
+      // Loaded from the database: a typed update needs a node that exists
+      // server-side (an uncreated node's fields wait for its create).
+      store.setNode(taskNode, { type: 'database', reason: 'test-seed' });
       store.updateTaskNode('task-1', { status: 'done' }, viewerSource);
 
       // Wait for async persistence to attempt

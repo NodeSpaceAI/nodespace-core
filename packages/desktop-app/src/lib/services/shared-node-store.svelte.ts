@@ -74,6 +74,8 @@ interface PendingOperation {
   promise: Promise<void>;
   resolve: () => void;
   reject: (error: Error) => void;
+  /** Still waiting on its debounce timer (not yet started). */
+  debounced?: boolean;
 }
 
 const coordLog = createLogger('PersistenceCoordinator');
@@ -208,6 +210,24 @@ export class SimplePersistenceCoordinator {
         `[op#${opId}] operation already executing for ${shortNodeId}, collapsed into latest-wins pending write (mode=${options.mode})`
       );
       return { promise: queuedPromise };
+    }
+
+    // An immediate write must not discard a debounced write still waiting on
+    // its timer (typically a content edit): each captures only its own
+    // changes, so cancelling it would lose the typed text. Start the debounced
+    // write now instead; this write then collapses behind it through the
+    // executing branch above, so both reach the server in order. A debounced
+    // write replacing another debounced write is the intended keystroke
+    // collapse and still cancels below.
+    const waiting = this.pendingOperations.get(nodeId);
+    if (options.mode === 'immediate' && waiting?.debounced) {
+      coordLog.debug(
+        `[op#${opId}] promoting pending debounced write for ${shortNodeId} ahead of an immediate write`
+      );
+      clearTimeout(waiting.timeoutId);
+      waiting.debounced = false;
+      void waiting.operation();
+      return this.persist(nodeId, operation, options);
     }
 
     // Cancel existing pending operation for this node (only if not executing)
@@ -359,7 +379,8 @@ export class SimplePersistenceCoordinator {
         timeoutId,
         promise,
         resolve,
-        reject
+        reject,
+        debounced: true
       };
       this.pendingOperations.set(nodeId, pending);
     }
@@ -703,6 +724,19 @@ function typedUpdateKeys(nodeType: TypedNodeType): string[] {
   return nodeType === 'task' ? [...keys, 'content'] : keys;
 }
 
+/**
+ * Typed fields staged for a node but not yet sent (see `updateTypedNode()`),
+ * with the callbacks of every write that staged them — settled by whichever
+ * write ends up sending the fields.
+ */
+interface PendingTypedWrite {
+  nodeType: TypedNodeType;
+  /** Source of the latest staging write, for failure notifications. */
+  source: UpdateSource;
+  fields: Record<string, unknown>;
+  callbacks: Array<Pick<UpdateOptions, 'onPersistSuccess' | 'onPersistError'>>;
+}
+
 /** Send a typed update through the backend update for its type. */
 function sendTypedUpdate(
   nodeType: TypedNodeType,
@@ -787,10 +821,7 @@ export class SharedNodeStore {
   // generic or batch — sends and clears the whole set first (see
   // `sendPendingTypedFields()`), so a typed write superseded in the
   // coordinator's single queued slot doesn't lose its fields.
-  private pendingTypedFields = new Map<
-    string,
-    { nodeType: TypedNodeType; fields: Record<string, unknown> }
-  >();
+  private pendingTypedFields = new Map<string, PendingTypedWrite>();
 
   /**
    * Bump the write-sequence number for a single typed field on a node.
@@ -1598,15 +1629,7 @@ export class SharedNodeStore {
       source.type !== 'database';
     const convertsType =
       changes.nodeType !== undefined && changes.nodeType !== existingNode?.nodeType;
-    // A typed update needs a node that exists server-side; one still awaiting
-    // its create stays on the generic path, which owns the create.
-    if (
-      existingNode &&
-      persists &&
-      !convertsType &&
-      hasTypedCoreFields(existingNode.nodeType) &&
-      this.persistedNodeIds.has(nodeId)
-    ) {
+    if (existingNode && persists && !convertsType && hasTypedCoreFields(existingNode.nodeType)) {
       const nodeType = existingNode.nodeType as TypedNodeType;
       const typedKeys = typedCoreKeys(nodeType);
       const typed: Record<string, unknown> = {};
@@ -2040,6 +2063,9 @@ export class SharedNodeStore {
                     }
                   }
                 }
+
+                // Typed fields staged while the node awaited its create go out now — see `sendPendingTypedFields()`.
+                await this.sendPendingTypedFields(nodeId);
 
                 // Mark update as persisted
                 this.markUpdatePersisted(nodeId, update);
@@ -2694,6 +2720,8 @@ export class SharedNodeStore {
                   }
                 }
               }
+              // Typed fields staged while the node awaited its create go out now — see `sendPendingTypedFields()`.
+              await this.sendPendingTypedFields(nodeId);
             } catch (dbError) {
               // Properly stringify Tauri errors which come as plain objects
               const errorMessage =
@@ -3065,21 +3093,45 @@ export class SharedNodeStore {
 
   /**
    * Send and clear every typed field pending for `nodeId` through its type's
-   * typed update, then apply the confirmed values.
+   * typed update, apply the confirmed values, and settle every staged write's
+   * callbacks.
    *
-   * Called at the start of every persistence closure for the node — typed,
-   * generic (`updateNode()`) and batch. The coordinator keeps one queued write
-   * per node and a newer write replaces it, so a queued typed write can be
-   * superseded by a generic one; flushing first means its fields still reach
-   * the server, ahead of (and at the version before) the generic write. No-op
-   * when nothing is pending. Throws the typed update's error, which the
-   * calling closure handles as its own.
+   * Called from every persistence closure that writes the node — typed,
+   * generic (`updateNode()`) and batch — before its own RPC, and right after
+   * each create path. The coordinator keeps one queued write per node and a
+   * newer write replaces it, so a queued typed write can be superseded by a
+   * generic one; flushing first means its fields still reach the server,
+   * ahead of (and at the version before) the generic write.
+   *
+   * Owns its own failures and never throws: a typed-update error is reported
+   * (notification, OCC hydration, the staging callers' `onPersistError`) here,
+   * so it can never fail — or be mistaken for a failure of — the unrelated
+   * write whose closure happened to flush it. No-op when nothing is pending,
+   * and while the node has not been created yet (its fields wait for the
+   * create).
    */
   private async sendPendingTypedFields(nodeId: string): Promise<void> {
+    // Nothing staged is the common case for a generic or create closure —
+    // return before touching anything, in particular before the move wait
+    // below: a move can itself be waiting on this node's in-flight create.
+    if (!this.persistedNodeIds.has(nodeId)) return;
+    const staged = this.pendingTypedFields.get(nodeId);
+    if (!staged || Object.keys(staged.fields).length === 0) return;
+
+    // A move (indent/outdent) bumps the version server-side; sending before it
+    // lands would conflict on a stale version.
+    const pendingMove = getPendingMoveOperation(nodeId);
+    if (pendingMove) {
+      await pendingMove;
+    }
+
+    // Re-read after the wait: fields staged meanwhile go in this same send.
     const pending = this.pendingTypedFields.get(nodeId);
     this.pendingTypedFields.delete(nodeId);
     if (!pending || Object.keys(pending.fields).length === 0) return;
     const payload = pending.fields;
+    const localBeforeSend = this.nodes.get(nodeId);
+    if (!localBeforeSend) return; // Evicted or deleted — nothing to write for.
 
     // Sequence numbers as of THIS send: a same-field write after this point
     // bumps past them, and its value must win over this response.
@@ -3088,32 +3140,149 @@ export class SharedNodeStore {
       sentSeq[field] = this.getTypedFieldSeq(nodeId, field);
     }
 
-    // Read version at EXECUTION time (not call time) to pick up any resync
-    // that occurred while this operation was queued.
-    const currentVersion = this.nodes.get(nodeId)?.version ?? 1;
+    try {
+      // Read version at EXECUTION time (not call time) to pick up any resync
+      // that occurred while this operation was queued.
+      const confirmed = (await sendTypedUpdate(
+        pending.nodeType,
+        nodeId,
+        localBeforeSend.version ?? 1,
+        payload
+      )) as unknown as Record<string, unknown> & { version: number };
 
-    const confirmed = (await sendTypedUpdate(
-      pending.nodeType,
-      nodeId,
-      currentVersion,
-      payload
-    )) as unknown as Record<string, unknown> & { version: number };
-
-    const localNode = this.nodes.get(nodeId);
-    if (localNode && confirmed) {
-      // The coordinator serializes real RPCs per node, so this response's
-      // version is always the latest authoritative one.
-      localNode.version = confirmed.version;
-      // Apply only the fields this send carried, and only where no newer
-      // same-field write has landed since (see `bumpTypedFieldSeq()`).
-      const confirmedFields: Record<string, unknown> = {};
-      for (const field of Object.keys(payload)) {
-        if (this.getTypedFieldSeq(nodeId, field) === sentSeq[field]) {
-          confirmedFields[field] = confirmed[field];
+      const localNode = this.nodes.get(nodeId);
+      if (localNode && confirmed) {
+        // The coordinator serializes real RPCs per node, so this response's
+        // version is always the latest authoritative one.
+        localNode.version = confirmed.version;
+        // Apply only the fields this send carried, and only where no newer
+        // same-field write has landed since (see `bumpTypedFieldSeq()`).
+        const confirmedFields: Record<string, unknown> = {};
+        for (const field of Object.keys(payload)) {
+          if (this.getTypedFieldSeq(nodeId, field) === sentSeq[field]) {
+            confirmedFields[field] = confirmed[field];
+          }
         }
+        Object.assign(localNode, confirmedFields);
+        this.nodesSet(nodeId, localNode);
       }
-      Object.assign(localNode, confirmedFields);
-      this.nodesSet(nodeId, localNode);
+      for (const callbacks of pending.callbacks) callbacks.onPersistSuccess?.();
+    } catch (dbError) {
+      this.handleTypedWriteFailure(nodeId, pending, dbError);
+    }
+  }
+
+  /**
+   * Report a failed typed update: OCC hydration or a play-rule message where
+   * those apply, otherwise a write-failure notification plus each staging
+   * caller's `onPersistError` so it can correct its own field locally (see
+   * `updateNode()`'s onPersistError branch). Does NOT force-revert the node:
+   * a newer typed write may already have applied its own optimistic value,
+   * and reverting would clobber it — mirrors `updateNode()`'s catch.
+   */
+  private handleTypedWriteFailure(
+    nodeId: string,
+    pending: PendingTypedWrite,
+    dbError: unknown
+  ): void {
+    const { nodeType, source } = pending;
+    const error = dbError instanceof Error ? dbError : new Error(String(dbError));
+
+    // Suppress expected errors in in-memory test mode
+    if (shouldLogDatabaseErrors()) {
+      log.error(`Typed ${nodeType} update failed for node ${nodeId}:`, error);
+    }
+    // Always track errors in test environment for verification
+    this.trackErrorIfTesting(error);
+
+    const nodeAfterFailure = this.nodes.get(nodeId);
+    if (nodeAfterFailure) {
+      this.notifySubscribers(nodeId, nodeAfterFailure, source);
+    }
+
+    if (isVersionConflict(dbError)) {
+      log.warn(
+        `OCC conflict for ${nodeType} node ${nodeId}: ` +
+          `expected v${dbError.conflictData.expected}, got v${dbError.conflictData.actual}`
+      );
+      // Read BEFORE clearQueued() erases it — see updateNode()'s OCC handler.
+      const hadQueuedWrite = PersistenceCoordinator.getInstance().isQueued(nodeId);
+      PersistenceCoordinator.getInstance().clearQueued(nodeId);
+      // The queued write is gone and the node is being rehydrated from the
+      // server, so any typed fields staged since go with it.
+      this.pendingTypedFields.delete(nodeId);
+
+      // Normalized like any sync-boundary node: the conflict payload is
+      // written straight into the store.
+      const currentNode = dbError.conflictData.current_node
+        ? normalizeNodeData(dbError.conflictData.current_node)
+        : null;
+      if (currentNode) {
+        // Respect the same skip-while-editing guard setNode()/
+        // resyncNodeFromServer() enforce (`decideRemoteUpdate`). `hasPending`
+        // is `hadQueuedWrite` (captured before clearQueued()) rather than a
+        // live `hasPending()` read, which from inside the failing write would
+        // just see its own not-yet-cleared bookkeeping.
+        const isFocused = focusManager.isNodeEditing(nodeId);
+        const decision = decideRemoteUpdate(
+          currentNode,
+          this.nodes.get(nodeId),
+          { type: 'database', reason: 'occ-resync' },
+          { isFocused, hasPending: hadQueuedWrite }
+        );
+
+        if (decision.apply) {
+          this.nodesSet(nodeId, currentNode);
+          this.versions.set(nodeId, currentNode.version ?? 1);
+          this.persistedNodeIds.add(nodeId);
+          this.pendingUpdates.delete(nodeId);
+          this.notifySubscribers(nodeId, currentNode, {
+            type: 'database',
+            reason: 'occ-resync'
+          });
+        } else {
+          // Actively edited — keep the local content. The conflict payload
+          // still proves the node exists server-side.
+          this.persistedNodeIds.add(nodeId);
+          log.debug(
+            `OCC direct hydration for ${nodeType} node ${nodeId} skipped — node is actively being edited (focused=${isFocused})`
+          );
+        }
+      } else {
+        this.resyncNodeFromServer(nodeId, false, hadQueuedWrite).catch((resyncError) => {
+          log.error(
+            `Failed to resync after OCC error for ${nodeType} node ${nodeId}:`,
+            resyncError
+          );
+        });
+      }
+
+      conflictNotifications.add({
+        nodeId,
+        message: CONFLICT_MESSAGE['version-mismatch'],
+        conflictType: 'version-mismatch'
+      });
+    } else if (isPlayRuleRejected(dbError)) {
+      // A synchronous invariant rule vetoed the write. Nothing changed
+      // server-side, so only the rule's own message needs surfacing.
+      log.warn(
+        `Play rule rejected update for ${nodeType} node ${nodeId}: ` +
+          dbError.conflictData.message
+      );
+      conflictNotifications.add({
+        nodeId,
+        message: dbError.conflictData.message,
+        conflictType: 'play-rule-rejected'
+      });
+    } else {
+      for (const callbacks of pending.callbacks) callbacks.onPersistError?.(error);
+      // Surface the failure visibly so users know their change didn't save —
+      // matches updateNode()'s/deleteNode()'s outer catch.
+      conflictNotifications.add({
+        nodeId,
+        message: CONFLICT_MESSAGE['write-failure'],
+        conflictType: 'write-failure'
+      });
     }
   }
 
@@ -3159,30 +3328,32 @@ export class SharedNodeStore {
    *
    * Core fields have exactly one home on a typed node — the top level — so
    * this is the only write path for them; `properties` carries extension
-   * fields and goes through `updateNode()`. Applies the change optimistically,
-   * then persists through `PersistenceCoordinator`.
+   * fields and goes through `updateNode()`. Applies the change optimistically
+   * and stages it in `pendingTypedFields`; `sendPendingTypedFields()` sends it.
    *
    * Two guarantees, both field-scoped:
    *
    * - **No lost fields.** The coordinator keeps one queued write per node and
-   *   a newer write supersedes it. Fields therefore accumulate in
-   *   `pendingTypedFields` and each write's closure sends ALL pending typed
-   *   fields for the node at execution time — a superseded write's fields
-   *   ride along with the write that replaced it instead of being dropped.
+   *   a newer write supersedes it. Staged fields accumulate, and whichever
+   *   write for the node runs next — typed, generic or batch — sends them all
+   *   first, so a superseded write's fields ride along with its replacement.
    * - **No transient clobber.** See `bumpTypedFieldSeq()`: a response only
-   *   applies a field whose write-sequence hasn't moved since this write
-   *   took it, so a newer optimistic value is never overwritten by an older
-   *   confirmation.
+   *   applies a field whose write-sequence hasn't moved since it was sent, so
+   *   a newer optimistic value is never overwritten by an older confirmation.
+   *
+   * A node not yet created has no server-side row to update, so its fields
+   * are staged without a write of their own — an immediate write here would
+   * also cancel the node's pending debounced create. They are sent right after
+   * the create lands.
    *
    * `null` clears a field; locally a cleared field reads as `undefined`, the
    * same as the backend's typed shape, which omits unset fields.
    *
    * `options.onPersistSuccess`/`onPersistError` behave as in `updateNode()`:
-   * success after the write is confirmed, error for a failure that is neither
-   * a version conflict nor a play-rule rejection (both of which resolve the
-   * node's state themselves). A write whose fields an earlier write already
-   * carried still reports success. A write superseded in the queue reports
-   * nothing — its fields are sent, and reported, by the write that replaced it.
+   * success once the staged fields are confirmed, error for a failure that is
+   * neither a version conflict nor a play-rule rejection (both of which
+   * resolve the node's state themselves). They travel with the staged fields,
+   * so they fire whichever write ends up sending them.
    */
   updateTypedNode(
     nodeId: string,
@@ -3215,163 +3386,45 @@ export class SharedNodeStore {
       return;
     }
 
-    const pending = this.pendingTypedFields.get(nodeId)?.fields ?? {};
+    const pending = this.pendingTypedFields.get(nodeId) ?? {
+      nodeType,
+      source,
+      fields: {},
+      callbacks: []
+    };
     const localChanges: Record<string, unknown> = {};
     for (const field of fields) {
-      pending[field] = update[field];
+      pending.fields[field] = update[field];
       localChanges[field] = update[field] ?? undefined;
       this.bumpTypedFieldSeq(nodeId, field);
     }
-    this.pendingTypedFields.set(nodeId, { nodeType, fields: pending });
+    pending.source = source;
+    if (options.onPersistSuccess || options.onPersistError) {
+      pending.callbacks.push({
+        onPersistSuccess: options.onPersistSuccess,
+        onPersistError: options.onPersistError
+      });
+    }
+    this.pendingTypedFields.set(nodeId, pending);
 
     const updatedNode = { ...existingNode, ...localChanges } as Node;
     this.nodesSet(nodeId, updatedNode);
     this.notifySubscribers(nodeId, updatedNode, source);
 
-    // Set from inside the closure when an OCC or play-rule error has already
-    // raised its own specific notification, so the outer catch doesn't pile
-    // a generic `write-failure` on top. The closure's re-thrown error has lost
-    // the `.code`/`.conflictData` shape by then (a plain-object CommandError
-    // gets wrapped in a fresh `Error`), so it can't be re-derived there.
-    let specificErrorAlreadyNotified = false;
+    // Not created yet: the create path sends the staged fields once it lands.
+    if (!this.persistedNodeIds.has(nodeId)) return;
 
     const handle = PersistenceCoordinator.getInstance().persist(
       nodeId,
-      async () => {
-        try {
-          // Sends every typed field pending for this node — including any from
-          // a write this one superseded in the coordinator's queue. Nothing to
-          // send means an earlier write for this node already carried them.
-          await this.sendPendingTypedFields(nodeId);
-          options.onPersistSuccess?.();
-        } catch (dbError) {
-          const error = dbError instanceof Error ? dbError : new Error(String(dbError));
-          const occError = isVersionConflict(dbError) ? dbError : null;
-          const playRuleRejectedError = isPlayRuleRejected(dbError) ? dbError : null;
-
-          // Suppress expected errors in in-memory test mode
-          if (shouldLogDatabaseErrors()) {
-            log.error(`Typed ${nodeType} update failed for node ${nodeId}:`, error);
-          }
-
-          // Always track errors in test environment for verification
-          this.trackErrorIfTesting(error);
-
-          // Do NOT force-revert to `existingNode` (this call's pre-edit
-          // snapshot): a second, queued typed write may already have applied
-          // its own optimistic value to this node, and reverting would
-          // clobber it. Notify subscribers with what the store holds now —
-          // mirrors `updateNode()`'s catch, which never touches content.
-          const nodeAfterFailure = this.nodes.get(nodeId);
-          if (nodeAfterFailure) {
-            this.notifySubscribers(nodeId, nodeAfterFailure, source);
-          }
-
-          if (occError) {
-            log.warn(
-              `OCC conflict for ${nodeType} node ${nodeId}: ` +
-                `expected v${occError.conflictData.expected}, got v${occError.conflictData.actual}`
-            );
-            // Read BEFORE clearQueued() erases it — see updateNode()'s OCC handler.
-            const hadQueuedWrite = PersistenceCoordinator.getInstance().isQueued(nodeId);
-            PersistenceCoordinator.getInstance().clearQueued(nodeId);
-            // The queued write is gone and the node is being rehydrated from
-            // the server, so its accumulated typed fields go with it.
-            this.pendingTypedFields.delete(nodeId);
-
-            // Normalized like any sync-boundary node: the conflict payload is
-            // written straight into the store.
-            const currentNode = occError.conflictData.current_node
-              ? normalizeNodeData(occError.conflictData.current_node)
-              : null;
-            if (currentNode) {
-              // Respect the same skip-while-editing guard setNode()/
-              // resyncNodeFromServer() enforce (`decideRemoteUpdate`).
-              // `hasPending` is `hadQueuedWrite` (captured before
-              // clearQueued()) rather than a live `hasPending()` read, which
-              // from inside this write's own catch would just see this same
-              // failing write's not-yet-cleared bookkeeping.
-              const isFocused = focusManager.isNodeEditing(nodeId);
-              const decision = decideRemoteUpdate(
-                currentNode,
-                this.nodes.get(nodeId),
-                { type: 'database', reason: 'occ-resync' },
-                { isFocused, hasPending: hadQueuedWrite }
-              );
-
-              if (decision.apply) {
-                this.nodesSet(nodeId, currentNode);
-                this.versions.set(nodeId, currentNode.version ?? 1);
-                this.persistedNodeIds.add(nodeId);
-                this.pendingUpdates.delete(nodeId);
-                this.notifySubscribers(nodeId, currentNode, {
-                  type: 'database',
-                  reason: 'occ-resync'
-                });
-              } else {
-                // Actively edited — keep the local content. The conflict
-                // payload still proves the node exists server-side.
-                this.persistedNodeIds.add(nodeId);
-                log.debug(
-                  `OCC direct hydration for ${nodeType} node ${nodeId} skipped — node is actively being edited (focused=${isFocused})`
-                );
-              }
-            } else {
-              this.resyncNodeFromServer(nodeId, false, hadQueuedWrite).catch((resyncError) => {
-                log.error(
-                  `Failed to resync after OCC error for ${nodeType} node ${nodeId}:`,
-                  resyncError
-                );
-              });
-            }
-
-            conflictNotifications.add({
-              nodeId,
-              message: CONFLICT_MESSAGE['version-mismatch'],
-              conflictType: 'version-mismatch'
-            });
-            specificErrorAlreadyNotified = true;
-          } else if (playRuleRejectedError) {
-            // A synchronous invariant rule vetoed the write. Nothing changed
-            // server-side, so only the rule's own message needs surfacing.
-            log.warn(
-              `Play rule rejected update for ${nodeType} node ${nodeId}: ` +
-                playRuleRejectedError.conflictData.message
-            );
-            conflictNotifications.add({
-              nodeId,
-              message: playRuleRejectedError.conflictData.message,
-              conflictType: 'play-rule-rejected'
-            });
-            specificErrorAlreadyNotified = true;
-          } else {
-            // Let the caller that made this write correct its own field
-            // locally — see updateNode()'s onPersistError branch.
-            options.onPersistError?.(error);
-          }
-
-          throw error;
-        }
-      },
+      () => this.sendPendingTypedFields(nodeId),
       {
         mode: 'immediate' // Typed field edits are discrete (selects, blurs), not keystrokes
       }
     );
-
-    handle.promise.catch((err) => {
-      if (err instanceof OperationCancelledError) {
-        // Superseded by a newer write, which carries this one's fields.
-        return;
-      }
-      if (specificErrorAlreadyNotified) return;
-      // Surface non-OCC write failures visibly so users know their change
-      // didn't save — matches updateNode()'s/deleteNode()'s outer catch.
-      conflictNotifications.add({
-        nodeId,
-        message: CONFLICT_MESSAGE['write-failure'],
-        conflictType: 'write-failure'
-      });
-    });
+    // Superseded (OperationCancelledError) is expected — the replacing write
+    // sends these fields. Every other outcome is settled inside
+    // sendPendingTypedFields, which never rejects.
+    handle.promise.catch(() => {});
   }
 
   /**
@@ -4665,6 +4718,8 @@ export class SharedNodeStore {
               }
             }
           }
+          // Typed fields staged while the node awaited its create go out now — see `sendPendingTypedFields()`.
+          await this.sendPendingTypedFields(nodeId);
         } catch (dbError) {
           const error = dbError instanceof Error ? dbError : new Error(String(dbError));
 
