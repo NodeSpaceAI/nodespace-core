@@ -121,8 +121,6 @@ impl PromptAssembler {
     async fn fetch_prompt_overrides(&self) -> Vec<Node> {
         let filter = nodespace_core::ops::node_ops::QueryNodesInput {
             node_type: Some("agent-guidance".to_string()),
-            parent_id: None,
-            root_id: None,
             limit: Some(MAX_PROMPT_NODES),
             offset: None,
             collection_id: None,
