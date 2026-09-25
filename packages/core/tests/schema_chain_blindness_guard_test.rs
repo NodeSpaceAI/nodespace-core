@@ -284,6 +284,14 @@ fn is_test_only_file(file_name: &str) -> bool {
 /// tokens (lifetimes) — accepted as a known simplification, since none of
 /// the files this guard cares about contain a char literal holding `/` or
 /// `"` adjacent to a `get_schema_node`-family call.
+///
+/// Also does not recognize raw strings (`r"..."`, `r#"..."#`) as a distinct
+/// form — a `"` anywhere, raw-string delimiter or not, toggles `in_string`.
+/// A raw string containing an unescaped `"` (only possible in the `r#"..."#`
+/// form) would desync this from the real lexical boundary. No such case
+/// exists near a `get_schema_node`-family call in this codebase today (this
+/// guard's own test suite scans the whole real codebase and passes), so
+/// this is a documented latent gap rather than an observed failure.
 fn strip_comments(source: &str) -> String {
     let mut out = String::with_capacity(source.len());
     let mut in_string = false;
