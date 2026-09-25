@@ -49,6 +49,14 @@
     --ring: 174 67% 35%;
 
     /*
+      Unchecked Switch track. It is the switch's sole on/off indicator, so it
+      must clear WCAG 1.4.11 non-text contrast (3:1) on its surface — --input
+      (1.25:1 here, near-invisible in dark) is a text-field fill and does not.
+      3.57:1 on --card, 3.42:1 on --sidebar-background.
+    */
+    --switch-track: 240 5% 55%;
+
+    /*
       State colors are sized to clear WCAG AA (4.5:1) as TEXT, which is the
       strictest way they are used. The binding case is text on a 0.1 tint of its
       own hue (see status-bar.svelte): the tint darkens the backdrop in the same
@@ -206,6 +214,7 @@
     --border: 0 0% 100% / 0.1;
     --input: 0 0% 100% / 0.15;
     --ring: 173 50% 41%;
+    --switch-track: 240 4% 45%; /* 3.50:1 on --card, 3.56:1 vs the --background thumb */
 
     /*
       Dark-mode fills are bright, so their foreground is near-black rather than

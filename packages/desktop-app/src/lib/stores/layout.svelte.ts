@@ -51,21 +51,12 @@ const initialNavigationItems: NavigationItem[] = [
     active: false,
     type: 'link',
   },
-  {
-    id: 'favorites',
-    label: 'Favorites',
-    icon: 'M12 2l3.09 6.26L22 9.27l-5 4.87L18.18 21.02L12 17.77l-6.18 3.25L7 14.14l-5-4.87l6.91-1.01L12 2z', // star icon
-    active: false,
-    type: 'link',
-  },
-  {
-    id: 'conflicts',
-    label: 'Conflicts',
-    // triangle-alert icon
-    icon: 'M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0zM12 9v4 M12 17h.01',
-    active: false,
-    type: 'link',
-  },
+  // "Favorites" and "Conflicts" are hidden until they are ready. Favorites has
+  // no view behind it yet; Conflicts is backed by the working ADR-068 conflict
+  // journal (`openConflicts()`, still reachable from the per-node conflict
+  // badge), but its sidebar entry point is not ready to offer. Each returns here
+  // as a `link` item — with its `handleNavItemClick` branch in NavigationSidebar
+  // — once its view is ready. Until then they are omitted rather than left inert.
   {
     id: 'settings',
     label: 'Settings',
