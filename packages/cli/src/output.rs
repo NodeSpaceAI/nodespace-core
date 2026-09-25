@@ -213,11 +213,25 @@ pub fn related_node_to_json(node: &serde_json::Value) -> serde_json::Value {
         }
     }
 
-    // Fold promoted fields back under `properties`. `node_to_typed_value` can
-    // synthesize a value that was never stored — `task_node_to_value` defaults
-    // an absent `status` to "open" — so dropping these outright would lose a
-    // field that `properties` does not carry. Stored values win: a key already
-    // in `properties` is the real one.
+    // Fold promoted fields back under `properties`. The typed conversion moves
+    // a core type's fields out of `properties` entirely (`task.due_date`
+    // travels as the top-level `dueDate`), so they are restored under their
+    // storage keys — the CLI's shape, which every other command emits and
+    // which `--property` writes back. Those keys are then no longer
+    // "promoted" leftovers.
+    //
+    // Any other unrecognized top-level key is folded in under its own name:
+    // `node_to_typed_value` can synthesize a value that was never stored —
+    // `task_node_to_value` defaults an absent `status` to "open" — so dropping
+    // it outright would lose a field `properties` does not carry. Stored
+    // values win: a key already in `properties` is the real one.
+    let flat = nodespace_types::flat_properties_view(node);
+    if let Some(node_type) = obj.get("nodeType").and_then(|v| v.as_str()) {
+        for (_, wire_key) in nodespace_types::promoted_fields(node_type) {
+            promoted.remove(*wire_key);
+        }
+    }
+    out.insert("properties".to_string(), flat);
     if !promoted.is_empty() {
         let props = out
             .entry("properties".to_string())
@@ -618,6 +632,34 @@ mod tests {
         assert_eq!(out["properties"]["priority"], "high");
         assert!(out.get("status").is_none());
         assert!(out.get("priority").is_none());
+    }
+
+    /// A core type's promoted fields come back under their storage keys — the
+    /// spelling every other CLI command emits and `--property` writes — not
+    /// the camelCase wire key the typed conversion moved them to.
+    #[test]
+    fn related_node_restores_promoted_fields_under_storage_keys() {
+        let typed = serde_json::json!({
+            "id": "p1",
+            "nodeType": "person",
+            "content": "",
+            "properties": {"custom:team": "Core"},
+            "firstName": "Ada",
+            "email": "ada@example.com",
+        });
+
+        let out = related_node_to_json(&typed);
+
+        assert_eq!(
+            out["properties"],
+            serde_json::json!({
+                "first_name": "Ada",
+                "email": "ada@example.com",
+                "custom:team": "Core"
+            })
+        );
+        assert!(out["properties"].get("firstName").is_none());
+        assert!(out.get("firstName").is_none());
     }
 
     /// `task_node_to_value` defaults an absent `status` to "open" via

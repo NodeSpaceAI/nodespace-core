@@ -6,7 +6,7 @@
 use crate::types::{
     node_to_typed_value as types_node_to_typed_value,
     nodes_to_typed_values as types_nodes_to_typed_values, DeleteResult, Node, NodeQuery,
-    NodeReference, NodeUpdate, TaskNodeUpdate,
+    NodeReference, NodeUpdate, PersonNodeUpdate, ProjectNodeUpdate, TaskNodeUpdate,
 };
 use chrono::{DateTime, Utc};
 use nodespace_proto::nodespace::{
@@ -16,8 +16,8 @@ use nodespace_proto::nodespace::{
     GetNodeRequest, GetSchemaDefinitionRequest, MentionAutocompleteRequest, MentionTargetRequest,
     MoveChildrenToParentRequest, MoveNodeRequest, NodeData, NodeResponse, NodeSortOrder,
     OptionalStringClear, OptionalTimestampClear, QueryNodesSimpleRequest, ReorderNodeRequest,
-    UpdateNodeRequest, UpdateRelationshipPropertiesRequest, UpdateTaskNodeRequest,
-    UpsertNodeWithParentRequest,
+    UpdateNodeRequest, UpdatePersonNodeRequest, UpdateProjectNodeRequest,
+    UpdateRelationshipPropertiesRequest, UpdateTaskNodeRequest, UpsertNodeWithParentRequest,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -1024,6 +1024,74 @@ pub async fn update_task_node(
     let req = task_update_to_proto(&id, version, update);
     let resp = c
         .update_task_node(Request::new(req))
+        .await
+        .map_err(status_to_command_error)?;
+
+    let node = proto_node_response_to_node(resp.into_inner())?;
+    node_to_typed_value(node)
+}
+
+/// Encode a tri-state update field for the proto's clearable wrapper:
+/// `None` → unset (no change), `Some(None)` → clear, `Some(Some(v))` → set.
+fn string_clear(value: Option<Option<String>>) -> Option<OptionalStringClear> {
+    value.map(|opt| OptionalStringClear {
+        clear: opt.is_none(),
+        value: opt.unwrap_or_default(),
+    })
+}
+
+/// Date variant of [`string_clear`].
+fn timestamp_clear(value: Option<Option<String>>) -> Option<OptionalTimestampClear> {
+    value.map(|opt| OptionalTimestampClear {
+        clear: opt.is_none(),
+        value: opt.unwrap_or_default(),
+    })
+}
+
+/// Update a person node's core fields (first name, last name, email).
+#[tauri::command]
+pub async fn update_person_node(
+    client: State<'_, GrpcClient>,
+    id: String,
+    version: i64,
+    update: PersonNodeUpdate,
+) -> Result<Value, CommandError> {
+    let mut c = client.client().await;
+    let req = UpdatePersonNodeRequest {
+        node_id: id,
+        version,
+        first_name: string_clear(update.first_name),
+        last_name: string_clear(update.last_name),
+        email: string_clear(update.email),
+    };
+    let resp = c
+        .update_person_node(Request::new(req))
+        .await
+        .map_err(status_to_command_error)?;
+
+    let node = proto_node_response_to_node(resp.into_inner())?;
+    node_to_typed_value(node)
+}
+
+/// Update a project node's core fields (status, priority, start/end dates).
+#[tauri::command]
+pub async fn update_project_node(
+    client: State<'_, GrpcClient>,
+    id: String,
+    version: i64,
+    update: ProjectNodeUpdate,
+) -> Result<Value, CommandError> {
+    let mut c = client.client().await;
+    let req = UpdateProjectNodeRequest {
+        node_id: id,
+        version,
+        status: update.status,
+        priority: string_clear(update.priority),
+        start_date: timestamp_clear(update.start_date),
+        end_date: timestamp_clear(update.end_date),
+    };
+    let resp = c
+        .update_project_node(Request::new(req))
         .await
         .map_err(status_to_command_error)?;
 

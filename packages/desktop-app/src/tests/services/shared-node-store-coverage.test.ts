@@ -202,24 +202,24 @@ describe('SharedNodeStore - Coverage Completion', () => {
         ...mockNode,
         id: 'task-props',
         nodeType: 'task',
-        properties: { task: { status: 'todo' } }
+        properties: { status: 'todo' }
       };
 
       vi.spyOn(backendAdapter, 'updateNode').mockResolvedValue({
         ...taskNode,
-        properties: { task: { status: 'done' } },
+        properties: { status: 'done' },
         version: 2
       });
 
       store.setNode(taskNode, databaseSource);
 
       // Update task status via properties - should trigger persistence even from viewer
-      store.updateNode('task-props', { properties: { task: { status: 'done' } } }, viewerSource);
+      store.updateNode('task-props', { properties: { status: 'done' } }, viewerSource);
 
       await new Promise(resolve => setTimeout(resolve, 100));
 
       const updated = store.getNode('task-props');
-      expect((updated?.properties as Record<string, unknown>)?.task).toEqual({ status: 'done' });
+      expect(updated?.properties).toEqual({ status: 'done' });
     });
 
     it('should handle properties field changes', async () => {

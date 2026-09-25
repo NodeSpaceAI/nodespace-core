@@ -10,9 +10,8 @@
   never reaches that fallback branch and composes the same primitives
   directly: `pluginRegistry.getTitleTemplate` for the raw template string,
   `HAS_RESOLVED_CHARACTER_RE` to decide whether `node.title` has actually
-  resolved to a real name yet. first_name/last_name/email all live in
-  properties.person and are editable via the PersonSchemaForm property
-  panel.
+  resolved to a real name yet. first_name/last_name/email are editable via
+  the PersonSchemaForm property panel.
 -->
 
 <script lang="ts">

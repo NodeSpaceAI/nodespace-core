@@ -1,22 +1,23 @@
 /**
- * Field-value resolution for the generic, schema-driven properties form.
+ * Field-value resolution for schema-driven UI (the generic properties form,
+ * Kanban grouping, viewer field edits).
  *
- * Two property storage shapes are in play across node types:
+ * A schema field lives in one of two places on a node, decided by the node's
+ * type, never by the value's shape:
  *
- * - **Namespaced** — schema-defined fields live under `properties[nodeType]` (e.g.
- *   `properties.project.status`). NodeService namespaces on create for every type except
- *   `schema`, so this is the normal shape for user-defined types as well as core ones.
- * - **Flat** — fields stored directly as `properties[fieldName]`. Reached by nodes written
- *   outside the create path, and by older rows predating namespacing.
+ * - **Typed core field** — a core type's schema-declared field (`task.status`,
+ *   `person.first_name`, `project.start_date`; see `TYPED_CORE_FIELDS`). It
+ *   travels as a top-level typed field (`node.status`, `node.firstName`,
+ *   `node.startDate`) and is written through the type's typed update.
+ * - **Extension field** — every other field: a `custom:` field on a core type
+ *   or any field of a user-defined type. It lives flat in `node.properties`.
  *
- * Core behaviors read nested-first with a flat fallback (`project`, `task`), though not
- * universally — `person` reads nested-only. Reads here mirror the nested-first order so one
- * generic form renders both shapes correctly, and writes preserve whichever shape the node
- * already uses (see `buildFieldWrite`).
- *
- * Extracted from generic-schema-form.svelte so both are unit-testable without rendering
- * the component.
+ * Extracted from generic-schema-form.svelte so it is unit-testable without
+ * rendering the component.
  */
+
+import type { Node } from '$lib/types';
+import { typedCoreField } from '$lib/types/typed-core-fields';
 
 export interface FieldValueSource {
   nodeType: string;
@@ -24,45 +25,38 @@ export interface FieldValueSource {
 }
 
 /**
- * Read a schema field's value, preferring the type's property namespace over a flat key.
+ * Read a schema field's value.
  *
- * @returns the stored value, or `null` when the field is unset in both shapes
+ * @returns the stored value, or `null` when the field is unset
  */
 export function resolveFieldValue(node: FieldValueSource, fieldName: string): unknown {
-  const namespace = node.properties?.[node.nodeType];
-  if (namespace && typeof namespace === 'object' && fieldName in namespace) {
-    return (namespace as Record<string, unknown>)[fieldName] ?? null;
+  const typed = typedCoreField(node.nodeType, fieldName);
+  if (typed) {
+    return (node as unknown as Record<string, unknown>)[typed.wire] ?? null;
   }
   return node.properties?.[fieldName] ?? null;
 }
 
 /**
- * Build the `properties` payload that writes `fieldName = value` in the shape the node
- * already stores — mirroring `resolveFieldValue`'s precedence so a field round-trips.
+ * Build the `sharedNodeStore.updateNode` changes that write `fieldName = value`
+ * to wherever `resolveFieldValue` reads it from.
  *
- * The namespaced branch is load-bearing **because this payload spreads the node's existing
- * properties**. The backend's normalize step returns the payload untouched when it already
- * carries a `properties[nodeType]` key, so a spread payload plus a flat `fieldName` merges
- * as two siblings — the namespaced copy wins on read and the edit is silently discarded.
- * (A payload carrying *only* the bare field would be namespaced and merged correctly; it is
- * the spread that reintroduces the key and defeats that.) Re-nesting here keeps the edit in
- * the branch the read path actually consults. `task-schema-form` re-nests likewise.
- *
- * Anyone tempted to drop the spread should note it is what makes both branches necessary —
- * sending only the changed field would let a single flat write serve both shapes.
+ * A typed core field becomes a top-level typed change (`{ startDate: … }`),
+ * which the store routes through the type's typed update; an empty string is
+ * sent as `null` (clear), since the typed updates validate their values and
+ * `""` is not a valid date or enum value. An extension field becomes a flat
+ * `properties` write that carries the node's other extension fields along —
+ * the persistence queue keeps only a node's newest write, so a lone-field
+ * patch could drop a queued sibling edit.
  */
 export function buildFieldWrite(
   node: FieldValueSource,
   fieldName: string,
   value: unknown
-): Record<string, unknown> {
-  const properties = node.properties ?? {};
-  const namespace = properties[node.nodeType];
-  if (namespace && typeof namespace === 'object') {
-    return {
-      ...properties,
-      [node.nodeType]: { ...(namespace as Record<string, unknown>), [fieldName]: value }
-    };
+): Partial<Node> {
+  const typed = typedCoreField(node.nodeType, fieldName);
+  if (typed) {
+    return { [typed.wire]: value === '' ? null : value } as Partial<Node>;
   }
-  return { ...properties, [fieldName]: value };
+  return { properties: { ...(node.properties ?? {}), [fieldName]: value } };
 }

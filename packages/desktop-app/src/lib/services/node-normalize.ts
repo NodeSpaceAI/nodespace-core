@@ -1,6 +1,9 @@
 import type { Node } from '$lib/types/node';
 import { nodeToTaskNode } from '$lib/types/task-node';
+import { nodeToPersonNode } from '$lib/types/person-node';
+import { nodeToProjectNode } from '$lib/types/project-node';
 import { nodeToAiChatNode } from '$lib/types/ai-chat-node';
+import { TYPED_CORE_DEFAULTS, TYPED_CORE_FIELDS } from '$lib/types/typed-core-fields';
 
 /**
  * Normalize raw node data from a sync boundary (Tauri domain events or SSE) to the
@@ -10,23 +13,26 @@ import { nodeToAiChatNode } from '$lib/types/ai-chat-node';
  * so a future type branch (e.g. SchemaNode) is added in exactly one place.
  */
 export function normalizeNodeData(nodeData: Node): Node {
-  if (nodeData.nodeType === 'task') {
-    return nodeToTaskNode(nodeData) as unknown as Node;
+  switch (nodeData.nodeType) {
+    case 'task':
+      return nodeToTaskNode(nodeData) as unknown as Node;
+    case 'person':
+      return nodeToPersonNode(nodeData) as unknown as Node;
+    case 'project':
+      return nodeToProjectNode(nodeData) as unknown as Node;
+    case 'ai-chat':
+      return nodeToAiChatNode(nodeData) as unknown as Node;
+    default:
+      return nodeData;
   }
-  if (nodeData.nodeType === 'ai-chat') {
-    return nodeToAiChatNode(nodeData) as unknown as Node;
-  }
-  return nodeData;
 }
 
 /**
- * One promoted field: `from` is the property key the write payload actually
- * uses (what `changesProperties`/`mergedProperties` are keyed by), `to` is the
- * top-level `Node` key viewers read. The two differ for ai-chat's canonical
- * snake_case property keys (`turn_status`, `session_status`), which the
- * backend promotes to camelCase top-level fields (`turnStatus`,
- * `sessionStatus`) — see `ai_chat_node_to_value` in
- * `packages/nodespace-types/src/convert.rs`. They're equal everywhere else.
+ * One ai-chat field the backend promotes: `from` is the property key the write
+ * payload uses (what `changesProperties`/`mergedProperties` are keyed by), `to`
+ * is the top-level `Node` key viewers read. They differ for the canonical
+ * snake_case keys (`turn_status` → `turnStatus`) — see `ai_chat_node_to_value`
+ * in `packages/nodespace-types/src/convert.rs`.
  */
 interface PromotedField {
   from: string;
@@ -34,26 +40,21 @@ interface PromotedField {
 }
 
 /**
- * Mirror of the backend's typed-field promotion (`node_to_typed_value` /
- * `flatten_properties_for_api` in `packages/nodespace-types/src/convert.rs`).
- * For each node type, lists the type-specific fields the backend lifts from
- * the stored `properties` bag up to the TOP LEVEL of the node (the fields
- * viewers actually read).
+ * ai-chat fields the backend lifts from `properties` to the top level while
+ * also leaving them in `properties` — ai-chat writes them through the
+ * generic properties path, unlike the typed core types (`task`, `person`,
+ * `project`, see `TYPED_CORE_FIELDS`), whose core fields have exactly one home.
  *
- * Two independent consumers:
- * - `promoteTypedFields` below, for an optimistic (pre-round-trip)
- *   `updateNode` — reflects these fields immediately instead of waiting a
- *   full RPC round trip. The backend response is always spread over the node
- *   afterward, so drift here degrades optimistic latency only.
- * - `flattenTypedFieldsFromStorage` below, for the browser/dev-proxy HTTP
- *   transport (`packages/dev-tools/src/dev-proxy.ts`), which has no access to
- *   `node_to_typed_value` (Rust) and returns nodes straight from storage
- *   shape. Drift here is NOT latency-only — a promoted field this map omits
- *   never reaches the top level over that transport at all, silently
- *   breaking any viewer that reads it (e.g. `AiChatNodeViewer`'s
- *   `node?.provider`/`node?.model`).
+ * Two consumers:
+ * - `promoteTypedFields`, for an optimistic (pre-round-trip) `updateNode` —
+ *   reflects these fields immediately instead of waiting a full RPC round
+ *   trip. The backend response is spread over the node afterward, so drift
+ *   here degrades optimistic latency only.
+ * - `storageNodeToApiFields`, for the browser/dev-proxy transport. Drift there
+ *   is NOT latency-only: a field this map omits never reaches the top level
+ *   over that transport (e.g. `AiChatNodeViewer`'s `node?.provider`).
  *
- * Keep in sync with convert.rs when the promoted field set changes.
+ * Keep in sync with convert.rs.
  */
 export const OPTIMISTIC_TYPED_FIELDS: Record<string, readonly PromotedField[]> = {
   'ai-chat': [
@@ -62,13 +63,6 @@ export const OPTIMISTIC_TYPED_FIELDS: Record<string, readonly PromotedField[]> =
     { from: 'provider', to: 'provider' },
     { from: 'model', to: 'model' },
     { from: 'messages', to: 'messages' }
-  ],
-  task: [
-    { from: 'status', to: 'status' },
-    { from: 'priority', to: 'priority' },
-    { from: 'dueDate', to: 'dueDate' },
-    { from: 'startedAt', to: 'startedAt' },
-    { from: 'completedAt', to: 'completedAt' }
   ]
 };
 
@@ -78,34 +72,21 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 
 /**
  * Merge an incoming `properties` patch onto the existing `properties` bag so a
- * partial write doesn't drop sibling keys. Merges one level, plus one level
- * deeper into the type namespace (e.g. `properties.task.*`) so a nested patch
- * like `{ task: { status } }` doesn't clobber `properties.task.priority`.
+ * partial write doesn't drop sibling keys. Both bags are flat (see
+ * `storageNodeToApiFields`), so a one-level merge is complete.
  */
-export function deepMergeProperties(
+export function mergeProperties(
   existing: Record<string, unknown> | undefined,
-  incoming: Record<string, unknown>,
-  nodeType: string
+  incoming: Record<string, unknown>
 ): Record<string, unknown> {
-  const base = existing ?? {};
-  const merged: Record<string, unknown> = { ...base, ...incoming };
-
-  const baseNs = base[nodeType];
-  const incomingNs = incoming[nodeType];
-  if (isPlainObject(baseNs) && isPlainObject(incomingNs)) {
-    merged[nodeType] = { ...baseNs, ...incomingNs };
-  }
-
-  return merged;
+  return { ...(existing ?? {}), ...incoming };
 }
 
 /**
  * Compute the top-level typed fields to promote for an optimistic update.
  *
- * Only promotes a field that is actually present in this write — either flat
- * under `properties` (ai-chat stores `properties.model`) or nested under the
- * type namespace (`properties.task.status`). The "present in this write" guard
- * is load-bearing: it prevents overwriting an existing top-level value with
+ * Only promotes a field that is actually present in this write. That guard is
+ * load-bearing: it prevents overwriting an existing top-level value with
  * `undefined` when a caller omits a field (e.g. sending a message writes
  * `properties.messages` but not `properties.model`).
  */
@@ -114,62 +95,86 @@ export function promoteTypedFields(
   changesProperties: Record<string, unknown>,
   mergedProperties: Record<string, unknown>
 ): Record<string, unknown> {
-  const fields = OPTIMISTIC_TYPED_FIELDS[nodeType];
-  if (!fields) return {};
-
-  const nestedChanges = changesProperties[nodeType];
-  const nestedMerged = mergedProperties[nodeType];
   const promoted: Record<string, unknown> = {};
-
-  for (const { from, to } of fields) {
+  for (const { from, to } of OPTIMISTIC_TYPED_FIELDS[nodeType] ?? []) {
     if (Object.prototype.hasOwnProperty.call(changesProperties, from)) {
-      // Flat shape (e.g. ai-chat: properties.model)
       promoted[to] = mergedProperties[from];
-    } else if (
-      isPlainObject(nestedChanges) &&
-      Object.prototype.hasOwnProperty.call(nestedChanges, from)
-    ) {
-      // Nested shape (e.g. task schema form: properties.task.status)
-      promoted[to] = isPlainObject(nestedMerged) ? nestedMerged[from] : undefined;
     }
   }
-
   return promoted;
 }
 
 /**
- * Promote a fetched node's namespaced typed-field bucket to top-level fields.
- *
- * Storage/wire shape from the browser HTTP transport is always namespaced
- * (`properties.<type>.*` — e.g. `properties['ai-chat'].model`), never flat:
- * unlike `promoteTypedFields` above (built for a partial WRITE payload, which
- * ai-chat sends flat), this reads a FULL fetched node's own bucket. This is
- * the browser-transport counterpart to the backend's `node_to_typed_value`
- * (`packages/nodespace-types/src/convert.rs`) — the Tauri IPC layer routes
- * every node through that function before it reaches the frontend, so
- * `nodeToAiChatNode`/`nodeToTaskNode` trust top-level fields are already
- * present and never read `properties.<type>` themselves. The dev-proxy HTTP
- * bridge (`packages/dev-tools/src/dev-proxy.ts`) has no access to that Rust
- * function and returns storage-shape `properties` verbatim, so it must call
- * this before handing a node to the frontend — otherwise a node's typed
- * fields silently read as `undefined` at the top level for that transport
- * only, even though the underlying data is intact.
+ * Mirror `normalize_date_field`: a `YYYY-MM-DD` date passes through, and an
+ * RFC 3339 datetime (`T`- or space-separated, seconds and a `Z`/`±hh:mm`
+ * offset) reduces to its literal date prefix — its date in its own offset, as
+ * that branch does. Rust's lenient UTC fallback parse, which would convert
+ * other forms to a UTC date, is not mirrored: no write path produces them,
+ * and they pass through unchanged here.
  */
-export function flattenTypedFieldsFromStorage(
+const OFFSET_DATETIME = /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/i;
+
+function normalizeDate(value: string): string {
+  return OFFSET_DATETIME.test(value) ? value.slice(0, 10) : value;
+}
+
+/**
+ * Convert a node's storage-shape `properties` into the API shape the frontend
+ * reads: `properties` flattened, typed core fields moved to the top level.
+ *
+ * This is the browser-transport counterpart to the backend's
+ * `node_to_typed_value` (`packages/nodespace-types/src/convert.rs`), which the
+ * Tauri IPC layer routes every node through. The dev-proxy HTTP bridge
+ * (`packages/dev-tools/src/dev-proxy.ts`) has no access to that Rust function
+ * and receives storage-shape `properties` (`{ person: { first_name } }`) from
+ * gRPC, so it must call this before handing a node to the frontend. Without it
+ * the two transports deliver different shapes. Keep in sync with convert.rs:
+ *
+ * - Flattening mirrors `flatten_namespaced_properties`: when the type's own
+ *   bucket is present, its non-`_` keys become the properties (object-valued
+ *   fields included); otherwise the bag is already flat and only its
+ *   non-object, non-`_` keys survive — a nested object there can only be
+ *   another type's dormant namespace.
+ * - Typed core types (`TYPED_CORE_FIELDS`) move each core field to its typed
+ *   key — read under either spelling, typed key first, as the Rust converters
+ *   do — normalize dates, fill the backend's defaults, and drop both
+ *   spellings from `properties`.
+ * - ai-chat promotes its fields and leaves them in `properties`.
+ */
+export function storageNodeToApiFields(
   nodeType: string,
-  properties: unknown
-): Record<string, unknown> {
-  const fields = OPTIMISTIC_TYPED_FIELDS[nodeType];
-  if (!fields || !isPlainObject(properties)) return {};
-
-  const bucket = properties[nodeType];
-  if (!isPlainObject(bucket)) return {};
-
-  const promoted: Record<string, unknown> = {};
-  for (const { from, to } of fields) {
-    if (Object.prototype.hasOwnProperty.call(bucket, from)) {
-      promoted[to] = bucket[from];
+  storageProperties: unknown
+): { properties: Record<string, unknown> } & Record<string, unknown> {
+  const properties: Record<string, unknown> = {};
+  if (isPlainObject(storageProperties)) {
+    const bucket = storageProperties[nodeType];
+    if (isPlainObject(bucket)) {
+      for (const [key, value] of Object.entries(bucket)) {
+        if (!key.startsWith('_')) properties[key] = value;
+      }
+    } else {
+      for (const [key, value] of Object.entries(storageProperties)) {
+        if (!key.startsWith('_') && !isPlainObject(value)) properties[key] = value;
+      }
     }
   }
-  return promoted;
+
+  const promoted: Record<string, unknown> = { ...(TYPED_CORE_DEFAULTS[nodeType] ?? {}) };
+  for (const { storage, wire, date } of TYPED_CORE_FIELDS[nodeType] ?? []) {
+    // Only task_node_to_value reads the legacy typed-key spelling, and it
+    // prefers it when the key is present at all (even as null) — `.get(wire)
+    // .or_else(storage)`. person/project read the storage key alone.
+    const raw = nodeType === 'task' && wire in properties ? properties[wire] : properties[storage];
+    if (typeof raw === 'string') {
+      promoted[wire] = date ? normalizeDate(raw) : raw;
+    }
+    delete properties[storage];
+    delete properties[wire];
+  }
+  for (const { from, to } of OPTIMISTIC_TYPED_FIELDS[nodeType] ?? []) {
+    if (Object.prototype.hasOwnProperty.call(properties, from)) {
+      promoted[to] = properties[from];
+    }
+  }
+  return { ...promoted, properties };
 }

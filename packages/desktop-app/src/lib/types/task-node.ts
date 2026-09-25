@@ -80,10 +80,12 @@ export interface TaskNode {
   id: string;
   nodeType: 'task';
   content: string;
-  title?: string;
+  title?: string | null;
   version: number;
   createdAt: string;
   modifiedAt: string;
+  /** Extension fields only (`custom:…`) — core fields are the typed fields below. */
+  properties?: Record<string, unknown>;
 
   // Type-specific fields (flat, at top level)
   status: TaskStatus;
@@ -229,6 +231,7 @@ export interface TaskNodeUpdate {
  * to the TOP LEVEL of the node and flattens the `properties.task` namespace away.
  * See the `wire_contract` tests in `nodespace-types/src/convert.rs`. This converter
  * therefore trusts the flat contract and only fills defaults for missing fields.
+ * Every other node field (`properties`, `title`, `lifecycleStatus`, …) is kept.
  *
  * @param node - Generic Node carrying a task (fields promoted to top level)
  * @returns TaskNode with flat type-specific fields
@@ -236,12 +239,9 @@ export interface TaskNodeUpdate {
 export function nodeToTaskNode(node: Node): TaskNode {
   const task = node as unknown as Partial<TaskNode>;
   return {
-    id: node.id,
+    ...(node as unknown as TaskNode),
     nodeType: 'task',
-    content: node.content,
-    version: node.version,
-    createdAt: node.createdAt,
-    modifiedAt: node.modifiedAt,
+    properties: node.properties ?? {},
     status: task.status ?? 'open',
     priority: task.priority,
     dueDate: task.dueDate ?? null,
@@ -365,6 +365,7 @@ export const TaskNodeHelpers = {
       createdAt: new Date().toISOString(),
       modifiedAt: new Date().toISOString(),
       version: 1,
+      properties: {},
       status: options.status ?? 'open',
       priority: options.priority,
       dueDate: options.dueDate ?? null

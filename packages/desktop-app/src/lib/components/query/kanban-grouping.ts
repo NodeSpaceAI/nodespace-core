@@ -9,6 +9,10 @@
 
 import type { Node } from '$lib/types';
 import type { SchemaField, SchemaNode } from '$lib/types/schema-node';
+import {
+  buildFieldWrite,
+  resolveFieldValue
+} from '$lib/components/schema/schema-field-resolution';
 
 /** Column key used for nodes whose group-by value is unset or unrecognized. */
 export const UNASSIGNED = '__unassigned__';
@@ -19,14 +23,6 @@ export interface KanbanColumn {
   value: string;
   /** Human-readable label for the column header. */
   label: string;
-}
-
-/**
- * Convert a snake_case schema field name to the camelCase key the API uses for
- * typed core fields (e.g. `due_date` → `dueDate`). Mirrors `table-row.svelte`.
- */
-function toCamelCase(name: string): string {
-  return name.replace(/_([a-z])/g, (_, c) => c.toUpperCase());
 }
 
 /**
@@ -69,82 +65,37 @@ export function enumColumns(field: SchemaField | undefined | null): KanbanColumn
 }
 
 /**
- * Read a node's value for the given field, mirroring `table-row.svelte`'s
- * resolution order: camelCase top-level (typed core fields) → snake_case
- * top-level → `properties[field]` (user-defined schema fields). Returns `null`
+ * Read a node's value for the given field — the same resolution every
+ * schema-driven surface uses (`resolveFieldValue`): a typed core field from
+ * its top-level typed key, any other field from `properties`. Returns `null`
  * for unset/empty values.
- *
- * Precedence here must exactly mirror `resolveFieldWrite`'s below — both
- * gate the top-level branches on the field NOT also being present in
- * `properties`, not just on the top-level slot being defined. A user-defined
- * type is free to use a bare field name that shadows a core property (e.g.
- * "status" — CLAUDE.md documents this as discouraged but not forbidden); for
- * such a node, an unconditional `rec[camel] ?? …` would read a stale/unset
- * top-level slot while every write still lands in `properties[field]` (the
- * slot `resolveFieldWrite` actually targets, since `field in props` there),
- * so the board would never reflect its own writes — reads and writes must
- * agree on which slot is authoritative for a given node, not just default to
- * the same *kind* of slot independently.
  */
 export function readGroupValue(node: Node, field: string): string | null {
-  const rec = node as unknown as Record<string, unknown>;
-  const camel = toCamelCase(field);
-  const props = (node.properties ?? {}) as Record<string, unknown>;
-  const raw =
-    rec[camel] !== undefined && !(camel in props)
-      ? rec[camel]
-      : rec[field] !== undefined && !(field in props)
-        ? rec[field]
-        : props[field];
+  const raw = resolveFieldValue(node, field);
   if (raw === null || raw === undefined || raw === '') return null;
   return String(raw);
 }
 
 /**
  * Build the `updateNode` change-set that moves a node into the column identified
- * by `value`, writing the value back to wherever it is *read* from (see
- * `readGroupValue`) so the card re-groups consistently after the store update.
+ * by `value`, writing the value to wherever `readGroupValue` reads it from
+ * (`buildFieldWrite`), so the card re-groups consistently after the store
+ * update: a typed core field persists through its type's typed update, any
+ * other field as a `properties` write.
  *
  * `value` is `null` for a move to Unassigned — written through as a genuine
- * `null`/absent value, not an empty string. An empty string is a real
- * (if unusual) enum value some backends would accept and persist as a
- * `TaskStatus::User("")` rather than clearing the field, so callers moving a
- * card to Unassigned must pass `null` here, not `''`.
- *
- * Not every field this can be called for actually HAS clear semantics on the
- * backend, though: task's `status` is a required, non-nullable `TaskStatus`
- * with no "cleared" state at all (unlike its siblings `priority`/`dueDate`,
- * which are genuinely optional). A `null` write to such a field
- * round-trips as an HTTP success while silently changing nothing server-side
- * — the caller is responsible for never offering Unassigned as a target for
- * a `required: true` schema field in the first place (kanban-view.svelte's
- * `displayColumns` and `moveCard` both guard on `activeField?.required`).
- *
- * Both shapes this produces persist through the store's viewer-write rule: a
- * user-defined schema field — the common Kanban case — is written under
- * `properties[field]` (property changes always persist, matching
- * `generic-schema-form`), and a typed core field stays a top-level field, which
- * persists via that type's registered updater for the mutable core enums
- * (`status`/`priority`/…). Grouping a core type by a non-standard top-level enum
- * field is out of scope — its board would move cards but not persist them.
+ * `null` (clear), not an empty string. Not every field has clear semantics
+ * on the backend: a `required` field (task's and project's `status`) has no
+ * cleared state, so the caller must never offer Unassigned as a target for
+ * one (kanban-view.svelte's `displayColumns` and `moveCard` both guard on
+ * `activeField?.required`).
  */
 export function resolveFieldWrite(
   node: Node,
   field: string,
   value: string | null
 ): Partial<Node> {
-  const rec = node as unknown as Record<string, unknown>;
-  const camel = toCamelCase(field);
-  const props = (node.properties ?? {}) as Record<string, unknown>;
-
-  if (rec[camel] !== undefined && !(camel in props)) {
-    return { [camel]: value } as unknown as Partial<Node>;
-  }
-  if (rec[field] !== undefined && !(field in props)) {
-    return { [field]: value } as unknown as Partial<Node>;
-  }
-  // Default and user-defined-schema case: the bare property.
-  return { properties: { ...props, [field]: value } };
+  return buildFieldWrite(node, field, value);
 }
 
 /**

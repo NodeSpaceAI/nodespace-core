@@ -15,7 +15,8 @@ use std::sync::Arc;
 use chrono::{DateTime, Utc};
 use nodespace_core::db::events::DomainEvent;
 use nodespace_core::models::{
-    Node, NodeQuery, NodeUpdate, OrderBy, TaskNodeUpdate, TaskPriority, TaskStatus,
+    Node, NodeQuery, NodeUpdate, OrderBy, PersonNodeUpdate, ProjectNodeUpdate, TaskNodeUpdate,
+    TaskPriority, TaskStatus,
 };
 use nodespace_core::ops::{
     collection_ops::{
@@ -67,9 +68,10 @@ use crate::nodespace::{
     RemoveNodeFromCollectionRequest, RenameCollectionRequest, ReorderNodeRequest,
     ReorderNodeResponse, ResetSeedNodeRequest, ResetSeedNodeResponse, ResolveConflictRequest,
     SchemaParamsRequest, SchemaResultResponse, SearchRequest, SetLocalPersonIdentityRequest,
-    UpdateNodeRequest, UpdateNodesBatchRequest, UpdateNodesBatchResponse,
-    UpdateRelationshipPropertiesRequest, UpdateRelationshipPropertiesResponse,
-    UpdateTaskNodeRequest, UpsertNodeWithParentRequest, WatchRequest,
+    UpdateNodeRequest, UpdateNodesBatchRequest, UpdateNodesBatchResponse, UpdatePersonNodeRequest,
+    UpdateProjectNodeRequest, UpdateRelationshipPropertiesRequest,
+    UpdateRelationshipPropertiesResponse, UpdateTaskNodeRequest, UpsertNodeWithParentRequest,
+    WatchRequest,
 };
 
 /// The most rows a paged query RPC will return, whatever the request asks for:
@@ -1502,33 +1504,7 @@ impl GrpcNodeService for NodeServiceImpl {
             .await
         {
             Ok(t) => t,
-            Err(NodeServiceError::VersionConflict {
-                node_id,
-                expected_version,
-                actual_version,
-            }) => {
-                // Fetch the authoritative current state so the client can
-                // hydrate without a second round-trip (mirrors the pattern
-                // used by node_ops::update_node for regular-node conflicts).
-                // Flattened via `node_to_typed_value` so the payload matches
-                // the wire shape of every other response — the client writes
-                // it straight into its store, where type-specific fields are
-                // read from the top level.
-                let current_node = this
-                    .node_service
-                    .get_node(&node_id)
-                    .await
-                    .ok()
-                    .flatten()
-                    .and_then(|n| nodespace_core::models::node_to_typed_value(n).ok());
-                return Err(ops_error_to_status(OpsError::VersionConflict {
-                    node_id,
-                    expected: expected_version,
-                    actual: actual_version,
-                    current_node,
-                }));
-            }
-            Err(e) => return Err(service_error_to_status(e)),
+            Err(e) => return Err(typed_update_error_to_status(&this.node_service, e).await),
         };
 
         // Convert TaskNode back to Node for proto wire shape. Frontend reconstructs
@@ -1542,6 +1518,55 @@ impl GrpcNodeService for NodeServiceImpl {
             node_type,
             node_data: Some(node_to_proto(node)),
         }))
+    }
+
+    async fn update_person_node(
+        &self,
+        request: Request<UpdatePersonNodeRequest>,
+    ) -> Result<Response<NodeResponse>, Status> {
+        let this = self.route(&request).await?;
+        let req = request.into_inner();
+
+        let update = PersonNodeUpdate {
+            first_name: optional_string_clear(req.first_name),
+            last_name: optional_string_clear(req.last_name),
+            email: optional_string_clear(req.email),
+        };
+
+        match this
+            .node_service
+            .update_person_node(&req.node_id, req.version, update)
+            .await
+        {
+            Ok(node) => Ok(Response::new(node_response(node))),
+            Err(e) => Err(typed_update_error_to_status(&this.node_service, e).await),
+        }
+    }
+
+    async fn update_project_node(
+        &self,
+        request: Request<UpdateProjectNodeRequest>,
+    ) -> Result<Response<NodeResponse>, Status> {
+        let this = self.route(&request).await?;
+        let req = request.into_inner();
+
+        let update = ProjectNodeUpdate {
+            status: req.status,
+            priority: optional_string_clear(req.priority),
+            start_date: parse_optional_timestamp(req.start_date, "start_date")
+                .map_err(Status::invalid_argument)?,
+            end_date: parse_optional_timestamp(req.end_date, "end_date")
+                .map_err(Status::invalid_argument)?,
+        };
+
+        match this
+            .node_service
+            .update_project_node(&req.node_id, req.version, update)
+            .await
+        {
+            Ok(node) => Ok(Response::new(node_response(node))),
+            Err(e) => Err(typed_update_error_to_status(&this.node_service, e).await),
+        }
     }
 
     // -- Local identity (ADR-037) ---------------------------------
@@ -2766,6 +2791,53 @@ fn markdown_error_to_status(err: nodespace_core::markdown::MarkdownError) -> Sta
         MarkdownError::Internal(msg) => Status::internal(msg),
         MarkdownError::AlreadyExists { message, .. } => Status::already_exists(message),
     }
+}
+
+/// Map a typed-update error to a gRPC status. A version conflict embeds the
+/// node's authoritative current state so the client can hydrate without a
+/// second round-trip (mirrors `node_ops::update_node` for generic updates),
+/// flattened via `node_to_typed_value` so the payload matches the wire shape
+/// of every other response — the client writes it straight into its store,
+/// where type-specific fields are read from the top level.
+async fn typed_update_error_to_status(
+    node_service: &nodespace_core::services::NodeService,
+    err: NodeServiceError,
+) -> Status {
+    match err {
+        NodeServiceError::VersionConflict {
+            node_id,
+            expected_version,
+            actual_version,
+        } => {
+            let current_node = node_service
+                .get_node(&node_id)
+                .await
+                .ok()
+                .flatten()
+                .and_then(|n| nodespace_core::models::node_to_typed_value(n).ok());
+            ops_error_to_status(OpsError::VersionConflict {
+                node_id,
+                expected: expected_version,
+                actual: actual_version,
+                current_node,
+            })
+        }
+        e => service_error_to_status(e),
+    }
+}
+
+fn node_response(node: Node) -> NodeResponse {
+    NodeResponse {
+        node_id: node.id.clone(),
+        node_type: node.node_type.clone(),
+        node_data: Some(node_to_proto(node)),
+    }
+}
+
+/// Decode a proto tri-state string: unset → no change, `clear` → clear,
+/// otherwise set.
+fn optional_string_clear(wrapper: Option<OptionalStringClear>) -> Option<Option<String>> {
+    wrapper.map(|w| if w.clear { None } else { Some(w.value) })
 }
 
 /// Build a `TaskNodeUpdate` from the proto's tri-state wrappers.
@@ -3997,6 +4069,109 @@ mod tests {
             "current_node must carry the post-conflict version (got {})",
             embedded_version
         );
+    }
+
+    fn create_person_request(id: &str) -> Request<crate::nodespace::CreateNodeRequest> {
+        Request::new(crate::nodespace::CreateNodeRequest {
+            id: Some(id.to_string()),
+            node_type: "person".to_string(),
+            content: "Ada".to_string(),
+            parent_id: None,
+            collections: Vec::new(),
+            collection_ids: Vec::new(),
+            lifecycle_status: None,
+            properties: r#"{"first_name":"Ada"}"#.to_string(),
+            position: None,
+        })
+    }
+
+    fn set_string(value: &str) -> Option<crate::nodespace::OptionalStringClear> {
+        Some(crate::nodespace::OptionalStringClear {
+            clear: false,
+            value: value.to_string(),
+        })
+    }
+
+    /// UpdatePersonNode writes the typed fields and returns the stored node,
+    /// including the `title_template`-recomputed title.
+    #[tokio::test]
+    async fn update_person_node_writes_typed_fields() {
+        let (svc, _tmp) = make_service().await;
+        let id = "b1b2c3d4-e5f6-7890-abcd-ef1234567890";
+        svc.create_node(create_person_request(id)).await.unwrap();
+
+        let resp = svc
+            .update_person_node(Request::new(crate::nodespace::UpdatePersonNodeRequest {
+                node_id: id.to_string(),
+                version: 1,
+                first_name: None,
+                last_name: set_string("Lovelace"),
+                email: set_string("ada@example.com"),
+            }))
+            .await
+            .expect("typed person update succeeds")
+            .into_inner();
+
+        let node = svc.node_service.get_node(id).await.unwrap().unwrap();
+        assert_eq!(node.version, 2);
+        assert_eq!(node.title.as_deref(), Some("Ada Lovelace"));
+        let typed = nodespace_core::models::node_to_typed_value(node).unwrap();
+        assert_eq!(typed["firstName"], "Ada");
+        assert_eq!(typed["lastName"], "Lovelace");
+        assert_eq!(typed["email"], "ada@example.com");
+        assert_eq!(resp.node_id, id);
+    }
+
+    /// UpdatePersonNode on a stale version embeds the typed current node in
+    /// the conflict header, like UpdateTaskNode.
+    #[tokio::test]
+    async fn update_person_node_version_conflict_embeds_typed_current_node() {
+        let (svc, _tmp) = make_service().await;
+        let id = "c1b2c3d4-e5f6-7890-abcd-ef1234567890";
+        svc.create_node(create_person_request(id)).await.unwrap();
+
+        let err = svc
+            .update_person_node(Request::new(crate::nodespace::UpdatePersonNodeRequest {
+                node_id: id.to_string(),
+                version: 7,
+                first_name: set_string("Grace"),
+                last_name: None,
+                email: None,
+            }))
+            .await
+            .expect_err("stale version must conflict");
+
+        assert_eq!(err.code(), tonic::Code::Aborted);
+        let header = err
+            .metadata()
+            .get("x-version-conflict")
+            .expect("x-version-conflict header missing for person-node OCC");
+        let json: serde_json::Value = serde_json::from_str(header.to_str().unwrap()).unwrap();
+        assert_eq!(json["current_node"]["firstName"], "Ada");
+    }
+
+    /// UpdateProjectNode rejects a malformed date before it reaches the
+    /// service.
+    #[tokio::test]
+    async fn update_project_node_rejects_a_malformed_date() {
+        let (svc, _tmp) = make_service().await;
+
+        let err = svc
+            .update_project_node(Request::new(crate::nodespace::UpdateProjectNodeRequest {
+                node_id: "anything".to_string(),
+                version: 1,
+                status: None,
+                priority: None,
+                start_date: Some(crate::nodespace::OptionalTimestampClear {
+                    clear: false,
+                    value: "next tuesday".to_string(),
+                }),
+                end_date: None,
+            }))
+            .await
+            .expect_err("malformed date must be rejected");
+
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
     }
 
     /// A generic-path (non-task) VersionConflict must embed `current_node` in the

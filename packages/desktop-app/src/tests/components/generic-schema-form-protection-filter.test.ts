@@ -90,7 +90,7 @@ afterEach(() => {
 describe('GenericSchemaForm — protection-level filtering', () => {
   it('never renders a system-protected field as an editable control', async () => {
     vi.spyOn(sharedNodeStore, 'getNode').mockReturnValue(
-      nodeWith({ 'person-like': { name: 'Alice', email: 'alice@example.com', _synthetic_system_field: true } })
+      nodeWith({ name: 'Alice', email: 'alice@example.com', _synthetic_system_field: true })
     );
     render(GenericSchemaForm, {
       props: {
@@ -110,7 +110,7 @@ describe('GenericSchemaForm — protection-level filtering', () => {
 
   it('excludes the system field from the filled/total field-count badge', async () => {
     vi.spyOn(sharedNodeStore, 'getNode').mockReturnValue(
-      nodeWith({ 'person-like': { name: 'Alice', _synthetic_system_field: true } })
+      nodeWith({ name: 'Alice', _synthetic_system_field: true })
     );
     render(GenericSchemaForm, {
       props: {
@@ -128,7 +128,7 @@ describe('GenericSchemaForm — protection-level filtering', () => {
 
   it('renders every non-system field normally, unaffected by the filter', async () => {
     vi.spyOn(sharedNodeStore, 'getNode').mockReturnValue(
-      nodeWith({ 'person-like': { name: 'Alice', email: 'alice@example.com' } })
+      nodeWith({ name: 'Alice', email: 'alice@example.com' })
     );
     render(GenericSchemaForm, {
       props: { nodeId: 'node-1', schema: schemaWith([NAME_FIELD, EMAIL_FIELD]), autoOpen: true }
@@ -141,7 +141,7 @@ describe('GenericSchemaForm — protection-level filtering', () => {
 
   it('hides the Collapsible entirely when every field on the schema is system-protected', async () => {
     vi.spyOn(sharedNodeStore, 'getNode').mockReturnValue(
-      nodeWith({ 'person-like': { _synthetic_system_field: true } })
+      nodeWith({ _synthetic_system_field: true })
     );
     const { container } = render(GenericSchemaForm, {
       props: { nodeId: 'node-1', schema: schemaWith([SYSTEM_MARKER_FIELD]), autoOpen: true }

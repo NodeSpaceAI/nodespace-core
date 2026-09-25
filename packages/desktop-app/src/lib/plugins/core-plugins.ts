@@ -12,9 +12,8 @@
 
 import type { PluginDefinition, NodeReferenceComponent } from './types';
 import type { PatternTemplate } from '../patterns/types';
-import type { CoreTaskStatus, TaskNodeUpdate } from '../types/task-node';
+import type { CoreTaskStatus } from '../types/task-node';
 import { PatternRegistry } from '../patterns/registry';
-import { backendAdapter } from '../services/backend-adapter';
 import BaseNodeReference from '../components/base-node-reference.svelte';
 import { parseDateString, formatDateTitle } from '$lib/utils/date-formatting';
 import { createLogger } from '$lib/utils/logger';
@@ -143,9 +142,9 @@ export const taskNodePlugin: PluginDefinition = {
     component: BaseNodeReference as NodeReferenceComponent,
     priority: 1
   },
-  // Type-specific metadata extraction
-  // Backend returns TaskNode with status at TOP LEVEL (flat type-specific fields)
-  // Also supports generic Node where status is in properties (for SSE events)
+  // Type-specific metadata extraction. Every transport delivers a TaskNode with
+  // its core fields (status, priority) at the top level; `properties` carries
+  // extension fields only.
   extractMetadata: (node: {
     nodeType: string;
     status?: string;
@@ -153,10 +152,8 @@ export const taskNodePlugin: PluginDefinition = {
     properties?: Record<string, unknown>;
   }) => {
     const properties = node.properties || {};
-    // Check top-level status first (TaskNode format), fall back to properties.status
-    // TaskNode has status at node.status, generic Node has it at node.properties.status
-    const status = node.status ?? properties.status;
-    const priority = node.priority ?? properties.priority;
+    const status = node.status;
+    const priority = node.priority;
 
     // Map task status to NodeState expected by TaskNode component
     let taskState: 'pending' | 'inProgress' | 'completed' = 'pending';
@@ -170,8 +167,7 @@ export const taskNodePlugin: PluginDefinition = {
       taskState = 'completed';
     }
 
-    // Spread properties first, then override with resolved top-level values
-    // This ensures top-level type-specific fields take precedence over properties
+    // Extension properties first, then the typed fields
     return { ...properties, taskState, status, priority };
   },
   // Type-specific state mapping
@@ -185,46 +181,6 @@ export const taskNodePlugin: PluginDefinition = {
         return 'done';
       default:
         return 'open';
-    }
-  },
-
-  // Type-specific updater for task node properties
-  // Routes to updateTaskNode() instead of generic updateNode()
-  updater: {
-    update: async (id: string, version: number, changes: Record<string, unknown>) => {
-      // Convert changes to TaskNodeUpdate format
-      // The caller provides type-safe changes, we map to the backend format
-      const update: TaskNodeUpdate = {};
-      if ('status' in changes && changes.status !== undefined)
-        update.status = changes.status as TaskNodeUpdate['status'];
-      if ('priority' in changes) update.priority = changes.priority as TaskNodeUpdate['priority'];
-      if ('dueDate' in changes) update.dueDate = changes.dueDate as TaskNodeUpdate['dueDate'];
-      if ('startedAt' in changes)
-        update.startedAt = changes.startedAt as TaskNodeUpdate['startedAt'];
-      if ('completedAt' in changes)
-        update.completedAt = changes.completedAt as TaskNodeUpdate['completedAt'];
-      if ('content' in changes && changes.content !== undefined)
-        update.content = changes.content as string;
-
-      // A caller (e.g. Kanban grouped by a field this updater doesn't map —
-      // see `resolveFieldWrite`'s doc comment on that being out of scope)
-      // can hand this a `changes` object with no field this updater
-      // recognizes. Sending an empty `TaskNodeUpdate` to the backend would
-      // still be rejected ("TaskNodeUpdate contains no changes"), but only
-      // as an opaque, unhelpful `[ERROR] updateTaskNode – Object` once it
-      // reaches the daemon. Failing loudly here, with the fields nobody
-      // recognized, is diagnosable — the previous version silently reduced
-      // to `{}` and let a generic backend rejection stand in for it.
-      if (Object.keys(update).length === 0) {
-        throw new Error(
-          `Task update has no fields this updater can map (received: ${Object.keys(changes).join(', ') || '(none)'})`
-        );
-      }
-
-      // Returns TaskNode which has node fields but not properties (flat structure)
-      // Cast to Node for interface compatibility - sharedNodeStore will handle appropriately
-      const result = await backendAdapter.updateTaskNode(id, version, update);
-      return result as unknown as import('../types').Node;
     }
   },
 

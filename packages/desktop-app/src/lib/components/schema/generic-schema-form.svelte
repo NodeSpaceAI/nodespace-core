@@ -14,10 +14,9 @@
   filtered out of every list below: system-managed fields must never render
   as a user-editable control.
 
-  Values are read from node.properties[nodeType][field.name] when the type namespaces its
-  properties (core types with backend behavior), falling back to flat
-  node.properties[field.name] (user-defined schema types). Writes use the same precedence —
-  see schema-field-resolution.ts, where both shapes are resolved and unit-tested.
+  A core type's schema fields (e.g. project's status/start_date) are read from and
+  written to the node's top-level typed fields; every other field lives flat in
+  node.properties[field.name] — see schema-field-resolution.ts.
 
   Shell chrome (Collapsible, trigger row, Relationships gate, NestedPropertyModal) is owned
   by TypedFormShell — this component supplies only the field grid.
@@ -70,13 +69,13 @@
 
   function updateField(fieldName: string, value: unknown) {
     if (!node) return;
-    // Write in whichever shape the node already stores, matching getFieldValue's precedence
-    // — a flat write into a namespaced node is silently discarded by the backend.
-    sharedNodeStore.updateNode(
-      nodeId,
-      { properties: buildFieldWrite(node, fieldName, value) },
-      { type: 'viewer', viewerId: 'generic-schema-form' }
-    );
+    // Written to wherever getFieldValue reads it: a typed core field as a typed
+    // change (routed by the store to the type's typed update), anything else
+    // into properties.
+    sharedNodeStore.updateNode(nodeId, buildFieldWrite(node, fieldName, value), {
+      type: 'viewer',
+      viewerId: 'generic-schema-form'
+    });
     updateTitlePreview(fieldName, value);
   }
 

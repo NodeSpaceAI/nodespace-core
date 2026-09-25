@@ -16,18 +16,22 @@ mod ai_chat;
 mod convert;
 mod helpers;
 mod node;
+mod person;
+mod project;
 mod schema;
 mod task;
 
 pub use ai_chat::{AiChatMessage, AiChatNode};
 pub use convert::{
-    flatten_namespaced_properties, flatten_namespaced_properties_at_scope, node_to_typed_value,
-    nodes_to_typed_values,
+    flat_properties_view, flatten_namespaced_properties, flatten_namespaced_properties_at_scope,
+    node_to_typed_value, nodes_to_typed_values, promoted_fields,
 };
 pub use helpers::{is_valid_lifecycle_status, LIFECYCLE_STATUSES};
 pub use node::{
     DeleteResult, Node, NodeQuery, NodeReference, NodeUpdate, OrderBy, ValidationError,
 };
+pub use person::{PersonNode, PersonNodeUpdate};
+pub use project::{ProjectNode, ProjectNodeUpdate, DEFAULT_PROJECT_STATUS};
 pub use schema::{
     derive_friendly_name, EdgeField, EnumValue, RelationshipCardinality, RelationshipDirection,
     SchemaField, SchemaNode, SchemaProtectionLevel, SchemaRelationship,

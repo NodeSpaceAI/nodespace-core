@@ -87,17 +87,38 @@ describe('Node CRUD round-trip (HTTP → gRPC → SQLite)', () => {
 
   it('persists node properties through the round-trip', async () => {
     const id = crypto.randomUUID();
-    // Daemon stores custom properties under the node-type namespace key (e.g. "text")
-    const properties = { text: { priority: 'high', tags: ['a', 'b'], count: 42 } };
+    // Properties travel flat in both directions: the daemon stores them under the
+    // node-type bucket ("text"), and the transport flattens that bucket on read.
+    const properties = { priority: 'high', tags: ['a', 'b'], count: 42 };
 
     await h.adapter.createNode({ id, nodeType: 'text', content: 'with props', properties });
 
     const node = await h.adapter.getNode(id);
     expect(node).not.toBeNull();
-    const props = node!.properties as Record<string, Record<string, unknown>>;
-    expect(props.text.priority).toBe('high');
-    expect(props.text.tags).toEqual(['a', 'b']);
-    expect(props.text.count).toBe(42);
+    expect(node!.properties).toEqual(properties);
+  });
+
+  it('serves typed nodes inside a children tree', async () => {
+    // Node pages populate the store from this tree, so its nodes must share the
+    // single-node read's typed shape rather than storage's type bucket.
+    const parentId = crypto.randomUUID();
+    const childId = crypto.randomUUID();
+    await h.adapter.createNode({ id: parentId, nodeType: 'text', content: 'tree parent' });
+    await h.adapter.createNode({
+      id: childId,
+      nodeType: 'person',
+      content: '',
+      parentId,
+      properties: { first_name: 'Ada', last_name: 'Lovelace' }
+    });
+
+    const tree = await h.adapter.getChildrenTree(parentId);
+    const child = tree?.children?.find((c) => c.id === childId) as
+      | (Record<string, unknown> & { properties?: Record<string, unknown> })
+      | undefined;
+    expect(child?.firstName).toBe('Ada');
+    expect(child?.lastName).toBe('Lovelace');
+    expect(child?.properties).toEqual({});
   });
 
   it('createNode returns the new node id string', async () => {

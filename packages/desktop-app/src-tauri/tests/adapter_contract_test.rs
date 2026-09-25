@@ -17,9 +17,10 @@
 //! as exactly one of the two suites failing.
 
 use nodespace_app_lib::commands::nodes::{
-    create_node, get_children, move_node, update_task_node, CreateNodeInput, InsertPositionInput,
+    create_node, get_children, move_node, update_person_node, update_task_node, CreateNodeInput,
+    InsertPositionInput,
 };
-use nodespace_app_lib::types::{TaskNodeUpdate, TaskPriority, TaskStatus};
+use nodespace_app_lib::types::{PersonNodeUpdate, TaskNodeUpdate, TaskPriority, TaskStatus};
 use nodespace_app_test_support::{SpawnedDaemon, TauriTestApp, DAEMON_CONNECT_TIMEOUT};
 use serde_json::json;
 
@@ -99,6 +100,68 @@ async fn task_tri_state_update_clear_set_no_change_matches_the_http_adapter_cont
     // No-change: status must still be in_progress — clearing priority must
     // not have touched a field the update didn't mention.
     assert_eq!(cleared["status"], json!("in_progress"));
+}
+
+/// Mirrors `adapter-contract.e2e.ts`'s "create → typed person update → read
+/// back carries typed fields and the templated title".
+#[tokio::test]
+async fn person_typed_update_matches_the_http_adapter_contract() {
+    let daemon = SpawnedDaemon::spawn();
+    let harness = TauriTestApp::connect(&daemon, DAEMON_CONNECT_TIMEOUT).await;
+    let state = harness.client_state();
+
+    let id = uuid::Uuid::new_v4().to_string();
+    create_node(
+        state.clone(),
+        CreateNodeInput {
+            id: id.clone(),
+            node_type: "person".to_string(),
+            content: String::new(),
+            parent_id: None,
+            insert_position: None,
+            properties: json!({ "first_name": "Ada" }),
+        },
+    )
+    .await
+    .expect("create person failed");
+
+    let updated = update_person_node(
+        state.clone(),
+        id.clone(),
+        1,
+        PersonNodeUpdate {
+            last_name: Some(Some("Lovelace".to_string())),
+            email: Some(Some("ada@example.com".to_string())),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("update_person_node (set) failed");
+    assert_eq!(updated["firstName"], json!("Ada"));
+    assert_eq!(updated["lastName"], json!("Lovelace"));
+    assert_eq!(updated["email"], json!("ada@example.com"));
+    assert_eq!(updated["title"], json!("Ada Lovelace"));
+    assert_eq!(updated["properties"], json!({}));
+    let version = updated["version"]
+        .as_i64()
+        .expect("version must be a number");
+
+    let cleared = update_person_node(
+        state.clone(),
+        id.clone(),
+        version,
+        PersonNodeUpdate {
+            email: Some(None),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("update_person_node (clear) failed");
+    assert!(
+        cleared.get("email").is_none(),
+        "cleared email must be absent"
+    );
+    assert_eq!(cleared["lastName"], json!("Lovelace"));
 }
 
 /// Mirrors `adapter-contract.e2e.ts`'s "createNode honors an explicit

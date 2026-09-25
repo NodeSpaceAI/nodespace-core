@@ -3,6 +3,8 @@ use std::str::FromStr;
 
 use crate::ai_chat::{AiChatMessage, AiChatNode};
 use crate::node::Node;
+use crate::person::PersonNode;
+use crate::project::{ProjectNode, DEFAULT_PROJECT_STATUS};
 use crate::schema::SchemaNode;
 use crate::task::{TaskNode, TaskPriority, TaskStatus};
 
@@ -21,7 +23,7 @@ fn normalize_date_field(s: &str) -> String {
 
 /// Convert a `Node` to its strongly-typed JSON representation for the frontend.
 ///
-/// For typed nodes (`task`, `ai-chat`, `schema`), promotes type-specific
+/// For typed nodes (`task`, `person`, `project`, `ai-chat`, `schema`), promotes type-specific
 /// properties to top-level fields. For all other types, returns the generic
 /// node shape. Adds a `nodespace://` URI field for rich client rendering.
 ///
@@ -39,6 +41,8 @@ pub fn node_to_typed_value(node: Node) -> Result<serde_json::Value, String> {
     let mut value = match node.node_type.as_str() {
         "task" => task_node_to_value(node),
         "ai-chat" => ai_chat_node_to_value(node),
+        "person" => person_node_to_value(node),
+        "project" => project_node_to_value(node),
         "schema" => SchemaNode::from_node(node).and_then(|s| {
             serde_json::to_value(s).map_err(|e| format!("Failed to serialize schema: {}", e))
         }),
@@ -159,6 +163,77 @@ fn flatten_properties_for_api(node: &mut Node) {
     node.properties = flatten_namespaced_properties(&node.properties, &node.node_type);
 }
 
+/// The core fields a typed conversion promotes out of `properties`, as
+/// `(storage key, wire key)` pairs: `due_date` is stored in the `task` bucket
+/// and travels as the top-level `dueDate`.
+///
+/// Promotion is a move, not a copy — [`node_to_typed_value`] removes these keys
+/// from `properties`, so each core field has exactly one home on the wire and
+/// `properties` carries only extension fields. Consumers that want the flat,
+/// storage-keyed view back (the CLI's snake_case node shape, the agent's
+/// model-facing property map) rebuild it with [`flat_properties_view`] rather
+/// than hard-coding these lists.
+pub fn promoted_fields(node_type: &str) -> &'static [(&'static str, &'static str)] {
+    match node_type {
+        "task" => &[
+            ("status", "status"),
+            ("priority", "priority"),
+            ("due_date", "dueDate"),
+            ("started_at", "startedAt"),
+            ("completed_at", "completedAt"),
+        ],
+        "person" => &[
+            ("first_name", "firstName"),
+            ("last_name", "lastName"),
+            ("email", "email"),
+        ],
+        "project" => &[
+            ("status", "status"),
+            ("priority", "priority"),
+            ("start_date", "startDate"),
+            ("end_date", "endDate"),
+        ],
+        _ => &[],
+    }
+}
+
+/// Remove a type's promoted core fields from its flat `properties`, under both
+/// spellings a stored node can carry (`due_date` and the legacy `dueDate`).
+fn without_promoted(mut properties: serde_json::Value, node_type: &str) -> serde_json::Value {
+    if let Some(obj) = properties.as_object_mut() {
+        for (storage_key, wire_key) in promoted_fields(node_type) {
+            obj.remove(*storage_key);
+            obj.remove(*wire_key);
+        }
+    }
+    properties
+}
+
+/// Rebuild a typed node value's flat, storage-keyed property map: its
+/// `properties` plus every promoted core field folded back under its storage
+/// key (`dueDate` → `due_date`). Null and absent core fields are left out.
+///
+/// For consumers whose contract is the flat property map — the CLI's node
+/// shape and the agent's model-facing summaries, both of which also *write*
+/// with these bare keys. The frontend reads the typed fields directly.
+pub fn flat_properties_view(typed: &serde_json::Value) -> serde_json::Value {
+    let mut props = typed
+        .get("properties")
+        .and_then(|p| p.as_object())
+        .cloned()
+        .unwrap_or_default();
+    if let Some(node_type) = typed.get("nodeType").and_then(|v| v.as_str()) {
+        for (storage_key, wire_key) in promoted_fields(node_type) {
+            if let Some(value) = typed.get(*wire_key).filter(|v| !v.is_null()) {
+                props
+                    .entry(storage_key.to_string())
+                    .or_insert_with(|| value.clone());
+            }
+        }
+    }
+    serde_json::Value::Object(props)
+}
+
 fn task_node_to_value(node: Node) -> Result<serde_json::Value, String> {
     let props = &node.properties;
 
@@ -201,7 +276,7 @@ fn task_node_to_value(node: Node) -> Result<serde_json::Value, String> {
         version: node.version,
         created_at: node.created_at,
         modified_at: node.modified_at,
-        properties: node.properties,
+        properties: without_promoted(node.properties, "task"),
         lifecycle_status,
         status,
         priority,
@@ -211,6 +286,66 @@ fn task_node_to_value(node: Node) -> Result<serde_json::Value, String> {
     };
 
     serde_json::to_value(&task).map_err(|e| format!("Failed to serialize task node: {}", e))
+}
+
+fn string_prop(props: &serde_json::Value, key: &str) -> Option<String> {
+    props.get(key).and_then(|v| v.as_str()).map(str::to_string)
+}
+
+fn person_node_to_value(node: Node) -> Result<serde_json::Value, String> {
+    let props = &node.properties;
+    let first_name = string_prop(props, "first_name");
+    let last_name = string_prop(props, "last_name");
+    let email = string_prop(props, "email");
+
+    let person = PersonNode {
+        id: node.id,
+        node_type: node.node_type,
+        content: node.content,
+        title: node.title,
+        version: node.version,
+        created_at: node.created_at,
+        modified_at: node.modified_at,
+        properties: without_promoted(node.properties, "person"),
+        lifecycle_status: node.lifecycle_status,
+        first_name,
+        last_name,
+        email,
+    };
+
+    serde_json::to_value(&person).map_err(|e| format!("Failed to serialize person node: {}", e))
+}
+
+fn project_node_to_value(node: Node) -> Result<serde_json::Value, String> {
+    let props = &node.properties;
+    let status = string_prop(props, "status").unwrap_or_else(|| DEFAULT_PROJECT_STATUS.to_string());
+    let priority = string_prop(props, "priority");
+    let start_date = props
+        .get("start_date")
+        .and_then(|v| v.as_str())
+        .map(normalize_date_field);
+    let end_date = props
+        .get("end_date")
+        .and_then(|v| v.as_str())
+        .map(normalize_date_field);
+
+    let project = ProjectNode {
+        id: node.id,
+        node_type: node.node_type,
+        content: node.content,
+        title: node.title,
+        version: node.version,
+        created_at: node.created_at,
+        modified_at: node.modified_at,
+        properties: without_promoted(node.properties, "project"),
+        lifecycle_status: node.lifecycle_status,
+        status,
+        priority,
+        start_date,
+        end_date,
+    };
+
+    serde_json::to_value(&project).map_err(|e| format!("Failed to serialize project node: {}", e))
 }
 
 fn ai_chat_node_to_value(node: Node) -> Result<serde_json::Value, String> {
@@ -305,8 +440,146 @@ mod wire_contract {
         assert!(out["properties"].get("task").is_none());
         // User/custom fields remain in flat `properties`.
         assert_eq!(out["properties"]["custom:store"], "Costco");
+        // Promotion is a move: core fields have one home, the top level.
+        assert_eq!(
+            out["properties"],
+            serde_json::json!({ "custom:store": "Costco" })
+        );
         // URI is injected by the backend.
         assert!(out["uri"].as_str().unwrap().starts_with("nodespace://"));
+    }
+
+    #[test]
+    fn task_removes_both_date_spellings_from_properties() {
+        let node = Node::new(
+            "task".to_string(),
+            "Buy milk".to_string(),
+            serde_json::json!({
+                "task": { "due_date": "2026-05-01", "startedAt": "2026-04-01" }
+            }),
+        );
+        let out = node_to_typed_value(node).unwrap();
+
+        assert_eq!(out["dueDate"], "2026-05-01");
+        assert_eq!(out["startedAt"], "2026-04-01");
+        assert_eq!(out["properties"], serde_json::json!({}));
+    }
+
+    #[test]
+    fn flat_properties_view_folds_promoted_fields_back_under_storage_keys() {
+        let node = Node::new(
+            "task".to_string(),
+            "Buy milk".to_string(),
+            serde_json::json!({
+                "task": { "status": "done", "due_date": "2026-05-01", "custom:store": "Costco" }
+            }),
+        );
+        let out = node_to_typed_value(node).unwrap();
+
+        assert_eq!(
+            flat_properties_view(&out),
+            serde_json::json!({
+                "status": "done",
+                "due_date": "2026-05-01",
+                "custom:store": "Costco"
+            })
+        );
+    }
+
+    #[test]
+    fn flat_properties_view_leaves_untyped_nodes_alone() {
+        let node = Node::new(
+            "invoice".to_string(),
+            "INV-1".to_string(),
+            serde_json::json!({ "invoice": { "amount": 5 } }),
+        );
+        let out = node_to_typed_value(node).unwrap();
+
+        assert_eq!(
+            flat_properties_view(&out),
+            serde_json::json!({ "amount": 5 })
+        );
+    }
+
+    #[test]
+    fn person_promotes_fields_top_level_and_flattens_properties() {
+        let mut node = Node::new(
+            "person".to_string(),
+            String::new(),
+            serde_json::json!({
+                "person": {
+                    "first_name": "Ada",
+                    "last_name": "Lovelace",
+                    "email": "ada@example.com",
+                    "custom:team": "Engines"
+                }
+            }),
+        );
+        node.title = Some("Ada Lovelace".to_string());
+        let out = node_to_typed_value(node).unwrap();
+
+        assert_eq!(out["nodeType"], "person");
+        assert_eq!(out["firstName"], "Ada");
+        assert_eq!(out["lastName"], "Lovelace");
+        assert_eq!(out["email"], "ada@example.com");
+        assert_eq!(out["title"], "Ada Lovelace");
+        assert!(out["properties"].get("person").is_none());
+        assert_eq!(out["properties"]["custom:team"], "Engines");
+        assert!(out["uri"].as_str().unwrap().starts_with("nodespace://"));
+    }
+
+    #[test]
+    fn person_with_unset_or_null_fields_omits_them() {
+        let node = Node::new(
+            "person".to_string(),
+            String::new(),
+            serde_json::json!({ "person": { "first_name": "Ada", "email": null } }),
+        );
+        let out = node_to_typed_value(node).unwrap();
+
+        assert_eq!(out["firstName"], "Ada");
+        assert!(out.get("lastName").is_none());
+        assert!(out.get("email").is_none());
+    }
+
+    #[test]
+    fn project_promotes_fields_top_level_and_normalizes_dates() {
+        let node = Node::new(
+            "project".to_string(),
+            "Launch".to_string(),
+            serde_json::json!({
+                "project": {
+                    "status": "active",
+                    "priority": "high",
+                    "start_date": "2026-03-01T09:00:00Z",
+                    "end_date": "2026-04-30",
+                    "custom:budget": 1200
+                }
+            }),
+        );
+        let out = node_to_typed_value(node).unwrap();
+
+        assert_eq!(out["nodeType"], "project");
+        assert_eq!(out["status"], "active");
+        assert_eq!(out["priority"], "high");
+        assert_eq!(out["startDate"], "2026-03-01");
+        assert_eq!(out["endDate"], "2026-04-30");
+        assert!(out["properties"].get("project").is_none());
+        assert_eq!(out["properties"]["custom:budget"], 1200);
+    }
+
+    #[test]
+    fn project_without_status_defaults_to_planning() {
+        let node = Node::new(
+            "project".to_string(),
+            "Launch".to_string(),
+            serde_json::json!({ "project": {} }),
+        );
+        let out = node_to_typed_value(node).unwrap();
+
+        assert_eq!(out["status"], "planning");
+        assert!(out.get("priority").is_none());
+        assert!(out.get("startDate").is_none());
     }
 
     #[test]

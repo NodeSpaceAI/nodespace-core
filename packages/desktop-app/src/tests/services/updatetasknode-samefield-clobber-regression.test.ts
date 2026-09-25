@@ -25,8 +25,8 @@
  *
  * This is self-correcting (B's own write always resolves the value
  * eventually) but produces a real, if brief, wrong-value window. Fixed by
- * a per-node-per-field write-sequence counter (`bumpTaskFieldSeq` /
- * `getTaskFieldSeq`): each write captures the sequence number for every
+ * a per-node-per-field write-sequence counter (`bumpTypedFieldSeq` /
+ * `getTypedFieldSeq`): each write captures the sequence number for every
  * field it touches at optimistic-apply time, and only applies that field
  * from its own response if the field's sequence hasn't moved on since —
  * i.e. no newer same-field write raced in ahead of this write's response.

@@ -441,8 +441,9 @@ describe('Core Plugins Integration', () => {
       expect(metadata.priority).toBe('high');
     });
 
-    it('should extract status from properties (generic Node format)', () => {
-      // Generic Node format: status is in properties (from SSE events or generic APIs)
+    it('never reads core fields from properties', () => {
+      // Every transport delivers a task's core fields top-level; `properties`
+      // holds extension fields only, so a same-named key there is not a status.
       const node = {
         nodeType: 'task',
         properties: {
@@ -453,9 +454,9 @@ describe('Core Plugins Integration', () => {
 
       const metadata = taskNodePlugin.extractMetadata!(node);
 
-      expect(metadata.taskState).toBe('completed');
-      expect(metadata.status).toBe('done');
-      expect(metadata.priority).toBe('low');
+      expect(metadata.taskState).toBe('pending');
+      expect(metadata.status).toBeUndefined();
+      expect(metadata.priority).toBeUndefined();
     });
 
     it('should prefer top-level status over properties.status', () => {

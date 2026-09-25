@@ -70,7 +70,7 @@ function task(id: string, status: string, title: string, version = 1): Node {
     createdAt: '2026-01-01T00:00:00Z',
     modifiedAt: '2026-01-01T00:00:00Z',
     version,
-    properties: { task: { _schema_version: 1, status } },
+    properties: { status },
     mentions: [],
     status
   } as unknown as Node;

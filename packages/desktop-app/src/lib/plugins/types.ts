@@ -50,26 +50,6 @@ export interface SchemaFormRegistration {
 }
 
 /**
- * Type-specific node updater interface
- * Provides type-safe update operations for nodes with type-specific properties
- *
- * The changes parameter accepts Record<string, unknown> at the interface level,
- * but implementations can use more specific types internally.
- * Type safety is enforced at the call site (e.g., TaskSchemaForm uses TaskNodeUpdate).
- */
-export interface NodeUpdater {
-  /**
-   * Update a node with type-specific changes
-   *
-   * @param id - Node ID
-   * @param version - Expected version for OCC
-   * @param changes - Changes to apply (type-specific fields like status, priority, etc.)
-   * @returns Updated node
-   */
-  update: (id: string, version: number, changes: Record<string, unknown>) => Promise<Node>;
-}
-
-/**
  * Plugin-owned pattern behavior definition
  *
  * Consolidates all pattern-related behavior into the plugin system,
@@ -221,22 +201,6 @@ export interface PluginDefinition {
    * }
    */
   schemaForm?: SchemaFormRegistration;
-
-  /**
-   * Type-specific updater for node properties
-   *
-   * Provides type-safe update operations that route to the correct
-   * backend method (e.g., updateTaskNode instead of generic updateNode).
-   *
-   * When defined, sharedNodeStore.updateNode() will use this updater
-   * instead of the generic properties-based update.
-   *
-   * @example
-   * updater: {
-   *   update: async (id, version, changes) => backendAdapter.updateTaskNode(id, version, changes)
-   * }
-   */
-  updater?: NodeUpdater;
 
   /**
    * Extract and transform node properties into component-compatible metadata

@@ -11,13 +11,17 @@
  */
 
 import * as grpc from '@grpc/grpc-js';
+import type { PersonNodeUpdate } from '../../desktop-app/src/lib/types/person-node.ts';
+import type { ProjectNodeUpdate } from '../../desktop-app/src/lib/types/project-node.ts';
 import {
+  buildPersonNodeUpdatePatch,
+  buildProjectNodeUpdatePatch,
   buildTaskNodeUpdatePatch,
   encodeInsertPosition,
   HTTP_ROUTE_PATTERNS,
   type InsertPosition,
 } from '../../desktop-app/src/lib/services/adapter-core.ts';
-import { flattenTypedFieldsFromStorage } from '../../desktop-app/src/lib/services/node-normalize.ts';
+import { storageNodeToApiFields } from '../../desktop-app/src/lib/services/node-normalize.ts';
 import { createNodeSpaceClients, createRunOnceGuard } from './grpc-client.ts';
 import { mapGrpcError } from './grpc-error-mapping.ts';
 
@@ -291,7 +295,6 @@ function nodeDataToApiNode(n: ProtoNodeData): Record<string, unknown> {
     nodeType: n.nodeType,
     content: n.content,
     parentId: n.parentId && n.parentId !== '' ? n.parentId : null,
-    properties,
     version: parseInt(n.version, 10),
     lifecycleStatus: n.lifecycleStatus,
     createdAt: n.createdAt,
@@ -305,18 +308,16 @@ function nodeDataToApiNode(n: ProtoNodeData): Record<string, unknown> {
     // null; an empty string passes through unchanged.
     title: n.title === undefined ? null : n.title,
     // The gRPC `properties` field above is always storage shape
-    // (`{"ai-chat": {...}}`) — this proxy has no access to the Rust
+    // (`{"person": {...}}`) — this proxy has no access to the Rust
     // `node_to_typed_value` that the Tauri IPC layer routes every node
-    // through to promote type-specific fields (ai-chat's provider/model,
-    // task's status/priority, ...) to the top level. Without this spread,
-    // every frontend `nodeTo*` converter — which trusts that promotion
-    // already happened (see `ai-chat-node.ts`'s doc comment) — reads those
-    // fields as `undefined` for any node fetched over this HTTP transport,
-    // even though the underlying data is intact. A daemon broadcast's
-    // resulting re-fetch (`browser-sync-service.ts`'s `fetchAndUpdateNode`)
-    // would then silently clobber a viewer's just-confirmed optimistic
-    // state with an "unset" snapshot of the very same version.
-    ...flattenTypedFieldsFromStorage(n.nodeType, properties)
+    // through to flatten `properties` and promote type-specific fields
+    // (ai-chat's provider/model, task's status/priority, ...) to the top
+    // level. Without this spread the frontend would receive a different
+    // shape over this transport than over Tauri: property forms would read
+    // empty fields, and the `nodeTo*` converters (which trust promotion
+    // already happened — see `ai-chat-node.ts`'s doc comment) would read
+    // typed fields as `undefined`.
+    ...storageNodeToApiFields(n.nodeType, properties)
   };
 }
 
@@ -515,6 +516,57 @@ async function handleRequest(req: Request): Promise<Response> {
         request
       );
       if (!res.nodeData) return error('NO_DATA', 'UpdateTaskNode returned no data');
+      return json(nodeDataToApiNode(res.nodeData));
+    } catch (err) {
+      return grpcError(err as grpc.ServiceError);
+    }
+  }
+
+  // PATCH /api/persons/:id — tri-state encoding via the shared builder, as for tasks.
+  const personMatch = pathname.match(HTTP_ROUTE_PATTERNS.updatePersonNode);
+  if (method === 'PATCH' && personMatch) {
+    const nodeId = decodeURIComponent(personMatch[1]);
+    try {
+      const body = await req.json() as Record<string, unknown>;
+      const patch = buildPersonNodeUpdatePatch(body as PersonNodeUpdate);
+      const request = {
+        nodeId,
+        version: body.version ?? 0,
+        firstName: patch.firstName ?? null,
+        lastName: patch.lastName ?? null,
+        email: patch.email ?? null
+      };
+      const res = await call<typeof request, { nodeData?: ProtoNodeData }>(
+        (nodeClient as unknown as Record<string, Function>).updatePersonNode,
+        request
+      );
+      if (!res.nodeData) return error('NO_DATA', 'UpdatePersonNode returned no data');
+      return json(nodeDataToApiNode(res.nodeData));
+    } catch (err) {
+      return grpcError(err as grpc.ServiceError);
+    }
+  }
+
+  // PATCH /api/projects/:id
+  const projectMatch = pathname.match(HTTP_ROUTE_PATTERNS.updateProjectNode);
+  if (method === 'PATCH' && projectMatch) {
+    const nodeId = decodeURIComponent(projectMatch[1]);
+    try {
+      const body = await req.json() as Record<string, unknown>;
+      const patch = buildProjectNodeUpdatePatch(body as ProjectNodeUpdate);
+      const request = {
+        nodeId,
+        version: body.version ?? 0,
+        status: patch.status ?? null,
+        priority: patch.priority ?? null,
+        startDate: patch.startDate ?? null,
+        endDate: patch.endDate ?? null
+      };
+      const res = await call<typeof request, { nodeData?: ProtoNodeData }>(
+        (nodeClient as unknown as Record<string, Function>).updateProjectNode,
+        request
+      );
+      if (!res.nodeData) return error('NO_DATA', 'UpdateProjectNode returned no data');
       return json(nodeDataToApiNode(res.nodeData));
     } catch (err) {
       return grpcError(err as grpc.ServiceError);

@@ -1,14 +1,15 @@
 /**
  * Schema-aware property updates for viewer-rendered nodes.
  *
- * Routes task node fields through the type-safe task update path and everything
- * else through the generic nested-namespace properties path
- * (`properties[nodeType][fieldName]`), migrating any legacy flat-format properties
- * into the namespace on first write.
+ * A typed core field (`task.status`, `project.start_date`, …) is written as a
+ * top-level typed change, which the store routes through the type's typed
+ * update; every other field is written flat into `properties`. See
+ * `schema-field-resolution.ts`.
  */
 
 import { sharedNodeStore } from '$lib/services/shared-node-store.svelte';
 import { pluginRegistry } from '$lib/plugins/plugin-registry';
+import { buildFieldWrite } from '$lib/components/schema/schema-field-resolution';
 
 /**
  * Extract and transform node properties into component-compatible metadata.
@@ -24,10 +25,6 @@ export function extractNodeMetadata(node: {
 /**
  * Update a schema field value for a node.
  *
- * For task nodes, task-specific fields (status, priority, dueDate) route
- * through the type-safe task update path. All other fields — and all non-task
- * nodes — use the generic properties path.
- *
  * @param viewerId - Origin viewer id, recorded on the store update for echo suppression
  * @param targetNodeId - Node to update
  * @param fieldName - Schema field name (e.g. 'status', 'due_date')
@@ -42,65 +39,8 @@ export function updateSchemaField(
   const targetNode = sharedNodeStore.getNode(targetNodeId);
   if (!targetNode) return;
 
-  // Route task node property updates through type-safe path
-  if (targetNode.nodeType === 'task') {
-    // Map field names to TaskNodeUpdate structure
-    // The task-specific fields are: status, priority, dueDate
-    const taskFields = ['status', 'priority', 'due_date', 'dueDate'];
-
-    if (taskFields.includes(fieldName)) {
-      // Use type-safe task node update
-      sharedNodeStore.updateTaskNode(
-        targetNodeId,
-        { [fieldName === 'due_date' ? 'dueDate' : fieldName]: value },
-        { type: 'viewer', viewerId }
-      );
-      return;
-    }
-  }
-
-  // Fallback: Generic update path via properties JSON
-  // Build nested namespace (properties[nodeType][fieldName])
-  const typeNamespace = targetNode.properties?.[targetNode.nodeType];
-  const isOldFormat = !typeNamespace || typeof typeNamespace !== 'object';
-
-  let updatedNamespace: Record<string, unknown> = {};
-
-  if (isOldFormat) {
-    // Migrate from old flat format - copy ALL existing flat properties into namespace
-    updatedNamespace = { ...targetNode.properties };
-    // Remove internal fields that shouldn't be in namespace
-    delete updatedNamespace._schema_version;
-  } else {
-    // Already in new format - copy namespace
-    updatedNamespace = { ...(typeNamespace as Record<string, unknown>) };
-  }
-
-  // Apply the update
-  updatedNamespace[fieldName] = value;
-
-  // Build final properties with ONLY the nested namespace
-  // CRITICAL: When migrating from old format, ALL flat properties are now in the namespace
-  // So we start fresh with ONLY the nested structure, dropping all flat properties
-  const updatedProperties = isOldFormat
-    ? {
-        // Old format: Start fresh with ONLY nested structure (drops ALL flat properties)
-        [targetNode.nodeType]: updatedNamespace
-      }
-    : {
-        // New format: Preserve existing properties structure
-        ...targetNode.properties,
-        [targetNode.nodeType]: updatedNamespace
-      };
-
-  // Persist via sharedNodeStore. This builds the full intended properties bag
-  // itself (and the old-format branch deliberately drops flat keys), so replace
-  // rather than deep-merge — otherwise the dropped flat keys would reappear on
-  // the local optimistic node.
-  sharedNodeStore.updateNode(
-    targetNodeId,
-    { properties: updatedProperties },
-    { type: 'viewer', viewerId },
-    { replaceProperties: true }
-  );
+  sharedNodeStore.updateNode(targetNodeId, buildFieldWrite(targetNode, fieldName, value), {
+    type: 'viewer',
+    viewerId
+  });
 }

@@ -1,9 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import {
   normalizeNodeData,
-  deepMergeProperties,
+  mergeProperties,
   promoteTypedFields,
-  flattenTypedFieldsFromStorage,
+  storageNodeToApiFields,
   OPTIMISTIC_TYPED_FIELDS
 } from '$lib/services/node-normalize';
 import type { Node } from '$lib/types/node';
@@ -74,27 +74,14 @@ describe('normalizeNodeData', () => {
   });
 });
 
-describe('deepMergeProperties', () => {
+describe('mergeProperties', () => {
   it('merges one level and keeps sibling keys', () => {
-    const merged = deepMergeProperties(
-      { 'capture:x': 'keep', provider: 'native' },
-      { model: 'm1' },
-      'ai-chat'
-    );
+    const merged = mergeProperties({ 'capture:x': 'keep', provider: 'native' }, { model: 'm1' });
     expect(merged).toEqual({ 'capture:x': 'keep', provider: 'native', model: 'm1' });
   });
 
-  it('merges one level deeper into the type namespace', () => {
-    const merged = deepMergeProperties(
-      { task: { status: 'open', priority: 'high' } },
-      { task: { status: 'done' } },
-      'task'
-    );
-    expect(merged.task).toEqual({ status: 'done', priority: 'high' });
-  });
-
   it('treats a missing existing bag as empty', () => {
-    expect(deepMergeProperties(undefined, { model: 'm1' }, 'ai-chat')).toEqual({ model: 'm1' });
+    expect(mergeProperties(undefined, { model: 'm1' })).toEqual({ model: 'm1' });
   });
 });
 
@@ -116,11 +103,10 @@ describe('promoteTypedFields', () => {
     expect('turnStatus' in promoted).toBe(false);
   });
 
-  it('promotes nested task fields from the type namespace', () => {
-    const changes = { task: { status: 'done' } };
-    const merged = { task: { status: 'done', priority: 'high' } };
-    const promoted = promoteTypedFields('task', changes, merged);
-    expect(promoted).toEqual({ status: 'done' });
+  it('never promotes a typed core type field from a properties write', () => {
+    // task/person/project core fields have one home, the top level, and are
+    // written through the typed update — a properties write can't carry them.
+    expect(promoteTypedFields('task', { status: 'done' }, { status: 'done' })).toEqual({});
   });
 
   it('returns nothing for a node type with no typed-field map', () => {
@@ -135,7 +121,7 @@ describe('promoteTypedFields', () => {
   });
 
   it('map stays aligned with the documented promoted types', () => {
-    expect(Object.keys(OPTIMISTIC_TYPED_FIELDS).sort()).toEqual(['ai-chat', 'task']);
+    expect(Object.keys(OPTIMISTIC_TYPED_FIELDS).sort()).toEqual(['ai-chat']);
     expect(OPTIMISTIC_TYPED_FIELDS['ai-chat']).toEqual([
       { from: 'turn_status', to: 'turnStatus' },
       { from: 'session_status', to: 'sessionStatus' },
@@ -166,35 +152,56 @@ describe('promoteTypedFields', () => {
   });
 });
 
-describe('flattenTypedFieldsFromStorage', () => {
-  // Regression coverage: the browser/dev-proxy HTTP transport
-  // (packages/dev-tools/src/dev-proxy.ts) returns a fetched node's
-  // `properties` exactly as stored — namespaced under the node's own type,
-  // e.g. `{"ai-chat": {"provider": "native", "model": "...", ...}}` — never
-  // flattened to the top level the way the Tauri IPC layer's
-  // `node_to_typed_value` (packages/nodespace-types/src/convert.rs) does.
-  // `nodeToAiChatNode`/`nodeToTaskNode` trust that promotion already
-  // happened and read top-level fields directly with no namespaced
-  // fallback, so without this function a node re-fetched over that
-  // transport — e.g. `browser-sync-service.ts`'s `fetchAndUpdateNode`,
-  // triggered by an SSE broadcast for the model-selection write itself —
-  // silently carries `provider`/`model` as `undefined`, clobbering a
-  // viewer's just-confirmed optimistic state with the same version number.
+describe('storageNodeToApiFields', () => {
+  // The browser/dev-proxy HTTP transport (packages/dev-tools/src/dev-proxy.ts)
+  // receives a node's `properties` exactly as stored — namespaced under the
+  // node's own type. The Tauri IPC layer's `node_to_typed_value`
+  // (packages/nodespace-types/src/convert.rs) flattens that bucket and promotes
+  // typed fields; this is the proxy's mirror of it, so both transports hand the
+  // frontend the same shape.
 
-  it('promotes an ai-chat node fetched in real storage shape', () => {
-    const properties = {
-      'ai-chat': {
-        context_tokens: 0,
-        created_nodes: [],
-        messages: [],
-        provider: 'native',
-        model: 'gemma-4-e4b-q4km',
-        session_status: 'active',
-        turn_status: 'idle'
+  it('moves person core fields to typed keys, leaving extension fields', () => {
+    const fields = storageNodeToApiFields('person', {
+      person: {
+        first_name: 'Michael',
+        last_name: 'Libio',
+        email: 'm@example.com',
+        'custom:team': 'Core'
       }
+    });
+    expect(fields).toEqual({
+      firstName: 'Michael',
+      lastName: 'Libio',
+      email: 'm@example.com',
+      properties: { 'custom:team': 'Core' }
+    });
+  });
+
+  it('moves project core fields, normalizing dates and defaulting status', () => {
+    const fields = storageNodeToApiFields('project', {
+      project: { start_date: '2026-03-01T09:00:00Z', end_date: '2026-04-30' }
+    });
+    expect(fields).toEqual({
+      status: 'planning',
+      startDate: '2026-03-01',
+      endDate: '2026-04-30',
+      properties: {}
+    });
+  });
+
+  it('flattens and promotes an ai-chat node in real storage shape', () => {
+    const bucket = {
+      context_tokens: 0,
+      created_nodes: [],
+      messages: [],
+      provider: 'native',
+      model: 'gemma-4-e4b-q4km',
+      session_status: 'active',
+      turn_status: 'idle'
     };
-    const promoted = flattenTypedFieldsFromStorage('ai-chat', properties);
-    expect(promoted).toEqual({
+    const fields = storageNodeToApiFields('ai-chat', { 'ai-chat': bucket });
+    expect(fields).toEqual({
+      properties: bucket,
       provider: 'native',
       model: 'gemma-4-e4b-q4km',
       sessionStatus: 'active',
@@ -203,34 +210,89 @@ describe('flattenTypedFieldsFromStorage', () => {
     });
   });
 
-  it('promotes a task node fetched in real storage shape', () => {
-    const properties = {
-      task: { status: 'in_progress', priority: 'high', dueDate: '2024-12-31' }
-    };
-    const promoted = flattenTypedFieldsFromStorage('task', properties);
-    expect(promoted).toEqual({ status: 'in_progress', priority: 'high', dueDate: '2024-12-31' });
+  it('moves task core fields to typed keys, reading either date spelling', () => {
+    const fields = storageNodeToApiFields('task', {
+      task: {
+        status: 'in_progress',
+        priority: 'high',
+        due_date: '2024-12-31',
+        startedAt: '2024-12-01T08:00:00Z',
+        'custom:store': 'Costco'
+      }
+    });
+    expect(fields).toEqual({
+      status: 'in_progress',
+      priority: 'high',
+      dueDate: '2024-12-31',
+      startedAt: '2024-12-01',
+      properties: { 'custom:store': 'Costco' }
+    });
   });
 
-  it('omits a field absent from the storage bucket rather than promoting undefined', () => {
-    // A freshly-created ai-chat node before model selection: `model` and
-    // `provider` are not yet set on the bucket at all.
-    const properties = { 'ai-chat': { messages: [], turn_status: 'idle', session_status: 'active' } };
-    const promoted = flattenTypedFieldsFromStorage('ai-chat', properties);
-    expect('model' in promoted).toBe(false);
-    expect('provider' in promoted).toBe(false);
-    expect(promoted).toEqual({ turnStatus: 'idle', sessionStatus: 'active', messages: [] });
+  it('mirrors Rust at the edges: typed-key fallback is task-only, and a present null wins', () => {
+    // person_node_to_value reads the storage key alone: a stray typed-key
+    // spelling is not promoted (and, like every core-field spelling, is dropped).
+    expect(storageNodeToApiFields('person', { person: { firstName: 'Ada' } })).toEqual({
+      properties: {}
+    });
+    // task reads `dueDate` first when present at all, even as null — no
+    // fallback to `due_date` then, as `.get(wire).or_else(storage)` behaves.
+    expect(
+      storageNodeToApiFields('task', { task: { dueDate: null, due_date: '2026-05-01' } })
+    ).toEqual({ status: 'open', properties: {} });
+    // A datetime with an offset reduces to its date, space-separated too; one
+    // without an offset passes through, as normalize_date_field leaves it.
+    expect(
+      storageNodeToApiFields('project', { project: { start_date: '2026-03-01 09:00:00Z' } })
+    ).toMatchObject({ startDate: '2026-03-01' });
+    expect(
+      storageNodeToApiFields('project', { project: { start_date: '2026-03-01T09:00:00' } })
+    ).toMatchObject({ startDate: '2026-03-01T09:00:00' });
   });
 
-  it('returns nothing for a node type with no typed-field map', () => {
-    expect(flattenTypedFieldsFromStorage('text', { text: { foo: 'bar' } })).toEqual({});
+  it('defaults an unset task status to open, as task_node_to_value does', () => {
+    expect(storageNodeToApiFields('task', { task: {} })).toEqual({
+      status: 'open',
+      properties: {}
+    });
   });
 
-  it('returns nothing when the node type has no own bucket at all', () => {
-    expect(flattenTypedFieldsFromStorage('ai-chat', {})).toEqual({});
-    expect(flattenTypedFieldsFromStorage('ai-chat', undefined)).toEqual({});
+  it('keeps object-valued fields inside the own bucket', () => {
+    const address = { city: 'Austin' };
+    const fields = storageNodeToApiFields('venue', { venue: { address } });
+    expect(fields.properties).toEqual({ address });
   });
 
-  it('returns nothing when the own bucket is present but not an object', () => {
-    expect(flattenTypedFieldsFromStorage('ai-chat', { 'ai-chat': 'not-an-object' })).toEqual({});
+  it('drops _-prefixed bookkeeping and sibling namespaces', () => {
+    const fields = storageNodeToApiFields('person', {
+      _schema_version: 1,
+      _seed: { id: 'x' },
+      text: { dormant: true },
+      person: { 'custom:team': 'Core', _internal: 'hidden' }
+    });
+    expect(fields.properties).toEqual({ 'custom:team': 'Core' });
+  });
+
+  it('passes an already-flat bag through, dropping only nested objects and _ keys', () => {
+    const fields = storageNodeToApiFields('schema', {
+      isCore: true,
+      fields: [{ name: 'a' }],
+      _schema_version: 2,
+      dormant: { x: 1 }
+    });
+    expect(fields.properties).toEqual({ isCore: true, fields: [{ name: 'a' }] });
+  });
+
+  it('omits a typed field absent from storage rather than promoting undefined', () => {
+    const fields = storageNodeToApiFields('ai-chat', {
+      'ai-chat': { messages: [], turn_status: 'idle', session_status: 'active' }
+    });
+    expect('model' in fields).toBe(false);
+    expect('provider' in fields).toBe(false);
+  });
+
+  it('returns empty properties for missing or non-object input', () => {
+    expect(storageNodeToApiFields('ai-chat', undefined)).toEqual({ properties: {} });
+    expect(storageNodeToApiFields('ai-chat', {})).toEqual({ properties: {} });
   });
 });

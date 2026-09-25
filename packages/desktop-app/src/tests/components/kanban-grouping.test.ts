@@ -92,12 +92,15 @@ describe('readGroupValue', () => {
     expect(readGroupValue(node('n1', { properties: { status: 'open' } }), 'status')).toBe('open');
   });
 
-  it('prefers a camelCase top-level typed field (e.g. due_date → dueDate)', () => {
-    expect(readGroupValue(node('n1', { dueDate: '2026-03-01' }), 'due_date')).toBe('2026-03-01');
+  it('reads a typed core field from its top-level key (task due_date -> dueDate)', () => {
+    const task = node('n1', { nodeType: 'task', status: 'open', dueDate: '2026-03-01' });
+    expect(readGroupValue(task, 'due_date')).toBe('2026-03-01');
+    expect(readGroupValue(task, 'status')).toBe('open');
   });
 
-  it('falls back to a snake_case top-level field', () => {
-    expect(readGroupValue(node('n1', { due_date: '2026-03-02' }), 'due_date')).toBe('2026-03-02');
+  it('reads an unset typed core field as null, never from properties', () => {
+    const project = node('n1', { nodeType: 'project', properties: { priority: 'stale' } });
+    expect(readGroupValue(project, 'priority')).toBeNull();
   });
 
   it('returns null for unset, null, or empty-string values', () => {
@@ -106,23 +109,15 @@ describe('readGroupValue', () => {
     expect(readGroupValue(node('n1', { properties: { status: '' } }), 'status')).toBeNull();
   });
 
-  it('prefers properties over a same-named top-level field, mirroring resolveFieldWrite (shadowed core property name)', () => {
+  it('reads a user-defined type field named like a core property from properties', () => {
     // A user-defined type is allowed a bare field name that shadows a core
-    // property (CLAUDE.md: discouraged, not forbidden). resolveFieldWrite
-    // already treats `field in props` as authoritative over a same-named
-    // top-level slot when deciding where to WRITE — this asserts the READ
-    // side agrees, so the board reflects its own writes instead of reading a
-    // stale/unrelated top-level value forever.
+    // property (CLAUDE.md: discouraged, not forbidden). Only a core type's own
+    // schema fields are typed, so reads and writes both use properties here.
     const n = node('n1', { status: 'stale-top-level', properties: { status: 'current' } });
     expect(readGroupValue(n, 'status')).toBe('current');
     expect(resolveFieldWrite(n, 'status', 'next')).toEqual({
       properties: { status: 'next' }
     });
-  });
-
-  it('still reads a genuine typed top-level field when properties has no same-named key', () => {
-    const n = node('n1', { stage: 'lead', properties: { note: 'hi' } });
-    expect(readGroupValue(n, 'stage')).toBe('lead');
   });
 });
 
@@ -139,9 +134,13 @@ describe('resolveFieldWrite', () => {
     expect(resolveFieldWrite(n, 'status', 'open')).toEqual({ properties: { status: 'open' } });
   });
 
-  it('writes a typed top-level field back to its camelCase key', () => {
-    const n = node('n1', { stage: 'lead' });
-    expect(resolveFieldWrite(n, 'stage', 'won')).toEqual({ stage: 'won' });
+  it('writes a typed core field to its top-level key, set or unset', () => {
+    const task = node('n1', { nodeType: 'task', status: 'open' });
+    expect(resolveFieldWrite(task, 'status', 'done')).toEqual({ status: 'done' });
+    // Unset priority still routes to the typed key, not properties.
+    const project = node('n2', { nodeType: 'project', status: 'active' });
+    expect(resolveFieldWrite(project, 'priority', 'high')).toEqual({ priority: 'high' });
+    expect(resolveFieldWrite(project, 'priority', null)).toEqual({ priority: null });
   });
 });
 

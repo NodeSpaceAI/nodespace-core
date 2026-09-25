@@ -1,8 +1,9 @@
 <!--
   PersonSchemaForm - Property form for person nodes
 
-  Provides direct editing of first_name/last_name/email fields stored in
-  properties.person.{first_name,last_name,email}. Display identity (the
+  Provides direct editing of a person's typed core fields — firstName,
+  lastName, email — read from the typed PersonNode and written through the
+  store's typed person update. Display identity (the
   inline outline row and node title) is composed by the person schema's
   title_template ("{first_name} {last_name}") — not synced into content
   here; person nodes are read-only inline, like other title_template-driven
@@ -31,7 +32,7 @@
   import { createLogger } from '$lib/utils/logger';
   import { evaluateTitleTemplate } from '$lib/utils/title-template';
   import { pushComputedTitle } from '$lib/utils/title-preview';
-  import type { Node } from '$lib/types';
+  import type { Node, PersonNode, PersonNodeUpdate } from '$lib/types';
   import RelationshipViewerModal from '$lib/components/relationships/relationship-viewer-modal.svelte';
   import { loadNodeRelationshipsView } from '$lib/services/relationship-viewer-service';
   import WaypointsIcon from '@lucide/svelte/icons/waypoints';
@@ -72,13 +73,11 @@
   });
 
   const node = $derived(sharedNodeStore.getNode(nodeId));
-  const personProps = $derived(
-    (node?.properties?.['person'] as Record<string, unknown> | undefined) ?? {}
-  );
+  const person = $derived(node as PersonNode | undefined);
 
-  const firstName = $derived((personProps['first_name'] as string | undefined) ?? '');
-  const lastName = $derived((personProps['last_name'] as string | undefined) ?? '');
-  const email = $derived((personProps['email'] as string | undefined) ?? '');
+  const firstName = $derived(person?.firstName ?? '');
+  const lastName = $derived(person?.lastName ?? '');
+  const email = $derived(person?.email ?? '');
 
   // Adopt-existing suggestion state (ADR-065). `duplicateMatch` is
   // the existing person the current email collides with, or null when there is
@@ -107,22 +106,17 @@
     checkGeneration++;
   });
 
-  // Routed through sharedNodeStore.updateNode (ADR-049), matching every
-  // other property form — NOT backendAdapter.updateNode directly. The store
-  // applies the change optimistically and synchronously, and owns
-  // persistence + error reporting itself; callers don't need their own
-  // try/catch around it, matching generic-schema-form.svelte /
-  // task-schema-form.svelte. The title itself does NOT wait on this —
-  // see updateTitlePreview below (ADR-077).
-  function updateField(field: 'first_name' | 'last_name' | 'email', value: string) {
+  // Routed through the store's typed person update (ADR-049) — NOT
+  // backendAdapter directly. The store applies the change optimistically and
+  // synchronously, and owns persistence + error reporting itself; callers
+  // don't need their own try/catch around it. An emptied field is cleared
+  // rather than stored as "". The title itself does NOT wait on this — see
+  // pushTitlePreview below (ADR-077).
+  function updateField(field: keyof PersonNodeUpdate, value: string) {
     if (!node) return;
-    const updatedProperties = {
-      ...node.properties,
-      person: { ...personProps, [field]: value }
-    };
-    sharedNodeStore.updateNode(
+    sharedNodeStore.updatePersonNode(
       nodeId,
-      { properties: updatedProperties },
+      { [field]: value === '' ? null : value },
       { type: 'viewer', viewerId: 'person-schema-form' }
     );
   }
@@ -196,12 +190,12 @@
 
   function handleFirstNameBlur(e: FocusEvent) {
     const value = (e.currentTarget as HTMLInputElement).value;
-    if (value !== firstName) updateField('first_name', value);
+    if (value !== firstName) updateField('firstName', value);
   }
 
   function handleLastNameBlur(e: FocusEvent) {
     const value = (e.currentTarget as HTMLInputElement).value;
-    if (value !== lastName) updateField('last_name', value);
+    if (value !== lastName) updateField('lastName', value);
   }
 
   async function handleEmailBlur(e: FocusEvent) {

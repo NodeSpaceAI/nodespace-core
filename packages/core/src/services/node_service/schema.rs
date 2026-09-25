@@ -460,6 +460,86 @@ impl NodeService {
         )))
     }
 
+    /// Update a person node's core fields (`first_name`, `last_name`, `email`)
+    /// with optimistic concurrency control.
+    ///
+    /// The typed payload is the wire contract; the write itself runs the
+    /// generic update pipeline (`update_node`), which already owns schema
+    /// validation, `title_template` recompute, the version check, invariant
+    /// dispatch and the `NodeUpdated` diff. Returns the stored `Node`; callers
+    /// serialize it through `node_to_typed_value` like every other read.
+    pub async fn update_person_node(
+        &self,
+        id: &str,
+        expected_version: i64,
+        update: crate::models::PersonNodeUpdate,
+    ) -> Result<Node, NodeServiceError> {
+        if update.is_empty() {
+            return Err(NodeServiceError::invalid_update(
+                "PersonNodeUpdate contains no changes",
+            ));
+        }
+        self.update_typed_fields(id, "person", expected_version, update.to_properties_patch())
+            .await
+    }
+
+    /// Update a project node's core fields (`status`, `priority`,
+    /// `start_date`, `end_date`) with optimistic concurrency control. See
+    /// [`Self::update_person_node`] for why this delegates to the generic
+    /// pipeline; `status`/`priority` are validated there against the
+    /// schema's declared vocabulary (core + user values).
+    pub async fn update_project_node(
+        &self,
+        id: &str,
+        expected_version: i64,
+        update: crate::models::ProjectNodeUpdate,
+    ) -> Result<Node, NodeServiceError> {
+        if update.is_empty() {
+            return Err(NodeServiceError::invalid_update(
+                "ProjectNodeUpdate contains no changes",
+            ));
+        }
+        self.update_typed_fields(
+            id,
+            "project",
+            expected_version,
+            update.to_properties_patch(),
+        )
+        .await
+    }
+
+    /// Write a typed update's flat properties patch to a node that must be of
+    /// `node_type`.
+    ///
+    /// The type check runs before the transaction. That is sound because the
+    /// version check inside the write rejects any change that lands after this
+    /// read: if the node is `node_type` at `expected_version`, a later retype
+    /// bumps the version and the write conflicts; if the version already moved,
+    /// the write conflicts regardless.
+    async fn update_typed_fields(
+        &self,
+        id: &str,
+        node_type: &str,
+        expected_version: i64,
+        patch: serde_json::Value,
+    ) -> Result<Node, NodeServiceError> {
+        let existing = self
+            .get_node(id)
+            .await?
+            .ok_or_else(|| NodeServiceError::node_not_found(id))?;
+        if existing.node_type != node_type {
+            return Err(NodeServiceError::invalid_update(format!(
+                "Node '{}' is a {} node, not a {} node",
+                id, existing.node_type, node_type
+            )));
+        }
+        let update = NodeUpdate {
+            properties: Some(patch),
+            ..Default::default()
+        };
+        self.update_node(id, expected_version, update).await
+    }
+
     /// Get a schema node with strong typing
     ///
     /// Returns strongly-typed `SchemaNode` instead of generic `Node`.
@@ -1429,5 +1509,203 @@ impl NodeService {
             is_complete: missing.is_empty(),
             missing_relationships: missing,
         })
+    }
+}
+
+#[cfg(test)]
+mod typed_update_tests {
+    use super::*;
+    use crate::db::SqliteStore;
+    use crate::models::{PersonNodeUpdate, ProjectNodeUpdate};
+    use crate::services::{CreateNodeParams, InsertPositionOwned};
+    use serde_json::json;
+    use tempfile::TempDir;
+
+    async fn create_test_service() -> (NodeService, TempDir) {
+        let temp_dir = TempDir::new().unwrap();
+        let mut store = Arc::new(
+            SqliteStore::new(temp_dir.path().join("test.db"))
+                .await
+                .unwrap(),
+        );
+        let service = NodeService::new(&mut store).await.unwrap();
+        (service, temp_dir)
+    }
+
+    async fn create(service: &NodeService, node_type: &str, properties: serde_json::Value) -> Node {
+        let id = service
+            .create_node_with_parent(CreateNodeParams {
+                id: None,
+                node_type: node_type.to_string(),
+                content: "Name".to_string(),
+                parent_id: None,
+                position: InsertPositionOwned::End,
+                properties,
+                lifecycle_status: None,
+            })
+            .await
+            .unwrap();
+        service.get_node(&id).await.unwrap().unwrap()
+    }
+
+    fn set(value: &str) -> Option<Option<String>> {
+        Some(Some(value.to_string()))
+    }
+
+    #[tokio::test]
+    async fn person_update_writes_fields_and_recomputes_title() {
+        let (service, _t) = create_test_service().await;
+        let person = create(&service, "person", json!({ "first_name": "Ada" })).await;
+
+        let updated = service
+            .update_person_node(
+                &person.id,
+                person.version,
+                PersonNodeUpdate {
+                    last_name: set("Lovelace"),
+                    email: set("ada@example.com"),
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("typed person update succeeds");
+
+        assert_eq!(updated.version, person.version + 1);
+        assert_eq!(updated.title.as_deref(), Some("Ada Lovelace"));
+        let typed = crate::models::node_to_typed_value(updated).unwrap();
+        assert_eq!(typed["firstName"], "Ada", "an untouched field survives");
+        assert_eq!(typed["lastName"], "Lovelace");
+        assert_eq!(typed["email"], "ada@example.com");
+        assert_eq!(typed["properties"], json!({}));
+    }
+
+    #[tokio::test]
+    async fn person_update_null_clears_a_field() {
+        let (service, _t) = create_test_service().await;
+        let person = create(
+            &service,
+            "person",
+            json!({ "first_name": "Ada", "last_name": "Lovelace" }),
+        )
+        .await;
+
+        let updated = service
+            .update_person_node(
+                &person.id,
+                person.version,
+                PersonNodeUpdate {
+                    last_name: Some(None),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(updated.title.as_deref(), Some("Ada"));
+        let typed = crate::models::node_to_typed_value(updated).unwrap();
+        assert!(typed.get("lastName").is_none());
+    }
+
+    #[tokio::test]
+    async fn person_update_on_a_stale_version_conflicts() {
+        let (service, _t) = create_test_service().await;
+        let person = create(&service, "person", json!({ "first_name": "Ada" })).await;
+
+        let err = service
+            .update_person_node(
+                &person.id,
+                person.version + 5,
+                PersonNodeUpdate {
+                    first_name: set("Grace"),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap_err();
+
+        assert!(
+            matches!(err, NodeServiceError::VersionConflict { .. }),
+            "{err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn typed_update_rejects_a_node_of_another_type() {
+        let (service, _t) = create_test_service().await;
+        let task = create(&service, "task", json!({})).await;
+
+        let err = service
+            .update_person_node(
+                &task.id,
+                task.version,
+                PersonNodeUpdate {
+                    first_name: set("Ada"),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap_err();
+
+        assert!(err.to_string().contains("not a person node"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn empty_typed_update_is_rejected() {
+        let (service, _t) = create_test_service().await;
+        let person = create(&service, "person", json!({})).await;
+
+        assert!(service
+            .update_person_node(&person.id, person.version, PersonNodeUpdate::default())
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn project_update_writes_fields_and_leaves_others() {
+        let (service, _t) = create_test_service().await;
+        let project = create(
+            &service,
+            "project",
+            json!({ "status": "planning", "custom:budget": 1200 }),
+        )
+        .await;
+
+        let updated = service
+            .update_project_node(
+                &project.id,
+                project.version,
+                ProjectNodeUpdate {
+                    status: Some("active".to_string()),
+                    start_date: set("2026-03-01"),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+
+        let typed = crate::models::node_to_typed_value(updated).unwrap();
+        assert_eq!(typed["status"], "active");
+        assert_eq!(typed["startDate"], "2026-03-01");
+        assert_eq!(typed["properties"], json!({ "custom:budget": 1200 }));
+    }
+
+    #[tokio::test]
+    async fn project_update_rejects_status_outside_the_schema_vocabulary() {
+        let (service, _t) = create_test_service().await;
+        let project = create(&service, "project", json!({})).await;
+
+        let err = service
+            .update_project_node(
+                &project.id,
+                project.version,
+                ProjectNodeUpdate {
+                    status: Some("someday".to_string()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap_err();
+
+        assert!(err.to_string().contains("Invalid value 'someday'"), "{err}");
     }
 }
