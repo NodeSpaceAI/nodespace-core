@@ -43,8 +43,15 @@ describe('navigated-to root node — persisted tracking', () => {
 
   it('marks the root persisted, so an edit takes the update path', async () => {
     vi.spyOn(backendAdapter, 'getNode').mockResolvedValue(personNode());
+    const { id, nodeType, content, version, createdAt, modifiedAt, properties } = personNode();
     vi.spyOn(backendAdapter, 'getChildrenTree').mockResolvedValue({
-      ...personNode(),
+      id,
+      nodeType,
+      content,
+      version,
+      createdAt,
+      modifiedAt,
+      properties,
       children: []
     });
     vi.spyOn(backendAdapter, 'getMentioningContainers').mockResolvedValue([]);
