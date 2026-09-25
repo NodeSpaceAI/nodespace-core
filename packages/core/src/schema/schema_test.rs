@@ -214,11 +214,11 @@ async fn create_base_schema(svc: &Arc<NodeService>, name: &str, field_names: &[&
         .to_string()
 }
 
-/// Test-only stand-in for the `SchemaNode::get_relationship` accessor this
-/// PR deletes from production code (its only production caller was folded
-/// into `NodeService::resolve_relationships` — see core#2888). A schema's own
-/// directly-declared relationships only, exactly as `get_relationship` read
-/// them; several assertions below still want to pluck one out by name.
+/// Test-only stand-in for the deleted `SchemaNode::get_relationship`
+/// accessor — its only production caller was folded into
+/// `NodeService::resolve_relationships`. A schema's own directly-declared
+/// relationships only, exactly as `get_relationship` read them; several
+/// assertions below still want to pluck one out by name.
 fn find_relationship<'a>(
     schema: &'a crate::models::SchemaNode,
     name: &str,
