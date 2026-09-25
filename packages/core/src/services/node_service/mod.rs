@@ -8838,6 +8838,290 @@ mod tests {
     }
 
     // ========================================================================
+    // ADR-078 extends-chain awareness on the bulk write paths (`bulk.rs`).
+    // `crud.rs`'s single-node write paths all funnel through
+    // `rebucket_and_validate`; these three bulk entry points didn't, so an
+    // extending type's inherited field stayed in the node's own bucket
+    // instead of moving to its declaring ancestor's.
+    // ========================================================================
+
+    /// `bulk_create` (the `Vec<Node>` entry point) now calls
+    /// `rebucket_and_validate` per node instead of the non-bucketing
+    /// `validate_node_against_schema`. `bulk_create` never normalizes flat
+    /// properties (unlike `create_node`), so the input here is given
+    /// already in "everything under the node's own type" shape — exactly
+    /// what a caller unaware of the extends chain would produce, and
+    /// exactly what `bulk_create` persisted verbatim before this fix.
+    #[tokio::test]
+    async fn bulk_create_rebuckets_an_inherited_field_into_the_ancestors_bucket() {
+        let (service, _temp) = create_test_service().await;
+        let service = Arc::new(service);
+
+        crate::schema::handle_create_schema(
+            &service,
+            json!({
+                "name": "Ticket",
+                "fields": [
+                    { "name": "priority", "type": "string", "protection": "user", "indexed": false }
+                ]
+            }),
+        )
+        .await
+        .expect("ticket schema creation failed");
+
+        crate::schema::handle_create_schema(
+            &service,
+            json!({
+                "name": "Bug",
+                "extends": "ticket",
+                "fields": [
+                    { "name": "severity", "type": "string", "protection": "user", "indexed": false }
+                ]
+            }),
+        )
+        .await
+        .expect("bug schema creation failed");
+
+        let node = Node::new(
+            "bug".to_string(),
+            "A bug".to_string(),
+            json!({ "bug": { "priority": "high", "severity": "critical" } }),
+        );
+
+        let ids = service.bulk_create(vec![node]).await.unwrap();
+        let created = service.get_node(&ids[0]).await.unwrap().unwrap();
+
+        assert_eq!(
+            created.properties,
+            json!({
+                "ticket": { "priority": "high" },
+                "bug": { "severity": "critical" },
+            }),
+            "the inherited `priority` field must move to the `ticket` bucket, not stay in \
+             `bug`'s own bucket alongside `severity`: {:?}",
+            created.properties
+        );
+    }
+
+    /// `bulk_update` now calls `rebucket_and_validate` on the merged
+    /// candidate instead of the non-bucketing `validate_node_against_schema`,
+    /// and computes `changed_properties` from the post-rebucket state.
+    #[tokio::test]
+    async fn bulk_update_rebuckets_an_inherited_field_into_the_ancestors_bucket() {
+        use crate::services::{CreateNodeParams, InsertPositionOwned};
+
+        let (service, _temp) = create_test_service().await;
+        let service = Arc::new(service);
+
+        crate::schema::handle_create_schema(
+            &service,
+            json!({
+                "name": "Ticket",
+                "fields": [
+                    { "name": "priority", "type": "string", "protection": "user", "indexed": false }
+                ]
+            }),
+        )
+        .await
+        .expect("ticket schema creation failed");
+
+        crate::schema::handle_create_schema(
+            &service,
+            json!({
+                "name": "Bug",
+                "extends": "ticket",
+                "fields": [
+                    { "name": "severity", "type": "string", "protection": "user", "indexed": false }
+                ]
+            }),
+        )
+        .await
+        .expect("bug schema creation failed");
+
+        let bug_id = service
+            .create_node_with_parent(CreateNodeParams {
+                id: None,
+                node_type: "bug".to_string(),
+                content: "A bug".to_string(),
+                parent_id: None,
+                position: InsertPositionOwned::End,
+                properties: json!({ "priority": "high", "severity": "critical" }),
+                lifecycle_status: None,
+            })
+            .await
+            .unwrap();
+
+        // Flat client value for an inherited field — normalized then
+        // deep-merged, same as the single-update path.
+        service
+            .bulk_update(vec![(
+                bug_id.clone(),
+                NodeUpdate::new().with_properties(json!({ "priority": "urgent" })),
+            )])
+            .await
+            .unwrap();
+
+        let updated = service.get_node(&bug_id).await.unwrap().unwrap();
+        assert_eq!(
+            updated.properties,
+            json!({
+                "ticket": { "priority": "urgent" },
+                "bug": { "severity": "critical" },
+            }),
+            "the updated `priority` value must land in the inherited `ticket` bucket, not a \
+             stray `bug.priority` key: {:?}",
+            updated.properties
+        );
+    }
+
+    /// `bulk_create_hierarchy` (and, via the shared
+    /// `prepare_bulk_hierarchy_nodes` preamble, `bulk_create_hierarchy_in_tx`
+    /// and `bulk_create_hierarchy_root_notify`) now resolves the full
+    /// `extends` chain per unique type and re-buckets each row's properties,
+    /// instead of validating only against the type's own schema with no
+    /// bucketing at all.
+    #[tokio::test]
+    async fn bulk_create_hierarchy_rebuckets_an_inherited_field_into_the_ancestors_bucket() {
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = temp_dir.path().join("test.db");
+
+        let mut store = Arc::new(SqliteStore::new(db_path.clone()).await.unwrap());
+        let service = Arc::new(NodeService::new(&mut store).await.unwrap());
+
+        crate::schema::handle_create_schema(
+            &service,
+            json!({
+                "name": "Ticket",
+                "fields": [
+                    { "name": "priority", "type": "string", "protection": "user", "indexed": false }
+                ]
+            }),
+        )
+        .await
+        .expect("ticket schema creation failed");
+
+        crate::schema::handle_create_schema(
+            &service,
+            json!({
+                "name": "Bug",
+                "extends": "ticket",
+                "fields": [
+                    { "name": "severity", "type": "string", "protection": "user", "indexed": false }
+                ]
+            }),
+        )
+        .await
+        .expect("bug schema creation failed");
+
+        // `SqliteStore::bulk_create_hierarchy`'s SQL layer gates every row's
+        // `node_type` against a `valid_node_types` cache built once, from the
+        // schema nodes already in the database, when the `SqliteStore` is
+        // constructed — `handle_create_schema` above does not refresh it (a
+        // separate, pre-existing gap, out of this issue's scope: today,
+        // `bulk_create_hierarchy` only ever targets core types seeded at
+        // startup in practice). Reopen against the same file, now that
+        // `ticket`/`bug` are persisted, so the fresh cache picks them up.
+        drop(service);
+        let mut store = Arc::new(SqliteStore::new(db_path).await.unwrap());
+        let service = Arc::new(NodeService::new(&mut store).await.unwrap());
+
+        let ids = service
+            .bulk_create_hierarchy(vec![(
+                "bug-row-1".to_string(),
+                "bug".to_string(),
+                "A bug".to_string(),
+                None,
+                0.0,
+                json!({ "priority": "high", "severity": "critical" }),
+            )])
+            .await
+            .unwrap();
+
+        let created = service.get_node(&ids[0]).await.unwrap().unwrap();
+        assert_eq!(
+            created.properties,
+            json!({
+                "ticket": { "priority": "high" },
+                "bug": { "severity": "critical" },
+            }),
+            "the inherited `priority` field must move to the `ticket` bucket for a \
+             bulk-imported row: {:?}",
+            created.properties
+        );
+    }
+
+    /// A schema whose own `fields` array is present but fails to deserialize
+    /// (a field entry missing the required `type` key here) must fail the
+    /// bulk-hierarchy write loudly. Before this fix,
+    /// `serde_json::from_value(fields_json).ok()` collapsed a parse failure
+    /// to `None`, indistinguishable from "this type has no schema at all" —
+    /// every row of that type was silently inserted unvalidated and
+    /// un-bucketed instead.
+    #[tokio::test]
+    async fn bulk_create_hierarchy_fails_loudly_on_a_malformed_schema_fields_array() {
+        let (service, _temp) = create_test_service().await;
+        let service = Arc::new(service);
+
+        crate::schema::handle_create_schema(
+            &service,
+            json!({
+                "name": "Gizmo",
+                "fields": [
+                    { "name": "widget", "type": "string", "protection": "user", "indexed": false }
+                ]
+            }),
+        )
+        .await
+        .expect("gizmo schema creation failed");
+
+        // Corrupt the stored schema directly, bypassing `update_schema`'s
+        // own validation — standing in for however malformed data could
+        // really reach storage (a relaxed future check, a sync-applied
+        // write, hand-edited data).
+        let gizmo_schema = service
+            .get_node("gizmo")
+            .await
+            .unwrap()
+            .expect("gizmo schema node must exist");
+        let mut properties = gizmo_schema.properties.clone();
+        properties["fields"] = json!([{ "name": "widget" }]);
+        service
+            .store
+            .update_node(
+                "gizmo",
+                NodeUpdate {
+                    properties: Some(properties),
+                    ..Default::default()
+                },
+                None,
+            )
+            .await
+            .unwrap();
+
+        let result = service
+            .bulk_create_hierarchy(vec![(
+                "gizmo-row-1".to_string(),
+                "gizmo".to_string(),
+                "A gizmo".to_string(),
+                None,
+                0.0,
+                json!({}),
+            )])
+            .await;
+
+        assert!(
+            result.is_err(),
+            "a malformed schema fields array must fail loudly, not silently skip validation \
+             for the whole type"
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("Malformed schema fields") && err.contains("gizmo"),
+            "error should name the malformed-schema cause and the type: {err}"
+        );
+    }
+
+    // ========================================================================
     // build_node_tree_recursive guards.
     //
     // The adjacency list comes from relationship rows fetched separately from

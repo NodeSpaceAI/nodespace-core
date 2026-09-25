@@ -2507,7 +2507,11 @@ impl NodeService {
     /// alone must not re-default: the node already has its values, and
     /// defaulting again would resurrect a field the caller deliberately
     /// cleared.
-    async fn rebucket_and_validate(
+    ///
+    /// `pub(crate)` rather than private: `bulk.rs`'s `bulk_create`/`bulk_update`
+    /// call this directly (with `apply_defaults: false`, matching their prior
+    /// no-defaulting behavior) rather than duplicating the sequence.
+    pub(crate) async fn rebucket_and_validate(
         &self,
         node: &mut Node,
         apply_defaults: bool,
