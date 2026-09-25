@@ -490,16 +490,36 @@ impl NodeService {
     /// the chain itself — same chain source (`resolve_type_chain`), same
     /// nearest-first shadowing (`flatten_chain_by_name`), so this can't drift
     /// from the resolver every other relationship-reading call site already
-    /// uses. One behavioral difference from the old hand-walk, and a
-    /// deliberate one: `resolve_relationships` excludes the `extends`/
-    /// `extended_by` type-system bookkeeping row (see its own doc comment),
-    /// which the old per-scope `SchemaNode::get_relationship` lookup did not
-    /// — that lookup would happily return a schema's own `extends`
-    /// declaration if a caller named it as `relationship_name`, letting
-    /// `create_relationship` create a real data-level `extends` edge between
-    /// two ordinary node instances. That was never a reachable, intentional
-    /// path (nothing creates such an edge), and is closed now rather than
-    /// preserved.
+    /// uses. Two behavioral differences from the old per-scope hand-walk,
+    /// both deliberate:
+    ///
+    /// - `resolve_relationships` excludes the `extends`/`extended_by`
+    ///   type-system bookkeeping row (see its own doc comment), which the old
+    ///   `SchemaNode::get_relationship` lookup did not — that lookup would
+    ///   happily return a schema's own `extends` declaration if a caller
+    ///   named it as `relationship_name`, letting `create_relationship`
+    ///   create a real data-level `extends` edge between two ordinary node
+    ///   instances. That was never a reachable, intentional path (nothing
+    ///   creates such an edge), and is closed now rather than preserved.
+    /// - The old hand-walk stopped at the first scope that declared
+    ///   `relationship_name`, so a match on the node's own (nearest) schema
+    ///   never touched a farther ancestor at all. `resolve_relationships`
+    ///   always resolves every scope in the chain before this function's own
+    ///   `.find()` picks the nearest match, so (a) a chain of depth N always
+    ///   costs N `get_schema_node` reads rather than stopping early, and (b)
+    ///   a real `Err` from a farther ancestor's read (a DB failure, not the
+    ///   ordinary "no schema there" `Ok(None)`) now propagates even when the
+    ///   nearest scope already had the answer, where it previously would
+    ///   never have been reached. Both are accepted, not incidental: extends
+    ///   chains are shallow by construction (ADR-078 composition is a rare,
+    ///   administrative act, and nothing about this call site changes
+    ///   `MAX_EXTENDS_DEPTH`'s cap), and every other single-name lookup
+    ///   through `resolve_relationships`/`resolve_field_owners` in this
+    ///   codebase (e.g. `check_node_completeness`, `find_duplicate_for`)
+    ///   already resolves the full chain unconditionally rather than
+    ///   short-circuiting — this brings the relationship-creation path's cost
+    ///   and failure shape in line with theirs instead of leaving it as the
+    ///   one outlier with a bespoke early exit.
     async fn resolve_declared_relationship(
         &self,
         schema_id: &str,
