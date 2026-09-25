@@ -69,15 +69,14 @@ const log = createLogger('SharedNodeStore');
  * newly created or updated node — so subscribers that fold incoming nodes into
  * a view must skip it (see `isStoreEviction`).
  */
-const STORE_CLEARED_REASON = 'store-cleared';
-export const STORE_CLEARED_SOURCE: UpdateSource = { type: 'database', reason: STORE_CLEARED_REASON };
+export const STORE_CLEARED_SOURCE = Object.freeze({ type: 'database', reason: 'store-cleared' } as const);
 
 /** Source reported for each node `restore()` puts back from a snapshot. */
-export const STORE_RESTORED_SOURCE: UpdateSource = { type: 'database', reason: 'store-restored' };
+export const STORE_RESTORED_SOURCE = Object.freeze({ type: 'database', reason: 'store-restored' } as const);
 
 /** Whether a subscription notification reports a node evicted by `clearAll()`. */
 export function isStoreEviction(source: UpdateSource): boolean {
-  return source.type === 'database' && source.reason === STORE_CLEARED_REASON;
+  return source.type === 'database' && source.reason === STORE_CLEARED_SOURCE.reason;
 }
 
 // ============================================================================
@@ -4780,7 +4779,9 @@ export class SharedNodeStore {
   /**
    * Restore all nodes from a snapshot (rollback on error)
    *
-   * Replaces the current node state with the snapshot state.
+   * Replaces the current node state with the snapshot state. Subscribers are
+   * notified of each restored node; nodes the restore drops (present now,
+   * absent from the snapshot) are not reported.
    *
    * @param snapshotMap - Previously captured snapshot to restore
    */
