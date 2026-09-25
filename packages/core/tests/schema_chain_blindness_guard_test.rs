@@ -624,8 +624,28 @@ fn find_hits_in_function(body: &str, file: &str, function: &str) -> Vec<Hit> {
         // persisted = match persisted { ... };` does — not a new, unrelated
         // value, so it must not cut the window short before that
         // function's actual `persisted.fields`/`.relationships` reads.
-        let reshadow_re =
-            regex::Regex::new(&format!(r"\blet\s+(?:mut\s+)?{}\s*=", regex::escape(name))).unwrap();
+        //
+        // Mirrors `binding_re`'s own `let NAME = ...` / `let Some(NAME) =
+        // ...` alternation above — a reshadow via the `let Some(NAME) = ...
+        // else { ... }` idiom must be recognized here too, or it silently
+        // falls through this check entirely and the original, unbounded
+        // false-positive risk this scoping exists to close reopens for
+        // that shape specifically.
+        //
+        // The self-reference check below only strips *comments* before
+        // this stage (see [`strip_comments`]), not string literals — a
+        // reassignment whose right-hand side happens to contain NAME
+        // inside a string (e.g. `let schema = config.get_value("schema")`)
+        // would coincidentally look self-referential and skip truncation.
+        // Accepted as a known, unfixed edge case: real production code
+        // reassigning a `get_schema_node`-bound variable's name to an
+        // unrelated string-literal-containing call is not a shape this
+        // codebase currently has any instance of.
+        let reshadow_re = regex::Regex::new(&format!(
+            r"\blet\s+(?:mut\s+)?(?:Some\(\s*{0}\s*\)|{0})\s*=",
+            regex::escape(name)
+        ))
+        .unwrap();
         let rest = match reshadow_re.find(rest) {
             Some(m) => {
                 // Bound the self-reference check to (approximately) the
@@ -1116,5 +1136,47 @@ fn scanner_detects_a_deliberately_bad_fixture() {
     assert!(
         hits.iter().any(|h| h.field_kind == "fields"),
         "a field access inside a function with an array-typed signature must still be detected"
+    );
+
+    // The reshadow-window-truncation logic must recognize a reshadow via
+    // `let Some(NAME) = ... else { ... }`, not only plain `let NAME = ...`
+    // — `binding_re` itself supports both forms, so the reshadow check that
+    // scopes the search window must mirror that same alternation or an
+    // unrelated `Some(NAME)`-shaped reshadow silently falls through it.
+    let unrelated_some_reshadow_fixture = r#"
+        async fn shadow_false_positive_some(&self, node_type: &str) -> usize {
+            let schema = self.get_schema_node(node_type).await.unwrap().unwrap();
+            let ok = schema.is_core;
+            let Some(schema) = unrelated_lookup() else { return 0; };
+            schema.fields.len()
+        }
+    "#;
+    let functions = split_functions(unrelated_some_reshadow_fixture);
+    let (name, body) = &functions[0];
+    let hits = find_hits_in_function(body, "fixture.rs", name);
+    assert!(
+        hits.is_empty(),
+        "a field access on a variable reshadowed via `let Some(NAME) = <unrelated>` must NOT \
+         be attributed to the earlier get_schema_node binding of the same name: {hits:?}"
+    );
+
+    // ...but a SELF-referential `let Some(NAME) = NAME else { ... }`
+    // reshadow (narrowing NAME itself through an else-guard) must still not
+    // cut the window short, symmetric with the plain-`let` self-reference
+    // case above.
+    let self_ref_some_reshadow_fixture = r#"
+        async fn self_ref_some_reshadow(&self, node_type: &str) -> usize {
+            let schema = self.get_schema_node(node_type).await.unwrap();
+            let Some(schema) = schema else { return 0; };
+            schema.fields.len()
+        }
+    "#;
+    let functions = split_functions(self_ref_some_reshadow_fixture);
+    let (name, body) = &functions[0];
+    let hits = find_hits_in_function(body, "fixture.rs", name);
+    assert!(
+        hits.iter().any(|h| h.field_kind == "fields"),
+        "a self-referential `let Some(NAME) = NAME else {{ ... }}` reshadow must not cut the \
+         search window short before the real field access that follows it"
     );
 }
