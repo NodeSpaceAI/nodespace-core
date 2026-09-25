@@ -1,7 +1,7 @@
 mod build_support;
 
 use std::env;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// `externalBin` entries from `tauri.conf.json`, without the `binaries/`
 /// prefix or platform triple — kept in sync with that file by hand since
@@ -66,6 +66,100 @@ fn sync_external_bin_staging() {
     }
 }
 
+/// `bundle.resources` and `bundle.externalBin` from `tauri.conf.json`, hand
+/// synced for the same reason as `EXTERNAL_BIN_NAMES`. Only read when the
+/// skill is unstaged (see `drop_unstaged_skill`), which is the one case that
+/// needs to restate them.
+const BUNDLE_RESOURCES: &[&str] = &["resources/models/**/*", SKILL_RESOURCES];
+const BUNDLE_EXTERNAL_BINS: &[&str] = &[
+    "binaries/nodespaced",
+    "binaries/nodespace",
+    SKILL_INSTALLER_BIN,
+];
+
+/// The two bundle entries `bun run build:skill` stages.
+const SKILL_RESOURCES: &str = "resources/skill/**/*";
+const SKILL_INSTALLER_BIN: &str = "binaries/nodespace-skill-installer";
+
+/// Leave the skill out of a debug build's bundle config when it isn't staged.
+///
+/// `tauri_build::build()` copies every declared resource and sidecar into the
+/// build output and fails on a missing one, so any build of this crate —
+/// clippy, `cargo check`, `cargo test`, the pre-push gate — used to need
+/// `bun run build:skill` first, although none of them ever reads the skill.
+/// A debug build therefore declares only what is staged, and says so.
+///
+/// Release builds stay strict: a packaged app must never ship without the
+/// skill. `dev:tauri` and `tauri:build` run `build:skill` before building, so
+/// both find it staged and are unaffected. The daemon/CLI sidecars stay strict
+/// too — the Tauri-seam tests execute `nodespaced`, so a missing one is a real
+/// failure, not a declaration nobody reads.
+///
+/// Works through `TAURI_CONFIG`, which `tauri_build` merges over
+/// `tauri.conf.json`. An explicitly set `TAURI_CONFIG` is left alone: without
+/// a JSON parser here there is no merging into it, and whoever set it owns
+/// the bundle config.
+fn drop_unstaged_skill() {
+    if env::var("PROFILE").as_deref() != Ok("debug") || env::var_os("TAURI_CONFIG").is_some() {
+        return;
+    }
+    let target_triple = env::var("TARGET").expect("cargo always sets TARGET for build scripts");
+    let target_os = env::var("CARGO_CFG_TARGET_OS").expect("cargo always sets CARGO_CFG_TARGET_OS");
+    let exe_suffix = if target_os == "windows" { ".exe" } else { "" };
+
+    let skill_dir = PathBuf::from("resources/skill");
+    let installer = PathBuf::from(format!("{SKILL_INSTALLER_BIN}-{target_triple}{exe_suffix}"));
+    let resources_staged = skill_dir
+        .read_dir()
+        .is_ok_and(|mut entries| entries.next().is_some());
+    let installer_staged = installer.is_file();
+    if resources_staged && installer_staged {
+        return;
+    }
+
+    let json_list = |entries: &[&str], drop: Option<&str>| -> String {
+        let kept: Vec<String> = entries
+            .iter()
+            .filter(|entry| Some(**entry) != drop)
+            .map(|entry| format!("\"{entry}\""))
+            .collect();
+        format!("[{}]", kept.join(","))
+    };
+    let resources = json_list(
+        BUNDLE_RESOURCES,
+        (!resources_staged).then_some(SKILL_RESOURCES),
+    );
+    let external_bins = json_list(
+        BUNDLE_EXTERNAL_BINS,
+        (!installer_staged).then_some(SKILL_INSTALLER_BIN),
+    );
+    // See `main` on `set_var` in a build script.
+    env::set_var(
+        "TAURI_CONFIG",
+        format!(r#"{{"bundle":{{"resources":{resources},"externalBin":{external_bins}}}}}"#),
+    );
+    println!(
+        "cargo:warning=skill not staged; left out of this debug build's bundle \
+         (run `bun run build:skill` only if you need the skill in this build)"
+    );
+
+    // tauri_build watches only what it copies, so watch the dropped paths
+    // here to pick up a later `build:skill`. A path that doesn't exist yet is
+    // watched through its nearest existing ancestor: cargo treats a missing
+    // path as always changed, which would rerun this script on every build.
+    let missing = [
+        (!resources_staged).then_some(skill_dir),
+        (!installer_staged).then_some(installer),
+    ];
+    for path in missing.into_iter().flatten() {
+        let watched = path
+            .ancestors()
+            .find(|p| !p.as_os_str().is_empty() && p.exists())
+            .unwrap_or(Path::new("."));
+        println!("cargo:rerun-if-changed={}", watched.display());
+    }
+}
+
 fn main() {
     // Compile the Pro-tier proto package alongside the standard Tauri build.
     // The .proto lives under `proto/` in this crate (vendored from
@@ -91,6 +185,7 @@ fn main() {
     // Must run before tauri_build::build(): that call is what performs the
     // unconditional, direction-reversing copy this guards against.
     sync_external_bin_staging();
+    drop_unstaged_skill();
 
     tauri_build::build()
 }
