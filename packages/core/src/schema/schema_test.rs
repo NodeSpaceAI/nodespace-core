@@ -214,6 +214,18 @@ async fn create_base_schema(svc: &Arc<NodeService>, name: &str, field_names: &[&
         .to_string()
 }
 
+/// Test-only stand-in for the `SchemaNode::get_relationship` accessor this
+/// PR deletes from production code (its only production caller was folded
+/// into `NodeService::resolve_relationships` — see core#2888). A schema's own
+/// directly-declared relationships only, exactly as `get_relationship` read
+/// them; several assertions below still want to pluck one out by name.
+fn find_relationship<'a>(
+    schema: &'a crate::models::SchemaNode,
+    name: &str,
+) -> Option<&'a crate::models::schema::SchemaRelationship> {
+    schema.relationships.iter().find(|r| r.name == name)
+}
+
 #[tokio::test]
 async fn test_update_schema_add_valid_title_template() {
     let (svc, _tmp) = create_test_service().await;
@@ -3176,10 +3188,7 @@ async fn test_create_schema_accepts_self_referential_relationship() {
         .await
         .expect("get_schema_node failed")
         .expect("schema should exist");
-    let rel = schema
-        .relationships
-        .iter()
-        .find(|r| r.name == "supersedes")
+    let rel = find_relationship(&schema, "supersedes")
         .expect("self-referential declaration should be persisted");
     assert_eq!(rel.target_type.as_deref(), Some("adr"));
 }
@@ -3247,16 +3256,10 @@ async fn test_create_schema_self_reference_reverse_edge_resolves() {
         .expect("get_schema_node failed")
         .expect("schema should exist");
 
-    let forward = schema
-        .relationships
-        .iter()
-        .find(|r| r.name == "supersedes")
-        .expect("forward edge should be persisted");
-    let reverse = schema
-        .relationships
-        .iter()
-        .find(|r| r.name == "superseded_by")
-        .expect("reverse edge should be persisted");
+    let forward =
+        find_relationship(&schema, "supersedes").expect("forward edge should be persisted");
+    let reverse =
+        find_relationship(&schema, "superseded_by").expect("reverse edge should be persisted");
 
     assert_eq!(forward.target_type.as_deref(), Some("adr"));
     assert_eq!(reverse.target_type.as_deref(), Some("adr"));
@@ -3294,10 +3297,7 @@ async fn test_create_schema_self_reference_uses_normalized_schema_id() {
         .expect("get_schema_node failed")
         .expect("schema should exist");
     assert_eq!(
-        schema
-            .relationships
-            .iter()
-            .find(|r| r.name == "supersedes")
+        find_relationship(&schema, "supersedes")
             .expect("declaration should be persisted")
             .target_type
             .as_deref(),
@@ -3493,10 +3493,7 @@ async fn test_update_schema_accepts_self_referential_relationship() {
         .expect("get_schema_node failed")
         .expect("schema should exist");
     assert_eq!(
-        schema
-            .relationships
-            .iter()
-            .find(|r| r.name == "supersedes")
+        find_relationship(&schema, "supersedes")
             .expect("self-referential declaration should be persisted")
             .target_type
             .as_deref(),

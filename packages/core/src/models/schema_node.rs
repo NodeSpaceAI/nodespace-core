@@ -337,11 +337,6 @@ impl SchemaNode {
     // Relationship helpers
     // ========================================================================
 
-    /// Get a mutable relationship by name
-    pub fn get_relationship_mut(&mut self, name: &str) -> Option<&mut SchemaRelationship> {
-        self.relationships.iter_mut().find(|r| r.name == name)
-    }
-
     /// Check if this schema has any relationships defined
     pub fn has_relationships(&self) -> bool {
         !self.relationships.is_empty()
