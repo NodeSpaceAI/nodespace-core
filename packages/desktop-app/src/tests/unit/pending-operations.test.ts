@@ -12,7 +12,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   waitForPendingMoveOperations,
   trackMoveOperation,
-  getPendingMoveOperation
+  movesAheadOfWrite,
+  type MoveTicket
 } from '$lib/services/pending-operations';
 
 /**
@@ -21,6 +22,21 @@ import {
  * pending-operations module uses global state (a Map of pending operations).
  */
 const uniqueNodeId = (prefix: string) => `${prefix}-${Math.random().toString(36).slice(2)}`;
+
+/** Track a move that settles when the test says so, exposing its ticket. */
+function trackControlledMove(nodeId: string) {
+  let resolve!: () => void;
+  let reject!: (error: Error) => void;
+  let ticket!: MoveTicket;
+  const tracked = trackMoveOperation(nodeId, (t) => {
+    ticket = t;
+    return new Promise<void>((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
+  });
+  return { tracked, ticket, resolve, reject };
+}
 
 describe('pending-operations module', () => {
   beforeEach(() => {
@@ -32,83 +48,136 @@ describe('pending-operations module', () => {
   });
 
   describe('trackMoveOperation', () => {
-    it('should track a pending move operation', async () => {
-      const nodeId = uniqueNodeId('test-node');
-      let resolveOperation: () => void;
-      const operation = new Promise<void>((resolve) => {
-        resolveOperation = resolve;
+    it('runs the move body synchronously and returns the tracked promise', async () => {
+      const nodeId = uniqueNodeId('run-node');
+      const ran = vi.fn();
+      const tracked = trackMoveOperation(nodeId, async () => {
+        ran();
       });
 
-      trackMoveOperation(nodeId, operation);
-
-      // Operation should be tracked
-      const pending = getPendingMoveOperation(nodeId);
-      expect(pending).toBeDefined();
-
-      // Clean up
-      resolveOperation!();
-      await vi.advanceTimersByTimeAsync(0);
+      expect(ran).toHaveBeenCalledTimes(1);
+      expect(tracked).toBeInstanceOf(Promise);
+      await tracked;
     });
 
-    it('should clean up tracked operations when complete', async () => {
+    it('stops tracking a move once it completes', async () => {
       const nodeId = uniqueNodeId('cleanup-node');
-      let resolveOperation: () => void;
-      const operation = new Promise<void>((resolve) => {
-        resolveOperation = resolve;
-      });
+      const move = trackControlledMove(nodeId);
+      move.ticket.coverWritesThrough(1);
+      expect(movesAheadOfWrite(nodeId, 2)).toBeDefined();
 
-      trackMoveOperation(nodeId, operation);
-      expect(getPendingMoveOperation(nodeId)).toBeDefined();
+      move.resolve();
+      await move.tracked;
 
-      resolveOperation!();
-      // Wait for finally() to execute
-      await vi.advanceTimersByTimeAsync(0);
-
-      expect(getPendingMoveOperation(nodeId)).toBeUndefined();
+      expect(movesAheadOfWrite(nodeId, 2)).toBeUndefined();
     });
 
-    it('should clean up tracked operations even on failure', async () => {
+    it('stops tracking a move even when it fails', async () => {
       const nodeId = uniqueNodeId('fail-node');
-      let rejectOperation: (error: Error) => void;
-      const operation = new Promise<void>((_, reject) => {
-        rejectOperation = reject;
-      });
+      const move = trackControlledMove(nodeId);
+      move.ticket.coverWritesThrough(1);
 
-      // Track the operation - the tracked promise catches errors internally
-      const trackedPromise = trackMoveOperation(nodeId, operation);
-      expect(getPendingMoveOperation(nodeId)).toBeDefined();
+      move.reject(new Error('Move failed'));
+      await move.tracked.catch(() => {});
 
-      rejectOperation!(new Error('Move failed'));
-
-      // The tracked promise should complete (even though the underlying operation failed)
-      // We need to catch the error since the tracked promise propagates it
-      await trackedPromise.catch(() => {});
-      await vi.advanceTimersByTimeAsync(0);
-
-      expect(getPendingMoveOperation(nodeId)).toBeUndefined();
+      expect(movesAheadOfWrite(nodeId, 2)).toBeUndefined();
     });
 
-    it('should return the tracked promise', async () => {
-      const nodeId = uniqueNodeId('return-node');
-      let resolveOperation: () => void;
-      const operation = new Promise<void>((resolve) => {
-        resolveOperation = resolve;
-      });
+    it("keeps a later move on the same node tracked when an earlier one completes", async () => {
+      const nodeId = uniqueNodeId('two-moves-node');
+      const first = trackControlledMove(nodeId);
+      const second = trackControlledMove(nodeId);
+      first.ticket.coverWritesThrough(1);
+      second.ticket.coverWritesThrough(2);
 
-      const trackedPromise = trackMoveOperation(nodeId, operation);
+      first.resolve();
+      await first.tracked;
 
-      // Should return a promise
-      expect(trackedPromise).toBeInstanceOf(Promise);
+      expect(movesAheadOfWrite(nodeId, 3)).toBeDefined();
+      second.resolve();
+      await second.tracked;
+      expect(movesAheadOfWrite(nodeId, 3)).toBeUndefined();
+    });
+  });
 
-      // Clean up
-      resolveOperation!();
+  describe('movesAheadOfWrite', () => {
+    it('returns undefined for a node with no moves', () => {
+      expect(movesAheadOfWrite('non-existent-node-xyz', 1)).toBeUndefined();
+    });
+
+    it('does not make a write wait on a move that has not flushed yet', async () => {
+      // That move will flush — and so wait on — the write itself.
+      const nodeId = uniqueNodeId('unflushed-node');
+      const move = trackControlledMove(nodeId);
+
+      expect(movesAheadOfWrite(nodeId, 10)).toBeUndefined();
+
+      move.resolve();
+      await move.tracked;
+    });
+
+    it('does not make a write wait on a move whose flush covers it', async () => {
+      const nodeId = uniqueNodeId('covered-node');
+      const move = trackControlledMove(nodeId);
+      move.ticket.coverWritesThrough(5);
+
+      expect(movesAheadOfWrite(nodeId, 4)).toBeUndefined();
+      expect(movesAheadOfWrite(nodeId, 5)).toBeUndefined();
+
+      move.resolve();
+      await move.tracked;
+    });
+
+    it('makes a write registered after the flush wait for the move', async () => {
+      const nodeId = uniqueNodeId('after-flush-node');
+      const move = trackControlledMove(nodeId);
+      move.ticket.coverWritesThrough(5);
+
+      const ahead = movesAheadOfWrite(nodeId, 6);
+      expect(ahead).toBeDefined();
+      const settled = vi.fn();
+      void ahead!.then(settled);
       await vi.advanceTimersByTimeAsync(0);
+      expect(settled).not.toHaveBeenCalled();
+
+      move.resolve();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(settled).toHaveBeenCalled();
+    });
+
+    it('waits only on the flushed move when a second one is still waiting to flush', async () => {
+      // Two quick Tabs, then a checkbox: the write follows the first move and
+      // is flushed by the second.
+      const nodeId = uniqueNodeId('tab-tab-node');
+      const first = trackControlledMove(nodeId);
+      first.ticket.coverWritesThrough(3);
+      const second = trackControlledMove(nodeId);
+
+      const settled = vi.fn();
+      void movesAheadOfWrite(nodeId, 7)!.then(settled);
+      first.resolve();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(settled).toHaveBeenCalled();
+
+      second.resolve();
+      await second.tracked;
+    });
+
+    it('settles even when the move it waits on fails', async () => {
+      const nodeId = uniqueNodeId('failed-ahead-node');
+      const move = trackControlledMove(nodeId);
+      move.ticket.coverWritesThrough(1);
+
+      const ahead = movesAheadOfWrite(nodeId, 2)!;
+      move.reject(new Error('Move failed'));
+      await move.tracked.catch(() => {});
+
+      await expect(ahead).resolves.toBeUndefined();
     });
   });
 
   describe('waitForPendingMoveOperations', () => {
     it('should resolve immediately if no pending operations', async () => {
-      // Generate unique node IDs to avoid interference from other tests
       const resolved = vi.fn();
       waitForPendingMoveOperations().then(resolved);
 
@@ -116,148 +185,61 @@ describe('pending-operations module', () => {
       expect(resolved).toHaveBeenCalled();
     });
 
-    it('should wait for all pending operations to complete', async () => {
-      const completionOrder: string[] = [];
+    it('waits for every pending move, including two on the same node', async () => {
       const nodeId1 = uniqueNodeId('wait-node-1');
       const nodeId2 = uniqueNodeId('wait-node-2');
-      let resolveOp1: () => void;
-      let resolveOp2: () => void;
-
-      const op1 = new Promise<void>((resolve) => {
-        resolveOp1 = () => {
-          completionOrder.push('op1');
-          resolve();
-        };
-      });
-
-      const op2 = new Promise<void>((resolve) => {
-        resolveOp2 = () => {
-          completionOrder.push('op2');
-          resolve();
-        };
-      });
-
-      trackMoveOperation(nodeId1, op1);
-      trackMoveOperation(nodeId2, op2);
+      const a = trackControlledMove(nodeId1);
+      const b = trackControlledMove(nodeId1);
+      const c = trackControlledMove(nodeId2);
 
       const waitComplete = vi.fn();
       waitForPendingMoveOperations().then(waitComplete);
 
-      // Neither operation has completed
+      a.resolve();
+      c.resolve();
       await vi.advanceTimersByTimeAsync(0);
       expect(waitComplete).not.toHaveBeenCalled();
 
-      // Complete first operation
-      resolveOp1!();
-      await vi.advanceTimersByTimeAsync(0);
-      expect(waitComplete).not.toHaveBeenCalled();
-
-      // Complete second operation
-      resolveOp2!();
+      b.resolve();
       await vi.advanceTimersByTimeAsync(0);
       expect(waitComplete).toHaveBeenCalled();
     });
-  });
 
-  describe('getPendingMoveOperation', () => {
-    it('should return undefined for non-tracked nodes', () => {
-      const result = getPendingMoveOperation('non-existent-node-xyz');
-      expect(result).toBeUndefined();
-    });
-
-    it('should return the pending promise for tracked nodes', async () => {
-      const nodeId = uniqueNodeId('get-pending-node');
-      let resolveOperation: () => void;
-      const operation = new Promise<void>((resolve) => {
-        resolveOperation = resolve;
+    it('does not make a move wait on itself', async () => {
+      const nodeId = uniqueNodeId('self-node');
+      const tracked = trackMoveOperation(nodeId, async () => {
+        await waitForPendingMoveOperations();
       });
 
-      trackMoveOperation(nodeId, operation);
-
-      const pending = getPendingMoveOperation(nodeId);
-      expect(pending).toBeDefined();
-      expect(pending).toBeInstanceOf(Promise);
-
-      // Clean up
-      resolveOperation!();
+      const done = vi.fn();
+      void tracked.then(done);
       await vi.advanceTimersByTimeAsync(0);
+      expect(done).toHaveBeenCalled();
     });
   });
 
   describe('Race condition prevention (real module)', () => {
-    // These tests require real timers because:
-    // 1. We're testing actual timing coordination between async operations
-    // 2. Fake timers don't properly simulate Promise.race/setTimeout interactions
-    //    when multiple promises are racing against real delays
-    // 3. The module uses real setTimeout internally, which needs real time to test
-
-    it('should ensure subsequent operations wait for pending moves', async () => {
-      vi.useRealTimers();
-      const nodeId = uniqueNodeId('race-node');
-      const executionOrder: string[] = [];
-
-      // First operation takes 50ms
-      const op1 = new Promise<void>((resolve) => {
-        setTimeout(() => {
-          executionOrder.push('op1-complete');
-          resolve();
-        }, 50);
-      });
-
-      // Track first operation
-      trackMoveOperation(nodeId, op1);
-
-      // A second operation that waits before starting
-      const op2 = (async () => {
-        await waitForPendingMoveOperations();
-        executionOrder.push('op2-started-after-wait');
-
-        await new Promise<void>((resolve) => {
-          setTimeout(() => {
-            executionOrder.push('op2-complete');
-            resolve();
-          }, 10);
-        });
-      })();
-
-      // Wait for both
-      await Promise.all([op1, op2]);
-
-      // op2 should NOT start until op1 completes
-      expect(executionOrder[0]).toBe('op1-complete');
-      expect(executionOrder[1]).toBe('op2-started-after-wait');
-      expect(executionOrder[2]).toBe('op2-complete');
-    });
-
     it('should handle the Enter+Tab+Shift+Tab scenario without interleaving indent/outdent operations', async () => {
       vi.useRealTimers();
-      const nodeId = uniqueNodeId('issue-662-node');
+      const nodeId = uniqueNodeId('indent-outdent-node');
       const operationLog: string[] = [];
 
-      // Simulate indent operation (takes 100ms to complete backend call)
-      const indentOperation = async () => {
+      // Fire indent (this is what happens in indentNode)
+      const indentPromise = trackMoveOperation(nodeId, async () => {
+        await waitForPendingMoveOperations();
         operationLog.push('indent-start');
         await new Promise((r) => setTimeout(r, 100));
         operationLog.push('indent-complete');
-      };
+      });
 
-      // Simulate outdent operation that must wait for indent
-      const outdentOperation = async () => {
-        // This is what outdentNode does - wait for pending moves first
+      // Fire outdent immediately (simulates rapid Tab then Shift+Tab)
+      const outdentPromise = trackMoveOperation(nodeId, async () => {
         await waitForPendingMoveOperations();
         operationLog.push('outdent-start');
         await new Promise((r) => setTimeout(r, 50));
         operationLog.push('outdent-complete');
-      };
+      });
 
-      // Fire indent (this is what happens in indentNode)
-      const indentPromise = indentOperation();
-      trackMoveOperation(nodeId, indentPromise);
-
-      // Fire outdent immediately (simulates rapid Tab then Shift+Tab)
-      const outdentPromise = outdentOperation();
-
-      // Wait for both
       await Promise.all([indentPromise, outdentPromise]);
 
       // Outdent should NOT start until indent completes
