@@ -87,17 +87,15 @@ describe('Node CRUD round-trip (HTTP → gRPC → SQLite)', () => {
 
   it('persists node properties through the round-trip', async () => {
     const id = crypto.randomUUID();
-    // Daemon stores custom properties under the node-type namespace key (e.g. "text")
-    const properties = { text: { priority: 'high', tags: ['a', 'b'], count: 42 } };
+    // Properties travel flat in both directions: the daemon stores them under the
+    // node-type bucket ("text"), and the transport flattens that bucket on read.
+    const properties = { priority: 'high', tags: ['a', 'b'], count: 42 };
 
     await h.adapter.createNode({ id, nodeType: 'text', content: 'with props', properties });
 
     const node = await h.adapter.getNode(id);
     expect(node).not.toBeNull();
-    const props = node!.properties as Record<string, Record<string, unknown>>;
-    expect(props.text.priority).toBe('high');
-    expect(props.text.tags).toEqual(['a', 'b']);
-    expect(props.text.count).toBe(42);
+    expect(node!.properties).toEqual(properties);
   });
 
   it('createNode returns the new node id string', async () => {
