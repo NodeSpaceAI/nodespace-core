@@ -1587,7 +1587,7 @@ export class SharedNodeStore {
       };
 
       // Apply update optimistically.
-      // A namespaced `properties` patch is deep-merged (so a partial write
+      // A flat `properties` patch is merged one level (so a partial write
       // doesn't drop sibling keys) and its type-specific fields are promoted to
       // the top level immediately — mirroring what the backend's
       // `node_to_typed_value` does on the round-trip response. Without this,
