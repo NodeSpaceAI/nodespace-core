@@ -2945,46 +2945,6 @@ impl SqliteStore {
         Ok(node.map(|n| n.properties))
     }
 
-    /// Build the `node_type` filter for `rename_schema_field`/`_in_tx`'s data
-    /// migration: `= ?1` for the common single-type case, `IN (…)` when
-    /// `type_id` has descendants.
-    ///
-    /// Under ADR-078's per-owner property-bucket model, a subtype instance
-    /// (e.g. an `issue` node where `issue extends task`) stores its inherited
-    /// `task` fields under the `task` bucket key — the SAME key a `task`
-    /// instance uses — not under `issue`. Renaming a `task` field must
-    /// therefore rekey every descendant instance's `task` bucket too, not
-    /// just rows whose own `node_type` literally equals `task`. `subtypes` is
-    /// `type_id`'s full descendant closure (including `type_id` itself, per
-    /// [`SqliteStore::get_subtype_closure`]/`_in_tx`'s own contract) — the
-    /// bucket key rewritten below stays `type_id` regardless of which row in
-    /// this set is being touched.
-    fn rename_field_node_type_filter_sql(subtypes: &[String]) -> (String, Vec<libsql::Value>) {
-        // `subtypes` always contains at least `type_id` itself (both
-        // `get_subtype_closure` and `_in_tx` include the seed in their base
-        // case) — an empty slice would mean that contract broke, not a case
-        // to migrate zero rows for silently. Caught here, in debug/test
-        // builds only, rather than made a hard `Result` error: this is an
-        // internal invariant between two store methods, not a condition a
-        // caller can trigger through any public input.
-        debug_assert!(
-            !subtypes.is_empty(),
-            "rename_field_node_type_filter_sql: descendant closure must include the seed type"
-        );
-        if subtypes.len() > 1 {
-            let placeholders: Vec<String> = (1..=subtypes.len()).map(|i| format!("?{i}")).collect();
-            let sql = format!("node_type IN ({})", placeholders.join(", "));
-            let binds = subtypes.iter().cloned().map(libsql::Value::Text).collect();
-            (sql, binds)
-        } else {
-            let value = subtypes.first().cloned().unwrap_or_default();
-            (
-                "node_type = ?1".to_string(),
-                vec![libsql::Value::Text(value)],
-            )
-        }
-    }
-
     /// Migrate a schema field rename's node property data (ADR-069 §1a/S3,
     /// closing F3), run against the caller's `tx` — this is what lets
     /// `NodeService::rename_schema_field`'s data migration and the
@@ -2997,6 +2957,19 @@ impl SqliteStore {
     /// the only production and test caller, and it always goes through
     /// `with_transaction`, so a standalone opens-its-own-transaction variant
     /// would have no caller.
+    ///
+    /// Under ADR-078's per-owner property-bucket model, a subtype instance
+    /// (e.g. an `issue` node where `issue extends task`) stores its inherited
+    /// `task` fields under the `task` bucket key — the SAME key a `task`
+    /// instance uses — not under `issue`. Renaming a `task` field must
+    /// therefore rekey every descendant instance's `task` bucket too, not
+    /// just rows whose own `node_type` literally equals `task`; the bucket
+    /// key rewritten stays `type_id` regardless of which row is touched.
+    ///
+    /// Every migrated row gets a `version` bump, same as any other write to
+    /// a node's properties: a client holding a pre-rename copy must fail its
+    /// optimistic-concurrency check rather than pass it against an unchanged
+    /// version and write the old field key back.
     pub(crate) async fn rename_schema_field_in_tx(
         tx: &Tx<'_>,
         type_id: &str,
@@ -3013,60 +2986,73 @@ impl SqliteStore {
             ));
         }
 
-        // See `rename_field_node_type_filter_sql`'s doc: every descendant
-        // instance's `type_id` bucket needs the same rewrite, not just rows
-        // whose own `node_type` literally equals `type_id`.
+        // `type_id`'s full descendant closure, including `type_id` itself
+        // (see the doc above). `MAX_EXTENDS_DEPTH` bounds chain depth, not
+        // branching factor, so the closure is chunked under SQLite's
+        // bound-parameter ceiling like this file's `id IN (...)` call sites.
         let subtypes = Self::get_subtype_closure_in_tx(tx, type_id).await?;
-        let (type_filter_sql, type_filter_binds) =
-            Self::rename_field_node_type_filter_sql(&subtypes);
-
-        let mut rows = tx
-            .conn()
-            .query(
-                &format!("SELECT id, properties FROM node WHERE {type_filter_sql}"),
-                type_filter_binds,
-            )
-            .await
-            .context("Failed to fetch nodes for field rename")?;
-
-        let mut nodes: Vec<(String, Value)> = Vec::new();
-        while let Some(row) = rows.next().await? {
-            let id: String = row.get(0)?;
-            let props_str: String = row.get(1)?;
-            let props: Value = serde_json::from_str(&props_str).unwrap_or(serde_json::json!({}));
-            nodes.push((id, props));
-        }
 
         let mut affected = 0u64;
         let now = Utc::now().to_rfc3339();
 
-        for (node_id, mut properties) in nodes {
-            let had_field = if let Some(ns_obj) = properties
-                .as_object_mut()
-                .and_then(|p| p.get_mut(type_id))
-                .and_then(|ns| ns.as_object_mut())
-            {
-                if let Some(value) = ns_obj.remove(from) {
-                    ns_obj.insert(to.to_string(), value);
-                    true
+        const TYPE_CHUNK: usize = 900;
+        for chunk in subtypes.chunks(TYPE_CHUNK) {
+            let placeholders: Vec<String> = (1..=chunk.len()).map(|i| format!("?{i}")).collect();
+            let params: Vec<libsql::Value> =
+                chunk.iter().cloned().map(libsql::Value::Text).collect();
+            let mut rows = tx
+                .conn()
+                .query(
+                    &format!(
+                        "SELECT id, properties FROM node WHERE node_type IN ({})",
+                        placeholders.join(", ")
+                    ),
+                    params,
+                )
+                .await
+                .context("Failed to fetch nodes for field rename")?;
+
+            // Drain before updating: the UPDATEs below run on the same
+            // transaction connection.
+            let mut nodes: Vec<(String, Value)> = Vec::new();
+            while let Some(row) = rows.next().await? {
+                let id: String = row.get(0)?;
+                let props_str: String = row.get(1)?;
+                let props: Value =
+                    serde_json::from_str(&props_str).unwrap_or(serde_json::json!({}));
+                nodes.push((id, props));
+            }
+            drop(rows);
+
+            for (node_id, mut properties) in nodes {
+                let had_field = if let Some(ns_obj) = properties
+                    .as_object_mut()
+                    .and_then(|p| p.get_mut(type_id))
+                    .and_then(|ns| ns.as_object_mut())
+                {
+                    if let Some(value) = ns_obj.remove(from) {
+                        ns_obj.insert(to.to_string(), value);
+                        true
+                    } else {
+                        false
+                    }
                 } else {
                     false
-                }
-            } else {
-                false
-            };
+                };
 
-            if had_field {
-                let props_json =
-                    serde_json::to_string(&properties).context("Failed to serialize properties")?;
-                tx.conn()
-                    .execute(
-                        "UPDATE node SET properties = ?1, modified_at = ?2 WHERE id = ?3",
-                        libsql::params![props_json, now.clone(), node_id],
-                    )
-                    .await
-                    .context("Failed to update node during field rename")?;
-                affected += 1;
+                if had_field {
+                    let props_json = serde_json::to_string(&properties)
+                        .context("Failed to serialize properties")?;
+                    tx.conn()
+                        .execute(
+                            "UPDATE node SET properties = ?1, modified_at = ?2, \
+                             version = version + 1 WHERE id = ?3",
+                            libsql::params![props_json, now.clone(), node_id],
+                        )
+                        .await
+                        .context("Failed to update node during field rename")?;
+                    affected += 1;
+                }
             }
         }
 
@@ -5464,6 +5450,130 @@ mod large_subtree_chunking_tests {
                 !store.node_exists(id).await?,
                 "descendant {id} survived the delete — a chunk's DELETE was skipped or its \
                  result silently dropped"
+            );
+        }
+        Ok(())
+    }
+
+    /// `rename_schema_field_in_tx` walks `type_id`'s whole descendant
+    /// closure; `MAX_EXTENDS_DEPTH` bounds depth, not fan-out, so the closure
+    /// is chunked like the id lists above. `MULTI_CHUNK_COUNT` sibling
+    /// subtypes plus the base make a closure of 1801 — three chunks — with
+    /// one instance per type, so an instance of a type in any chunk that was
+    /// dropped (or a chunk whose `affected` count was overwritten rather
+    /// than added) fails the assertions below.
+    #[tokio::test]
+    async fn rename_schema_field_in_tx_migrates_across_multiple_type_chunks() -> Result<()> {
+        let (store, _t) = bare_store().await?;
+        let now = Utc::now().to_rfc3339();
+        let base = "base_type";
+        let subtypes: Vec<String> = (0..MULTI_CHUNK_COUNT)
+            .map(|i| format!("sub_type_{i}"))
+            .collect();
+
+        // Schema nodes for the base and every subtype (the `extends` edges'
+        // foreign keys need them), then one `extends` edge per subtype.
+        let mut schema_ids = vec![base.to_string()];
+        schema_ids.extend(subtypes.iter().cloned());
+        let placeholders: Vec<String> = (1..=schema_ids.len())
+            .map(|i| format!("(?{i}, 'schema', '', '{{}}', 'active', 1, '{now}', '{now}')"))
+            .collect();
+        store
+            .write()
+            .await
+            .execute(
+                &format!(
+                    "INSERT INTO node (id, node_type, content, properties, lifecycle_status, version, created_at, modified_at) VALUES {}",
+                    placeholders.join(", ")
+                ),
+                schema_ids
+                    .iter()
+                    .cloned()
+                    .map(libsql::Value::Text)
+                    .collect::<Vec<_>>(),
+            )
+            .await?;
+        let placeholders: Vec<String> = (1..=subtypes.len())
+            .map(|i| {
+                format!(
+                    "(?{i}, '{base}', '{}', '{{}}', 1, '{now}', '{now}')",
+                    crate::models::schema::EXTENDS_RELATIONSHIP
+                )
+            })
+            .collect();
+        store
+            .write()
+            .await
+            .execute(
+                &format!(
+                    "INSERT INTO relationship (in_node, out_node, relationship_type, properties, version, created_at, modified_at) VALUES {}",
+                    placeholders.join(", ")
+                ),
+                subtypes
+                    .iter()
+                    .cloned()
+                    .map(libsql::Value::Text)
+                    .collect::<Vec<_>>(),
+            )
+            .await?;
+
+        // One instance per type in the closure, each carrying the renamed
+        // field under the BASE bucket (ADR-078 per-owner buckets).
+        let instance_ids: Vec<String> = schema_ids.iter().map(|t| format!("inst_{t}")).collect();
+        let placeholders: Vec<String> = (0..schema_ids.len())
+            .map(|i| {
+                format!(
+                    "(?{}, ?{}, '', '{{\"{base}\":{{\"old\":\"v\"}}}}', 'active', 1, '{now}', '{now}')",
+                    2 * i + 1,
+                    2 * i + 2
+                )
+            })
+            .collect();
+        let params: Vec<libsql::Value> = instance_ids
+            .iter()
+            .zip(&schema_ids)
+            .flat_map(|(id, ty)| {
+                [
+                    libsql::Value::Text(id.clone()),
+                    libsql::Value::Text(ty.clone()),
+                ]
+            })
+            .collect();
+        store
+            .write()
+            .await
+            .execute(
+                &format!(
+                    "INSERT INTO node (id, node_type, content, properties, lifecycle_status, version, created_at, modified_at) VALUES {}",
+                    placeholders.join(", ")
+                ),
+                params,
+            )
+            .await?;
+
+        let affected = store
+            .with_transaction(|tx| {
+                Box::pin(async move {
+                    SqliteStore::rename_schema_field_in_tx(tx, "base_type", "old", "new").await
+                })
+            })
+            .await?;
+        assert_eq!(affected as usize, MULTI_CHUNK_COUNT + 1);
+
+        let migrated = store.get_nodes_by_ids(&instance_ids).await?;
+        assert_eq!(migrated.len(), instance_ids.len());
+        for id in &instance_ids {
+            let node = &migrated[id];
+            let bucket = &node.properties[base];
+            assert_eq!(
+                bucket.get("new").and_then(|v| v.as_str()),
+                Some("v"),
+                "{id} was not migrated — its type's chunk was dropped: {bucket:?}"
+            );
+            assert!(bucket.get("old").is_none(), "{id} kept the old key");
+            assert_eq!(
+                node.version, 2,
+                "{id}'s version must be bumped so a stale OCC write against it fails"
             );
         }
         Ok(())
