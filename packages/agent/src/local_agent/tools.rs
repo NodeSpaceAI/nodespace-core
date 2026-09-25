@@ -4456,8 +4456,9 @@ mod tests {
     /// raw arguments straight through to `handle_create_schema`/
     /// `handle_update_schema`, which `serde_json::from_value` them into
     /// `CreateSchemaParams`/`UpdateSchemaParams` — no key normalization
-    /// anywhere in between. `SchemaField`, `SchemaRelationship`, `EdgeField`
-    /// and `EnumValue` are all `rename_all = "camelCase"` plus
+    /// anywhere in between. `SchemaField`, `SchemaRelationship`, `EdgeField`,
+    /// `FieldRename`, `FieldValueAddition` and `EnumValue` are all
+    /// `rename_all = "camelCase"` plus
     /// `deny_unknown_fields`, so a declared key in the wrong case is not
     /// ignored: the whole call is rejected as an unknown field. A model that
     /// faithfully follows the schema is the thing that breaks.
@@ -4488,6 +4489,12 @@ mod tests {
                 "add_relationships",
                 &SCHEMA_RELATIONSHIP_SHAPE,
             ),
+            (Tool::UpdateSchema, "rename_fields", &FIELD_RENAME_SHAPE),
+            (
+                Tool::UpdateSchema,
+                "add_field_values",
+                &FIELD_VALUE_ADDITION_SHAPE,
+            ),
         ];
         let mut visited = Vec::new();
         for (tool, key, shape) in surfaces {
@@ -4500,12 +4507,34 @@ mod tests {
             );
         }
 
+        // Fail closed at the top level too, the same way the walk does for a
+        // nested item schema: a new top-level item array with no row above
+        // would otherwise go unchecked.
+        for tool in [Tool::CreateSchema, Tool::UpdateSchema] {
+            let schema = tool.definition().parameters_schema;
+            let params = schema["properties"]
+                .as_object()
+                .unwrap_or_else(|| panic!("{tool:?} declares no parameters"));
+            for (key, declared) in params {
+                if declared["items"]["properties"].is_object() {
+                    assert!(
+                        surfaces.iter().any(|(t, k, _)| *t == tool && k == key),
+                        "{tool:?}.{key} declares item properties but has no row in this \
+                         test's `surfaces` table. Add ({tool:?}, {key:?}, &<shape>) so its \
+                         keys are checked against the struct its items deserialize into."
+                    );
+                }
+            }
+        }
+
         // A walk that silently stopped short would pass vacuously, so pin
         // that it reached the nested surfaces, not just the top-level ones.
         for expected in [
             "CreateSchema.fields[].coreValues[]",
             "CreateSchema.relationships[].edgeFields[]",
+            "UpdateSchema.add_fields[].coreValues[]",
             "UpdateSchema.add_relationships[].edgeFields[]",
+            "UpdateSchema.add_field_values[].values[]",
         ] {
             assert!(
                 visited.iter().any(|p| p == expected),
@@ -4522,7 +4551,10 @@ mod tests {
         /// attributable to the one key under test.
         base: fn() -> serde_json::Value,
         round_trip: fn(serde_json::Value) -> Result<(), serde_json::Error>,
-        /// Which shape each nested item-array key deserializes into.
+        /// Which shape each nested item-array key deserializes into. Every
+        /// nested array the struct has is listed, whether or not the tool
+        /// schemas declare its item properties yet, so declaring them later
+        /// is checked without touching this test.
         nested: &'static [(&'static str, &'static WireShape)],
     }
 
@@ -4564,6 +4596,20 @@ mod tests {
         base: || serde_json::json!({ "name": "probe", "type": "text" }),
         round_trip: round_trip::<nodespace_core::models::schema::EdgeField>,
         nested: &[("coreValues", &ENUM_VALUE_SHAPE)],
+    };
+
+    static FIELD_RENAME_SHAPE: WireShape = WireShape {
+        name: "FieldRename",
+        base: || serde_json::json!({ "from": "probe", "to": "probe_renamed" }),
+        round_trip: round_trip::<nodespace_core::schema::FieldRename>,
+        nested: &[],
+    };
+
+    static FIELD_VALUE_ADDITION_SHAPE: WireShape = WireShape {
+        name: "FieldValueAddition",
+        base: || serde_json::json!({ "field": "probe", "values": [] }),
+        round_trip: round_trip::<nodespace_core::schema::FieldValueAddition>,
+        nested: &[("values", &ENUM_VALUE_SHAPE)],
     };
 
     static ENUM_VALUE_SHAPE: WireShape = WireShape {
@@ -4619,19 +4665,15 @@ mod tests {
 
             let nested_items = &declared_key["items"];
             if nested_items["properties"].is_object() {
-                let (_, nested_shape) =
-                    shape
-                        .nested
-                        .iter()
-                        .find(|(k, _)| k == key)
-                        .unwrap_or_else(|| {
-                            panic!(
-                                "{path}.{key} declares item properties, but {name}'s WireShape \
-                             doesn't say which struct its items deserialize into. Add \
-                             ({key:?}, &<shape>) to its `nested` list.",
-                                name = shape.name,
-                            )
-                        });
+                let nested = shape.nested.iter().find(|(k, _)| k == key);
+                let Some((_, nested_shape)) = nested else {
+                    panic!(
+                        "{path}.{key} declares item properties, but {name}'s WireShape doesn't \
+                         say which struct its items deserialize into. Add ({key:?}, &<shape>) \
+                         to its `nested` list.",
+                        name = shape.name,
+                    );
+                };
                 assert_declared_item_keys_are_wire_keys(
                     &format!("{path}.{key}[]"),
                     nested_items,
