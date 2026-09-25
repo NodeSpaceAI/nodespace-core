@@ -472,22 +472,23 @@ pub async fn validate_play(
     let mut errors: Vec<PlayValidationError> = Vec::new();
 
     // Collect all referenced node_types and fetch schemas once
-    let mut schema_cache: HashMap<String, Option<SchemaNode>> = HashMap::new();
+    let mut schema_cache: SchemaCache = HashMap::new();
 
     for (rule_idx, rule) in rules.iter().enumerate() {
         // -- Validate trigger node_type --
         let trigger_node_type = trigger_node_type(rule);
         if let Some(nt) = &trigger_node_type {
             ensure_schema_cached(nt, node_service, &mut schema_cache).await;
-            if schema_cache
-                .get(nt.as_str())
-                .and_then(|s| s.as_ref())
-                .is_none()
-            {
-                errors.push(PlayValidationError::UnknownNodeType {
-                    node_type: nt.clone(),
-                    location: format!("rule[{}].trigger", rule_idx),
-                });
+            // Cheap membership check first so the `format!` below (and the
+            // `cached_schema` call that needs it) only runs on the error
+            // path — the common case, every trigger type resolving fine,
+            // previously paid for an allocation it never used.
+            if !matches!(schema_cache.get(nt.as_str()), Some(Ok(Some(_)))) {
+                let location = format!("rule[{}].trigger", rule_idx);
+                errors.push(
+                    cached_schema(&schema_cache, nt, &location)
+                        .expect_err("matches! above confirmed this entry is not Ok(Some(_))"),
+                );
             }
         }
 
@@ -690,26 +691,70 @@ fn trigger_node_type(rule: &ParsedRule) -> Option<String> {
     }
 }
 
+/// A node_type → schema lookup cache shared across one `validate_play` call.
+///
+/// Tri-state per entry, via `Result`:
+/// - `Ok(Some(schema))` — resolved; the type has a schema.
+/// - `Ok(None)` — the type genuinely has no schema node.
+/// - `Err(message)` — the lookup itself failed (e.g. a transient DB error).
+///   This is NOT evidence the type doesn't exist, and callers must not
+///   collapse it into `Ok(None)`'s `UnknownNodeType` verdict — see
+///   `cached_schema` and `PlayValidationError::SchemaResolutionFailed`.
+type SchemaCache = HashMap<String, Result<Option<SchemaNode>, String>>;
+
 /// Ensure a schema is in the cache, fetching from DB if not yet loaded.
+///
+/// Stores the lookup's `Result` verbatim rather than collapsing an `Err`
+/// into `None`: a lookup failure (transient DB error) and a genuinely
+/// missing schema are different facts, and conflating them here would make
+/// every consumer report a real store hiccup as "this node_type doesn't
+/// exist" (`UnknownNodeType`), wrongly blaming the Play author's schema
+/// reference for what is actually an infrastructure problem.
 async fn ensure_schema_cached(
     node_type: &str,
     node_service: &NodeService,
-    cache: &mut HashMap<String, Option<SchemaNode>>,
+    cache: &mut SchemaCache,
 ) {
     if cache.contains_key(node_type) {
         return;
     }
-    let schema = match node_service.get_schema_node(node_type).await {
-        Ok(s) => s,
-        Err(e) => {
-            debug!(
-                "Failed to query schema for '{}': {} — treating as missing",
-                node_type, e
-            );
-            None
-        }
-    };
-    cache.insert(node_type.to_string(), schema);
+    let result = node_service
+        .get_schema_node(node_type)
+        .await
+        .map_err(|e| e.to_string());
+    if let Err(e) = &result {
+        debug!(
+            "Failed to query schema for '{}': {} — recorded as a lookup failure, not a missing schema",
+            node_type, e
+        );
+    }
+    cache.insert(node_type.to_string(), result);
+}
+
+/// Look up `node_type` in `schema_cache` (already populated by
+/// `ensure_schema_cached`) and turn a miss into the right
+/// [`PlayValidationError`] — [`PlayValidationError::UnknownNodeType`] when
+/// the type genuinely has no schema, or
+/// [`PlayValidationError::SchemaResolutionFailed`] when the cache instead
+/// holds a lookup failure. See [`SchemaCache`] for why these must stay
+/// distinct.
+fn cached_schema<'a>(
+    schema_cache: &'a SchemaCache,
+    node_type: &str,
+    location: &str,
+) -> Result<&'a SchemaNode, PlayValidationError> {
+    match schema_cache.get(node_type) {
+        Some(Ok(Some(schema))) => Ok(schema),
+        Some(Err(e)) => Err(PlayValidationError::SchemaResolutionFailed {
+            node_type: node_type.to_string(),
+            error: e.clone(),
+            location: location.to_string(),
+        }),
+        Some(Ok(None)) | None => Err(PlayValidationError::UnknownNodeType {
+            node_type: node_type.to_string(),
+            location: location.to_string(),
+        }),
+    }
 }
 
 /// If `segment` is the declared reverse name of a relationship reaching
@@ -754,7 +799,7 @@ async fn resolve_reverse_segment(
     segment: &str,
     location: &str,
     node_service: &NodeService,
-    schema_cache: &mut HashMap<String, Option<SchemaNode>>,
+    schema_cache: &mut SchemaCache,
 ) -> Result<Option<String>, PlayValidationError> {
     let chain = node_service
         .resolve_type_chain(node_type)
@@ -801,7 +846,7 @@ async fn validate_schema_path(
     trigger_node_type: &str,
     location: &str,
     node_service: &NodeService,
-    schema_cache: &mut HashMap<String, Option<SchemaNode>>,
+    schema_cache: &mut SchemaCache,
     errors: &mut Vec<PlayValidationError>,
 ) {
     if segments.len() < 2 {
@@ -815,13 +860,21 @@ async fn validate_schema_path(
     for (i, segment) in segments[1..].iter().enumerate() {
         ensure_schema_cached(&current_type, node_service, schema_cache).await;
 
-        if schema_cache
-            .get(&current_type)
-            .and_then(|s| s.as_ref())
-            .is_none()
-        {
-            // Schema not found — can't validate further
-            // (UnknownNodeType error is already reported by trigger validation)
+        if let Err(e) = cached_schema(schema_cache, &current_type, location) {
+            // On the first hop, `current_type` is still the trigger's own
+            // node_type: that case is already reported (as either
+            // `UnknownNodeType` or `SchemaResolutionFailed`) by the
+            // trigger-node_type check at the top of `validate_play`, so
+            // pushing here would just duplicate it — stay silent, as
+            // before. From the second hop on, `current_type` is a
+            // relationship's `target_type` reached partway through this
+            // path; nothing else ever checks that hop's schema, so
+            // silently returning here (the pre-fix behavior) let a Play
+            // save with an entirely unvalidated tail segment. Surfaced for
+            // real from this point on.
+            if i > 0 {
+                errors.push(e);
+            }
             return;
         }
 
@@ -1019,7 +1072,7 @@ async fn validate_action(
     location: &str,
     trigger_node_type: Option<&str>,
     node_service: &NodeService,
-    schema_cache: &mut HashMap<String, Option<SchemaNode>>,
+    schema_cache: &mut SchemaCache,
     errors: &mut Vec<PlayValidationError>,
 ) {
     match action.action_type {
@@ -1037,11 +1090,8 @@ async fn validate_action(
             // update_node may optionally reference a node_type for type conversion
             if let Some(nt) = action.params.get("node_type").and_then(|v| v.as_str()) {
                 ensure_schema_cached(nt, node_service, schema_cache).await;
-                if schema_cache.get(nt).and_then(|s| s.as_ref()).is_none() {
-                    errors.push(PlayValidationError::UnknownNodeType {
-                        node_type: nt.to_string(),
-                        location: location.to_string(),
-                    });
+                if let Err(e) = cached_schema(schema_cache, nt, location) {
+                    errors.push(e);
                 }
             }
         }
@@ -1091,7 +1141,7 @@ async fn validate_create_node_action(
     params: &serde_json::Value,
     location: &str,
     node_service: &NodeService,
-    schema_cache: &mut HashMap<String, Option<SchemaNode>>,
+    schema_cache: &mut SchemaCache,
     errors: &mut Vec<PlayValidationError>,
 ) {
     // node_type is required
@@ -1117,13 +1167,10 @@ async fn validate_create_node_action(
 
     ensure_schema_cached(node_type, node_service, schema_cache).await;
 
-    let schema = match schema_cache.get(node_type).and_then(|s| s.as_ref()) {
-        Some(s) => s,
-        None => {
-            errors.push(PlayValidationError::UnknownNodeType {
-                node_type: node_type.to_string(),
-                location: location.to_string(),
-            });
+    let schema = match cached_schema(schema_cache, node_type, location) {
+        Ok(s) => s,
+        Err(e) => {
+            errors.push(e);
             return;
         }
     };
@@ -1157,7 +1204,7 @@ async fn validate_relationship_action(
     location: &str,
     trigger_node_type: Option<&str>,
     node_service: &NodeService,
-    schema_cache: &mut HashMap<String, Option<SchemaNode>>,
+    schema_cache: &mut SchemaCache,
     errors: &mut Vec<PlayValidationError>,
 ) {
     let rel_type = match params.get("relationship_type").and_then(|v| v.as_str()) {
@@ -1196,8 +1243,10 @@ async fn validate_relationship_action(
 
     ensure_schema_cached(nt, node_service, schema_cache).await;
 
-    if schema_cache.get(nt).and_then(|s| s.as_ref()).is_none() {
-        // Schema is None — we already flagged the missing node_type
+    if cached_schema(schema_cache, nt, location).is_err() {
+        // Missing or failed to resolve — already flagged by the trigger
+        // check at the top of `validate_play` (see `cached_schema`'s
+        // tri-state doc for why a lookup failure is included here too).
         return;
     }
 
@@ -3530,6 +3579,112 @@ mod tests {
                     .any(|p| p.contains("vi_epic")),
                 "should detect path traversal through vi_epic: {:?}",
                 affected[0].broken_paths
+            );
+        }
+
+        /// A schema lookup that genuinely fails (a transient DB error, not
+        /// "no schema for this type") must be reported as
+        /// `SchemaResolutionFailed`, never as `UnknownNodeType` — the two
+        /// mean very different things to a Play author, and collapsing them
+        /// would wrongly blame their type reference for what is actually a
+        /// store-level hiccup. The failure is real rather than injected:
+        /// dropping the `node` table makes `get_schema_node`'s SELECT fail
+        /// the way a genuine I/O or corruption error would (same technique
+        /// as `engine.rs`'s `a_failed_refresh_keeps_the_previous_cache_and_marks_it_dirty`).
+        #[tokio::test]
+        async fn test_trigger_schema_lookup_failure_is_not_reported_as_unknown_node_type() {
+            let (svc, _tmp) = create_test_service().await;
+            create_schema(&svc, "vp_flaky", 1, json!([])).await;
+
+            svc.store()
+                .write()
+                .await
+                .execute("DROP TABLE node", ())
+                .await
+                .expect("dropping the node table should succeed");
+
+            let rules = vec![make_rule("vp_flaky", vec![], vec![])];
+            let result = validate_play(&rules, &svc).await;
+            let errors = result.expect_err("a schema lookup failure must still fail validation");
+
+            assert!(
+                errors.iter().any(|e| matches!(
+                    e,
+                    PlayValidationError::SchemaResolutionFailed { node_type, .. }
+                        if node_type == "vp_flaky"
+                )),
+                "a transient lookup failure must surface as SchemaResolutionFailed: {:?}",
+                errors
+            );
+            assert!(
+                !errors
+                    .iter()
+                    .any(|e| matches!(e, PlayValidationError::UnknownNodeType { .. })),
+                "must not misreport a lookup failure as the type not existing: {:?}",
+                errors
+            );
+        }
+
+        /// A condition path that traverses a relationship whose declared
+        /// `target_type` has no real schema behind it (e.g. the target
+        /// type's schema node exists in name only, or was retired without
+        /// updating the relationship) must fail validation instead of
+        /// silently passing — before the fix, `validate_schema_path` only
+        /// checked the trigger's own node_type for this; a deeper hop's
+        /// missing schema returned early with no error at all, letting a
+        /// Play save with an entirely unvalidated tail segment.
+        ///
+        /// `vp_ghost` is a real node (so the relationship declaration's
+        /// `out_node` foreign key is satisfied) but not a `schema` node
+        /// (`node_type: "text"`), so `get_schema_node("vp_ghost")` genuinely
+        /// returns `Ok(None)` — reproducing a declared-but-schemaless
+        /// target_type without needing to break the database.
+        #[tokio::test]
+        async fn test_deeper_hop_missing_target_schema_is_reported() {
+            let (svc, _tmp) = create_test_service().await;
+
+            svc.create_node(Node::new_with_id(
+                "vp_ghost".to_string(),
+                "text".to_string(),
+                "not a schema".to_string(),
+                json!({}),
+            ))
+            .await
+            .expect("plain node creation should succeed");
+
+            create_schema(
+                &svc,
+                "vp_hub",
+                1,
+                json!([{
+                    "name": "linked",
+                    "targetType": "vp_ghost",
+                    "direction": "out",
+                    "cardinality": "one",
+                    "reverseName": "linked_from",
+                    "reverseCardinality": "many"
+                }]),
+            )
+            .await;
+
+            let rules = vec![make_rule(
+                "vp_hub",
+                vec!["node.linked.status == 'x'"],
+                vec![],
+            )];
+            let result = validate_play(&rules, &svc).await;
+            let errors = result.expect_err(
+                "a path through a relationship whose target has no real schema must fail \
+                 validation, not silently pass",
+            );
+            assert!(
+                errors.iter().any(|e| matches!(
+                    e,
+                    PlayValidationError::UnknownNodeType { node_type, .. }
+                        if node_type == "vp_ghost"
+                )),
+                "expected an UnknownNodeType for the missing deeper-hop target schema: {:?}",
+                errors
             );
         }
     }
