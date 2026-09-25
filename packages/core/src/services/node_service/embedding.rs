@@ -461,6 +461,21 @@ mod former_embedding_root_tests {
     }
 
     #[tokio::test]
+    async fn batch_move_children_across_trees_requeues_both_roots() {
+        const TARGET: &str = "22222222-0000-0000-0000-0000000000b1";
+        let (svc, _tmp) = two_trees().await;
+        text(&svc, TARGET, "", Some(ROOT_B)).await;
+        embed_fresh(&svc, &[ROOT_B]).await;
+
+        svc.move_children_to_parent(TARGET, &[(LINE.to_string(), version(&svc, LINE).await)])
+            .await
+            .unwrap();
+
+        assert!(is_stale(&svc, ROOT_A).await, "the tree LINE left");
+        assert!(is_stale(&svc, ROOT_B).await, "the tree LINE joined");
+    }
+
+    #[tokio::test]
     async fn deleting_the_has_child_edge_requeues_the_former_root() {
         let (svc, _tmp) = two_trees().await;
 
@@ -541,10 +556,13 @@ mod former_embedding_root_tests {
     /// left must be re-embedded, or its vector keeps the line's meaning.
     #[tokio::test]
     async fn outdent_then_file_into_restricted_collection_requeues_the_open_root() {
-        use crate::behaviors::{NodeBehavior, TextNodeBehavior};
         const RESTRICTED: &str = "22222222-0000-0000-0000-0000000000d1";
+        const STAYS: &str = "22222222-0000-0000-0000-0000000000c3";
 
         let (svc, _tmp) = two_trees().await;
+        text(&svc, STAYS, "STAYS_TEXT", Some(ROOT_A)).await;
+        embed_fresh(&svc, &[ROOT_A]).await;
+        assert!(aggregate(&svc, ROOT_A).await.contains("LINE_TEXT"));
         svc.create_node_with_parent(CreateNodeParams {
             id: Some(RESTRICTED.into()),
             node_type: "collection".into(),
@@ -565,15 +583,22 @@ mod former_embedding_root_tests {
             .await
             .expect("an outdented line is a root and may be filed");
 
+        // The staleness check guards the fix: aggregation reads the tree
+        // live, so only a queued root is ever rebuilt from it.
         assert!(is_stale(&svc, ROOT_A).await, "the open tree LINE left");
-        let root_a = svc.get_node(ROOT_A).await.unwrap().unwrap();
-        let rebuilt = TextNodeBehavior
-            .get_aggregated_content(&root_a, &svc)
-            .await
-            .unwrap_or_default();
+        let rebuilt = aggregate(&svc, ROOT_A).await;
         assert!(
-            !rebuilt.contains("LINE_TEXT"),
-            "the rebuilt aggregate excludes the filed line: {rebuilt}"
+            rebuilt.contains("STAYS_TEXT") && !rebuilt.contains("LINE_TEXT"),
+            "the rebuilt aggregate keeps the tree and excludes the filed line: {rebuilt}"
         );
+    }
+
+    async fn aggregate(svc: &NodeService, root_id: &str) -> String {
+        use crate::behaviors::{NodeBehavior, TextNodeBehavior};
+        let root = svc.get_node(root_id).await.unwrap().unwrap();
+        TextNodeBehavior
+            .get_aggregated_content(&root, svc)
+            .await
+            .expect("a text root aggregates its tree")
     }
 }

@@ -688,6 +688,7 @@ impl NodeService {
         // Pre-validation: fetch all children, check versions, apply move_node guards.
         // Version conflicts return immediately before any write touches the DB.
         let mut nodes = Vec::with_capacity(children.len());
+        let mut former_parents = Vec::with_capacity(children.len());
         for (node_id, expected_version) in children {
             let node = self
                 .get_node(node_id)
@@ -713,12 +714,12 @@ impl NodeService {
             // Root nodes have no has_child edge — the in-transaction DELETE would
             // return 0 changes and be misidentified as a version conflict. Reject
             // root nodes explicitly so callers get a clear InvalidParent error.
-            if self.is_root_node(node_id).await? {
+            let Some(former_parent) = self.get_parent(node_id).await?.map(|p| p.id) else {
                 return Err(NodeServiceError::hierarchy_violation(format!(
                     "Root node '{}' cannot be batch-moved (no parent edge to replace)",
                     node_id
                 )));
-            }
+            };
 
             // Cycle guard: the new parent must not be a descendant of any moved child.
             if self.is_descendant(node_id, new_parent_id).await? {
@@ -729,6 +730,7 @@ impl NodeService {
             }
 
             nodes.push(node);
+            former_parents.push(former_parent);
         }
 
         // Delegate the atomic edge-swap to the store. Version tokens are passed
@@ -753,6 +755,16 @@ impl NodeService {
                     NodeServiceError::query_failed(msg)
                 }
             })?;
+        // The new parent need not be in the children's tree, so each child
+        // may have left one.
+        for ((node_id, _), former_parent) in children.iter().zip(&former_parents) {
+            self.refresh_for_rootness(
+                node_id,
+                false,
+                Some(former_parent.as_str()).filter(|p| *p != new_parent_id),
+            )
+            .await;
+        }
 
         // ADR-069 §1b/S4, closing F9: the version-bump loop now runs in ONE
         // transaction, so a version conflict on child k rolls back bumps

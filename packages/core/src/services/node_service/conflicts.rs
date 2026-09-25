@@ -277,6 +277,10 @@ impl NodeService {
 
                     // Re-pointing can hand the survivor the loser's parent edge,
                     // changing whether it is a root — so its title follows.
+                    // Re-pointing only adds edges to the survivor and never
+                    // removes its own parent, so it has no former parent. The
+                    // loser's tree loses the loser, which is a delete, not a
+                    // move, and this refresh does not cover it.
                     let survivor_is_root =
                         crate::db::SqliteStore::get_parent_id_in_tx(ns_tx.store_tx(), &survivor_id)
                             .await
