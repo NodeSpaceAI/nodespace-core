@@ -9121,6 +9121,179 @@ mod tests {
         );
     }
 
+    /// `rebucket_and_validate` mutates `updated.properties` whenever the type
+    /// has `extends`-chain fields, regardless of whether this particular
+    /// update touched properties at all — so `bulk_update` must always
+    /// re-persist the (possibly rebucketed) value, not only when the
+    /// caller's `NodeUpdate` included `properties`. Before this was fixed,
+    /// a content-only update left the in-memory rebucket unpersisted (the
+    /// store column was skipped via `COALESCE`) while still emitting the
+    /// mutated node in the `NodeUpdated` event — storage and event payload
+    /// would disagree.
+    #[tokio::test]
+    async fn bulk_update_self_heals_a_stale_wrong_bucket_even_on_a_content_only_change() {
+        use crate::services::{CreateNodeParams, InsertPositionOwned};
+
+        let (service, _temp) = create_test_service().await;
+        let service = Arc::new(service);
+
+        crate::schema::handle_create_schema(
+            &service,
+            json!({
+                "name": "Ticket",
+                "fields": [
+                    { "name": "priority", "type": "string", "protection": "user", "indexed": false }
+                ]
+            }),
+        )
+        .await
+        .expect("ticket schema creation failed");
+
+        crate::schema::handle_create_schema(
+            &service,
+            json!({
+                "name": "Bug",
+                "extends": "ticket",
+                "fields": [
+                    { "name": "severity", "type": "string", "protection": "user", "indexed": false }
+                ]
+            }),
+        )
+        .await
+        .expect("bug schema creation failed");
+
+        let bug_id = service
+            .create_node_with_parent(CreateNodeParams {
+                id: None,
+                node_type: "bug".to_string(),
+                content: "A bug".to_string(),
+                parent_id: None,
+                position: InsertPositionOwned::End,
+                properties: json!({ "priority": "high", "severity": "critical" }),
+                lifecycle_status: None,
+            })
+            .await
+            .unwrap();
+
+        // Corrupt storage directly to simulate stale, wrongly-bucketed data
+        // (bypassing NodeService's own validation/bucketing) — standing in
+        // for however such a row could really exist, e.g. written before
+        // this fix shipped.
+        service
+            .store
+            .update_node(
+                &bug_id,
+                NodeUpdate {
+                    properties: Some(
+                        json!({ "bug": { "priority": "high", "severity": "critical" } }),
+                    ),
+                    ..Default::default()
+                },
+                None,
+            )
+            .await
+            .unwrap();
+
+        // Content-only — the `NodeUpdate` carries no `properties` at all.
+        service
+            .bulk_update(vec![(
+                bug_id.clone(),
+                NodeUpdate::new().with_content("An updated bug".to_string()),
+            )])
+            .await
+            .unwrap();
+
+        let updated = service.get_node(&bug_id).await.unwrap().unwrap();
+        assert_eq!(updated.content, "An updated bug");
+        assert_eq!(
+            updated.properties,
+            json!({
+                "ticket": { "priority": "high" },
+                "bug": { "severity": "critical" },
+            }),
+            "a content-only bulk_update must still self-heal a stale wrong-bucket layout, \
+             matching the single-node update paths: {:?}",
+            updated.properties
+        );
+    }
+
+    /// `bulk_update` now passes `node_type_changed` to `rebucket_and_validate`
+    /// (rather than always `false`), matching every single-node update path
+    /// (`crud.rs`'s `update_node_unchecked` et al.): a type change into an
+    /// `extends`-chain type must default the new type's missing fields
+    /// before validating, or a required-with-default inherited field the
+    /// node never had reads as missing instead of taking its default.
+    #[tokio::test]
+    async fn bulk_update_applies_the_new_types_defaults_on_a_node_type_change() {
+        let (service, _temp) = create_test_service().await;
+        let service = Arc::new(service);
+
+        crate::schema::handle_create_schema(
+            &service,
+            json!({
+                "name": "Ticket",
+                "fields": [
+                    {
+                        "name": "priority",
+                        "type": "string",
+                        "protection": "user",
+                        "indexed": false,
+                        "default": "normal"
+                    }
+                ]
+            }),
+        )
+        .await
+        .expect("ticket schema creation failed");
+
+        crate::schema::handle_create_schema(
+            &service,
+            json!({
+                "name": "Bug",
+                "extends": "ticket",
+                "fields": [
+                    { "name": "severity", "type": "string", "protection": "user", "indexed": false }
+                ]
+            }),
+        )
+        .await
+        .expect("bug schema creation failed");
+
+        let node_id = service
+            .create_node(Node::new(
+                "text".to_string(),
+                "Just text".to_string(),
+                json!({}),
+            ))
+            .await
+            .unwrap();
+
+        service
+            .bulk_update(vec![(
+                node_id.clone(),
+                NodeUpdate {
+                    node_type: Some("bug".to_string()),
+                    ..Default::default()
+                },
+            )])
+            .await
+            .unwrap();
+
+        let updated = service.get_node(&node_id).await.unwrap().unwrap();
+        assert_eq!(updated.node_type, "bug");
+        assert_eq!(
+            updated
+                .properties
+                .get("ticket")
+                .and_then(|v| v.get("priority"))
+                .and_then(|v| v.as_str()),
+            Some("normal"),
+            "a node_type change via bulk_update must default the new type's missing inherited \
+             field, matching the single-node update paths: {:?}",
+            updated.properties
+        );
+    }
+
     // ========================================================================
     // build_node_tree_recursive guards.
     //

@@ -673,7 +673,9 @@ impl NodeService {
                 .ok_or_else(|| NodeServiceError::node_not_found(id))?;
 
             let mut updated = existing.clone();
+            let mut node_type_changed = false;
             if let Some(node_type) = &update.node_type {
+                node_type_changed = updated.node_type != *node_type;
                 updated.node_type = node_type.clone();
             }
             if let Some(content) = &update.content {
@@ -683,9 +685,15 @@ impl NodeService {
             // NOTE: Sibling ordering is handled via the has_child order field; bulk
             // updates don't reorder — use move_node.
 
-            let mut old_props_for_diff: Option<serde_json::Value> = None;
+            // Baseline for the property diff, captured unconditionally —
+            // not just when `update.properties` is `Some`. `rebucket_and_validate`
+            // below can move an inherited field between buckets even on a
+            // content-only/lifecycle-only update (self-healing a stale bucket
+            // layout on every write, same as the single-node update paths), so
+            // `updated.properties` may end up mutated either way.
+            let old_props = existing.properties.clone();
+
             if let Some(properties) = &update.properties {
-                old_props_for_diff = Some(updated.properties.clone());
                 if updated.node_type == "schema" {
                     // Schema nodes use a flat (non-namespaced) format — deep-merge as-is.
                     Self::deep_merge_namespaced_properties(
@@ -704,12 +712,14 @@ impl NodeService {
             // Validate the MERGED candidate (PROTECTED + USER-EXTENSIBLE rules),
             // re-bucketing by declaring owner across the `extends` chain
             // (ADR-078) before persisting — same sequence as the single-node
-            // update paths, via `rebucket_and_validate`. `changed_properties`
-            // is computed AFTER this (not from `old_props_for_diff` directly
-            // above) so it diffs against the properties that actually land in
-            // storage, not a pre-rebucket snapshot; for an unextended type
-            // `rebucket_and_validate` is a no-op reshuffle, so this changes
-            // nothing for the common case.
+            // update paths, via `rebucket_and_validate`, `node_type_changed`
+            // included so a type change defaults the new type's missing
+            // fields before validating (mirrors crud.rs's `update_node_unchecked`
+            // et al.). `changed_properties` is computed AFTER this (not from
+            // `old_props` directly above) so it diffs against the properties
+            // that actually land in storage, not a pre-rebucket snapshot; for
+            // an unextended type `rebucket_and_validate` is a no-op reshuffle,
+            // so this changes nothing for the common case.
             self.behaviors.validate_node(&updated).map_err(|e| {
                 NodeServiceError::bulk_operation_failed(format!(
                     "Failed to validate node {}: {}",
@@ -717,7 +727,7 @@ impl NodeService {
                 ))
             })?;
             if updated.node_type != "schema" {
-                self.rebucket_and_validate(&mut updated, false)
+                self.rebucket_and_validate(&mut updated, node_type_changed)
                     .await
                     .map_err(|e| {
                         NodeServiceError::bulk_operation_failed(format!(
@@ -727,22 +737,24 @@ impl NodeService {
                     })?;
             }
 
-            let changed_properties = match old_props_for_diff {
-                Some(old_props) => super::compute_property_changes(&old_props, &updated.properties),
-                None => Vec::new(),
-            };
+            let changed_properties =
+                super::compute_property_changes(&old_props, &updated.properties);
 
-            // Persist the caller's intent for type/content/title/lifecycle, but the
-            // MERGED value for properties (so the stored row matches single-update).
+            // Persist the caller's intent for type/content/title/lifecycle. Properties
+            // are always re-persisted with the current (possibly rebucketed) value —
+            // not just when the caller's update touched them — so a bucket move made
+            // above by `rebucket_and_validate` is never silently dropped from storage
+            // while still appearing in the `NodeUpdated` event below; the store's
+            // `COALESCE` only skips a column on a literal `None`; writing the current
+            // value back is a no-op for a genuinely untouched, unextended node's
+            // properties (same posture as the single-node update paths, which always
+            // send `Some(updated.properties.clone())`).
             merged_updates.push((
                 id.clone(),
                 crate::models::NodeUpdate {
                     node_type: update.node_type.clone(),
                     content: update.content.clone(),
-                    properties: update
-                        .properties
-                        .as_ref()
-                        .map(|_| updated.properties.clone()),
+                    properties: Some(updated.properties.clone()),
                     title: update.title.clone(),
                     lifecycle_status: update.lifecycle_status.clone(),
                 },
