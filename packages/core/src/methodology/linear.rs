@@ -26,7 +26,7 @@
 //! there is no `todo` value in NodeSpace, so `backlog` and `triage` both map
 //! to `open`.
 
-use crate::markdown::{NodeTemplate, SeedTier};
+use crate::methodology::skills::playbook_skill;
 use crate::methodology::{FieldValueExtension, MethodologyPlaybook, PlayStep, SchemaStep};
 use serde_json::json;
 
@@ -64,9 +64,9 @@ pub fn playbook() -> MethodologyPlaybook {
             blocker_gate(),
         ],
         skills: vec![
-            creating_an_issue(),
-            working_with_cycles(),
-            validation_rules(),
+            playbook_skill(include_str!("skills/linear/creating-an-issue.md")),
+            playbook_skill(include_str!("skills/linear/working-with-cycles.md")),
+            playbook_skill(include_str!("skills/linear/issue-validation-rules.md")),
         ],
     }
 }
@@ -444,203 +444,10 @@ fn blocker_gate() -> PlayStep {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Seeded skills
-// ---------------------------------------------------------------------------
-
-// Narrow and task-scoped, mirroring the built-in skills' own shape rather
-// than one broad "Linear methodology" skill.
-//
-// Retrieval (`skill_ops::find_skills`) is pure KNN cosine over skill ROOTS,
-// limit-capped, with the threshold at 0.0 — the cosine noise floor, not a
-// confidence cutoff (ADR-038 describes an 0.8 floor; the code deliberately
-// moved past that so the model judges confidence from the raw score). Two
-// consequences for anything seeded here:
-//
-//   - The markdown body is NOT indexed. Only the root's title and
-//     `description` are, so the description is the entire retrieval surface.
-//   - Nothing is filtered out; a weak description is out-RANKED. These
-//     compete directly with the 11 built-ins, so "Creating an Issue" loses to
-//     "Node Creation" on a query like "file a bug" unless its description is
-//     written in the words a request actually arrives in.
-//
-// These carry the cross-schema narrative no per-schema description can: how
-// an Issue relates to a Cycle, what rollover does, why a write was rejected.
-
-fn skill(title: &str, description: &str, markdown: &str) -> NodeTemplate {
-    NodeTemplate {
-        title: title.to_string(),
-        content: None,
-        markdown_content: markdown.to_string(),
-        root_node_type: "skill".to_string(),
-        root_properties: serde_json::json!({
-            "description": description,
-            "tool_whitelist": ["create_node", "update_node", "search_nodes", "get_node"],
-            "max_iterations": 3,
-        }),
-        child_node_type: None,
-        child_properties: None,
-        tier: SeedTier::Starter,
-    }
-}
-
-fn creating_an_issue() -> NodeTemplate {
-    skill(
-        "Creating an Issue",
-        "How to create an issue in a Linear-style workspace: when to use issue rather than \
-         task, the extended status and priority vocabularies, and point estimates.",
-        r#"# Creating an Issue
-
-`issue` extends `task`. Create an `issue` for tracked product or engineering
-work; a plain `task` is still right for a one-off to-do that is not part of the
-tracked workflow.
-
-An issue carries everything a task does — assignee, due date, blocking edges —
-plus the following.
-
-## Status
-
-`status` is `task`'s own field with extra values, not a separate field:
-
-| Value | Means | Reads as, to a task-scoped reader |
-|---|---|---|
-| `triage` | Not yet assessed | `open` |
-| `backlog` | Assessed, not scheduled | `open` |
-| `open` | Ready to pick up | `open` |
-| `in_progress` | Being worked | `in_progress` |
-| `in_review` | Work done, awaiting review | `in_progress` |
-| `done` | Complete | `done` |
-| `cancelled` | Abandoned | `cancelled` |
-
-The right-hand column matters: a query or Play written against `task` sees the
-mapped value, never the raw one. So a `task`-scoped report counting
-`in_progress` work includes issues sitting in `in_review`.
-
-## Priority
-
-`urgent` sits above `highest`; `none` means deliberately unprioritized, which
-is different from leaving the field unset.
-
-## Estimate
-
-Points on a modified-Fibonacci scale: 1, 2, 3, 5, 8. The gaps are the point —
-an 8 says "clearly large" rather than a precise wrong number. Leave it unset
-rather than guessing; the field is extensible if a team wants 13 or 21.
-
-## Sub-issues
-
-A sub-issue is just an issue nested under another in the outline. There is no
-field for it, and no special call — create the child and put it under the
-parent. Note the completion gate: a parent cannot be closed while a child is
-still open.
-
-## Labels and teams
-
-Collections, not fields. A label is a collection of issues; a team is a
-collection of people. Add membership rather than looking for a `labels` field.
-"#,
-    )
-}
-
-fn working_with_cycles() -> NodeTemplate {
-    skill(
-        "Working with Cycles",
-        "How cycles work in a Linear-style workspace: assigning work via the tasks \
-         relationship, the derived active/past state, and what the automatic cycle-creation \
-         and rollover Plays do.",
-        r#"# Working with Cycles
-
-A `cycle` is a time-boxed iteration — Linear's sprint equivalent.
-
-## Assigning work
-
-Work joins a cycle through the `tasks` relationship, not a property. Create the
-edge from the cycle to the task or issue; there is no `cycle_id` field to set.
-
-The relationship targets `task`, so plain tasks and issues can both be assigned.
-Reading `cycle.tasks` returns both.
-
-## There is no status field
-
-A cycle's state is derived by comparing its dates to today:
-
-- `start_date` in the future → upcoming
-- today between the dates → active
-- `end_date` in the past → over
-
-Do not look for a `status` property and do not add one. Storing it would mean
-two copies of the same truth, one of which would drift.
-
-## What runs automatically
-
-**Cycle creation.** On the day a cycle ends, its successor is created, starting
-the next day and running for `duration_days` — read off the ending cycle, so
-changing cadence means editing that field, not the Play.
-
-**Create the first cycle yourself.** This triggers on an existing cycle reaching
-its end date, so with no cycle in the graph nothing ever fires. Create one with
-a `start_date` and `end_date`; the automation takes over from there.
-
-**Rollover.** In the same run, the ending cycle's unfinished tasks move to the
-successor — added to the new cycle and removed from the old one, so a task
-belongs to exactly one cycle. Tasks whose status is `done` or `cancelled` stay
-in the ending cycle as its record of what it accomplished.
-
-Runs daily just after midnight, on whichever devices are online. If several are,
-they converge on the same result rather than duplicating it.
-
-## Estimate totals
-
-Not stored. Sum `estimate` across `cycle.tasks` when a total is wanted, rather
-than expecting a field.
-"#,
-    )
-}
-
-fn validation_rules() -> NodeTemplate {
-    skill(
-        "Issue Validation Rules",
-        "Why a status change on an issue was rejected: the sub-issue completion gate and the \
-         blocker gate, what each checks, and how to proceed when one fires.",
-        r#"# Issue Validation Rules
-
-Two rules can reject a status change outright. A rejection is the system
-working as configured — not a bug, and not something to retry unchanged.
-
-Both run synchronously, inside the transaction of the write they are checking,
-so a rejected change never partially lands.
-
-## Cannot close with open sub-issues
-
-Setting `status` to `done` is rejected while any child issue is not `done` or
-`cancelled`.
-
-To proceed, either close or cancel the children, or move them out from under
-this issue if they do not really belong to it.
-
-## Cannot start with an open blocker
-
-Setting `status` to `in_progress` is rejected while anything on `blocked_by` is
-not `done` or `cancelled`.
-
-To proceed, either finish the blocker, or remove the `blocks` edge if it no
-longer applies. Note this gate is specific to starting work — an issue can sit
-in `triage` or `backlog` behind a blocker quite legitimately.
-
-## If a rejection looks wrong
-
-Report it rather than working around it. Both rules are ordinary Plays the user
-can inspect, edit or disable, and both were installed as part of the methodology
-setup — so a rejection that seems incorrect is a question about their
-configuration, not something to route around by, say, writing the status through
-a different path.
-"#,
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::markdown::SeedTier;
 
     #[test]
     fn issue_extends_task_and_declares_only_estimate() {
