@@ -171,6 +171,82 @@ describe('outdentNode propagates root reparenting and sibling transfer', () => {
     ]);
   });
 
+  it('an in-flight CREATE is MOVEd to the new parent once it lands, before its siblings are moved under it', async () => {
+    addPersistedNode('grandparent', null, 1);
+    addPersistedNode('parent', 'grandparent', 1);
+    addUnpersistedFocusedNode('child', 'parent', 1);
+    addPersistedNode('after1', 'parent', 2);
+
+    // Start the CREATE and hold it mid-RPC: it has already read the OLD parent.
+    let releaseCreate!: () => void;
+    createNodeSpy.mockImplementation(
+      (input) => new Promise((resolve) => (releaseCreate = () => resolve(input.id ?? '')))
+    );
+    const firstFlush = sharedNodeStore.flushAllPendingSaves();
+    await vi.waitFor(() => expect(sharedNodeStore.isNodePersistenceExecuting('child')).toBe(true));
+    expect(createParentsFor('child')).toEqual(['parent']);
+
+    expect(await service.outdentNode('child')).toBe(true);
+    expect(structureTree.getChildren('child')).toEqual(['after1']);
+
+    // Nothing may be moved under 'child' before it exists in the backend
+    await Promise.resolve();
+    expect(moveNodeSpy).not.toHaveBeenCalled();
+
+    releaseCreate();
+    await firstFlush;
+    await settle();
+
+    // The node converges on the new parent even though its CREATE used the old one
+    expect(moveNodeSpy.mock.calls.map(([id, , parentId]) => [id, parentId])).toEqual([
+      ['child', 'grandparent'],
+      ['after1', 'child']
+    ]);
+  });
+
+  it('rolls back an outdent to root when the CREATE re-trigger is declined', async () => {
+    addPersistedNode('parent', null, 1);
+    addUnpersistedFocusedNode('child', 'parent', 1);
+    vi.spyOn(sharedNodeStore, 'setNode').mockReturnValue(false);
+
+    expect(await service.outdentNode('child')).toBe(false);
+
+    expect(structureTree.getParent('child')).toBe('parent');
+    expect(service.rootNodeIds).not.toContain('child');
+    expect(moveNodeSpy).not.toHaveBeenCalled();
+  });
+
+  it('a failed MOVE restores the node and its transferred siblings under the old parent, in order', async () => {
+    addPersistedNode('grandparent', null, 1);
+    addPersistedNode('parent', 'grandparent', 1);
+    addPersistedNode('child', 'parent', 1);
+    addPersistedNode('after1', 'parent', 2);
+    addPersistedNode('after2', 'parent', 3);
+    moveNodeSpy.mockRejectedValue(new Error('move rejected'));
+
+    expect(await service.outdentNode('child')).toBe(true);
+    expect(structureTree.getChildren('child')).toEqual(['after1', 'after2']);
+
+    await settle();
+
+    expect(structureTree.getParent('child')).toBe('parent');
+    expect(structureTree.getChildren('parent')).toEqual(['child', 'after1', 'after2']);
+    expect(structureTree.getChildren('child')).toEqual([]);
+  });
+
+  it('rolls back an indent of a root node when the CREATE re-trigger is declined', async () => {
+    // Empty text nodes initialize as unpersisted placeholders with a pending CREATE
+    service.initializeNodes([makeNode('first'), { ...makeNode('second'), content: '' }]);
+    expect(sharedNodeStore.isNodePersisted('second')).toBe(false);
+    vi.spyOn(sharedNodeStore, 'setNode').mockReturnValue(false);
+
+    expect(await service.indentNode('second')).toBe(false);
+
+    expect(structureTree.getParent('second')).toBeNull();
+    expect(structureTree.getChildren('first')).not.toContain('second');
+    expect(service.rootNodeIds).toContain('second');
+  });
+
   it('with no trailing siblings, issues no MOVE — the re-triggered CREATE carries the new parent', async () => {
     addPersistedNode('grandparent', null, 1);
     addPersistedNode('parent', 'grandparent', 1);

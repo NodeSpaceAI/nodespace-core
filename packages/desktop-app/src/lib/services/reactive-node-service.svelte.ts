@@ -743,15 +743,22 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     oldParentId: string,
     newParentId: string | null
   ): void {
+    // Rollback structure tree first (newParentId null = node had been moved to root), so the
+    // siblings restored below land back after it, in their original order
+    structureTree.moveInMemoryRelationship(newParentId, oldParentId, nodeId);
+
     // Restore main node UI state
     _uiState[nodeId] = originalUIState;
     _rootNodeIds = originalRootNodeIds;
     updateDescendantDepths(nodeId);
 
-    // Rollback sibling depths
+    // Rollback transferred siblings: back under the old parent, at their old depth
     for (const siblingId of siblingsBelow) {
       const sibling = sharedNodeStore.getNode(siblingId);
       if (sibling) {
+        if (structureTree.getParent(siblingId) === nodeId) {
+          structureTree.moveInMemoryRelationship(nodeId, oldParentId, siblingId);
+        }
         _uiState[siblingId] = {
           ..._uiState[siblingId],
           depth: (_uiState[oldParentId]?.depth || 0) + 1
@@ -759,9 +766,6 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
         updateDescendantDepths(siblingId);
       }
     }
-
-    // Rollback structure tree (newParentId null = node had been moved to root)
-    structureTree.moveInMemoryRelationship(newParentId, oldParentId, nodeId);
 
     events.hierarchyChanged();
   }
@@ -1040,9 +1044,10 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
         return false;
       }
     } else if (!isNodePersisted) {
-      // CREATE is in-flight: it reads structureTree.getParent(nodeId) at execution time, so the
-      // reparent above is enough. Clear the stale insertPosition (references a sibling under
-      // the OLD parent).
+      // CREATE is in-flight. It may or may not have read structureTree.getParent(nodeId) yet,
+      // so the move operation below MOVEs the node once the CREATE lands — idempotent if the
+      // CREATE already picked up the new parent. Clear the stale insertPosition (references a
+      // sibling under the OLD parent) in case the CREATE hasn't read it yet.
       log.debug(
         `[outdentNode] Node ${nodeId.substring(0, 8)} CREATE in-flight, updating structureTree for in-flight CREATE`
       );
@@ -1077,9 +1082,12 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
 
     events.hierarchyChanged();
 
-    // Unpersisted node with no siblings to transfer: its (re-)CREATE carries the correct
-    // parent, so there is nothing to move in the backend.
-    if (!isNodePersisted && siblingsBelow.length === 0) {
+    // Only a re-triggered CREATE is guaranteed to carry the new parent; a persisted node or an
+    // in-flight CREATE (which may already have read the old parent) needs an explicit MOVE.
+    const needsNodeMove = isNodePersisted || isOperationExecuting;
+
+    // Re-triggered CREATE and no siblings to transfer: nothing to move in the backend.
+    if (!needsNodeMove && siblingsBelow.length === 0) {
       return true;
     }
 
@@ -1105,9 +1113,9 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
           return;
         }
 
-        // A node that was unpersisted at outdent time has just been created (by the flush
-        // above) under the correct parent — only its siblings still need moving.
-        if (isNodePersisted) {
+        // A re-triggered CREATE has just landed (via the flush above) under the correct
+        // parent — only its siblings still need moving.
+        if (needsNodeMove) {
           // Now safe to move the node (with OCC)
           // When outdenting, insert after the old parent (so it appears right below it)
           // Backend returns updated node with new version
