@@ -87,6 +87,33 @@ impl RelationshipRecord {
     }
 }
 
+/// An optimistic-concurrency mismatch observed by a store write: `node_id`
+/// was expected at `expected` but is persisted at `actual`.
+///
+/// Store methods return it as `Ok(Err(VersionConflict))` rather than as an
+/// `anyhow` error (ADR-069 §2a: a version mismatch is an expected outcome, not
+/// a transaction failure), so the service maps it to
+/// `NodeServiceError::VersionConflict` by type — never by parsing message
+/// text — and carries the real versions through to the caller.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VersionConflict {
+    pub node_id: String,
+    pub expected: i64,
+    pub actual: i64,
+}
+
+impl std::fmt::Display for VersionConflict {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "version conflict on node '{}': expected {}, actual {}",
+            self.node_id, self.expected, self.actual
+        )
+    }
+}
+
+impl std::error::Error for VersionConflict {}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StoreOperation {
     Created,
@@ -663,7 +690,11 @@ mod tests {
                         .iter()
                         .map(|(id, ver)| (id.as_str(), *ver))
                         .collect();
-                    SqliteStore::move_children_to_parent_in_tx(tx, &new_parent_id, &refs).await
+                    // A conflict must fail the closure, not return `Ok`, or
+                    // `with_transaction` would commit the edges already swapped.
+                    SqliteStore::move_children_to_parent_in_tx(tx, &new_parent_id, &refs)
+                        .await?
+                        .map_err(anyhow::Error::new)
                 })
             })
             .await
@@ -2225,6 +2256,36 @@ mod tests {
         Ok(())
     }
 
+    /// A gated DELETE that removes nothing is only a version conflict when the
+    /// persisted version actually differs. A child at its expected version with
+    /// no `has_child` edge (a root) must fail as a plain error, not surface as a
+    /// conflict carrying equal expected and actual versions.
+    #[tokio::test]
+    async fn test_move_children_to_parent_store_root_child_is_not_a_conflict() -> Result<()> {
+        let (store, _temp) = create_test_store().await?;
+
+        let new_parent = Node::new("text".to_string(), "New Parent".to_string(), json!({}));
+        let new_parent_id = new_parent.id.clone();
+        store.create_node(new_parent, None, None).await?;
+
+        let root = Node::new("text".to_string(), "Root".to_string(), json!({}));
+        let root_id = root.id.clone();
+        store.create_node(root, None, None).await?;
+        let root_version = store.get_node(&root_id).await?.unwrap().version;
+
+        let err =
+            move_children_to_parent(&store, &new_parent_id, &[(root_id.as_str(), root_version)])
+                .await
+                .expect_err("a root child has no edge to replace");
+        assert!(
+            err.downcast_ref::<VersionConflict>().is_none(),
+            "a missing parent edge is not a version conflict, got: {err:#}"
+        );
+        assert_eq!(store.get_parent_id(&root_id).await?, None);
+
+        Ok(())
+    }
+
     // C3c: store-layer atomicity — exercises the in-transaction version check
     // that the service-level pre-validation cannot catch (concurrent version bump).
     #[tokio::test]
@@ -2264,15 +2325,18 @@ mod tests {
         )
         .await;
 
-        assert!(
-            result.is_err(),
-            "stale version should cause store-level failure"
-        );
-        let err_msg = result.unwrap_err().to_string();
-        assert!(
-            err_msg.contains("VERSION_CONFLICT"),
-            "error should contain VERSION_CONFLICT, got: {}",
-            err_msg
+        let err = result.expect_err("stale version should cause store-level failure");
+        let conflict = err
+            .downcast_ref::<VersionConflict>()
+            .unwrap_or_else(|| panic!("expected a typed VersionConflict, got: {err:#}"));
+        let child2_actual = store.get_node(&child2_id).await?.unwrap().version;
+        assert_eq!(
+            conflict,
+            &VersionConflict {
+                node_id: child2_id.clone(),
+                expected: stale_version,
+                actual: child2_actual,
+            }
         );
 
         // ALL-OR-NOTHING: child1 must NOT have moved (transaction was rolled back).

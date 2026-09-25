@@ -16,5 +16,5 @@ pub(crate) use sqlite_store::collection_not_root;
 pub(crate) use sqlite_store::tx::Tx;
 pub use sqlite_store::{
     ensure_sqlite_vec_registered, BulkNodeRow, RelationshipRecord, ResolvedEntity, SqliteStore,
-    StoreChange, StoreOperation,
+    StoreChange, StoreOperation, VersionConflict,
 };

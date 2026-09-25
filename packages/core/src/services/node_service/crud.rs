@@ -1935,19 +1935,8 @@ impl NodeService {
                 self.client_id.clone(),
             )
             .await
-            .map_err(|e| {
-                let msg = e.to_string();
-                // Parse version_conflict sentinel: "version_conflict:<id>:<expected>:<actual>"
-                if let Some(rest) = msg.strip_prefix("version_conflict:") {
-                    let parts: Vec<&str> = rest.splitn(3, ':').collect();
-                    if parts.len() == 3 {
-                        let exp: i64 = parts[1].parse().unwrap_or(expected_version);
-                        let act: i64 = parts[2].parse().unwrap_or(0);
-                        return NodeServiceError::version_conflict(node_id, exp, act);
-                    }
-                }
-                NodeServiceError::query_failed(msg)
-            })?;
+            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?
+            .map_err(|c| NodeServiceError::version_conflict(c.node_id, c.expected, c.actual))?;
 
         if !existed {
             return Ok(crate::models::DeleteResult {
