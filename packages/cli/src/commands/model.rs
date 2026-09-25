@@ -9,7 +9,7 @@ use anyhow::{Context, Result};
 use clap::{Args, Subcommand};
 use nodespace_daemon::nodespace::{
     EnsureModelReadyRequest, GetLocalStatusRequest, GetSystemRamRequest, ListModelsRequest,
-    RecommendedModelRequest,
+    ModelLoadProgressEvent, RecommendedModelRequest,
 };
 use serde_json::json;
 
@@ -19,7 +19,8 @@ use crate::LocalAgentClient;
 pub enum ModelAction {
     /// List models in the catalog and their download/load status.
     List,
-    /// Load a model (downloading first if needed); streams progress to stdout.
+    /// Load a model (downloading first if needed); streams progress to stdout
+    /// (with `--json`, prints a single document once the model is ready).
     Load(LoadArgs),
     /// Print the recommended model id for this machine's RAM.
     Recommended,
@@ -117,53 +118,64 @@ async fn load(client: &mut LocalAgentClient, args: LoadArgs, json: bool) -> Resu
         .context("EnsureModelReady RPC failed")?
         .into_inner();
 
-    let mut last_event = String::new();
     while let Some(event) = stream.message().await.context("model load stream error")? {
-        last_event = event.event_type.clone();
-        if json {
-            println!(
-                "{}",
-                serde_json::to_string(&json!({
-                    "event_type": event.event_type,
-                    "model_id": event.model_id,
-                    "message": event.message,
-                    "bytes_downloaded": event.bytes_downloaded,
-                    "bytes_total": event.bytes_total,
-                    "error_message": event.error_message,
-                    "engine_swapped": event.engine_swapped,
-                }))?
-            );
-        } else {
-            match event.event_type.as_str() {
-                "downloading" => {
-                    if let (Some(d), Some(t)) = (event.bytes_downloaded, event.bytes_total) {
-                        let pct = if t > 0 {
-                            d as f64 / t as f64 * 100.0
-                        } else {
-                            0.0
-                        };
-                        println!("downloading {model_id}: {pct:.0}%");
-                    } else {
-                        println!("downloading {model_id}...");
-                    }
-                }
-                "error" => {
-                    let msg = event.error_message.unwrap_or_default();
-                    anyhow::bail!("model load failed: {msg}");
-                }
-                other => {
-                    let detail = event.message.unwrap_or_default();
-                    println!("{other}: {detail}");
-                }
-            }
+        if let Some(line) = render_load_event(&event, &model_id, json)? {
+            println!("{line}");
+        }
+        if event.event_type == "ready" {
+            return Ok(());
         }
     }
 
-    if last_event != "ready" && last_event != "error" {
-        // Stream ended without an explicit terminal event — surface it.
-        eprintln!("warning: model load stream ended on '{last_event}'");
+    anyhow::bail!("model load stream for {model_id} ended before the model was ready")
+}
+
+/// Render one `EnsureModelReady` event as the line to print, if any.
+///
+/// With `--json` only the terminal `ready` event is rendered, so the command
+/// emits exactly one JSON document — the MCP passthrough returns stdout
+/// verbatim as a single structured tool result. An `error` event fails the
+/// command in both modes, so a failed load exits non-zero.
+fn render_load_event(
+    event: &ModelLoadProgressEvent,
+    model_id: &str,
+    json: bool,
+) -> Result<Option<String>> {
+    if event.event_type == "error" {
+        let msg = event.error_message.clone().unwrap_or_default();
+        anyhow::bail!("model load failed: {msg}");
     }
-    Ok(())
+
+    if json {
+        if event.event_type != "ready" {
+            return Ok(None);
+        }
+        let doc = json!({
+            "event_type": event.event_type,
+            "model_id": event.model_id,
+            "message": event.message,
+            "engine_swapped": event.engine_swapped,
+        });
+        return Ok(Some(serde_json::to_string(&doc)?));
+    }
+
+    let line = match (
+        event.event_type.as_str(),
+        event.bytes_downloaded,
+        event.bytes_total,
+    ) {
+        ("downloading", Some(d), Some(t)) => {
+            let pct = if t > 0 {
+                d as f64 / t as f64 * 100.0
+            } else {
+                0.0
+            };
+            format!("downloading {model_id}: {pct:.0}%")
+        }
+        ("downloading", _, _) => format!("downloading {model_id}..."),
+        (other, _, _) => format!("{other}: {}", event.message.as_deref().unwrap_or_default()),
+    };
+    Ok(Some(line))
 }
 
 /// Report what the daemon actually has loaded.
@@ -232,4 +244,60 @@ async fn recommended(client: &mut LocalAgentClient, json: bool) -> Result<()> {
         println!("{model_id}");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn event(event_type: &str) -> ModelLoadProgressEvent {
+        ModelLoadProgressEvent {
+            event_type: event_type.to_string(),
+            model_id: "m".to_string(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn json_mode_renders_only_the_ready_event() {
+        let phases = ["downloading", "verifying", "loading", "ready"];
+        let lines: Vec<String> = phases
+            .iter()
+            .filter_map(|p| render_load_event(&event(p), "m", true).unwrap())
+            .collect();
+
+        assert_eq!(lines.len(), 1, "--json must emit exactly one document");
+        let doc: serde_json::Value = serde_json::from_str(&lines[0]).unwrap();
+        assert_eq!(doc["event_type"], "ready");
+        assert_eq!(doc["model_id"], "m");
+    }
+
+    #[test]
+    fn error_event_fails_in_both_modes() {
+        let mut failed = event("error");
+        failed.error_message = Some("disk full".to_string());
+        for json in [true, false] {
+            let err = render_load_event(&failed, "m", json).unwrap_err();
+            assert!(err.to_string().contains("disk full"));
+        }
+    }
+
+    #[test]
+    fn human_mode_renders_every_phase() {
+        let mut downloading = event("downloading");
+        downloading.bytes_downloaded = Some(50);
+        downloading.bytes_total = Some(200);
+        assert_eq!(
+            render_load_event(&downloading, "m", false)
+                .unwrap()
+                .as_deref(),
+            Some("downloading m: 25%")
+        );
+        assert_eq!(
+            render_load_event(&event("loading"), "m", false)
+                .unwrap()
+                .as_deref(),
+            Some("loading: ")
+        );
+    }
 }
