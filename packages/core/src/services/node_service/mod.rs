@@ -568,6 +568,16 @@ fn flush_envelopes(
 /// itself applies one layer down.
 pub(crate) struct NodeServiceTx<'t> {
     store_tx: &'t Tx<'t>,
+    deferred_embedding_refreshes: Mutex<Vec<DeferredEmbeddingRefresh>>,
+}
+
+/// The embedding half of a rootness refresh made inside a transaction, run by
+/// [`NodeService::with_transaction`] after commit. See
+/// [`NodeService::refresh_for_rootness_in_tx`].
+struct DeferredEmbeddingRefresh {
+    node_id: String,
+    is_root: bool,
+    former_parent: Option<String>,
 }
 
 impl<'t> NodeServiceTx<'t> {
@@ -576,6 +586,23 @@ impl<'t> NodeServiceTx<'t> {
     /// opens its own transaction — see the type's own doc comment.
     pub(crate) fn store_tx(&self) -> &Tx<'t> {
         self.store_tx
+    }
+
+    /// Record a rootness change whose embedding refresh must wait for commit.
+    pub(crate) fn defer_embedding_refresh(
+        &self,
+        node_id: &str,
+        is_root: bool,
+        former_parent: Option<&str>,
+    ) {
+        self.deferred_embedding_refreshes
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(DeferredEmbeddingRefresh {
+                node_id: node_id.to_string(),
+                is_root,
+                former_parent: former_parent.map(str::to_string),
+            });
     }
 }
 
@@ -624,7 +651,7 @@ impl NodeService {
     {
         let batch_state = Arc::clone(&self.batch_state);
 
-        let result: Result<(T, BatchState), NodeServiceError> = self
+        let result: Result<(T, BatchState, Vec<DeferredEmbeddingRefresh>), NodeServiceError> = self
             .store
             .with_transaction(move |store_tx| {
                 Box::pin(async move {
@@ -657,8 +684,17 @@ impl NodeService {
                     }
                     let mut reset_guard = ResetOnDrop(&batch_state, false);
 
-                    let ns_tx = NodeServiceTx { store_tx };
+                    let ns_tx = NodeServiceTx {
+                        store_tx,
+                        deferred_embedding_refreshes: Mutex::new(Vec::new()),
+                    };
                     let inner_result = f(&ns_tx).await;
+                    let deferred = std::mem::take(
+                        &mut *ns_tx
+                            .deferred_embedding_refreshes
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner()),
+                    );
 
                     // Reset to `Immediate` — capturing the buffer — before
                     // this closure returns, so `self.store.with_transaction`
@@ -671,7 +707,7 @@ impl NodeService {
                     reset_guard.1 = true; // already reset above; skip the Drop's redundant reset
 
                     match inner_result {
-                        Ok(value) => Ok((value, prev)),
+                        Ok(value) => Ok((value, prev, deferred)),
                         Err(e) => Err(anyhow::anyhow!(NodeServiceTxError(e))),
                     }
                 })
@@ -693,8 +729,9 @@ impl NodeService {
         // this takes. This only decides what to do with the captured buffer:
         // flush in order on success, discard on failure, per ADR-069 §2 (an
         // event is a statement about committed state).
+        // The deferred embedding refreshes likewise run only after a commit.
         match result {
-            Ok((value, prev)) => {
+            Ok((value, prev, deferred)) => {
                 if let BatchState::Transactional(buf) = prev {
                     flush_envelopes(
                         buf,
@@ -702,6 +739,14 @@ impl NodeService {
                         &self.push_event_tx,
                         &self.push_excluded_origin,
                     );
+                }
+                for refresh in deferred {
+                    self.refresh_embedding_for_rootness(
+                        &refresh.node_id,
+                        refresh.is_root,
+                        refresh.former_parent.as_deref(),
+                    )
+                    .await;
                 }
                 Ok(value)
             }
@@ -3512,7 +3557,7 @@ mod tests {
                 )
                 .await
                 .unwrap();
-            svc.refresh_for_rootness(id, false).await;
+            svc.refresh_for_rootness(id, false, None).await;
         }
         let kept = |id: &'static str| {
             let svc = &svc;

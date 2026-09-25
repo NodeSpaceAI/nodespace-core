@@ -104,6 +104,31 @@ impl NodeService {
             .map_err(|e| NodeServiceError::query_failed(e.to_string()))
     }
 
+    /// Queue the embedding root of the tree `node_id` just left.
+    /// `former_parent` was its `has_child` parent before the write. That
+    /// parent's embedding root is the root whose aggregate held the node's
+    /// subtree. It is skipped when it is also the node's current root (a move
+    /// within one tree), which the caller has already queued.
+    #[cfg(feature = "nlp")]
+    pub(crate) async fn queue_former_embedding_root(&self, node_id: &str, former_parent: &str) {
+        let roots = tokio::try_join!(
+            self.get_embedding_root_id(former_parent),
+            self.get_embedding_root_id(node_id)
+        );
+        match roots {
+            Ok((former_root, current_root)) if former_root != current_root => {
+                self.queue_root_for_embedding(&former_root).await;
+            }
+            Ok(_) => {}
+            Err(e) => tracing::warn!(
+                node_id = %node_id,
+                former_parent = %former_parent,
+                error = %e,
+                "failed to resolve the former embedding root (not queued)"
+            ),
+        }
+    }
+
     /// Queue a node's root for embedding regeneration
     ///
     /// Finds the root of the given node and marks its embedding as stale.
@@ -308,5 +333,247 @@ impl NodeService {
                 waker.wake();
             }
         }
+    }
+}
+
+/// A node leaving a tree re-queues the tree it left, not only the one it
+/// joined. Each test gives the roots a fresh (non-stale) embedding first, so a
+/// stale marker afterwards can only come from the edge change under test.
+#[cfg(all(test, feature = "nlp"))]
+mod former_embedding_root_tests {
+    use crate::db::SqliteStore;
+    use crate::models::NewEmbedding;
+    use crate::services::error::NodeServiceError;
+    use crate::services::{CreateNodeParams, InsertPosition, InsertPositionOwned, NodeService};
+    use std::sync::Arc;
+    use tempfile::TempDir;
+
+    const ROOT_A: &str = "22222222-0000-0000-0000-00000000000a";
+    const ROOT_B: &str = "22222222-0000-0000-0000-00000000000b";
+    const LINE: &str = "22222222-0000-0000-0000-0000000000c1";
+
+    async fn service() -> (NodeService, TempDir) {
+        let tmp = TempDir::new().unwrap();
+        let mut store = Arc::new(SqliteStore::new(tmp.path().join("test.db")).await.unwrap());
+        let svc = NodeService::new(&mut store).await.unwrap();
+        (svc, tmp)
+    }
+
+    async fn text(svc: &NodeService, id: &str, content: &str, parent: Option<&str>) {
+        svc.create_node_with_parent(CreateNodeParams {
+            id: Some(id.into()),
+            node_type: "text".into(),
+            content: content.into(),
+            parent_id: parent.map(Into::into),
+            position: InsertPositionOwned::End,
+            properties: serde_json::json!({}),
+            lifecycle_status: None,
+        })
+        .await
+        .unwrap();
+    }
+
+    /// ROOT_A holds LINE; ROOT_B is a separate tree. Both roots start fresh.
+    async fn two_trees() -> (NodeService, TempDir) {
+        let (svc, tmp) = service().await;
+        text(&svc, ROOT_A, "Root A", None).await;
+        text(&svc, LINE, "LINE_TEXT", Some(ROOT_A)).await;
+        text(&svc, ROOT_B, "Root B", None).await;
+        embed_fresh(&svc, &[ROOT_A, ROOT_B]).await;
+        (svc, tmp)
+    }
+
+    async fn embed_fresh(svc: &NodeService, ids: &[&str]) {
+        for id in ids {
+            svc.upsert_embeddings(
+                id,
+                vec![NewEmbedding::single_chunk(*id, vec![0.5; 768], "h", 1, 1)],
+            )
+            .await
+            .unwrap();
+            assert!(!is_stale(svc, id).await, "{id} must start fresh");
+        }
+    }
+
+    async fn is_stale(svc: &NodeService, id: &str) -> bool {
+        svc.get_embeddings(id)
+            .await
+            .unwrap()
+            .iter()
+            .any(|e| e.stale)
+    }
+
+    async fn version(svc: &NodeService, id: &str) -> i64 {
+        svc.get_node(id).await.unwrap().unwrap().version
+    }
+
+    #[tokio::test]
+    async fn outdent_to_root_requeues_the_former_root() {
+        let (svc, _tmp) = two_trees().await;
+
+        svc.move_node(LINE, version(&svc, LINE).await, None, InsertPosition::End)
+            .await
+            .unwrap();
+
+        assert!(is_stale(&svc, ROOT_A).await, "the tree LINE left");
+        assert!(is_stale(&svc, LINE).await, "LINE, now a root");
+        assert!(!is_stale(&svc, ROOT_B).await, "an uninvolved tree");
+    }
+
+    #[tokio::test]
+    async fn unchecked_outdent_requeues_the_former_root() {
+        let (svc, _tmp) = two_trees().await;
+
+        svc.move_node_unchecked(LINE, None, InsertPosition::End)
+            .await
+            .unwrap();
+
+        assert!(is_stale(&svc, ROOT_A).await, "the tree LINE left");
+    }
+
+    #[tokio::test]
+    async fn reparent_across_trees_requeues_both_roots() {
+        let (svc, _tmp) = two_trees().await;
+
+        svc.move_node(
+            LINE,
+            version(&svc, LINE).await,
+            Some(ROOT_B),
+            InsertPosition::End,
+        )
+        .await
+        .unwrap();
+
+        assert!(is_stale(&svc, ROOT_A).await, "the tree LINE left");
+        assert!(is_stale(&svc, ROOT_B).await, "the tree LINE joined");
+    }
+
+    #[tokio::test]
+    async fn create_parent_edge_reparent_requeues_the_former_root() {
+        let (svc, _tmp) = two_trees().await;
+
+        svc.create_parent_edge(LINE, ROOT_B, InsertPosition::End)
+            .await
+            .unwrap();
+
+        assert!(is_stale(&svc, ROOT_A).await, "the tree LINE left");
+        assert!(is_stale(&svc, ROOT_B).await, "the tree LINE joined");
+    }
+
+    #[tokio::test]
+    async fn deleting_the_has_child_edge_requeues_the_former_root() {
+        let (svc, _tmp) = two_trees().await;
+
+        svc.delete_relationship(ROOT_A, "has_child", LINE)
+            .await
+            .unwrap();
+
+        assert!(is_stale(&svc, ROOT_A).await, "the tree LINE left");
+    }
+
+    #[tokio::test]
+    async fn tx_edge_delete_requeues_the_former_root_after_commit() {
+        let (svc, _tmp) = two_trees().await;
+
+        let inner = svc.clone();
+        svc.with_transaction(move |tx| {
+            Box::pin(async move {
+                inner
+                    .remove_relationship_in_tx(tx, ROOT_A, "has_child", LINE)
+                    .await
+            })
+        })
+        .await
+        .unwrap();
+
+        assert!(is_stale(&svc, ROOT_A).await, "the tree LINE left");
+    }
+
+    #[tokio::test]
+    async fn rolled_back_tx_edge_delete_queues_nothing() {
+        let (svc, _tmp) = two_trees().await;
+
+        let inner = svc.clone();
+        let result: Result<(), NodeServiceError> = svc
+            .with_transaction(move |tx| {
+                Box::pin(async move {
+                    inner
+                        .remove_relationship_in_tx(tx, ROOT_A, "has_child", LINE)
+                        .await?;
+                    Err(NodeServiceError::invalid_update("roll back"))
+                })
+            })
+            .await;
+
+        assert!(result.is_err());
+        assert!(!is_stale(&svc, ROOT_A).await, "nothing committed");
+        assert!(svc.get_embeddings(LINE).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_move_within_one_tree_queues_only_that_tree() {
+        const SIBLING: &str = "22222222-0000-0000-0000-0000000000c2";
+        let (svc, _tmp) = two_trees().await;
+        text(&svc, SIBLING, "Sibling", Some(ROOT_A)).await;
+        embed_fresh(&svc, &[ROOT_A]).await;
+
+        svc.move_node(
+            LINE,
+            version(&svc, LINE).await,
+            Some(SIBLING),
+            InsertPosition::End,
+        )
+        .await
+        .unwrap();
+
+        assert!(is_stale(&svc, ROOT_A).await, "the tree LINE moved within");
+        assert!(!is_stale(&svc, ROOT_B).await, "an uninvolved tree");
+        for id in [LINE, SIBLING] {
+            assert!(
+                svc.get_embeddings(id).await.unwrap().is_empty(),
+                "{id} is a child and is never queued"
+            );
+        }
+    }
+
+    /// ADR-059 §7 through a legitimate flow: outdenting a line makes it a root,
+    /// which may then be filed into a restricted collection. The open tree it
+    /// left must be re-embedded, or its vector keeps the line's meaning.
+    #[tokio::test]
+    async fn outdent_then_file_into_restricted_collection_requeues_the_open_root() {
+        use crate::behaviors::{NodeBehavior, TextNodeBehavior};
+        const RESTRICTED: &str = "22222222-0000-0000-0000-0000000000d1";
+
+        let (svc, _tmp) = two_trees().await;
+        svc.create_node_with_parent(CreateNodeParams {
+            id: Some(RESTRICTED.into()),
+            node_type: "collection".into(),
+            content: "Restricted".into(),
+            parent_id: None,
+            position: InsertPositionOwned::End,
+            properties: serde_json::json!({ "collection": { "restrictedToMembers": true } }),
+            lifecycle_status: None,
+        })
+        .await
+        .unwrap();
+
+        svc.move_node(LINE, version(&svc, LINE).await, None, InsertPosition::End)
+            .await
+            .unwrap();
+        svc.store()
+            .add_to_collection(LINE, RESTRICTED, &serde_json::json!({}))
+            .await
+            .expect("an outdented line is a root and may be filed");
+
+        assert!(is_stale(&svc, ROOT_A).await, "the open tree LINE left");
+        let root_a = svc.get_node(ROOT_A).await.unwrap().unwrap();
+        let rebuilt = TextNodeBehavior
+            .get_aggregated_content(&root_a, &svc)
+            .await
+            .unwrap_or_default();
+        assert!(
+            !rebuilt.contains("LINE_TEXT"),
+            "the rebuilt aggregate excludes the filed line: {rebuilt}"
+        );
     }
 }

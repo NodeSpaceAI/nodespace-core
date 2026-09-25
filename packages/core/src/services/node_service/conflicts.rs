@@ -283,7 +283,7 @@ impl NodeService {
                             .map_err(|e| NodeServiceError::query_failed(e.to_string()))?
                             .is_none();
                     service
-                        .refresh_for_rootness_in_tx(ns_tx, &survivor_id, survivor_is_root)
+                        .refresh_for_rootness_in_tx(ns_tx, &survivor_id, survivor_is_root, None)
                         .await?;
 
                     if let Some(conflict_id) = conflict_id {
