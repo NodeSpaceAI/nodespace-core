@@ -357,7 +357,7 @@ describe('TaskSchemaForm — field completion badge', () => {
 });
 
 describe('TaskSchemaForm — user-defined fields still render dynamically', () => {
-  it('renders a non-core schema field through SchemaFieldLeaf, keyed under properties.task', async () => {
+  it('renders a non-core schema field through SchemaFieldLeaf, read and written flat', async () => {
     const schema = realTaskSchema();
     schema.fields.push({
       name: 'sprint',
@@ -370,7 +370,7 @@ describe('TaskSchemaForm — user-defined fields still render dynamically', () =
     vi.spyOn(backendAdapter, 'getSchema').mockResolvedValue(schema as never);
     loadNodeRelationshipsView.mockResolvedValue({ nodeType: 'task', groups: [] });
     vi.spyOn(sharedNodeStore, 'getNode').mockReturnValue(
-      taskNode({ properties: { task: { sprint: 'Sprint 12' } } })
+      taskNode({ properties: { sprint: 'Sprint 12' } })
     );
 
     const { container } = render(TaskSchemaForm, { props: { nodeId: 'task-1' } });
@@ -383,8 +383,7 @@ describe('TaskSchemaForm — user-defined fields still render dynamically', () =
 
     expect(updateNodeSpy).toHaveBeenCalledTimes(1);
     const [, changes] = updateNodeSpy.mock.calls[0] as [string, Partial<Node>];
-    const persisted = changes.properties as { task: Record<string, unknown> };
-    expect(persisted.task.sprint).toBe('Sprint 13');
+    expect(changes.properties).toEqual({ sprint: 'Sprint 13' });
   });
 
   it('does not render a system-protected field as an editable control', async () => {

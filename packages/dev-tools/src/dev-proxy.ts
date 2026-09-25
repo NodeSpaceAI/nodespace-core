@@ -17,7 +17,7 @@ import {
   HTTP_ROUTE_PATTERNS,
   type InsertPosition,
 } from '../../desktop-app/src/lib/services/adapter-core.ts';
-import { flattenTypedFieldsFromStorage } from '../../desktop-app/src/lib/services/node-normalize.ts';
+import { storageNodeToApiFields } from '../../desktop-app/src/lib/services/node-normalize.ts';
 import { createNodeSpaceClients, createRunOnceGuard } from './grpc-client.ts';
 import { mapGrpcError } from './grpc-error-mapping.ts';
 
@@ -291,7 +291,6 @@ function nodeDataToApiNode(n: ProtoNodeData): Record<string, unknown> {
     nodeType: n.nodeType,
     content: n.content,
     parentId: n.parentId && n.parentId !== '' ? n.parentId : null,
-    properties,
     version: parseInt(n.version, 10),
     lifecycleStatus: n.lifecycleStatus,
     createdAt: n.createdAt,
@@ -305,18 +304,16 @@ function nodeDataToApiNode(n: ProtoNodeData): Record<string, unknown> {
     // null; an empty string passes through unchanged.
     title: n.title === undefined ? null : n.title,
     // The gRPC `properties` field above is always storage shape
-    // (`{"ai-chat": {...}}`) — this proxy has no access to the Rust
+    // (`{"person": {...}}`) — this proxy has no access to the Rust
     // `node_to_typed_value` that the Tauri IPC layer routes every node
-    // through to promote type-specific fields (ai-chat's provider/model,
-    // task's status/priority, ...) to the top level. Without this spread,
-    // every frontend `nodeTo*` converter — which trusts that promotion
-    // already happened (see `ai-chat-node.ts`'s doc comment) — reads those
-    // fields as `undefined` for any node fetched over this HTTP transport,
-    // even though the underlying data is intact. A daemon broadcast's
-    // resulting re-fetch (`browser-sync-service.ts`'s `fetchAndUpdateNode`)
-    // would then silently clobber a viewer's just-confirmed optimistic
-    // state with an "unset" snapshot of the very same version.
-    ...flattenTypedFieldsFromStorage(n.nodeType, properties)
+    // through to flatten `properties` and promote type-specific fields
+    // (ai-chat's provider/model, task's status/priority, ...) to the top
+    // level. Without this spread the frontend would receive a different
+    // shape over this transport than over Tauri: property forms would read
+    // empty fields, and the `nodeTo*` converters (which trust promotion
+    // already happened — see `ai-chat-node.ts`'s doc comment) would read
+    // typed fields as `undefined`.
+    ...storageNodeToApiFields(n.nodeType, properties)
   };
 }
 

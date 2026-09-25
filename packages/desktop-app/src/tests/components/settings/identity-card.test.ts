@@ -47,7 +47,7 @@ function personNode(overrides: Partial<Node> = {}): Node {
     createdAt: '2026-01-01T00:00:00Z',
     modifiedAt: '2026-01-01T00:00:00Z',
     version: 1,
-    properties: { person: { first_name: 'Alice', last_name: 'Example', email: 'alice@example.com' } },
+    properties: { first_name: 'Alice', last_name: 'Example', email: 'alice@example.com' },
     ...overrides
   } as Node;
 }
@@ -225,9 +225,7 @@ describe('IdentityCard', () => {
     // already committed an edit through sharedNodeStore.updateNode.
     vi.spyOn(sharedNodeStore, 'getNode').mockReturnValue(
       personNode({
-        properties: {
-          person: { first_name: 'Alicia', last_name: 'Updated', email: 'alicia@example.com' }
-        }
+        properties: { first_name: 'Alicia', last_name: 'Updated', email: 'alicia@example.com' }
       })
     );
 

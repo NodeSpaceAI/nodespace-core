@@ -1,8 +1,9 @@
 <!--
   PersonSchemaForm - Property form for person nodes
 
-  Provides direct editing of first_name/last_name/email fields stored in
-  properties.person.{first_name,last_name,email}. Display identity (the
+  Provides direct editing of the first_name/last_name/email properties, read
+  and written flat — the shape every transport delivers; the backend moves bare
+  keys into the type's storage bucket on write. Display identity (the
   inline outline row and node title) is composed by the person schema's
   title_template ("{first_name} {last_name}") — not synced into content
   here; person nodes are read-only inline, like other title_template-driven
@@ -72,13 +73,10 @@
   });
 
   const node = $derived(sharedNodeStore.getNode(nodeId));
-  const personProps = $derived(
-    (node?.properties?.['person'] as Record<string, unknown> | undefined) ?? {}
-  );
 
-  const firstName = $derived((personProps['first_name'] as string | undefined) ?? '');
-  const lastName = $derived((personProps['last_name'] as string | undefined) ?? '');
-  const email = $derived((personProps['email'] as string | undefined) ?? '');
+  const firstName = $derived((node?.properties?.first_name as string | undefined) ?? '');
+  const lastName = $derived((node?.properties?.last_name as string | undefined) ?? '');
+  const email = $derived((node?.properties?.email as string | undefined) ?? '');
 
   // Adopt-existing suggestion state (ADR-065). `duplicateMatch` is
   // the existing person the current email collides with, or null when there is
@@ -116,13 +114,9 @@
   // see updateTitlePreview below (ADR-077).
   function updateField(field: 'first_name' | 'last_name' | 'email', value: string) {
     if (!node) return;
-    const updatedProperties = {
-      ...node.properties,
-      person: { ...personProps, [field]: value }
-    };
     sharedNodeStore.updateNode(
       nodeId,
-      { properties: updatedProperties },
+      { properties: { ...node.properties, [field]: value } },
       { type: 'viewer', viewerId: 'person-schema-form' }
     );
   }

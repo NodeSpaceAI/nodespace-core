@@ -14,10 +14,8 @@
   filtered out of every list below: system-managed fields must never render
   as a user-editable control.
 
-  Values are read from node.properties[nodeType][field.name] when the type namespaces its
-  properties (core types with backend behavior), falling back to flat
-  node.properties[field.name] (user-defined schema types). Writes use the same precedence —
-  see schema-field-resolution.ts, where both shapes are resolved and unit-tested.
+  Values are read from and written to flat node.properties[field.name] — see
+  schema-field-resolution.ts.
 
   Shell chrome (Collapsible, trigger row, Relationships gate, NestedPropertyModal) is owned
   by TypedFormShell — this component supplies only the field grid.

@@ -330,7 +330,7 @@ describe('NavigationService - generateTabTitle (via resolveNodeTarget)', () => {
       content: '',
       title: '', // unresolved title_template ("{first_name} {last_name}" with both empty)
       version: 1,
-      properties: { person: { first_name: '', last_name: '' } },
+      properties: { first_name: '', last_name: '' },
       createdAt: Date.now().toString(),
       modifiedAt: Date.now().toString()
     };

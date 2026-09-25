@@ -83,7 +83,7 @@ function ticketNode(overrides: Partial<Node> = {}): Node {
     modifiedAt: '2026-01-01T00:00:00Z',
     version: 1,
     title: '',
-    properties: { ticket: { severity: '', subject: '' } },
+    properties: { severity: '', subject: '' },
     ...overrides
   } as Node;
 }
@@ -151,7 +151,7 @@ describe('GenericSchemaForm — title_template client-side preview (ADR-077), no
     sharedNodeStore.setNode(
       ticketNode({
         title: '',
-        properties: { ticket: { severity: 'p1', subject: '' } }
+        properties: { severity: 'p1', subject: '' }
       }),
       { type: 'database', reason: 'test-seed' },
       true
@@ -173,7 +173,7 @@ describe('GenericSchemaForm — title_template client-side preview (ADR-077), no
     sharedNodeStore.setNode(
       ticketNode({
         title: 'P0: Already Set',
-        properties: { ticket: { severity: 'P0', subject: 'Already Set' } }
+        properties: { severity: 'P0', subject: 'Already Set' }
       }),
       { type: 'database', reason: 'test-seed' },
       true
