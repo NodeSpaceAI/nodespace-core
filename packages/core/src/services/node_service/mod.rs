@@ -5533,64 +5533,161 @@ mod tests {
         );
     }
 
-    /// ADR-069 S4 regression test for F9: before this fix, the version-bump
-    /// loop that follows `move_children_to_parent`'s atomic edge swap was
-    /// NOT itself atomic — a failure bumping child k left children 0..k
-    /// bumped (and their `RelationshipUpdated` events already broadcast)
-    /// while k..N were neither, contradicting the method's own doc comment
-    /// ("If any child has a version mismatch the entire batch is rolled
-    /// back — nothing moves"), which covered only the edge swap. This
-    /// exercises the fix directly: run the same bump-loop body the
-    /// production method uses (`update_node_with_version_bump_in_tx` per
-    /// child) inside `NodeService::with_transaction`, inducing a failure
-    /// after the first child's bump has already run inside the closure, and
-    /// asserts that child's version reverts on rollback — proving the loop
-    /// is now one unit rather than N independent ones.
+    /// The edge swap and the version bumps of `move_children_to_parent` are
+    /// one unit of work. They used to commit in two transactions, so a
+    /// version conflict at the bump — a concurrent write landing between the
+    /// two commits — failed the call after the edges had already moved. This
+    /// composes the same two store/service steps the production method runs
+    /// inside one `with_transaction`, forces the bump to conflict, and asserts
+    /// the edge swap rolled back with it and no event escaped.
     #[tokio::test]
-    async fn test_move_children_to_parent_bump_loop_rolls_back_as_one_unit() {
+    async fn test_move_children_to_parent_bump_conflict_rolls_back_edge_swap() {
         let (service, _temp) = create_test_service().await;
 
-        let child1 = Node::new("text".to_string(), "Child 1".to_string(), json!({}));
-        let child1_id = service.create_node(child1).await.unwrap();
-        let child1_before = service.get_node(&child1_id).await.unwrap().unwrap();
-        let version_before = child1_before.version;
+        let old_parent = Node::new("text".to_string(), "Old Parent".to_string(), json!({}));
+        let old_parent_id = service.create_node(old_parent).await.unwrap();
+        let new_parent = Node::new("text".to_string(), "New Parent".to_string(), json!({}));
+        let new_parent_id = service.create_node(new_parent).await.unwrap();
+        let child_id = service
+            .create_node_with_parent(CreateNodeParams {
+                id: None,
+                node_type: "text".to_string(),
+                content: "Child".to_string(),
+                parent_id: Some(old_parent_id.clone()),
+                position: crate::services::InsertPositionOwned::End,
+                properties: json!({}),
+                lifecycle_status: None,
+            })
+            .await
+            .unwrap();
+        let version_before = service.get_node(&child_id).await.unwrap().unwrap().version;
+
+        let mut rx = service.subscribe_to_events();
 
         let service_for_tx = service.clone();
-        let child1_id_for_tx = child1_id.clone();
+        let child_id_for_tx = child_id.clone();
+        let new_parent_id_for_tx = new_parent_id.clone();
         let result: Result<(), NodeServiceError> = service
             .with_transaction(move |tx| {
                 let service = service_for_tx.clone();
-                let child1_id = child1_id_for_tx.clone();
+                let child_id = child_id_for_tx.clone();
+                let new_parent_id = new_parent_id_for_tx.clone();
                 Box::pin(async move {
-                    // First bump in the "loop" — succeeds, same as production.
-                    service
-                        .update_node_with_version_bump_in_tx(tx, &child1_id, version_before)
-                        .await?;
+                    crate::db::SqliteStore::move_children_to_parent_in_tx(
+                        tx.store_tx(),
+                        &new_parent_id,
+                        &[(child_id.as_str(), version_before)],
+                    )
+                    .await
+                    .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
 
-                    // Simulated failure on a later item in the same batch —
-                    // the exact shape F9 describes (bump k succeeds, k+1
-                    // fails). Must roll back the bump above too.
-                    Err(NodeServiceError::version_conflict(
-                        "child2-placeholder",
-                        0,
-                        1,
-                    ))?;
+                    // A concurrent writer bumped the child after the edge swap.
+                    service
+                        .update_node_with_version_bump_in_tx(tx, &child_id, version_before - 1)
+                        .await?;
                     Ok(())
                 })
             })
             .await;
 
         assert!(
-            result.is_err(),
-            "the induced mid-loop failure must propagate"
+            matches!(result, Err(NodeServiceError::VersionConflict { .. })),
+            "the forced bump conflict must propagate, got {:?}",
+            result
         );
-
-        let child1_after = service.get_node(&child1_id).await.unwrap().unwrap();
         assert_eq!(
-            child1_after.version, version_before,
-            "child1's bump must have rolled back along with the rest of the batch, \
-             not persisted just because it ran first in the loop"
+            service.get_parent(&child_id).await.unwrap().map(|p| p.id),
+            Some(old_parent_id),
+            "the edge swap must roll back with the failed bump"
         );
+        assert_eq!(
+            service.get_node(&child_id).await.unwrap().unwrap().version,
+            version_before
+        );
+        assert!(
+            rx.try_recv().is_err(),
+            "no event may escape a rolled-back transaction"
+        );
+    }
+
+    /// Race a real concurrent write against `move_children_to_parent` on the
+    /// same child and version: exactly one wins, and the backend must always
+    /// agree with what the call reported. A failed move leaves the child
+    /// under its old parent with no `RelationshipUpdated`; a successful one
+    /// leaves it under the new parent with one.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn test_move_children_to_parent_result_matches_backend_under_concurrent_write() {
+        let (service, _temp) = create_test_service().await;
+
+        let old_parent = Node::new("text".to_string(), "Old Parent".to_string(), json!({}));
+        let old_parent_id = service.create_node(old_parent).await.unwrap();
+
+        for i in 0..50 {
+            let new_parent = Node::new("text".to_string(), format!("New Parent {i}"), json!({}));
+            let new_parent_id = service.create_node(new_parent).await.unwrap();
+            let child_id = service
+                .create_node_with_parent(CreateNodeParams {
+                    id: None,
+                    node_type: "text".to_string(),
+                    content: format!("Child {i}"),
+                    parent_id: Some(old_parent_id.clone()),
+                    position: crate::services::InsertPositionOwned::End,
+                    properties: json!({}),
+                    lifecycle_status: None,
+                })
+                .await
+                .unwrap();
+            let version = service.get_node(&child_id).await.unwrap().unwrap().version;
+
+            let mut rx = service.subscribe_to_events();
+            let children = vec![(child_id.clone(), version)];
+            let mover = service.clone();
+            let move_target = new_parent_id.clone();
+            let move_task = tokio::spawn(async move {
+                mover.move_children_to_parent(&move_target, &children).await
+            });
+            let writer = service.clone();
+            let write_id = child_id.clone();
+            let write_task = tokio::spawn(async move {
+                writer
+                    .update_node(
+                        &write_id,
+                        version,
+                        NodeUpdate {
+                            content: Some(format!("edited {i}")),
+                            ..Default::default()
+                        },
+                    )
+                    .await
+            });
+            let moved = move_task.await.unwrap();
+            let written = write_task.await.unwrap();
+            assert!(
+                moved.is_ok() != written.is_ok(),
+                "exactly one writer holding version {version} may win (iteration {i})"
+            );
+
+            let parent = service.get_parent(&child_id).await.unwrap().map(|p| p.id);
+            let mut relationship_events = 0;
+            while let Ok(envelope) = rx.try_recv() {
+                if let DomainEvent::RelationshipUpdated { relationship } = envelope.event {
+                    if relationship.id == format!("relationship:{new_parent_id}:{child_id}") {
+                        relationship_events += 1;
+                    }
+                }
+            }
+            if moved.is_ok() {
+                assert_eq!(parent.as_deref(), Some(new_parent_id.as_str()));
+                assert_eq!(relationship_events, 1);
+            } else {
+                assert_eq!(
+                    parent.as_deref(),
+                    Some(old_parent_id.as_str()),
+                    "a failed move must leave the child where it was (iteration {i})"
+                );
+                assert_eq!(relationship_events, 0);
+            }
+        }
     }
 
     #[tokio::test]
