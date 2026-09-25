@@ -1935,8 +1935,7 @@ impl NodeService {
                 self.client_id.clone(),
             )
             .await
-            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?
-            .map_err(|c| NodeServiceError::version_conflict(c.node_id, c.expected, c.actual))?;
+            .map_err(|e| NodeServiceError::query_failed(e.to_string()))??;
 
         if !existed {
             return Ok(crate::models::DeleteResult {

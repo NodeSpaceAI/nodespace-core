@@ -2281,6 +2281,10 @@ mod tests {
             err.downcast_ref::<VersionConflict>().is_none(),
             "a missing parent edge is not a version conflict, got: {err:#}"
         );
+        assert!(
+            err.to_string().contains("has no parent edge to replace"),
+            "expected the missing-parent-edge error, got: {err:#}"
+        );
         assert_eq!(store.get_parent_id(&root_id).await?, None);
 
         Ok(())

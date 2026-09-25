@@ -173,6 +173,12 @@ pub enum NodeServiceError {
     },
 }
 
+impl From<crate::db::VersionConflict> for NodeServiceError {
+    fn from(c: crate::db::VersionConflict) -> Self {
+        Self::version_conflict(c.node_id, c.expected, c.actual)
+    }
+}
+
 impl NodeServiceError {
     /// Create a node not found error
     pub fn node_not_found(id: impl Into<String>) -> Self {

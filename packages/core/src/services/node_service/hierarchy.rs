@@ -752,18 +752,16 @@ impl NodeService {
                         .iter()
                         .map(|(id, ver)| (id.as_str(), *ver))
                         .collect();
+                    // The second `?` turns a `VersionConflict` into this
+                    // closure's `Err`, which is what rolls back the edges
+                    // already swapped for earlier children.
                     let orders = crate::db::SqliteStore::move_children_to_parent_in_tx(
                         tx.store_tx(),
                         &new_parent_id,
                         &children_with_versions,
                     )
                     .await
-                    .map_err(|e| NodeServiceError::query_failed(e.to_string()))?
-                    // Returning the conflict as `Err` from this closure is what
-                    // rolls back the edges already swapped for earlier children.
-                    .map_err(|c| {
-                        NodeServiceError::version_conflict(c.node_id, c.expected, c.actual)
-                    })?;
+                    .map_err(|e| NodeServiceError::query_failed(e.to_string()))??;
 
                     let mut updated = Vec::with_capacity(nodes.len());
                     for ((node, order), former_parent) in
