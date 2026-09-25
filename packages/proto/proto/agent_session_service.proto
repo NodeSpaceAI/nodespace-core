@@ -67,11 +67,20 @@ message StreamOutputRequest {
 // distinguish them at this layer. The bytes may contain partial UTF-8 sequences
 // and terminal escape codes; consumers are expected to render them the way a
 // terminal would.
+//
+// A chunk with a non-zero `dropped_chunks` is a loss marker rather than
+// output: this subscriber fell behind the daemon's output buffer and that many
+// chunks were discarded before it could read them. Its `data` is empty.
+// Consumers should surface the gap (e.g. an "output truncated" notice) instead
+// of rendering a silently desynced stream.
 message OutputChunk {
   // Raw bytes read from the PTY (may include ANSI escape sequences).
   bytes data = 1;
   // Unix timestamp in milliseconds when this chunk was produced.
   int64 timestamp_ms = 2;
+  // Number of chunks dropped immediately before this point in the stream.
+  // Zero for ordinary output chunks.
+  uint64 dropped_chunks = 3;
 }
 
 // ---------------------------------------------------------------------------

@@ -193,6 +193,9 @@ async fn stream_bridge(client: &mut SessionClient, session_id: String) -> Result
     // Drive the output stream to stdout.
     loop {
         match output_stream.message().await {
+            Ok(Some(chunk)) if chunk.dropped_chunks > 0 => {
+                write_stdout(dropped_notice(chunk.dropped_chunks).as_bytes())?;
+            }
             Ok(Some(chunk)) => {
                 write_stdout(&chunk.data)?;
             }
@@ -209,6 +212,18 @@ async fn stream_bridge(client: &mut SessionClient, session_id: String) -> Result
     input_task.abort();
     let _ = input_task.await;
     Ok(())
+}
+
+/// Text written in place of output the daemon dropped because this stream fell
+/// behind a burst. Starts on a fresh line (raw mode needs the explicit `\r`)
+/// so it does not splice into a partially written line.
+fn dropped_notice(dropped_chunks: u64) -> String {
+    let unit = if dropped_chunks == 1 {
+        "chunk"
+    } else {
+        "chunks"
+    };
+    format!("\r\n\x1b[33m[output truncated: {dropped_chunks} {unit} dropped]\x1b[0m\r\n")
 }
 
 fn detect_terminal_size(cols_override: Option<u32>, rows_override: Option<u32>) -> (u32, u32) {

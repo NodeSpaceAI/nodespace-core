@@ -5,6 +5,7 @@
   import { listen, type UnlistenFn } from '@tauri-apps/api/event';
   import { ptyWriteInput, ptyResizeTerminal } from '$lib/services/tauri-commands';
   import { createLogger } from '$lib/utils/logger';
+  import { formatDroppedNotice } from './pty-output';
 
   const log = createLogger('PtyTerminal');
 
@@ -45,11 +46,18 @@
     });
 
     // Subscribe to output events from the Tauri backend
-    unlistenOutput = await listen<{ data: number[]; timestampMs: number }>(
+    unlistenOutput = await listen<{ data: number[]; timestampMs: number; droppedChunks: number }>(
       `pty-output-${sessionId}`,
       (event) => {
-        const bytes = new Uint8Array(event.payload.data);
-        terminal.write(bytes);
+        const { data, droppedChunks } = event.payload;
+        if (droppedChunks > 0) {
+          // The daemon discarded output because this stream fell behind a
+          // burst; mark the gap so the user knows the rendering is incomplete.
+          log.warn('PTY output dropped', { sessionId, droppedChunks });
+          terminal.write(formatDroppedNotice(droppedChunks));
+          return;
+        }
+        terminal.write(new Uint8Array(data));
       }
     );
 
