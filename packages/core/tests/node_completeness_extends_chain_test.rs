@@ -127,3 +127,173 @@ async fn inherited_required_relationship_satisfied_reports_complete() -> Result<
     assert!(result.missing_relationships.is_empty());
     Ok(())
 }
+
+/// `adr` declares `superseded_by` as a required `in`-direction relationship —
+/// the target's view of its own forward `supersedes` edge (a self-referential
+/// pair, so both ends exist when the schema is created). The stored edge is
+/// `supersedes`, with the newer ADR as source and the older one as target.
+async fn create_inbound_required_schema(svc: &Arc<NodeService>) -> Result<()> {
+    handle_create_schema(
+        svc,
+        json!({
+            "name": "completeness_in_adr",
+            "fields": [],
+            "relationships": [
+                {
+                    "name": "supersedes",
+                    "targetType": "completeness_in_adr",
+                    "direction": "out",
+                    "cardinality": "one",
+                    "reverseName": "superseded_by",
+                    "reverseCardinality": "one"
+                },
+                {
+                    "name": "superseded_by",
+                    "targetType": "completeness_in_adr",
+                    "direction": "in",
+                    "cardinality": "one",
+                    "required": true,
+                    "reverseName": "supersedes",
+                    "reverseCardinality": "one"
+                }
+            ]
+        }),
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("adr schema: {e}"))?;
+    Ok(())
+}
+
+/// A required `in`-direction relationship with no inbound edge is missing.
+#[tokio::test]
+async fn required_inbound_relationship_missing_reports_incomplete() -> Result<()> {
+    let (svc, _t) = create_test_service().await?;
+    create_inbound_required_schema(&svc).await?;
+    make_node(&svc, "old", "completeness_in_adr").await?;
+
+    let result = svc.check_node_completeness("old").await?;
+
+    assert!(!result.is_complete);
+    assert_eq!(
+        result.missing_relationships,
+        vec!["superseded_by".to_string()]
+    );
+    Ok(())
+}
+
+/// A real edge attached from the other side satisfies the required
+/// `in`-direction relationship. The check used to look for an outbound
+/// `superseded_by` edge from the node — which is never stored — so the node
+/// was reported incomplete forever.
+#[tokio::test]
+async fn required_inbound_relationship_satisfied_from_other_side_reports_complete() -> Result<()> {
+    let (svc, _t) = create_test_service().await?;
+    create_inbound_required_schema(&svc).await?;
+    make_node(&svc, "old", "completeness_in_adr").await?;
+    make_node(&svc, "new", "completeness_in_adr").await?;
+
+    svc.create_relationship("new", "supersedes", "old", json!({}))
+        .await?;
+
+    let result = svc.check_node_completeness("old").await?;
+
+    assert!(
+        result.is_complete,
+        "missing: {:?}",
+        result.missing_relationships
+    );
+    assert!(result.missing_relationships.is_empty());
+
+    // The edge's source end is not satisfied by it: `new` has no inbound
+    // `supersedes` edge of its own.
+    let source = svc.check_node_completeness("new").await?;
+    assert_eq!(
+        source.missing_relationships,
+        vec!["superseded_by".to_string()]
+    );
+    Ok(())
+}
+
+/// The write path also accepts an edge written through the `in` name itself
+/// (stored under `superseded_by` from this node's own end). That shape must
+/// satisfy the required relationship too.
+#[tokio::test]
+async fn required_inbound_relationship_written_through_in_name_reports_complete() -> Result<()> {
+    let (svc, _t) = create_test_service().await?;
+    create_inbound_required_schema(&svc).await?;
+    make_node(&svc, "old", "completeness_in_adr").await?;
+    make_node(&svc, "new", "completeness_in_adr").await?;
+
+    svc.create_relationship("old", "superseded_by", "new", json!({}))
+        .await?;
+
+    let result = svc.check_node_completeness("old").await?;
+
+    assert!(
+        result.is_complete,
+        "missing: {:?}",
+        result.missing_relationships
+    );
+    Ok(())
+}
+
+/// Another schema declaring the same forward name toward the same type shares
+/// the stored `relationship_type`. Its edge must not satisfy an `in`
+/// declaration whose `targetType` names a different source type — but an
+/// ADR-078 subtype of the declared source type does.
+#[tokio::test]
+async fn required_inbound_relationship_narrows_by_source_type() -> Result<()> {
+    let (svc, _t) = create_test_service().await?;
+    create_inbound_required_schema(&svc).await?;
+    handle_create_schema(
+        &svc,
+        json!({
+            "name": "completeness_in_memo",
+            "fields": [],
+            "relationships": [{
+                "name": "supersedes",
+                "targetType": "completeness_in_adr",
+                "direction": "out",
+                "cardinality": "one",
+                "reverseName": "superseded_by_memo",
+                "reverseCardinality": "one"
+            }]
+        }),
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("memo schema: {e}"))?;
+    handle_create_schema(
+        &svc,
+        json!({
+            "name": "completeness_in_adr_sub",
+            "extends": "completeness_in_adr",
+            "fields": []
+        }),
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("adr subtype schema: {e}"))?;
+
+    make_node(&svc, "old", "completeness_in_adr").await?;
+    make_node(&svc, "memo1", "completeness_in_memo").await?;
+    svc.create_relationship("memo1", "supersedes", "old", json!({}))
+        .await?;
+
+    let result = svc.check_node_completeness("old").await?;
+    assert_eq!(
+        result.missing_relationships,
+        vec!["superseded_by".to_string()],
+        "a memo's `supersedes` edge is not an adr superseding this one"
+    );
+
+    make_node(&svc, "sub1", "completeness_in_adr_sub").await?;
+    svc.create_relationship("sub1", "supersedes", "old", json!({}))
+        .await?;
+
+    let result = svc.check_node_completeness("old").await?;
+    assert!(
+        result.is_complete,
+        "an adr subtype source satisfies it; missing: {:?}",
+        result.missing_relationships
+    );
+    Ok(())
+}
