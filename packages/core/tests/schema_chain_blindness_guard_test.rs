@@ -197,7 +197,7 @@ const ALLOWLIST: &[Allowed] = &[
     },
     Allowed {
         file: "services/node_service/schema.rs",
-        function: "rename_schema_field",
+        function: "validate_schema_field_rename",
         field_kind: "fields",
         why: "Two own-only reads, both intentional. (1) The source field \
               being renamed must be OWN-declared on type_id — you can only \
