@@ -479,9 +479,16 @@ pub async fn validate_play(
         let trigger_node_type = trigger_node_type(rule);
         if let Some(nt) = &trigger_node_type {
             ensure_schema_cached(nt, node_service, &mut schema_cache).await;
-            if let Err(e) = cached_schema(&schema_cache, nt, &format!("rule[{}].trigger", rule_idx))
-            {
-                errors.push(e);
+            // Cheap membership check first so the `format!` below (and the
+            // `cached_schema` call that needs it) only runs on the error
+            // path — the common case, every trigger type resolving fine,
+            // previously paid for an allocation it never used.
+            if !matches!(schema_cache.get(nt.as_str()), Some(Ok(Some(_)))) {
+                let location = format!("rule[{}].trigger", rule_idx);
+                errors.push(
+                    cached_schema(&schema_cache, nt, &location)
+                        .expect_err("matches! above confirmed this entry is not Ok(Some(_))"),
+                );
             }
         }
 
