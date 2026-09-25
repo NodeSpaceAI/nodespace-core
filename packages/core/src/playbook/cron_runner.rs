@@ -81,10 +81,11 @@ pub async fn cron_runner_loop(
 /// Start of the window a check ending at `now` covers.
 ///
 /// Normally `last_checked`, so consecutive windows are contiguous however long
-/// the previous check took. Never later than `now - POLL_INTERVAL`, so a check
-/// always looks back at least one poll interval even when checks run closer
-/// together in wall-clock time than the timer suggests (a clock set backward,
-/// or a virtual tokio clock in tests).
+/// the previous check took. Never later than `now - POLL_INTERVAL`: the timer
+/// runs on tokio's clock while `now` is wall-clock time, and when those diverge
+/// (a paused tokio clock in tests) consecutive wall-clock checks can be nearly
+/// simultaneous. If the wall clock steps backward, this floor makes the window
+/// overlap the previous one, so an occurrence in the overlap can fire twice.
 fn window_start(
     last_checked: chrono::DateTime<chrono::Local>,
     now: chrono::DateTime<chrono::Local>,
@@ -112,7 +113,7 @@ pub(crate) async fn check_and_enqueue(
     last_checked: chrono::DateTime<chrono::Local>,
 ) -> chrono::DateTime<chrono::Local> {
     let now = chrono::Local::now();
-    let window_start = window_start(last_checked, now);
+    let start = window_start(last_checked, now);
 
     // Read cron registry (short read lock, then release).
     // A poisoned lock (some other thread panicked while holding it) still
@@ -154,7 +155,7 @@ pub(crate) async fn check_and_enqueue(
             }
         };
 
-        if !fires_in_window(&schedule, &window_start, &now) {
+        if !fires_in_window(&schedule, &start, &now) {
             continue;
         }
 
@@ -349,7 +350,8 @@ mod tests {
         let start = window_start(last_checked, now);
         assert_eq!(start, last_checked);
         assert!(fires_in_window(&schedule, &start, &now));
-        // …and the previous window did not already cover it.
+        // …and the check before that (ending at `last_checked`, starting a
+        // poll interval earlier) did not already cover it.
         assert!(!fires_in_window(
             &schedule,
             &window_start(at(8, 58, 50), last_checked),
@@ -602,6 +604,64 @@ mod tests {
             assert!(
                 rx.try_recv().is_err(),
                 "non-matching cron should not enqueue any work items"
+            );
+        }
+
+        /// An occurrence 90s ago, after the previous check ended 120s ago,
+        /// lies outside a fixed 60s lookback. `check_and_enqueue` must still
+        /// match it by starting its window at `last_checked`.
+        #[tokio::test]
+        async fn check_and_enqueue_matches_occurrence_since_last_check() {
+            use chrono::Timelike;
+            let (svc, _tmp) = create_test_service().await;
+
+            let schema = Node::new_with_id(
+                "cr_task_gap".to_string(),
+                "schema".to_string(),
+                "cr_task_gap".to_string(),
+                json!({
+                    "isCore": false,
+                    "schemaVersion": 1,
+                    "description": "cr_task_gap schema",
+                    "fields": [],
+                    "relationships": []
+                }),
+            );
+            svc.create_node(schema).await.unwrap();
+            let node = Node::new_with_id(
+                "cr-t5".to_string(),
+                "cr_task_gap".to_string(),
+                "task 5".to_string(),
+                json!({}),
+            );
+            svc.create_node(node).await.unwrap();
+
+            // Daily, at the wall-clock time 90s ago.
+            let now = chrono::Local::now();
+            let due = now - chrono::Duration::seconds(90);
+            let cron_expr = format!("{} {} {} * * * *", due.second(), due.minute(), due.hour());
+            let lifecycle = make_lifecycle_with_cron(&cron_expr, "cr_task_gap");
+
+            let (tx, mut rx) = mpsc::channel::<ExecutionWorkItem>(100);
+
+            // A check whose previous one just ended sees only the last 60s.
+            check_and_enqueue(&lifecycle, &svc, &tx, now).await;
+            assert!(
+                rx.try_recv().is_err(),
+                "an occurrence 90s ago is outside a 60s lookback"
+            );
+
+            let returned =
+                check_and_enqueue(&lifecycle, &svc, &tx, now - chrono::Duration::seconds(120))
+                    .await;
+            assert_eq!(
+                rx.try_recv().expect("work item enqueued").trigger_node.id,
+                "cr-t5",
+                "the window must reach back to the previous check's end"
+            );
+            assert!(
+                returned >= now,
+                "the returned window end is this check's `now`"
             );
         }
 
