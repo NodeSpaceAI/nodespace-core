@@ -147,86 +147,67 @@
   /* Header wrapper - width handled by parent .node-content-wrapper flex rule */
   /* No additional styles needed - flex: 1 applied by parent */
 
-  /* Header-specific typography and icon positioning */
+  /* Header-specific typography and icon positioning. H1–H3 step down from 1.5rem;
+     H4–H6 sit at body size — a heading never renders smaller than body text. */
   .header-h1 {
-    --font-size: 2rem;
-    --line-height: 1.2;
-    --icon-vertical-position: calc(0.25rem + (2rem * 1.2 / 2));
-  }
-
-  .header-h1 :global(.node__content) {
-    font-size: 2rem;
-    font-weight: bold;
-    line-height: 1.2;
-  }
-
-  .header-h2 {
     --font-size: 1.5rem;
     --line-height: 1.3;
     --icon-vertical-position: calc(0.25rem + (1.5rem * 1.3 / 2));
   }
 
-  .header-h2 :global(.node__content) {
+  .header-h1 :global(.node__content) {
     font-size: 1.5rem;
-    font-weight: bold;
+    font-weight: 600;
+    line-height: 1.3;
+  }
+
+  .header-h2 {
+    --font-size: 1.25rem;
+    --line-height: 1.3;
+    --icon-vertical-position: calc(0.25rem + (1.25rem * 1.3 / 2));
+  }
+
+  .header-h2 :global(.node__content) {
+    font-size: 1.25rem;
+    font-weight: 600;
     line-height: 1.3;
   }
 
   .header-h3 {
-    --font-size: 1.25rem;
-    --line-height: 1.4;
-    --icon-vertical-position: calc(0.25rem + (1.25rem * 1.4 / 2));
+    --font-size: 1.125rem;
+    --line-height: 1.3;
+    --icon-vertical-position: calc(0.25rem + (1.125rem * 1.3 / 2));
   }
 
   .header-h3 :global(.node__content) {
-    font-size: 1.25rem;
-    font-weight: bold;
-    line-height: 1.4;
-  }
-
-  .header-h4 {
-    --font-size: 1.125rem;
-    --line-height: 1.4;
-    --icon-vertical-position: calc(0.25rem + (1.125rem * 1.4 / 2));
-  }
-
-  .header-h4 :global(.node__content) {
     font-size: 1.125rem;
-    font-weight: bold;
-    line-height: 1.4;
+    font-weight: 600;
+    line-height: 1.3;
   }
 
-  .header-h5 {
+  .header-h4,
+  .header-h5,
+  .header-h6 {
     --font-size: 1rem;
     --line-height: 1.4;
     --icon-vertical-position: calc(0.25rem + (1rem * 1.4 / 2));
   }
 
-  .header-h5 :global(.node__content) {
-    font-size: 1rem;
-    font-weight: bold;
-    line-height: 1.4;
-  }
-
-  .header-h6 {
-    --font-size: 0.875rem;
-    --line-height: 1.4;
-    --icon-vertical-position: calc(0.25rem + (0.875rem * 1.4 / 2));
-  }
-
+  .header-h4 :global(.node__content),
+  .header-h5 :global(.node__content),
   .header-h6 :global(.node__content) {
-    font-size: 0.875rem;
-    font-weight: bold;
+    font-size: 1rem;
+    font-weight: 600;
     line-height: 1.4;
   }
 
-  /* Ensure empty headers maintain proper height */
+  /* Ensure empty headers hold their level's full line height */
   .header-h1 :global(.node__content:empty),
   .header-h2 :global(.node__content:empty),
   .header-h3 :global(.node__content:empty),
   .header-h4 :global(.node__content:empty),
   .header-h5 :global(.node__content:empty),
   .header-h6 :global(.node__content:empty) {
-    min-height: 1.5rem;
+    min-height: calc(var(--font-size) * var(--line-height));
   }
 </style>

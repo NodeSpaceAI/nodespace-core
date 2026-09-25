@@ -290,38 +290,28 @@
 
   /* Inherit font-size, line-height, and icon positioning from HeaderNode wrapper classes */
   .node-content-wrapper:has(:global(.header-h1)) {
-    --font-size: 2rem;
-    --line-height: 1.2;
-    --icon-vertical-position: calc(0.25rem + (2rem * 1.2 / 2));
-  }
-
-  .node-content-wrapper:has(:global(.header-h2)) {
     --font-size: 1.5rem;
     --line-height: 1.3;
     --icon-vertical-position: calc(0.25rem + (1.5rem * 1.3 / 2));
   }
 
-  .node-content-wrapper:has(:global(.header-h3)) {
+  .node-content-wrapper:has(:global(.header-h2)) {
     --font-size: 1.25rem;
-    --line-height: 1.4;
-    --icon-vertical-position: calc(0.25rem + (1.25rem * 1.4 / 2));
+    --line-height: 1.3;
+    --icon-vertical-position: calc(0.25rem + (1.25rem * 1.3 / 2));
   }
 
-  .node-content-wrapper:has(:global(.header-h4)) {
+  .node-content-wrapper:has(:global(.header-h3)) {
     --font-size: 1.125rem;
-    --line-height: 1.4;
-    --icon-vertical-position: calc(0.25rem + (1.125rem * 1.4 / 2));
+    --line-height: 1.3;
+    --icon-vertical-position: calc(0.25rem + (1.125rem * 1.3 / 2));
   }
 
-  .node-content-wrapper:has(:global(.header-h5)) {
+  .node-content-wrapper:has(:global(.header-h4)),
+  .node-content-wrapper:has(:global(.header-h5)),
+  .node-content-wrapper:has(:global(.header-h6)) {
     --font-size: 1rem;
     --line-height: 1.4;
     --icon-vertical-position: calc(0.25rem + (1rem * 1.4 / 2));
-  }
-
-  .node-content-wrapper:has(:global(.header-h6)) {
-    --font-size: 0.875rem;
-    --line-height: 1.4;
-    --icon-vertical-position: calc(0.25rem + (0.875rem * 1.4 / 2));
   }
 </style>
