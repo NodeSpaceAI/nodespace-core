@@ -100,7 +100,27 @@
 //! *different* `get_schema_node` call; keeping the granularity coarser
 //! keeps the allowlist small and the scanner simple, at that one known
 //! cost. In practice a new bug-class instance shows up in a new function or
-//! a new file, which this still catches.
+//! a new file, which this still catches. The same coarseness also means two
+//! *different* functions that happen to share a name in one file (e.g. the
+//! same method name in two separate `impl` blocks — legal Rust, rare in
+//! this codebase's style) collapse into a single [`Hit`]: an allowlist
+//! entry justified for one would silently also cover a genuinely-buggy
+//! second function of the same name. Disambiguating would need the key to
+//! carry enough of the function's signature/impl target to tell them apart,
+//! which is a larger change than this guard's "coarse but simple" design
+//! trades for; accepted as a known gap rather than built out, consistent
+//! with the false-negative-biased philosophy above.
+//!
+//! Detection tolerates a bounded set of chain-adapter calls (`.clone()`,
+//! `.unwrap()`, `.expect(...)`, `.as_ref()`, `.as_mut()` — see
+//! [`CHAIN_ADAPTERS`]) and one level of `.map(|x| ...)` indirection between
+//! a tracked call and the `.fields`/`.relationships` access, in both the
+//! bound-variable and no-binding forms, and depth-counts the tracked call's
+//! own argument parens ([`matching_paren_end`]) rather than assuming no
+//! nested call appears in them. Any OTHER method call spliced in between
+//! (`.to_owned()`, a custom accessor, etc.) still defeats detection — the
+//! adapter list is a finite, named set, not "any method call," by the same
+//! simplicity-over-completeness trade-off as everything else here.
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -288,10 +308,19 @@ fn is_test_only_file(file_name: &str) -> bool {
 /// Also does not recognize raw strings (`r"..."`, `r#"..."#`) as a distinct
 /// form — a `"` anywhere, raw-string delimiter or not, toggles `in_string`.
 /// A raw string containing an unescaped `"` (only possible in the `r#"..."#`
-/// form) would desync this from the real lexical boundary. No such case
-/// exists near a `get_schema_node`-family call in this codebase today (this
-/// guard's own test suite scans the whole real codebase and passes), so
-/// this is a documented latent gap rather than an observed failure.
+/// form) would desync this from the real lexical boundary. The blast radius
+/// of that desync is the *whole rest of the file* this function is scanning
+/// — `strip_comments` runs in a single pass over the entire source before
+/// [`strip_cfg_test_blocks`]/[`split_functions`] ever run, so an
+/// odd-unescaped-quote-count raw string anywhere in a file, including
+/// inside a `#[cfg(test)]` block that gets stripped later, could still
+/// corrupt comment-stripping for real production code elsewhere in that
+/// same file — not just "near a `get_schema_node`-family call" as a purely
+/// local read of this gap might suggest. No such raw string (odd internal
+/// `"` count) exists anywhere in `packages/core/src` production code today
+/// — checked directly, not just inferred from this guard's own test suite
+/// passing against the real codebase — so this remains a documented latent
+/// gap rather than an observed failure.
 fn strip_comments(source: &str) -> String {
     let mut out = String::with_capacity(source.len());
     let mut in_string = false;
@@ -442,12 +471,33 @@ fn split_functions(source: &str) -> Vec<(String, String)> {
         let name = cap.get(1).unwrap().as_str().to_string();
         let sig_end = cap.get(0).unwrap().end();
 
-        // Find the first `{` or `;` after the signature, whichever comes
-        // first (a `;` means a body-less trait declaration).
-        let Some(rel) = source[sig_end..].find(['{', ';']) else {
+        // Find the first `{` or `;` after the signature that occurs at
+        // paren/bracket depth zero — i.e. outside the parameter list and
+        // outside any `[T; N]` fixed-size array type in a parameter or
+        // return type. A plain `.find(['{', ';'])` from right after the
+        // function name would instead stop at the FIRST such character
+        // anywhere, including one inside `[u8; 32]` or a function-pointer
+        // parameter's own parens, and wrongly treat the whole function as a
+        // body-less trait declaration — silently dropping it, and every
+        // `.fields`/`.relationships` read in it, from the scan entirely.
+        let mut depth = 0i32;
+        let mut marker = None;
+        let mut k = sig_end;
+        while k < bytes.len() {
+            match bytes[k] {
+                b'(' | b'[' => depth += 1,
+                b')' | b']' => depth -= 1,
+                b'{' | b';' if depth <= 0 => {
+                    marker = Some(k);
+                    break;
+                }
+                _ => {}
+            }
+            k += 1;
+        }
+        let Some(marker) = marker else {
             continue;
         };
-        let marker = sig_end + rel;
         if bytes[marker] == b';' {
             continue;
         }
@@ -476,6 +526,35 @@ fn split_functions(source: &str) -> Vec<(String, String)> {
     out
 }
 
+/// Find the end index (exclusive) of the balanced-parens call whose opening
+/// `(` is at `open_paren`, by depth-counting rather than a `[^)]*`-style
+/// regex — so an argument that itself contains a call (a nested `(...)`) is
+/// still matched correctly instead of terminating the match at the
+/// argument's own inner closing paren. Returns `None` if `open_paren` isn't
+/// actually a `(` or the parens never balance before the text ends.
+fn matching_paren_end(text: &str, open_paren: usize) -> Option<usize> {
+    let bytes = text.as_bytes();
+    if bytes.get(open_paren) != Some(&b'(') {
+        return None;
+    }
+    let mut depth = 0i32;
+    let mut i = open_paren;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'(' => depth += 1,
+            b')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i + 1);
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
 /// One detected direct read of `.relationships`/`.fields` off a
 /// `get_schema_node`/`get_schema_with_relationships` result.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -488,6 +567,18 @@ struct Hit {
 /// The call-site names this guard treats identically — see the module doc's
 /// "Why `get_schema_with_relationships` counts too".
 const TRACKED_CALLS: &str = r"(?:get_schema_node(?:_verifying)?|get_schema_with_relationships)";
+
+/// Zero or more single-hop adapter calls that don't change *which* schema's
+/// fields/relationships end up being read (`.clone()`, `.unwrap()`,
+/// `.expect(...)`, `.as_ref()`, `.as_mut()`) — allowed to appear between a
+/// `get_schema_node`-family result (bound or not) and the `.fields`/
+/// `.relationships` access this guard watches for, so `schema.clone().fields`
+/// or `...get_schema_node(id).await?.as_ref().unwrap().fields` are still
+/// detected, not just the bare `schema.fields` shape. Does not include
+/// `.map(...)` — that indirection needs its own closure-variable tracking
+/// and is handled separately wherever this constant is used.
+const CHAIN_ADAPTERS: &str =
+    r"(?:\s*\.\s*(?:clone\(\)|as_ref\(\)|as_mut\(\)|unwrap\(\)|expect\([^()]*\)))*";
 
 /// Scan one function body for a `get_schema_node`-family-bound variable
 /// whose `.relationships`/`.fields` is read later in the same body —
@@ -506,7 +597,7 @@ fn find_hits_in_function(body: &str, file: &str, function: &str) -> Vec<Hit> {
     let mut kinds = BTreeSet::new();
 
     let binding_re = regex::Regex::new(&format!(
-        r"let\s+(?:mut\s+)?(?:Some\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)|([A-Za-z_][A-Za-z0-9_]*))\s*=\s*[^;{{}}]{{0,200}}?{TRACKED_CALLS}\s*\("
+        r"\blet\s+(?:mut\s+)?(?:Some\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)|([A-Za-z_][A-Za-z0-9_]*))\s*=\s*[^;{{}}]{{0,200}}?{TRACKED_CALLS}\s*\("
     ))
     .unwrap();
 
@@ -519,10 +610,51 @@ fn find_hits_in_function(body: &str, file: &str, function: &str) -> Vec<Hit> {
         let bind_end = cap.get(0).unwrap().end();
         let rest = &body[bind_end..];
 
+        // Scope the search window to end before NAME is rebound (shadowed)
+        // by a later `let` to a value that does NOT reference NAME's old
+        // value — otherwise a field access on a genuinely different value
+        // bound under the same name would be wrongly attributed to this
+        // binding's `get_schema_node` result, a false positive the module
+        // doc's design goal explicitly wants to avoid. A *self-referential*
+        // re-`let` (`let x = match x { ... }`, `let x = x.unwrap()`) is
+        // excluded from this: it's a continuation of the SAME value's
+        // derivation chain — the common Rust idiom for narrowing a
+        // `Result<Option<T>>` down to `T` in two steps, exactly what
+        // `handle_create_schema`'s allowlisted `let persisted = ...; let
+        // persisted = match persisted { ... };` does — not a new, unrelated
+        // value, so it must not cut the window short before that
+        // function's actual `persisted.fields`/`.relationships` reads.
+        let reshadow_re =
+            regex::Regex::new(&format!(r"\blet\s+(?:mut\s+)?{}\s*=", regex::escape(name))).unwrap();
+        let rest = match reshadow_re.find(rest) {
+            Some(m) => {
+                // Bound the self-reference check to (approximately) the
+                // reassignment's own right-hand side — up to its first `;`
+                // (or a 200-char cap) — not a flat character count: a flat
+                // count would overreach past the statement's own end into
+                // unrelated later code, wrongly treating THAT code's
+                // mention of NAME as the reassignment being self-referential.
+                let search_area = &rest[m.end()..(m.end() + 200).min(rest.len())];
+                let rhs_window = match search_area.find(';') {
+                    Some(i) => &search_area[..i],
+                    None => search_area,
+                };
+                let self_ref_re =
+                    regex::Regex::new(&format!(r"\b{}\b", regex::escape(name))).unwrap();
+                if self_ref_re.is_match(rhs_window) {
+                    rest
+                } else {
+                    &rest[..m.start()]
+                }
+            }
+            None => rest,
+        };
+
         for field_kind in ["relationships", "fields"] {
-            // Direct: `NAME.field_kind`.
+            // Direct, optionally through one or more adapter calls:
+            // `NAME.field_kind` or `NAME.clone().field_kind` etc.
             let access_re = regex::Regex::new(&format!(
-                r"\b{}\s*\.\s*{}\b",
+                r"\b{}\b{CHAIN_ADAPTERS}\s*\.\s*{}\b",
                 regex::escape(name),
                 field_kind
             ))
@@ -565,13 +697,52 @@ fn find_hits_in_function(body: &str, file: &str, function: &str) -> Vec<Hit> {
     // `...get_schema_node(id).await?.unwrap().relationships`, or
     // `...get_schema_node(id).await.unwrap().unwrap().fields` (the Result
     // AND the Option both unwrapped before the field access — two calls,
-    // not one, since `get_schema_node` returns `Result<Option<SchemaNode>>`).
-    let chained_re = regex::Regex::new(&format!(
-        r"{TRACKED_CALLS}\s*\([^)]*\)(?:\s*\.\s*await\s*\??)?(?:\s*\.\s*(?:unwrap\(\)|expect\([^)]*\)))*\s*\.\s*(relationships|fields)\b"
-    ))
-    .unwrap();
-    for cap in chained_re.captures_iter(body) {
-        kinds.insert(cap.get(1).unwrap().as_str().to_string());
+    // not one, since `get_schema_node` returns `Result<Option<SchemaNode>>`),
+    // or with one level of `.map(|x| ...)` indirection instead of `.unwrap()`
+    // chains (e.g. `...get_schema_with_relationships(id).await?.map(|s| s.fields...)`).
+    //
+    // The call's own argument list is matched by depth-aware paren counting
+    // ([`matching_paren_end`]), not a `[^)]*`-style regex — an argument
+    // that itself contains a call (`get_schema_node(entry.node_type())`)
+    // has its own `(`/`)`, which a flat "no `)` at all" character class
+    // cannot span.
+    let call_start_re = regex::Regex::new(&format!(r"{TRACKED_CALLS}\s*\(")).unwrap();
+    for m in call_start_re.find_iter(body) {
+        let open_paren = m.end() - 1;
+        let Some(close_paren) = matching_paren_end(body, open_paren) else {
+            continue;
+        };
+        let after = &body[close_paren..];
+
+        let suffix_re = regex::Regex::new(&format!(
+            r"^(?:\s*\.\s*await\s*\??)?{CHAIN_ADAPTERS}\s*\.\s*(relationships|fields)\b"
+        ))
+        .unwrap();
+        if let Some(cap) = suffix_re.captures(after) {
+            kinds.insert(cap.get(1).unwrap().as_str().to_string());
+            continue;
+        }
+
+        let map_suffix_re = regex::Regex::new(&format!(
+            r"^(?:\s*\.\s*await\s*\??)?{CHAIN_ADAPTERS}\s*\.\s*map\(\s*\|\s*([A-Za-z_][A-Za-z0-9_]*)\s*\|"
+        ))
+        .unwrap();
+        if let Some(cap) = map_suffix_re.captures(after) {
+            let closure_var = cap.get(1).unwrap().as_str();
+            let window_start = cap.get(0).unwrap().end();
+            let window = &after[window_start..(window_start + 200).min(after.len())];
+            for field_kind in ["relationships", "fields"] {
+                let access_re = regex::Regex::new(&format!(
+                    r"\b{}\s*\.\s*{}\b",
+                    regex::escape(closure_var),
+                    field_kind
+                ))
+                .unwrap();
+                if access_re.is_match(window) {
+                    kinds.insert(field_kind.to_string());
+                }
+            }
+        }
     }
 
     kinds
@@ -821,5 +992,129 @@ fn scanner_detects_a_deliberately_bad_fixture() {
             .any(|(name, _)| name == "real_production_fn_after_mod_decl"),
         "the function after a semicolon-terminated #[cfg(test)] mod declaration must survive \
          stripping intact"
+    );
+
+    // Bound-variable form through a `.clone()`/`.as_ref().unwrap()` chain
+    // adapter — not just the bare `NAME.field` shape.
+    let clone_chain_fixture = r#"
+        async fn clone_chain_bug(&self, node_type: &str) -> Vec<String> {
+            let schema = self.get_schema_node(node_type).await.unwrap().unwrap();
+            schema.clone().fields.iter().map(|f| f.name.clone()).collect()
+        }
+    "#;
+    let functions = split_functions(clone_chain_fixture);
+    let (name, body) = &functions[0];
+    let hits = find_hits_in_function(body, "fixture.rs", name);
+    assert!(
+        hits.iter().any(|h| h.field_kind == "fields"),
+        "a chain-adapter call (schema.clone().fields) between the bound NAME and the field \
+         access should be detected, not just the bare NAME.fields shape"
+    );
+
+    // No-binding form with `.map(|x| ...)` indirection instead of an
+    // `.unwrap()`/`.expect(...)` chain — no intermediate `let` at all.
+    let unbound_map_fixture = r#"
+        async fn unbound_map_bug(&self, node_type: &str) -> Vec<String> {
+            self.get_schema_node(node_type).await.unwrap()
+                .map(|s| s.fields.iter().map(|f| f.name.clone()).collect())
+                .unwrap_or_default()
+        }
+    "#;
+    let functions = split_functions(unbound_map_fixture);
+    let (name, body) = &functions[0];
+    let hits = find_hits_in_function(body, "fixture.rs", name);
+    assert!(
+        hits.iter().any(|h| h.field_kind == "fields"),
+        "the no-binding chained form should also catch `.map(|x| ...)` indirection, not only \
+         `.unwrap()`/`.expect(...)` chains"
+    );
+
+    // No-binding form whose call argument itself contains a nested call —
+    // a `[^)]*`-style regex cannot span the inner call's own parens.
+    let nested_paren_fixture = r#"
+        async fn nested_paren_bug(&self, entry: &Entry) -> usize {
+            self.get_schema_node(entry.node_type()).await.unwrap().unwrap().fields.len()
+        }
+    "#;
+    let functions = split_functions(nested_paren_fixture);
+    let (name, body) = &functions[0];
+    let hits = find_hits_in_function(body, "fixture.rs", name);
+    assert!(
+        hits.iter().any(|h| h.field_kind == "fields"),
+        "a get_schema_node call whose own argument contains a nested call \
+         (entry.node_type()) should still be detected"
+    );
+
+    // A later `let` that rebinds NAME to a genuinely unrelated value must
+    // stop the search window there — a field access on THAT value must not
+    // be attributed to the original get_schema_node result.
+    let unrelated_reshadow_fixture = r#"
+        async fn shadow_false_positive(&self, node_type: &str) -> usize {
+            let schema = self.get_schema_node(node_type).await.unwrap().unwrap();
+            let ok = schema.is_core;
+            let schema = unrelated_lookup();
+            schema.fields.len()
+        }
+    "#;
+    let functions = split_functions(unrelated_reshadow_fixture);
+    let (name, body) = &functions[0];
+    let hits = find_hits_in_function(body, "fixture.rs", name);
+    assert!(
+        hits.is_empty(),
+        "a field access on a variable reshadowed to an unrelated value must NOT be attributed \
+         to the earlier get_schema_node binding of the same name: {hits:?}"
+    );
+
+    // But a SELF-referential re-`let` (`let x = match x { ... }`, the same
+    // shape `handle_create_schema` uses on the allowlist to narrow
+    // `Result<Option<T>>` down to `T`) is a continuation of the same
+    // value's derivation chain, not a new unrelated one — the window must
+    // NOT be cut short before the real field access that follows it.
+    let self_ref_reshadow_fixture = r#"
+        async fn self_ref_reshadow(&self, node_type: &str) -> usize {
+            let persisted = self.get_schema_node(node_type).await.unwrap();
+            let persisted = match persisted {
+                Some(s) => s,
+                None => return 0,
+            };
+            persisted.fields.len()
+        }
+    "#;
+    let functions = split_functions(self_ref_reshadow_fixture);
+    let (name, body) = &functions[0];
+    let hits = find_hits_in_function(body, "fixture.rs", name);
+    assert!(
+        hits.iter().any(|h| h.field_kind == "fields"),
+        "a self-referential re-let (let x = match x {{ ... }}) must not cut the search window \
+         short before the real field access that follows it"
+    );
+
+    // A function signature containing a fixed-size array type (`[u8; 32]`)
+    // has a `;` before the body's own `{` — `split_functions` must not
+    // mistake that for a body-less trait declaration and drop the whole
+    // function (and everything in it) from the scan.
+    let array_sig_fixture = r#"
+        async fn hashes_a_thing(&self, node_type: &str) -> [u8; 32] {
+            let Some(schema) = self.get_schema_node(node_type).await.unwrap() else {
+                return [0u8; 32];
+            };
+            for f in &schema.fields {
+                println!("{}", f.name);
+            }
+            [0u8; 32]
+        }
+    "#;
+    let functions = split_functions(array_sig_fixture);
+    assert_eq!(
+        functions.len(),
+        1,
+        "a function whose signature contains a `[T; N]` array type must still be found by \
+         split_functions, not silently dropped"
+    );
+    let (name, body) = &functions[0];
+    let hits = find_hits_in_function(body, "fixture.rs", name);
+    assert!(
+        hits.iter().any(|h| h.field_kind == "fields"),
+        "a field access inside a function with an array-typed signature must still be detected"
     );
 }
