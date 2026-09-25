@@ -905,8 +905,8 @@ export class SharedNodeStore {
   // Typed fields written optimistically but not yet sent, per node, with the
   // node type they belong to. Whichever write for the node runs next — typed,
   // generic or batch — sends and clears the whole set first (see
-  // `sendPendingTypedFields()`), so a typed write superseded in the
-  // coordinator's single queued slot doesn't lose its fields.
+  // `sendPendingTypedFields()`), so a typed write superseded while queued
+  // in the coordinator doesn't lose its fields.
   private pendingTypedFields = new Map<string, PendingTypedWrite>();
 
   // Source of collapse keys no other write shares — see `updateNode()`.
@@ -1945,9 +1945,13 @@ export class SharedNodeStore {
                   // Typed fields a superseded typed write left pending go
                   // first — see `sendPendingTypedFields()`. A conflict there
                   // has already been reported and leaves this write's version
-                  // stale too, so it does not send.
+                  // stale too, so it does not send — and tells its caller so,
+                  // since its own change never reached the server.
                   if ((await this.sendPendingTypedFields(nodeId)) === 'conflict') {
                     this.rollbackUpdate(nodeId, update);
+                    onPersistError?.(
+                      new Error(`Update for node ${nodeId} skipped after a version conflict`)
+                    );
                     return;
                   }
 
@@ -2070,8 +2074,8 @@ export class SharedNodeStore {
                       // `PersistenceCoordinator` (`persist()` above) executes
                       // at most one real RPC per node at a time — a second
                       // write for the same node while this one is executing
-                      // collapses into a single queued slot and only starts
-                      // once this write's response has already been applied.
+                      // is queued behind it and only starts once this
+                      // write's response has already been applied.
                       // A future change that let two RPCs for the same node
                       // race concurrently would need this branch to also
                       // check the snapshot, not just field ownership.
@@ -3202,10 +3206,10 @@ export class SharedNodeStore {
    *
    * Called from every persistence closure that writes the node — typed,
    * generic (`updateNode()`) and batch — before its own RPC, and right after
-   * each create path. The coordinator keeps one queued write per node and a
-   * newer write replaces it, so a queued typed write can be superseded by a
-   * generic one; flushing first means its fields still reach the server,
-   * ahead of (and at the version before) the generic write.
+   * each create path. A queued typed write can be replaced by a later write
+   * for the node (see `PersistOptions.collapseKey`); flushing first means its
+   * fields still reach the server, ahead of (and at the version before) the
+   * replacing write.
    *
    * Owns its own failures and never throws: a typed-update error is reported
    * (notification, OCC hydration, the staging callers' `onPersistError`) here,
@@ -3287,6 +3291,8 @@ export class SharedNodeStore {
    * doesn't yield before reading the state it sends.
    */
   private movesAhead(nodeId: string): Promise<void> | undefined {
+    // Every caller runs inside the node's executing coordinator write, so the
+    // sequence is always defined; without one, wait for every flushed move.
     const sequence =
       PersistenceCoordinator.getInstance().executingSequence(nodeId) ?? Number.POSITIVE_INFINITY;
     const moves = movesAheadOfWrite(nodeId, sequence);
@@ -3463,8 +3469,8 @@ export class SharedNodeStore {
    *
    * Two guarantees, both field-scoped:
    *
-   * - **No lost fields.** The coordinator keeps one queued write per node and
-   *   a newer write supersedes it. Staged fields accumulate, and whichever
+   * - **No lost fields.** A queued typed write can be replaced by a later
+   *   write for the node. Staged fields accumulate, and whichever
    *   write for the node runs next — typed, generic or batch — sends them all
    *   first, so a superseded write's fields ride along with its replacement.
    * - **No transient clobber.** See `bumpTypedFieldSeq()`: a response only
@@ -4115,8 +4121,7 @@ export class SharedNodeStore {
     // Idempotency guard: prevent concurrent resync operations on same node.
     // A second caller while one is already in flight doesn't get dropped
     // outright, though — it queues exactly one follow-up (single-slot,
-    // latest-wins, mirroring PersistenceCoordinator's own queued-write
-    // pattern above). Without that follow-up, two failures landing close
+    // latest-wins). Without that follow-up, two failures landing close
     // together for the same node — e.g. two rapid Kanban drags, or a drag
     // plus a property edit, both failing during a short daemon outage —
     // would silently drop the second correction: the in-flight fetch can
@@ -4753,7 +4758,10 @@ export class SharedNodeStore {
             // Typed fields a superseded typed write left pending go first —
             // see `sendPendingTypedFields()`. A conflict there has already
             // been reported and leaves this write's version stale too.
-            if ((await this.sendPendingTypedFields(nodeId)) === 'conflict') return;
+            if ((await this.sendPendingTypedFields(nodeId)) === 'conflict') {
+              log.warn(`Batched update for node ${nodeId} skipped after a version conflict`);
+              return;
+            }
 
             // CRITICAL: Wait for any move this UPDATE must follow.
             // Move operations (indent/outdent) increment the version in the backend.
@@ -4870,7 +4878,10 @@ export class SharedNodeStore {
       },
       {
         mode: 'immediate', // Batches are already accumulated, persist immediately
-        dependencies: dependencies.length > 0 ? dependencies : undefined
+        dependencies: dependencies.length > 0 ? dependencies : undefined,
+        // Sends the `changes` captured at commit, which no later write
+        // re-sends — so nothing may replace it (see `PersistOptions.collapseKey`).
+        collapseKey: `batch:${++this.uniqueWriteKeyCounter}`
       }
     );
 

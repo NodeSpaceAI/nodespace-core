@@ -246,50 +246,91 @@ describe('per-node write sequencing', () => {
     ]);
   });
 
-  it('raises one notification for a conflict on typed fields flushed inside another write, and settles dropped callbacks', async () => {
-    addPersistedNode('task-3', null, 1, 'task');
-    focusManager.focusNode('task-3', 'default');
-    expect(focusManager.isNodeEditing('task-3')).toBe(true);
+  it('keeps a queued batch when a later keystroke write for the same node queues behind it', async () => {
+    addPersistedNode('text-3', null, 1);
 
     const firstWriteGate = deferred();
     const updateSpy = vi
       .spyOn(backendAdapter, 'updateNode')
       .mockImplementation(async (id, version) => {
         if (updateSpy.mock.calls.length === 1) await firstWriteGate.promise;
-        return makeNode(id, 'task', version + 1);
+        return makeNode(id, 'text', version + 1);
       });
 
-    const sentFieldError = vi.fn();
-    const droppedFieldError = vi.fn();
-    const typedSpy = vi.spyOn(backendAdapter, 'updateTaskNode').mockImplementation(async () => {
-      // A field staged while the typed RPC is in flight.
-      store.updateTypedNode('task-3', 'task', { priority: 'high' }, viewerSource, {
-        onPersistError: droppedFieldError
-      });
-      throw versionConflict(store.getNode('task-3')!);
-    });
-
-    // An in-flight content write; behind it a typed write, which a generic
-    // property write then replaces — the generic write flushes the typed fields.
-    store.updateNode('task-3', { content: '- [ ] edited' }, viewerSource);
-    void store.flushNodeSaves(['task-3']);
+    store.updateNode('text-3', { content: 'a' }, viewerSource);
+    void store.flushNodeSaves(['text-3']);
     await vi.waitFor(() => expect(updateSpy).toHaveBeenCalledTimes(1));
-    store.updateTypedNode('task-3', 'task', { status: 'done' }, viewerSource, {
-      onPersistError: sentFieldError
-    });
-    store.updateNode('task-3', { properties: { 'custom:flag': true } }, viewerSource);
+
+    // A batch commits behind the in-flight write, then typing resumes.
+    store.startBatch('text-3');
+    store.addToBatch('text-3', { properties: { 'custom:kind': 'quote' } });
+    store.commitBatch('text-3');
+    store.updateNode('text-3', { content: 'ab' }, viewerSource);
 
     firstWriteGate.resolve();
     await store.flushAllPendingSaves();
 
-    expect(typedSpy).toHaveBeenCalledTimes(1);
+    const payloads = updateSpy.mock.calls.map(([, , payload]) => payload);
+    expect(payloads).toEqual([
+      { content: 'a' },
+      { properties: { 'custom:kind': 'quote' } },
+      { content: 'ab' }
+    ]);
+  });
+
+  it('raises one notification for a conflict on typed fields flushed inside another write, and settles dropped callbacks', async () => {
+    addPersistedNode('task-3', null, 1, 'task');
+    focusManager.focusNode('task-3', 'default');
+    expect(focusManager.isNodeEditing('task-3')).toBe(true);
+
+    const updateSpy = vi
+      .spyOn(backendAdapter, 'updateNode')
+      .mockImplementation(async (id, version) => makeNode(id, 'task', version + 1));
+
+    const firstTypedGate = deferred();
+    const droppedFieldError = vi.fn();
+    const typedSpy = vi
+      .spyOn(backendAdapter, 'updateTaskNode')
+      .mockImplementation(async (id, version, payload) => {
+        if (typedSpy.mock.calls.length === 1) {
+          await firstTypedGate.promise;
+          return typedResponse(id, version + 1, payload);
+        }
+        // A field staged while the conflicting typed RPC is in flight.
+        store.updateTypedNode('task-3', 'task', { priority: 'high' }, viewerSource, {
+          onPersistError: droppedFieldError
+        });
+        throw versionConflict(store.getNode('task-3')!);
+      });
+
+    // An in-flight typed write; behind it a second typed write, which a
+    // generic property write then replaces — so the generic write sends the
+    // staged typed fields before its own update.
+    store.updateTypedNode('task-3', 'task', { priority: 'low' }, viewerSource);
+    await vi.waitFor(() => expect(typedSpy).toHaveBeenCalledTimes(1));
+    const sentFieldError = vi.fn();
+    store.updateTypedNode('task-3', 'task', { status: 'done' }, viewerSource, {
+      onPersistError: sentFieldError
+    });
+    const skippedWriteError = vi.fn();
+    store.updateNode('task-3', { properties: { 'custom:flag': true } }, viewerSource, {
+      onPersistError: skippedWriteError
+    });
+
+    firstTypedGate.resolve();
+    await store.flushAllPendingSaves();
+
+    expect(typedSpy).toHaveBeenCalledTimes(2);
+    expect(typedSpy.mock.calls[1][2]).toEqual({ status: 'done' });
     // The generic write that ran the flush did not send on the stale version.
-    expect(updateSpy).toHaveBeenCalledTimes(1);
+    expect(updateSpy).not.toHaveBeenCalled();
     const mismatches = conflictNotifications.notifications.filter(
       (n) => n.conflictType === 'version-mismatch'
     );
     expect(mismatches).toHaveLength(1);
     expect(droppedFieldError).toHaveBeenCalledTimes(1);
+    // The generic write's own change never reached the server either.
+    expect(skippedWriteError).toHaveBeenCalledTimes(1);
     // The conflicting send itself resolves through the conflict, not onPersistError.
     expect(sentFieldError).not.toHaveBeenCalled();
   });
