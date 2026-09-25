@@ -208,6 +208,7 @@
               aria-selected={index === highlighted}
               class="cursor-pointer truncate rounded-sm px-2 py-1.5"
               class:bg-accent={index === highlighted}
+              class:text-accent-foreground={index === highlighted}
               onmouseenter={() => (highlighted = index)}
               onmousedown={(event) => {
                 // Select before the input's blur can close the list.
