@@ -45,7 +45,7 @@ interface PromotedField {
  *   `updateNode` — reflects these fields immediately instead of waiting a
  *   full RPC round trip. The backend response is always spread over the node
  *   afterward, so drift here degrades optimistic latency only.
- * - `flattenTypedFieldsFromStorage` below, for the browser/dev-proxy HTTP
+ * - `storageNodeToApiFields` below, for the browser/dev-proxy HTTP
  *   transport (`packages/dev-tools/src/dev-proxy.ts`), which has no access to
  *   `node_to_typed_value` (Rust) and returns nodes straight from storage
  *   shape. Drift here is NOT latency-only — a promoted field this map omits
@@ -78,34 +78,21 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 
 /**
  * Merge an incoming `properties` patch onto the existing `properties` bag so a
- * partial write doesn't drop sibling keys. Merges one level, plus one level
- * deeper into the type namespace (e.g. `properties.task.*`) so a nested patch
- * like `{ task: { status } }` doesn't clobber `properties.task.priority`.
+ * partial write doesn't drop sibling keys. Both bags are flat (see
+ * `storageNodeToApiFields`), so a one-level merge is complete.
  */
-export function deepMergeProperties(
+export function mergeProperties(
   existing: Record<string, unknown> | undefined,
-  incoming: Record<string, unknown>,
-  nodeType: string
+  incoming: Record<string, unknown>
 ): Record<string, unknown> {
-  const base = existing ?? {};
-  const merged: Record<string, unknown> = { ...base, ...incoming };
-
-  const baseNs = base[nodeType];
-  const incomingNs = incoming[nodeType];
-  if (isPlainObject(baseNs) && isPlainObject(incomingNs)) {
-    merged[nodeType] = { ...baseNs, ...incomingNs };
-  }
-
-  return merged;
+  return { ...(existing ?? {}), ...incoming };
 }
 
 /**
  * Compute the top-level typed fields to promote for an optimistic update.
  *
- * Only promotes a field that is actually present in this write — either flat
- * under `properties` (ai-chat stores `properties.model`) or nested under the
- * type namespace (`properties.task.status`). The "present in this write" guard
- * is load-bearing: it prevents overwriting an existing top-level value with
+ * Only promotes a field that is actually present in this write. That guard is
+ * load-bearing: it prevents overwriting an existing top-level value with
  * `undefined` when a caller omits a field (e.g. sending a message writes
  * `properties.messages` but not `properties.model`).
  */
@@ -114,62 +101,57 @@ export function promoteTypedFields(
   changesProperties: Record<string, unknown>,
   mergedProperties: Record<string, unknown>
 ): Record<string, unknown> {
-  const fields = OPTIMISTIC_TYPED_FIELDS[nodeType];
-  if (!fields) return {};
-
-  const nestedChanges = changesProperties[nodeType];
-  const nestedMerged = mergedProperties[nodeType];
   const promoted: Record<string, unknown> = {};
-
-  for (const { from, to } of fields) {
+  for (const { from, to } of OPTIMISTIC_TYPED_FIELDS[nodeType] ?? []) {
     if (Object.prototype.hasOwnProperty.call(changesProperties, from)) {
-      // Flat shape (e.g. ai-chat: properties.model)
       promoted[to] = mergedProperties[from];
-    } else if (
-      isPlainObject(nestedChanges) &&
-      Object.prototype.hasOwnProperty.call(nestedChanges, from)
-    ) {
-      // Nested shape (e.g. task schema form: properties.task.status)
-      promoted[to] = isPlainObject(nestedMerged) ? nestedMerged[from] : undefined;
     }
   }
-
   return promoted;
 }
 
 /**
- * Promote a fetched node's namespaced typed-field bucket to top-level fields.
+ * Convert a node's storage-shape `properties` into the API shape the frontend
+ * reads: `properties` flattened, plus typed fields promoted to the top level.
  *
- * Storage/wire shape from the browser HTTP transport is always namespaced
- * (`properties.<type>.*` — e.g. `properties['ai-chat'].model`), never flat:
- * unlike `promoteTypedFields` above (built for a partial WRITE payload, which
- * ai-chat sends flat), this reads a FULL fetched node's own bucket. This is
- * the browser-transport counterpart to the backend's `node_to_typed_value`
- * (`packages/nodespace-types/src/convert.rs`) — the Tauri IPC layer routes
- * every node through that function before it reaches the frontend, so
- * `nodeToAiChatNode`/`nodeToTaskNode` trust top-level fields are already
- * present and never read `properties.<type>` themselves. The dev-proxy HTTP
- * bridge (`packages/dev-tools/src/dev-proxy.ts`) has no access to that Rust
- * function and returns storage-shape `properties` verbatim, so it must call
- * this before handing a node to the frontend — otherwise a node's typed
- * fields silently read as `undefined` at the top level for that transport
- * only, even though the underlying data is intact.
+ * This is the browser-transport counterpart to the backend's
+ * `node_to_typed_value` (`packages/nodespace-types/src/convert.rs`), which the
+ * Tauri IPC layer routes every node through. The dev-proxy HTTP bridge
+ * (`packages/dev-tools/src/dev-proxy.ts`) has no access to that Rust function
+ * and receives storage-shape `properties` (`{ person: { first_name } }`) from
+ * gRPC, so it must call this before handing a node to the frontend. Without it
+ * the two transports deliver different shapes and every reader has to guess
+ * which one it got.
+ *
+ * The flattening mirrors `flatten_namespaced_properties` exactly: when the
+ * type's own bucket is present, its non-`_` keys become the properties
+ * (object-valued fields included); otherwise the bag is already flat and only
+ * its non-object, non-`_` keys survive — a nested object there can only be
+ * another type's dormant namespace. Keep in sync with convert.rs.
  */
-export function flattenTypedFieldsFromStorage(
+export function storageNodeToApiFields(
   nodeType: string,
-  properties: unknown
-): Record<string, unknown> {
-  const fields = OPTIMISTIC_TYPED_FIELDS[nodeType];
-  if (!fields || !isPlainObject(properties)) return {};
-
-  const bucket = properties[nodeType];
-  if (!isPlainObject(bucket)) return {};
-
-  const promoted: Record<string, unknown> = {};
-  for (const { from, to } of fields) {
-    if (Object.prototype.hasOwnProperty.call(bucket, from)) {
-      promoted[to] = bucket[from];
+  storageProperties: unknown
+): { properties: Record<string, unknown> } & Record<string, unknown> {
+  const properties: Record<string, unknown> = {};
+  if (isPlainObject(storageProperties)) {
+    const bucket = storageProperties[nodeType];
+    if (isPlainObject(bucket)) {
+      for (const [key, value] of Object.entries(bucket)) {
+        if (!key.startsWith('_')) properties[key] = value;
+      }
+    } else {
+      for (const [key, value] of Object.entries(storageProperties)) {
+        if (!key.startsWith('_') && !isPlainObject(value)) properties[key] = value;
+      }
     }
   }
-  return promoted;
+
+  const promoted: Record<string, unknown> = {};
+  for (const { from, to } of OPTIMISTIC_TYPED_FIELDS[nodeType] ?? []) {
+    if (Object.prototype.hasOwnProperty.call(properties, from)) {
+      promoted[to] = properties[from];
+    }
+  }
+  return { ...promoted, properties };
 }

@@ -2,25 +2,13 @@
  * Property-form field dispatch — one shared editor, two form implementations.
  *
  * GenericSchemaForm and TaskSchemaForm render the same leaf controls and open
- * the SAME nested (object/array) editor modal, but store values at different
- * paths:
- *   - GenericSchemaForm — reads/writes whichever shape the node already uses:
- *     properties[nodeType][<field>] when that namespace exists (core types
- *     with backend behavior, e.g. project), else flat properties[<field>]
- *     (user-defined schema types). See schema-field-resolution.ts.
- *   - TaskSchemaForm     → task ns     properties.task[<field>]
- *
- * (A third implementation, SchemaPropertyForm, used to also write the
- * namespaced shape — it was deleted as dead code once GenericSchemaForm
- * gained the same namespace-aware read/write via schema-field-resolution.ts,
- * making it a redundant, unused duplicate. Its namespaced-write and
- * un-migrated-flat-properties coverage below was ported to GenericSchemaForm,
- * which now owns that behavior.)
+ * the SAME nested (object/array) editor modal. Both read and write fields flat,
+ * as properties[<field>] — the shape every transport delivers; the backend
+ * re-buckets bare keys under the node's type in storage.
  *
  * The modal therefore owns no persistence: each form supplies the current value
  * and the write. These tests drive a real edit through each form's modal and
- * assert the rebuilt value lands at the right path — the crux of the shared
- * modal being safe to reuse across both storage shapes.
+ * assert the rebuilt value lands at the right path without dropping siblings.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { render, cleanup, screen, fireEvent, waitFor } from '@testing-library/svelte';
@@ -148,17 +136,17 @@ describe('GenericSchemaForm — nested values persist FLAT', () => {
   });
 });
 
-describe('TaskSchemaForm — nested values persist under properties.task', () => {
+describe('TaskSchemaForm — nested values persist FLAT', () => {
   beforeEach(() => {
     vi.spyOn(backendAdapter, 'getSchema').mockResolvedValue(
       schemaWith([ADDRESS_FIELD], 'task') as never
     );
     vi.spyOn(sharedNodeStore, 'getNode').mockReturnValue(
-      nodeWith('task', { task: { estimate: 3 } })
+      nodeWith('task', { estimate: 3 })
     );
   });
 
-  it('writes properties.task[<field>] and preserves sibling task fields', async () => {
+  it('writes properties[<field>] and preserves sibling task fields', async () => {
     const { container } = render(TaskSchemaForm, { props: { nodeId: 'node-1' } });
 
     // The form's Collapsible starts collapsed; its trigger is the first button.
@@ -167,51 +155,24 @@ describe('TaskSchemaForm — nested values persist under properties.task', () =>
     await editStreetThroughModal();
 
     expect(persistedProperties(updateNodeSpy)).toEqual({
-      task: { estimate: 3, address: { street: '1 Main' } }
+      estimate: 3,
+      address: { street: '1 Main' }
     });
   });
 });
 
-describe('GenericSchemaForm — nested values persist NAMESPACED for a namespaced type', () => {
-  // A node whose `properties[nodeType]` namespace already exists — the real shape a
-  // core type like `project` has from creation (NodeService namespaces on create),
-  // distinct from the flat `gadget` case above.
+describe('GenericSchemaForm — existing nested values', () => {
   beforeEach(() => {
-    vi.spyOn(sharedNodeStore, 'getNode').mockReturnValue(
-      nodeWith('invoice', { invoice: { total: 10 } })
-    );
-  });
-
-  it('writes properties[nodeType][<field>] and preserves sibling type fields', async () => {
-    render(GenericSchemaForm, {
-      props: { nodeId: 'node-1', schema: schemaWith([ADDRESS_FIELD], 'invoice'), autoOpen: true }
-    });
-
-    await editStreetThroughModal();
-
-    expect(persistedProperties(updateNodeSpy)).toEqual({
-      invoice: { total: 10, address: { street: '1 Main' } }
-    });
-  });
-});
-
-describe('GenericSchemaForm — un-migrated flat properties on a namespaced type', () => {
-  beforeEach(() => {
-    // Old FLAT shape: `address` sits at the top level, not yet migrated into the
-    // `invoice` namespace. resolveFieldValue/buildFieldWrite fall back to the flat
-    // location, so the read path must see it too.
     vi.spyOn(sharedNodeStore, 'getNode').mockReturnValue(
       nodeWith('invoice', { address: { street: 'A', city: 'B' }, total: 10 })
     );
   });
 
-  it('shows an un-migrated nested value instead of an empty editor', async () => {
+  it('shows an existing nested value instead of an empty editor', async () => {
     render(GenericSchemaForm, {
       props: { nodeId: 'node-1', schema: schemaWith([ADDRESS_FIELD], 'invoice'), autoOpen: true }
     });
 
-    // Reading the flat location means the summary counts the real keys. Reading only
-    // the namespace would render "0 fields" and open an empty editor.
     await waitFor(() => expect(screen.getByText('2 fields')).toBeTruthy());
   });
 
@@ -226,12 +187,6 @@ describe('GenericSchemaForm — un-migrated flat properties on a namespaced type
 
     // `city` was never rendered (it is not a declared sub-field) but must survive the
     // write — NestedPropertyModal rebuilds the whole object, not just the edited key.
-    // This asserts the PAYLOAD GenericSchemaForm sends to sharedNodeStore.updateNode —
-    // buildFieldWrite only namespaces when the `invoice` namespace already exists in
-    // `node.properties`, so from this component's perspective the write "lands flat".
-    // What the backend subsequently does with a flat payload against a node that also
-    // has other, unrelated data (normalize-to-namespace + merge, crud.rs) is a separate
-    // concern this test does not cover.
     expect(persistedProperties(updateNodeSpy)).toEqual({
       total: 10,
       address: { street: 'X', city: 'B' }
@@ -242,7 +197,7 @@ describe('GenericSchemaForm — un-migrated flat properties on a namespaced type
 describe('GenericSchemaForm — boolean fields', () => {
   beforeEach(() => {
     vi.spyOn(sharedNodeStore, 'getNode').mockReturnValue(
-      nodeWith('invoice', { invoice: { total: 10 } })
+      nodeWith('invoice', { total: 10 })
     );
   });
 
@@ -262,7 +217,7 @@ describe('GenericSchemaForm — boolean fields', () => {
     expect(checkbox.checked).toBe(false);
   });
 
-  it('persists the toggled value namespaced under properties[nodeType]', async () => {
+  it('persists the toggled value flat, preserving siblings', async () => {
     render(GenericSchemaForm, {
       props: {
         nodeId: 'node-1',
@@ -274,6 +229,6 @@ describe('GenericSchemaForm — boolean fields', () => {
     await waitFor(() => expect(screen.getByLabelText('Paid')).toBeTruthy());
     await fireEvent.click(screen.getByLabelText('Paid'));
 
-    expect(persistedProperties(updateNodeSpy)).toEqual({ invoice: { total: 10, paid: true } });
+    expect(persistedProperties(updateNodeSpy)).toEqual({ total: 10, paid: true });
   });
 });

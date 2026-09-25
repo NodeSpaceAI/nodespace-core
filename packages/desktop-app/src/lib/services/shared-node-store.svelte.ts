@@ -43,7 +43,7 @@ import {
   conflictNotifications,
   type ConflictNotification
 } from '$lib/stores/conflict-notifications.svelte';
-import { normalizeNodeData, deepMergeProperties, promoteTypedFields } from './node-normalize';
+import { normalizeNodeData, mergeProperties, promoteTypedFields } from './node-normalize';
 import { decideRemoteUpdate, shouldSkipStaleAiChatUpdate } from './remote-update-policy';
 
 const CONFLICT_MESSAGE: Record<ConflictNotification['conflictType'], string> = {
@@ -1595,7 +1595,7 @@ export class SharedNodeStore {
       const mergedProperties = changes.properties
         ? options.replaceProperties
           ? changes.properties
-          : deepMergeProperties(existingNode.properties, changes.properties, existingNode.nodeType)
+          : mergeProperties(existingNode.properties, changes.properties)
         : existingNode.properties;
       const promotedFields = changes.properties
         ? promoteTypedFields(existingNode.nodeType, changes.properties, mergedProperties)

@@ -46,7 +46,7 @@ function personNode(overrides: Partial<Node> = {}): Node {
     createdAt: '2026-01-01T00:00:00Z',
     modifiedAt: '2026-01-01T00:00:00Z',
     version: 1,
-    properties: { person: { first_name: 'Alice', last_name: '', email: '' } },
+    properties: { first_name: 'Alice', last_name: '', email: '' },
     ...overrides
   } as Node;
 }
@@ -60,7 +60,7 @@ function existingMatch(overrides: Partial<Node> = {}): Node {
     createdAt: '2026-01-01T00:00:00Z',
     modifiedAt: '2026-01-01T00:00:00Z',
     version: 1,
-    properties: { person: { first_name: 'Bob', last_name: 'Existing', email: 'bob@example.com' } },
+    properties: { first_name: 'Bob', last_name: 'Existing', email: 'bob@example.com' },
     ...overrides
   } as Node;
 }
@@ -119,6 +119,32 @@ describe('PersonSchemaForm — field placeholders', () => {
   });
 });
 
+describe('PersonSchemaForm — flat property shape', () => {
+  // Every transport hands the frontend `properties` flattened — storage's
+  // `{ person: {...} }` bucket is collapsed at the wire boundary — so the form
+  // reads and writes bare keys.
+  it('populates first name, last name and email from flat properties', () => {
+    vi.mocked(sharedNodeStore.getNode).mockReturnValue(
+      personNode({
+        properties: { first_name: 'Michael', last_name: 'Libio', email: 'm@example.com' }
+      })
+    );
+    render(PersonSchemaForm, { props: { nodeId: 'person-1' } });
+
+    expect((screen.getByLabelText('First name') as HTMLInputElement).value).toBe('Michael');
+    expect((screen.getByLabelText('Last name') as HTMLInputElement).value).toBe('Libio');
+    expect((screen.getByLabelText('Email') as HTMLInputElement).value).toBe('m@example.com');
+  });
+
+  it('writes the edited field flat, with no nested person bucket', async () => {
+    render(PersonSchemaForm, { props: { nodeId: 'person-1' } });
+    await fireEvent.blur(screen.getByLabelText('Last name'), { target: { value: 'Smith' } });
+
+    const [, changes] = updateNodeSpy.mock.calls[0];
+    expect(changes.properties).toEqual({ first_name: 'Alice', last_name: 'Smith', email: '' });
+  });
+});
+
 describe('PersonSchemaForm — adopt-existing suggestion', () => {
   it('surfaces the suggestion when the blurred email collides with another person', async () => {
     findDuplicateForSpy.mockResolvedValue(existingMatch());
@@ -143,7 +169,7 @@ describe('PersonSchemaForm — adopt-existing suggestion', () => {
     // The write happens regardless of the suggestion — suggest, never block.
     expect(updateNodeSpy).toHaveBeenCalledTimes(1);
     const [, changes] = updateNodeSpy.mock.calls[0];
-    expect((changes.properties.person as Record<string, unknown>).email).toBe('bob@example.com');
+    expect(changes.properties.email).toBe('bob@example.com');
   });
 
   it('"Use existing" navigates to the match and dismisses the suggestion', async () => {
@@ -368,7 +394,7 @@ describe('PersonSchemaForm — save path routes through the store (title-update 
     expect(updateNodeSpy).toHaveBeenCalledTimes(1);
     const [calledNodeId, changes, source] = updateNodeSpy.mock.calls[0];
     expect(calledNodeId).toBe('person-1');
-    expect((changes.properties.person as Record<string, unknown>).first_name).toBe('Carol');
+    expect(changes.properties.first_name).toBe('Carol');
     expect(source).toEqual({ type: 'viewer', viewerId: 'person-schema-form' });
   });
 
@@ -387,13 +413,14 @@ describe('PersonSchemaForm — save path routes through the store (title-update 
 
     const seeded = personNode({
       title: 'Untitled',
-      properties: { person: { first_name: '', last_name: '', email: '' } }
+      properties: { first_name: '', last_name: '', email: '' }
     });
     sharedNodeStore.setNode(seeded, { type: 'database', reason: 'test-seed' }, true);
 
+    // The response carries the flat shape every transport delivers — the
+    // daemon's authoritative node, which is what used to wipe the fields.
     vi.spyOn(backendAdapter, 'updateNode').mockImplementation(async (id, version, update) => {
-      const patched = (update as { properties?: { person?: Record<string, unknown> } })
-        .properties?.person;
+      const patched = (update as { properties?: Record<string, unknown> }).properties;
       const merged = { first_name: '', last_name: '', email: '', ...patched };
       // Deliberately omit `title` from the response — `...seeded` would
       // otherwise leak `seeded.title` ("Untitled") back in, which is exactly
@@ -406,7 +433,7 @@ describe('PersonSchemaForm — save path routes through the store (title-update 
         ...seededWithoutTitle,
         id,
         version: (version as number) + 1,
-        properties: { person: merged }
+        properties: merged
       } as Node;
     });
 
@@ -422,6 +449,11 @@ describe('PersonSchemaForm — save path routes through the store (title-update 
     await waitFor(() => expect(sharedNodeStore.getNode('person-1')?.title).toBe('Jane Doe'));
     // No manual reload/re-fetch performed above — the assertion above already
     // covers "no reload required".
+
+    // The committed values stay visible once the daemon's node has landed.
+    await waitFor(() => expect(sharedNodeStore.getNode('person-1')?.version).toBeGreaterThan(1));
+    expect(firstName.value).toBe('Jane');
+    expect(lastName.value).toBe('Doe');
   });
 });
 
@@ -443,7 +475,7 @@ describe('PersonSchemaForm — client-side title preview (ADR-077)', () => {
 
     const seeded = personNode({
       title: '',
-      properties: { person: { first_name: '', last_name: '', email: '' } }
+      properties: { first_name: '', last_name: '', email: '' }
     });
     sharedNodeStore.setNode(seeded, { type: 'database', reason: 'test-seed' }, true);
 
@@ -473,7 +505,7 @@ describe('PersonSchemaForm — client-side title preview (ADR-077)', () => {
 
     const seeded = personNode({
       title: 'Server Computed Title',
-      properties: { person: { first_name: 'Server', last_name: 'Computed', email: '' } }
+      properties: { first_name: 'Server', last_name: 'Computed', email: '' }
     });
     sharedNodeStore.setNode(seeded, { type: 'database', reason: 'test-seed' }, true);
 
@@ -488,7 +520,7 @@ describe('PersonSchemaForm — client-side title preview (ADR-077)', () => {
 
     const seeded = personNode({
       title: 'Jane Doe',
-      properties: { person: { first_name: 'Jane', last_name: 'Doe', email: '' } }
+      properties: { first_name: 'Jane', last_name: 'Doe', email: '' }
     });
     sharedNodeStore.setNode(seeded, { type: 'database', reason: 'test-seed' }, true);
 

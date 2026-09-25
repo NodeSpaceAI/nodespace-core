@@ -100,9 +100,7 @@
   // the one-time `get_local_identity` snapshot until then, so the card has
   // something to show on the very first paint rather than flashing empty.
   const liveNode = $derived(identity ? sharedNodeStore.getNode(identity.nodeId) : undefined);
-  const personProps = $derived(
-    liveNode ? ((liveNode.properties?.['person'] as Record<string, unknown> | undefined) ?? {}) : null
-  );
+  const personProps = $derived(liveNode ? (liveNode.properties ?? {}) : null);
   const firstName = $derived(
     personProps ? ((personProps['first_name'] as string | undefined) ?? '') : (identity?.firstName ?? '')
   );

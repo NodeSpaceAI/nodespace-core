@@ -144,19 +144,19 @@ describe('SharedNodeStore', () => {
       expect(node.properties.provider).toBe('native');
     });
 
-    it('promotes nested task properties.task.* to the top level', () => {
+    it('promotes flat task properties to the top level', () => {
       store.setNode(taskNode, viewerSource);
 
       store.updateNode(
         taskNode.id,
-        { properties: { task: { status: 'done' } } },
+        { properties: { status: 'done' } },
         viewerSource,
         skip
       );
 
       const node = store.getNode(taskNode.id) as unknown as Record<string, unknown>;
       expect(node.status).toBe('done');
-      expect((node.properties as Record<string, Record<string, unknown>>).task.status).toBe('done');
+      expect((node.properties as Record<string, unknown>).status).toBe('done');
     });
 
     it('leaves non-typed node types unaffected', () => {

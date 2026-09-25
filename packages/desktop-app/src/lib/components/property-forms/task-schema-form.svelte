@@ -15,8 +15,8 @@
   - Shell chrome (Collapsible, trigger row, gated Relationships button, NestedPropertyModal)
     is owned by TypedFormShell — this component supplies only the task-specific field grid.
 
-  User-defined values (nested ones included) are stored under
-  properties.task[field.name] via updateUserField.
+  User-defined values (nested ones included) are read and written flat, as
+  properties[field.name], via getUserFieldValue/updateUserField.
 
   Props:
   - nodeId: ID of the task node to display properties for
@@ -152,42 +152,23 @@
   // User-Defined Field Helpers
   // ============================================================================
 
-  // Get value for a user-defined field from node properties.
-  //
-  // Two shapes can appear in the store: the flat API shape from the backend
-  // (node_to_typed_value flattens the `properties.task` namespace away, so fields
-  // arrive under `properties.<fieldName>`), and the nested STORAGE shape left
-  // transiently by an optimistic local write below (`properties.task.<fieldName>`).
-  // Prefer the nested form so a just-edited value renders immediately, then fall
-  // back to the flat form once the backend round-trip re-flattens it.
+  // User-defined fields are read and written flat, under `properties.<fieldName>` —
+  // the shape every transport delivers. The backend moves bare keys into the
+  // type's storage bucket on write.
   function getUserFieldValue(fieldName: string): unknown {
     if (!node) return undefined;
-
-    const rawNode = sharedNodeStore.getNode(nodeId);
-    if (!rawNode) return undefined;
-
-    const taskProps = rawNode.properties?.task as Record<string, unknown> | undefined;
-    return taskProps?.[fieldName] ?? rawNode.properties?.[fieldName];
+    return sharedNodeStore.getNode(nodeId)?.properties?.[fieldName];
   }
 
-  // Update a user-defined field.
-  //
-  // WRITE uses the STORAGE shape: the backend stores type properties namespaced
-  // under `properties.task`, so updates must re-nest the field there.
-  // This leaves the local node in the nested shape until the backend echo
-  // re-flattens it — getUserFieldValue above reads both forms to bridge the gap.
   function updateUserField(fieldName: string, value: unknown) {
     if (!node) return;
 
     const rawNode = sharedNodeStore.getNode(nodeId);
     if (!rawNode) return;
 
-    const taskNamespace = (rawNode.properties?.task as Record<string, unknown>) || {};
-    const updatedTaskNamespace = { ...taskNamespace, [fieldName]: value };
-
     sharedNodeStore.updateNode(
       nodeId,
-      { properties: { ...rawNode.properties, task: updatedTaskNamespace } },
+      { properties: { ...rawNode.properties, [fieldName]: value } },
       { type: 'viewer', viewerId: 'task-schema-form' }
     );
   }

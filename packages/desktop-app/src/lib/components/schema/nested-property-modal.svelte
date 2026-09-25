@@ -5,12 +5,9 @@
   the `value` the caller supplies. On every edit it hands the whole rebuilt value
   back through `onPersist`.
 
-  Persistence is deliberately NOT owned here: the property forms that open this
-  modal each store values under a different namespace — flat `properties[field]`
-  for the generic schema form, `properties.task[field]` for the task form,
-  `properties[nodeType][field]` for the schema property form — so each caller
-  supplies both the current value and the write. That keeps one modal (and one
-  editor) shared by every form.
+  Persistence is deliberately NOT owned here: each property form that opens this
+  modal owns its own store write path, so each caller supplies both the current
+  value and the write. That keeps one modal (and one editor) shared by every form.
 
   Mirrors RelationshipViewerModal's dialog + `open = $bindable()` idiom.
 -->

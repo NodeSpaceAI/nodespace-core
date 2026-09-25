@@ -14,8 +14,7 @@
   which receives `openNestedModal` to wire up nested-field triggers), plus
   optional `headerLeft` content for the trigger row's left side, and the two
   callbacks the shell needs to drive the nested-field modal without knowing
-  where a field's value actually lives (namespaced under properties.task,
-  namespaced under properties[nodeType], or flat — each form's own concern).
+  how the form reads and writes a field's value (each form's own concern).
 
   Props:
   - nodeId: node the form is editing (relationships gate + modal)
