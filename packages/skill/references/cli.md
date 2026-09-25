@@ -634,7 +634,7 @@ Manage the local inference model (list, load, recommended)
 
 **`nodespace model list`** — List models in the catalog and their download/load status
 
-**`nodespace model load`** — Load a model (downloading first if needed); streams progress to stdout
+**`nodespace model load`** — Load a model (downloading first if needed); streams progress to stdout (with `--json`, prints a single document once the model is ready)
 
 - `<MODEL_ID>` — Model id to load, e.g. `gemma-4-e4b-q4km`. Omit to use the recommended model
 
