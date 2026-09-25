@@ -555,6 +555,65 @@ fn matching_paren_end(text: &str, open_paren: usize) -> Option<usize> {
     None
 }
 
+/// Find the end (exclusive, relative to `text`) of a `let`/let-else/`if
+/// let`/`while let` binding's own condition/right-hand-side expression —
+/// the text starting at `start` (right after its `=`) up to whichever of
+/// `;`, `{`, or the `else` keyword terminates it FIRST, counting one of
+/// those as the real terminator only when it's reached at paren/bracket
+/// depth zero (mirroring [`matching_paren_end`]'s depth-tracking, applied
+/// to a different set of terminator characters).
+///
+/// This uniformly bounds the expression for every shape the reshadow check
+/// in [`find_hits_in_function`] needs to reason about, without treating any
+/// of them specially:
+/// - `let x = EXPR;` → stops at `;` → EXPR = "EXPR"
+/// - `let Some(x) = EXPR else { BLOCK };` → stops at `else` (before the
+///   block) → EXPR = "EXPR ", never scanning into BLOCK
+/// - `if let Some(x) = EXPR { BODY }` / `while let Some(x) = EXPR { BODY }`
+///   → stops at `{` (there is no `;`/`else` before it) → EXPR = "EXPR ",
+///   never scanning into BODY
+///
+/// Scanning into BLOCK/BODY is exactly the bug an earlier, simpler version
+/// of this logic had: those blocks commonly reference the newly-bound name
+/// legitimately (that's the point of binding it), which would make ANY
+/// such block look "self-referential" to a naive scan and defeat the
+/// reshadow check's entire purpose — the whole point is to determine
+/// whether the NEW value being assigned to NAME is derived from the OLD
+/// one, which is a question about EXPR alone, never about what runs after
+/// the binding completes.
+fn expr_end(text: &str, start: usize) -> usize {
+    let bytes = text.as_bytes();
+    let mut depth = 0i32;
+    let mut i = start;
+    while i < bytes.len() {
+        let c = bytes[i];
+        if depth <= 0 {
+            if c == b';' || c == b'{' {
+                return i;
+            }
+            if c == b'e' && text[i..].starts_with("else") {
+                let before_ok = i == start
+                    || !matches!(bytes[i - 1], b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'_');
+                let after_ok = text[i + 4..]
+                    .chars()
+                    .next()
+                    .map(|c| !c.is_alphanumeric() && c != '_')
+                    .unwrap_or(true);
+                if before_ok && after_ok {
+                    return i;
+                }
+            }
+        }
+        match c {
+            b'(' | b'[' => depth += 1,
+            b')' | b']' => depth -= 1,
+            _ => {}
+        }
+        i += 1;
+    }
+    text.len()
+}
+
 /// One detected direct read of `.relationships`/`.fields` off a
 /// `get_schema_node`/`get_schema_with_relationships` result.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -648,17 +707,21 @@ fn find_hits_in_function(body: &str, file: &str, function: &str) -> Vec<Hit> {
         .unwrap();
         let rest = match reshadow_re.find(rest) {
             Some(m) => {
-                // Bound the self-reference check to (approximately) the
-                // reassignment's own right-hand side — up to its first `;`
-                // (or a 200-char cap) — not a flat character count: a flat
-                // count would overreach past the statement's own end into
-                // unrelated later code, wrongly treating THAT code's
-                // mention of NAME as the reassignment being self-referential.
-                let search_area = &rest[m.end()..(m.end() + 200).min(rest.len())];
-                let rhs_window = match search_area.find(';') {
-                    Some(i) => &search_area[..i],
-                    None => search_area,
-                };
+                // Bound the self-reference check to the reassignment's own
+                // right-hand-side expression via [`expr_end`] — depth-aware,
+                // so it correctly stops before a following block (`else
+                // { .. }`, or an `if let`/`while let`'s own `{ .. }` body)
+                // rather than scanning into it. An earlier version of this
+                // check used "the next literal `;` within a flat 200-char
+                // window" instead, which happened to work for a `let x =
+                // EXPR;`/simple let-else shape but silently broke for `if
+                // let`/`while let` (no `;` terminates the condition at all,
+                // so it scanned straight into the following block's body)
+                // and for a let-else whose else-block legitimately mentions
+                // NAME before diverging (its own `;` was found first,
+                // wrongly extending the checked region into that mention).
+                let rhs_end = expr_end(rest, m.end());
+                let rhs_window = &rest[m.end()..rhs_end];
                 let self_ref_re =
                     regex::Regex::new(&format!(r"\b{}\b", regex::escape(name))).unwrap();
                 if self_ref_re.is_match(rhs_window) {
@@ -1178,5 +1241,76 @@ fn scanner_detects_a_deliberately_bad_fixture() {
         hits.iter().any(|h| h.field_kind == "fields"),
         "a self-referential `let Some(NAME) = NAME else {{ ... }}` reshadow must not cut the \
          search window short before the real field access that follows it"
+    );
+
+    // Adversarial: an `if let`/`while let` (no `else`) reshadow has no `;`
+    // terminating its condition at all, and its body legitimately
+    // references the newly (unrelated) bound name — proving `expr_end`
+    // stops at the body's own `{` rather than scanning into it, unlike an
+    // earlier "next literal `;`" version of this check which had no
+    // terminator to find here and fell through into the body itself.
+    let if_let_unrelated_fixture = r#"
+        async fn if_let_unrelated(&self, node_type: &str) -> usize {
+            let schema = self.get_schema_node(node_type).await.unwrap().unwrap();
+            let ok = schema.is_core;
+            if let Some(schema) = unrelated_lookup() {
+                return schema.fields.len();
+            }
+            0
+        }
+    "#;
+    let functions = split_functions(if_let_unrelated_fixture);
+    let (name, body) = &functions[0];
+    let hits = find_hits_in_function(body, "fixture.rs", name);
+    assert!(
+        hits.is_empty(),
+        "an if-let reshadow to an unrelated value, whose body legitimately mentions the same \
+         name, must not be flagged: {hits:?}"
+    );
+
+    let while_let_unrelated_fixture = r#"
+        async fn while_let_unrelated(&self, node_type: &str) -> usize {
+            let schema = self.get_schema_node(node_type).await.unwrap().unwrap();
+            let ok = schema.is_core;
+            let mut total = 0;
+            while let Some(schema) = queue.pop() {
+                total += schema.fields.len();
+            }
+            total
+        }
+    "#;
+    let functions = split_functions(while_let_unrelated_fixture);
+    let (name, body) = &functions[0];
+    let hits = find_hits_in_function(body, "fixture.rs", name);
+    assert!(
+        hits.is_empty(),
+        "a while-let reshadow to an unrelated value must not be flagged: {hits:?}"
+    );
+
+    // Adversarial: a let-else whose ELSE-BLOCK (not the matched expression)
+    // legitimately mentions the reshadowed name before diverging — proving
+    // the self-reference check is scoped to the expression between `=` and
+    // `else` only, never into the else-block's own body. An earlier "next
+    // literal `;`" version of this check would find the `;` INSIDE this
+    // else-block (after `log_missing_schema()`) and wrongly include the
+    // block's own mention of the name in what it checked.
+    let let_else_body_mentions_name_fixture = r#"
+        async fn let_else_body_mentions_name(&self, node_type: &str) -> usize {
+            let schema = self.get_schema_node(node_type).await.unwrap().unwrap();
+            let ok = schema.is_core;
+            let Some(schema) = unrelated_lookup() else {
+                log_missing_schema();
+                return 0;
+            };
+            schema.fields.len()
+        }
+    "#;
+    let functions = split_functions(let_else_body_mentions_name_fixture);
+    let (name, body) = &functions[0];
+    let hits = find_hits_in_function(body, "fixture.rs", name);
+    assert!(
+        hits.is_empty(),
+        "a let-else reshadow to an unrelated value must not be flagged just because its \
+         else-block body happens to mention the same name before diverging: {hits:?}"
     );
 }
