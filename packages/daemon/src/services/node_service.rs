@@ -68,10 +68,10 @@ use crate::nodespace::{
     RemoveNodeFromCollectionRequest, RenameCollectionRequest, ReorderNodeRequest,
     ReorderNodeResponse, ResetSeedNodeRequest, ResetSeedNodeResponse, ResolveConflictRequest,
     SchemaParamsRequest, SchemaResultResponse, SearchRequest, SetLocalPersonIdentityRequest,
-    UpdateNodeRequest, UpdateNodesBatchRequest, UpdateNodesBatchResponse,
-    UpdateRelationshipPropertiesRequest, UpdateRelationshipPropertiesResponse,
-    UpdatePersonNodeRequest, UpdateProjectNodeRequest, UpdateTaskNodeRequest,
-    UpsertNodeWithParentRequest, WatchRequest,
+    UpdateNodeRequest, UpdateNodesBatchRequest, UpdateNodesBatchResponse, UpdatePersonNodeRequest,
+    UpdateProjectNodeRequest, UpdateRelationshipPropertiesRequest,
+    UpdateRelationshipPropertiesResponse, UpdateTaskNodeRequest, UpsertNodeWithParentRequest,
+    WatchRequest,
 };
 
 /// The most rows a paged query RPC will return, whatever the request asks for:
@@ -2801,7 +2801,8 @@ fn markdown_error_to_status(err: nodespace_core::markdown::MarkdownError) -> Sta
 /// where type-specific fields are read from the top level.
 async fn typed_update_error_to_status(
     node_service: &nodespace_core::services::NodeService,
-    err: NodeServiceError) -> Status {
+    err: NodeServiceError,
+) -> Status {
     match err {
         NodeServiceError::VersionConflict {
             node_id,

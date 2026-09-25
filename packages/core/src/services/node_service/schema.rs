@@ -499,8 +499,13 @@ impl NodeService {
                 "ProjectNodeUpdate contains no changes",
             ));
         }
-        self.update_typed_fields(id, "project", expected_version, update.to_properties_patch())
-            .await
+        self.update_typed_fields(
+            id,
+            "project",
+            expected_version,
+            update.to_properties_patch(),
+        )
+        .await
     }
 
     /// Write a typed update's flat properties patch to a node that must be of

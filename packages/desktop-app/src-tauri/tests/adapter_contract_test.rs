@@ -142,7 +142,9 @@ async fn person_typed_update_matches_the_http_adapter_contract() {
     assert_eq!(updated["email"], json!("ada@example.com"));
     assert_eq!(updated["title"], json!("Ada Lovelace"));
     assert_eq!(updated["properties"], json!({}));
-    let version = updated["version"].as_i64().expect("version must be a number");
+    let version = updated["version"]
+        .as_i64()
+        .expect("version must be a number");
 
     let cleared = update_person_node(
         state.clone(),
@@ -155,7 +157,10 @@ async fn person_typed_update_matches_the_http_adapter_contract() {
     )
     .await
     .expect("update_person_node (clear) failed");
-    assert!(cleared.get("email").is_none(), "cleared email must be absent");
+    assert!(
+        cleared.get("email").is_none(),
+        "cleared email must be absent"
+    );
     assert_eq!(cleared["lastName"], json!("Lovelace"));
 }
 

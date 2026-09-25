@@ -318,8 +318,7 @@ fn person_node_to_value(node: Node) -> Result<serde_json::Value, String> {
 
 fn project_node_to_value(node: Node) -> Result<serde_json::Value, String> {
     let props = &node.properties;
-    let status =
-        string_prop(props, "status").unwrap_or_else(|| DEFAULT_PROJECT_STATUS.to_string());
+    let status = string_prop(props, "status").unwrap_or_else(|| DEFAULT_PROJECT_STATUS.to_string());
     let priority = string_prop(props, "priority");
     let start_date = props
         .get("start_date")
@@ -442,7 +441,10 @@ mod wire_contract {
         // User/custom fields remain in flat `properties`.
         assert_eq!(out["properties"]["custom:store"], "Costco");
         // Promotion is a move: core fields have one home, the top level.
-        assert_eq!(out["properties"], serde_json::json!({ "custom:store": "Costco" }));
+        assert_eq!(
+            out["properties"],
+            serde_json::json!({ "custom:store": "Costco" })
+        );
         // URI is injected by the backend.
         assert!(out["uri"].as_str().unwrap().starts_with("nodespace://"));
     }
@@ -493,7 +495,10 @@ mod wire_contract {
         );
         let out = node_to_typed_value(node).unwrap();
 
-        assert_eq!(flat_properties_view(&out), serde_json::json!({ "amount": 5 }));
+        assert_eq!(
+            flat_properties_view(&out),
+            serde_json::json!({ "amount": 5 })
+        );
     }
 
     #[test]
