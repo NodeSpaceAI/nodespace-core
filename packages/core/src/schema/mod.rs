@@ -976,6 +976,16 @@ pub async fn resolve_effective_fields(
         // deleted. Contribute nothing rather than failing the read: the
         // descendant's own fields still resolve, and schema deletion with a
         // live extends chain is explicitly out of scope (ADR-078).
+        //
+        // Not covered by packages/core/tests/schema_chain_blindness_guard_test.rs's
+        // structural guard: this `if let Some(schema) = schema { ... }`
+        // self-referential reshadow of `schema` is invisible to that
+        // scanner by design (its third documented false-negative class —
+        // see that file's module doc). This read is correct — it's this
+        // function's own per-hop step of the chain-walk the guard exists
+        // to distinguish real bugs from — but a future edit here isn't
+        // structurally protected the way most `get_schema_node` call sites
+        // are; review it with the same care ADR-078 changes always need.
         if let Some(schema) = schema {
             chain_fields.push(schema.fields);
         }
@@ -1743,6 +1753,16 @@ pub async fn handle_create_schema(
     // did commit was "NOT created", an agent retries, the exists-check reads
     // `Ok(None)` too, and the retry runs into the primary-key violation that
     // the exists-check exists to prevent. One raw row read tells them apart.
+    //
+    // Not covered by packages/core/tests/schema_chain_blindness_guard_test.rs's
+    // structural guard: this `let persisted = match persisted { ... }`
+    // self-referential reshadow is invisible to that scanner by design
+    // (its third documented false-negative class — see that file's module
+    // doc). The `persisted.fields`/`.relationships` reads below this match
+    // are correct — a write-confirmation echo of what was just created,
+    // nothing to chain-merge — but aren't structurally protected the way
+    // most `get_schema_node` call sites are; review changes here with the
+    // same care any ADR-078 extends-chain change needs.
     let persisted = match persisted {
         Some(schema) => schema,
         None => {
