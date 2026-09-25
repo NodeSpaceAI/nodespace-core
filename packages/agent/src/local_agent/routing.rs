@@ -528,6 +528,15 @@ pub fn render_candidates_for_prompt(candidates: &[SkillCandidate]) -> Option<Str
     // JSON inside a code block — instead of calling it. Measured on
     // mistral:7b, that wording produced zero tool calls where the unrouted
     // control produced one.
+    //
+    // "If none applies" is not a working escape on the locked model. A closing
+    // instruction to judge each procedure by what it does and call
+    // route_clarify when none fits was measured on gemma-4-e4b against a
+    // lexical false-positive top candidate ("mark it resolved" → Conflict
+    // Resolution): 0 of 15 clarified, identical to this wording, at every step
+    // from the first action through two successful lookups. The model keeps
+    // reading rather than noticing no offered tool can write. The fix for that
+    // case lives in retrieval (the skill descriptions), not here.
     let mut out = String::from(
         "REFERENCE — procedures relevant to this request. Use whichever applies and IGNORE the \
          rest. Do not describe, quote, or summarise any of it. Your reply must be the tool call \
@@ -729,6 +738,29 @@ pub fn stage2_tools(candidates: &[SkillCandidate], all: &[ToolDefinition]) -> Ve
         return fail_open_surface(all);
     }
     scoped
+}
+
+/// Add `route_clarify` to a Stage-2 surface when the registry offers it and
+/// the surface does not already carry it.
+///
+/// [`stage2_tools`] scopes to the candidates' whitelists, so a turn whose
+/// retrieval surfaced only skills that do not whitelist `route_clarify` had no
+/// way to say "none of these fits" — the case where the top candidate won on a
+/// shared word rather than on what it does. `route_clarify` performs nothing,
+/// so offering it widens no trust boundary; it is ADR-038's Stage-2 clarify
+/// branch. The caller decides *whether* to offer it — the clarification
+/// contract allows one per intent.
+pub fn with_stage2_clarify(
+    mut tools: Vec<ToolDefinition>,
+    all: &[ToolDefinition],
+) -> Vec<ToolDefinition> {
+    if tools.iter().any(|t| t.name == ROUTE_CLARIFY_TOOL) {
+        return tools;
+    }
+    if let Some(clarify) = all.iter().find(|t| t.name == ROUTE_CLARIFY_TOOL) {
+        tools.push(clarify.clone());
+    }
+    tools
 }
 
 /// Names of destructive tools that a gate-clearing candidate whitelisted but
@@ -1439,6 +1471,23 @@ mod tests {
         let rendered = render_candidates_for_prompt(&cands).unwrap();
         assert!(rendered.contains("Schema Creation instructions"));
         assert!(rendered.contains("Purpose: Schema Creation description"));
+    }
+
+    #[test]
+    fn with_stage2_clarify_adds_the_registered_tool_once() {
+        let all = vec![tool("list_conflicts"), tool(ROUTE_CLARIFY_TOOL)];
+        let names = |ts: &[ToolDefinition]| ts.iter().map(|t| t.name.clone()).collect::<Vec<_>>();
+
+        let added = with_stage2_clarify(vec![tool("list_conflicts")], &all);
+        assert_eq!(names(&added), ["list_conflicts", ROUTE_CLARIFY_TOOL]);
+
+        // A skill that already whitelists it must not see it twice.
+        let again = with_stage2_clarify(added, &all);
+        assert_eq!(names(&again), ["list_conflicts", ROUTE_CLARIFY_TOOL]);
+
+        // A registry without it adds nothing rather than inventing a def.
+        let absent = with_stage2_clarify(vec![tool("list_conflicts")], &[tool("list_conflicts")]);
+        assert_eq!(names(&absent), ["list_conflicts"]);
     }
 
     #[test]

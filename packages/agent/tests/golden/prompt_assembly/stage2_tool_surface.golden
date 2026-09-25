@@ -764,12 +764,12 @@ parameters_schema:
 }
 
 ### route_clarify
-description: Ask the user one specific clarifying question when a request can't be completed as understood — e.g. a search returned more than one plausible match and nothing already said picks one, or the request's wording could mean more than one thing. Ends the turn with the question; do not call another tool in the same turn.
+description: Ask the user one specific clarifying question when a request can't be completed as understood — e.g. a search returned more than one plausible match and nothing already said picks one, the request's wording could mean more than one thing, or none of the available tools can do what was asked. Ends the turn with the question; do not call another tool in the same turn.
 parameters_schema:
 {
   "properties": {
     "options": {
-      "description": "The concrete candidates the request could mean, one entry each.",
+      "description": "The concrete records the request could mean, one entry each. Empty when the question is not a choice between records.",
       "items": {
         "properties": {
           "id": {

@@ -2015,6 +2015,18 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
         // the mechanism actually implicated is turned off.
         let mut tools = routing::stage2_tools(&routed.candidates, &all_tools);
 
+        // ADR-038's Stage-2 clarify branch: `route_clarify` stays callable even
+        // when no matched skill whitelists it. This addition is skipped once
+        // the intent has already clarified, so a retrieval that keeps
+        // surfacing the same wrong skill cannot ask again after every answer.
+        // It governs only this addition: a skill that whitelists
+        // `route_clarify` itself (Graph Editing, Node Creation, for
+        // record-level ambiguity) still offers it, as does the fail-open
+        // surface.
+        if !session_already_clarified(session) {
+            tools = routing::with_stage2_clarify(tools, &all_tools);
+        }
+
         // A destructive tool withheld because its skill placed but did not win
         // retrieval. Logged because the *absence* of a tool is otherwise
         // indistinguishable from a model that declined to call it: nothing in
@@ -11320,6 +11332,77 @@ mod tests {
         assert!(
             stage2_prompt.contains("research"),
             "Stage 2's prompt must carry the matched candidate: {stage2_prompt}"
+        );
+    }
+
+    /// Run one routed turn whose only candidate does NOT whitelist
+    /// `route_clarify`, and return the tools Stage 2 offered.
+    async fn stage2_surface_for_mismatched_skill(session: &mut AgentSession) -> Vec<String> {
+        let engine = RecordingEngine::new(routed_engine(
+            "mark incident resolved",
+            "list_conflicts",
+            "{}",
+            "Done.",
+        ));
+        let tool_names = engine.tool_names_handle();
+        let inner = MockToolExecutor::new()
+            .with_tool("list_conflicts", json!({"type": "object"}), json!([]))
+            .with_tool(
+                routing::ROUTE_CLARIFY_TOOL,
+                json!({"type": "object"}),
+                json!({}),
+            );
+        let exec = RoutingToolExecutor::new(
+            inner,
+            vec![skill_candidate(
+                "Conflict Resolution",
+                0.87,
+                &["list_conflicts"],
+            )],
+        );
+        let loop_ = LocalAgentLoop::new(Arc::new(engine), Arc::new(exec));
+        loop_
+            .run_turn(
+                session,
+                "the incident Rowan was on call for — mark it resolved",
+                |_| {},
+                |_| {},
+                CancellationToken::new(),
+            )
+            .await
+            .expect("turn should succeed");
+        let names = tool_names.lock().unwrap()[1].clone();
+        names
+    }
+
+    #[tokio::test]
+    async fn stage2_offers_clarify_when_the_matched_skill_does_not_whitelist_it() {
+        // A lexical false-positive top candidate must not leave the model only
+        // "try its tools" or "give up": route_clarify stays on the surface.
+        let mut session = new_session();
+        let names = stage2_surface_for_mismatched_skill(&mut session).await;
+        assert!(
+            names.iter().any(|n| n == routing::ROUTE_CLARIFY_TOOL),
+            "Stage 2 must offer route_clarify: {names:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn stage2_withholds_clarify_once_the_intent_already_clarified() {
+        // One clarification per intent: after the user answered one, a
+        // retrieval that surfaces the same wrong skill must not ask again.
+        let mut session = new_session();
+        session.messages.push(ChatMessage::text(
+            Role::Assistant,
+            format!("{CLARIFICATION_OPENER}. Did you mean set its status?"),
+        ));
+        session
+            .messages
+            .push(ChatMessage::text(Role::User, "yes".to_string()));
+        let names = stage2_surface_for_mismatched_skill(&mut session).await;
+        assert!(
+            !names.iter().any(|n| n == routing::ROUTE_CLARIFY_TOOL),
+            "route_clarify must be withheld after an answered clarification: {names:?}"
         );
     }
 
