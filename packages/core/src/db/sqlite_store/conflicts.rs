@@ -250,6 +250,18 @@ impl SqliteStore {
     ///    is dropped too. `has_child`'s `properties.order` (and every other
     ///    edge property) travels with the re-point for free: this is a plain
     ///    endpoint `UPDATE`, not a delete-and-reinsert.
+    ///
+    ///    This step is schema-blind — it re-points every edge unconditionally
+    ///    and has no notion of a declared relationship's `cardinality`/
+    ///    `reverse_cardinality` (that knowledge lives in `NodeService`'s
+    ///    schema resolution, not the store). A re-point can therefore leave
+    ///    the survivor with two live edges where a declared relationship
+    ///    allows at most one — e.g. survivor and loser each held their own
+    ///    compliant `cardinality: One` edge toward different targets before
+    ///    the merge. The caller, [`crate::services::NodeService::merge_nodes`],
+    ///    closes that gap immediately afterward, in the same transaction, via
+    ///    `NodeService::enforce_cardinality_after_merge_in_tx` — using the
+    ///    returned `repointed_edges` below to know which edges to re-check.
     /// 3. **Archive the loser** — `lifecycle_status = 'archived'`. NOT a
     ///    literal ADR-068 "deleted" tombstone: this codebase has no such
     ///    lifecycle value (`LIFECYCLE_STATUSES` is `["active", "archived"]`,
@@ -266,12 +278,17 @@ impl SqliteStore {
     /// 4. Caller closes the conflict record (if any) via
     ///    [`Self::resolve_conflict_in_tx`] with a `Resolution::Merge`.
     ///
-    /// Returns `(properties_merged, superseded, edges_repointed, edges_dropped)`.
+    /// Returns `(properties_merged, superseded, repointed_edges, edges_dropped)`,
+    /// where `repointed_edges` is `(relationship_type, new_source_id,
+    /// new_target_id)` for every edge this step actually re-pointed (i.e.
+    /// `in_node`/`out_node` after the update) — `edges_dropped` counts only
+    /// this step's own self-edge and unique-constraint drops, not anything
+    /// the caller's cardinality pass may additionally evict.
     pub(crate) async fn merge_nodes_in_tx(
         tx: &Tx<'_>,
         survivor_id: &str,
         loser_id: &str,
-    ) -> Result<(u32, Value, u32, u32)> {
+    ) -> Result<(u32, Value, Vec<(String, String, String)>, u32)> {
         let conn = tx.conn();
 
         let mut survivor_rows = conn
@@ -400,7 +417,7 @@ impl SqliteStore {
             edges.push(Self::row_to_relationship(&row)?);
         }
 
-        let mut edges_repointed: u32 = 0;
+        let mut repointed_edges: Vec<(String, String, String)> = Vec::new();
         let mut edges_dropped: u32 = 0;
         let now = Utc::now().to_rfc3339();
 
@@ -463,7 +480,11 @@ impl SqliteStore {
             )
             .await
             .context("Failed to re-point relationship edge during merge")?;
-            edges_repointed += 1;
+            repointed_edges.push((
+                edge.relationship_type.clone(),
+                new_in.to_string(),
+                new_out.to_string(),
+            ));
         }
 
         // --- Step 3: archive the loser (see doc comment above for why
@@ -479,7 +500,7 @@ impl SqliteStore {
         Ok((
             properties_merged,
             Value::Object(superseded),
-            edges_repointed,
+            repointed_edges,
             edges_dropped,
         ))
     }

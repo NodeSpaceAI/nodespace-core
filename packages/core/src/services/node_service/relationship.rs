@@ -1136,6 +1136,168 @@ impl NodeService {
         Ok(())
     }
 
+    /// Closes the gap `SqliteStore::merge_nodes_in_tx` cannot close on its
+    /// own: that store-level step re-points every edge touching the merge's
+    /// loser onto the survivor with no notion of a declared relationship's
+    /// `cardinality`/`reverse_cardinality` (schema resolution lives here, in
+    /// `NodeService`, not the store). When survivor and loser each held
+    /// their own compliant edge of the same `cardinality: One` (or
+    /// `reverse_cardinality: One`) relationship toward *different* targets,
+    /// the repoint leaves the survivor with two live edges where the schema
+    /// allows at most one.
+    ///
+    /// Called by [`Self::merge_nodes`] immediately after
+    /// `SqliteStore::merge_nodes_in_tx` returns, in the same transaction,
+    /// with that call's `repointed_edges`. For each repointed edge whose
+    /// declared relationship is cardinality-one on the end the survivor now
+    /// occupies, evicts that edge — the one just re-pointed from the loser —
+    /// via [`Self::remove_relationship_in_tx`], the same eviction primitive
+    /// `create_relationship_in_tx`'s replace semantics use, keeping the
+    /// survivor's own pre-existing edge intact. Mirrors that method's gather
+    /// logic but does not need its "insert first, evict after" ordering
+    /// trick — the repoint has already landed, so a `required` relationship's
+    /// last-edge check sees both edges and cannot mistake this eviction for
+    /// removing the last one.
+    ///
+    /// Built-in relationship types (`has_child`, `mentions`, `member_of`,
+    /// `has_role`) carry no declared cardinality and are skipped — `has_child`
+    /// single-parent is a separate, structural guarantee untouched by this.
+    ///
+    /// Returns the number of repointed edges evicted here, so the caller can
+    /// fold them into the merge's overall `edges_dropped` count (and subtract
+    /// them from `edges_repointed`, since they did not end up surviving).
+    pub(crate) async fn enforce_cardinality_after_merge_in_tx(
+        &self,
+        tx: &NodeServiceTx<'_>,
+        survivor_id: &str,
+        repointed_edges: &[(String, String, String)],
+    ) -> Result<u32, NodeServiceError> {
+        let mut evicted = 0u32;
+        // Cached lazily — only needed once a forward-cardinality edge is seen.
+        let mut survivor_node_type: Option<String> = None;
+
+        for (relationship_type, source_id, target_id) in repointed_edges {
+            if crate::models::schema::is_builtin_relationship(relationship_type) {
+                continue;
+            }
+
+            // Forward end: this repointed edge now originates from the
+            // survivor. A declared `cardinality: One` means the survivor may
+            // hold at most one edge of this type — if the repoint gave it a
+            // second (its own pre-existing edge, plus this one from the
+            // loser), evict this one.
+            if source_id == survivor_id {
+                if survivor_node_type.is_none() {
+                    let survivor =
+                        crate::db::SqliteStore::get_node_in_tx(tx.store_tx(), survivor_id)
+                            .await
+                            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?
+                            .ok_or_else(|| NodeServiceError::node_not_found(survivor_id))?;
+                    survivor_node_type = Some(survivor.node_type);
+                }
+                let schema_id = survivor_node_type.as_deref().unwrap_or_default();
+
+                let relationship = match self
+                    .resolve_declared_relationship(schema_id, relationship_type)
+                    .await
+                {
+                    Ok(rel) => rel,
+                    // Not a declared relationship on this schema (e.g. the
+                    // schema changed since the edge was created) — nothing to
+                    // enforce here.
+                    Err(NodeServiceError::InvalidUpdate(_)) => continue,
+                    Err(e) => return Err(e),
+                };
+
+                if relationship.cardinality == crate::models::schema::RelationshipCardinality::One {
+                    let existing_edges =
+                        crate::db::SqliteStore::get_relationship_edges_from_source_in_tx(
+                            tx.store_tx(),
+                            survivor_id,
+                            relationship_type,
+                        )
+                        .await
+                        .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+
+                    let collides = existing_edges
+                        .iter()
+                        .any(|(_, existing_target)| existing_target != target_id);
+                    if collides {
+                        self.remove_relationship_in_tx(tx, source_id, relationship_type, target_id)
+                            .await?;
+                        evicted += 1;
+                        continue;
+                    }
+                }
+            }
+
+            // Reverse end: this repointed edge now targets the survivor. A
+            // declared `reverse_cardinality: One` means the survivor may be
+            // the target of at most one edge of this type (from the
+            // declaring schema's sources) — if the repoint gave it a second,
+            // evict this one.
+            if target_id == survivor_id {
+                let Some(source) = crate::db::SqliteStore::get_node_in_tx(tx.store_tx(), source_id)
+                    .await
+                    .map_err(|e| NodeServiceError::query_failed(e.to_string()))?
+                else {
+                    continue;
+                };
+
+                let relationship = match self
+                    .resolve_declared_relationship(&source.node_type, relationship_type)
+                    .await
+                {
+                    Ok(rel) => rel,
+                    Err(NodeServiceError::InvalidUpdate(_)) => continue,
+                    Err(e) => return Err(e),
+                };
+
+                if relationship.reverse_cardinality
+                    == crate::models::schema::RelationshipCardinality::One
+                {
+                    let (_, owners) = self.resolve_relationships(&source.node_type).await?;
+                    let declaring_type = owners
+                        .get(relationship_type)
+                        .cloned()
+                        .unwrap_or_else(|| source.node_type.clone());
+
+                    let existing_edges =
+                        crate::db::SqliteStore::get_relationship_edges_into_target_in_tx(
+                            tx.store_tx(),
+                            survivor_id,
+                            relationship_type,
+                        )
+                        .await
+                        .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+
+                    let mut collides = false;
+                    for (_, existing_source_id, existing_source_type) in &existing_edges {
+                        if existing_source_id == source_id {
+                            continue;
+                        }
+                        if !self
+                            .type_satisfies(existing_source_type, &declaring_type)
+                            .await?
+                        {
+                            continue;
+                        }
+                        collides = true;
+                        break;
+                    }
+
+                    if collides {
+                        self.remove_relationship_in_tx(tx, source_id, relationship_type, target_id)
+                            .await?;
+                        evicted += 1;
+                    }
+                }
+            }
+        }
+
+        Ok(evicted)
+    }
+
     /// Tx-scoped twin of [`Self::delete_relationship`], for invariant-rule
     /// `remove_relationship` actions (ADR-060 §1). Reproduces the
     /// required-relationship last-edge protection via tx-consistent reads.

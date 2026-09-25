@@ -182,6 +182,195 @@ async fn merge_drops_a_repoint_that_would_collide_with_an_existing_survivor_edge
 }
 
 #[tokio::test]
+async fn merge_evicts_a_repointed_edge_that_violates_forward_cardinality_one() -> Result<()> {
+    let (svc, _tmp) = service().await?;
+
+    // A declared relationship pair with `cardinality: one` on the forward
+    // (source) side and `many` on the reverse, so only the forward check is
+    // in play — mirrors
+    // `create_relationship_replaces_prior_edge_from_cardinality_one_source`
+    // in `node_service/mod.rs`'s own test suite.
+    svc.store()
+        .create_node(
+            Node::new_with_id(
+                "widget".to_string(),
+                "schema".to_string(),
+                "Widget".to_string(),
+                json!({ "fields": [], "relationships": [] }),
+            ),
+            None,
+            None,
+        )
+        .await?;
+    svc.store()
+        .create_node(
+            Node::new_with_id(
+                "gadget".to_string(),
+                "schema".to_string(),
+                "Gadget".to_string(),
+                json!({ "fields": [] }),
+            ),
+            None,
+            None,
+        )
+        .await?;
+    let declarations: Vec<nodespace_core::models::schema::SchemaRelationship> =
+        serde_json::from_value(json!([{
+            "name": "primary_widget",
+            "targetType": "widget",
+            "direction": "out",
+            "cardinality": "one",
+            "reverseName": "gadgets",
+            "reverseCardinality": "many"
+        }]))?;
+    svc.set_schema_relationships("gadget", &declarations)
+        .await?;
+
+    let survivor_id = svc
+        .create_node(Node::new(
+            "gadget".to_string(),
+            "Gadget One".to_string(),
+            json!({}),
+        ))
+        .await?;
+    let loser_id = svc
+        .create_node(Node::new(
+            "gadget".to_string(),
+            "Gadget Two".to_string(),
+            json!({}),
+        ))
+        .await?;
+    let survivor_widget = svc
+        .create_node(Node::new(
+            "widget".to_string(),
+            "Widget One".to_string(),
+            json!({}),
+        ))
+        .await?;
+    let loser_widget = svc
+        .create_node(Node::new(
+            "widget".to_string(),
+            "Widget Two".to_string(),
+            json!({}),
+        ))
+        .await?;
+
+    // Both survivor and loser hold their own compliant cardinality-one edge,
+    // toward DIFFERENT targets — neither create_relationship call has
+    // anything to replace at creation time.
+    svc.create_relationship(&survivor_id, "primary_widget", &survivor_widget, json!({}))
+        .await?;
+    svc.create_relationship(&loser_id, "primary_widget", &loser_widget, json!({}))
+        .await?;
+
+    let outcome = svc.merge_nodes(&survivor_id, &loser_id, None).await?;
+
+    // The repoint itself succeeds (different targets, no raw unique-index
+    // collision) but must then be evicted by the cardinality-one check —
+    // never counted as a surviving repoint.
+    assert_eq!(
+        outcome.edges_repointed, 0,
+        "the repointed edge must be evicted for violating cardinality: one, not survive"
+    );
+    assert_eq!(
+        outcome.edges_dropped, 1,
+        "the evicted repoint must still be counted as dropped"
+    );
+
+    // Exactly one `primary_widget` edge remains, and it is the survivor's
+    // own pre-existing edge — not the loser's.
+    assert_eq!(
+        svc.store()
+            .check_relationship_exists(&survivor_id, "primary_widget")
+            .await?,
+        1,
+        "cardinality: one must hold after the merge"
+    );
+    assert!(
+        svc.store()
+            .relationship_exists(&survivor_id, &survivor_widget, "primary_widget")
+            .await?,
+        "the survivor's own edge must be kept"
+    );
+    assert!(
+        !svc.store()
+            .relationship_exists(&survivor_id, &loser_widget, "primary_widget")
+            .await?,
+        "the loser's repointed edge must be dropped, not duplicated onto the survivor"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn merge_evicts_a_repointed_edge_that_violates_reverse_cardinality_one() -> Result<()> {
+    let (svc, _tmp) = service().await?;
+
+    // `person.tasks` -> `task`, `reverseCardinality: one` (a task has a
+    // single assignee) is a core-seeded declaration — no custom schema
+    // needed. The MERGE happens on the `task` side: two tasks, each already
+    // validly assigned to a different person, get merged into one.
+    let survivor_task = svc
+        .create_node(Node::new(
+            "task".to_string(),
+            "Ship the feature".to_string(),
+            json!({}),
+        ))
+        .await?;
+    let loser_task = svc
+        .create_node(Node::new(
+            "task".to_string(),
+            "Ship the feature (dup)".to_string(),
+            json!({}),
+        ))
+        .await?;
+    let person_a = svc
+        .create_node(Node::new(
+            "person".to_string(),
+            "Alice".to_string(),
+            json!({}),
+        ))
+        .await?;
+    let person_b = svc
+        .create_node(Node::new(
+            "person".to_string(),
+            "Bob".to_string(),
+            json!({}),
+        ))
+        .await?;
+
+    svc.create_relationship(&person_a, "tasks", &survivor_task, json!({}))
+        .await?;
+    svc.create_relationship(&person_b, "tasks", &loser_task, json!({}))
+        .await?;
+
+    let outcome = svc.merge_nodes(&survivor_task, &loser_task, None).await?;
+
+    assert_eq!(
+        outcome.edges_repointed, 0,
+        "the repointed (former person_b) edge must be evicted for violating reverse_cardinality: one"
+    );
+    assert_eq!(outcome.edges_dropped, 1);
+
+    // The survivor task must show exactly one assignee — Alice's
+    // pre-existing edge, not Bob's repointed one.
+    assert!(
+        svc.store()
+            .relationship_exists(&person_a, &survivor_task, "tasks")
+            .await?,
+        "the survivor's own assignee edge must be kept"
+    );
+    assert!(
+        !svc.store()
+            .relationship_exists(&person_b, &survivor_task, "tasks")
+            .await?,
+        "the loser's repointed assignee edge must be dropped, not give the task two assignees"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn merge_archives_the_loser_not_hard_deletes_it() -> Result<()> {
     let (svc, _tmp) = service().await?;
 
