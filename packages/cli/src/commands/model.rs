@@ -173,7 +173,10 @@ fn render_load_event(
             format!("downloading {model_id}: {pct:.0}%")
         }
         ("downloading", _, _) => format!("downloading {model_id}..."),
-        (other, _, _) => format!("{other}: {}", event.message.as_deref().unwrap_or_default()),
+        (other, _, _) => match &event.message {
+            Some(detail) => format!("{other}: {detail}"),
+            None => other.to_string(),
+        },
     };
     Ok(Some(line))
 }
@@ -297,7 +300,7 @@ mod tests {
             render_load_event(&event("loading"), "m", false)
                 .unwrap()
                 .as_deref(),
-            Some("loading: ")
+            Some("loading")
         );
     }
 }
