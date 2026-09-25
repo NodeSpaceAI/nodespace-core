@@ -742,17 +742,11 @@ impl NodeService {
         // children the backend had re-parented, and their events never fired.
         // The store re-validates each version inside the transaction
         // (eliminates the TOCTOU against the pre-validation above).
-        let new_parent_id_owned = new_parent_id.to_string();
-        let children_owned: Vec<(String, i64)> = children.to_vec();
+        let new_parent_id = new_parent_id.to_string();
+        let children: Vec<(String, i64)> = children.to_vec();
         let service = self.clone();
-        let service_for_tx = service.clone();
-        let updated: Vec<Node> = service
+        let updated: Vec<Node> = self
             .with_transaction(move |tx| {
-                let service = service_for_tx.clone();
-                let new_parent_id = new_parent_id_owned.clone();
-                let children = children_owned.clone();
-                let nodes = nodes.clone();
-                let former_parents = former_parents.clone();
                 Box::pin(async move {
                     let children_with_versions: Vec<(&str, i64)> = children
                         .iter()
