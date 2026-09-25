@@ -525,21 +525,41 @@ impl NodeService {
     ///   never have been reached. Both are accepted, not incidental: extends
     ///   chains are shallow by construction (ADR-078 composition is a rare,
     ///   administrative act, and nothing about this call site changes
-    ///   `MAX_EXTENDS_DEPTH`'s cap), and every other single-name lookup
-    ///   through `resolve_relationships`/`resolve_field_owners` in this
-    ///   codebase (e.g. `check_node_completeness`, `find_duplicate_for`)
-    ///   already resolves the full chain unconditionally rather than
+    ///   `MAX_EXTENDS_DEPTH`'s cap — the only real production `extends`
+    ///   declaration in this codebase, the built-in `linear` methodology, is
+    ///   a single level), and every other single-name lookup through
+    ///   `resolve_relationships`/`resolve_field_owners` in this codebase
+    ///   (e.g. `check_node_completeness`, `find_duplicate_for`) already
+    ///   resolves the full chain unconditionally rather than
     ///   short-circuiting — this brings the relationship-creation path's cost
     ///   and failure shape in line with theirs instead of leaving it as the
-    ///   one outlier with a bespoke early exit.
+    ///   one outlier with a bespoke early exit. A short-circuit-then-fallback
+    ///   variant was considered and rejected: it would need its own
+    ///   nearest-scope peek ahead of `resolve_relationships`, reintroducing a
+    ///   second, slightly different chain-walk this consolidation exists to
+    ///   eliminate, to save work on a path that's already cheap in practice.
+    ///
+    /// Returns the owners map alongside the match (mirroring
+    /// `resolve_relationships`'s own shape) rather than discarding it —
+    /// `create_relationship_in_tx`'s `reverse_cardinality: One` branch needs
+    /// the declaring schema for this exact `schema_id`/`relationship_name`
+    /// pair immediately after, and previously re-derived it with a second,
+    /// redundant full-chain `resolve_relationships` call of its own while
+    /// the write transaction was still open.
     async fn resolve_declared_relationship(
         &self,
         schema_id: &str,
         relationship_name: &str,
-    ) -> Result<crate::models::schema::SchemaRelationship, NodeServiceError> {
-        let (relationships, _owners) = self.resolve_relationships(schema_id).await?;
+    ) -> Result<
+        (
+            crate::models::schema::SchemaRelationship,
+            std::collections::HashMap<String, String>,
+        ),
+        NodeServiceError,
+    > {
+        let (relationships, owners) = self.resolve_relationships(schema_id).await?;
 
-        relationships
+        let relationship = relationships
             .into_iter()
             .find(|rel| rel.name == relationship_name)
             .ok_or_else(|| {
@@ -551,7 +571,9 @@ impl NodeService {
                     "Relationship '{}' not defined in schema '{}'. Built-in relationships (member_of, has_child, mentions, has_role) are universal.",
                     relationship_name, schema_id
                 ))
-            })
+            })?;
+
+        Ok((relationship, owners))
     }
 
     /// The forward name an edge addressed through an `in`-direction
@@ -1208,13 +1230,13 @@ impl NodeService {
             let resolved = self
                 .resolve_declared_relationship(schema_id, relationship_name)
                 .await;
-            let relationship = match (&forward_name, resolved) {
+            let (relationship, declared_owners) = match (&forward_name, resolved) {
                 (None, resolved) => resolved?,
-                (Some(_), Ok(rel))
+                (Some(_), Ok((rel, owners)))
                     if rel.direction == crate::models::schema::RelationshipDirection::Out
                         && rel.reverse_name == requested_name =>
                 {
-                    rel
+                    (rel, owners)
                 }
                 (Some(_), _) => {
                     return Err(NodeServiceError::invalid_update(format!(
@@ -1333,8 +1355,11 @@ impl NodeService {
             if relationship.reverse_cardinality
                 == crate::models::schema::RelationshipCardinality::One
             {
-                let (_, owners) = self.resolve_relationships(schema_id).await?;
-                let declaring_type = owners
+                // Reuses the owners map `resolve_declared_relationship` above
+                // already built for this same `schema_id` rather than paying
+                // for a second full-chain `resolve_relationships` call while
+                // this write transaction is still open.
+                let declaring_type = declared_owners
                     .get(relationship_name)
                     .cloned()
                     .unwrap_or_else(|| schema_id.clone());
