@@ -1097,12 +1097,52 @@ const PREFILL_STABILITY_CEILING: u32 = 8_000;
 const EMPTY_RESPONSE_FALLBACK: &str =
     "⚠️ I wasn't able to produce a response for that. Please try again.";
 
-/// Shared confirmation request used when a guard suppresses a response the model
-/// should not have produced — a fabricated action claim, or a tool call the
-/// model narrated as text instead of invoking. Kept in one place so the two
-/// guards stay in sync.
+/// Replacement for a suppressed response when nothing was written this turn —
+/// a fabricated action claim with zero tool calls, or a tool call the model
+/// narrated as text instead of invoking. Asking the user to confirm is honest
+/// only because nothing happened.
 const CONFIRMATION_REQUEST: &str =
     "I'd like to help with that. Could you confirm what you'd like me to do? I want to make sure I take the right action.";
+
+/// Lead-in for a suppressed response when a write genuinely went through but
+/// the model's account of it could not be trusted (an invented id, a leaked
+/// pseudo-call). [`CONFIRMATION_REQUEST`] would read as "nothing happened" and
+/// invite a redundant retry, so the replacement states the change landed and
+/// lists what actually ran instead of relaying the model's wording.
+///
+/// Worded to avoid every [`contains_action_claim`] phrase: the no-op guard runs
+/// after the guards that emit this, and must judge the model's claim, not ours.
+const WRITE_MISREPORTED_NOTICE: &str =
+    "Your change went through, but my description of it wasn't reliable. Here's what actually ran:";
+
+/// Replacement when the model claimed an action backed only by writes that
+/// persisted zero of the fields they carried. The write call itself did run,
+/// so "nothing happened" would be wrong; what is true is that the particulars
+/// the user asked for were not saved.
+const NOTHING_SAVED_NOTICE: &str =
+    "That change ran, but none of the details you asked for were saved. Could you tell me exactly which details you'd like recorded?";
+
+/// What replaces a response a guard suppressed for misreporting the turn.
+///
+/// Whether the user should be asked to confirm depends on the turn, not the
+/// guard: a leaked pseudo-call or an invented id can follow a real write
+/// earlier in the same turn. Any successful write selects
+/// [`WRITE_MISREPORTED_NOTICE`] plus the same error-aware summary the
+/// empty-text fallback uses; otherwise nothing changed and
+/// [`CONFIRMATION_REQUEST`] is accurate.
+fn suppressed_response_replacement(executions: &[ToolExecutionRecord]) -> String {
+    if executions
+        .iter()
+        .any(|r| !r.is_error && super::tools::is_write_tool(&r.name))
+    {
+        format!(
+            "{WRITE_MISREPORTED_NOTICE}\n\n{}",
+            summarize_executions(executions)
+        )
+    } else {
+        CONFIRMATION_REQUEST.to_string()
+    }
+}
 
 fn session_prompt_override(session: &AgentSession) -> Option<&str> {
     session.system_prompt_override.as_deref()
@@ -2484,7 +2524,8 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                 // different id than the one the tool actually returned. A
                 // fabricated id in `nodespace://` form is worse than a vague
                 // hallucination — it reads as a durable, pastable reference and
-                // resolves to nothing.
+                // resolves to nothing. Because the write usually DID land, the
+                // replacement says so rather than asking the user to confirm.
                 let normalized = if !normalized.is_empty() && normalized.contains("nodespace://") {
                     let bad_ids = ungrounded_node_uris(&normalized, &all_tool_executions, session);
                     if bad_ids.is_empty() {
@@ -2498,9 +2539,9 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                             fabricated_ids = %bad_ids.join(", "),
                             response_preview = %preview,
                             response_preview_truncated = preview_truncated,
-                            "Fabricated id: model referenced a nodespace:// id no tool call this turn produced — converting to confirmation request"
+                            "Fabricated id: model referenced a nodespace:// id no tool call this turn produced — replacing response"
                         );
-                        CONFIRMATION_REQUEST.to_string()
+                        suppressed_response_replacement(&all_tool_executions)
                     }
                 } else {
                     normalized
@@ -2510,10 +2551,11 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                 // plain text (e.g. `search_nodes(...)`) instead of using the
                 // structured tool_calls field, so nothing executes and the raw
                 // pseudo-code would be persisted as the answer. Detect that shape
-                // and replace it with a confirmation request rather than leaking
-                // internal call syntax to the user. Fires independently of
-                // any_real_tool_calls: even after a real call earlier in the turn,
-                // a leaked pseudo-call in the final text is still not a valid answer.
+                // and replace it rather than leaking internal call syntax to the
+                // user. Fires independently of any_real_tool_calls: even after a
+                // real call earlier in the turn, a leaked pseudo-call in the final
+                // text is still not a valid answer — which is also why the
+                // replacement is chosen from what the turn actually wrote.
                 let normalized = if !normalized.is_empty()
                     && looks_like_narrated_tool_call(&normalized)
                 {
@@ -2524,9 +2566,9 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                         iteration = iteration,
                         response_preview = %preview,
                         response_preview_truncated = preview_truncated,
-                        "Narrated tool call: model printed a tool call as text instead of invoking it — converting to confirmation request"
+                        "Narrated tool call: model printed a tool call as text instead of invoking it — replacing response"
                     );
-                    CONFIRMATION_REQUEST.to_string()
+                    suppressed_response_replacement(&all_tool_executions)
                 } else {
                     normalized
                 };
@@ -2563,9 +2605,9 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                         write_calls = write_field_counts.len(),
                         response_preview = %preview,
                         response_preview_truncated = preview_truncated,
-                        "No-op success: model claimed an action backed only by writes that persisted nothing — converting to confirmation request"
+                        "No-op success: model claimed an action backed only by writes that persisted nothing — replacing response"
                     );
-                    CONFIRMATION_REQUEST.to_string()
+                    NOTHING_SAVED_NOTICE.to_string()
                 } else {
                     normalized
                 };
@@ -7401,7 +7443,8 @@ mod tests {
     /// and returned a real id, but the model's text names a different,
     /// invented `nodespace://` id (not a UUID — contains g/w/x/y/z, ends in a
     /// placeholder literal). This must never reach the user; it must not be
-    /// confused for the real id either.
+    /// confused for the real id either. The write did land, so the user must
+    /// be told so — not asked to confirm as though nothing happened.
     #[tokio::test]
     async fn fabricated_id_guard_converts_a_response_naming_an_invented_id() {
         let response = run_guard_turn(
@@ -7412,9 +7455,54 @@ mod tests {
         )
         .await;
         assert_eq!(
-            response, CONFIRMATION_REQUEST,
-            "a response naming an id no tool call produced must not reach the user"
+            response,
+            format!("{WRITE_MISREPORTED_NOTICE}\n\n• node creation completed"),
+            "a response naming an id no tool call produced must not reach the user, \
+             and the write that did land must be reported"
         );
+    }
+
+    #[tokio::test]
+    async fn fabricated_id_guard_asks_for_confirmation_when_nothing_was_written() {
+        let response = run_guard_turn(
+            "search_nodes",
+            r#"{"query":"invoice"}"#,
+            json!({"count": 1, "results": [{"id": "nodespace://real-a"}]}),
+            "Your invoice is nodespace://invented-id.",
+        )
+        .await;
+        assert_eq!(response, CONFIRMATION_REQUEST);
+    }
+
+    /// A pseudo-call leaked after a real write in the same turn: the write
+    /// stands, so "please confirm" would misreport the turn.
+    #[tokio::test]
+    async fn narrated_tool_call_guard_reports_a_write_that_already_landed() {
+        let response = run_guard_turn(
+            "update_node",
+            r#"{"id":"abc","field_values":{"due_date":"2026-08-06"}}"#,
+            json!({"id": "nodespace://abc", "updated": true, "property_count": 1}),
+            "update_node(id='abc', status='done')",
+        )
+        .await;
+        assert_eq!(
+            response,
+            format!("{WRITE_MISREPORTED_NOTICE}\n\n• node update completed")
+        );
+    }
+
+    #[test]
+    fn guard_replacement_messages_are_not_action_claims() {
+        // The no-op guard runs after the guards that emit these and keys on
+        // `contains_action_claim`; a replacement tripping it would be judged
+        // as though the model had said it.
+        for msg in [
+            CONFIRMATION_REQUEST,
+            WRITE_MISREPORTED_NOTICE,
+            NOTHING_SAVED_NOTICE,
+        ] {
+            assert!(!contains_action_claim(msg), "{msg}");
+        }
     }
 
     #[tokio::test]
@@ -7515,7 +7603,7 @@ mod tests {
         )
         .await;
         assert_eq!(
-            response, CONFIRMATION_REQUEST,
+            response, NOTHING_SAVED_NOTICE,
             "a claim backed only by a write that persisted nothing must not reach the user"
         );
     }
