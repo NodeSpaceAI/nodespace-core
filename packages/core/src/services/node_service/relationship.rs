@@ -1149,7 +1149,13 @@ impl NodeService {
             // is on `(in_node, out_node, relationship_type)`, not
             // `(out_node, relationship_type)`, so briefly holding both is
             // not a constraint violation — and it is invisible to any
-            // reader outside this transaction regardless.
+            // reader outside this transaction regardless. Inserting first
+            // helps only the source's own count: the evicted edge's old
+            // TARGET loses an inbound edge the insert does not replace, so
+            // when that was its last qualifying edge of a required `in`
+            // declaration, the target-side guard rejects the eviction and
+            // the whole create rolls back — the same trap as the reverse
+            // case below.
             let mut forward_targets_to_evict: Vec<String> = Vec::new();
             if relationship.cardinality == crate::models::schema::RelationshipCardinality::One {
                 let existing_edges =
@@ -1178,8 +1184,9 @@ impl NodeService {
             // for why matches are scoped to the declaring schema (two schemas
             // may share a forward name toward the same target type as
             // logically distinct relationships). Also gather-only, for
-            // symmetry with the forward case — though the required-relationship
-            // trap above is specific to the forward direction: an evicted
+            // symmetry with the forward case — though the source-side
+            // required-relationship trap above is specific to the forward
+            // direction: an evicted
             // reverse-side edge belongs to a DIFFERENT node than the one
             // gaining the new edge, so inserting first cannot help it the
             // same way (that node's own edge count is genuinely unaffected
@@ -2533,6 +2540,80 @@ mod required_in_last_edge_tests {
             .await
             .unwrap();
         assert_eq!(superseders(&svc, "old").await, ["new"]);
+    }
+
+    /// A `cardinality: one` replace evicts the source's previous edge through
+    /// `remove_relationship_in_tx`. Inserting the replacement first satisfies
+    /// only the source's own count; when the evicted edge was its old
+    /// target's last qualifying inbound edge, the create rolls back whole.
+    #[tokio::test]
+    async fn replace_that_strands_the_old_target_is_rejected() {
+        let (svc, _tmp) = service().await;
+        crate::schema::handle_create_schema(
+            &svc,
+            json!({
+                "name": "guard_one",
+                "fields": [],
+                "relationships": [
+                    {
+                        "name": "replaces",
+                        "targetType": "guard_one",
+                        "direction": "out",
+                        "cardinality": "one",
+                        "reverseName": "replaced_by",
+                        "reverseCardinality": "many"
+                    },
+                    {
+                        "name": "replaced_by",
+                        "targetType": "guard_one",
+                        "direction": "in",
+                        "cardinality": "many",
+                        "required": true,
+                        "reverseName": "replaces",
+                        "reverseCardinality": "one"
+                    }
+                ]
+            }),
+        )
+        .await
+        .expect("one schema");
+        for id in ["a", "b", "x", "y"] {
+            node(&svc, id, "guard_one").await;
+        }
+        let targets = |id: &'static str| {
+            let svc = svc.clone();
+            async move {
+                svc.get_related_nodes(id, "replaces", "out")
+                    .await
+                    .unwrap()
+                    .into_iter()
+                    .map(|n| n.id)
+                    .collect::<Vec<_>>()
+            }
+        };
+        svc.create_relationship("a", "replaces", "x", json!({}))
+            .await
+            .unwrap();
+
+        let message = svc
+            .create_relationship("a", "replaces", "y", json!({}))
+            .await
+            .expect_err("evicting a -> x strands x")
+            .to_string();
+        assert!(
+            message.contains("'replaced_by' on 'x' is required and this is its last edge"),
+            "{message}"
+        );
+        assert_eq!(targets("a").await, ["x"], "the create rolled back whole");
+
+        // With another qualifying source on `x`, the same replace goes through.
+        svc.create_relationship("b", "replaces", "x", json!({}))
+            .await
+            .unwrap();
+        svc.create_relationship("a", "replaces", "y", json!({}))
+            .await
+            .unwrap();
+        assert_eq!(targets("a").await, ["y"]);
     }
 
     #[tokio::test]
