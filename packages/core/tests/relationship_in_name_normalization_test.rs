@@ -657,6 +657,75 @@ async fn pairing_is_validated_after_same_call_extends_retarget() -> Result<()> {
     Ok(())
 }
 
+/// Re-parenting a MIDDLE schema can drop a forward a grandchild inherits. The
+/// grandchild's stored chain still runs through the old parent, so validation
+/// must splice in the chain the call leaves it with.
+#[tokio::test]
+async fn reparenting_middle_schema_that_drops_mirrored_forward_is_rejected() -> Result<()> {
+    let (svc, _t) = create_test_service().await?;
+    let create = |payload: serde_json::Value| {
+        let svc = svc.clone();
+        async move {
+            handle_create_schema(&svc, payload)
+                .await
+                .map_err(|e| anyhow::anyhow!("{e}"))
+        }
+    };
+    create(json!({ "name": "in_norm_target", "fields": [] })).await?;
+    create(json!({
+        "name": "in_norm_grand",
+        "fields": [],
+        "relationships": [{
+            "name": "reviews",
+            "targetType": "in_norm_target",
+            "direction": "out",
+            "cardinality": "many",
+            "reverseName": "reviewed_by",
+            "reverseCardinality": "many"
+        }]
+    }))
+    .await?;
+    create(json!({ "name": "in_norm_other_grand", "fields": [] })).await?;
+    create(json!({ "name": "in_norm_middle", "extends": "in_norm_grand", "fields": [] })).await?;
+    create(json!({ "name": "in_norm_leaf", "extends": "in_norm_middle", "fields": [] })).await?;
+    // The target names its reviewers by the leaf type, whose forward is
+    // inherited two levels up.
+    handle_update_schema(
+        &svc,
+        json!({
+            "schema_id": "in_norm_target",
+            "add_relationships": [{
+                "name": "reviewed_by",
+                "targetType": "in_norm_leaf",
+                "direction": "in",
+                "cardinality": "many",
+                "reverseName": "reviews",
+                "reverseCardinality": "many"
+            }]
+        }),
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("target reviewed_by: {e}"))?;
+
+    let err = handle_update_schema(
+        &svc,
+        json!({ "schema_id": "in_norm_middle", "extends": "in_norm_other_grand" }),
+    )
+    .await
+    .expect_err("re-parenting away from the declaring ancestor must be rejected");
+    let message = err.to_string();
+    assert!(
+        message.contains("would break 'in_norm_target.reviewed_by'"),
+        "got: {message}"
+    );
+    assert_eq!(
+        message.matches("invalid params").count(),
+        1,
+        "the wrapped error must not repeat its kind prefix: {message}"
+    );
+    Ok(())
+}
+
 /// `set_schema_relationships` writes declarations below schema save's pairing
 /// check, so the forward half can still disappear there. A write through the
 /// `in` name then has no storage shape to normalize to; the error names what

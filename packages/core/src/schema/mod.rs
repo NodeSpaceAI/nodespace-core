@@ -447,12 +447,22 @@ async fn type_chain(
     if type_id == pending.id {
         return Ok(pending.chain.to_vec());
     }
-    node_service.resolve_type_chain(type_id).await.map_err(|e| {
-        MarkdownError::internal_error(format!(
-            "Failed to resolve extends chain of '{}': {}",
-            type_id, e
-        ))
-    })
+    let mut chain = node_service
+        .resolve_type_chain(type_id)
+        .await
+        .map_err(|e| {
+            MarkdownError::internal_error(format!(
+                "Failed to resolve extends chain of '{}': {}",
+                type_id, e
+            ))
+        })?;
+    // A descendant's stored chain runs through the pending schema into its
+    // OLD ancestors; splice in the chain this call leaves it with.
+    if let Some(at) = chain.iter().position(|scope| scope == pending.id) {
+        chain.truncate(at);
+        chain.extend_from_slice(pending.chain);
+    }
+    Ok(chain)
 }
 
 /// Reject an `in`-direction declaration that is not the exact mirror of a
@@ -627,13 +637,18 @@ async fn validate_in_declarations_paired(
                 continue;
             }
             let owner_chain = type_chain(node_service, &schema.id, pending).await?;
+            // Only a pairing rejection is re-framed as this change's fault; a
+            // storage failure passes through with its own kind.
             validate_in_declaration(node_service, &schema.id, &owner_chain, rel, pending)
                 .await
-                .map_err(|e| {
-                    MarkdownError::invalid_params(format!(
-                        "This change to '{}' would break '{}.{}', which mirrors it: {}",
-                        pending.id, schema.id, rel.name, e
-                    ))
+                .map_err(|e| match e {
+                    MarkdownError::InvalidParams(message) => {
+                        MarkdownError::invalid_params(format!(
+                            "This change to '{}' would break '{}.{}', which mirrors it: {}",
+                            pending.id, schema.id, rel.name, message
+                        ))
+                    }
+                    other => other,
                 })?;
         }
     }
@@ -2911,7 +2926,10 @@ pub async fn handle_update_schema(
     // call leaves them — after the `extends` re-target above, so a combined
     // call is judged by its result. Only when declarations changed: that is
     // the only way this call can break a pair, here or on a schema mirroring
-    // one of this schema's forward declarations.
+    // one of this schema's forward declarations. An `extends` re-target is
+    // one of those changes — it bumps `relationships_added` above, since the
+    // `extends` edge is itself a declaration — which is what brings a
+    // re-parent that drops an inherited forward under this check.
     if relationships_added > 0 || relationships_removed > 0 {
         let own_chain =
             match params.extends.as_deref().map(str::trim) {
