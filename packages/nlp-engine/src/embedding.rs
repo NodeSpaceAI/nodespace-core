@@ -13,7 +13,7 @@ use crate::config::EmbeddingConfig;
 use crate::error::{EmbeddingError, Result};
 use lru::LruCache;
 use std::num::NonZeroUsize;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 
 /// Embedding vector dimension for nomic-embed-vision-v1.5
 pub const EMBEDDING_DIMENSION: usize = 768;
@@ -57,8 +57,6 @@ static LLAMA_BACKEND: Mutex<Option<LlamaBackend>> = Mutex::new(None);
 trait GpuResidentState: Send + Sync {
     /// Drop the loaded state, if any. Returns whether something was dropped.
     fn release(&self) -> bool;
-    /// Whether the slot still holds a loaded state.
-    fn is_loaded(&self) -> bool;
 }
 
 #[cfg(any(feature = "embedding-service", feature = "chat-service"))]
@@ -68,10 +66,6 @@ impl<T: Send> GpuResidentState for Mutex<Option<T>> {
             .unwrap_or_else(|p| p.into_inner())
             .take()
             .is_some()
-    }
-
-    fn is_loaded(&self) -> bool {
-        self.lock().unwrap_or_else(|p| p.into_inner()).is_some()
     }
 }
 
@@ -84,10 +78,12 @@ impl<T: Send> GpuResidentState for Mutex<Option<T>> {
 /// alike — releasing their residency sets before the backend goes.
 ///
 /// Each service stores its state in an `Arc<Mutex<Option<_>>>` and registers
-/// that Arc here on load. Graceful shutdown/unload also clears the slot — the
-/// atexit handler's `.take()` returns `None` in that case (harmless).
+/// a `Weak` to it here on load. The registry must never own a slot: services
+/// release a model by dropping their engine, and a strong reference here would
+/// keep that model resident on the GPU until exit. A slot already cleared by
+/// graceful shutdown/unload yields `None` from `.take()` (harmless).
 #[cfg(any(feature = "embedding-service", feature = "chat-service"))]
-static GPU_STATES: Mutex<Vec<Arc<dyn GpuResidentState>>> = Mutex::new(Vec::new());
+static GPU_STATES: Mutex<Vec<Weak<dyn GpuResidentState>>> = Mutex::new(Vec::new());
 
 /// Register an `atexit` handler that releases GPU resources before C++ static
 /// destructors run. Called once when the first model is loaded.
@@ -117,15 +113,18 @@ pub(crate) fn register_atexit_handler() {
     }
 }
 
-/// Drop every registered model state. Returns how many were still loaded.
+/// Drop every registered model state that is still alive and loaded.
 #[cfg(any(feature = "embedding-service", feature = "chat-service"))]
-fn release_registered_states() -> usize {
+fn release_registered_states() {
     let states = GPU_STATES.lock().unwrap_or_else(|p| p.into_inner());
-    let released = states.iter().filter(|state| state.release()).count();
+    let released = states
+        .iter()
+        .filter_map(Weak::upgrade)
+        .filter(|state| state.release())
+        .count();
     if released > 0 {
         eprintln!("[atexit] {released} model state(s) dropped, Metal residency sets released");
     }
-    released
 }
 
 /// Register a service's model-state slot in the global registry for atexit
@@ -133,10 +132,12 @@ fn release_registered_states() -> usize {
 #[cfg(any(feature = "embedding-service", feature = "chat-service"))]
 pub(crate) fn register_state_for_cleanup<T: Send + 'static>(state: &Arc<Mutex<Option<T>>>) {
     let state: Arc<dyn GpuResidentState> = Arc::clone(state) as _;
+    let state = Arc::downgrade(&state);
     let mut states = GPU_STATES.lock().unwrap_or_else(|p| p.into_inner());
-    // Prune stale entries (unloaded slots) and avoid registering a slot twice
-    // when the same service reloads.
-    states.retain(|s| s.is_loaded() && !Arc::ptr_eq(s, &state));
+    // Prune slots whose owner is gone and avoid registering a slot twice when
+    // the same service reloads. Never locks a slot, so registration cannot
+    // stall behind an in-flight generation holding one.
+    states.retain(|s| s.strong_count() > 0 && !Weak::ptr_eq(s, &state));
     states.push(state);
 }
 
@@ -931,8 +932,8 @@ mod tests {
             let chat: Arc<dyn GpuResidentState> = chat.clone();
             let ours: Vec<_> = states
                 .iter()
+                .filter_map(Weak::upgrade)
                 .filter(|s| Arc::ptr_eq(s, &embedding) || Arc::ptr_eq(s, &chat))
-                .cloned()
                 .collect();
             assert_eq!(ours.len(), 2, "each slot registered exactly once");
             ours
@@ -940,12 +941,38 @@ mod tests {
 
         for state in &registered {
             assert!(state.release());
-            assert!(!state.is_loaded());
             assert!(!state.release(), "a released slot releases nothing twice");
         }
         assert_eq!(DROPS.load(Ordering::SeqCst), 2);
         assert!(embedding.lock().unwrap().is_none());
         assert!(chat.lock().unwrap().is_none());
+    }
+
+    /// Services unload a model by dropping their engine, never by clearing
+    /// the slot. The registry must not keep a dropped engine's model alive —
+    /// otherwise every unload or model switch leaves the old model resident
+    /// on the GPU until exit.
+    #[cfg(any(feature = "embedding-service", feature = "chat-service"))]
+    #[test]
+    fn registry_does_not_keep_a_dropped_owners_state_alive() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        static DROPPED: AtomicBool = AtomicBool::new(false);
+        struct Model;
+        impl Drop for Model {
+            fn drop(&mut self) {
+                DROPPED.store(true, Ordering::SeqCst);
+            }
+        }
+
+        let slot = Arc::new(Mutex::new(Some(Model)));
+        register_state_for_cleanup(&slot);
+        drop(slot);
+
+        assert!(
+            DROPPED.load(Ordering::SeqCst),
+            "dropping the owning engine must free its model"
+        );
     }
 
     #[cfg(not(feature = "embedding-service"))]
