@@ -229,6 +229,27 @@ describe('storageNodeToApiFields', () => {
     });
   });
 
+  it('mirrors Rust at the edges: typed-key fallback is task-only, and a present null wins', () => {
+    // person_node_to_value reads the storage key alone: a stray typed-key
+    // spelling is not promoted (and, like every core-field spelling, is dropped).
+    expect(storageNodeToApiFields('person', { person: { firstName: 'Ada' } })).toEqual({
+      properties: {}
+    });
+    // task reads `dueDate` first when present at all, even as null — no
+    // fallback to `due_date` then, as `.get(wire).or_else(storage)` behaves.
+    expect(
+      storageNodeToApiFields('task', { task: { dueDate: null, due_date: '2026-05-01' } })
+    ).toEqual({ status: 'open', properties: {} });
+    // A datetime with an offset reduces to its date, space-separated too; one
+    // without an offset passes through, as normalize_date_field leaves it.
+    expect(
+      storageNodeToApiFields('project', { project: { start_date: '2026-03-01 09:00:00Z' } })
+    ).toMatchObject({ startDate: '2026-03-01' });
+    expect(
+      storageNodeToApiFields('project', { project: { start_date: '2026-03-01T09:00:00' } })
+    ).toMatchObject({ startDate: '2026-03-01T09:00:00' });
+  });
+
   it('defaults an unset task status to open, as task_node_to_value does', () => {
     expect(storageNodeToApiFields('task', { task: {} })).toEqual({
       status: 'open',

@@ -2087,4 +2087,34 @@ mod tests {
             );
         }
     }
+
+    /// The typed wire structs promote exactly the fields each core type's
+    /// schema declares — no more, no fewer. `promoted_fields` is the single
+    /// list the conversion, the CLI and the agent use, so a field added to a
+    /// core schema without it would travel in `properties` and be invisible
+    /// to every typed reader, and a stale entry would strip a field that no
+    /// longer exists. (The frontend's `TYPED_CORE_FIELDS` is pinned to this
+    /// same list by `typed-core-fields.test.ts`.)
+    #[test]
+    fn promoted_fields_match_each_typed_core_schema() {
+        let schemas = get_core_schemas();
+        for node_type in ["task", "person", "project"] {
+            let schema = schemas
+                .iter()
+                .find(|s| s.id == node_type)
+                .unwrap_or_else(|| panic!("core schema '{}' missing", node_type));
+            let mut declared: Vec<&str> = schema.fields.iter().map(|f| f.name.as_str()).collect();
+            let mut promoted: Vec<&str> = crate::models::promoted_fields(node_type)
+                .iter()
+                .map(|(storage, _)| *storage)
+                .collect();
+            declared.sort_unstable();
+            promoted.sort_unstable();
+            assert_eq!(
+                promoted, declared,
+                "promoted_fields('{}') must list exactly the core schema's fields",
+                node_type
+            );
+        }
+    }
 }

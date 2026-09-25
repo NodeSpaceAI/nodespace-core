@@ -105,12 +105,16 @@ export function promoteTypedFields(
 }
 
 /**
- * Mirror `normalize_date_field`: a `YYYY-MM-DD` date passes through and an
- * RFC 3339 datetime reduces to its date in its own offset — the literal date
- * prefix. Only `T`-separated datetimes are reduced, the only form written.
+ * Mirror `normalize_date_field`: a `YYYY-MM-DD` date passes through, and a
+ * datetime carrying an offset (`T`- or space-separated) reduces to its
+ * literal date prefix — its date in its own offset, as the RFC 3339 branch
+ * does. Anything else, including a datetime with no offset, which neither
+ * Rust parse accepts, passes through unchanged.
  */
+const OFFSET_DATETIME = /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:?\d{2})$/i;
+
 function normalizeDate(value: string): string {
-  return /^\d{4}-\d{2}-\d{2}T/.test(value) ? value.slice(0, 10) : value;
+  return OFFSET_DATETIME.test(value) ? value.slice(0, 10) : value;
 }
 
 /**
@@ -156,7 +160,10 @@ export function storageNodeToApiFields(
 
   const promoted: Record<string, unknown> = { ...(TYPED_CORE_DEFAULTS[nodeType] ?? {}) };
   for (const { storage, wire, date } of TYPED_CORE_FIELDS[nodeType] ?? []) {
-    const raw = properties[wire] ?? properties[storage];
+    // Only task_node_to_value reads the legacy typed-key spelling, and it
+    // prefers it when the key is present at all (even as null) — `.get(wire)
+    // .or_else(storage)`. person/project read the storage key alone.
+    const raw = nodeType === 'task' && wire in properties ? properties[wire] : properties[storage];
     if (typeof raw === 'string') {
       promoted[wire] = date ? normalizeDate(raw) : raw;
     }

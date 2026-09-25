@@ -782,10 +782,15 @@ export class SharedNodeStore {
   // `bumpTypedFieldSeq()`'s doc comment for what this closes.
   private typedFieldWriteSeq = new Map<string, Map<string, number>>();
 
-  // Typed fields written optimistically but not yet sent, per node. Each
-  // `updateTypedNode()` closure sends and clears the whole set, so a write
-  // superseded in the coordinator's single queued slot doesn't lose its fields.
-  private pendingTypedFields = new Map<string, Record<string, unknown>>();
+  // Typed fields written optimistically but not yet sent, per node, with the
+  // node type they belong to. Whichever write for the node runs next — typed,
+  // generic or batch — sends and clears the whole set first (see
+  // `sendPendingTypedFields()`), so a typed write superseded in the
+  // coordinator's single queued slot doesn't lose its fields.
+  private pendingTypedFields = new Map<
+    string,
+    { nodeType: TypedNodeType; fields: Record<string, unknown> }
+  >();
 
   /**
    * Bump the write-sequence number for a single typed field on a node.
@@ -1593,7 +1598,15 @@ export class SharedNodeStore {
       source.type !== 'database';
     const convertsType =
       changes.nodeType !== undefined && changes.nodeType !== existingNode?.nodeType;
-    if (existingNode && persists && !convertsType && hasTypedCoreFields(existingNode.nodeType)) {
+    // A typed update needs a node that exists server-side; one still awaiting
+    // its create stays on the generic path, which owns the create.
+    if (
+      existingNode &&
+      persists &&
+      !convertsType &&
+      hasTypedCoreFields(existingNode.nodeType) &&
+      this.persistedNodeIds.has(nodeId)
+    ) {
       const nodeType = existingNode.nodeType as TypedNodeType;
       const typedKeys = typedCoreKeys(nodeType);
       const typed: Record<string, unknown> = {};
@@ -1602,12 +1615,16 @@ export class SharedNodeStore {
         (typedKeys.includes(key) ? typed : rest)[key] = value;
       }
       if (Object.keys(typed).length > 0) {
+        // The persist callbacks belong to the typed half — the caller's
+        // intent (e.g. a Kanban move) is the typed field — so a mixed write
+        // fires each callback once, not once per half.
         this.updateTypedNode(nodeId, nodeType, typed, source, {
           onPersistSuccess: options.onPersistSuccess,
           onPersistError: options.onPersistError
         });
         if (Object.keys(rest).length === 0) return;
         changes = rest as Partial<Node>;
+        options = { ...options, onPersistSuccess: undefined, onPersistError: undefined };
       }
     }
 
@@ -1798,6 +1815,10 @@ export class SharedNodeStore {
                 if (isPersistedToDatabase) {
                   // CRITICAL: Read current node state at execution time, not capture time
                   // This ensures we persist the latest content, not stale content from when persist() was called
+                  // Typed fields a superseded typed write left pending go
+                  // first — see `sendPendingTypedFields()`.
+                  await this.sendPendingTypedFields(nodeId);
+
                   let currentNode = this.nodes.get(nodeId);
                   if (!currentNode) {
                     log.warn(
@@ -3043,6 +3064,60 @@ export class SharedNodeStore {
   }
 
   /**
+   * Send and clear every typed field pending for `nodeId` through its type's
+   * typed update, then apply the confirmed values.
+   *
+   * Called at the start of every persistence closure for the node — typed,
+   * generic (`updateNode()`) and batch. The coordinator keeps one queued write
+   * per node and a newer write replaces it, so a queued typed write can be
+   * superseded by a generic one; flushing first means its fields still reach
+   * the server, ahead of (and at the version before) the generic write. No-op
+   * when nothing is pending. Throws the typed update's error, which the
+   * calling closure handles as its own.
+   */
+  private async sendPendingTypedFields(nodeId: string): Promise<void> {
+    const pending = this.pendingTypedFields.get(nodeId);
+    this.pendingTypedFields.delete(nodeId);
+    if (!pending || Object.keys(pending.fields).length === 0) return;
+    const payload = pending.fields;
+
+    // Sequence numbers as of THIS send: a same-field write after this point
+    // bumps past them, and its value must win over this response.
+    const sentSeq: Record<string, number> = {};
+    for (const field of Object.keys(payload)) {
+      sentSeq[field] = this.getTypedFieldSeq(nodeId, field);
+    }
+
+    // Read version at EXECUTION time (not call time) to pick up any resync
+    // that occurred while this operation was queued.
+    const currentVersion = this.nodes.get(nodeId)?.version ?? 1;
+
+    const confirmed = (await sendTypedUpdate(
+      pending.nodeType,
+      nodeId,
+      currentVersion,
+      payload
+    )) as unknown as Record<string, unknown> & { version: number };
+
+    const localNode = this.nodes.get(nodeId);
+    if (localNode && confirmed) {
+      // The coordinator serializes real RPCs per node, so this response's
+      // version is always the latest authoritative one.
+      localNode.version = confirmed.version;
+      // Apply only the fields this send carried, and only where no newer
+      // same-field write has landed since (see `bumpTypedFieldSeq()`).
+      const confirmedFields: Record<string, unknown> = {};
+      for (const field of Object.keys(payload)) {
+        if (this.getTypedFieldSeq(nodeId, field) === sentSeq[field]) {
+          confirmedFields[field] = confirmed[field];
+        }
+      }
+      Object.assign(localNode, confirmedFields);
+      this.nodesSet(nodeId, localNode);
+    }
+  }
+
+  /**
    * Update a task node's typed fields (status, priority, dates) and content.
    * See `updateTypedNode()` for the write path.
    */
@@ -3105,7 +3180,9 @@ export class SharedNodeStore {
    * `options.onPersistSuccess`/`onPersistError` behave as in `updateNode()`:
    * success after the write is confirmed, error for a failure that is neither
    * a version conflict nor a play-rule rejection (both of which resolve the
-   * node's state themselves).
+   * node's state themselves). A write whose fields an earlier write already
+   * carried still reports success. A write superseded in the queue reports
+   * nothing — its fields are sent, and reported, by the write that replaced it.
    */
   updateTypedNode(
     nodeId: string,
@@ -3138,14 +3215,14 @@ export class SharedNodeStore {
       return;
     }
 
-    const pending = this.pendingTypedFields.get(nodeId) ?? {};
+    const pending = this.pendingTypedFields.get(nodeId)?.fields ?? {};
     const localChanges: Record<string, unknown> = {};
     for (const field of fields) {
       pending[field] = update[field];
       localChanges[field] = update[field] ?? undefined;
       this.bumpTypedFieldSeq(nodeId, field);
     }
-    this.pendingTypedFields.set(nodeId, pending);
+    this.pendingTypedFields.set(nodeId, { nodeType, fields: pending });
 
     const updatedNode = { ...existingNode, ...localChanges } as Node;
     this.nodesSet(nodeId, updatedNode);
@@ -3161,48 +3238,11 @@ export class SharedNodeStore {
     const handle = PersistenceCoordinator.getInstance().persist(
       nodeId,
       async () => {
-        // Take every typed field pending for this node — including any from a
-        // write this one superseded in the coordinator's queue.
-        const payload = this.pendingTypedFields.get(nodeId);
-        this.pendingTypedFields.delete(nodeId);
-        if (!payload || Object.keys(payload).length === 0) return;
-
-        // Sequence numbers as of THIS send: a same-field write after this
-        // point bumps past them, and its value must win over this response.
-        const sentSeq: Record<string, number> = {};
-        for (const field of Object.keys(payload)) {
-          sentSeq[field] = this.getTypedFieldSeq(nodeId, field);
-        }
-
         try {
-          // Read version at EXECUTION time (not call time) to pick up any
-          // resync that occurred while this operation was queued
-          const currentNode = this.nodes.get(nodeId);
-          const currentVersion = currentNode?.version ?? existingNode.version ?? 1;
-
-          const confirmed = (await sendTypedUpdate(
-            nodeType,
-            nodeId,
-            currentVersion,
-            payload
-          )) as unknown as Record<string, unknown> & { version: number };
-
-          const localNode = this.nodes.get(nodeId);
-          if (localNode && confirmed) {
-            // The coordinator serializes real RPCs per node, so this
-            // response's version is always the latest authoritative one.
-            localNode.version = confirmed.version;
-            // Apply only the fields this write sent, and only where no newer
-            // same-field write has landed since (see the method doc).
-            const confirmedFields: Record<string, unknown> = {};
-            for (const field of Object.keys(payload)) {
-              if (this.getTypedFieldSeq(nodeId, field) === sentSeq[field]) {
-                confirmedFields[field] = confirmed[field];
-              }
-            }
-            Object.assign(localNode, confirmedFields);
-            this.nodesSet(nodeId, localNode);
-          }
+          // Sends every typed field pending for this node — including any from
+          // a write this one superseded in the coordinator's queue. Nothing to
+          // send means an earlier write for this node already carried them.
+          await this.sendPendingTypedFields(nodeId);
           options.onPersistSuccess?.();
         } catch (dbError) {
           const error = dbError instanceof Error ? dbError : new Error(String(dbError));
@@ -3368,6 +3408,7 @@ export class SharedNodeStore {
     this.versions.clear();
     this.pendingUpdates.clear();
     this.typedFieldWriteSeq.clear();
+    this.pendingTypedFields.clear();
     this.persistedNodeIds.clear();
     this.batchedNotifications.clear();
     this.activeBatches.clear();
@@ -4517,6 +4558,10 @@ export class SharedNodeStore {
           //
           // STRATEGY: Try UPDATE first if we know node is persisted, otherwise CREATE
           if (isPersistedToDatabase) {
+            // Typed fields a superseded typed write left pending go first —
+            // see `sendPendingTypedFields()`.
+            await this.sendPendingTypedFields(nodeId);
+
             // CRITICAL: Wait for any pending move operation to complete before UPDATE.
             // Move operations (indent/outdent) increment the version in the backend.
             // If we UPDATE before the move completes, we'll have a version mismatch.

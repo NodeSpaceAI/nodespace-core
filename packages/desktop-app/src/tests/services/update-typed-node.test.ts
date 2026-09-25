@@ -171,17 +171,80 @@ describe('updateNode routing for typed core types', () => {
   it('splits a mixed write: typed fields to the typed update, content to the generic one', async () => {
     store.setNode(makeNode('pr1', 'project', { status: 'planning' }), dbSource);
     const typedSpy = vi.spyOn(backendAdapter, 'updateProjectNode').mockImplementation(
-      () => new Promise(() => {})
+      async (id, version, update) =>
+        ({ ...makeNode(id, 'project', { ...update }), version: version + 1 }) as unknown as ProjectNode
     );
+    const genericSpy = vi.spyOn(backendAdapter, 'updateNode').mockImplementation(
+      async (id, version) =>
+        ({ ...makeNode(id, 'project', { status: 'active' }), content: 'Renamed', version: version + 1 }) as Node
+    );
+    const onPersistSuccess = vi.fn();
 
     store.updateNode(
       'pr1',
       { status: 'active', content: 'Renamed' } as unknown as Partial<Node>,
-      viewerSource
+      viewerSource,
+      { onPersistSuccess }
     );
 
     await vi.waitFor(() => expect(typedSpy).toHaveBeenCalledWith('pr1', 1, { status: 'active' }));
+    await vi.waitFor(() => expect(genericSpy).toHaveBeenCalledTimes(1), { timeout: 3000 });
+    // The generic half carries content only — the typed field has one write path.
+    expect(genericSpy.mock.calls[0][2]).toEqual({ content: 'Renamed' });
     expect(store.getNode('pr1')?.content).toBe('Renamed');
+    // Callbacks belong to the typed half: fired once, not once per half.
+    await vi.waitFor(() => expect(store.getNode('pr1')?.version).toBe(3), { timeout: 3000 });
+    expect(onPersistSuccess).toHaveBeenCalledTimes(1);
+  });
+
+  it('sends a typed write superseded in the queue by a generic write, ahead of it', async () => {
+    // A write is in flight; a typed write queues; a generic write replaces it
+    // in the coordinator's single queued slot. The typed field must still
+    // reach the server — sent first by the generic write's closure.
+    store.setNode(makeNode('p1', 'person', { firstName: 'Ada' }), dbSource);
+    const calls: string[] = [];
+    let releaseFirst!: () => void;
+    vi.spyOn(backendAdapter, 'updatePersonNode').mockImplementation(async (id, version, update) => {
+      calls.push(`typed:${JSON.stringify(update)}@v${version}`);
+      if (calls.length === 1) {
+        await new Promise<void>((resolve) => {
+          releaseFirst = resolve;
+        });
+      }
+      return { ...makeNode(id, 'person', { ...update }), version: version + 1 } as unknown as PersonNode;
+    });
+    vi.spyOn(backendAdapter, 'updateNode').mockImplementation(async (id, version, update) => {
+      calls.push(`generic:${JSON.stringify(update)}@v${version}`);
+      return { ...makeNode(id, 'person'), properties: {}, version: version + 1 } as Node;
+    });
+
+    store.updatePersonNode('p1', { firstName: 'Grace' }, viewerSource);
+    await vi.waitFor(() => expect(calls).toHaveLength(1));
+    store.updatePersonNode('p1', { email: 'grace@example.com' }, viewerSource);
+    store.updateNode('p1', { properties: { 'custom:team': 'Core' } }, viewerSource, {
+      persist: 'immediate'
+    });
+    releaseFirst();
+
+    await vi.waitFor(() => expect(calls).toHaveLength(3), { timeout: 3000 });
+    expect(calls).toEqual([
+      'typed:{"firstName":"Grace"}@v1',
+      'typed:{"email":"grace@example.com"}@v2',
+      'generic:{"properties":{"custom:team":"Core"}}@v3'
+    ]);
+  });
+
+  it('keeps a node awaiting its create on the generic path', () => {
+    // Not persisted yet: a typed update has no server-side node to write to.
+    // A viewer-sourced setNode with skipPersistence leaves it un-persisted.
+    store.setNode(makeNode('pr1', 'project', { status: 'planning' }), viewerSource, true);
+    const typedSpy = vi.spyOn(backendAdapter, 'updateProjectNode');
+    vi.spyOn(backendAdapter, 'createNode').mockImplementation(() => new Promise(() => {}));
+
+    store.updateNode('pr1', { status: 'active' } as unknown as Partial<Node>, viewerSource);
+
+    expect(typedSpy).not.toHaveBeenCalled();
+    expect((store.getNode('pr1') as unknown as ProjectNode).status).toBe('active');
   });
 
   it('calls onPersistError when the typed write fails, so the caller can revert its field', async () => {
