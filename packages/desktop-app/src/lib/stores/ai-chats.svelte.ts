@@ -133,11 +133,10 @@ class AiChatsStore {
       // QueryNodeViewer's `handleCreateInstance` already does for its own
       // "+ New" call site) so the viewer's first write, once the tab opens,
       // finds the id already known-persisted. Without this, the id is only
-      // hydrated later via the sync/domain-event echo of this very create,
-      // which sets `skipPersistence: true` and therefore never marks it
-      // persisted — so the viewer's first write (model selection or the
-      // first message) wrongly re-issues a CREATE for an id that already
-      // has a row, colliding with it.
+      // marked persisted once the sync/domain-event echo of this very create
+      // arrives — and if the viewer's first write (model selection or the
+      // first message) races ahead of that echo, it wrongly re-issues a
+      // CREATE for an id that already has a row, colliding with it.
       sharedNodeStore.setNode(created, { type: 'database', reason: 'ai-chat-created' });
       this.state = { ...this.state, chats: [toListItem(created), ...this.state.chats] };
       return created;
