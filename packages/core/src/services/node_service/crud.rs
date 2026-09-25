@@ -441,14 +441,15 @@ impl NodeService {
             "create_node_with_parent: START"
         );
 
-        // Step 1: Auto-create date container if parent is a date ID
+        // Step 1: Reject a node_type that is neither a registered core type
+        // nor an existing schema id — before any write, so a rejected call
+        // leaves no auto-created date container behind.
+        self.ensure_known_node_type(&params.node_type).await?;
+
+        // Step 2: Auto-create date container if parent is a date ID
         if let Some(ref parent_id) = params.parent_id {
             self.ensure_date_exists(parent_id).await?;
         }
-
-        // Step 2: Reject a node_type that is neither a registered core type
-        // nor an existing schema id.
-        self.ensure_known_node_type(&params.node_type).await?;
 
         // Step 3: Validate parent exists and is a container (if provided)
         if let Some(ref parent_id) = params.parent_id {
@@ -2054,7 +2055,7 @@ impl NodeService {
     /// Upsert a node with automatic parent creation - single transaction
     ///
     /// Creates parent node if it doesn't exist, then upserts the child node.
-    /// All operations happen in a single transaction to prevent database locking.
+    /// The steps are separate store writes, not one transaction.
     ///
     /// # Arguments
     /// * `node_id` - ID of the node to upsert
@@ -2064,7 +2065,7 @@ impl NodeService {
     ///
     /// # Returns
     /// * `Ok(())` - Operation successful
-    /// * `Err(NodeServiceError)` - If transaction fails
+    /// * `Err(NodeServiceError)` - If validation or a store write fails
     pub async fn upsert_node_with_parent(
         &self,
         node_id: &str,

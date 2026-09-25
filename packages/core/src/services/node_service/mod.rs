@@ -5306,6 +5306,50 @@ mod tests {
 
         let created = service.get_node(&task_id).await.unwrap().unwrap();
         assert_eq!(created.title.as_deref(), Some("Buy milk"));
+
+        // A text node is titled only as a root; upsert always attaches the
+        // node to a parent, so a created text child must stay untitled.
+        let text_id = uuid::Uuid::new_v4().to_string();
+        service
+            .upsert_node_with_parent(&text_id, "a child", "text", &parent_id, &text_id, None)
+            .await
+            .unwrap();
+        let text = service.get_node(&text_id).await.unwrap().unwrap();
+        assert_eq!(text.title, None);
+    }
+
+    /// `create_node_with_parent` must reject an unknown node type before it
+    /// auto-creates a missing date parent.
+    #[tokio::test]
+    async fn test_create_node_with_parent_unknown_type_leaves_no_date_parent() {
+        let (service, _temp) = create_test_service().await;
+
+        let result = service
+            .create_node_with_parent(CreateNodeParams {
+                id: None,
+                node_type: "not-a-real-type".to_string(),
+                content: "content".to_string(),
+                parent_id: Some("2026-09-25".to_string()),
+                position: crate::services::InsertPositionOwned::End,
+                properties: json!({}),
+                lifecycle_status: None,
+            })
+            .await;
+
+        assert!(
+            matches!(result, Err(NodeServiceError::UnknownNodeType { .. })),
+            "expected UnknownNodeType; got: {:?}",
+            result
+        );
+        assert!(
+            service
+                .store
+                .get_node("2026-09-25")
+                .await
+                .unwrap()
+                .is_none(),
+            "a rejected create must not leave an auto-created date parent behind"
+        );
     }
 
     /// The create branch of `upsert_node_with_parent` must reject an unknown
