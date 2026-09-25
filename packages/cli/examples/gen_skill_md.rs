@@ -99,6 +99,7 @@ fn regions() -> Vec<GeneratedRegion> {
             id: "linear-playbook",
             file: "references/linear-playbook.md",
             source_note: "packages/core/src/methodology/linear.rs, \
+                          packages/core/src/methodology/skills/linear/, \
                           packages/cli/examples/gen_skill_md.rs",
             render: render_linear_playbook_block,
         },
@@ -458,7 +459,7 @@ fn render_linear_playbook_block() -> String {
         out,
         "Create each with `nodespace node create --type skill`, then add its guidance as \
          markdown children. The bodies are long-form prose; read them from \
-         `packages/core/src/methodology/linear.rs` rather than reproducing them here."
+         `packages/core/src/methodology/skills/linear/` rather than reproducing them here."
     );
 
     out.trim_end().to_string()

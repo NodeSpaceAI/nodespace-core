@@ -25,6 +25,7 @@
 
 pub mod install;
 pub mod linear;
+pub mod skills;
 
 pub use install::install_playbook;
 
@@ -50,7 +51,9 @@ pub struct MethodologyPlaybook {
     pub field_value_extensions: Vec<FieldValueExtension>,
     /// Plays to install, as seeded (resettable) play nodes.
     pub plays: Vec<PlayStep>,
-    /// Skill nodes seeded as usage guidance.
+    /// Skill nodes seeded as usage guidance, authored as markdown files under
+    /// `skills/<id>/` and loaded with [`skills::playbook_skill`] — see
+    /// [`skills`] for the file format.
     pub skills: Vec<NodeTemplate>,
 }
 
