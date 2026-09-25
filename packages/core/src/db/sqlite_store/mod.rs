@@ -1637,9 +1637,9 @@ mod tests {
     async fn test_reparent_guard_rejects_moving_a_member_under_a_parent() -> Result<()> {
         // ADR-059 §2 (reparent side): the store's `move_node` chokepoint rejects
         // giving a `has_child` parent to a node that holds a `member_of` edge, so
-        // every reparent path (service move_node, ...) is
-        // covered. Non-members move freely; move-to-root is allowed; collection and
-        // person nodes are exempt.
+        // the service `move_node` reparent path is covered (the sync-apply
+        // `bulk_create_has_child` sweep calls the same guard). Non-members move
+        // freely; move-to-root is allowed; collection and person nodes are exempt.
         let (store, _t) = create_test_store().await?;
 
         let coll = Node::new("collection".to_string(), "Coll".to_string(), json!({}));
