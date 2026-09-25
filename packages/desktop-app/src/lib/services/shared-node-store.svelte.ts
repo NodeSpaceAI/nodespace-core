@@ -1238,9 +1238,12 @@ export class SharedNodeStore {
       return { shouldPersist: false, shouldMarkAsPersisted: true };
     }
 
-    // Priority 2: Skip persistence flag (legacy compatibility)
+    // Priority 2: Skip persistence flag. It suppresses the write only — a
+    // database-sourced node still exists in the backend, so it must still be
+    // tracked as persisted. Otherwise a later update to it takes the create
+    // path and the backend rejects the duplicate insert.
     if (options.skipPersistence) {
-      return { shouldPersist: false, shouldMarkAsPersisted: false };
+      return { shouldPersist: false, shouldMarkAsPersisted: source.type === 'database' };
     }
 
     // Priority 3: Explicit persist option (new API)
