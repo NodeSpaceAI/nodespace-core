@@ -511,6 +511,42 @@ impl NodeService {
         )))
     }
 
+    /// The forward name an edge addressed through an `in`-direction
+    /// declaration's name is stored under.
+    ///
+    /// An edge is stored once: `relationship_type` is the forward (`out`)
+    /// name, `in_node` its source, `out_node` its target. An `in` declaration
+    /// is the target's view of that same edge, and its `reverse_name` is the
+    /// forward name — so `old --superseded_by--> new` is `new --supersedes-->
+    /// old` written from the other end. Every write path rewrites such a call
+    /// to the forward spelling (endpoints swapped) before touching storage,
+    /// so one logical edge has exactly one storage shape and the forward-name
+    /// validation (target type, cardinality on both ends, required last-edge
+    /// protection) applies to it unchanged.
+    ///
+    /// `schema_id` is the addressed source's type; `None` (a builtin, or a
+    /// source that does not exist) never rewrites. Returns `None` too when
+    /// `relationship_name` does not resolve on the extends chain to an `in`
+    /// declaration — including an undeclared name, which the caller's own
+    /// resolution reports.
+    async fn in_declaration_forward_name(
+        &self,
+        schema_id: Option<&str>,
+        relationship_name: &str,
+    ) -> Result<Option<String>, NodeServiceError> {
+        let Some(schema_id) = schema_id else {
+            return Ok(None);
+        };
+        let (relationships, _) = self.resolve_relationships(schema_id).await?;
+        Ok(relationships
+            .into_iter()
+            .find(|r| {
+                r.name == relationship_name
+                    && r.direction == crate::models::schema::RelationshipDirection::In
+            })
+            .map(|r| r.reverse_name))
+    }
+
     /// `_in_tx` equivalent of [`Self::get_node`]'s virtual-date fallback.
     ///
     /// A date node (`YYYY-MM-DD`) with no row yet is still a legitimate
@@ -845,6 +881,26 @@ impl NodeService {
     ) -> Result<(), NodeServiceError> {
         let is_builtin = crate::models::schema::is_builtin_relationship(relationship_name);
 
+        // A write through an `in` declaration's name is stored as the forward
+        // edge — see `in_declaration_forward_name`. Everything below then
+        // validates and stores the forward spelling.
+        let source_type = if is_builtin {
+            None
+        } else {
+            Self::get_node_in_tx_or_virtual_date(tx, source_id)
+                .await?
+                .map(|n| n.node_type)
+        };
+        let forward_name = self
+            .in_declaration_forward_name(source_type.as_deref(), relationship_name)
+            .await?;
+        let (source_id, relationship_name, target_id) = forward_endpoints(
+            forward_name.as_deref(),
+            source_id,
+            relationship_name,
+            target_id,
+        );
+
         // See `create_relationship` — a declared relationship's instance edge
         // must carry its declaration's reverse name, or the column lands NULL.
         let mut declared_reverse_name: Option<String> = None;
@@ -1147,6 +1203,27 @@ impl NodeService {
         target_id: &str,
     ) -> Result<(), NodeServiceError> {
         let is_builtin = crate::models::schema::is_builtin_relationship(relationship_name);
+
+        // Same forward spelling the create path stored — see
+        // `in_declaration_forward_name`.
+        let source_type = if is_builtin {
+            None
+        } else {
+            crate::db::SqliteStore::get_node_in_tx(tx.store_tx(), source_id)
+                .await
+                .map_err(|e| NodeServiceError::query_failed(e.to_string()))?
+                .map(|n| n.node_type)
+        };
+        let forward_name = self
+            .in_declaration_forward_name(source_type.as_deref(), relationship_name)
+            .await?;
+        let (source_id, relationship_name, target_id) = forward_endpoints(
+            forward_name.as_deref(),
+            source_id,
+            relationship_name,
+            target_id,
+        );
+
         if !is_builtin {
             if let Some(source) = crate::db::SqliteStore::get_node_in_tx(tx.store_tx(), source_id)
                 .await
@@ -1345,6 +1422,24 @@ impl NodeService {
         // several is fine; deleting a nonexistent edge stays a harmless no-op.
         // Built-in structural relationships are not schema-declared and are exempt.
         let is_builtin = crate::models::schema::is_builtin_relationship(relationship_name);
+
+        // Same forward spelling the create path stored — see
+        // `in_declaration_forward_name`.
+        let source_type = if is_builtin {
+            None
+        } else {
+            self.get_node(source_id).await?.map(|n| n.node_type)
+        };
+        let forward_name = self
+            .in_declaration_forward_name(source_type.as_deref(), relationship_name)
+            .await?;
+        let (source_id, relationship_name, target_id) = forward_endpoints(
+            forward_name.as_deref(),
+            source_id,
+            relationship_name,
+            target_id,
+        );
+
         if !is_builtin {
             if let Some(source) = self.get_node(source_id).await? {
                 // A non-builtin edge whose source is a schema node is a
@@ -1482,7 +1577,26 @@ impl NodeService {
         // disappears from every read path). Builtin edges are exempt: e.g. a
         // schema's description subtree legitimately carries `has_child` edges
         // whose order attribute may be rewritten.
-        if !crate::models::schema::is_builtin_relationship(relationship_name) {
+        let is_builtin = crate::models::schema::is_builtin_relationship(relationship_name);
+
+        // Same forward spelling the create path stored — see
+        // `in_declaration_forward_name`.
+        let source_type = if is_builtin {
+            None
+        } else {
+            self.get_node(source_id).await?.map(|n| n.node_type)
+        };
+        let forward_name = self
+            .in_declaration_forward_name(source_type.as_deref(), relationship_name)
+            .await?;
+        let (source_id, relationship_name, target_id) = forward_endpoints(
+            forward_name.as_deref(),
+            source_id,
+            relationship_name,
+            target_id,
+        );
+
+        if !is_builtin {
             if let Some(source) = self.get_node(source_id).await? {
                 if source.node_type == "schema" {
                     return Err(NodeServiceError::invalid_update(format!(
@@ -1766,6 +1880,20 @@ impl NodeService {
         }
 
         Ok(edges)
+    }
+}
+
+/// `(source, name, target)` as stored: swapped onto `forward_name` when
+/// [`NodeService::in_declaration_forward_name`] found one, unchanged otherwise.
+fn forward_endpoints<'a>(
+    forward_name: Option<&'a str>,
+    source_id: &'a str,
+    relationship_name: &'a str,
+    target_id: &'a str,
+) -> (&'a str, &'a str, &'a str) {
+    match forward_name {
+        Some(name) => (target_id, name, source_id),
+        None => (source_id, relationship_name, target_id),
     }
 }
 
