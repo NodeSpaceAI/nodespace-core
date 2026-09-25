@@ -5,7 +5,6 @@
  */
 
 export { default as TextNode } from '$lib/design/components/text-node.svelte';
-export { default as NodeTree } from './node-tree.svelte';
 export { default as AutocompleteModal } from './autocomplete-modal.svelte';
 export { default as MarkdownRenderer } from './markdown-renderer.svelte';
 export { default as BaseNodeReference } from './base-node-reference.svelte';

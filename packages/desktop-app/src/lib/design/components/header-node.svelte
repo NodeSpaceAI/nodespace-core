@@ -201,13 +201,13 @@
     line-height: 1.4;
   }
 
-  /* Ensure empty headers maintain proper height */
+  /* Ensure empty headers hold their level's full line height */
   .header-h1 :global(.node__content:empty),
   .header-h2 :global(.node__content:empty),
   .header-h3 :global(.node__content:empty),
   .header-h4 :global(.node__content:empty),
   .header-h5 :global(.node__content:empty),
   .header-h6 :global(.node__content:empty) {
-    min-height: 1.5rem;
+    min-height: calc(var(--font-size) * var(--line-height));
   }
 </style>
