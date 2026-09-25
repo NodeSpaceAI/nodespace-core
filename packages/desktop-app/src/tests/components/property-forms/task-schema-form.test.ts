@@ -386,6 +386,34 @@ describe('TaskSchemaForm — user-defined fields still render dynamically', () =
     expect(changes.properties).toEqual({ sprint: 'Sprint 13' });
   });
 
+  it('shows a user-defined field on a task loaded from the database', async () => {
+    // A database-sourced set runs normalizeNodeData → nodeToTaskNode, which is
+    // the path every real task takes into the store. That conversion must keep
+    // the flat `properties` bag, or user-defined fields read as empty.
+    const schema = realTaskSchema();
+    schema.fields.push({
+      name: 'sprint',
+      friendlyName: 'Sprint',
+      type: 'string',
+      protection: 'user',
+      indexed: false,
+      required: false
+    });
+    vi.spyOn(backendAdapter, 'getSchema').mockResolvedValue(schema as never);
+    loadNodeRelationshipsView.mockResolvedValue({ nodeType: 'task', groups: [] });
+    sharedNodeStore.setNode(
+      taskNode({ id: 'task-db', properties: { status: 'open', sprint: 'Sprint 7' } }),
+      { type: 'database', reason: 'test-seed' },
+      true
+    );
+
+    const { container } = render(TaskSchemaForm, { props: { nodeId: 'task-db' } });
+    await openForm(container);
+
+    const input = (await waitFor(() => screen.getByLabelText('Sprint'))) as HTMLInputElement;
+    expect(input.value).toBe('Sprint 7');
+  });
+
   it('does not render a system-protected field as an editable control', async () => {
     const schema = realTaskSchema();
     schema.fields.push({

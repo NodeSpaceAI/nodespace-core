@@ -203,6 +203,20 @@ describe('storageNodeToApiFields', () => {
     });
   });
 
+  it('promotes snake_case task dates and reduces datetimes to their date', () => {
+    // Mirrors task_node_to_value: storage uses snake_case keys, and a stored
+    // RFC 3339 datetime is reduced to YYYY-MM-DD in its own offset.
+    const fields = storageNodeToApiFields('task', {
+      task: {
+        status: 'open',
+        due_date: '2026-03-01',
+        started_at: '2026-02-27T23:30:00-05:00'
+      }
+    });
+    expect(fields).toMatchObject({ dueDate: '2026-03-01', startedAt: '2026-02-27' });
+    expect('completedAt' in fields).toBe(false);
+  });
+
   it('keeps object-valued fields inside the own bucket', () => {
     const address = { city: 'Austin' };
     const fields = storageNodeToApiFields('venue', { venue: { address } });

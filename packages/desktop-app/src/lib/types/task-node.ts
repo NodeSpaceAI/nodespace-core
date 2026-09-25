@@ -84,6 +84,8 @@ export interface TaskNode {
   version: number;
   createdAt: string;
   modifiedAt: string;
+  /** Flat property bag, including user-defined schema fields. */
+  properties?: Record<string, unknown>;
 
   // Type-specific fields (flat, at top level)
   status: TaskStatus;
@@ -239,9 +241,11 @@ export function nodeToTaskNode(node: Node): TaskNode {
     id: node.id,
     nodeType: 'task',
     content: node.content,
+    title: node.title ?? undefined,
     version: node.version,
     createdAt: node.createdAt,
     modifiedAt: node.modifiedAt,
+    properties: node.properties,
     status: task.status ?? 'open',
     priority: task.priority,
     dueDate: task.dueDate ?? null,

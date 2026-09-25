@@ -153,5 +153,31 @@ export function storageNodeToApiFields(
       promoted[to] = properties[from];
     }
   }
+  if (nodeType === 'task') {
+    Object.assign(promoted, promoteTaskDates(properties));
+  }
   return { ...promoted, properties };
+}
+
+const TASK_DATE_FIELDS = [
+  { camel: 'dueDate', snake: 'due_date' },
+  { camel: 'startedAt', snake: 'started_at' },
+  { camel: 'completedAt', snake: 'completed_at' }
+] as const;
+
+/**
+ * Mirror `task_node_to_value`'s date handling: prefer the camelCase key, fall
+ * back to the snake_case key storage actually uses, and reduce an RFC 3339
+ * datetime to its `YYYY-MM-DD` date (in its own offset, as `normalize_date_field`
+ * does).
+ */
+function promoteTaskDates(properties: Record<string, unknown>): Record<string, unknown> {
+  const promoted: Record<string, unknown> = {};
+  for (const { camel, snake } of TASK_DATE_FIELDS) {
+    const raw = properties[camel] ?? properties[snake];
+    if (typeof raw === 'string') {
+      promoted[camel] = /^\d{4}-\d{2}-\d{2}T/.test(raw) ? raw.slice(0, 10) : raw;
+    }
+  }
+  return promoted;
 }

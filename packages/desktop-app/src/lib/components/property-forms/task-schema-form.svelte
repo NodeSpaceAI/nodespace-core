@@ -156,19 +156,15 @@
   // the shape every transport delivers. The backend moves bare keys into the
   // type's storage bucket on write.
   function getUserFieldValue(fieldName: string): unknown {
-    // `node` is the TaskNode view, which carries no `properties` — read the raw node.
-    return sharedNodeStore.getNode(nodeId)?.properties?.[fieldName];
+    return node?.properties?.[fieldName];
   }
 
   function updateUserField(fieldName: string, value: unknown) {
     if (!node) return;
 
-    const rawNode = sharedNodeStore.getNode(nodeId);
-    if (!rawNode) return;
-
     sharedNodeStore.updateNode(
       nodeId,
-      { properties: { ...rawNode.properties, [fieldName]: value } },
+      { properties: { ...node.properties, [fieldName]: value } },
       { type: 'viewer', viewerId: 'task-schema-form' }
     );
   }
