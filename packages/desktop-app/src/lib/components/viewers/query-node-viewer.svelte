@@ -23,7 +23,7 @@
   import { MAX_QUERY_ROWS } from '$lib/services/adapter-core';
   import { createSchemaInstance, shouldIntegrateInstance } from '$lib/services/schema-authoring';
   import { getNavigationService } from '$lib/services/navigation-service';
-  import { sharedNodeStore } from '$lib/services/shared-node-store.svelte';
+  import { sharedNodeStore, isStoreEviction } from '$lib/services/shared-node-store.svelte';
   import { pinReachableNodes } from '$lib/utils/pin-node-reachability';
   import { navigationStore, updateTabContent } from '$lib/stores/navigation.svelte';
   import TableView from '$lib/components/query/table-view.svelte';
@@ -176,7 +176,10 @@
     // into `sharedNodeStore` by tauri-sync-listener (which already drops events from
     // a non-active database), so a wildcard subscription surfaces every active-DB
     // node change; we append the ones that belong to this view.
-    const unsubscribe = sharedNodeStore.subscribeAll((node) => {
+    const unsubscribe = sharedNodeStore.subscribeAll((node, source) => {
+      // A database switch reports every evicted node — none of them is a node
+      // created in the now-active database.
+      if (isStoreEviction(source)) return;
       // `shouldShowCreatedNode` gates on the settled view, dedup, type, and the
       // query's filters. Gating on 'success' matters: during a (re)load
       // `loadedNodeIds` is reset and repopulated wholesale and the load's own

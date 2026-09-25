@@ -63,6 +63,22 @@ const CONFLICT_MESSAGE: Record<ConflictNotification['conflictType'], string> = {
 
 const log = createLogger('SharedNodeStore');
 
+/**
+ * Source reported for each node `clearAll()` evicts. The node passed alongside
+ * it is the last cached value of a node that is no longer in the store — not a
+ * newly created or updated node — so subscribers that fold incoming nodes into
+ * a view must skip it (see `isStoreEviction`).
+ */
+export const STORE_CLEARED_SOURCE = Object.freeze({ type: 'database', reason: 'store-cleared' } as const);
+
+/** Source reported for each node `restore()` puts back from a snapshot. */
+export const STORE_RESTORED_SOURCE = Object.freeze({ type: 'database', reason: 'store-restored' } as const);
+
+/** Whether a subscription notification reports a node evicted by `clearAll()`. */
+export function isStoreEviction(source: UpdateSource): boolean {
+  return source.type === 'database' && source.reason === STORE_CLEARED_SOURCE.reason;
+}
+
 // ============================================================================
 // Simple Debounce Utility
 // ============================================================================
@@ -3451,7 +3467,10 @@ export class SharedNodeStore {
    * active local database must never leave the previous database's nodes
    * visible. Clearing the reactive `nodes` map plus notifying subscribers makes
    * consumers re-derive against the now-empty store and reload from the
-   * newly-active database. Component subscriptions themselves are preserved.
+   * newly-active database. Every evicted node is reported — with its last
+   * cached value and `STORE_CLEARED_SOURCE` — to its per-node subscribers and
+   * to every wildcard subscriber, after all state is cleared. Component
+   * subscriptions themselves are preserved.
    *
    * Hot-swap callers must flush pending saves (`flushAllPendingSaves`) BEFORE
    * switching the routed clients so in-flight writes land in the database they
@@ -3463,6 +3482,7 @@ export class SharedNodeStore {
    */
   clearAll(): void {
     this.databaseEpoch++;
+    const evicted = [...this.nodes.values()];
     this.nodesClear();
     this.versions.clear();
     this.pendingUpdates.clear();
@@ -3482,7 +3502,7 @@ export class SharedNodeStore {
     this.hasOpenDocumentReport = false;
     this.pinnedByOwner.clear();
     this.pinnedNodeRefCounts.clear();
-    this.notifyAllSubscribers();
+    this.notifyAllSubscribers(evicted, STORE_CLEARED_SOURCE);
   }
 
   // ========================================================================
@@ -4254,21 +4274,13 @@ export class SharedNodeStore {
   }
 
   /**
-   * Notify all subscribers (e.g., on clear)
+   * Notify node-specific and wildcard subscribers of a wholesale store change
+   * (`clearAll()`, `restore()`) — once per affected node, exactly as a normal
+   * per-node change would.
    */
-  private notifyAllSubscribers(): void {
-    // Notify all node-specific subscribers
-    for (const [nodeId, subs] of this.subscriptions) {
-      const node = this.nodes.get(nodeId);
-      if (node) {
-        for (const sub of subs) {
-          try {
-            sub.callback(node, { type: 'database', reason: 'store-cleared' });
-          } catch (error) {
-            log.error(`Subscription callback error:`, error);
-          }
-        }
-      }
+  private notifyAllSubscribers(affected: Iterable<Node>, source: UpdateSource): void {
+    for (const node of affected) {
+      this.notifySubscribers(node.id, node, source);
     }
   }
 
@@ -4809,7 +4821,9 @@ export class SharedNodeStore {
   /**
    * Restore all nodes from a snapshot (rollback on error)
    *
-   * Replaces the current node state with the snapshot state.
+   * Replaces the current node state with the snapshot state. Subscribers are
+   * notified of each restored node; nodes the restore drops (present now,
+   * absent from the snapshot) are not reported.
    *
    * @param snapshotMap - Previously captured snapshot to restore
    */
@@ -4823,8 +4837,7 @@ export class SharedNodeStore {
       this.nodesSet(nodeId, node);
     }
 
-    // Notify all subscribers about the restore
-    this.notifyAllSubscribers();
+    this.notifyAllSubscribers(snapshotMap.values(), STORE_RESTORED_SOURCE);
   }
 
   // ========================================================================

@@ -14,7 +14,12 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { SharedNodeStore } from '../../lib/services/shared-node-store.svelte';
+import {
+  SharedNodeStore,
+  STORE_CLEARED_SOURCE,
+  STORE_RESTORED_SOURCE,
+  isStoreEviction
+} from '../../lib/services/shared-node-store.svelte';
 import { backendAdapter } from '../../lib/services/backend-adapter';
 import { conflictNotifications } from '../../lib/stores/conflict-notifications.svelte';
 import type { Node } from '../../lib/types';
@@ -1439,6 +1444,77 @@ describe('SharedNodeStore', () => {
 
       // Subscriber should be notified (via notifyAllSubscribers)
       expect(callback).toHaveBeenCalled();
+    });
+
+    it('should notify wildcard subscribers of every restored node', () => {
+      store.setNode(mockNode, viewerSource);
+      store.setNode({ ...mockNode, id: 'node-2' }, viewerSource);
+      const snapshot = store.snapshot();
+
+      const wildcard = vi.fn();
+      store.subscribeAll(wildcard);
+
+      store.restore(snapshot);
+
+      expect(wildcard).toHaveBeenCalledTimes(2);
+      expect(wildcard).toHaveBeenCalledWith(
+        expect.objectContaining({ id: mockNode.id }),
+        STORE_RESTORED_SOURCE
+      );
+      expect(wildcard).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'node-2' }),
+        STORE_RESTORED_SOURCE
+      );
+    });
+  });
+
+  describe('clearAll notifications', () => {
+    it('should notify per-node subscribers of their evicted node', () => {
+      store.setNode(mockNode, viewerSource);
+      const callback = vi.fn();
+      store.subscribe(mockNode.id, callback);
+
+      store.clearAll();
+
+      expect(callback).toHaveBeenCalledTimes(1);
+      expect(callback).toHaveBeenCalledWith(
+        expect.objectContaining({ id: mockNode.id, content: 'Test content' }),
+        STORE_CLEARED_SOURCE
+      );
+      expect(store.hasNode(mockNode.id)).toBe(false);
+    });
+
+    it('should notify wildcard subscribers of every evicted node', () => {
+      store.setNode(mockNode, viewerSource);
+      store.setNode({ ...mockNode, id: 'node-2' }, viewerSource);
+      const wildcard = vi.fn();
+      store.subscribeAll(wildcard);
+
+      store.clearAll();
+
+      expect(wildcard.mock.calls.map(([node]) => node.id).sort()).toEqual([
+        'node-2',
+        mockNode.id
+      ]);
+      expect(wildcard.mock.calls.every(([, source]) => isStoreEviction(source))).toBe(true);
+    });
+
+    it('should notify after the store is fully cleared', () => {
+      store.setNode(mockNode, viewerSource);
+      let seenDuringNotify: boolean | undefined;
+      store.subscribeAll((node) => {
+        seenDuringNotify = store.hasNode(node.id);
+      });
+
+      store.clearAll();
+
+      expect(seenDuringNotify).toBe(false);
+    });
+
+    it('isStoreEviction distinguishes eviction from other sources', () => {
+      expect(isStoreEviction(STORE_CLEARED_SOURCE)).toBe(true);
+      expect(isStoreEviction(STORE_RESTORED_SOURCE)).toBe(false);
+      expect(isStoreEviction(viewerSource)).toBe(false);
     });
 
     it('should clear nodes not in snapshot', () => {
