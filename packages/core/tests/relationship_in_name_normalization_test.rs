@@ -348,15 +348,25 @@ async fn cross_type_write_through_in_name_rejects_wrong_types() -> Result<()> {
     make_node(&svc, "p2", "in_norm_person").await?;
 
     // p2 is not a doc, so `approved_by` is not declared on its type at all.
-    assert!(svc
+    let err = svc
         .create_relationship("p2", "approved_by", "p1", json!({}))
         .await
-        .is_err());
+        .expect_err("a person has no `approved_by`");
+    assert!(
+        err.to_string()
+            .contains("'approved_by' not defined in schema 'in_norm_person'"),
+        "got: {err}"
+    );
     // doc1 -> doc1: the far end is a doc, which does not declare `approves`.
-    assert!(svc
+    let err = svc
         .create_relationship("doc1", "approved_by", "doc1", json!({}))
         .await
-        .is_err());
+        .expect_err("a doc cannot approve");
+    assert!(
+        err.to_string()
+            .contains("inbound view of 'in_norm_doc.approves'"),
+        "got: {err}"
+    );
     Ok(())
 }
 
@@ -457,7 +467,12 @@ async fn unpaired_or_mismatched_in_declaration_is_rejected_at_save() -> Result<(
         // Cardinality disagrees with the forward's reverseCardinality.
         (
             json!({ "name": "approved_by", "cardinality": "one" }),
-            "reverseCardinality",
+            "its reverseCardinality (Many) differs",
+        ),
+        // reverseCardinality disagrees with the forward's cardinality.
+        (
+            json!({ "name": "approved_by", "reverseCardinality": "one" }),
+            "its cardinality (Many) differs",
         ),
         // Edge attributes belong on the forward declaration.
         (
@@ -490,19 +505,167 @@ async fn self_referential_pair_in_one_payload_is_accepted() -> Result<()> {
     create_adr_schema(&svc).await
 }
 
-/// If the forward half is removed after the `in` declaration was saved, a
-/// write through the `in` name has no storage shape to normalize to; the
-/// error names what the caller wrote rather than the rewritten call.
+/// Editing the forward side is validated against the `in` declarations that
+/// mirror it: removing it, or re-adding it with a different reverse name,
+/// would leave the doc's saved `approved_by` describing an edge storage no
+/// longer has.
 #[tokio::test]
-async fn write_through_in_name_after_forward_removed_is_rejected() -> Result<()> {
+async fn editing_forward_mirrored_by_in_declaration_is_rejected() -> Result<()> {
     let (svc, _t) = create_test_service().await?;
     create_cross_type_schemas(&svc).await?;
-    handle_update_schema(
+
+    let removed = handle_update_schema(
         &svc,
         json!({ "schema_id": "in_norm_person", "remove_relationships": ["approves"] }),
     )
     .await
-    .map_err(|e| anyhow::anyhow!("remove person.approves: {e}"))?;
+    .expect_err("removing a mirrored forward must be rejected");
+    assert!(
+        removed
+            .to_string()
+            .contains("would break 'in_norm_doc.approved_by'"),
+        "got: {removed}"
+    );
+
+    let redeclared = handle_update_schema(
+        &svc,
+        json!({
+            "schema_id": "in_norm_person",
+            "remove_relationships": ["approves"],
+            "add_relationships": [{
+                "name": "approves",
+                "targetType": "in_norm_doc",
+                "direction": "out",
+                "cardinality": "many",
+                "reverseName": "endorsed_by",
+                "reverseCardinality": "many"
+            }]
+        }),
+    )
+    .await
+    .expect_err("re-adding the forward with another reverse name must be rejected");
+    assert!(
+        redeclared
+            .to_string()
+            .contains("its reverseName is 'endorsed_by'"),
+        "got: {redeclared}"
+    );
+    Ok(())
+}
+
+/// A self-referential `in` declaration on a subtype mirrors a forward the
+/// subtype inherits (ADR-078) — the same chain the write path resolves by.
+#[tokio::test]
+async fn in_declaration_mirroring_inherited_forward_is_accepted() -> Result<()> {
+    let (svc, _t) = create_test_service().await?;
+    handle_create_schema(
+        &svc,
+        json!({
+            "name": "in_norm_base",
+            "fields": [],
+            "relationships": [{
+                "name": "supersedes",
+                "targetType": "in_norm_base",
+                "direction": "out",
+                "cardinality": "one",
+                "reverseName": "superseded_by",
+                "reverseCardinality": "one"
+            }]
+        }),
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("base schema: {e}"))?;
+    handle_create_schema(
+        &svc,
+        json!({
+            "name": "in_norm_sub",
+            "extends": "in_norm_base",
+            "fields": [],
+            "relationships": [{
+                "name": "superseded_by",
+                "targetType": "in_norm_sub",
+                "direction": "in",
+                "cardinality": "one",
+                "reverseName": "supersedes",
+                "reverseCardinality": "one"
+            }]
+        }),
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("sub schema: {e}"))?;
+
+    make_node(&svc, "old", "in_norm_sub").await?;
+    make_node(&svc, "new", "in_norm_sub").await?;
+    svc.create_relationship("old", "superseded_by", "new", json!({}))
+        .await?;
+    assert_eq!(
+        related_ids(&svc, "new", "supersedes", "out").await?,
+        ["old"]
+    );
+    Ok(())
+}
+
+/// A call that both re-targets `extends` and adds an `in` declaration is
+/// judged by its result: the forward lives on the NEW parent.
+#[tokio::test]
+async fn pairing_is_validated_after_same_call_extends_retarget() -> Result<()> {
+    let (svc, _t) = create_test_service().await?;
+    handle_create_schema(&svc, json!({ "name": "in_norm_parent_a", "fields": [] }))
+        .await
+        .map_err(|e| anyhow::anyhow!("parent a: {e}"))?;
+    handle_create_schema(
+        &svc,
+        json!({
+            "name": "in_norm_parent_b",
+            "fields": [],
+            "relationships": [{
+                "name": "reviews",
+                "targetType": "in_norm_parent_b",
+                "direction": "out",
+                "cardinality": "many",
+                "reverseName": "reviewed_by",
+                "reverseCardinality": "many"
+            }]
+        }),
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("parent b: {e}"))?;
+    handle_create_schema(
+        &svc,
+        json!({ "name": "in_norm_child", "extends": "in_norm_parent_a", "fields": [] }),
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("child: {e}"))?;
+
+    handle_update_schema(
+        &svc,
+        json!({
+            "schema_id": "in_norm_child",
+            "extends": "in_norm_parent_b",
+            "add_relationships": [{
+                "name": "reviewed_by",
+                "targetType": "in_norm_child",
+                "direction": "in",
+                "cardinality": "many",
+                "reverseName": "reviews",
+                "reverseCardinality": "many"
+            }]
+        }),
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("retarget + add in: {e}"))?;
+    Ok(())
+}
+
+/// `set_schema_relationships` writes declarations below schema save's pairing
+/// check, so the forward half can still disappear there. A write through the
+/// `in` name then has no storage shape to normalize to; the error names what
+/// the caller wrote rather than the rewritten call.
+#[tokio::test]
+async fn write_through_in_name_after_forward_dropped_below_save_is_rejected() -> Result<()> {
+    let (svc, _t) = create_test_service().await?;
+    create_cross_type_schemas(&svc).await?;
+    svc.set_schema_relationships("in_norm_person", &[]).await?;
 
     let err = svc
         .create_relationship("doc1", "approved_by", "p1", json!({}))

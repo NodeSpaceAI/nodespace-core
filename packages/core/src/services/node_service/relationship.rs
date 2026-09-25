@@ -977,25 +977,28 @@ impl NodeService {
             }
 
             let schema_id = &source.node_type;
-            // A rewritten `in` write must land on a real forward declaration.
-            // Schema save does not pair an `in` declaration with its far end,
-            // so the far type may not declare the forward name at all, or may
-            // declare it as another `in` — storing under that would reintroduce
-            // the second storage shape. Report it in the caller's own terms.
+            // A rewritten `in` write must land on the forward declaration that
+            // mirrors it. Schema save enforces the pairing, so this only
+            // catches a pair broken below it — `set_schema_relationships`
+            // (which Play actions call) writes declarations unvalidated.
+            // Storing under anything else (an undeclared name, another `in`,
+            // a forward naming a different reverse) would reintroduce a second
+            // storage shape. Report it in the caller's own terms.
             let resolved = self
                 .resolve_declared_relationship(schema_id, relationship_name)
                 .await;
             let relationship = match (&forward_name, resolved) {
                 (None, resolved) => resolved?,
                 (Some(_), Ok(rel))
-                    if rel.direction == crate::models::schema::RelationshipDirection::Out =>
+                    if rel.direction == crate::models::schema::RelationshipDirection::Out
+                        && rel.reverse_name == requested_name =>
                 {
                     rel
                 }
                 (Some(_), _) => {
                     return Err(NodeServiceError::invalid_update(format!(
                         "'{}' on '{}' is the inbound view of '{}.{}', which '{}' does not \
-                         declare as an outbound relationship",
+                         declare as an outbound relationship naming it back",
                         requested_name,
                         source_type.as_deref().unwrap_or_default(),
                         schema_id,
