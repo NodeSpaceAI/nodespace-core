@@ -29,7 +29,7 @@ pub use types::{
 };
 
 #[cfg(feature = "chat-service")]
-use crate::embedding::{get_or_init_backend, register_atexit_handler};
+use crate::embedding::{get_or_init_backend, register_atexit_handler, register_state_for_cleanup};
 
 #[cfg(feature = "chat-service")]
 use llama_cpp_2::context::params::{KvCacheType, LlamaContextParams};
@@ -288,6 +288,7 @@ impl ChatEngine {
             }
 
             register_atexit_handler();
+            register_state_for_cleanup(&self.state);
 
             tracing::info!("Chat model ready for inference");
         }

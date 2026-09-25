@@ -13,7 +13,7 @@ use crate::config::EmbeddingConfig;
 use crate::error::{EmbeddingError, Result};
 use lru::LruCache;
 use std::num::NonZeroUsize;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 
 /// Embedding vector dimension for nomic-embed-vision-v1.5
 pub const EMBEDDING_DIMENSION: usize = 768;
@@ -48,19 +48,42 @@ use llama_cpp_2::model::{AddBos, LlamaModel};
 #[cfg(any(feature = "embedding-service", feature = "chat-service"))]
 static LLAMA_BACKEND: Mutex<Option<LlamaBackend>> = Mutex::new(None);
 
-/// Global registry of active LlamaState instances for atexit cleanup.
+/// A loaded model whose GPU resources the atexit handler must release.
+///
+/// Implemented for every `Mutex<Option<T>>` slot a service keeps its loaded
+/// model+context in, so embedding (`LlamaState`) and chat (`ChatLlamaState`)
+/// share one registry despite their distinct state types.
+#[cfg(any(feature = "embedding-service", feature = "chat-service"))]
+trait GpuResidentState: Send + Sync {
+    /// Drop the loaded state, if any. Returns whether something was dropped.
+    fn release(&self) -> bool;
+}
+
+#[cfg(any(feature = "embedding-service", feature = "chat-service"))]
+impl<T: Send> GpuResidentState for Mutex<Option<T>> {
+    fn release(&self) -> bool {
+        self.lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take()
+            .is_some()
+    }
+}
+
+/// Global registry of loaded model states for atexit cleanup.
 ///
 /// When `NSApplication terminate:` → `exit()` → `__cxa_finalize_ranges` runs,
 /// C++ static destructors destroy the Metal device, which asserts that all
-/// residency sets are freed. Our `atexit` handler runs first and drops all
-/// registered LlamaState instances, releasing their residency sets.
+/// residency sets are freed. `exit()` skips Rust `Drop`, so our `atexit`
+/// handler runs first and drops every registered state — embedding and chat
+/// alike — releasing their residency sets before the backend goes.
 ///
-/// Each EmbeddingService stores its state in an `Arc<Mutex<Option<LlamaState>>>`
-/// and registers that Arc here. The atexit handler iterates and clears them all.
-/// Graceful shutdown also clears the per-instance state — the atexit handler's
-/// `.take()` returns `None` in that case (harmless).
-#[cfg(feature = "embedding-service")]
-static LLAMA_STATES: Mutex<Vec<Arc<Mutex<Option<LlamaState>>>>> = Mutex::new(Vec::new());
+/// Each service stores its state in an `Arc<Mutex<Option<_>>>` and registers
+/// a `Weak` to it here on load. The registry must never own a slot: services
+/// release a model by dropping their engine, and a strong reference here would
+/// keep that model resident on the GPU until exit. A slot already cleared by
+/// graceful shutdown/unload yields `None` from `.take()` (harmless).
+#[cfg(any(feature = "embedding-service", feature = "chat-service"))]
+static GPU_STATES: Mutex<Vec<Weak<dyn GpuResidentState>>> = Mutex::new(Vec::new());
 
 /// Register an `atexit` handler that releases GPU resources before C++ static
 /// destructors run. Called once when the first model is loaded.
@@ -75,17 +98,8 @@ pub(crate) fn register_atexit_handler() {
         return;
     }
     extern "C" fn cleanup() {
-        // Drop embedding model+context instances first (releases Metal residency sets)
-        #[cfg(feature = "embedding-service")]
-        {
-            let states = LLAMA_STATES.lock().unwrap_or_else(|p| p.into_inner());
-            for state_arc in states.iter() {
-                let mut guard = state_arc.lock().unwrap_or_else(|p| p.into_inner());
-                if guard.take().is_some() {
-                    eprintln!("[atexit] LlamaState dropped, Metal residency sets released");
-                }
-            }
-        }
+        // Drop every loaded model+context first (releases Metal residency sets)
+        release_registered_states();
         // Then drop the backend
         {
             let mut guard = LLAMA_BACKEND.lock().unwrap_or_else(|p| p.into_inner());
@@ -99,13 +113,32 @@ pub(crate) fn register_atexit_handler() {
     }
 }
 
-/// Register a LlamaState Arc in the global registry for atexit cleanup.
-#[cfg(feature = "embedding-service")]
-fn register_state_for_cleanup(state: &Arc<Mutex<Option<LlamaState>>>) {
-    let mut states = LLAMA_STATES.lock().unwrap_or_else(|p| p.into_inner());
-    // Prune stale entries (already-taken states from previous initialize() calls)
-    states.retain(|s| s.lock().unwrap_or_else(|p| p.into_inner()).is_some());
-    states.push(Arc::clone(state));
+/// Drop every registered model state that is still alive and loaded.
+#[cfg(any(feature = "embedding-service", feature = "chat-service"))]
+fn release_registered_states() {
+    let states = GPU_STATES.lock().unwrap_or_else(|p| p.into_inner());
+    let released = states
+        .iter()
+        .filter_map(Weak::upgrade)
+        .filter(|state| state.release())
+        .count();
+    if released > 0 {
+        eprintln!("[atexit] {released} model state(s) dropped, Metal residency sets released");
+    }
+}
+
+/// Register a service's model-state slot in the global registry for atexit
+/// cleanup. Call after every successful load.
+#[cfg(any(feature = "embedding-service", feature = "chat-service"))]
+pub(crate) fn register_state_for_cleanup<T: Send + 'static>(state: &Arc<Mutex<Option<T>>>) {
+    let state: Arc<dyn GpuResidentState> = Arc::clone(state) as _;
+    let state = Arc::downgrade(&state);
+    let mut states = GPU_STATES.lock().unwrap_or_else(|p| p.into_inner());
+    // Prune slots whose owner is gone and avoid registering a slot twice when
+    // the same service reloads. Never locks a slot, so registration cannot
+    // stall behind an in-flight generation holding one.
+    states.retain(|s| s.strong_count() > 0 && !Weak::ptr_eq(s, &state));
+    states.push(state);
 }
 
 /// Initialize or get the global llama backend.
@@ -370,7 +403,7 @@ pub struct EmbeddingService {
     config: EmbeddingConfig,
     /// Model and context state, wrapped in Arc<Mutex<Option<>>> to allow:
     /// 1. Taking ownership for cleanup without requiring &mut self (Arc)
-    /// 2. Registration in the global LLAMA_STATES for atexit cleanup
+    /// 2. Registration in the global GPU_STATES for atexit cleanup
     #[cfg(feature = "embedding-service")]
     state: Arc<Mutex<Option<LlamaState>>>,
     cache: Arc<Mutex<LruCache<String, Vec<f32>>>>,
@@ -859,6 +892,87 @@ mod tests {
     #[test]
     fn test_embedding_dimension() {
         assert_eq!(EMBEDDING_DIMENSION, 768);
+    }
+
+    /// The atexit registry must hold chat state alongside embedding state:
+    /// a chat slot that never reaches it keeps its Metal residency sets alive
+    /// past backend teardown and SIGABRTs on quit. Exercised on registered
+    /// entries directly — draining the whole global registry would unload
+    /// models other tests in this process have loaded.
+    #[cfg(any(feature = "embedding-service", feature = "chat-service"))]
+    #[test]
+    fn registry_releases_states_of_distinct_types() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        static DROPS: AtomicUsize = AtomicUsize::new(0);
+        struct EmbeddingLike;
+        struct ChatLike;
+        impl Drop for EmbeddingLike {
+            fn drop(&mut self) {
+                DROPS.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+        impl Drop for ChatLike {
+            fn drop(&mut self) {
+                DROPS.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+
+        let embedding = Arc::new(Mutex::new(Some(EmbeddingLike)));
+        let chat = Arc::new(Mutex::new(Some(ChatLike)));
+        register_state_for_cleanup(&embedding);
+        register_state_for_cleanup(&chat);
+        // A reload of the same service re-registers its slot; it must not
+        // appear twice.
+        register_state_for_cleanup(&chat);
+
+        let registered: Vec<Arc<dyn GpuResidentState>> = {
+            let states = GPU_STATES.lock().unwrap_or_else(|p| p.into_inner());
+            let embedding: Arc<dyn GpuResidentState> = embedding.clone();
+            let chat: Arc<dyn GpuResidentState> = chat.clone();
+            let ours: Vec<_> = states
+                .iter()
+                .filter_map(Weak::upgrade)
+                .filter(|s| Arc::ptr_eq(s, &embedding) || Arc::ptr_eq(s, &chat))
+                .collect();
+            assert_eq!(ours.len(), 2, "each slot registered exactly once");
+            ours
+        };
+
+        for state in &registered {
+            assert!(state.release());
+            assert!(!state.release(), "a released slot releases nothing twice");
+        }
+        assert_eq!(DROPS.load(Ordering::SeqCst), 2);
+        assert!(embedding.lock().unwrap().is_none());
+        assert!(chat.lock().unwrap().is_none());
+    }
+
+    /// Services unload a model by dropping their engine, never by clearing
+    /// the slot. The registry must not keep a dropped engine's model alive —
+    /// otherwise every unload or model switch leaves the old model resident
+    /// on the GPU until exit.
+    #[cfg(any(feature = "embedding-service", feature = "chat-service"))]
+    #[test]
+    fn registry_does_not_keep_a_dropped_owners_state_alive() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        static DROPPED: AtomicBool = AtomicBool::new(false);
+        struct Model;
+        impl Drop for Model {
+            fn drop(&mut self) {
+                DROPPED.store(true, Ordering::SeqCst);
+            }
+        }
+
+        let slot = Arc::new(Mutex::new(Some(Model)));
+        register_state_for_cleanup(&slot);
+        drop(slot);
+
+        assert!(
+            DROPPED.load(Ordering::SeqCst),
+            "dropping the owning engine must free its model"
+        );
     }
 
     #[cfg(not(feature = "embedding-service"))]
