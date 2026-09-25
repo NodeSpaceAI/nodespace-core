@@ -405,7 +405,8 @@ pub async fn delete_node(
     })
 }
 
-/// Query nodes with collection resolution, over-fetching, and post-filtering.
+/// Query nodes with collection resolution, collection-scoped pagination, and
+/// structured title/content/property filters.
 pub async fn query_nodes(
     node_service: &Arc<NodeService>,
     input: QueryNodesInput,

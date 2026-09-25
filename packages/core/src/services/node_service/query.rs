@@ -95,7 +95,8 @@ impl NodeService {
         // needs per-row schema context SQL can't express), so offset/limit can
         // only apply AFTER filtering: fetch the whole type-scoped set, unpaged.
         // A fetch cap here would silently drop every match past it with no
-        // signal to the caller.
+        // signal to the caller. Worst case: with no `node_type`, this reads
+        // every node in the database into memory.
         let (db_limit, db_offset) = if filter.property_filters.is_some() {
             (None, None)
         } else {
@@ -671,8 +672,9 @@ mod scope_context_tests {
     //! filter path stays synchronous and store-free (ADR-078).
     //!
     //! Property filtering runs per row. A schema read inside that loop would
-    //! turn an in-memory filter into one DB round-trip per matched node —
-    //! 10,000 of them at the fetch cap. The design has this property today;
+    //! turn an in-memory filter into one DB round-trip per matched node — and
+    //! the filtered read is unpaged, so that is one per row of the queried
+    //! type, with no upper bound. The design has this property today;
     //! these pin it so a future edit that reintroduces an `await` there fails
     //! here rather than silently regressing into per-row I/O.
 
