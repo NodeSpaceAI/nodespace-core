@@ -1810,7 +1810,7 @@ fn def_route_clarify() -> ToolDefinition {
         description: "Ask the user one specific clarifying question when a request can't be \
              completed as understood — e.g. a search returned more than one plausible match and \
              nothing already said picks one, the request's wording could mean more than one \
-             thing, or none of the procedures offered for this request can do what was asked. \
+             thing, or none of the available tools can do what was asked. \
              Ends the turn with the question; do not call another tool in the same turn."
             .into(),
         parameters_schema: json!({

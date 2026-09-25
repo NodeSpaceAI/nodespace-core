@@ -484,3 +484,42 @@ async fn control_conflict_requests_still_route_conflict_resolution() {
         "Conflict Resolution lost rank 1 for {misses:?}"
     );
 }
+
+/// Control for the destructive direction: deletion requests that carry a
+/// completion-state word ("the resolved incidents", "closed tickets") must not
+/// rank Graph Editing above Node Deletion. Rank, not top-3, is what matters
+/// here — `delete_node` is offered only from the top tool-bearing candidate,
+/// so a Graph Editing that outranks Node Deletion silently withholds it.
+///
+/// Scoped to Graph Editing on purpose: "delete the resolved incidents" also
+/// ranks Conflict Resolution above Node Deletion, on the shared word
+/// "resolve", independently of Graph Editing's wording.
+#[tokio::test]
+#[ignore = "requires the locked nomic-embed-text-v1.5 GGUF on disk"]
+async fn control_deletion_requests_are_not_outranked_by_graph_editing() {
+    let Some((embedding_service, node_service, _temp_dir)) = seed_and_embed().await else {
+        return;
+    };
+    let mut misses = Vec::new();
+    for query in [
+        "delete the resolved incidents",
+        "remove the closed tickets",
+        "get rid of the paid invoices",
+    ] {
+        let ranked = scored_ranking(&embedding_service, &node_service, query, 6).await;
+        eprintln!("{query:?}: {ranked:?}");
+        let rank = |skill: &str| {
+            ranked
+                .iter()
+                .position(|r| r.starts_with(&format!("{skill}=")))
+        };
+        let deletion = rank("Node Deletion");
+        if deletion.is_none() || rank("Graph Editing").is_some_and(|g| Some(g) < deletion) {
+            misses.push(query);
+        }
+    }
+    assert!(
+        misses.is_empty(),
+        "Graph Editing outranked Node Deletion for {misses:?}"
+    );
+}

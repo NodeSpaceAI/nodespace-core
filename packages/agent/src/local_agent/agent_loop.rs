@@ -1958,10 +1958,13 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
         let mut tools = routing::stage2_tools(&routed.candidates, &all_tools);
 
         // ADR-038's Stage-2 clarify branch: `route_clarify` stays callable even
-        // when no matched skill whitelists it. Withheld once this intent has
-        // already clarified — the contract Stage 1 enforces applies here too,
-        // or a retrieval that keeps surfacing the same wrong skill would ask
-        // the user again after every answer.
+        // when no matched skill whitelists it. This addition is skipped once
+        // the intent has already clarified, so a retrieval that keeps
+        // surfacing the same wrong skill cannot ask again after every answer.
+        // It governs only this addition: a skill that whitelists
+        // `route_clarify` itself (Graph Editing, Node Creation, for
+        // record-level ambiguity) still offers it, as does the fail-open
+        // surface.
         if !session_already_clarified(session) {
             tools = routing::with_stage2_clarify(tools, &all_tools);
         }

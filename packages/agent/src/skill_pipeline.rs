@@ -515,16 +515,23 @@ STRUCTURED PROPERTY QUERIES: To filter by property values (status, due_date, etc
             root_node_type: "skill".to_string(),
             root_properties: serde_json::json!({
                 // Names the completion states users actually say ("mark it
-                // resolved", "the invoice is paid"). The prior wording ("Modify
+                // resolved", "mark it paid"). The prior wording ("Modify
                 // existing nodes... update content, properties, titles, and
                 // metadata") missed the top-3 for 5 of 7 such requests on the
                 // locked embedding model, while Conflict Resolution won them on
                 // the shared word "resolve" and left no write tool on Stage 2's
-                // surface. Now in the top-3 for all 7, with conflict-journal
-                // requests still routing to Conflict Resolution first — see
-                // `completion_state_updates_route_graph_editing` and its
-                // control in `tests/live_skill_retrieval_stability.rs`.
-                "description": "Change something about a record that already exists: mark it resolved, done, closed, paid, or complete, or set, change, or update one of its fields, status, title, or content. Use when the user describes a new state for an existing item — the incident is resolved, the invoice is paid, the ticket is closed. For tasks, use update_task_status to change status.",
+                // surface. Now in the top-3 for all 7.
+                //
+                // Kept narrow on purpose. A broader draft listing "closed" and
+                // "paid" as nouns ("the invoice is paid, the ticket is closed")
+                // outranked Node Deletion on "remove the closed tickets",
+                // silently withholding delete_node; "keep it" / "stay" is what
+                // holds deletion requests on Node Deletion. Guarded in
+                // `tests/live_skill_retrieval_stability.rs` by
+                // `completion_state_updates_route_graph_editing`,
+                // `control_conflict_requests_still_route_conflict_resolution`,
+                // and `control_deletion_requests_are_not_outranked_by_graph_editing`.
+                "description": "Update a record that already exists and keep it: mark it resolved, done, or paid, or set or change one of its fields, status, title, or content. Use when the user wants an existing item to stay but move to a new state. For tasks, use update_task_status to change status.",
                 // `create_node` is whitelisted here as the mirror of
                 // `update_node` on Node Creation: "record this" and "change
                 // that" are the same user intent inflected two ways, and either
