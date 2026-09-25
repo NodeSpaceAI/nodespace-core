@@ -94,6 +94,37 @@
 //! variable is real dataflow analysis, not a text scan — left as a second
 //! documented gap rather than the scanner growing that complexity.
 //!
+//! A third known false negative, by deliberate design rather than
+//! oversight: a bound `NAME` that is later rebound by ANY `let NAME = ...`/
+//! `let Some(NAME) = ...` (bare `let`, let-else, `if let`, `while let` all
+//! count) ends the search window right there, unconditionally — even when
+//! the new value is clearly derived from the old one (`let x = match x {
+//! ... }`, the common idiom for narrowing a `Result<Option<T>>` down to
+//! `T` in two steps). An earlier version of this scanner tried to except
+//! that self-referential case from truncation so its own later field
+//! access would still be found, and went through three rounds of
+//! increasingly complex, still-incomplete fixes chasing edge cases in that
+//! classification (a missed binding shape, a heuristic that scanned into a
+//! following block's own body, a depth-aware rewrite that still
+//! misclassified a self-referential struct-literal/match/if-expression
+//! RHS) before concluding that "does this reshadow derive from the old
+//! value" is fundamentally a real-parser question this deliberately
+//! simple text scanner has no business trying to answer. Unconditional
+//! truncation on any reshadow eliminates that entire recurring bug
+//! surface at the cost of this one false-negative class. The concrete,
+//! checked cost — two real call sites, found by re-running this scanner
+//! against the real codebase after the change and checking every entry
+//! `ALLOWLIST` no longer needed: `schema/mod.rs::handle_create_schema`
+//! reads `persisted.fields`/`.relationships` (a write-confirmation echo,
+//! own-declarations-only and correct — not a bug) via `let persisted =
+//! ...; let persisted = match persisted { ... };`; and
+//! `schema/mod.rs::resolve_effective_fields` — itself one of the chain-
+//! walkers this scanner is supposed to recognize as legitimate — reads
+//! `schema.fields` via `if let Some(schema) = schema { chain_fields.push
+//! (schema.fields); }`, an if-let reshadowing a variable with itself.
+//! Neither call site has an [`ALLOWLIST`] entry any more, the same as the
+//! two false-negative classes above.
+//!
 //! Granularity is per (file, function, field kind) — not per line or per
 //! exact call site. A function already on the allowlist for `.fields` is
 //! not re-flagged if it grows a *second* `.fields` read reachable from a
@@ -191,17 +222,6 @@ const ALLOWLIST: &[Allowed] = &[
               only valid for a field type_id itself declares.",
     },
     Allowed {
-        file: "schema/mod.rs",
-        function: "resolve_effective_fields",
-        field_kind: "fields",
-        why: "A second, parallel implementation of resolve_field_owners' \
-              chain-walk, living in the MCP schema-handler layer rather than \
-              on NodeService directly (its own doc comment: 'This is what \
-              validation, defaulting and schema comprehension read instead \
-              of a schema's own directly-declared fields'). Same per-hop \
-              get_schema_node-then-.fields shape, same intentional chain-walk.",
-    },
-    Allowed {
         file: "playbook/workflow_state.rs",
         function: "get_workflow_state",
         field_kind: "fields",
@@ -210,26 +230,6 @@ const ALLOWLIST: &[Allowed] = &[
               only read off get_schema_with_relationships is used solely \
               when that primary call fails (a transient DB error), and the \
               failure is recorded in `degraded` so it's never silent.",
-    },
-    Allowed {
-        file: "schema/mod.rs",
-        function: "handle_create_schema",
-        field_kind: "fields",
-        why: "Write-confirmation echo, not a business-logic read: after \
-              creating a brand-new schema, `persisted` is that same schema \
-              read back via get_schema_node_verifying to confirm the write \
-              actually landed (see the function's own doc comment on why a \
-              read-back replaced echoing the request payload back \
-              verbatim). Reports exactly what was just persisted for THIS \
-              schema, not an effective/inherited view — there is nothing to \
-              chain-merge for a type that was only just created.",
-    },
-    Allowed {
-        file: "schema/mod.rs",
-        function: "handle_create_schema",
-        field_kind: "relationships",
-        why: "Same write-confirmation echo as this function's `fields` \
-              entry above, relationship counterpart.",
     },
     Allowed {
         file: "schema/mod.rs",
@@ -555,65 +555,6 @@ fn matching_paren_end(text: &str, open_paren: usize) -> Option<usize> {
     None
 }
 
-/// Find the end (exclusive, relative to `text`) of a `let`/let-else/`if
-/// let`/`while let` binding's own condition/right-hand-side expression —
-/// the text starting at `start` (right after its `=`) up to whichever of
-/// `;`, `{`, or the `else` keyword terminates it FIRST, counting one of
-/// those as the real terminator only when it's reached at paren/bracket
-/// depth zero (mirroring [`matching_paren_end`]'s depth-tracking, applied
-/// to a different set of terminator characters).
-///
-/// This uniformly bounds the expression for every shape the reshadow check
-/// in [`find_hits_in_function`] needs to reason about, without treating any
-/// of them specially:
-/// - `let x = EXPR;` → stops at `;` → EXPR = "EXPR"
-/// - `let Some(x) = EXPR else { BLOCK };` → stops at `else` (before the
-///   block) → EXPR = "EXPR ", never scanning into BLOCK
-/// - `if let Some(x) = EXPR { BODY }` / `while let Some(x) = EXPR { BODY }`
-///   → stops at `{` (there is no `;`/`else` before it) → EXPR = "EXPR ",
-///   never scanning into BODY
-///
-/// Scanning into BLOCK/BODY is exactly the bug an earlier, simpler version
-/// of this logic had: those blocks commonly reference the newly-bound name
-/// legitimately (that's the point of binding it), which would make ANY
-/// such block look "self-referential" to a naive scan and defeat the
-/// reshadow check's entire purpose — the whole point is to determine
-/// whether the NEW value being assigned to NAME is derived from the OLD
-/// one, which is a question about EXPR alone, never about what runs after
-/// the binding completes.
-fn expr_end(text: &str, start: usize) -> usize {
-    let bytes = text.as_bytes();
-    let mut depth = 0i32;
-    let mut i = start;
-    while i < bytes.len() {
-        let c = bytes[i];
-        if depth <= 0 {
-            if c == b';' || c == b'{' {
-                return i;
-            }
-            if c == b'e' && text[i..].starts_with("else") {
-                let before_ok = i == start
-                    || !matches!(bytes[i - 1], b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'_');
-                let after_ok = text[i + 4..]
-                    .chars()
-                    .next()
-                    .map(|c| !c.is_alphanumeric() && c != '_')
-                    .unwrap_or(true);
-                if before_ok && after_ok {
-                    return i;
-                }
-            }
-        }
-        match c {
-            b'(' | b'[' => depth += 1,
-            b')' | b']' => depth -= 1,
-            _ => {}
-        }
-        i += 1;
-    }
-    text.len()
-}
-
 /// One detected direct read of `.relationships`/`.fields` off a
 /// `get_schema_node`/`get_schema_with_relationships` result.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -670,66 +611,44 @@ fn find_hits_in_function(body: &str, file: &str, function: &str) -> Vec<Hit> {
         let rest = &body[bind_end..];
 
         // Scope the search window to end before NAME is rebound (shadowed)
-        // by a later `let` to a value that does NOT reference NAME's old
-        // value — otherwise a field access on a genuinely different value
-        // bound under the same name would be wrongly attributed to this
-        // binding's `get_schema_node` result, a false positive the module
-        // doc's design goal explicitly wants to avoid. A *self-referential*
-        // re-`let` (`let x = match x { ... }`, `let x = x.unwrap()`) is
-        // excluded from this: it's a continuation of the SAME value's
-        // derivation chain — the common Rust idiom for narrowing a
-        // `Result<Option<T>>` down to `T` in two steps, exactly what
-        // `handle_create_schema`'s allowlisted `let persisted = ...; let
-        // persisted = match persisted { ... };` does — not a new, unrelated
-        // value, so it must not cut the window short before that
-        // function's actual `persisted.fields`/`.relationships` reads.
+        // by a LATER `let NAME = ...`/`let Some(NAME) = ...` of any kind
+        // (bare let, let-else, if-let, while-let all match — see
+        // `reshadow_re`, which mirrors `binding_re`'s own alternation
+        // above) — unconditionally, regardless of whether the new value
+        // looks derived from NAME's old one. A field access on a
+        // genuinely different value bound under the same name must not be
+        // attributed to this binding's `get_schema_node` result — a false
+        // positive the module doc's design goal explicitly wants to avoid.
         //
-        // Mirrors `binding_re`'s own `let NAME = ...` / `let Some(NAME) =
-        // ...` alternation above — a reshadow via the `let Some(NAME) = ...
-        // else { ... }` idiom must be recognized here too, or it silently
-        // falls through this check entirely and the original, unbounded
-        // false-positive risk this scoping exists to close reopens for
-        // that shape specifically.
-        //
-        // The self-reference check below only strips *comments* before
-        // this stage (see [`strip_comments`]), not string literals — a
-        // reassignment whose right-hand side happens to contain NAME
-        // inside a string (e.g. `let schema = config.get_value("schema")`)
-        // would coincidentally look self-referential and skip truncation.
-        // Accepted as a known, unfixed edge case: real production code
-        // reassigning a `get_schema_node`-bound variable's name to an
-        // unrelated string-literal-containing call is not a shape this
-        // codebase currently has any instance of.
+        // An earlier version of this check tried to except a
+        // *self-referential* re-`let` (`let x = match x { ... }`, the
+        // common idiom for narrowing a `Result<Option<T>>` down to `T` in
+        // two steps — exactly what `handle_create_schema` used to do)
+        // from truncation, so that shape's own later field access would
+        // still be found. That classification went through three rounds
+        // of increasingly complex, still-incomplete fixes: missing the
+        // `Some(NAME)` form entirely; a "next `;`" heuristic that scanned
+        // into a following block's own body (`if let`/`while let` have no
+        // `;` to find at all; a let-else's else-block commonly mentions
+        // the name legitimately); then a depth-aware rewrite that still
+        // misclassified a self-referential struct-literal/match/
+        // if-expression RHS whose own `{` triggered early. Given this
+        // guard's stated design goal — false negatives over false
+        // positives, a deliberately non-exhaustive text scan, not a real
+        // parser — the right trade is to stop trying to classify
+        // self-reference at all: truncate on ANY reshadow, full stop. This
+        // makes `handle_create_schema`'s own `persisted.fields`/
+        // `.relationships` reads invisible to this scanner — see the
+        // module doc's third known false-negative class, and its two
+        // ALLOWLIST entries were removed as a direct, documented
+        // consequence rather than left as a silent gap.
         let reshadow_re = regex::Regex::new(&format!(
             r"\blet\s+(?:mut\s+)?(?:Some\(\s*{0}\s*\)|{0})\s*=",
             regex::escape(name)
         ))
         .unwrap();
         let rest = match reshadow_re.find(rest) {
-            Some(m) => {
-                // Bound the self-reference check to the reassignment's own
-                // right-hand-side expression via [`expr_end`] — depth-aware,
-                // so it correctly stops before a following block (`else
-                // { .. }`, or an `if let`/`while let`'s own `{ .. }` body)
-                // rather than scanning into it. An earlier version of this
-                // check used "the next literal `;` within a flat 200-char
-                // window" instead, which happened to work for a `let x =
-                // EXPR;`/simple let-else shape but silently broke for `if
-                // let`/`while let` (no `;` terminates the condition at all,
-                // so it scanned straight into the following block's body)
-                // and for a let-else whose else-block legitimately mentions
-                // NAME before diverging (its own `;` was found first,
-                // wrongly extending the checked region into that mention).
-                let rhs_end = expr_end(rest, m.end());
-                let rhs_window = &rest[m.end()..rhs_end];
-                let self_ref_re =
-                    regex::Regex::new(&format!(r"\b{}\b", regex::escape(name))).unwrap();
-                if self_ref_re.is_match(rhs_window) {
-                    rest
-                } else {
-                    &rest[..m.start()]
-                }
-            }
+            Some(m) => &rest[..m.start()],
             None => rest,
         };
 
@@ -1128,9 +1047,9 @@ fn scanner_detects_a_deliberately_bad_fixture() {
          (entry.node_type()) should still be detected"
     );
 
-    // A later `let` that rebinds NAME to a genuinely unrelated value must
-    // stop the search window there — a field access on THAT value must not
-    // be attributed to the original get_schema_node result.
+    // A later `let` that rebinds NAME — to ANY value, related or not — must
+    // stop the search window there; a field access after it must not be
+    // attributed to the original get_schema_node result.
     let unrelated_reshadow_fixture = r#"
         async fn shadow_false_positive(&self, node_type: &str) -> usize {
             let schema = self.get_schema_node(node_type).await.unwrap().unwrap();
@@ -1148,12 +1067,17 @@ fn scanner_detects_a_deliberately_bad_fixture() {
          to the earlier get_schema_node binding of the same name: {hits:?}"
     );
 
-    // But a SELF-referential re-`let` (`let x = match x { ... }`, the same
-    // shape `handle_create_schema` uses on the allowlist to narrow
-    // `Result<Option<T>>` down to `T`) is a continuation of the same
-    // value's derivation chain, not a new unrelated one — the window must
-    // NOT be cut short before the real field access that follows it.
-    let self_ref_reshadow_fixture = r#"
+    // Even a SELF-referential re-`let` (`let x = match x { ... }`, the
+    // idiom for narrowing a `Result<Option<T>>` down to `T` in two steps —
+    // `schema/mod.rs::handle_create_schema` uses exactly this shape in real
+    // code) is now truncated too, unconditionally. This is a deliberate,
+    // documented trade-off (see the module doc's third known false-negative
+    // class), not an oversight: distinguishing "the new value is derived
+    // from the old one" from "the new value is unrelated" turned out to be
+    // a real-parser question this text scanner kept getting wrong in new
+    // ways, so it no longer tries. `handle_create_schema` itself has no
+    // ALLOWLIST entry as a direct, accepted consequence.
+    let self_referential_reshadow_is_now_excluded_fixture = r#"
         async fn self_ref_reshadow(&self, node_type: &str) -> usize {
             let persisted = self.get_schema_node(node_type).await.unwrap();
             let persisted = match persisted {
@@ -1163,13 +1087,13 @@ fn scanner_detects_a_deliberately_bad_fixture() {
             persisted.fields.len()
         }
     "#;
-    let functions = split_functions(self_ref_reshadow_fixture);
+    let functions = split_functions(self_referential_reshadow_is_now_excluded_fixture);
     let (name, body) = &functions[0];
     let hits = find_hits_in_function(body, "fixture.rs", name);
     assert!(
-        hits.iter().any(|h| h.field_kind == "fields"),
-        "a self-referential re-let (let x = match x {{ ... }}) must not cut the search window \
-         short before the real field access that follows it"
+        hits.is_empty(),
+        "a self-referential re-let (let x = match x {{ ... }}) is now expected to be excluded \
+         by the unconditional reshadow truncation, not specially preserved: {hits:?}"
     );
 
     // A function signature containing a fixed-size array type (`[u8; 32]`)
@@ -1223,32 +1147,30 @@ fn scanner_detects_a_deliberately_bad_fixture() {
          be attributed to the earlier get_schema_node binding of the same name: {hits:?}"
     );
 
-    // ...but a SELF-referential `let Some(NAME) = NAME else { ... }`
-    // reshadow (narrowing NAME itself through an else-guard) must still not
-    // cut the window short, symmetric with the plain-`let` self-reference
-    // case above.
-    let self_ref_some_reshadow_fixture = r#"
+    // A SELF-referential `let Some(NAME) = NAME else { ... }` reshadow is
+    // now also excluded, symmetric with the plain-`let` case above — the
+    // unconditional truncation doesn't distinguish this form either.
+    let self_ref_some_reshadow_is_now_excluded_fixture = r#"
         async fn self_ref_some_reshadow(&self, node_type: &str) -> usize {
             let schema = self.get_schema_node(node_type).await.unwrap();
             let Some(schema) = schema else { return 0; };
             schema.fields.len()
         }
     "#;
-    let functions = split_functions(self_ref_some_reshadow_fixture);
+    let functions = split_functions(self_ref_some_reshadow_is_now_excluded_fixture);
     let (name, body) = &functions[0];
     let hits = find_hits_in_function(body, "fixture.rs", name);
     assert!(
-        hits.iter().any(|h| h.field_kind == "fields"),
-        "a self-referential `let Some(NAME) = NAME else {{ ... }}` reshadow must not cut the \
-         search window short before the real field access that follows it"
+        hits.is_empty(),
+        "a self-referential `let Some(NAME) = NAME else {{ ... }}` reshadow is now expected to \
+         be excluded by the unconditional truncation: {hits:?}"
     );
 
-    // Adversarial: an `if let`/`while let` (no `else`) reshadow has no `;`
-    // terminating its condition at all, and its body legitimately
-    // references the newly (unrelated) bound name — proving `expr_end`
-    // stops at the body's own `{` rather than scanning into it, unlike an
-    // earlier "next literal `;`" version of this check which had no
-    // terminator to find here and fell through into the body itself.
+    // `reshadow_re`'s `let`-based pattern also matches the `let` embedded
+    // in `if let`/`while let` (they're the same regex, unconditionally, not
+    // a case this scanner special-cases) — an unrelated reshadow through
+    // either form still correctly ends the window, even though its body
+    // legitimately mentions the newly (unrelated) bound name.
     let if_let_unrelated_fixture = r#"
         async fn if_let_unrelated(&self, node_type: &str) -> usize {
             let schema = self.get_schema_node(node_type).await.unwrap().unwrap();
@@ -1264,53 +1186,6 @@ fn scanner_detects_a_deliberately_bad_fixture() {
     let hits = find_hits_in_function(body, "fixture.rs", name);
     assert!(
         hits.is_empty(),
-        "an if-let reshadow to an unrelated value, whose body legitimately mentions the same \
-         name, must not be flagged: {hits:?}"
-    );
-
-    let while_let_unrelated_fixture = r#"
-        async fn while_let_unrelated(&self, node_type: &str) -> usize {
-            let schema = self.get_schema_node(node_type).await.unwrap().unwrap();
-            let ok = schema.is_core;
-            let mut total = 0;
-            while let Some(schema) = queue.pop() {
-                total += schema.fields.len();
-            }
-            total
-        }
-    "#;
-    let functions = split_functions(while_let_unrelated_fixture);
-    let (name, body) = &functions[0];
-    let hits = find_hits_in_function(body, "fixture.rs", name);
-    assert!(
-        hits.is_empty(),
-        "a while-let reshadow to an unrelated value must not be flagged: {hits:?}"
-    );
-
-    // Adversarial: a let-else whose ELSE-BLOCK (not the matched expression)
-    // legitimately mentions the reshadowed name before diverging — proving
-    // the self-reference check is scoped to the expression between `=` and
-    // `else` only, never into the else-block's own body. An earlier "next
-    // literal `;`" version of this check would find the `;` INSIDE this
-    // else-block (after `log_missing_schema()`) and wrongly include the
-    // block's own mention of the name in what it checked.
-    let let_else_body_mentions_name_fixture = r#"
-        async fn let_else_body_mentions_name(&self, node_type: &str) -> usize {
-            let schema = self.get_schema_node(node_type).await.unwrap().unwrap();
-            let ok = schema.is_core;
-            let Some(schema) = unrelated_lookup() else {
-                log_missing_schema();
-                return 0;
-            };
-            schema.fields.len()
-        }
-    "#;
-    let functions = split_functions(let_else_body_mentions_name_fixture);
-    let (name, body) = &functions[0];
-    let hits = find_hits_in_function(body, "fixture.rs", name);
-    assert!(
-        hits.is_empty(),
-        "a let-else reshadow to an unrelated value must not be flagged just because its \
-         else-block body happens to mention the same name before diverging: {hits:?}"
+        "an if-let reshadow to an unrelated value must not be flagged: {hits:?}"
     );
 }
