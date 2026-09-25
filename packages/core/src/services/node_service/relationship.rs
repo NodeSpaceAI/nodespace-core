@@ -485,30 +485,41 @@ impl NodeService {
     /// Checking only the node's own type made inherited relationships
     /// unusable — `create_relationship` rejected them outright, which meant a
     /// subtype could never participate in an edge its parent declares.
+    ///
+    /// Delegates to [`Self::resolve_relationships`] rather than hand-walking
+    /// the chain itself — same chain source (`resolve_type_chain`), same
+    /// nearest-first shadowing (`flatten_chain_by_name`), so this can't drift
+    /// from the resolver every other relationship-reading call site already
+    /// uses. One behavioral difference from the old hand-walk, and a
+    /// deliberate one: `resolve_relationships` excludes the `extends`/
+    /// `extended_by` type-system bookkeeping row (see its own doc comment),
+    /// which the old per-scope `SchemaNode::get_relationship` lookup did not
+    /// — that lookup would happily return a schema's own `extends`
+    /// declaration if a caller named it as `relationship_name`, letting
+    /// `create_relationship` create a real data-level `extends` edge between
+    /// two ordinary node instances. That was never a reachable, intentional
+    /// path (nothing creates such an edge), and is closed now rather than
+    /// preserved.
     async fn resolve_declared_relationship(
         &self,
         schema_id: &str,
         relationship_name: &str,
     ) -> Result<crate::models::schema::SchemaRelationship, NodeServiceError> {
-        // Hydrated fetch: declarations come from the relationship table via
-        // the one shared store query path (`get_schema_declarations`).
-        let chain = self.resolve_type_chain(schema_id).await?;
+        let (relationships, _owners) = self.resolve_relationships(schema_id).await?;
 
-        for scope in &chain {
-            let Some(schema_node) = self.get_schema_node(scope).await? else {
-                continue;
-            };
-            if let Some(rel) = schema_node.get_relationship(relationship_name) {
-                return Ok(rel.clone());
-            }
-        }
-
-        // Nearest scope first, so the node's own type is reported even when the
-        // chain is longer — that is the type the caller named.
-        Err(NodeServiceError::invalid_update(format!(
-            "Relationship '{}' not defined in schema '{}'. Built-in relationships (member_of, has_child, mentions, has_role) are universal.",
-            relationship_name, schema_id
-        )))
+        relationships
+            .into_iter()
+            .find(|rel| rel.name == relationship_name)
+            .ok_or_else(|| {
+                // Nearest scope first is already `resolve_relationships`'s own
+                // resolution order; `schema_id` is reported unconditionally
+                // here regardless of how deep a match would have been in the
+                // chain — that is the type the caller named.
+                NodeServiceError::invalid_update(format!(
+                    "Relationship '{}' not defined in schema '{}'. Built-in relationships (member_of, has_child, mentions, has_role) are universal.",
+                    relationship_name, schema_id
+                ))
+            })
     }
 
     /// `_in_tx` equivalent of [`Self::get_node`]'s virtual-date fallback.

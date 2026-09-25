@@ -4786,6 +4786,80 @@ async fn test_unextended_schema_resolves_to_its_own_fields() {
     );
 }
 
+/// Pins the single-source-of-truth property this consolidation establishes:
+/// `resolve_effective_fields` (this module, via the private `load_parent_map`
+/// helper) and `NodeService::resolve_field_owners` (`services::node_service`,
+/// via `resolve_type_chain`) are two independent call paths that both walk
+/// the same `extends` chain and must resolve the exact same effective field
+/// set for it. Before this consolidation they read the chain from two
+/// different underlying sources (`get_all_schemas()`'s hydrated
+/// `declared_parent` vs. `get_extends_parent_map()`'s direct query) with
+/// nothing guarding that the two stayed in agreement — a regression here
+/// would mean the two walkers have silently diverged again.
+#[tokio::test]
+async fn test_resolve_effective_fields_agrees_with_resolve_field_owners_across_extends_chain() {
+    let (svc, _tmp) = create_test_service().await;
+    create_base_schema(&svc, "Root", &["root_field"]).await;
+    handle_create_schema(
+        &svc,
+        json!({
+            "name": "Mid",
+            "extends": "root",
+            "fields": [
+                { "name": "mid_field", "type": "string", "protection": "user", "indexed": false }
+            ]
+        }),
+    )
+    .await
+    .expect("mid extends root should succeed");
+    handle_create_schema(
+        &svc,
+        json!({
+            "name": "Leaf",
+            "extends": "mid",
+            "fields": [
+                { "name": "leaf_field", "type": "string", "protection": "user", "indexed": false }
+            ]
+        }),
+    )
+    .await
+    .expect("leaf extends mid should succeed");
+
+    let via_schema_layer = resolve_effective_fields(&svc, "leaf")
+        .await
+        .expect("resolve_effective_fields should succeed");
+    let (via_node_service, _owners, chain) = svc
+        .resolve_field_owners("leaf")
+        .await
+        .expect("resolve_field_owners should succeed");
+
+    let mut schema_layer_names: Vec<&str> =
+        via_schema_layer.iter().map(|f| f.name.as_str()).collect();
+    let mut node_service_names: Vec<&str> =
+        via_node_service.iter().map(|f| f.name.as_str()).collect();
+    schema_layer_names.sort_unstable();
+    node_service_names.sort_unstable();
+
+    assert_eq!(
+        schema_layer_names,
+        vec!["leaf_field", "mid_field", "root_field"],
+        "sanity: the full 3-level chain's fields should all resolve"
+    );
+    assert_eq!(
+        schema_layer_names, node_service_names,
+        "resolve_effective_fields (schema layer, load_parent_map) and \
+         resolve_field_owners (NodeService, resolve_type_chain) must resolve \
+         the exact same effective field set for the same extends chain — they \
+         are two independent walkers over what must be the same edges"
+    );
+    assert_eq!(
+        chain,
+        vec!["leaf", "mid", "root"],
+        "resolve_field_owners's own chain, nearest-first, should match the \
+         extends edges load_parent_map resolves against"
+    );
+}
+
 // ============================================================================
 // ADR-078 write-time collision enforcement: add_fields-only updates, and
 // relationships (both create_schema and update_schema)
