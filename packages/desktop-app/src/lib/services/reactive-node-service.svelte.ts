@@ -356,32 +356,17 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
           // Wait for newNode to be persisted so children can reference it as parent.
           await sharedNodeStore.waitForNodeSaves([nodeId]);
 
-          // Single atomic RPC — all-or-nothing OCC, one transaction in the daemon.
-          const updatedChildren = await backendAdapter.moveChildrenToParent(
+          await persistChildTransfer(
             nodeId,
-            children.map((c) => ({ id: c.id, version: c.version }))
+            children.map((c) => c.id)
           );
-
-          // Sync versions from the response (order reconciles via RelationshipUpdated events).
-          for (const updated of updatedChildren) {
-            sharedNodeStore.updateNode(
-              updated.id,
-              { version: updated.version },
-              { type: 'database', reason: 'move-version-sync' },
-              { skipPersistence: true }
-            );
-          }
         } catch (error) {
           // ROLLBACK: Revert optimistic UI changes on failure (preserves the move-rejected notification).
           log.error('[createNode] Failed to transfer children to database, rolling back:', error);
           for (const child of children) {
             structureTree.moveInMemoryRelationship(nodeId, afterNodeId, child.id);
           }
-          conflictNotifications.add({
-            nodeId,
-            message: "Changes couldn't be saved. Please try again.",
-            conflictType: 'child-transfer-failure'
-          });
+          notifyChildTransferFailure(nodeId);
         }
       });
     }
@@ -752,7 +737,21 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     _rootNodeIds = originalRootNodeIds;
     updateDescendantDepths(nodeId);
 
-    // Rollback transferred siblings: back under the old parent, at their old depth
+    rollbackSiblingTransfer(nodeId, siblingsBelow, oldParentId);
+
+    events.hierarchyChanged();
+  }
+
+  /**
+   * Returns the siblings outdentNode optimistically moved under `nodeId` back under the
+   * old parent, in order, at their old depth. Leaves `nodeId` itself where it is — used on
+   * its own when the node's CREATE/MOVE committed but the sibling transfer did not.
+   */
+  function rollbackSiblingTransfer(
+    nodeId: string,
+    siblingsBelow: string[],
+    oldParentId: string
+  ): void {
     for (const siblingId of siblingsBelow) {
       const sibling = sharedNodeStore.getNode(siblingId);
       if (sibling) {
@@ -766,8 +765,39 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
         updateDescendantDepths(siblingId);
       }
     }
+  }
 
-    events.hierarchyChanged();
+  /**
+   * Persists an optimistic child transfer as ONE atomic RPC (all-or-nothing OCC, one daemon
+   * transaction; children are appended under `newParentId` in the given order), then syncs
+   * each moved child's version from the response. On throw, none of the children moved.
+   */
+  async function persistChildTransfer(newParentId: string, childIds: string[]): Promise<void> {
+    const children = childIds.flatMap((id) => {
+      const child = sharedNodeStore.getNode(id);
+      return child ? [{ id, version: child.version }] : [];
+    });
+    if (children.length === 0) return;
+
+    const updatedChildren = await backendAdapter.moveChildrenToParent(newParentId, children);
+
+    // Order reconciles via RelationshipUpdated events; only versions need syncing here.
+    for (const updated of updatedChildren) {
+      sharedNodeStore.updateNode(
+        updated.id,
+        { version: updated.version },
+        { type: 'database', reason: 'move-version-sync' },
+        { skipPersistence: true }
+      );
+    }
+  }
+
+  function notifyChildTransferFailure(nodeId: string): void {
+    conflictNotifications.add({
+      nodeId,
+      message: "Changes couldn't be saved. Please try again.",
+      conflictType: 'child-transfer-failure'
+    });
   }
 
   /**
@@ -1094,6 +1124,9 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     // Track move operation to prevent race conditions with subsequent indent/outdent
     // CRITICAL: Other hierarchy operations must wait for this move to complete
     const moveOperation = (async () => {
+      // Whether the node itself now sits under newParentId in the backend (its CREATE or MOVE
+      // committed). Decides how much of the optimistic outdent a later failure may undo.
+      let nodeCommitted = false;
       try {
         // CRITICAL: Wait for any pending move operations (from indent) to complete.
         // This prevents "Sibling not found" errors when:
@@ -1136,29 +1169,25 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
           );
         }
 
-        // Move sibling transfers (get fresh versions for each)
-        // NOTE: Sequential to preserve sibling order. Parallel execution is possible but requires
-        // pre-issuing all move RPCs and waiting for the daemon to assign orders atomically. For
-        // typical outdent operations (0-3 siblings), sequential latency is negligible.
-        for (const siblingId of siblingsBelow) {
-          const freshSibling = sharedNodeStore.getNode(siblingId);
-          if (freshSibling) {
-            // Backend returns updated sibling with new version
-            const updatedSibling = await backendAdapter.moveNode(
-              siblingId,
-              freshSibling.version,
-              nodeId,
-              null
-            );
-            // Sync sibling's version from backend response
-            sharedNodeStore.updateNode(
-              siblingId,
-              { version: updatedSibling.version },
-              { type: 'database', reason: 'move-version-sync' },
-              { skipPersistence: true }
-            );
-          }
+        nodeCommitted = needsNodeMove || sharedNodeStore.isNodePersisted(nodeId);
+        if (!nodeCommitted) {
+          // The re-triggered CREATE failed (flushAllPendingSaves reports failures rather than
+          // throwing): the node isn't in the backend, so there is no parent to move siblings
+          // under. Undo the whole optimistic outdent.
+          rollbackOutdentChanges(
+            nodeId,
+            originalUIState,
+            originalRootNodeIds,
+            siblingsBelow,
+            oldParentId,
+            newParentId
+          );
+          log.error(`[outdentNode] CREATE for ${nodeId.substring(0, 8)} did not land; rolled back`);
+          return;
         }
+
+        // Trailing siblings move under the node in one atomic RPC: all of them or none
+        await persistChildTransfer(nodeId, siblingsBelow);
       } catch (error) {
         // Check if error is ignorable
         const isIgnorableError =
@@ -1169,8 +1198,16 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
             error.message.includes('fetch failed') ||
             error.message.includes('Failed to execute "fetch()"'));
 
-        if (!isIgnorableError) {
-          // Non-ignorable error: rollback all changes
+        if (!isIgnorableError && nodeCommitted) {
+          // The node is under its new parent in the backend; only the sibling transfer
+          // failed (atomically — none of them moved). Keep the node where it is and return
+          // just the siblings, so the local tree matches the backend.
+          rollbackSiblingTransfer(nodeId, siblingsBelow, oldParentId);
+          events.hierarchyChanged();
+          notifyChildTransferFailure(nodeId);
+          log.error('[outdentNode] Failed to transfer siblings, rolled them back:', error);
+        } else if (!isIgnorableError) {
+          // The node's own CREATE/MOVE did not commit: rollback all changes
           rollbackOutdentChanges(
             nodeId,
             originalUIState,
