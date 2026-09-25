@@ -88,6 +88,8 @@ export interface ImportProgressEvent {
   current: number;
   /** Total items in step (if applicable) */
   total: number;
+  /** Database the import writes into; absent when it targets the daemon's default database */
+  database_id?: string;
 }
 
 // ============================================================================
