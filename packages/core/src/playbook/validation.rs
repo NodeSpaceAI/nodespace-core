@@ -3323,11 +3323,10 @@ mod tests {
 
         /// A segment that matches no declared reverse name anywhere in the
         /// chain is a genuine miss — `Ok(None)` — never conflated with the
-        /// `Err(SchemaResolutionFailed)` a DB error produces. This is the
-        /// distinction core#2885 fixes: before it, both a genuine miss and a
-        /// DB error collapsed to the same `None`, so the caller always
-        /// reported `BrokenPath`, blaming the play's own expression even
-        /// when the real cause was a transient DB error.
+        /// `Err(SchemaResolutionFailed)` a DB error produces. Previously both
+        /// a genuine miss and a DB error collapsed to the same `None`, so the
+        /// caller always reported `BrokenPath`, blaming the play's own
+        /// expression even when the real cause was a transient DB error.
         #[tokio::test]
         async fn test_resolve_reverse_segment_returns_ok_none_for_undeclared_name() {
             let (svc, _tmp) = create_test_service().await;
