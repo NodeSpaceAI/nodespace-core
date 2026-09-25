@@ -771,6 +771,17 @@ describe('ReactiveStructureTree', () => {
       expect(structureTree.getChildren('parent1')).toEqual(['child1']);
     });
 
+    it('should make the child a root when the new parent is null', () => {
+      structureTree.children.clear();
+      structureTree.addInMemoryRelationship('parent1', 'child1', 1.0);
+      structureTree.addInMemoryRelationship('parent1', 'child2', 2.0);
+
+      structureTree.moveInMemoryRelationship('parent1', null, 'child1');
+
+      expect(structureTree.getParent('child1')).toBeNull();
+      expect(structureTree.getChildren('parent1')).toEqual(['child2']);
+    });
+
     it('should calculate order automatically when not provided', () => {
       structureTree.children.clear();
 

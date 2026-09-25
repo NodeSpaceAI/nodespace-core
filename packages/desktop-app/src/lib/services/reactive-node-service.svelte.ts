@@ -743,26 +743,28 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     oldParentId: string,
     newParentId: string | null
   ): void {
+    // Rollback structure tree first (newParentId null = node had been moved to root), so the
+    // siblings restored below land back after it, in their original order
+    structureTree.moveInMemoryRelationship(newParentId, oldParentId, nodeId);
+
     // Restore main node UI state
     _uiState[nodeId] = originalUIState;
     _rootNodeIds = originalRootNodeIds;
     updateDescendantDepths(nodeId);
 
-    // Rollback sibling depths
+    // Rollback transferred siblings: back under the old parent, at their old depth
     for (const siblingId of siblingsBelow) {
       const sibling = sharedNodeStore.getNode(siblingId);
       if (sibling) {
+        if (structureTree.getParent(siblingId) === nodeId) {
+          structureTree.moveInMemoryRelationship(nodeId, oldParentId, siblingId);
+        }
         _uiState[siblingId] = {
           ..._uiState[siblingId],
           depth: (_uiState[oldParentId]?.depth || 0) + 1
         };
         updateDescendantDepths(siblingId);
       }
-    }
-
-    // Rollback structure tree if we moved to a new parent
-    if (newParentId) {
-      structureTree.moveInMemoryRelationship(newParentId, oldParentId, nodeId);
     }
 
     events.hierarchyChanged();
@@ -789,9 +791,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     _uiState[nodeId] = originalUIState;
     _rootNodeIds = originalRootNodeIds;
     updateDescendantDepths(nodeId);
-    if (currentParentId) {
-      structureTree.moveInMemoryRelationship(targetParentId, currentParentId, nodeId);
-    }
+    structureTree.moveInMemoryRelationship(targetParentId, currentParentId, nodeId);
     events.hierarchyChanged();
   }
 
@@ -1007,46 +1007,29 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
       ];
     }
 
-    // NOTE: Cache management removed - ReactiveStructureTree handles hierarchy via domain events
+    // Optimistic placement: move to new parent (or to root when newParentId is null) with
+    // relative-after intent. structureTree is the single source of truth for hierarchy — an
+    // unpersisted node's CREATE derives its parentId from structureTree.getParent(nodeId), so
+    // this must happen on every path, including the move to root.
+    // Authoritative fractional order arrives via relationship:updated event.
+    structureTree.moveInMemoryRelationship(oldParentId, newParentId, nodeId);
 
-    // Check if node has been persisted to database yet
     const isNodePersisted = sharedNodeStore.isNodePersisted(nodeId);
     const isOperationExecuting = sharedNodeStore.isNodePersistenceExecuting(nodeId);
 
-    if (!isNodePersisted) {
-      if (!isOperationExecuting) {
-        // OPTIMIZATION: Node hasn't been persisted yet AND no operation in flight.
-        // Instead of CREATE + MOVE (two operations), we can:
-        // 1. Cancel the pending CREATE
-        // 2. Re-trigger setNode with updated parentId
-        // 3. The CREATE will happen with the correct parent - no MOVE needed!
-        //
-        // This is more efficient and avoids race conditions where the CREATE
-        // fires with stale insertAfterNodeId while parentId has been updated.
-        log.debug(
-          `[outdentNode] Node ${nodeId.substring(0, 8)} not persisted yet, re-triggering CREATE with new parent`
-        );
+    if (!isNodePersisted && !isOperationExecuting) {
+      // OPTIMIZATION: Node hasn't been persisted yet AND no operation in flight.
+      // Instead of CREATE + MOVE, cancel the pending CREATE and re-trigger it: the CREATE
+      // then lands with the correct parent (derived from structureTree) — no MOVE needed
+      // for the node itself, and no stale insertAfterNodeId under the old parent.
+      log.debug(
+        `[outdentNode] Node ${nodeId.substring(0, 8)} not persisted yet, re-triggering CREATE with new parent`
+      );
 
-        // Update structure tree first so persistence path can derive parentId from structureTree
-        if (newParentId) {
-          structureTree.moveInMemoryRelationship(oldParentId, newParentId, nodeId);
-        }
-
-        // Re-trigger setNode to cancel the pending CREATE and schedule a new one.
-        // Persistence path derives parentId from structureTree.getParent(nodeId) at CREATE time.
-        const reCreateApplied = reTriggerPendingCreate(nodeId);
-
-        if (reCreateApplied) {
-          events.hierarchyChanged();
-          // No moveOperation needed - the CREATE will include the correct parent
-          return true;
-        }
-
+      if (!reTriggerPendingCreate(nodeId)) {
         // setNode declined the re-trigger (or the node vanished under us). The node is NOT
-        // persisted (that's why we're in this branch), so falling through to the "already
-        // persisted" MOVE logic below would call backendAdapter.moveNode on an id the backend
-        // never created, reproducing this exact "lost create" defect one layer deeper. Roll
-        // back the optimistic outdent and report failure honestly instead.
+        // persisted, so the MOVE below would call backendAdapter.moveNode on an id the
+        // backend never created. Roll back the optimistic outdent and report failure.
         log.error(
           `[outdentNode] Re-triggered CREATE for ${nodeId.substring(0, 8)} was not applied; rolling back`
         );
@@ -1059,43 +1042,24 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
           newParentId
         );
         return false;
-      } else {
-        // CREATE is in-flight! Update structureTree now so the in-flight CREATE closure reads
-        // the correct parentId from structureTree.getParent(nodeId) at execution time.
-        log.debug(
-          `[outdentNode] Node ${nodeId.substring(0, 8)} CREATE in-flight, updating structureTree for in-flight CREATE`
-        );
-
-        // Update structure tree so in-flight CREATE derives correct parentId
-        if (newParentId) {
-          structureTree.moveInMemoryRelationship(oldParentId, newParentId, nodeId);
-        }
-
-        // Clear stale insertPosition on the in-store node (references sibling under OLD parent)
-        const currentNode = sharedNodeStore.getNode(nodeId);
-        if (currentNode) {
-          (
-            currentNode as typeof currentNode & { insertPosition?: InsertPosition | null }
-          ).insertPosition = { type: 'end' } as InsertPosition;
-        }
-
-        events.hierarchyChanged();
-
-        // The in-flight CREATE will read structureTree.getParent(nodeId) and create with correct parent.
-        return true;
+      }
+    } else if (!isNodePersisted) {
+      // CREATE is in-flight. It may or may not have read structureTree.getParent(nodeId) yet,
+      // so the move operation below MOVEs the node once the CREATE lands — idempotent if the
+      // CREATE already picked up the new parent. Clear the stale insertPosition (references a
+      // sibling under the OLD parent) in case the CREATE hasn't read it yet.
+      log.debug(
+        `[outdentNode] Node ${nodeId.substring(0, 8)} CREATE in-flight, updating structureTree for in-flight CREATE`
+      );
+      const currentNode = sharedNodeStore.getNode(nodeId);
+      if (currentNode) {
+        (
+          currentNode as typeof currentNode & { insertPosition?: InsertPosition | null }
+        ).insertPosition = { type: 'end' } as InsertPosition;
       }
     }
 
-    // Node is already persisted - proceed with MOVE operation
-    // structureTree is the single source of truth for hierarchy.
-
-    // Optimistic placement: move to new parent with relative-after intent.
-    // Authoritative fractional order arrives via relationship:updated event.
-    if (newParentId) {
-      structureTree.moveInMemoryRelationship(oldParentId, newParentId, nodeId);
-    }
-
-    // Transfer siblings below as children (optimistic UI first)
+    // Transfer siblings below as children (optimistic UI first) — on every path, persisted or not
     if (siblingsBelow.length > 0) {
       // Transfer each sibling - UI updates first, maintaining their original order
       for (let i = 0; i < siblingsBelow.length; i++) {
@@ -1117,6 +1081,15 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     }
 
     events.hierarchyChanged();
+
+    // Only a re-triggered CREATE is guaranteed to carry the new parent; a persisted node or an
+    // in-flight CREATE (which may already have read the old parent) needs an explicit MOVE.
+    const needsNodeMove = isNodePersisted || isOperationExecuting;
+
+    // Re-triggered CREATE and no siblings to transfer: nothing to move in the backend.
+    if (!needsNodeMove && siblingsBelow.length === 0) {
+      return true;
+    }
 
     // Track move operation to prevent race conditions with subsequent indent/outdent
     // CRITICAL: Other hierarchy operations must wait for this move to complete
@@ -1140,26 +1113,28 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
           return;
         }
 
-        // Now safe to move the node and its siblings (with OCC)
-        // When outdenting, insert after the old parent (so it appears right below it)
-        // Backend returns updated node with new version
-        const outdentPosition: InsertPosition = oldParentId
-          ? { type: 'after', siblingId: oldParentId }
-          : { type: 'end' };
-        const updatedNode = await backendAdapter.moveNode(
-          nodeId,
-          freshNode.version,
-          newParentId,
-          outdentPosition
-        );
+        // A re-triggered CREATE has just landed (via the flush above) under the correct
+        // parent — only its siblings still need moving.
+        if (needsNodeMove) {
+          // Now safe to move the node (with OCC)
+          // When outdenting, insert after the old parent (so it appears right below it)
+          // Backend returns updated node with new version
+          const outdentPosition: InsertPosition = { type: 'after', siblingId: oldParentId };
+          const updatedNode = await backendAdapter.moveNode(
+            nodeId,
+            freshNode.version,
+            newParentId,
+            outdentPosition
+          );
 
-        // Sync local version from backend response
-        sharedNodeStore.updateNode(
-          nodeId,
-          { version: updatedNode.version },
-          { type: 'database', reason: 'move-version-sync' },
-          { skipPersistence: true }
-        );
+          // Sync local version from backend response
+          sharedNodeStore.updateNode(
+            nodeId,
+            { version: updatedNode.version },
+            { type: 'database', reason: 'move-version-sync' },
+            { skipPersistence: true }
+          );
+        }
 
         // Move sibling transfers (get fresh versions for each)
         // NOTE: Sequential to preserve sibling order. Parallel execution is possible but requires
