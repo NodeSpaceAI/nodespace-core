@@ -1286,9 +1286,22 @@ mod tree_size_limit_tests {
                 lifecycle_status: None,
             })
             .await?;
+        service
+            .create_node_with_parent(CreateNodeParams {
+                id: None,
+                node_type: "task".to_string(),
+                content: "ship it".to_string(),
+                parent_id: Some(root_id.clone()),
+                position: crate::services::InsertPositionOwned::End,
+                properties: serde_json::json!({ "status": "in_progress" }),
+                lifecycle_status: None,
+            })
+            .await?;
 
         let tree = service.get_children_tree(&root_id).await?;
         let person = &tree["children"][0];
+        // Typed fields are promoted to the top level, as on a single-node read.
+        assert_eq!(tree["children"][1]["status"], "in_progress");
 
         assert_eq!(person["nodeType"], "person");
         assert_eq!(person["properties"]["first_name"], "Ada");
