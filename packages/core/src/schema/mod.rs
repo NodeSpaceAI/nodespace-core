@@ -3049,6 +3049,17 @@ pub async fn handle_update_schema(
     // for a friendly_name failure after a successful rename (Phase 1 above)
     // therefore still applies — that compensation-by-error-message is
     // unchanged by this fix.
+    //
+    // Everything written below was built from the Phase 2 read, which ran
+    // outside this transaction — and `properties` replaces the stored
+    // `fields` array wholesale. A rename, relabel or other `update_schema`
+    // committing in between would be silently reverted (for a rename,
+    // leaving the definition disagreeing with instance data already rekeyed
+    // to the new name). So the first thing the transaction does, under the
+    // write guard, is confirm the schema node is still at the version Phase
+    // 2 read; every writer of a schema definition bumps it. A mismatch
+    // rejects the whole group before anything is written.
+    let expected_version = schema.version;
     let schema_id_for_tx = params.schema_id.clone();
     let relationships_for_tx = relationships.clone();
     let description_for_tx = params.description.clone();
@@ -3061,6 +3072,18 @@ pub async fn handle_update_schema(
             let description = description_for_tx.clone();
             let properties = properties.clone();
             Box::pin(async move {
+                let current = crate::db::SqliteStore::get_node_in_tx(tx.store_tx(), &schema_id)
+                    .await
+                    .map_err(|e| NodeServiceError::query_failed(e.to_string()))?
+                    .ok_or_else(|| NodeServiceError::node_not_found(&schema_id))?;
+                if current.version != expected_version {
+                    return Err(NodeServiceError::VersionConflict {
+                        node_id: schema_id.clone(),
+                        expected_version,
+                        actual_version: current.version,
+                    });
+                }
+
                 if relationships_added > 0 || relationships_removed > 0 {
                     node_service
                         .set_schema_relationships_in_tx(tx, &schema_id, &relationships)
@@ -3117,6 +3140,22 @@ pub async fn handle_update_schema(
         .await
         .map_err(|e| match e {
             NodeServiceError::InvalidUpdate(_) => MarkdownError::invalid_params(e.to_string()),
+            NodeServiceError::VersionConflict { .. } => {
+                // Phase 1 renames commit on their own, ahead of this group,
+                // so a caller retrying the whole call must not resend them.
+                let renames_note = if fields_renamed > 0 {
+                    " The field renames in this call WERE applied before the conflict was \
+                     detected — omit rename_fields when retrying."
+                } else {
+                    ""
+                };
+                MarkdownError::invalid_params(format!(
+                    "Schema '{}' changed concurrently while this update was being applied; \
+                     none of its field, relationship or description changes were written.{} \
+                     Re-read the schema and retry.",
+                    params.schema_id, renames_note
+                ))
+            }
             other => MarkdownError::internal_error(format!("Failed to update schema: {}", other)),
         })?;
 

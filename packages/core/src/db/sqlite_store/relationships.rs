@@ -2265,6 +2265,15 @@ impl SqliteStore {
     /// `handle_update_schema` compose the relationship-declaration write
     /// into the same transaction as the schema node and description
     /// subtree writes.
+    ///
+    /// Does NOT bump the schema node's `version`. Every caller must also
+    /// rewrite the schema node in the same transaction (both current callers
+    /// do), because that bump is what `handle_update_schema`'s pre-write
+    /// version check relies on to detect a concurrent change: a
+    /// declaration-only write that skipped it would go unseen, and a
+    /// concurrent `update_schema` holding a stale declaration list would
+    /// silently revert it. Bumping here instead would double-bump every
+    /// `update_schema` and desync the version its `NodeUpdated` event reports.
     pub(crate) async fn set_schema_declarations_in_tx(
         tx: &super::tx::Tx<'_>,
         schema_id: &str,
