@@ -438,6 +438,9 @@ async fn stream_output_reports_dropped_chunks_when_subscriber_lags() {
         .expect("stream_output rpc accepted")
         .into_inner();
 
+    // Not reading for a while is what creates the backpressure: the HTTP/2
+    // window fills, the daemon stops polling its receiver, and the flood
+    // overruns the broadcast buffer. Removing this sleep removes the lag.
     tokio::time::sleep(Duration::from_secs(2)).await;
 
     let marker = timeout(Duration::from_secs(10), async {
