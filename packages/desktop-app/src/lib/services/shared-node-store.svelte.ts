@@ -4759,7 +4759,10 @@ export class SharedNodeStore {
             // see `sendPendingTypedFields()`. A conflict there has already
             // been reported and leaves this write's version stale too.
             if ((await this.sendPendingTypedFields(nodeId)) === 'conflict') {
-              log.warn(`Batched update for node ${nodeId} skipped after a version conflict`);
+              log.warn(
+                `Batched update for node ${nodeId} skipped after a version conflict ` +
+                  `(dropped: ${Object.keys(changes).join(', ')})`
+              );
               return;
             }
 
