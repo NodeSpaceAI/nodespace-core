@@ -278,9 +278,14 @@ impl EntityTypeDescriptor {
                 .iter()
                 .map(EntityFieldDescriptor::from_schema_field)
                 .collect(),
+            // A schema read from storage still carries its `extends`
+            // bookkeeping row. It is not traversable from an instance, so
+            // listing it would tell the model to call `get_related_nodes`
+            // with a name that always errors.
             relationships: schema
                 .relationships
                 .iter()
+                .filter(|r| !crate::models::schema::is_type_system_relationship(&r.name))
                 .map(EntityRelationshipDescriptor::from_schema_relationship)
                 .collect(),
             title_template: schema.title_template.clone(),
@@ -437,8 +442,9 @@ impl EntityTypeDescriptor {
     ///   traversed with `get_related_nodes`, not passed as `search_nodes`
     ///   filters: `- incident_report -> resolved: boolean ~> on_call (person)`
     ///
-    /// Both call sites — workspace-context (`name: Some`) and per-candidate
-    /// routing (`name: None`) — share this one shape; only whether the quoted
+    /// All call sites — workspace-context and the `already_exists` error
+    /// (`name: Some`), per-candidate routing (`name: None`) — share this one
+    /// shape; only whether the quoted
     /// name segment appears differs, per the doc comment above.
     ///
     /// A type with no fields renders with no `->`: a trailing separator would
@@ -861,6 +867,24 @@ mod tests {
             1,
             "`->` only introduces fields: {line}"
         );
+    }
+
+    #[test]
+    fn type_system_extends_row_is_not_listed_as_a_relationship() {
+        let mut schema = sample_schema();
+        schema.relationships = vec![SchemaRelationship {
+            name: crate::models::schema::EXTENDS_RELATIONSHIP.to_string(),
+            target_type: Some("task".to_string()),
+            direction: RelationshipDirection::Out,
+            cardinality: RelationshipCardinality::One,
+            reverse_name: crate::models::schema::EXTENDED_BY_RELATIONSHIP.to_string(),
+            reverse_cardinality: RelationshipCardinality::Many,
+            ..schema.relationships[0].clone()
+        }];
+
+        let d = EntityTypeDescriptor::from_schema(&schema);
+        assert!(d.relationships.is_empty());
+        assert!(!d.render_line().contains("~>"));
     }
 
     #[test]
