@@ -1161,7 +1161,34 @@ impl NodeService {
     ///
     /// Built-in relationship types (`has_child`, `mentions`, `member_of`,
     /// `has_role`) carry no declared cardinality and are skipped — `has_child`
-    /// single-parent is a separate, structural guarantee untouched by this.
+    /// single-parent is a separate, structural guarantee untouched by this,
+    /// and remains its own pre-existing gap (independent of this method):
+    /// a repoint can still hand a survivor two `has_child` parents when
+    /// each already had a different one, since that collision isn't caught
+    /// by the store's raw unique-index check either (different `in_node`
+    /// values, same `out_node`).
+    ///
+    /// **The reverse branch can abort the whole merge, unlike the forward
+    /// one.** The forward branch's eviction target is always the survivor's
+    /// OWN edge count, which the repoint has already grown to two — so a
+    /// `required` last-edge check there can never fire (see above). The
+    /// reverse branch's eviction target is a DIFFERENT node (the repointed
+    /// edge's `source_id`, e.g. the loser's own former counterpart), and
+    /// that node's edge count is genuinely unaffected by the repoint: if
+    /// this is its only edge of a relationship that is ALSO `required: true`
+    /// on its schema, [`Self::remove_relationship_in_tx`]'s last-edge guard
+    /// rejects the eviction, and that `Err` propagates out of this method,
+    /// out of `merge_nodes`'s `with_transaction` closure, and rolls back the
+    /// ENTIRE merge — not just this one edge. This is intentional, not a
+    /// bug: the conflict is real and irreconcilable (keeping the edge
+    /// violates the survivor's `reverse_cardinality: One`; evicting it
+    /// violates the source's `required: true`), so failing the merge closed
+    /// is the only safe outcome, and it needs no special handling here — the
+    /// existing transaction rollback (verified atomic; see
+    /// `SqliteStore::with_transaction`) already leaves the database exactly
+    /// as it was before the merge was attempted. Exactly mirrors
+    /// `create_relationship_in_tx`'s own reverse-cardinality eviction, which
+    /// has the identical trap by the same design (see its doc comment).
     ///
     /// Returns the number of repointed edges evicted here, so the caller can
     /// fold them into the merge's overall `edges_dropped` count (and subtract
@@ -1237,9 +1264,11 @@ impl NodeService {
             // declaring schema's sources) — if the repoint gave it a second,
             // evict this one.
             if target_id == survivor_id {
-                let Some(source) = crate::db::SqliteStore::get_node_in_tx(tx.store_tx(), source_id)
-                    .await
-                    .map_err(|e| NodeServiceError::query_failed(e.to_string()))?
+                // Same resolver `create_relationship_in_tx` uses for a
+                // relationship's source (see its own call site) — a plain
+                // `get_node_in_tx` would silently skip enforcement for a
+                // not-yet-persisted virtual node instead of resolving it.
+                let Some(source) = Self::get_node_in_tx_or_virtual_date(tx, source_id).await?
                 else {
                     continue;
                 };
