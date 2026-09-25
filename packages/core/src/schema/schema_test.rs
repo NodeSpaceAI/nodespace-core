@@ -6485,11 +6485,17 @@ async fn concurrent_update_schema_cannot_revert_a_committed_rename() {
                 schema.fields.iter().any(|f| f.name == "notes"),
                 "iteration {i}: add_fields reported success but 'notes' is missing"
             ),
-            Err(e) => assert!(
-                e.to_string().contains("changed concurrently"),
-                "iteration {i}: the only acceptable update_schema failure here is the \
-                 concurrent-change rejection: {e}"
-            ),
+            Err(e) => {
+                assert!(
+                    e.to_string().contains("changed concurrently"),
+                    "iteration {i}: the only acceptable update_schema failure here is the \
+                     concurrent-change rejection: {e}"
+                );
+                assert!(
+                    !schema.fields.iter().any(|f| f.name == "notes"),
+                    "iteration {i}: a rejected update_schema must write nothing"
+                );
+            }
         }
     }
 }
@@ -6518,10 +6524,31 @@ async fn concurrent_friendly_name_update_cannot_revert_a_committed_rename() {
             }
         });
         let rename = rename.await.unwrap();
-        let _ = relabel.await.unwrap();
+        let relabel = relabel.await.unwrap();
 
         if rename.is_ok() {
             assert_rename_survived(&svc, &schema_id, &format!("iteration {i}")).await;
+        }
+        // The other direction: a relabel that reported success must not be
+        // reverted by the rename. It only succeeds if it ran first, so the
+        // label now sits on whatever the field is called after the rename.
+        match relabel {
+            Ok(()) => {
+                let schema = svc.get_schema_node(&schema_id).await.unwrap().unwrap();
+                assert!(
+                    schema
+                        .fields
+                        .iter()
+                        .any(|f| f.friendly_name == "Importance"),
+                    "iteration {i}: relabel reported success but its label was reverted: {:?}",
+                    schema.fields
+                );
+            }
+            Err(e) => assert!(
+                e.to_string().contains("not found"),
+                "iteration {i}: a relabel may only lose the race by finding the field \
+                 already renamed: {e}"
+            ),
         }
     }
 }

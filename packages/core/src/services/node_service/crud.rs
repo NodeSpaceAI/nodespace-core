@@ -941,9 +941,10 @@ impl NodeService {
     /// `self.emit_event` instead of relying on the store notifier. Mention
     /// sync is intentionally NOT reproduced here — it stays outside the
     /// transaction boundary by design (ADR-069 §5, derived state that
-    /// self-heals); the only current caller (`rename_schema_field_in_tx`)
-    /// updates a schema node's `fields` JSON, whose content mention sync is
-    /// a no-op in practice, and a future caller updating real content
+    /// self-heals); every current caller (`rename_schema_field`,
+    /// `update_schema_field_friendly_name`, `handle_update_schema`) updates a
+    /// schema node's `fields` JSON, whose content mention sync is a no-op in
+    /// practice, and a future caller updating real content
     /// through this path should call `sync_mentions` itself after `commit`.
     pub(crate) async fn update_node_unchecked_in_tx(
         &self,
@@ -1048,9 +1049,9 @@ impl NodeService {
     /// until commit. That case is the common one here: the canonical
     /// invariant rule shape stamps a property onto the very node whose
     /// creation triggered it, which exists only inside this transaction
-    /// until commit. `update_node_unchecked_in_tx` is left as-is for its one
-    /// existing caller (`rename_schema_field_in_tx`, which always targets an
-    /// already-committed schema node) rather than changed underneath it.
+    /// until commit. `update_node_unchecked_in_tx` is left as-is for its
+    /// callers (the schema-definition writers, which always target an
+    /// already-committed schema node) rather than changed underneath them.
     ///
     /// No optimistic-concurrency check: within one transaction, nothing else
     /// can observe or mutate `id` mid-transaction (SQLite serializes writers
