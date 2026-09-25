@@ -1284,7 +1284,10 @@ impl NodeService {
                     .resolve_declared_relationship(schema_id, relationship_type)
                     .await
                 {
-                    Ok(rel) => rel,
+                    // Owners map unused on this branch — only the reverse
+                    // branch below needs it, to resolve the declaring schema
+                    // for a `reverse_cardinality: One` collision check.
+                    Ok((rel, _owners)) => rel,
                     // Not a declared relationship on this schema (e.g. the
                     // schema changed since the edge was created) — nothing to
                     // enforce here.
@@ -1329,11 +1332,11 @@ impl NodeService {
                     continue;
                 };
 
-                let relationship = match self
+                let (relationship, owners) = match self
                     .resolve_declared_relationship(&source.node_type, relationship_type)
                     .await
                 {
-                    Ok(rel) => rel,
+                    Ok(found) => found,
                     Err(NodeServiceError::InvalidUpdate(_)) => continue,
                     Err(e) => return Err(e),
                 };
@@ -1341,7 +1344,12 @@ impl NodeService {
                 if relationship.reverse_cardinality
                     == crate::models::schema::RelationshipCardinality::One
                 {
-                    let (_, owners) = self.resolve_relationships(&source.node_type).await?;
+                    // Reuses the owners map `resolve_declared_relationship`
+                    // above already built for this same `source.node_type`
+                    // rather than paying for a second full-chain
+                    // `resolve_relationships` call while this write
+                    // transaction is still open — same rationale as
+                    // `create_relationship_in_tx`'s identical reuse.
                     let declaring_type = owners
                         .get(relationship_type)
                         .cloned()
