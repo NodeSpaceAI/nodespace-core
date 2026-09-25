@@ -110,6 +110,9 @@ export const headerNodePlugin: PluginDefinition = {
   }
 };
 
+/** Top-level task fields the task updater maps onto `TaskNodeUpdate`. */
+const TASK_TYPED_FIELDS = ['status', 'priority', 'dueDate', 'startedAt', 'completedAt'] as const;
+
 export const taskNodePlugin: PluginDefinition = {
   id: 'task',
   name: 'Task Node',
@@ -192,6 +195,23 @@ export const taskNodePlugin: PluginDefinition = {
   // Routes to updateTaskNode() instead of generic updateNode()
   updater: {
     update: async (id: string, version: number, changes: Record<string, unknown>) => {
+      // A `properties` write (a user-defined field, or a Kanban move on a field
+      // read from the property bag) has no TaskNodeUpdate counterpart. It goes
+      // through the generic update, whose backend normalization buckets the
+      // bare keys under `task` — status included, validated the same way.
+      if ('properties' in changes) {
+        const typedFields = TASK_TYPED_FIELDS.filter((f) => f in changes);
+        if (typedFields.length > 0) {
+          throw new Error(
+            `Task update mixes a properties write with typed fields (${typedFields.join(', ')}); send them as separate updates`
+          );
+        }
+        return backendAdapter.updateNode(id, version, {
+          properties: changes.properties as Record<string, unknown>,
+          ...('content' in changes ? { content: changes.content as string } : {})
+        });
+      }
+
       // Convert changes to TaskNodeUpdate format
       // The caller provides type-safe changes, we map to the backend format
       const update: TaskNodeUpdate = {};

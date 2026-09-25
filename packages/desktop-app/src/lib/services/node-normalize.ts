@@ -169,7 +169,7 @@ const TASK_DATE_FIELDS = [
  * Mirror `task_node_to_value`'s date handling: prefer the camelCase key, fall
  * back to the snake_case key storage actually uses, and reduce an RFC 3339
  * datetime to its `YYYY-MM-DD` date (in its own offset, as `normalize_date_field`
- * does).
+ * does). Only `T`-separated datetimes are reduced, the only form the app writes.
  */
 function promoteTaskDates(properties: Record<string, unknown>): Record<string, unknown> {
   const promoted: Record<string, unknown> = {};

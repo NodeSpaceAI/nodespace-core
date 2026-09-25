@@ -205,21 +205,29 @@ describe('SharedNodeStore - Coverage Completion', () => {
         properties: { status: 'todo' }
       };
 
-      vi.spyOn(backendAdapter, 'updateNode').mockResolvedValue({
+      const updateNodeSpy = vi.spyOn(backendAdapter, 'updateNode').mockResolvedValue({
         ...taskNode,
         properties: { status: 'done' },
         version: 2
       });
+      const updateTaskNodeSpy = vi.spyOn(backendAdapter, 'updateTaskNode');
 
       store.setNode(taskNode, databaseSource);
 
-      // Update task status via properties - should trigger persistence even from viewer
+      // A properties write on a task (a user-defined field, or a Kanban move on a
+      // field read from the property bag) has no typed counterpart, so the task
+      // updater must hand it to the generic update rather than reject it.
       store.updateNode('task-props', { properties: { status: 'done' } }, viewerSource);
 
       await new Promise(resolve => setTimeout(resolve, 100));
 
+      expect(updateNodeSpy).toHaveBeenCalledWith('task-props', 1, {
+        properties: { status: 'done' }
+      });
+      expect(updateTaskNodeSpy).not.toHaveBeenCalled();
       const updated = store.getNode('task-props');
       expect(updated?.properties).toEqual({ status: 'done' });
+      expect(updated?.version).toBe(2);
     });
 
     it('should handle properties field changes', async () => {

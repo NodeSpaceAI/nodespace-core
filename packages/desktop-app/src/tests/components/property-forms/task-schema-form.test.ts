@@ -31,7 +31,7 @@
  *     unconditionally, a real inconsistency that has now been fixed
  *   - user-defined (non-core) schema fields still render dynamically
  */
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, onTestFinished, vi } from 'vitest';
 import { render, cleanup, screen, fireEvent, waitFor } from '@testing-library/svelte';
 import type { SchemaField, SchemaNode } from '$lib/types/schema-node';
 import type { Node } from '$lib/types';
@@ -406,6 +406,8 @@ describe('TaskSchemaForm — user-defined fields still render dynamically', () =
       { type: 'database', reason: 'test-seed' },
       true
     );
+    // The store is a singleton; don't leave this node for later tests.
+    onTestFinished(() => sharedNodeStore.clearAll());
 
     const { container } = render(TaskSchemaForm, { props: { nodeId: 'task-db' } });
     await openForm(container);
