@@ -6397,3 +6397,131 @@ async fn test_display_only_rename_combined_with_an_invalid_extends_does_not_rela
         "friendly_name must not have been changed before the invalid extends target was caught"
     );
 }
+
+// ============================================================================
+// Concurrent schema-definition writers
+//
+// `handle_update_schema` and `update_schema_field_friendly_name` both build
+// a whole new `fields` array from a schema they read, then overwrite the
+// stored one. A rename committing between that read and that write must not
+// be silently reverted: the rename has already rekeyed every instance's
+// data, so a reverted definition would disagree with the data for the whole
+// type. Either the second writer sees the rename, or it is rejected.
+//
+// Multi-thread runtime + spawned tasks: a current_thread `join!` never
+// interleaves inside the window, so it would pass against the buggy code.
+// ============================================================================
+
+const RACE_ITERATIONS: usize = 50;
+
+async fn create_race_schema(svc: &Arc<NodeService>, i: usize) -> String {
+    let result = handle_create_schema(
+        svc,
+        json!({
+            "name": format!("RaceType{i}"),
+            "fields": [
+                { "name": "priority", "type": "string", "protection": "user", "indexed": false }
+            ]
+        }),
+    )
+    .await
+    .expect("race schema creation failed");
+    result["schemaId"]
+        .as_str()
+        .expect("schemaId missing")
+        .to_string()
+}
+
+/// A rename that reported success must be what the stored definition says.
+async fn assert_rename_survived(svc: &Arc<NodeService>, schema_id: &str, context: &str) {
+    let schema = svc.get_schema_node(schema_id).await.unwrap().unwrap();
+    let names: Vec<&str> = schema.fields.iter().map(|f| f.name.as_str()).collect();
+    assert!(
+        names.contains(&"urgency") && !names.contains(&"priority"),
+        "{context}: rename reported success but the definition was reverted: {names:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_update_schema_cannot_revert_a_committed_rename() {
+    let (svc, _tmp) = create_test_service().await;
+
+    for i in 0..RACE_ITERATIONS {
+        let schema_id = create_race_schema(&svc, i).await;
+
+        let rename = tokio::spawn({
+            let svc = Arc::clone(&svc);
+            let schema_id = schema_id.clone();
+            async move {
+                svc.rename_schema_field(&schema_id, "priority", "urgency")
+                    .await
+            }
+        });
+        let update = tokio::spawn({
+            let svc = Arc::clone(&svc);
+            let schema_id = schema_id.clone();
+            async move {
+                handle_update_schema(
+                    &svc,
+                    json!({
+                        "schema_id": schema_id,
+                        "add_fields": [
+                            { "name": "notes", "type": "string", "protection": "user", "indexed": false }
+                        ]
+                    }),
+                )
+                .await
+            }
+        });
+        let rename = rename.await.unwrap();
+        let update = update.await.unwrap();
+
+        let schema = svc.get_schema_node(&schema_id).await.unwrap().unwrap();
+        if rename.is_ok() {
+            assert_rename_survived(&svc, &schema_id, &format!("iteration {i}")).await;
+        }
+        match update {
+            Ok(_) => assert!(
+                schema.fields.iter().any(|f| f.name == "notes"),
+                "iteration {i}: add_fields reported success but 'notes' is missing"
+            ),
+            Err(e) => assert!(
+                e.to_string().contains("changed concurrently"),
+                "iteration {i}: the only acceptable update_schema failure here is the \
+                 concurrent-change rejection: {e}"
+            ),
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_friendly_name_update_cannot_revert_a_committed_rename() {
+    let (svc, _tmp) = create_test_service().await;
+
+    for i in 0..RACE_ITERATIONS {
+        let schema_id = create_race_schema(&svc, i).await;
+
+        let rename = tokio::spawn({
+            let svc = Arc::clone(&svc);
+            let schema_id = schema_id.clone();
+            async move {
+                svc.rename_schema_field(&schema_id, "priority", "urgency")
+                    .await
+            }
+        });
+        let relabel = tokio::spawn({
+            let svc = Arc::clone(&svc);
+            let schema_id = schema_id.clone();
+            async move {
+                svc.update_schema_field_friendly_name(&schema_id, "priority", "Importance")
+                    .await
+            }
+        });
+        let rename = rename.await.unwrap();
+        let _ = relabel.await.unwrap();
+
+        if rename.is_ok() {
+            assert_rename_survived(&svc, &schema_id, &format!("iteration {i}")).await;
+        }
+    }
+}

@@ -811,12 +811,11 @@ impl NodeService {
     /// whatever landed in it. Pooled readers cannot see this transaction's
     /// own writes, which is why this runs before any of them.
     ///
-    /// This closes only the rename's OWN read-then-overwrite window. A
-    /// writer that read the schema before this rename committed and later
-    /// overwrites `fields` from that read (e.g. `handle_update_schema`'s
-    /// post-rename re-fetch, which happens outside its own transaction) can
-    /// still revert the rename's definition change — that writer has to
-    /// close its own window the same way.
+    /// This closes only the rename's OWN read-then-overwrite window. Every
+    /// other writer that rebuilds `fields` from a read has to close its own:
+    /// `update_schema_field_friendly_name` reads inside its transaction the
+    /// same way, and `handle_update_schema` (whose read runs outside it)
+    /// version-checks the schema node before writing.
     async fn validate_schema_field_rename(
         &self,
         type_id: &str,
@@ -923,99 +922,130 @@ impl NodeService {
         field_name: &str,
         friendly_name: &str,
     ) -> Result<(), NodeServiceError> {
-        let schema = self
-            .get_schema_node(type_id)
-            .await?
-            .ok_or_else(|| NodeServiceError::node_not_found(type_id))?;
+        // Read, validate and write under one write guard, for the same
+        // reason `rename_schema_field` does (see
+        // `validate_schema_field_rename`): `fields` is rewritten wholesale
+        // from the schema read here, so a rename or `add_fields` committing
+        // between an unguarded read and this write would be silently
+        // reverted — for a rename, leaving the definition disagreeing with
+        // instance data that has already been rekeyed. Pooled reads inside
+        // the closure see the latest committed state, and nothing can commit
+        // until this transaction does.
+        let type_id_owned = type_id.to_string();
+        let field_name_owned = field_name.to_string();
+        let friendly_name_owned = friendly_name.to_string();
+        let service = self.clone();
+        let service_for_tx = service.clone();
+        service
+            .with_transaction(move |tx| {
+                let service = service_for_tx.clone();
+                let type_id = type_id_owned.clone();
+                let field_name = field_name_owned.clone();
+                let friendly_name = friendly_name_owned.clone();
+                Box::pin(async move {
+                    let type_id = type_id.as_str();
+                    let field_name = field_name.as_str();
+                    let friendly_name = friendly_name.as_str();
 
-        if !schema.fields.iter().any(|f| f.name == field_name) {
-            return Err(NodeServiceError::invalid_update(format!(
-                "Field '{}' not found in schema '{}'",
-                field_name, type_id
-            )));
-        }
+                    let schema = service
+                        .get_schema_node(type_id)
+                        .await?
+                        .ok_or_else(|| NodeServiceError::node_not_found(type_id))?;
 
-        // Same protection-level guard as `rename_schema_field`'s identity
-        // rename: a Core/System field is immutable through `update_schema`,
-        // and a relabel is a modification of the field definition just as
-        // much as a storage-key rename is.
-        if !schema.can_modify_field(field_name) {
-            let protection = schema
-                .get_field(field_name)
-                .map(|f| f.protection.clone())
-                .unwrap_or_default();
-            return Err(NodeServiceError::invalid_update(format!(
-                "Field '{}' in schema '{}' is {}-protected and cannot be relabeled — only \
-                 User-protected fields may be modified. Core and System fields are immutable \
-                 through update_schema.",
-                field_name, type_id, protection
-            )));
-        }
+                    if !schema.fields.iter().any(|f| f.name == field_name) {
+                        return Err(NodeServiceError::invalid_update(format!(
+                            "Field '{}' not found in schema '{}'",
+                            field_name, type_id
+                        )));
+                    }
 
-        // `SchemaField::friendly_name` is documented as always populated in
-        // storage, with every reader assuming so unconditionally — a blank
-        // value must never reach it here any more than it can through
-        // `apply_friendly_name_defaults` on create/`add_fields`. Mirrors that
-        // function's treatment of an omitted value exactly: derive from the
-        // field's own name, disambiguating against a sibling field's label
-        // if the derived form collides.
-        let resolved_friendly_name = if friendly_name.trim().is_empty() {
-            let derived = crate::models::schema::derive_friendly_name(field_name);
-            let collides = schema
-                .fields
-                .iter()
-                .any(|f| f.name != field_name && f.friendly_name == derived);
-            if collides {
-                crate::schema::disambiguate_friendly_name(&derived, field_name)
-            } else {
-                derived
-            }
-        } else {
-            friendly_name.to_string()
-        };
+                    // Same protection-level guard as `rename_schema_field`'s identity
+                    // rename: a Core/System field is immutable through `update_schema`,
+                    // and a relabel is a modification of the field definition just as
+                    // much as a storage-key rename is.
+                    if !schema.can_modify_field(field_name) {
+                        let protection = schema
+                            .get_field(field_name)
+                            .map(|f| f.protection.clone())
+                            .unwrap_or_default();
+                        return Err(NodeServiceError::invalid_update(format!(
+                            "Field '{}' in schema '{}' is {}-protected and cannot be relabeled — only \
+                             User-protected fields may be modified. Core and System fields are immutable \
+                             through update_schema.",
+                            field_name, type_id, protection
+                        )));
+                    }
 
-        let updated_fields: Vec<crate::models::schema::SchemaField> = schema
-            .fields
-            .into_iter()
-            .map(|mut f| {
-                if f.name == field_name {
-                    f.friendly_name = resolved_friendly_name.clone();
-                }
-                f
-            })
-            .collect();
+                    // `SchemaField::friendly_name` is documented as always populated in
+                    // storage, with every reader assuming so unconditionally — a blank
+                    // value must never reach it here any more than it can through
+                    // `apply_friendly_name_defaults` on create/`add_fields`. Mirrors that
+                    // function's treatment of an omitted value exactly: derive from the
+                    // field's own name, disambiguating against a sibling field's label
+                    // if the derived form collides.
+                    let resolved_friendly_name = if friendly_name.trim().is_empty() {
+                        let derived = crate::models::schema::derive_friendly_name(field_name);
+                        let collides = schema
+                            .fields
+                            .iter()
+                            .any(|f| f.name != field_name && f.friendly_name == derived);
+                        if collides {
+                            crate::schema::disambiguate_friendly_name(&derived, field_name)
+                        } else {
+                            derived
+                        }
+                    } else {
+                        friendly_name.to_string()
+                    };
 
-        // Same persistence shape as `rename_schema_field`'s Step 2 — fields
-        // only, declarations live in the relationship table and are untouched.
-        let mut properties = serde_json::json!({
-            "isCore": schema.is_core,
-            "schemaVersion": schema.schema_version,
-            "fields": updated_fields,
-        });
-        if let Some(ref t) = schema.title_template {
-            properties["titleTemplate"] = serde_json::Value::String(t.clone());
-        }
-        if let Some(ref t) = schema.properties_header_summary_template {
-            properties["propertiesHeaderSummaryTemplate"] = serde_json::Value::String(t.clone());
-        }
+                    let updated_fields: Vec<crate::models::schema::SchemaField> = schema
+                        .fields
+                        .into_iter()
+                        .map(|mut f| {
+                            if f.name == field_name {
+                                f.friendly_name = resolved_friendly_name.clone();
+                            }
+                            f
+                        })
+                        .collect();
 
-        let update = crate::models::NodeUpdate {
-            properties: Some(properties),
-            ..Default::default()
-        };
+                    // Same persistence shape as `rename_schema_field`'s Step 2 — fields
+                    // only, declarations live in the relationship table and are untouched.
+                    let mut properties = serde_json::json!({
+                        "isCore": schema.is_core,
+                        "schemaVersion": schema.schema_version,
+                        "fields": updated_fields,
+                    });
+                    if let Some(ref t) = schema.title_template {
+                        properties["titleTemplate"] = serde_json::Value::String(t.clone());
+                    }
+                    if let Some(ref t) = schema.properties_header_summary_template {
+                        properties["propertiesHeaderSummaryTemplate"] = serde_json::Value::String(t.clone());
+                    }
 
-        self.update_node_unchecked(type_id, update)
-            .await
-            .map_err(|e| {
-                NodeServiceError::DatabaseError(crate::db::DatabaseError::SqlExecutionError {
-                    context: format!(
-                        "Failed to update friendly_name for field '{}' on type '{}': {}",
-                        field_name, type_id, e
-                    ),
+                    let update = crate::models::NodeUpdate {
+                        properties: Some(properties),
+                        ..Default::default()
+                    };
+
+
+                    service
+                        .update_node_unchecked_in_tx(tx, type_id, update)
+                        .await
+                        .map_err(|e| {
+                            NodeServiceError::DatabaseError(
+                                crate::db::DatabaseError::SqlExecutionError {
+                                    context: format!(
+                                        "Failed to update friendly_name for field '{}' on type \
+                                         '{}': {}",
+                                        field_name, type_id, e
+                                    ),
+                                },
+                            )
+                        })
                 })
-            })?;
-
-        Ok(())
+            })
+            .await
     }
 
     /// Replace a schema's relationship declarations — the write path for
