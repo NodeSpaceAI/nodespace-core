@@ -3147,6 +3147,76 @@ mod tests {
         );
     }
 
+    /// A migrated instance's `version` is bumped, so a client holding a
+    /// pre-rename copy fails its optimistic-concurrency check instead of
+    /// passing it and writing the old field key back over the migration.
+    #[tokio::test]
+    async fn rename_schema_field_bumps_version_so_stale_writes_conflict() {
+        use crate::services::{CreateNodeParams, InsertPositionOwned};
+
+        let (svc, _tmp) = create_test_service().await;
+        let svc = Arc::new(svc);
+
+        crate::schema::handle_create_schema(
+            &svc,
+            json!({
+                "name": "Ticket",
+                "fields": [
+                    { "name": "priority", "type": "string", "protection": "user", "indexed": false }
+                ]
+            }),
+        )
+        .await
+        .expect("ticket schema creation failed");
+
+        let ticket_id = svc
+            .create_node_with_parent(CreateNodeParams {
+                id: None,
+                node_type: "ticket".to_string(),
+                content: "A ticket".to_string(),
+                parent_id: None,
+                position: InsertPositionOwned::End,
+                properties: json!({ "priority": "high" }),
+                lifecycle_status: None,
+            })
+            .await
+            .unwrap();
+        let stale = svc.get_node(&ticket_id).await.unwrap().unwrap();
+
+        svc.rename_schema_field("ticket", "priority", "urgency")
+            .await
+            .expect("rename should succeed");
+
+        let migrated = svc.get_node(&ticket_id).await.unwrap().unwrap();
+        assert_eq!(
+            migrated.version,
+            stale.version + 1,
+            "the data migration must bump the migrated row's version"
+        );
+
+        let result = svc
+            .update_node(
+                &ticket_id,
+                stale.version,
+                crate::models::NodeUpdate {
+                    properties: Some(stale.properties.clone()),
+                    ..Default::default()
+                },
+            )
+            .await;
+        assert!(
+            matches!(result, Err(NodeServiceError::VersionConflict { .. })),
+            "a write against the pre-rename version must conflict: {result:?}"
+        );
+
+        let after = svc.get_node(&ticket_id).await.unwrap().unwrap();
+        assert!(
+            after.properties["ticket"].get("priority").is_none(),
+            "the stale payload must not have revived the old key: {:?}",
+            after.properties
+        );
+    }
+
     #[tokio::test]
     async fn rename_schema_field_rejects_destination_colliding_with_inherited_field() {
         let (svc, _tmp) = create_test_service().await;
