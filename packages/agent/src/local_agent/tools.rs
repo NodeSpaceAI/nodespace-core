@@ -3552,6 +3552,15 @@ impl GraphToolExecutor {
                 summary["relationship_type"] = json!(&output.relationship_name);
                 all_nodes.push(summary);
             }
+
+            // A reverse name (a declared `reverseName`, or a built-in inverse
+            // like `child_of`) names exactly one traversal and comes back
+            // rewritten to its forward name; `rel_ops` ignores the requested
+            // direction for it. Fanning out to the other direction would run
+            // the identical query again and report every hit twice.
+            if output.relationship_name != rel_type {
+                break;
+            }
         }
 
         Ok(ok_result(
