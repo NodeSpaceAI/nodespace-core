@@ -40,9 +40,8 @@ pub struct EntityTypeDescriptor {
     /// This type's declared relationships to other types, carried so
     /// `schema_metadata` can tell the model which relationship to use (e.g.
     /// `epic.stories` vs. the structural `has_child`) and why, via each
-    /// relationship's own `description`. Not rendered by [`Self::render_line`]
-    /// — see [`EntityRelationshipDescriptor`]'s doc comment for why this stays
-    /// out of the compact `EXISTING SCHEMAS` line.
+    /// relationship's own `description`. [`Self::render_line`] renders only
+    /// each relationship's name and target type, after `~>`.
     pub relationships: Vec<EntityRelationshipDescriptor>,
     /// Rendered because the `create_node` tool description promises the
     /// template is "shown in EXISTING SCHEMAS"; that promise needs a referent.
@@ -160,11 +159,13 @@ impl EntityFieldDescriptor {
 /// to name the relationship, tell one direction/cardinality from the other,
 /// and — the reason this struct exists — surface its `description`.
 ///
-/// Not rendered by [`EntityTypeDescriptor::render_line`]: relationships were
-/// never part of the compact `EXISTING SCHEMAS` block before this struct
-/// existed, and this issue's scope is getting `description` prose into
-/// `schema_metadata` (the `find_skills` sidecar), not changing what the
-/// deterministic prompt-injection block shows.
+/// [`EntityTypeDescriptor::render_line`] renders only `name (target_type)`,
+/// after a `~>` separator that marks the names as traversable relationships
+/// rather than filterable fields. Stage-2 routing pre-selects schema
+/// candidates without a `search_skills` call, so the compact line is often the
+/// only schema the model sees; without the name there, it cannot know a
+/// relationship exists and invents a property filter instead. The
+/// `description` prose stays in `schema_metadata` only.
 #[derive(Debug, Clone, PartialEq)]
 pub struct EntityRelationshipDescriptor {
     /// The name this edge is declared under, from the declaring type's side.
@@ -277,9 +278,14 @@ impl EntityTypeDescriptor {
                 .iter()
                 .map(EntityFieldDescriptor::from_schema_field)
                 .collect(),
+            // A schema read from storage still carries its `extends`
+            // bookkeeping row. It is not traversable from an instance, so
+            // listing it would tell the model to call `get_related_nodes`
+            // with a name that always errors.
             relationships: schema
                 .relationships
                 .iter()
+                .filter(|r| !crate::models::schema::is_type_system_relationship(&r.name))
                 .map(EntityRelationshipDescriptor::from_schema_relationship)
                 .collect(),
             title_template: schema.title_template.clone(),
@@ -430,10 +436,16 @@ impl EntityTypeDescriptor {
     /// - enum values are wrapped in `{}` ([`EntityFieldDescriptor::render_shape`]),
     ///   distinct from the `->`-introduced field list, so a line never nests
     ///   the same delimiter inside itself
+    /// - relationships are introduced by `~>`, after the field list, with the
+    ///   target type in `()` — not `->`, which would read as a second field
+    ///   list. The separate token is what tells the model these names are
+    ///   traversed with `get_related_nodes`, not passed as `search_nodes`
+    ///   filters: `- incident_report -> resolved: boolean ~> on_call (person)`
     ///
-    /// Both call sites — workspace-context (`name: Some`) and per-candidate
-    /// routing (`name: None`) — share this one shape; only whether the quoted
-    /// name segment appears differs, per the doc comment above.
+    /// All call sites — workspace-context and the `already_exists` error
+    /// (`name: Some`), per-candidate routing (`name: None`) — share this one
+    /// shape; only whether the quoted name segment appears differs, per the
+    /// doc comment above.
     ///
     /// A type with no fields renders with no `->`: a trailing separator would
     /// read as a promise of a field list that never arrives.
@@ -449,6 +461,18 @@ impl EntityTypeDescriptor {
         if !self.fields.is_empty() {
             let rendered: Vec<String> = self.fields.iter().map(|f| f.render()).collect();
             line.push_str(&format!(" -> {}", rendered.join("; ")));
+        }
+
+        if !self.relationships.is_empty() {
+            let rendered: Vec<String> = self
+                .relationships
+                .iter()
+                .map(|r| match &r.target_type {
+                    Some(t) => format!("{} ({t})", r.name),
+                    None => r.name.clone(),
+                })
+                .collect();
+            line.push_str(&format!(" ~> {}", rendered.join("; ")));
         }
 
         if let Some(tmpl) = &self.title_template {
@@ -612,11 +636,12 @@ mod tests {
     }
 
     /// Golden test: the exact rendered line for a type with a display name,
-    /// an enum field (core and user values unioned), a required field, and a
-    /// `title_template`. Pins the grammar this module exists to keep
-    /// unambiguous — `:` appears only inside the `->`-introduced field list,
-    /// the display name is quoted rather than colon-prefixed, and enum values
-    /// use `{}` rather than the field list's own delimiter.
+    /// an enum field (core and user values unioned), a required field, a
+    /// relationship, and a `title_template`. Pins the grammar this module
+    /// exists to keep unambiguous — `:` appears only inside the `->`-introduced
+    /// field list, the display name is quoted rather than colon-prefixed, enum
+    /// values use `{}` rather than the field list's own delimiter, and
+    /// relationships follow `~>`.
     #[test]
     fn renders_type_field_enum_required_and_template() {
         let d = EntityTypeDescriptor::from_schema(&sample_schema());
@@ -624,7 +649,7 @@ mod tests {
         assert_eq!(
             d.render_line(),
             "- invoice \"Invoice\" -> reference: string; amount: number, required; \
-             status: enum {draft, sent} [title_template: {reference}]"
+             status: enum {draft, sent} ~> billed_to (customer) [title_template: {reference}]"
         );
     }
 
@@ -716,6 +741,11 @@ mod tests {
                 {"name": "amount", "type": "number", "required": true},
                 {"name": "status", "type": "enum", "enum_values": ["draft", "sent"]}
             ],
+            "relationships": [
+                {"name": "billed_to", "target_type": "customer", "direction": "out",
+                 "cardinality": "one", "reverse_name": "invoices",
+                 "reverse_cardinality": "many"}
+            ],
             "title_template": "{reference}"
         }]));
 
@@ -805,8 +835,63 @@ mod tests {
 
         assert!(!line.contains("Total invoiced amount"));
         assert!(!line.contains("billed to"));
-        // The compact line predates relationships entirely — still true.
-        assert!(!line.contains("billed_to"));
+    }
+
+    /// Stage-2 routing shows the model only the compact line, so a
+    /// relationship absent from it is invisible: the model invents a property
+    /// filter instead of traversing. The name and target must be there, marked
+    /// by `~>` so they don't read as filterable fields.
+    #[test]
+    fn render_line_lists_relationships_after_the_field_list() {
+        let mut d = EntityTypeDescriptor::from_schema(&sample_schema());
+        d.relationships.push(EntityRelationshipDescriptor {
+            name: "related".into(),
+            target_type: None,
+            direction: RelationshipDirection::Out,
+            cardinality: RelationshipCardinality::Many,
+            reverse_name: "related_from".into(),
+            reverse_cardinality: RelationshipCardinality::Many,
+            description: None,
+        });
+        let line = d.render_line();
+
+        assert!(
+            line.contains(" ~> billed_to (customer); related"),
+            "got: {line}"
+        );
+        let fields_at = line.find(" -> ").expect("field list present");
+        let rels_at = line.find(" ~> ").expect("relationship list present");
+        assert!(fields_at < rels_at, "relationships follow fields: {line}");
+        assert_eq!(
+            line.matches("->").count(),
+            1,
+            "`->` only introduces fields: {line}"
+        );
+    }
+
+    #[test]
+    fn type_system_extends_row_is_not_listed_as_a_relationship() {
+        let mut schema = sample_schema();
+        schema.relationships = vec![SchemaRelationship {
+            name: crate::models::schema::EXTENDS_RELATIONSHIP.to_string(),
+            target_type: Some("task".to_string()),
+            direction: RelationshipDirection::Out,
+            cardinality: RelationshipCardinality::One,
+            reverse_name: crate::models::schema::EXTENDED_BY_RELATIONSHIP.to_string(),
+            reverse_cardinality: RelationshipCardinality::Many,
+            ..schema.relationships[0].clone()
+        }];
+
+        let d = EntityTypeDescriptor::from_schema(&schema);
+        assert!(d.relationships.is_empty());
+        assert!(!d.render_line().contains("~>"));
+    }
+
+    #[test]
+    fn render_line_omits_relationship_segment_when_none_declared() {
+        let mut d = EntityTypeDescriptor::from_schema(&sample_schema());
+        d.relationships.clear();
+        assert!(!d.render_line().contains("~>"));
     }
 
     /// The core defect: an unset field must still be listed, and must be
