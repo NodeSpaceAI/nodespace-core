@@ -145,7 +145,10 @@ pub struct ImportProgressEvent {
 }
 
 /// Forward one daemon progress event to the frontend, routed to the window(s)
-/// pinned to `database_id` rather than broadcast to every window.
+/// pinned to `database_id` rather than broadcast to every window. `None` (no
+/// routing header — the daemon default) goes to the focused window, not to
+/// "the default database's window": a window may be pinned to a real id while
+/// the gRPC client still sends no header, and the progress must still arrive.
 fn forward_progress<R: Runtime>(
     app: &AppHandle<R>,
     event: &nodespace_proto::nodespace::ImportProgressEvent,
@@ -698,6 +701,42 @@ mod tests {
         assert!(
             received_b.lock().unwrap().is_empty(),
             "db-2's window must not see db-1's import progress"
+        );
+    }
+
+    /// The path production takes today: the window is pinned to a real
+    /// database id but the import ran with no routing header (`None`). The
+    /// progress must still reach that window rather than being dropped for
+    /// naming no pinned database.
+    #[test]
+    fn forward_progress_without_database_id_reaches_the_pinned_window() {
+        use crate::window_routing::WindowDatabaseRegistry;
+        use std::sync::{Arc, Mutex};
+        use tauri::{Listener, Manager};
+
+        let app = tauri::test::mock_app();
+        app.manage(WindowDatabaseRegistry::default());
+        let handle = app.handle().clone();
+
+        let win = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build()
+            .expect("failed to build mock window");
+        handle
+            .state::<WindowDatabaseRegistry>()
+            .pin("main", "db-remembered");
+
+        let received: Arc<Mutex<Vec<String>>> = Arc::default();
+        let r = received.clone();
+        win.listen("import-progress", move |e| {
+            r.lock().unwrap().push(e.payload().to_string())
+        });
+
+        forward_progress(&handle, &proto_progress(2), None);
+
+        assert_eq!(
+            received.lock().unwrap().len(),
+            1,
+            "an unrouted import's progress must reach the one pinned window"
         );
     }
 
