@@ -302,6 +302,50 @@ describe('outdentNode propagates root reparenting and sibling transfer', () => {
     expect(childTransferFailures().map((n) => n.nodeId)).toEqual(['child']);
   });
 
+  it('an in-flight CREATE MOVEd to its new parent keeps it there when the sibling transfer fails', async () => {
+    addPersistedNode('grandparent', null, 1);
+    addPersistedNode('parent', 'grandparent', 1);
+    addUnpersistedFocusedNode('child', 'parent', 1);
+    addPersistedNode('after1', 'parent', 2);
+    moveChildrenSpy.mockRejectedValue(new Error('version conflict'));
+
+    let releaseCreate!: () => void;
+    createNodeSpy.mockImplementation(
+      (input) => new Promise((resolve) => (releaseCreate = () => resolve(input.id ?? '')))
+    );
+    const firstFlush = sharedNodeStore.flushAllPendingSaves();
+    await vi.waitFor(() => expect(sharedNodeStore.isNodePersistenceExecuting('child')).toBe(true));
+
+    expect(await service.outdentNode('child')).toBe(true);
+    releaseCreate();
+    await firstFlush;
+    await settle();
+
+    expect(moveNodeSpy.mock.calls.map(([id, , parentId]) => [id, parentId])).toEqual([
+      ['child', 'grandparent']
+    ]);
+    expect(structureTree.getParent('child')).toBe('grandparent');
+    expect(structureTree.getChildren('parent')).toEqual(['after1']);
+    expect(structureTree.getChildren('child')).toEqual([]);
+    expect(childTransferFailures().map((n) => n.nodeId)).toEqual(['child']);
+  });
+
+  it('a new node whose CREATE fails is fully rolled back without attempting the sibling transfer', async () => {
+    addPersistedNode('grandparent', null, 1);
+    addPersistedNode('parent', 'grandparent', 1);
+    addUnpersistedFocusedNode('child', 'parent', 1);
+    addPersistedNode('after1', 'parent', 2);
+    createNodeSpy.mockRejectedValue(new Error('create rejected'));
+
+    expect(await service.outdentNode('child')).toBe(true);
+    await settle();
+
+    expect(moveChildrenSpy).not.toHaveBeenCalled();
+    expect(structureTree.getParent('child')).toBe('parent');
+    expect(structureTree.getChildren('parent')).toEqual(['child', 'after1']);
+    expect(childTransferFailures()).toEqual([]);
+  });
+
   it('a failed MOVE of the node itself is not reported as a child-transfer failure', async () => {
     addPersistedNode('grandparent', null, 1);
     addPersistedNode('parent', 'grandparent', 1);

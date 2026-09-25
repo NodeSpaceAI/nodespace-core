@@ -1170,6 +1170,21 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
         }
 
         nodeCommitted = needsNodeMove || sharedNodeStore.isNodePersisted(nodeId);
+        if (!nodeCommitted) {
+          // The re-triggered CREATE failed (flushAllPendingSaves reports failures rather than
+          // throwing): the node isn't in the backend, so there is no parent to move siblings
+          // under. Undo the whole optimistic outdent.
+          rollbackOutdentChanges(
+            nodeId,
+            originalUIState,
+            originalRootNodeIds,
+            siblingsBelow,
+            oldParentId,
+            newParentId
+          );
+          log.error(`[outdentNode] CREATE for ${nodeId.substring(0, 8)} did not land; rolled back`);
+          return;
+        }
 
         // Trailing siblings move under the node in one atomic RPC: all of them or none
         await persistChildTransfer(nodeId, siblingsBelow);
@@ -1192,7 +1207,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
           notifyChildTransferFailure(nodeId);
           log.error('[outdentNode] Failed to transfer siblings, rolled them back:', error);
         } else if (!isIgnorableError) {
-          // Nothing reached the backend: rollback all changes
+          // The node's own CREATE/MOVE did not commit: rollback all changes
           rollbackOutdentChanges(
             nodeId,
             originalUIState,
