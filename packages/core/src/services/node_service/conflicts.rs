@@ -266,7 +266,7 @@ impl NodeService {
                 let conflict_id = conflict_id.clone();
                 let service = service_for_tx.clone();
                 Box::pin(async move {
-                    let (properties_merged, superseded, edges_repointed, edges_dropped) =
+                    let (properties_merged, superseded, repointed_edges, edges_dropped) =
                         crate::db::SqliteStore::merge_nodes_in_tx(
                             ns_tx.store_tx(),
                             &survivor_id,
@@ -274,6 +274,21 @@ impl NodeService {
                         )
                         .await
                         .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+
+                    // The store-level repoint above is schema-blind (see its
+                    // doc comment) — close any cardinality-one violation it
+                    // may have just produced, in the same transaction, before
+                    // anything else reads the survivor's edge set.
+                    let evicted_for_cardinality = service
+                        .enforce_cardinality_after_merge_in_tx(
+                            ns_tx,
+                            &survivor_id,
+                            &repointed_edges,
+                        )
+                        .await?;
+                    let edges_repointed =
+                        (repointed_edges.len() as u32).saturating_sub(evicted_for_cardinality);
+                    let edges_dropped = edges_dropped + evicted_for_cardinality;
 
                     // Re-pointing can hand the survivor the loser's parent edge,
                     // changing whether it is a root — so its title follows.
