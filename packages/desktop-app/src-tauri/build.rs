@@ -1,7 +1,7 @@
 mod build_support;
 
 use std::env;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 /// `externalBin` entries from `tauri.conf.json`, without the `binaries/`
 /// prefix or platform triple — kept in sync with that file by hand since
@@ -66,18 +66,8 @@ fn sync_external_bin_staging() {
     }
 }
 
-/// `bundle.resources` and `bundle.externalBin` from `tauri.conf.json`, hand
-/// synced for the same reason as `EXTERNAL_BIN_NAMES`. Only read when the
-/// skill is unstaged (see `drop_unstaged_skill`), which is the one case that
-/// needs to restate them.
-const BUNDLE_RESOURCES: &[&str] = &["resources/models/**/*", SKILL_RESOURCES];
-const BUNDLE_EXTERNAL_BINS: &[&str] = &[
-    "binaries/nodespaced",
-    "binaries/nodespace",
-    SKILL_INSTALLER_BIN,
-];
-
-/// The two bundle entries `bun run build:skill` stages.
+/// The two bundle entries `bun run build:skill` stages, as `tauri.conf.json`
+/// declares them.
 const SKILL_RESOURCES: &str = "resources/skill/**/*";
 const SKILL_INSTALLER_BIN: &str = "binaries/nodespace-skill-installer";
 
@@ -96,9 +86,10 @@ const SKILL_INSTALLER_BIN: &str = "binaries/nodespace-skill-installer";
 /// failure, not a declaration nobody reads.
 ///
 /// Works through `TAURI_CONFIG`, which `tauri_build` merges over
-/// `tauri.conf.json`. An explicitly set `TAURI_CONFIG` is left alone: without
-/// a JSON parser here there is no merging into it, and whoever set it owns
-/// the bundle config.
+/// `tauri.conf.json` as a JSON merge patch. Arrays are replaced whole, so the
+/// patch restates each list read from `tauri.conf.json`, minus the unstaged
+/// entry. An explicitly set `TAURI_CONFIG` (the tauri CLI's `--config`) is
+/// left alone: whoever set it owns the bundle config.
 fn drop_unstaged_skill() {
     if env::var("PROFILE").as_deref() != Ok("debug") || env::var_os("TAURI_CONFIG").is_some() {
         return;
@@ -117,27 +108,37 @@ fn drop_unstaged_skill() {
         return;
     }
 
-    let json_list = |entries: &[&str], drop: Option<&str>| -> String {
-        let kept: Vec<String> = entries
-            .iter()
-            .filter(|entry| Some(**entry) != drop)
-            .map(|entry| format!("\"{entry}\""))
-            .collect();
-        format!("[{}]", kept.join(","))
+    let conf: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string("tauri.conf.json").expect("tauri.conf.json is readable"),
+    )
+    .expect("tauri.conf.json is valid JSON");
+    // The declared list with `drop` removed. `None` when the entry isn't a
+    // plain list (a resources map), in which case the build stays strict
+    // rather than guess at the shape.
+    let without = |key: &str, drop: Option<&str>| -> Option<serde_json::Value> {
+        let entries = conf["bundle"][key].as_array()?;
+        Some(
+            entries
+                .iter()
+                .filter(|entry| drop.is_none() || entry.as_str() != drop)
+                .cloned()
+                .collect(),
+        )
     };
-    let resources = json_list(
-        BUNDLE_RESOURCES,
-        (!resources_staged).then_some(SKILL_RESOURCES),
-    );
-    let external_bins = json_list(
-        BUNDLE_EXTERNAL_BINS,
-        (!installer_staged).then_some(SKILL_INSTALLER_BIN),
-    );
+    let (Some(resources), Some(external_bins)) = (
+        without("resources", (!resources_staged).then_some(SKILL_RESOURCES)),
+        without(
+            "externalBin",
+            (!installer_staged).then_some(SKILL_INSTALLER_BIN),
+        ),
+    ) else {
+        return;
+    };
+    let patch = serde_json::json!({
+        "bundle": { "resources": resources, "externalBin": external_bins }
+    });
     // See `main` on `set_var` in a build script.
-    env::set_var(
-        "TAURI_CONFIG",
-        format!(r#"{{"bundle":{{"resources":{resources},"externalBin":{external_bins}}}}}"#),
-    );
+    env::set_var("TAURI_CONFIG", patch.to_string());
     println!(
         "cargo:warning=skill not staged; left out of this debug build's bundle \
          (run `bun run build:skill` only if you need the skill in this build)"
@@ -152,11 +153,12 @@ fn drop_unstaged_skill() {
         (!installer_staged).then_some(installer),
     ];
     for path in missing.into_iter().flatten() {
-        let watched = path
+        if let Some(watched) = path
             .ancestors()
             .find(|p| !p.as_os_str().is_empty() && p.exists())
-            .unwrap_or(Path::new("."));
-        println!("cargo:rerun-if-changed={}", watched.display());
+        {
+            println!("cargo:rerun-if-changed={}", watched.display());
+        }
     }
 }
 

@@ -85,15 +85,15 @@ try {
   console.warn(`  ${err instanceof Error ? err.message : String(err)}\n`);
 }
 
-// Stages two of the things nodespace-app's build.rs (tauri_build::build())
-// insists on: the `nodespace-skill-installer` externalBin and the
-// `resources/skill/**/*` glob, neither of which has a tracked file to fall
-// back on. Cheap enough (a tsc build + file copy) to run unconditionally
-// rather than rely on a prior `dev:tauri`/`tauri:build` having staged it. This
-// now runs BEFORE `test:all`, because `rust:test` compiles that crate to cover
-// its `src/` unit tests. The remaining sidecars aren't staged here — a cold
-// build of them takes minutes, too much for every push — so `rust:test` checks
-// every required path up front and names the command that produces each.
+// Builds the skill BEFORE `test:all`, because one of nodespace-app's `src/`
+// unit tests (run by `rust:test`) asserts the source checkout's built
+// installer, `packages/skill/dist/install.js`, exists. Compiling that crate no
+// longer needs it — build.rs drops the unstaged skill from a debug build's
+// bundle — so this is a test prerequisite, not a build one. Cheap enough (a
+// tsc build + file copy) to run unconditionally. The remaining sidecars aren't
+// staged here — a cold build of them takes minutes, too much for every push —
+// so `rust:test` checks every required path up front and names the command
+// that produces each.
 await run("bun run build:skill (stage bundled skill installer resource)", () => $`bun run build:skill`);
 await run("bun run quality:scripts:check (scripts/ lint + typecheck)", () => $`bun run quality:scripts:check`);
 // The design-token gate (Stylelint over CSS and Svelte <style> blocks). It is
