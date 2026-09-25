@@ -76,8 +76,24 @@ pub enum ConditionResult {
 /// Compile a CEL expression string into a reusable Program.
 ///
 /// Used at play save time for validation and at runtime for evaluation.
+///
+/// The parser panics, rather than erroring, on some truncated input
+/// (`node.status ==`, `a && `) — an `unreachable!` inside its generated
+/// grammar. Expressions here are user-authored, so that panic is caught and
+/// reported as the compile error it is; otherwise one malformed condition or
+/// `.where(...)` predicate takes down whatever task is saving the play.
+///
+/// The default panic hook still prints `panicked at … unreachable` to stderr
+/// before the unwind is caught. In daemon logs that line is a rejected
+/// malformed expression, not a crash; the global hook is deliberately left
+/// alone rather than swapped around this call.
 pub fn compile_condition(expr: &str) -> Result<Program, CelCompileError> {
-    Program::compile(expr).map_err(|e| CelCompileError {
+    let compiled =
+        std::panic::catch_unwind(|| Program::compile(expr)).map_err(|_| CelCompileError {
+            expression: expr.to_string(),
+            message: "malformed expression (incomplete or unparseable)".to_string(),
+        })?;
+    compiled.map_err(|e| CelCompileError {
         expression: expr.to_string(),
         message: e.to_string(),
     })
@@ -180,6 +196,45 @@ pub struct CelScope {
 }
 
 impl CelScope {
+    /// Build the scope for reading `node` at `scope_type` (ADR-078).
+    ///
+    /// Returns `Ok(None)` when there is nothing to scope — the node is already
+    /// `scope_type` and reads natively. The one builder for every surface that
+    /// reads a node at a declared type: a rule's trigger (the engine's
+    /// `cel_scope_for`) and a `.where(...)` collection item read at its
+    /// relationship's target type (`actions::BindingContext`). Two builders is
+    /// how those two reads would drift apart.
+    ///
+    /// `Err` is a resolver failure, not "nothing to scope"; callers must not
+    /// fold it into `Ok(None)` — see `PlaybookEngine::cel_scope_for`.
+    pub(crate) async fn resolve(
+        node_service: &crate::services::NodeService,
+        scope_type: &str,
+        node: &Node,
+    ) -> Result<Option<Self>, crate::services::NodeServiceError> {
+        if scope_type == node.node_type {
+            return Ok(None);
+        }
+
+        let chain = node_service.resolve_type_chain(scope_type).await?;
+        let scope_fields = node_service.resolve_field_owners(scope_type).await?.0;
+        // The node's OWN chain, not the scope's. Reading the scope's ancestry
+        // would skip every bucket between the node and the reading scope — on
+        // `bug → ticket → workitem` read at `workitem`, the `ticket` bucket
+        // would never be opened. `resolve_field_owners` already computes this
+        // chain as its third element, so taking it costs nothing.
+        let (node_fields, _, node_chain) =
+            node_service.resolve_field_owners(&node.node_type).await?;
+
+        Ok(Some(Self {
+            scope_type: scope_type.to_string(),
+            node_chain,
+            chain,
+            scope_fields,
+            node_fields,
+        }))
+    }
+
     /// Whether this scope differs from the node's own, i.e. whether values
     /// could need resolving. False for a node of exactly the registered type,
     /// which is already reading natively.
@@ -201,7 +256,11 @@ fn node_own_chain(scope: &CelScope) -> Vec<&str> {
 }
 
 /// Keys the CEL map carries that are node metadata rather than schema fields.
-fn is_core_key(key: &str) -> bool {
+///
+/// `pub(crate)`: save-time validation of a `.where(...)` predicate accepts
+/// these alongside the item type's schema fields, because the item's CEL map
+/// carries them.
+pub(crate) fn is_core_key(key: &str) -> bool {
     matches!(
         key,
         "id" | "node_type" | "content" | "version" | "lifecycle_status"
@@ -534,13 +593,80 @@ fn build_condition_context_with_resolved<'a>(
         }),
     );
 
-    // Register custom functions
+    register_functions(&mut ctx);
+    ctx
+}
+
+/// Register the custom functions every CEL surface shares — rule conditions
+/// and `.where(...)` item predicates alike, so a function means the same thing
+/// in both. [`NON_DETERMINISTIC_FUNCTIONS`] must stay in sync with this list.
+fn register_functions(ctx: &mut Context<'_>) {
     ctx.add_function("days_since", cel_days_since);
     ctx.add_function("days_until", cel_days_until);
     ctx.add_function("today", cel_today);
     ctx.add_function("add_days", cel_add_days);
+}
 
-    ctx
+// ---------------------------------------------------------------------------
+// Item predicates: `.where(expr)` on an action-binding collection
+// ---------------------------------------------------------------------------
+
+/// A `.where(expr)` predicate, compiled once per collection and evaluated per
+/// item (see `actions::BindingContext::resolve_where_chain`).
+///
+/// The item's own fields are bare variables — `status != 'done'`, not
+/// `item.status` — because the predicate has exactly one subject. Nothing else
+/// is in scope: not `trigger`, not `actions`. Save-time validation
+/// (`playbook::validation`) rejects any variable that is not a field of the
+/// collection's declared item type, so every variable reaching here names a
+/// real field.
+///
+/// A declared field the item simply has no value for is bound to `null`
+/// rather than left undeclared: `status != 'done'` must hold for a task whose
+/// status was never set, and an undeclared reference would instead fail the
+/// evaluation. Any other evaluation error (comparing `null < 3`, a type
+/// mismatch) is returned as an error, never folded into "no match" — a filter
+/// that silently drops items it could not evaluate is the fail-open shape
+/// this layer refuses.
+pub(crate) struct ItemPredicate {
+    source: String,
+    program: Program,
+    variables: Vec<String>,
+}
+
+impl ItemPredicate {
+    pub(crate) fn compile(source: &str) -> Result<Self, String> {
+        let program = compile_condition(source).map_err(|e| e.to_string())?;
+        let variables = path_extractor::free_variables(source)?;
+        Ok(Self {
+            source: source.to_string(),
+            program,
+            variables,
+        })
+    }
+
+    /// Whether `item` — a node's CEL map, as [`scoped_node_value`] builds it —
+    /// satisfies the predicate.
+    pub(crate) fn matches(&self, item: &Value) -> Result<bool, String> {
+        let mut ctx = Context::default();
+        for var in &self.variables {
+            let value = match item {
+                Value::Map(map) => map.map.get(&key(var)).cloned().unwrap_or(Value::Null),
+                _ => Value::Null,
+            };
+            ctx.add_variable_from_value(var.as_str(), value);
+        }
+        register_functions(&mut ctx);
+
+        match self.program.execute(&ctx) {
+            Ok(Value::Bool(b)) => Ok(b),
+            Ok(other) => Err(format!(
+                "where({}) must evaluate to a boolean, got {:?}",
+                self.source, other
+            )),
+            Err(e) => Err(format!("where({}) failed to evaluate: {}", self.source, e)),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -819,6 +945,16 @@ mod tests {
     use crate::db::events::PropertyChange;
     use chrono::Utc;
     use serde_json::json;
+
+    /// The parser panics on truncated input; `compile_condition` must turn
+    /// that into an ordinary compile error.
+    #[test]
+    fn truncated_expression_is_a_compile_error_not_a_panic() {
+        for expr in ["node.status ==", "status == 'x' &&"] {
+            let err = compile_condition(expr).expect_err(expr);
+            assert!(err.message.contains("malformed expression"), "{err}");
+        }
+    }
 
     /// Helper: create a test node with the given properties (already in wire format).
     fn test_node(node_type: &str, properties: serde_json::Value) -> Node {

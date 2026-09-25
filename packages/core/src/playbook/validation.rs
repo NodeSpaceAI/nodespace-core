@@ -22,8 +22,10 @@
 
 use crate::models::SchemaNode;
 use crate::playbook::actions::{
-    action_list_signature, collect_binding_templates_in_value, parse_function_call,
+    action_list_signature, collect_binding_templates_in_value, collect_where_chains,
+    parse_function_call, parse_where_chain,
 };
+use crate::playbook::graph_resolver::declared_collection_type;
 use crate::playbook::path_extractor;
 use crate::playbook::types::{
     namespaced_property_key, ActionType, GraphEventType, ParsedAction, ParsedRule, ParsedTrigger,
@@ -204,6 +206,19 @@ pub enum PlayValidationError {
         error: String,
         location: String,
     },
+    /// A `.where(...)` collection filter in an action binding cannot be
+    /// resolved against the schema: malformed, on a path with no declared
+    /// item type, or reading a name that is not a field of that type.
+    ///
+    /// Rejected at save time because the runtime alternative is fail-open: a
+    /// predicate over a misspelled field reads `null` for every item, so
+    /// `statuss != 'done'` would quietly select everything and
+    /// `statuss == 'done'` nothing — a filter that looks applied and is not.
+    InvalidWhereFilter {
+        filter: String,
+        message: String,
+        location: String,
+    },
 }
 
 impl std::fmt::Display for PlayValidationError {
@@ -362,6 +377,15 @@ impl std::fmt::Display for PlayValidationError {
                  path; retry)",
                 node_type, location, error
             ),
+            Self::InvalidWhereFilter {
+                filter,
+                message,
+                location,
+            } => write!(
+                f,
+                "invalid .where() filter '{}' at {}: {}",
+                filter, location, message
+            ),
         }
     }
 }
@@ -394,7 +418,8 @@ impl PlayValidationError {
             | Self::RejectActionHasForEach { location }
             | Self::DuplicateActionList { location, .. }
             | Self::UnnamespacedPropertyChangedKey { location, .. }
-            | Self::SchemaResolutionFailed { location, .. } => location,
+            | Self::SchemaResolutionFailed { location, .. }
+            | Self::InvalidWhereFilter { location, .. } => location,
         }
     }
 
@@ -423,6 +448,7 @@ impl PlayValidationError {
             Self::DuplicateActionList { .. } => "duplicate_action_list",
             Self::UnnamespacedPropertyChangedKey { .. } => "unnamespaced_property_changed_key",
             Self::SchemaResolutionFailed { .. } => "schema_resolution_failed",
+            Self::InvalidWhereFilter { .. } => "invalid_where_filter",
         }
     }
 
@@ -580,6 +606,15 @@ pub async fn validate_play(
         for (action_idx, action) in rule.actions.iter().enumerate() {
             let location = format!("rule[{}].action[{}]", rule_idx, action_idx);
             validate_action(
+                action,
+                &location,
+                trigger_node_type.as_deref(),
+                node_service,
+                &mut schema_cache,
+                &mut errors,
+            )
+            .await;
+            validate_where_filters(
                 action,
                 &location,
                 trigger_node_type.as_deref(),
@@ -1066,6 +1101,241 @@ async fn validate_schema_path(
     }
 }
 
+/// Every binding expression in `action` that can carry a `.where(...)` chain,
+/// with the location suffix naming where it sits: the raw `for_each` path and
+/// each `{binding}` in the params (including `sum(...)`/`count(...)`
+/// arguments, which [`collect_where_chains`] descends into).
+fn where_chain_sources(action: &ParsedAction) -> Vec<(String, &'static str)> {
+    let mut sources = Vec::new();
+    if let Some(for_each) = &action.for_each {
+        sources.push((for_each.clone(), "for_each"));
+    }
+    let mut templates = Vec::new();
+    collect_binding_templates_in_value(&action.params, &mut templates);
+    sources.extend(templates.into_iter().map(|t| (t, "params")));
+    sources
+}
+
+/// Validate every `.where(...)` chain in an action against the schema.
+///
+/// For each chain: the collection path must be rooted at
+/// `trigger.node.<path>` — or `item.<path>` inside a `for_each` action's
+/// params — and walk to a relationship with a declared target type
+/// ([`declared_collection_type`], the same walk the runtime reads items at);
+/// every predicate must compile, and every variable it reads must be a field
+/// of that type (or a core key such as `id`/`content`).
+async fn validate_where_filters(
+    action: &ParsedAction,
+    location: &str,
+    trigger_node_type: Option<&str>,
+    node_service: &NodeService,
+    schema_cache: &mut SchemaCache,
+    errors: &mut Vec<PlayValidationError>,
+) {
+    for (expr, site) in where_chain_sources(action) {
+        let site_location = format!("{}.{}", location, site);
+        let mut chains = Vec::new();
+        collect_where_chains(&expr, &mut chains);
+        for chain in chains {
+            let (base, predicates) = match chain {
+                Ok(chain) => chain,
+                Err(message) => {
+                    errors.push(PlayValidationError::InvalidWhereFilter {
+                        filter: expr.clone(),
+                        message,
+                        location: site_location.clone(),
+                    });
+                    continue;
+                }
+            };
+            let where_site = WhereSite {
+                action,
+                location: &site_location,
+                in_for_each: site == "for_each",
+            };
+            validate_where_chain(
+                base,
+                &predicates,
+                where_site,
+                trigger_node_type,
+                node_service,
+                schema_cache,
+                errors,
+            )
+            .await;
+        }
+    }
+}
+
+/// Where a `.where` chain sits: the action carrying it, the location to report
+/// against, and whether it is that action's `for_each` path (where `item` is
+/// not yet bound) rather than one of its params.
+#[derive(Clone, Copy)]
+struct WhereSite<'a> {
+    action: &'a ParsedAction,
+    location: &'a str,
+    in_for_each: bool,
+}
+
+async fn validate_where_chain(
+    base: &str,
+    predicates: &[&str],
+    site: WhereSite<'_>,
+    trigger_node_type: Option<&str>,
+    node_service: &NodeService,
+    schema_cache: &mut SchemaCache,
+    errors: &mut Vec<PlayValidationError>,
+) {
+    let WhereSite {
+        action,
+        location,
+        in_for_each,
+    } = site;
+    let invalid = |message: String| PlayValidationError::InvalidWhereFilter {
+        filter: format!("{}.where({})", base, predicates.join(").where(")),
+        message,
+        location: location.to_string(),
+    };
+
+    // A missing trigger node_type is already reported by the trigger check.
+    let Some(trigger_type) = trigger_node_type else {
+        return;
+    };
+
+    let segments: Vec<&str> = base.split('.').collect();
+    let (start_type, rest): (String, &[&str]) = match segments.as_slice() {
+        ["trigger", "node", rest @ ..] if !rest.is_empty() => (trigger_type.to_string(), rest),
+        ["item", rest @ ..] if !rest.is_empty() && !in_for_each => {
+            match for_each_item_type(action, trigger_type, node_service).await {
+                Ok(Some(item_type)) => (item_type, rest),
+                Ok(None) => {
+                    errors.push(invalid(
+                        "an `item.` path needs this action's for_each to iterate a \
+                         `trigger.node.<relationship>` collection with a declared target type"
+                            .to_string(),
+                    ));
+                    return;
+                }
+                Err(e) => {
+                    errors.push(PlayValidationError::SchemaResolutionFailed {
+                        node_type: trigger_type.to_string(),
+                        error: e.to_string(),
+                        location: location.to_string(),
+                    });
+                    return;
+                }
+            }
+        }
+        _ => {
+            errors.push(invalid(format!(
+                "'{}' is not a filterable collection path — .where() follows \
+                 `trigger.node.<relationship>`, or `item.<relationship>` inside a for_each \
+                 action's params",
+                base
+            )));
+            return;
+        }
+    };
+
+    // The path itself, checked exactly as a condition path is. A broken
+    // segment is reported there; a filter over it has nothing to add.
+    let mut path_segments = vec!["node".to_string()];
+    path_segments.extend(rest.iter().map(|s| s.to_string()));
+    let before = errors.len();
+    validate_schema_path(
+        &path_segments,
+        &start_type,
+        location,
+        node_service,
+        schema_cache,
+        errors,
+    )
+    .await;
+    if errors.len() > before {
+        return;
+    }
+
+    let item_type = match declared_collection_type(node_service, &start_type, rest).await {
+        Ok(Some(t)) => t,
+        Ok(None) => {
+            errors.push(invalid(format!(
+                "'{}' does not reach a relationship with a declared target type, so its \
+                 items have no schema fields to filter on",
+                base
+            )));
+            return;
+        }
+        Err(e) => {
+            errors.push(PlayValidationError::SchemaResolutionFailed {
+                node_type: start_type,
+                error: e.to_string(),
+                location: location.to_string(),
+            });
+            return;
+        }
+    };
+
+    let fields: Vec<String> = match node_service.resolve_field_owners(&item_type).await {
+        Ok((fields, _, _)) => fields.into_iter().map(|f| f.name).collect(),
+        Err(e) => {
+            errors.push(PlayValidationError::SchemaResolutionFailed {
+                node_type: item_type,
+                error: e.to_string(),
+                location: location.to_string(),
+            });
+            return;
+        }
+    };
+
+    for predicate in predicates {
+        if let Err(e) = crate::playbook::cel::compile_condition(predicate) {
+            errors.push(invalid(e.to_string()));
+            continue;
+        }
+        let variables = match path_extractor::free_variables(predicate) {
+            Ok(v) => v,
+            Err(e) => {
+                errors.push(invalid(e));
+                continue;
+            }
+        };
+        for variable in variables {
+            if !crate::playbook::cel::is_core_key(&variable) && !fields.contains(&variable) {
+                errors.push(invalid(format!(
+                    "'{}' is not a field of '{}' — a .where() predicate reads the item's own \
+                     fields by bare name (e.g. `status != 'done'`)",
+                    variable, item_type
+                )));
+            }
+        }
+    }
+}
+
+/// The declared item type of `action`'s own `for_each` collection, for a
+/// `.where` chain in its params rooted at `item`. Only a `trigger.node.<path>`
+/// for_each has a type to start from.
+async fn for_each_item_type(
+    action: &ParsedAction,
+    trigger_type: &str,
+    node_service: &NodeService,
+) -> Result<Option<String>, crate::services::NodeServiceError> {
+    let Some(for_each) = &action.for_each else {
+        return Ok(None);
+    };
+    let base = match parse_where_chain(for_each) {
+        Ok(Some((base, _))) => base,
+        Ok(None) => for_each.as_str(),
+        Err(_) => return Ok(None),
+    };
+    let segments: Vec<&str> = base.split('.').collect();
+    match segments.as_slice() {
+        ["trigger", "node", rest @ ..] => {
+            declared_collection_type(node_service, trigger_type, rest).await
+        }
+        _ => Ok(None),
+    }
+}
+
 /// Validate a single action's params.
 async fn validate_action(
     action: &ParsedAction,
@@ -1468,6 +1738,36 @@ fn validate_invariant_eligibility(
                         function: function.to_string(),
                         location: format!("rule[{}].action[{}].for_each", rule_idx, action_idx),
                     });
+                }
+            }
+        }
+
+        // A `.where(...)` predicate is real CEL, evaluated per item — the one
+        // place CEL is reachable from an action binding — so it is checked
+        // like a condition, wherever the chain sits.
+        for (expr, site) in where_chain_sources(action) {
+            let mut chains = Vec::new();
+            collect_where_chains(&expr, &mut chains);
+            for (_base, predicates) in chains.into_iter().flatten() {
+                for predicate in predicates {
+                    // An unparseable predicate is already reported by
+                    // `validate_where_filters`, so skipping it here loses nothing.
+                    let Ok(functions) = path_extractor::extract_function_names(predicate) else {
+                        continue;
+                    };
+                    for function in functions {
+                        if crate::playbook::cel::NON_DETERMINISTIC_FUNCTIONS
+                            .contains(&function.as_str())
+                        {
+                            errors.push(PlayValidationError::InvariantNonDeterministic {
+                                function,
+                                location: format!(
+                                    "rule[{}].action[{}].{}",
+                                    rule_idx, action_idx, site
+                                ),
+                            });
+                        }
+                    }
                 }
             }
         }
@@ -2213,6 +2513,228 @@ mod tests {
             )];
             let result = validate_play(&rules, &svc).await;
             assert!(result.is_ok());
+        }
+
+        // -- `.where(...)` collection filters --------------------------------
+
+        /// `vt_sprint -[tasks]-> vt_item`, where `vt_item` declares `status`.
+        async fn create_sprint_schemas(svc: &NodeService) {
+            create_schema(svc, "vt_item", 1, json!([])).await;
+            create_schema(
+                svc,
+                "vt_sprint",
+                1,
+                json!([{
+                    "name": "tasks",
+                    "targetType": "vt_item",
+                    "direction": "out",
+                    "cardinality": "many",
+                    "reverseName": "sprint",
+                    "reverseCardinality": "one"
+                }]),
+            )
+            .await;
+        }
+
+        fn for_each_action(for_each: &str) -> ParsedAction {
+            ParsedAction {
+                action_type: ActionType::UpdateNode,
+                params: json!({ "node_id": "{item.id}", "properties": { "status": "moved" } }),
+                for_each: Some(for_each.to_string()),
+            }
+        }
+
+        fn params_action(binding: &str) -> ParsedAction {
+            ParsedAction {
+                action_type: ActionType::UpdateNode,
+                params: json!({ "node_id": "{trigger.node.id}", "properties": { "status": binding } }),
+                for_each: None,
+            }
+        }
+
+        async fn where_errors(svc: &NodeService, action: ParsedAction) -> Vec<PlayValidationError> {
+            let rules = vec![make_rule("vt_sprint", vec![], vec![action])];
+            match validate_play(&rules, svc).await {
+                Ok(()) => Vec::new(),
+                Err(errors) => errors,
+            }
+        }
+
+        fn only_where_error(errors: &[PlayValidationError]) -> (&str, &str) {
+            assert_eq!(errors.len(), 1, "expected exactly one error: {errors:?}");
+            match &errors[0] {
+                PlayValidationError::InvalidWhereFilter {
+                    message, location, ..
+                } => {
+                    // A lost `\` continuation splices source indentation into
+                    // the text an agent or CLI user reads.
+                    assert!(!message.contains("  "), "stray whitespace: {message:?}");
+                    (message.as_str(), location.as_str())
+                }
+                other => panic!("expected InvalidWhereFilter, got {other:?}"),
+            }
+        }
+
+        #[tokio::test]
+        async fn where_over_a_declared_relationship_passes() {
+            let (svc, _tmp) = create_test_service().await;
+            create_sprint_schemas(&svc).await;
+
+            let errors = where_errors(
+                &svc,
+                for_each_action("trigger.node.tasks.where(status != 'done' && content != '')"),
+            )
+            .await;
+            assert!(errors.is_empty(), "{errors:?}");
+
+            let errors = where_errors(
+                &svc,
+                params_action("{count(trigger.node.tasks.where(status == 'done'))}"),
+            )
+            .await;
+            assert!(errors.is_empty(), "{errors:?}");
+        }
+
+        /// The fail-open case this check exists for: a misspelled field would
+        /// read `null` on every item and filter nothing (or everything).
+        #[tokio::test]
+        async fn where_reading_an_unknown_field_is_rejected() {
+            let (svc, _tmp) = create_test_service().await;
+            create_sprint_schemas(&svc).await;
+
+            let errors = where_errors(
+                &svc,
+                for_each_action("trigger.node.tasks.where(statuss != 'done')"),
+            )
+            .await;
+            let (message, location) = only_where_error(&errors);
+            assert!(
+                message.contains("'statuss' is not a field of 'vt_item'"),
+                "{message}"
+            );
+            assert_eq!(location, "rule[0].action[0].for_each");
+        }
+
+        #[tokio::test]
+        async fn where_inside_sum_is_validated_too() {
+            let (svc, _tmp) = create_test_service().await;
+            create_sprint_schemas(&svc).await;
+
+            let errors = where_errors(
+                &svc,
+                params_action("{sum(trigger.node.tasks.where(done == true), estimate)}"),
+            )
+            .await;
+            let (message, location) = only_where_error(&errors);
+            assert!(message.contains("'done' is not a field"), "{message}");
+            assert_eq!(location, "rule[0].action[0].params");
+        }
+
+        #[tokio::test]
+        async fn where_on_a_field_rather_than_a_relationship_is_rejected() {
+            let (svc, _tmp) = create_test_service().await;
+            create_sprint_schemas(&svc).await;
+
+            let errors = where_errors(
+                &svc,
+                for_each_action("trigger.node.status.where(status == 'x')"),
+            )
+            .await;
+            let (message, _) = only_where_error(&errors);
+            assert!(
+                message.contains("does not reach a relationship"),
+                "{message}"
+            );
+        }
+
+        #[tokio::test]
+        async fn where_on_a_broken_path_reports_the_broken_segment() {
+            let (svc, _tmp) = create_test_service().await;
+            create_sprint_schemas(&svc).await;
+
+            let errors = where_errors(
+                &svc,
+                for_each_action("trigger.node.taskz.where(status == 'x')"),
+            )
+            .await;
+            assert_eq!(errors.len(), 1, "{errors:?}");
+            assert!(
+                matches!(&errors[0], PlayValidationError::BrokenPath { segment, .. } if segment == "taskz"),
+                "{errors:?}"
+            );
+        }
+
+        #[tokio::test]
+        async fn where_on_an_untyped_root_is_rejected() {
+            let (svc, _tmp) = create_test_service().await;
+            create_sprint_schemas(&svc).await;
+
+            // `item` is not bound while the for_each collection itself resolves.
+            let errors =
+                where_errors(&svc, for_each_action("item.tasks.where(status == 'x')")).await;
+            let (message, _) = only_where_error(&errors);
+            assert!(
+                message.contains("not a filterable collection path"),
+                "{message}"
+            );
+
+            let errors = where_errors(
+                &svc,
+                params_action("{count(actions[0].result.where(status == 'x'))}"),
+            )
+            .await;
+            let (message, _) = only_where_error(&errors);
+            assert!(
+                message.contains("not a filterable collection path"),
+                "{message}"
+            );
+        }
+
+        #[tokio::test]
+        async fn malformed_where_is_rejected() {
+            let (svc, _tmp) = create_test_service().await;
+            create_sprint_schemas(&svc).await;
+
+            let errors = where_errors(
+                &svc,
+                for_each_action("trigger.node.tasks.where(status == 'x').count"),
+            )
+            .await;
+            let (message, _) = only_where_error(&errors);
+            assert!(message.contains("only further .where(...)"), "{message}");
+
+            let errors =
+                where_errors(&svc, for_each_action("trigger.node.tasks.where(status ==)")).await;
+            only_where_error(&errors);
+        }
+
+        /// A `.where` predicate is CEL evaluated inside the action, so an
+        /// invariant rule must not read the wall clock there either.
+        #[tokio::test]
+        async fn invariant_where_predicate_must_be_deterministic() {
+            let (svc, _tmp) = create_test_service().await;
+            create_sprint_schemas(&svc).await;
+
+            let mut rule = (*make_rule(
+                "vt_sprint",
+                vec![],
+                vec![for_each_action(
+                    "trigger.node.tasks.where(status != today())",
+                )],
+            ))
+            .clone();
+            rule.class = RuleClass::Invariant;
+            let errors = validate_play(&[Arc::new(rule)], &svc)
+                .await
+                .expect_err("today() in an invariant predicate must be rejected");
+            assert!(
+                errors.iter().any(|e| matches!(
+                    e,
+                    PlayValidationError::InvariantNonDeterministic { function, location }
+                        if function == "today" && location == "rule[0].action[0].for_each"
+                )),
+                "{errors:?}"
+            );
         }
 
         #[tokio::test]

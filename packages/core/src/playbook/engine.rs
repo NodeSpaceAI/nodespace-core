@@ -233,29 +233,10 @@ impl PlaybookEngine {
             ParsedTrigger::Scheduled { node_type, .. } => node_type,
         };
 
-        // A node of exactly the registered type reads natively; nothing to
-        // project or resolve.
-        if scope_type == &node.node_type || scope_type == "*" {
+        if scope_type == "*" {
             return Ok(None);
         }
-
-        let chain = node_service.resolve_type_chain(scope_type).await?;
-        let scope_fields = node_service.resolve_field_owners(scope_type).await?.0;
-        // The node's OWN chain, not the scope's. Reading the scope's ancestry
-        // would skip every bucket between the node and the reading scope — on
-        // `bug → ticket → workitem` read at `workitem`, the `ticket` bucket
-        // would never be opened. `resolve_field_owners` already computes this
-        // chain as its third element, so taking it costs nothing.
-        let (node_fields, _, node_chain) =
-            node_service.resolve_field_owners(&node.node_type).await?;
-
-        Ok(Some(crate::playbook::cel::CelScope {
-            scope_type: scope_type.clone(),
-            node_chain,
-            chain,
-            scope_fields,
-            node_fields,
-        }))
+        crate::playbook::cel::CelScope::resolve(node_service, scope_type, node).await
     }
 
     /// Rebuild the `extends` ancestry cache from the store (ADR-078).

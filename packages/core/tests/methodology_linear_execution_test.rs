@@ -329,6 +329,99 @@ async fn rollover_moves_a_task_rather_than_leaving_it_in_both_cycles() -> Result
     shutdown(tx, task).await
 }
 
+/// Rollover moves unfinished work and leaves finished work behind.
+///
+/// Asserted on the graph after the actions run, because the rule JSON cannot
+/// show it: a `.where` that validated but filtered nothing (or everything)
+/// looks identical there. The cycle's items span the cases that matter —
+/// terminal base statuses (`done`, `cancelled`) stay; a base in-flight status
+/// moves; and an `issue` whose EXTENDED status (`in_review`) only means "not
+/// finished" through its `mapsTo`, which the filter reads at `task` scope,
+/// also moves.
+#[tokio::test]
+async fn rollover_leaves_finished_work_in_the_ending_cycle() -> Result<()> {
+    let (service, _tmp, tx, task) = service_with_playbook().await?;
+
+    let ending = service
+        .create_node(Node::new(
+            "cycle".to_string(),
+            "Ending cycle".to_string(),
+            serde_json::json!({
+                "start_date": "2026-01-01",
+                // UTC, matching CEL's `today()`.
+                "end_date": chrono::Utc::now().format("%Y-%m-%d").to_string(),
+                "duration_days": 14,
+            }),
+        ))
+        .await?;
+
+    let mut members = Vec::new();
+    for (content, status) in [
+        ("Shipped", "done"),
+        ("Dropped", "cancelled"),
+        ("Half done", "in_progress"),
+        ("Awaiting review", "in_review"),
+    ] {
+        let id = service
+            .create_node(Node::new(
+                "issue".to_string(),
+                content.to_string(),
+                serde_json::json!({ "status": status }),
+            ))
+            .await?;
+        service
+            .create_relationship(&ending, "tasks", &id, serde_json::json!({}))
+            .await?;
+        members.push((id, status));
+    }
+    let id_of = |status: &str| {
+        members
+            .iter()
+            .find(|(_, s)| *s == status)
+            .map(|(id, _)| id.clone())
+            .unwrap()
+    };
+
+    run_rollover(&service, &ending).await?;
+
+    let successor = service
+        .query_nodes_by_type("cycle", Some("active"))
+        .await?
+        .into_iter()
+        .find(|c| c.id != ending)
+        .expect("the rule should have created a successor cycle");
+
+    let mut moved: Vec<String> = service
+        .get_related_nodes(successor.id.as_str(), "tasks", "out")
+        .await?
+        .into_iter()
+        .map(|n| n.id)
+        .collect();
+    moved.sort();
+    let mut expected_moved = vec![id_of("in_progress"), id_of("in_review")];
+    expected_moved.sort();
+    assert_eq!(
+        moved, expected_moved,
+        "only unfinished work moves to the successor"
+    );
+
+    let mut stayed: Vec<String> = service
+        .get_related_nodes(&ending, "tasks", "out")
+        .await?
+        .into_iter()
+        .map(|n| n.id)
+        .collect();
+    stayed.sort();
+    let mut expected_stayed = vec![id_of("done"), id_of("cancelled")];
+    expected_stayed.sort();
+    assert_eq!(
+        stayed, expected_stayed,
+        "done and cancelled tasks stay with the ending cycle as its record"
+    );
+
+    shutdown(tx, task).await
+}
+
 /// Run the rollover play's single rule against `trigger`, the way the
 /// CronRunner would once its cron matched.
 async fn run_rollover(service: &Arc<NodeService>, trigger_id: &str) -> Result<()> {

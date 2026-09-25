@@ -78,6 +78,12 @@ impl GraphResolver {
         self
     }
 
+    /// The service this resolver reads through — also what `.where(...)`
+    /// item scoping needs for its schema lookups (`actions::BindingContext`).
+    pub(crate) fn node_service(&self) -> &Arc<NodeService> {
+        &self.node_service
+    }
+
     /// Point an existing resolver at a different reading scope.
     ///
     /// One resolver is reused across the rules of a work item, and each rule
@@ -701,6 +707,64 @@ fn core_field_value(node: &Node, name: &str) -> Option<serde_json::Value> {
         "lifecycle_status" => Some(serde_json::Value::String(node.lifecycle_status.clone())),
         _ => None,
     }
+}
+
+/// The declared item type of the collection `segments` reaches from a node of
+/// `start_type`: the far-end type of the last relationship walked.
+///
+/// This is the type a `.where(...)` predicate is authored against — validated
+/// against it at save time (`playbook::validation`) and read at it per item at
+/// run time (`actions::BindingContext`), so an `issue` reached through
+/// `cycle.tasks → task` is read at `task` scope with its extended values
+/// resolved through `maps_to`. Both sides call this one walk, so the segment
+/// resolution rules cannot drift apart.
+///
+/// The START type can differ, though: validation starts from the rule's
+/// registered trigger type, the runtime from the trigger node's concrete type.
+/// Relationships are inherited down the `extends` chain, so the two agree
+/// unless a subtype re-declares a same-named relationship with a different
+/// target — the one case where a predicate could be evaluated at a type other
+/// than the one it was validated against.
+///
+/// Segments resolve as `validate_schema_path` resolves them: a forward name
+/// from the effective (`extends`-merged) relationship set first, then a
+/// declared reverse name. `Ok(None)` means the path has no declared item type
+/// — it is empty, ends on a field, walks a built-in structural relationship
+/// (any type may sit at either end of one), or crosses a relationship with no
+/// `target_type`. `Err` is a schema lookup failure, never folded into `None`.
+pub(crate) async fn declared_collection_type(
+    node_service: &NodeService,
+    start_type: &str,
+    segments: &[&str],
+) -> Result<Option<String>, crate::services::NodeServiceError> {
+    if segments.is_empty() {
+        return Ok(None);
+    }
+    let mut current = start_type.to_string();
+    for segment in segments {
+        if crate::models::schema::is_reserved_relationship_name(segment) {
+            return Ok(None);
+        }
+        let (relationships, _) = node_service.resolve_relationships(&current).await?;
+        if let Some(rel) = relationships.iter().find(|r| r.name == *segment) {
+            match &rel.target_type {
+                Some(target) => {
+                    current = target.clone();
+                    continue;
+                }
+                None => return Ok(None),
+            }
+        }
+        let inbound = node_service.get_inbound_relationships(&current).await?;
+        match inbound
+            .into_iter()
+            .find_map(|(source_type, rel)| (rel.reverse_name == *segment).then_some(source_type))
+        {
+            Some(source) => current = source,
+            None => return Ok(None),
+        }
+    }
+    Ok(Some(current))
 }
 
 /// Get a property value from a node, checking multiple formats.

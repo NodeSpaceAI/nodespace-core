@@ -253,8 +253,16 @@ fn issue_priority_values() -> FieldValueExtension {
 // Plays
 // ---------------------------------------------------------------------------
 
-/// Close out an ending cycle: create its successor, then move its tasks into
-/// it.
+/// Which of an ending cycle's tasks roll over: the unfinished ones.
+///
+/// Read at `task` scope — `cycle.tasks` targets `task` — so an issue's
+/// extended statuses arrive as the base values they map to (`in_review` as
+/// `in_progress`, `backlog`/`triage` as `open`), and only the two terminal base
+/// values need naming.
+const ROLLOVER_TASKS: &str = "trigger.node.tasks.where(status != 'done' && status != 'cancelled')";
+
+/// Close out an ending cycle: create its successor, then move its unfinished
+/// tasks into it.
 ///
 /// One Play with two actions rather than two Plays, because the second action
 /// needs the first's output. The successor's id is only reachable as
@@ -278,13 +286,13 @@ fn issue_priority_values() -> FieldValueExtension {
 /// in both cycles, which is visible and repairable, rather than in neither,
 /// which silently loses it.
 ///
-/// **Every task moves, including finished ones.** `for_each` has no per-item
-/// filter — `ActionDefinition` carries only `action_type`, `params` and
-/// `for_each`, and rule conditions compile once against the trigger node, so
-/// nothing can see `item`. Filtering to incomplete work needs a capability
-/// the engine does not have. This is stated plainly in the Play's own
-/// description and in the seeded guidance rather than described as intent,
-/// because an agent reading either will act on it.
+/// **Only unfinished tasks move.** Done and cancelled tasks stay with the
+/// ending cycle as its record of what it accomplished, which is how Linear
+/// behaves. Both `for_each`s narrow `trigger.node.tasks` with the same
+/// `.where` ([`ROLLOVER_TASKS`]) — the add and the remove must iterate the
+/// same set, or a task could be added without being removed. Scoping to the
+/// cycle needs nothing extra: the path starts at the ending cycle, so it only
+/// ever yields that cycle's own tasks.
 ///
 /// Both dates come from `add_days`; neither CEL nor action-value resolution
 /// can otherwise compute one.
@@ -299,9 +307,8 @@ fn cycle_rollover_play() -> PlayStep {
         play_id: "linear-cycle-rollover",
         name: "Close out the ending cycle",
         description: "On the day a cycle ends, create its successor — starting the next day and \
-             spanning that cycle's own duration_days — then move the ending cycle's tasks \
-             into it. Every task moves, finished ones included: the engine has no per-item \
-             filter for a for_each yet.",
+             spanning that cycle's own duration_days — then move the ending cycle's unfinished \
+             tasks into it. Done and cancelled tasks stay with the ending cycle as its record.",
         rules: json!([{
             "name": "create-successor-and-roll-over",
             "trigger": {
@@ -328,7 +335,7 @@ fn cycle_rollover_play() -> PlayStep {
                 },
                 {
                     "action_type": "add_relationship",
-                    "for_each": "trigger.node.tasks",
+                    "for_each": ROLLOVER_TASKS,
                     "params": {
                         "source_id": "{actions[0].result.id}",
                         "relationship_type": "tasks",
@@ -337,7 +344,7 @@ fn cycle_rollover_play() -> PlayStep {
                 },
                 {
                     "action_type": "remove_relationship",
-                    "for_each": "trigger.node.tasks",
+                    "for_each": ROLLOVER_TASKS,
                     "params": {
                         "source_id": "{trigger.node.id}",
                         "relationship_type": "tasks",
@@ -574,13 +581,10 @@ changing cadence means editing that field, not the Play.
 its end date, so with no cycle in the graph nothing ever fires. Create one with
 a `start_date` and `end_date`; the automation takes over from there.
 
-**Rollover.** In the same run, the ending cycle's tasks move to the successor —
-added to the new cycle and removed from the old one, so a task belongs to
-exactly one cycle.
-
-Every task moves, completed ones included. That is a current limitation rather
-than a design choice: a `for_each` action cannot filter per item yet. If a
-finished cycle should keep its completed work, move those tasks back afterwards.
+**Rollover.** In the same run, the ending cycle's unfinished tasks move to the
+successor — added to the new cycle and removed from the old one, so a task
+belongs to exactly one cycle. Tasks whose status is `done` or `cancelled` stay
+in the ending cycle as its record of what it accomplished.
 
 Runs daily just after midnight, on whichever devices are online. If several are,
 they converge on the same result rather than duplicating it.
@@ -829,10 +833,12 @@ mod tests {
 
         // `node.*` is condition syntax; action bindings only know
         // `trigger.node.*`, `item.*` and `actions[N].*`. A bare `node.tasks`
-        // fails at runtime with `unknown binding root: 'node'`.
+        // fails at runtime with `unknown binding root: 'node'`. The add and
+        // the remove must iterate the SAME narrowed set, or a task could be
+        // added to the successor without leaving the ending cycle.
         for action in [add, remove] {
             assert_eq!(
-                action["for_each"], "trigger.node.tasks",
+                action["for_each"], ROLLOVER_TASKS,
                 "for_each must use an action-binding root"
             );
         }

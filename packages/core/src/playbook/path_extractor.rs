@@ -60,6 +60,33 @@ pub fn extract_paths(expr: &str) -> Result<ExtractionResult, String> {
     Ok(result)
 }
 
+/// The free variables of a CEL expression: every root identifier it reads,
+/// excluding comprehension iteration and accumulator variables bound inside
+/// it. `status != 'done' && tags.exists(t, t == 'x')` yields `status` and
+/// `tags`, not `t`.
+///
+/// Used by `.where(expr)` item predicates, whose free variables are the item
+/// fields they read: validated against the item type at save time, bound per
+/// item at run time.
+pub fn free_variables(expr: &str) -> Result<Vec<String>, String> {
+    let extraction = extract_paths(expr)?;
+    let mut vars: Vec<String> = extraction
+        .paths
+        .iter()
+        .map(|p| p.root.clone())
+        .chain(
+            extraction
+                .collections
+                .iter()
+                .map(|c| c.collection.root.clone()),
+        )
+        .filter(|v| !v.starts_with('@'))
+        .collect();
+    vars.sort();
+    vars.dedup();
+    Ok(vars)
+}
+
 /// Collect the names of every function called in a CEL expression.
 ///
 /// Used by save-time validation to detect non-deterministic functions
