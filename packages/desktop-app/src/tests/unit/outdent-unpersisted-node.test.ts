@@ -189,8 +189,9 @@ describe('outdentNode propagates root reparenting and sibling transfer', () => {
     expect(await service.outdentNode('child')).toBe(true);
     expect(structureTree.getChildren('child')).toEqual(['after1']);
 
-    // Nothing may be moved under 'child' before it exists in the backend
-    await Promise.resolve();
+    // Nothing may be moved under 'child' before it exists in the backend — drain a full
+    // macrotask so a MOVE scheduled a few ticks later would still be caught
+    await new Promise((resolve) => setTimeout(resolve, 0));
     expect(moveNodeSpy).not.toHaveBeenCalled();
 
     releaseCreate();
