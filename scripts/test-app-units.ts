@@ -103,13 +103,6 @@ const resourcePatterns = (resources: unknown): string[] => {
 };
 
 /**
- * The staged paths `tauri_build::build()` will insist on, read from the
- * config it reads. `externalBin` entries gain the host triple and exe suffix
- * and must exist as files; `resources` entries are globs that must match at
- * least one file (an empty match is `GlobPathNotFound`, a hard error just
- * like a missing file).
- */
-/**
  * Bundle entries build.rs drops from a DEBUG build when unstaged (see its
  * `drop_unstaged_skill`), so they don't gate compiling these tests.
  */
@@ -127,6 +120,13 @@ const TEST_PREREQUISITES: RequiredPath[] = [
   { path: '../../skill/dist/install.js', kind: 'file' },
 ];
 
+/**
+ * Every path these tests need: what `tauri_build::build()` will insist on in
+ * a debug build, read from the config it reads, plus `TEST_PREREQUISITES`.
+ * `externalBin` entries gain the host triple and exe suffix and must exist as
+ * files; `resources` entries are globs that must match at least one file (an
+ * empty match is `GlobPathNotFound`, a hard error just like a missing file).
+ */
 const requiredPaths = (triple: string): RequiredPath[] => {
   const config: unknown = JSON.parse(
     readFileSync(join(TAURI_DIR, 'tauri.conf.json'), 'utf8'),
@@ -184,15 +184,15 @@ const missing = requiredPaths(triple).filter(({ path, kind }) => {
 if (missing.length > 0) {
   const commands = [...new Set(missing.map(({ path }) => producerFor(path)))];
   console.error(
-    `\nnodespace-app cannot compile — ${missing.length} staged path${
+    `\nnodespace-app unit tests need ${missing.length} path${
       missing.length === 1 ? '' : 's'
-    } missing:\n`,
+    } that ${missing.length === 1 ? 'is' : 'are'} missing:\n`,
   );
   for (const { path } of missing) {
     console.error(`  ✗ ${path}`);
   }
   console.error(
-    `\nThese are gitignored, so every fresh checkout builds them once:\n`,
+    `\nThese are gitignored build output, so a fresh checkout builds them once:\n`,
   );
   for (const command of commands) {
     console.error(`  ${command}`);

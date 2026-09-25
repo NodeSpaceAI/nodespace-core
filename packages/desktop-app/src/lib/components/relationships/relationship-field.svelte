@@ -131,7 +131,10 @@
 
   async function write(fn: () => Promise<void>) {
     // One write at a time: a second pick while the first is in flight would
-    // race it, and the store keeps whichever commits last.
+    // race it, and the store keeps whichever commits last. The input goes
+    // readonly rather than disabled meanwhile: disabling a focused input
+    // blurs it, which would close the list and drop the query a failed write
+    // needs to leave behind for a retry.
     if (busy) return;
     busy = true;
     error = null;
@@ -193,7 +196,8 @@
       autocomplete="off"
       placeholder="Search {group.targetType ?? 'nodes'}…"
       value={query}
-      disabled={busy}
+      readonly={busy}
+      aria-busy={busy}
       oninput={(event) => onInput(event.currentTarget.value)}
       onkeydown={onKeydown}
       onblur={() => {
