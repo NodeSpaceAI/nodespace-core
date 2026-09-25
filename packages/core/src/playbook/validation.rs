@@ -736,30 +736,53 @@ async fn ensure_schema_cached(
 /// at the top of the loop) — but the
 /// per-scope `get_inbound_relationships` cost this function actually incurs
 /// is untouched by it.
+///
+/// Returns `Ok(None)` when `segment` is genuinely not a declared reverse name
+/// anywhere in the chain — a real "not found" the caller reports as
+/// [`PlayValidationError::BrokenPath`]. A DB error while resolving the
+/// `extends` chain or reading a scope's inbound relationships is a distinct
+/// outcome, `Err(PlayValidationError::SchemaResolutionFailed)`, propagated
+/// rather than swallowed: collapsing either failure to "no match" — falling
+/// back to `vec![node_type]` for the chain, or silently skipping a scope
+/// whose inbound lookup errored — would report a legitimate inherited
+/// reverse relationship as a broken path, blaming the play's own expression
+/// for what is actually a transient/internal error. Same rationale as
+/// `SchemaResolutionFailed`'s doc comment and the forward-resolution
+/// `tokio::try_join!` above in [`validate_schema_path`].
 async fn resolve_reverse_segment(
     node_type: &str,
     segment: &str,
+    location: &str,
     node_service: &NodeService,
     schema_cache: &mut HashMap<String, Option<SchemaNode>>,
-) -> Option<String> {
+) -> Result<Option<String>, PlayValidationError> {
     let chain = node_service
         .resolve_type_chain(node_type)
         .await
-        .unwrap_or_else(|_| vec![node_type.to_string()]);
+        .map_err(|e| PlayValidationError::SchemaResolutionFailed {
+            node_type: node_type.to_string(),
+            error: e.to_string(),
+            location: location.to_string(),
+        })?;
 
     for scope in chain {
         ensure_schema_cached(&scope, node_service, schema_cache).await;
-        let Ok(inbound) = node_service.get_inbound_relationships(&scope).await else {
-            continue;
-        };
+        let inbound = node_service
+            .get_inbound_relationships(&scope)
+            .await
+            .map_err(|e| PlayValidationError::SchemaResolutionFailed {
+                node_type: scope.clone(),
+                error: e.to_string(),
+                location: location.to_string(),
+            })?;
         if let Some(source) = inbound
             .into_iter()
             .find_map(|(source_type, rel)| (rel.reverse_name == segment).then_some(source_type))
         {
-            return Some(source);
+            return Ok(Some(source));
         }
     }
-    None
+    Ok(None)
 }
 
 /// Validate a dot-path against the schema graph.
@@ -955,11 +978,24 @@ async fn validate_schema_path(
         // Matched against inbound declarations by schema alone, with no node
         // in hand: this asks whether the name is *declarable* here, which is
         // all save-time validation can know.
-        if let Some(target) =
-            resolve_reverse_segment(&current_type, segment, node_service, schema_cache).await
+        //
+        // A DB error here (`Err`) is distinct from a genuine miss (`Ok(None)`)
+        // — see `resolve_reverse_segment`'s doc comment — and is reported the
+        // same way the forward-resolution failure above is: push
+        // `SchemaResolutionFailed` and stop, rather than falling through to
+        // `BrokenPath` and blaming the play's own expression for it.
+        match resolve_reverse_segment(&current_type, segment, location, node_service, schema_cache)
+            .await
         {
-            current_type = target;
-            continue;
+            Ok(Some(target)) => {
+                current_type = target;
+                continue;
+            }
+            Ok(None) => {}
+            Err(e) => {
+                errors.push(e);
+                return;
+            }
         }
 
         // Neither a field nor a relationship — broken path
@@ -3212,6 +3248,142 @@ mod tests {
                  extends chain, must validate: {:?}",
                 result
             );
+        }
+
+        /// `resolve_reverse_segment` called directly: a name declared toward
+        /// an ancestor resolves to `Ok(Some(source_type))`, not bundled up
+        /// inside a full `validate_play` run. Regression coverage for the
+        /// function's `Result`-returning contract (previously `Option`) —
+        /// the success arm must still work exactly as before.
+        #[tokio::test]
+        async fn test_resolve_reverse_segment_finds_name_declared_on_an_ancestor() {
+            let (svc, _tmp) = create_test_service().await;
+
+            create_schema(&svc, "vrs_task", 1, json!([])).await;
+            let child = Node::new_with_id(
+                "vrs_child".to_string(),
+                "schema".to_string(),
+                "vrs_child".to_string(),
+                json!({
+                    "isCore": false,
+                    "schemaVersion": 1,
+                    "description": "vrs_child schema",
+                    "fields": []
+                }),
+            );
+            svc.create_node(child)
+                .await
+                .expect("Failed to create vrs_child schema");
+            let extends: Vec<crate::models::schema::SchemaRelationship> =
+                serde_json::from_value(json!([{
+                    "name": "extends",
+                    "targetType": "vrs_task",
+                    "direction": "out",
+                    "cardinality": "one",
+                    "reverseName": "extended_by",
+                    "reverseCardinality": "many"
+                }]))
+                .expect("valid extends fixture");
+            svc.set_schema_relationships("vrs_child", &extends)
+                .await
+                .expect("Failed to declare extends on vrs_child");
+
+            create_schema(
+                &svc,
+                "vrs_blocker",
+                1,
+                json!([{
+                    "name": "blocks",
+                    "targetType": "vrs_task",
+                    "direction": "out",
+                    "cardinality": "many",
+                    "reverseName": "blocked_by",
+                    "reverseCardinality": "many"
+                }]),
+            )
+            .await;
+
+            let mut schema_cache = HashMap::new();
+            let result = resolve_reverse_segment(
+                "vrs_child",
+                "blocked_by",
+                "rule[0].condition[0]",
+                &svc,
+                &mut schema_cache,
+            )
+            .await;
+
+            assert_eq!(
+                result,
+                Ok(Some("vrs_blocker".to_string())),
+                "a reverse name declared toward an ancestor must resolve through \
+                 the extends chain to Ok(Some(..)), not collapse to None"
+            );
+        }
+
+        /// A segment that matches no declared reverse name anywhere in the
+        /// chain is a genuine miss — `Ok(None)` — never conflated with the
+        /// `Err(SchemaResolutionFailed)` a DB error produces. Previously both
+        /// a genuine miss and a DB error collapsed to the same `None`, so the
+        /// caller always reported `BrokenPath`, blaming the play's own
+        /// expression even when the real cause was a transient DB error.
+        #[tokio::test]
+        async fn test_resolve_reverse_segment_returns_ok_none_for_undeclared_name() {
+            let (svc, _tmp) = create_test_service().await;
+            create_schema(&svc, "vrs_widget", 1, json!([])).await;
+
+            let mut schema_cache = HashMap::new();
+            let result = resolve_reverse_segment(
+                "vrs_widget",
+                "nonexistent_reverse_name",
+                "rule[0].condition[0]",
+                &svc,
+                &mut schema_cache,
+            )
+            .await;
+
+            assert_eq!(
+                result,
+                Ok(None),
+                "a segment declared nowhere is a genuine miss and must stay \
+                 Ok(None), distinct from a DB-error Err"
+            );
+        }
+
+        /// `resolve_reverse_segment`'s two failure points — the ancestor-chain
+        /// resolution and the per-scope inbound-relationship lookup — now
+        /// report `PlayValidationError::SchemaResolutionFailed` instead of
+        /// silently degrading (an `unwrap_or_else` chain-collapse, or a
+        /// silent `continue` on lookup failure) into the same outcome a
+        /// genuine miss produces. Locks in that the resulting error is
+        /// structurally distinguishable from `BrokenPath` — different
+        /// `kind()`, and correctly flagged as inconclusive rather than a
+        /// genuine validation failure — so a caller (e.g. the play engine's
+        /// schema-drift handler) does not wrongly reject/disable a
+        /// legitimate play over a transient DB hiccup.
+        #[test]
+        fn test_schema_resolution_failed_from_reverse_segment_is_distinguishable_from_broken_path()
+        {
+            let db_error = PlayValidationError::SchemaResolutionFailed {
+                node_type: "vrs_child".to_string(),
+                error: "transient DB error".to_string(),
+                location: "rule[0].condition[0]".to_string(),
+            };
+            let broken_path = PlayValidationError::BrokenPath {
+                path: "node.blocked_by".to_string(),
+                segment: "blocked_by".to_string(),
+                message: "'blocked_by' is not a field or relationship on schema 'vrs_child'"
+                    .to_string(),
+                location: "rule[0].condition[0]".to_string(),
+            };
+
+            assert_ne!(db_error.kind(), broken_path.kind());
+            assert!(
+                !db_error.is_genuine_failure(),
+                "a DB error resolving a reverse segment is inconclusive, not a \
+                 confirmed break in the play's own definition"
+            );
+            assert!(broken_path.is_genuine_failure());
         }
 
         // ---------------------------------------------------------------
