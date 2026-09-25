@@ -343,7 +343,17 @@
   {/if}
 </div>
 
-<RelationshipViewerModal bind:open={showRelationships} {nodeId} />
+<!-- Reload on close, as TypedFormShell does. -->
+<RelationshipViewerModal
+  bind:open={
+    () => showRelationships,
+    (open) => {
+      showRelationships = open;
+      if (!open) void relationships.reload();
+    }
+  }
+  {nodeId}
+/>
 
 <style>
   .person-schema-form {

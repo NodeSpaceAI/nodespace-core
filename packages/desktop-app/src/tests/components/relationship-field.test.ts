@@ -163,6 +163,154 @@ describe('RelationshipField', () => {
     expect(screen.queryByRole('button', { name: 'Clear assignee' })).toBeNull();
   });
 
+  it('closes the list when an empty field loses focus', async () => {
+    searchNodesByTitle.mockResolvedValue([personNode('person-sam', 'Sam Lee')]);
+    render(RelationshipField, {
+      props: { nodeId: 'task-1', group: assigneeGroup(), fieldId: 'f', onChanged }
+    });
+
+    const input = screen.getByRole('combobox');
+    await search(input, 'sam');
+    await screen.findByRole('listbox');
+    await fireEvent.blur(input);
+
+    expect(screen.queryByRole('listbox')).toBeNull();
+    expect((screen.getByRole('combobox') as HTMLInputElement).value).toBe('');
+  });
+
+  it('keeps focus in the input when the list itself is pressed', async () => {
+    searchNodesByTitle.mockResolvedValue([personNode('person-sam', 'Sam Lee')]);
+    render(RelationshipField, {
+      props: { nodeId: 'task-1', group: assigneeGroup(), fieldId: 'f', onChanged }
+    });
+
+    await search(screen.getByRole('combobox'), 'sam');
+    const listbox = await screen.findByRole('listbox');
+    // A mousedown the list doesn't cancel would blur the input and close it
+    // under the pointer (a scrollbar drag, a status row).
+    const press = new MouseEvent('mousedown', { bubbles: true, cancelable: true });
+    listbox.dispatchEvent(press);
+    expect(press.defaultPrevented).toBe(true);
+  });
+
+  it('moves the highlight with arrow keys and exposes it as the active descendant', async () => {
+    searchNodesByTitle.mockResolvedValue([
+      personNode('person-sam', 'Sam Lee'),
+      personNode('person-ana', 'Ana Ruiz')
+    ]);
+    render(RelationshipField, {
+      props: { nodeId: 'task-1', group: assigneeGroup(), fieldId: 'f', onChanged }
+    });
+
+    const input = screen.getByRole('combobox');
+    await search(input, 'a');
+    await screen.findByRole('option', { name: 'Ana Ruiz' });
+    expect(input.getAttribute('aria-activedescendant')).toBe('f-option-0');
+
+    await fireEvent.keyDown(input, { key: 'ArrowDown' });
+    expect(input.getAttribute('aria-activedescendant')).toBe('f-option-1');
+    expect(screen.getByRole('option', { name: 'Ana Ruiz' }).getAttribute('aria-selected')).toBe(
+      'true'
+    );
+
+    await fireEvent.keyDown(input, { key: 'Enter' });
+    await waitFor(() =>
+      expect(createRelationship).toHaveBeenCalledWith('person-ana', 'tasks', 'task-1', undefined)
+    );
+  });
+
+  it('closes the list on Escape without writing', async () => {
+    searchNodesByTitle.mockResolvedValue([personNode('person-sam', 'Sam Lee')]);
+    render(RelationshipField, {
+      props: { nodeId: 'task-1', group: assigneeGroup(), fieldId: 'f', onChanged }
+    });
+
+    const input = screen.getByRole('combobox');
+    await search(input, 'sam');
+    await screen.findByRole('listbox');
+    await fireEvent.keyDown(input, { key: 'Escape' });
+
+    expect(screen.queryByRole('listbox')).toBeNull();
+    expect(createRelationship).not.toHaveBeenCalled();
+  });
+
+  it('writes an outbound `one` edge from this node', async () => {
+    searchNodesByTitle.mockResolvedValue([personNode('customer-1', 'Acme')]);
+    const group = buildRelationshipsView({
+      nodeId: 'invoice-1',
+      nodeType: 'invoice',
+      groups: [
+        {
+          relationshipName: 'billed_to',
+          direction: 'out',
+          targetType: 'customer',
+          reverseName: 'invoices',
+          sourceType: 'invoice',
+          cardinality: 'one',
+          required: null,
+          edgeFields: null,
+          description: null,
+          related: [],
+          count: 0
+        }
+      ]
+    }).groups[0];
+    render(RelationshipField, { props: { nodeId: 'invoice-1', group, fieldId: 'f', onChanged } });
+
+    const input = screen.getByRole('combobox');
+    await fireEvent.input(input, { target: { value: 'acme' } });
+    await fireEvent.mouseDown(await screen.findByRole('option', { name: 'Acme' }));
+
+    await waitFor(() =>
+      expect(createRelationship).toHaveBeenCalledWith('invoice-1', 'billed_to', 'customer-1', undefined)
+    );
+  });
+
+  it('ignores a second pick while the first write is in flight', async () => {
+    let finish!: () => void;
+    createRelationship.mockReturnValue(new Promise<void>((resolve) => (finish = resolve)));
+    searchNodesByTitle.mockResolvedValue([
+      personNode('person-sam', 'Sam Lee'),
+      personNode('person-ana', 'Ana Ruiz')
+    ]);
+    render(RelationshipField, {
+      props: { nodeId: 'task-1', group: assigneeGroup(), fieldId: 'f', onChanged }
+    });
+
+    await search(screen.getByRole('combobox'), 'a');
+    const sam = await screen.findByRole('option', { name: 'Sam Lee' });
+    const ana = screen.getByRole('option', { name: 'Ana Ruiz' });
+    await fireEvent.mouseDown(sam);
+    await fireEvent.mouseDown(ana);
+    finish();
+
+    await waitFor(() => expect(onChanged).toHaveBeenCalled());
+    expect(createRelationship).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports a failed search rather than "No matches."', async () => {
+    searchNodesByTitle.mockRejectedValue(new Error('daemon offline'));
+    render(RelationshipField, {
+      props: { nodeId: 'task-1', group: assigneeGroup(), fieldId: 'f', onChanged }
+    });
+
+    await search(screen.getByRole('combobox'), 'sam');
+    await screen.findByText('Search failed.');
+    expect(screen.queryByText('No matches.')).toBeNull();
+  });
+
+  it('names the set value for assistive tech, not just the field', () => {
+    render(RelationshipField, {
+      props: {
+        nodeId: 'task-1',
+        group: assigneeGroup({ related: [sam], count: 1 }),
+        fieldId: 'f',
+        onChanged
+      }
+    });
+    expect(screen.getByRole('button', { name: 'Assignee: Sam Lee' })).toBeTruthy();
+  });
+
   it('surfaces a failed write and keeps the field editable', async () => {
     deleteRelationship.mockRejectedValue(new Error('daemon offline'));
     render(RelationshipField, {

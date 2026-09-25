@@ -31,9 +31,13 @@ export class NodeRelationshipsState {
   readonly partitioned = $derived(partitionGroups(this.view?.groups ?? []));
   readonly showModalTrigger = $derived(this.loadFailed || hasModalContent(this.partitioned));
 
-  // The node whose data `view` holds or is loading. A response for any other
-  // node is stale and dropped.
+  // The node whose data `view` holds or is loading.
   #nodeId: string | null = null;
+  // Only the most recently STARTED fetch may write `view`. Keyed on request
+  // order rather than node id: two reloads of the same node (one per quick
+  // edit) can resolve out of order, and the older one must not overwrite the
+  // newer.
+  #generation = 0;
 
   /**
    * Load a node's relationships. A call for the node already loaded is a
@@ -54,13 +58,14 @@ export class NodeRelationshipsState {
   }
 
   async #fetch(nodeId: string): Promise<void> {
+    const generation = ++this.#generation;
     try {
       const view = await loadNodeRelationshipsView(nodeId);
-      if (this.#nodeId !== nodeId) return;
+      if (generation !== this.#generation) return;
       this.view = view;
       this.loadFailed = false;
     } catch (error) {
-      if (this.#nodeId !== nodeId) return;
+      if (generation !== this.#generation) return;
       log.error('Failed to load relationships', error);
       this.loadFailed = true;
     }

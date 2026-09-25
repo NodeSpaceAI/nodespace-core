@@ -413,6 +413,39 @@ describe('PersonSchemaForm — Relationships trigger gate', () => {
 
     await waitFor(() => expect(screen.getByText('Relationships')).toBeTruthy());
   });
+
+  it('renders a single-valued relationship as a field, not behind the trigger', async () => {
+    // e.g. a user schema declaring `employees → person` with a `one` reverse.
+    loadNodeRelationshipsView.mockResolvedValue(
+      buildRelationshipsView({
+        nodeId: 'person-1',
+        nodeType: 'person',
+        groups: [
+          {
+            relationshipName: 'employees',
+            direction: 'in',
+            targetType: 'company',
+            reverseName: 'employer',
+            sourceType: 'company',
+            cardinality: 'one',
+            required: null,
+            edgeFields: null,
+            description: null,
+            related: [
+              { id: 'co-1', nodeType: 'company', title: 'Acme', contentPreview: '', edgeProperties: {} }
+            ],
+            count: 1
+          }
+        ]
+      })
+    );
+    render(PersonSchemaForm, { props: { nodeId: 'person-1' } });
+
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Employer: Acme' })).toBeTruthy()
+    );
+    expect(screen.queryByText('Relationships')).toBeNull();
+  });
 });
 
 /**

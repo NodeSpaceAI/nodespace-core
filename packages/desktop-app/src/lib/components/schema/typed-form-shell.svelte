@@ -179,7 +179,18 @@
   {/if}
 </div>
 
-<RelationshipViewerModal bind:open={showRelationships} {nodeId} />
+<!-- Reload on close: an edit in the modal can empty what it had to show, and
+     the trigger's gate must see that. -->
+<RelationshipViewerModal
+  bind:open={
+    () => showRelationships,
+    (open) => {
+      showRelationships = open;
+      if (!open) void relationships.reload();
+    }
+  }
+  {nodeId}
+/>
 
 {#if nestedModalField}
   {@const nestedField = nestedModalField}

@@ -56,6 +56,7 @@
   let results = $state<Node[]>([]);
   let highlighted = $state(0);
   let searching = $state(false);
+  let searchFailed = $state(false);
   let busy = $state(false);
   let error = $state<string | null>(null);
   let inputEl = $state<HTMLInputElement | null>(null);
@@ -63,9 +64,13 @@
   // Only the most recently STARTED search may write `results`.
   let searchGeneration = 0;
 
+  // A search still pending when the field unmounts must not fire.
+  $effect(() => () => clearTimeout(searchTimer));
+
   const showSearch = $derived(editing || !current);
   const listboxId = $derived(`${fieldId}-options`);
   const listOpen = $derived(showSearch && query.trim().length > 0);
+  const optionId = (index: number) => `${fieldId}-option-${index}`;
 
   function nodeLabel(node: Node): string {
     return node.title?.trim() || node.content?.trim() || node.id;
@@ -79,12 +84,14 @@
     inputEl?.focus();
   }
 
+  /** Close the list and drop the query, leaving the field showing its value. */
   function stopEditing() {
     editing = false;
     query = '';
     results = [];
     highlighted = 0;
     searching = false;
+    searchFailed = false;
     searchGeneration++;
     if (searchTimer) clearTimeout(searchTimer);
   }
@@ -101,6 +108,7 @@
     if (!q) {
       results = [];
       searching = false;
+      searchFailed = false;
       return;
     }
     searching = true;
@@ -110,16 +118,21 @@
       // The current value is not a choice: picking it would be a no-op write.
       results = filterUnlinkedTargets(group, found);
       highlighted = 0;
+      searchFailed = false;
     } catch (err) {
       if (generation !== searchGeneration) return;
       log.error('Relationship target search failed', err);
       results = [];
+      searchFailed = true;
     } finally {
       if (generation === searchGeneration) searching = false;
     }
   }
 
   async function write(fn: () => Promise<void>) {
+    // One write at a time: a second pick while the first is in flight would
+    // race it, and the store keeps whichever commits last.
+    if (busy) return;
     busy = true;
     error = null;
     try {
@@ -174,7 +187,8 @@
       bind:ref={inputEl}
       role="combobox"
       aria-expanded={listOpen}
-      aria-controls={listboxId}
+      aria-controls={listOpen ? listboxId : undefined}
+      aria-activedescendant={listOpen && results[highlighted] ? optionId(highlighted) : undefined}
       aria-autocomplete="list"
       autocomplete="off"
       placeholder="Search {group.targetType ?? 'nodes'}…"
@@ -183,38 +197,42 @@
       oninput={(event) => onInput(event.currentTarget.value)}
       onkeydown={onKeydown}
       onblur={() => {
-        // Options take the click on mousedown (see below), so a blur here is
-        // the user leaving the field — drop back to the current value.
-        if (current) stopEditing();
+        // The list keeps focus on the input (see its mousedown), so a blur
+        // here is the user leaving the field: close the list, and fall back
+        // to showing the current value if there is one.
+        stopEditing();
       }}
     />
     {#if listOpen}
+      <!-- Mousedown anywhere in the list — an option, a status row, the
+           scrollbar — must not blur the input, or the list closes under the
+           pointer. -->
       <ul
         id={listboxId}
         role="listbox"
         class="absolute z-50 mt-1 max-h-60 w-full overflow-y-auto rounded-md border bg-popover p-1 text-sm text-popover-foreground shadow-md"
+        onmousedown={(event) => event.preventDefault()}
       >
         {#if searching && results.length === 0}
           <li class="flex items-center gap-2 px-2 py-1.5 text-muted-foreground">
             <LoaderIcon class="size-3 animate-spin" />
             <span>Searching…</span>
           </li>
+        {:else if searchFailed}
+          <li class="px-2 py-1.5 text-destructive">Search failed.</li>
         {:else if results.length === 0}
           <li class="px-2 py-1.5 text-muted-foreground">No matches.</li>
         {:else}
           {#each results as node, index (node.id)}
             <li
+              id={optionId(index)}
               role="option"
               aria-selected={index === highlighted}
               class="cursor-pointer truncate rounded-sm px-2 py-1.5"
               class:bg-accent={index === highlighted}
               class:text-accent-foreground={index === highlighted}
               onmouseenter={() => (highlighted = index)}
-              onmousedown={(event) => {
-                // Select before the input's blur can close the list.
-                event.preventDefault();
-                select(node);
-              }}
+              onmousedown={() => select(node)}
             >
               {nodeLabel(node)}
             </li>
@@ -231,6 +249,7 @@
         type="button"
         class="min-w-0 flex-1 truncate px-3 text-left font-medium"
         title="Change {group.label.toLowerCase()}"
+        aria-label="{group.label}: {current.label}"
         disabled={busy}
         onclick={startEditing}
       >
