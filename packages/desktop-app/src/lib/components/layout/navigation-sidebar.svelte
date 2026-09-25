@@ -5,16 +5,17 @@
     toggleSidebar,
     setCollectionsExpanded,
     setSchemaTypesExpanded,
-    setAiChatsExpanded
+    setAiChatsExpanded,
+    type NavigationItem
   } from '$lib/stores/layout.svelte';
   import { navigationStore, setActiveTab, addTab } from '$lib/stores/navigation.svelte';
   import { openSettings } from '$lib/utils/open-settings';
-  import { openConflicts } from '$lib/utils/open-conflicts';
   import { collectionsState, collectionsData } from '$lib/stores/collections.svelte';
   import { formatDateISO } from '$lib/utils/date-formatting.js';
   import { getNavigationService } from '$lib/services/navigation-service';
   import CollectionSubPanel from './collection-sub-panel.svelte';
-  import DatabaseSwitcher from './database-switcher.svelte';
+  import TriangleAlert from '@lucide/svelte/icons/triangle-alert';
+  import { databaseStore } from '$lib/stores/database.svelte';
   import { onMount, onDestroy } from 'svelte';
   import { schemasStore, schemasData } from '$lib/stores/schemas.svelte';
   import { aiChatsData } from '$lib/stores/ai-chats.svelte';
@@ -29,6 +30,27 @@
   // Read reactive store state directly (ADR-049)
   let isCollapsed = $derived(layoutStore.state.sidebarCollapsed);
   let navItems = $derived(layoutStore.navigationItems);
+  /**
+   * An alert marker on a nav item's icon. It sits on the icon so it survives the
+   * collapsed rail, and `label` joins the item's accessible name — the glyph
+   * itself is decorative, so the alert is never conveyed by colour alone.
+   * `settingsCategory` sends a badged Settings click straight to the section
+   * that resolves the alert.
+   */
+  interface NavBadge {
+    label: string;
+    settingsCategory?: string;
+  }
+
+  // Keyed by nav item id. Settings carries the missing-database alert because
+  // Settings → Database is where the user resolves it.
+  let navBadges = $derived<Record<string, NavBadge | undefined>>({
+    settings:
+      databaseStore.activeDatabase?.status === 'missing'
+        ? { label: 'Active database is missing', settingsCategory: 'database' }
+        : undefined
+  });
+
   // Collections expanded state from layout store (persisted)
   let collectionsExpanded = $derived(layoutStore.state.collectionsExpanded);
   // Schema Types expanded state from layout store (persisted)
@@ -110,6 +132,7 @@
 
   // Load collections, schemas, and AI chats from backend on mount
   onMount(() => {
+    databaseStore.load();
     collectionsData.loadCollections();
     schemasData.loadSchemas();
     aiChatsData.loadAiChats();
@@ -262,22 +285,46 @@
       collectionsState.clearSelection();
     }
 
-    // Each nav item opens its own view (Favorites is not implemented yet).
+    // Each nav item opens its own view.
     if (itemId === 'daily-journal') {
       handleDailyJournalClick();
     } else if (itemId === 'search') {
       openSearchTab();
     } else if (itemId === 'settings') {
-      // Shared singleton tab (same one the File menu + database indicator open).
-      openSettings();
-    } else if (itemId === 'conflicts') {
-      openConflicts();
+      // Shared singleton tab (same one the File menu opens).
+      openSettings(navBadges.settings?.settingsCategory);
     }
 
     // Update active state in navigation items
     layoutStore.setActiveNavItem(itemId);
   }
 </script>
+
+{#snippet navItemButton(item: NavigationItem)}
+  {@const badge = navBadges[item.id]}
+  {@const accessibleName = badge ? `${item.label} — ${badge.label}` : item.label}
+  <button
+    class="nav-item"
+    onclick={() => handleNavItemClick(item.id)}
+    aria-label={accessibleName}
+    disabled={item.type === 'placeholder'}
+    title={isCollapsed || badge ? accessibleName : undefined}
+  >
+    <span class="nav-icon-wrap">
+      <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d={item.icon}></path>
+      </svg>
+      {#if badge}
+        <span class="nav-badge" data-testid="nav-badge-{item.id}" aria-hidden="true">
+          <TriangleAlert class="nav-badge-glyph" />
+        </span>
+      {/if}
+    </span>
+    {#if !isCollapsed}
+      <span class="nav-label">{item.label}</span>
+    {/if}
+  </button>
+{/snippet}
 
 <nav
   bind:this={navElement}
@@ -307,34 +354,9 @@
 
   <!-- Navigation items -->
   <div class="nav-items">
-    <!-- Database switcher (ADR-053) — sidebar header. Hidden when collapsed
-         since the trigger needs room for the database name. -->
-    {#if !isCollapsed}
-      <DatabaseSwitcher />
-    {/if}
-
     <!-- Daily Journal (first item) -->
     {#each navItems.slice(0, 1) as item}
-      <button
-        class="nav-item"
-        onclick={() => handleNavItemClick(item.id)}
-        aria-label={item.label}
-        disabled={item.type === 'placeholder'}
-        title={isCollapsed ? item.label : undefined}
-      >
-        <svg
-          class="nav-icon"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="2"
-        >
-          <path d={item.icon}></path>
-        </svg>
-        {#if !isCollapsed}
-          <span class="nav-label">{item.label}</span>
-        {/if}
-      </button>
+      {@render navItemButton(item)}
     {/each}
 
     <!-- Collections section (after Daily Journal) - accordion toggle -->
@@ -696,28 +718,9 @@
     {/if}
     {/if}
 
-    <!-- Remaining nav items (Search, Favorites) -->
+    <!-- Remaining nav items (Search, Settings) -->
     {#each navItems.slice(1) as item}
-      <button
-        class="nav-item"
-        onclick={() => handleNavItemClick(item.id)}
-        aria-label={item.label}
-        disabled={item.type === 'placeholder'}
-        title={isCollapsed ? item.label : undefined}
-      >
-        <svg
-          class="nav-icon"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="2"
-        >
-          <path d={item.icon}></path>
-        </svg>
-        {#if !isCollapsed}
-          <span class="nav-label">{item.label}</span>
-        {/if}
-      </button>
+      {@render navItemButton(item)}
     {/each}
   </div>
 
@@ -861,6 +864,32 @@
     width: 20px;
     height: 20px;
     flex-shrink: 0;
+  }
+
+  /* Positions a nav item's badge over its icon (visible in the collapsed rail) */
+  .nav-icon-wrap {
+    position: relative;
+    display: inline-flex;
+    flex-shrink: 0;
+  }
+
+  /* Alert badge: destructive glyph on a sidebar-coloured disc so it reads
+     against the icon beneath it in both themes */
+  .nav-badge {
+    position: absolute;
+    top: -5px;
+    right: -6px;
+    display: inline-flex;
+    padding: 1px;
+    border-radius: 9999px;
+    background: hsl(var(--sidebar-background));
+    color: hsl(var(--destructive));
+    pointer-events: none;
+  }
+
+  .nav-badge :global(.nav-badge-glyph) {
+    width: 12px;
+    height: 12px;
   }
 
   /* Navigation label */

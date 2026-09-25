@@ -37,18 +37,19 @@
         <div class="flex items-center gap-2.5">
           <span class="text-foreground text-[0.9375rem] font-semibold">Team synchronization</span>
         </div>
-        <Switch
-          checked={labsFlags.syncEnabled}
-          onCheckedChange={(checked) => (labsFlags.syncEnabled = checked)}
-          aria-label={labsFlags.syncEnabled
-            ? 'Disable Team synchronization'
-            : 'Enable Team synchronization'}
-        />
+        <!-- Shown but not operable until Team synchronization is ready: the card
+             keeps the capability discoverable, and the disabled switch means this
+             UI can no longer change `syncEnabled` (it still reflects the stored value). -->
+        <Switch checked={labsFlags.syncEnabled} disabled aria-label="Team synchronization" />
       </div>
       <p class="text-muted-foreground m-0 text-sm leading-relaxed">
         Share collections and collaborate with your team across devices. Team synchronization is
         under heavy development. To help us test this capability, contact us at
-        developer@nodespace.ai
+        <a
+          href="mailto:developer@nodespace.ai"
+          class="text-foreground font-medium underline underline-offset-2 hover:text-primary"
+          >developer@nodespace.ai</a
+        >
       </p>
     </CardHeader>
   </Card>

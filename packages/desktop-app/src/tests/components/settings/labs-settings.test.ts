@@ -1,8 +1,9 @@
 /**
  * LabsSettings — the Settings → Labs section housing experimental/
- * not-yet-ready features. Both entries have a real, working Switch: "AI Chat"
- * bound to the labs-flags store's `aiChatEnabled`, "Team synchronization"
- * bound to `syncEnabled` — both default off. "Team synchronization" is a pure
+ * not-yet-ready features. Both entries render a real Switch: "AI Chat" is
+ * operable and bound to the labs-flags store's `aiChatEnabled`; "Team
+ * synchronization" reflects `syncEnabled` but is disabled until the capability
+ * is ready — both default off. "Team synchronization" is a pure
  * client-side visibility flag over EXISTING Pro sign-in/collaboration entry
  * points (gated at `resolveProSyncVariant()` plus two direct `proSync.isPro`
  * reads) — this file only covers the Labs switch itself, not that gating.
@@ -91,9 +92,9 @@ describe('LabsSettings', () => {
     expect(toggle).not.toBeNull();
     expect(toggle?.getAttribute('data-state')).toBe('unchecked');
     expect(toggle?.getAttribute('aria-checked')).toBe('false');
-    // Neither card is disabled anymore.
-    expect(teamSyncCard.getAttribute('aria-disabled')).not.toBe('true');
-    expect(cards[0].getAttribute('aria-disabled')).not.toBe('true');
+    // The switch is disabled; the AI Chat one is not.
+    expect(toggle?.hasAttribute('disabled')).toBe(true);
+    expect(cards[0].querySelector('[data-slot="switch"]')?.hasAttribute('disabled')).toBe(false);
   });
 
   it('marks the Team synchronization copy with the "under heavy development" message', () => {
@@ -106,21 +107,28 @@ describe('LabsSettings', () => {
     );
   });
 
-  it('clicking the Team synchronization Switch flips labsFlags.syncEnabled and reflects the new checked state', async () => {
+  it('renders the contact email as a real mailto: link', () => {
+    const { container } = render(LabsSettings);
+
+    const cards = container.querySelectorAll('[data-slot="card"]');
+    const link = cards[1].querySelector('a');
+    expect(link?.getAttribute('href')).toBe('mailto:developer@nodespace.ai');
+    expect(link?.textContent?.trim()).toBe('developer@nodespace.ai');
+  });
+
+  it('the disabled Team synchronization Switch cannot be toggled by click or keyboard', async () => {
     const { container } = render(LabsSettings);
 
     const cards = container.querySelectorAll('[data-slot="card"]');
     const toggle = cards[1].querySelector('[data-slot="switch"]') as HTMLButtonElement;
-    expect(labsFlags.syncEnabled).toBe(false);
 
     await fireEvent.click(toggle);
+    await fireEvent.keyDown(toggle, { key: ' ' });
+    await fireEvent.keyDown(toggle, { key: 'Enter' });
 
-    expect(labsFlags.syncEnabled).toBe(true);
-    expect(toggle.getAttribute('data-state')).toBe('checked');
-    expect(toggle.getAttribute('aria-checked')).toBe('true');
-
-    // The AI Chat flag is untouched by flipping the Team synchronization one.
-    expect(labsFlags.aiChatEnabled).toBe(false);
+    expect(labsFlags.syncEnabled).toBe(false);
+    expect(toggle.getAttribute('data-state')).toBe('unchecked');
+    expect(toggle.getAttribute('aria-checked')).toBe('false');
   });
 
   it('reflects a pre-existing enabled syncEnabled flag (e.g. after reload) as checked on mount', () => {
