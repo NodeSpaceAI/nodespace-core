@@ -447,22 +447,8 @@ impl NodeService {
         }
 
         // Step 2: Reject a node_type that is neither a registered core type
-        // nor an existing schema id. Without this, an invented id (a display
-        // name, a paraphrase) falls through to CustomNodeBehavior and the node
-        // is stored as a bare shell: no schema means nothing to validate
-        // supplied properties against, so every one of them is silently
-        // dropped and the caller is told the write succeeded.
-        if self.behaviors.get(&params.node_type).is_none() {
-            let schema_exists = self
-                .store
-                .get_schema(&params.node_type)
-                .await
-                .map_err(|e| NodeServiceError::query_failed(e.to_string()))?
-                .is_some();
-            if !schema_exists {
-                return Err(NodeServiceError::unknown_node_type(&params.node_type));
-            }
-        }
+        // nor an existing schema id.
+        self.ensure_known_node_type(&params.node_type).await?;
 
         // Step 3: Validate parent exists and is a container (if provided)
         if let Some(ref parent_id) = params.parent_id {
@@ -518,11 +504,8 @@ impl NodeService {
         // Step 5: Generate or validate node ID
         let node_id = if let Some(provided_id) = params.id {
             // Validate ID format based on node type
-            if params.node_type == "date"
-                || params.node_type == "schema"
-                || provided_id.starts_with("test-")
-            {
-                // Date, schema, and test nodes can use their own ID format
+            if params.node_type == "date" || params.node_type == "schema" {
+                // Date and schema nodes use their own ID format
                 provided_id
             } else {
                 // Production nodes must use UUID format
@@ -2091,6 +2074,16 @@ impl NodeService {
         _root_id: &str, // Deprecated: hierarchy now managed via relationships
         before_sibling_id: Option<&str>,
     ) -> Result<(), NodeServiceError> {
+        let existing = self.store.get_node(node_id).await.map_err(|e| {
+            NodeServiceError::query_failed(format!("Failed to check node existence: {}", e))
+        })?;
+
+        // A node about to be created must have a known type — checked before
+        // the parent is auto-created so a rejected call leaves nothing behind.
+        if existing.is_none() {
+            self.ensure_known_node_type(node_type).await?;
+        }
+
         // Ensure parent exists (create if missing)
         if self
             .store
@@ -2143,9 +2136,7 @@ impl NodeService {
         }
 
         // Upsert the node (update if exists, create if not)
-        if let Some(existing) = self.store.get_node(node_id).await.map_err(|e| {
-            NodeServiceError::query_failed(format!("Failed to check node existence: {}", e))
-        })? {
+        if let Some(existing) = existing {
             // Update existing node
             // Recompute title from the new content — this node is always
             // attached to a parent by the end of this call, so it's never
@@ -2190,7 +2181,7 @@ impl NodeService {
             });
         } else {
             // Create new node
-            let node = Node {
+            let mut node = Node {
                 id: node_id.to_string(),
                 node_type: node_type.to_string(),
                 content: content.to_string(),
@@ -2200,9 +2191,11 @@ impl NodeService {
                 mentioned_in: vec![],
                 created_at: chrono::Utc::now(),
                 modified_at: chrono::Utc::now(),
-                title: None, // Title managed by NodeService for root/task nodes
+                title: None,
                 lifecycle_status: "active".to_string(),
             };
+            // Always attached to a parent by the end of this call — never root.
+            node.title = self.compute_title(&node, Some(false)).await?;
             self.store
                 .create_node(node, self.client_id.clone(), self.execution_context.clone())
                 .await
@@ -2239,6 +2232,29 @@ impl NodeService {
     // =========================================================================
     // Private CRUD helpers
     // =========================================================================
+
+    /// Reject a node_type that is neither a registered core type nor an
+    /// existing schema id. Without this, an invented id (a display name, a
+    /// paraphrase) falls through to CustomNodeBehavior and the node is stored
+    /// as a bare shell: no schema means nothing to validate supplied
+    /// properties against, so every one of them is silently dropped and the
+    /// caller is told the write succeeded.
+    async fn ensure_known_node_type(&self, node_type: &str) -> Result<(), NodeServiceError> {
+        if self.behaviors.get(node_type).is_some() {
+            return Ok(());
+        }
+        let schema_exists = self
+            .store
+            .get_schema(node_type)
+            .await
+            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?
+            .is_some();
+        if schema_exists {
+            Ok(())
+        } else {
+            Err(NodeServiceError::unknown_node_type(node_type))
+        }
+    }
 
     /// Validate a node's properties against its schema definition
     pub(crate) async fn validate_node_against_schema(
