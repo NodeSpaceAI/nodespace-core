@@ -127,3 +127,89 @@ async fn inherited_required_relationship_satisfied_reports_complete() -> Result<
     assert!(result.missing_relationships.is_empty());
     Ok(())
 }
+
+/// `adr` declares `superseded_by` as a required `in`-direction relationship —
+/// the target's view of its own forward `supersedes` edge (a self-referential
+/// pair, so both ends exist when the schema is created). The stored edge is
+/// `supersedes`, with the newer ADR as source and the older one as target.
+async fn create_inbound_required_schema(svc: &Arc<NodeService>) -> Result<()> {
+    handle_create_schema(
+        svc,
+        json!({
+            "name": "completeness_in_adr",
+            "fields": [],
+            "relationships": [
+                {
+                    "name": "supersedes",
+                    "targetType": "completeness_in_adr",
+                    "direction": "out",
+                    "cardinality": "one",
+                    "reverseName": "superseded_by",
+                    "reverseCardinality": "one"
+                },
+                {
+                    "name": "superseded_by",
+                    "targetType": "completeness_in_adr",
+                    "direction": "in",
+                    "cardinality": "one",
+                    "required": true,
+                    "reverseName": "supersedes",
+                    "reverseCardinality": "one"
+                }
+            ]
+        }),
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("adr schema: {e}"))?;
+    Ok(())
+}
+
+/// A required `in`-direction relationship with no inbound edge is missing.
+#[tokio::test]
+async fn required_inbound_relationship_missing_reports_incomplete() -> Result<()> {
+    let (svc, _t) = create_test_service().await?;
+    create_inbound_required_schema(&svc).await?;
+    make_node(&svc, "old", "completeness_in_adr").await?;
+
+    let result = svc.check_node_completeness("old").await?;
+
+    assert!(!result.is_complete);
+    assert_eq!(
+        result.missing_relationships,
+        vec!["superseded_by".to_string()]
+    );
+    Ok(())
+}
+
+/// A real edge attached from the other side satisfies the required
+/// `in`-direction relationship. The check used to look for an outbound
+/// `superseded_by` edge from the node — which is never stored — so the node
+/// was reported incomplete forever.
+#[tokio::test]
+async fn required_inbound_relationship_satisfied_from_other_side_reports_complete() -> Result<()> {
+    let (svc, _t) = create_test_service().await?;
+    create_inbound_required_schema(&svc).await?;
+    make_node(&svc, "old", "completeness_in_adr").await?;
+    make_node(&svc, "new", "completeness_in_adr").await?;
+
+    svc.create_relationship("new", "supersedes", "old", json!({}))
+        .await?;
+
+    let result = svc.check_node_completeness("old").await?;
+
+    assert!(
+        result.is_complete,
+        "missing: {:?}",
+        result.missing_relationships
+    );
+    assert!(result.missing_relationships.is_empty());
+
+    // The edge's source end is not satisfied by it: `new` has no inbound
+    // `supersedes` edge of its own.
+    let source = svc.check_node_completeness("new").await?;
+    assert_eq!(
+        source.missing_relationships,
+        vec!["superseded_by".to_string()]
+    );
+    Ok(())
+}

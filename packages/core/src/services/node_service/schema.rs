@@ -1306,17 +1306,30 @@ impl NodeService {
                 continue;
             }
 
-            // Check whether at least one edge of this relationship type exists
-            let existing_count = self
-                .store
-                .check_relationship_exists(node_id, &relationship.name)
-                .await
-                .map_err(|e| {
-                    NodeServiceError::query_failed(format!(
-                        "Failed to check required relationship '{}': {}",
-                        relationship.name, e
-                    ))
-                })?;
+            // Check whether at least one edge of this relationship exists.
+            // Edges are stored once, keyed by the forward (`out`) name with
+            // the source as `in_node`. An `in` declaration is the target's
+            // view of such an edge: the stored type is its `reverse_name`
+            // (the forward name) and this node sits at `out_node`, so the
+            // outbound lookup by `name` could never find it.
+            let existing = match relationship.direction {
+                crate::models::schema::RelationshipDirection::Out => {
+                    self.store
+                        .check_relationship_exists(node_id, &relationship.name)
+                        .await
+                }
+                crate::models::schema::RelationshipDirection::In => {
+                    self.store
+                        .check_inbound_relationship_exists(node_id, &relationship.reverse_name)
+                        .await
+                }
+            };
+            let existing_count = existing.map_err(|e| {
+                NodeServiceError::query_failed(format!(
+                    "Failed to check required relationship '{}': {}",
+                    relationship.name, e
+                ))
+            })?;
             if existing_count == 0 {
                 missing.push(relationship.name.clone());
             }

@@ -1565,6 +1565,26 @@ impl SqliteStore {
         Ok(row.get::<i64>(0).unwrap_or(0))
     }
 
+    /// Inbound counterpart to [`Self::check_relationship_exists`]: counts
+    /// edges of `rel_type` pointing INTO `target_id` (`out_node = target_id`),
+    /// from any source.
+    pub async fn check_inbound_relationship_exists(
+        &self,
+        target_id: &str,
+        rel_type: &str,
+    ) -> Result<i64> {
+        let mut rows = self.read().await?.query(
+            "SELECT COUNT(*) as cnt FROM relationship WHERE out_node = ?1 AND relationship_type = ?2",
+            libsql::params![target_id.to_string(), rel_type.to_string()],
+        ).await.context("Failed to check inbound relationship existence")?;
+        let row = rows
+            .next()
+            .await
+            .context("No row returned")?
+            .ok_or_else(|| anyhow::anyhow!("Empty result for relationship count"))?;
+        Ok(row.get::<i64>(0).unwrap_or(0))
+    }
+
     pub async fn relationship_exists(
         &self,
         source_id: &str,
