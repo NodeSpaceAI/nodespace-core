@@ -15,7 +15,7 @@
 use crate::db::events::{persisted_chain_depth, DomainEvent, EventEnvelope};
 use crate::playbook::lifecycle::{trigger_keys_for_event, PlaybookLifecycleManager};
 use crate::playbook::types::*;
-use crate::services::NodeService;
+use crate::services::{NodeService, NodeServiceError};
 use std::sync::{Arc, RwLock};
 use tokio::sync::{broadcast, mpsc};
 use tracing::{debug, error, info, warn};
@@ -210,15 +210,24 @@ impl PlaybookEngine {
     ///
     /// A rule registered against a base type evaluates its conditions at that
     /// type's scope, so it sees the field set and enum vocabulary it was
-    /// authored against whatever concrete subtype fired it. Returns `None`
-    /// when there is nothing to scope — the node is already the registered
-    /// type, or the trigger is not type-scoped — which is every rule until
-    /// something declares `extends`.
+    /// authored against whatever concrete subtype fired it. Returns
+    /// `Ok(None)` when there is nothing to scope — the node is already the
+    /// registered type, or the trigger is not type-scoped — which is every
+    /// rule until something declares `extends`.
+    ///
+    /// Returns `Err` when a resolver call itself fails (a transient DB error,
+    /// not a schema-shape problem). This is deliberately distinct from
+    /// `Ok(None)`: folding a resolver error into the same `None` used for
+    /// "nothing to scope" would be indistinguishable from those legitimate
+    /// cases, and a caller evaluating conditions against the raw,
+    /// unprojected node on a base-type-registered rule reads the wrong
+    /// property bucket and simply fails to match — silently, with nothing
+    /// logged. Callers must not treat `Err` as `Ok(None)`.
     pub(crate) async fn cel_scope_for(
         node_service: &Arc<NodeService>,
         rule: &ParsedRule,
         node: &crate::models::Node,
-    ) -> Option<crate::playbook::cel::CelScope> {
+    ) -> Result<Option<crate::playbook::cel::CelScope>, NodeServiceError> {
         let scope_type = match &rule.trigger {
             ParsedTrigger::GraphEvent { node_type, .. } => node_type,
             ParsedTrigger::Scheduled { node_type, .. } => node_type,
@@ -227,28 +236,26 @@ impl PlaybookEngine {
         // A node of exactly the registered type reads natively; nothing to
         // project or resolve.
         if scope_type == &node.node_type || scope_type == "*" {
-            return None;
+            return Ok(None);
         }
 
-        let chain = node_service.resolve_type_chain(scope_type).await.ok()?;
-        let scope_fields = node_service.resolve_field_owners(scope_type).await.ok()?.0;
+        let chain = node_service.resolve_type_chain(scope_type).await?;
+        let scope_fields = node_service.resolve_field_owners(scope_type).await?.0;
         // The node's OWN chain, not the scope's. Reading the scope's ancestry
         // would skip every bucket between the node and the reading scope — on
         // `bug → ticket → workitem` read at `workitem`, the `ticket` bucket
         // would never be opened. `resolve_field_owners` already computes this
         // chain as its third element, so taking it costs nothing.
-        let (node_fields, _, node_chain) = node_service
-            .resolve_field_owners(&node.node_type)
-            .await
-            .ok()?;
+        let (node_fields, _, node_chain) =
+            node_service.resolve_field_owners(&node.node_type).await?;
 
-        Some(crate::playbook::cel::CelScope {
+        Ok(Some(crate::playbook::cel::CelScope {
             scope_type: scope_type.clone(),
             node_chain,
             chain,
             scope_fields,
             node_fields,
-        })
+        }))
     }
 
     /// Rebuild the `extends` ancestry cache from the store (ADR-078).
@@ -606,8 +613,33 @@ impl PlaybookEngine {
         };
 
         for rule_ref in invariant_rules {
-            let cel_scope =
-                PlaybookEngine::cel_scope_for(&self.node_service, &rule_ref.rule, &node).await;
+            let cel_scope = match PlaybookEngine::cel_scope_for(
+                &self.node_service,
+                &rule_ref.rule,
+                &node,
+            )
+            .await
+            {
+                Ok(scope) => scope,
+                Err(e) => {
+                    // Best-effort, same posture as the node-fetch failure
+                    // above: a scope resolver error here would otherwise
+                    // silently fold into "nothing to scope", evaluating
+                    // this rule against the node's raw, unprojected
+                    // properties and reporting a false non-violation.
+                    // Skip this rule rather than repair (or not-repair)
+                    // on a wrong read; the others in this batch are
+                    // unaffected.
+                    warn!(
+                        node_id = %node.id,
+                        play_id = %rule_ref.play_id,
+                        rule = %rule_ref.rule.name,
+                        error = %e,
+                        "Repair-and-log: failed to resolve CEL scope for rule; skipping"
+                    );
+                    continue;
+                }
+            };
             // The resolver reads related nodes at this rule's scope too, so a
             // traversed node is projected exactly as the trigger node is.
             let mut resolver =
@@ -1161,12 +1193,39 @@ pub(crate) async fn rule_processor_loop(
             // Evaluate at the rule's registered trigger scope (ADR-078), so
             // a Play on a base type sees that type's fields and vocabulary
             // whatever concrete subtype fired it.
-            let cel_scope = PlaybookEngine::cel_scope_for(
+            let cel_scope = match PlaybookEngine::cel_scope_for(
                 &node_service,
                 &rule_ref.rule,
                 &work_item.trigger_node,
             )
-            .await;
+            .await
+            {
+                Ok(scope) => scope,
+                Err(e) => {
+                    // A resolver DB error is distinct from "nothing to
+                    // scope" (see `cel_scope_for`'s doc) and must not be
+                    // treated as the latter: evaluating this rule's
+                    // conditions against the trigger node's raw,
+                    // unprojected properties would read the wrong bucket
+                    // and silently fail to match. Skip this rule for this
+                    // event rather than misevaluate it -- the play stays
+                    // active and gets another chance on the next matching
+                    // event, unlike the cycle-limit/action-failure cases
+                    // below, which disable the play outright because they
+                    // reflect an actual problem with the play itself
+                    // rather than a transient resolver failure.
+                    warn!(
+                        play_id = %rule_ref.play_id,
+                        rule = %rule_ref.rule.name,
+                        rule_index = rule_ref.rule_index,
+                        trigger_node_id = %work_item.trigger_node.id,
+                        error_type = "scope_resolution_failed",
+                        error = %e,
+                        "Failed to resolve CEL scope for rule; skipping this rule for this event"
+                    );
+                    continue;
+                }
+            };
             // Each rule in this work item carries its own registered scope, so
             // the shared resolver is re-pointed per rule rather than per item.
             resolver.set_scope(cel_scope.clone());
@@ -1477,7 +1536,9 @@ mod scope_tests {
     }
 
     async fn eval(svc: &Arc<NodeService>, rule: &ParsedRule, node: &crate::models::Node) -> bool {
-        let scope = PlaybookEngine::cel_scope_for(svc, rule, node).await;
+        let scope = PlaybookEngine::cel_scope_for(svc, rule, node)
+            .await
+            .expect("scope resolution should not fail against a healthy store");
         let event = DomainEvent::NodeCreated {
             node_id: node.id.clone(),
             node_type: node.node_type.clone(),
@@ -1604,8 +1665,63 @@ mod scope_tests {
         assert!(
             PlaybookEngine::cel_scope_for(&svc, &rule, &node)
                 .await
+                .expect("the node's-own-type short-circuit must not error")
                 .is_none(),
             "a rule on the node's own type resolves no scope"
+        );
+    }
+
+    /// The other legitimate `Ok(None)` case: a trigger that is not
+    /// type-scoped at all (`node_type: "*"`) needs no projection either,
+    /// same short-circuit as the node's-own-type case above.
+    #[tokio::test]
+    async fn a_wildcard_trigger_gets_no_scope_at_all() {
+        let (svc, _tmp) = test_service().await;
+        seed_chain(&svc).await;
+        let node = make_bug(&svc, json!({ "state": "open" })).await;
+
+        let rule = rule_on("*", "node.state == 'open'");
+        assert!(
+            PlaybookEngine::cel_scope_for(&svc, &rule, &node)
+                .await
+                .expect("the wildcard-trigger short-circuit must not error")
+                .is_none(),
+            "a trigger that is not type-scoped resolves no scope"
+        );
+    }
+
+    /// A resolver DB error must surface as `Err`, never fold into the same
+    /// `Ok(None)` the two tests above use for "nothing to scope" — see
+    /// `cel_scope_for`'s doc comment. Forces a real failure (dropping the
+    /// `relationship` table, same technique as
+    /// `a_failed_refresh_keeps_the_previous_cache_and_marks_it_dirty` in
+    /// `ancestry_cache_tests`) rather than injecting one, so this exercises
+    /// the actual `Err` arm of `resolve_type_chain`'s `get_extends_parent_map`
+    /// query, not a stand-in for it.
+    #[tokio::test]
+    async fn a_resolver_db_error_is_propagated_not_folded_into_none() {
+        let (svc, _tmp) = test_service().await;
+        seed_chain(&svc).await;
+        let node = make_bug(&svc, json!({ "state": "backlog" })).await;
+
+        // A base-scoped rule on a subtype node: past the "already the
+        // registered type" and wildcard short-circuits, so this actually
+        // reaches the resolver calls below.
+        let rule = rule_on("ticket", "node.state == 'open'");
+
+        svc.store()
+            .write()
+            .await
+            .execute("DROP TABLE relationship", ())
+            .await
+            .expect("dropping the relationship table should succeed");
+
+        let result = PlaybookEngine::cel_scope_for(&svc, &rule, &node).await;
+
+        assert!(
+            result.is_err(),
+            "a resolver DB error must surface as Err, not silently collapse into \
+             the same None the doc comment reserves for 'nothing to scope'"
         );
     }
 
@@ -1713,7 +1829,9 @@ mod scope_tests {
 
         // Read the child THROUGH the relationship, at `ticket` scope.
         let rule = rule_on("ticket", "node.has_child.all(c, c.state == 'done')");
-        let scope = PlaybookEngine::cel_scope_for(&svc, &rule, &parent).await;
+        let scope = PlaybookEngine::cel_scope_for(&svc, &rule, &parent)
+            .await
+            .expect("scope resolution should not fail against a healthy store");
         let mut resolver = crate::playbook::graph_resolver::GraphResolver::new(Arc::clone(&svc))
             .with_scope(scope.clone());
         let event = DomainEvent::NodeCreated {
@@ -1758,7 +1876,9 @@ mod scope_tests {
             .expect("relationship creation failed");
 
         let rule = rule_on("ticket", "node.has_child.all(c, c.state == 'open')");
-        let scope = PlaybookEngine::cel_scope_for(&svc, &rule, &parent).await;
+        let scope = PlaybookEngine::cel_scope_for(&svc, &rule, &parent)
+            .await
+            .expect("scope resolution should not fail against a healthy store");
         let mut resolver = crate::playbook::graph_resolver::GraphResolver::new(Arc::clone(&svc))
             .with_scope(scope.clone());
         let event = DomainEvent::NodeCreated {
