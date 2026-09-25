@@ -617,7 +617,10 @@ fn def_search_nodes() -> ToolDefinition {
             retry with a listed field or value if yours was not among them, otherwise the result is genuinely empty. \
             Never ask the user to confirm a field name or value that appears in that list. \
             Dates use YYYY-MM-DD. Prefer this over search_semantic when you know the name/type or want structured results; \
-            use search_semantic only for meaning-based / fuzzy questions."
+            use search_semantic only for meaning-based / fuzzy questions. \
+            A name shown after '~>' in an EXISTING SCHEMAS line is a relationship, not a filterable property — \
+            'filters' only accepts a type's own fields (before '~>'). To find a node connected via a relationship \
+            (e.g. 'the contract a given vendor signed'), use get_related_nodes with that relationship's name, not a filter here."
             .into(),
         parameters_schema: json!({
             "type": "object",
@@ -1240,7 +1243,7 @@ fn def_create_relationship() -> ToolDefinition {
 fn def_get_related_nodes() -> ToolDefinition {
     ToolDefinition {
         name: "get_related_nodes".into(),
-        description: "Get nodes related to a given node. Defaults to 'mentions' relationship type if not specified. A schema relationship can be traversed from either end: use its forward name from the source, or its declared reverseName from the target.".into(),
+        description: "Get nodes related to a given node. Defaults to 'mentions' relationship type if not specified. A schema relationship can be traversed from either end: use its forward name from the source, or its declared reverseName from the target. Use this — not search_nodes's 'filters' — for any name shown after '~>' in an EXISTING SCHEMAS line; that syntax marks a relationship, and 'filters' only accepts a type's own fields.".into(),
         parameters_schema: json!({
             "type": "object",
             "properties": {
