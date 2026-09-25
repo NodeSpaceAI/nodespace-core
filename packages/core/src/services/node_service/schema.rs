@@ -1351,44 +1351,43 @@ impl NodeService {
                 ))
             };
 
-            // Check whether at least one edge of this relationship exists
-            // from this node's own end (`in_node = node_id`, stored under
-            // `name`). For an `in` declaration that shape only arises when
-            // the edge was written through the `in` name itself.
-            let mut satisfied = self
-                .store
-                .check_relationship_exists(node_id, &relationship.name)
-                .await
-                .map_err(query_failed)?
-                > 0;
-
-            // An `in` declaration is more usually the target's view of a
-            // forward edge written from the other side: stored under its
-            // `reverse_name` (the forward name) with this node at
-            // `out_node`, which the lookup above can never see. Only edges
-            // from a source satisfying the declared `target_type` (itself or
-            // an ADR-078 descendant) count, since another schema may declare
-            // the same forward name toward this type.
-            if !satisfied && relationship.direction == RelationshipDirection::In {
-                let source_types = self
-                    .store
-                    .get_inbound_relationship_source_types(node_id, &relationship.reverse_name)
-                    .await
-                    .map_err(query_failed)?;
-                satisfied = match &relationship.target_type {
-                    None => !source_types.is_empty(),
-                    Some(expected) => {
-                        let mut any = false;
-                        for source_type in &source_types {
-                            if self.type_satisfies(source_type, expected).await? {
-                                any = true;
-                                break;
+            // An `out` declaration's edges are stored from this node's own end
+            // (`in_node = node_id`, under `name`). An `in` declaration is the
+            // target's view of a forward edge: stored under its `reverse_name`
+            // with this node at `out_node` — the only shape, since writes
+            // through the `in` name are normalized to it. Only edges from a
+            // source satisfying the declared `target_type` (itself or an
+            // ADR-078 descendant) count, since another schema may declare the
+            // same forward name toward this type.
+            let satisfied = match relationship.direction {
+                RelationshipDirection::Out => {
+                    self.store
+                        .check_relationship_exists(node_id, &relationship.name)
+                        .await
+                        .map_err(query_failed)?
+                        > 0
+                }
+                RelationshipDirection::In => {
+                    let source_types = self
+                        .store
+                        .get_inbound_relationship_source_types(node_id, &relationship.reverse_name)
+                        .await
+                        .map_err(query_failed)?;
+                    match &relationship.target_type {
+                        None => !source_types.is_empty(),
+                        Some(expected) => {
+                            let mut any = false;
+                            for source_type in &source_types {
+                                if self.type_satisfies(source_type, expected).await? {
+                                    any = true;
+                                    break;
+                                }
                             }
+                            any
                         }
-                        any
                     }
-                };
-            }
+                }
+            };
 
             if !satisfied {
                 missing.push(relationship.name.clone());

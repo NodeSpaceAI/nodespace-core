@@ -428,6 +428,233 @@ async fn validate_relationship_targets_exist(
     Ok(())
 }
 
+/// A schema a `create_schema`/`update_schema` call is saving, as it will stand
+/// once the call commits. Lookups by id still return its old state (or nothing,
+/// on create), so pairing validation reads this instead wherever the id
+/// appears on an extends chain.
+struct PendingSchema<'a> {
+    id: &'a str,
+    /// Extends chain after this call, nearest first, starting with `id`.
+    chain: &'a [String],
+    relationships: &'a [crate::models::schema::SchemaRelationship],
+}
+
+async fn type_chain(
+    node_service: &Arc<NodeService>,
+    type_id: &str,
+    pending: &PendingSchema<'_>,
+) -> Result<Vec<String>, MarkdownError> {
+    if type_id == pending.id {
+        return Ok(pending.chain.to_vec());
+    }
+    let mut chain = node_service
+        .resolve_type_chain(type_id)
+        .await
+        .map_err(|e| {
+            MarkdownError::internal_error(format!(
+                "Failed to resolve extends chain of '{}': {}",
+                type_id, e
+            ))
+        })?;
+    // A descendant's stored chain runs through the pending schema into its
+    // OLD ancestors; splice in the chain this call leaves it with.
+    if let Some(at) = chain.iter().position(|scope| scope == pending.id) {
+        chain.truncate(at);
+        chain.extend_from_slice(pending.chain);
+    }
+    Ok(chain)
+}
+
+/// Reject an `in`-direction declaration that is not the exact mirror of a
+/// forward (`out`) declaration on its `targetType`.
+///
+/// An `in` declaration never has edges of its own: it is `owner`'s name for
+/// the far type's forward edge, and every write through it is stored as that
+/// edge (see `NodeService::in_declaration_forward_name`). So it is only
+/// meaningful when the far type's extends chain declares `reverseName` as
+/// `out`, that declaration names this one back as its `reverseName`, targets
+/// `owner` (or an ancestor), and the two agree on cardinality from each end.
+/// Anything else saves a declaration that either can never be written — a
+/// `required` one then reports missing forever — or that says one thing about
+/// cardinality while storage enforces the forward side's.
+///
+/// `edgeFields` are rejected too: edge attributes are validated against the
+/// forward declaration, so any declared here would be silently ignored.
+///
+/// The forward is looked up along the far type's whole extends chain, the same
+/// inheritance the write path resolves by (ADR-078), with `pending` standing
+/// in for the schema being saved.
+async fn validate_in_declaration(
+    node_service: &Arc<NodeService>,
+    owner: &str,
+    owner_chain: &[String],
+    rel: &crate::models::schema::SchemaRelationship,
+    pending: &PendingSchema<'_>,
+) -> Result<(), MarkdownError> {
+    use crate::models::schema::RelationshipDirection;
+
+    let Some(far_type) = rel.target_type.as_deref() else {
+        return Err(MarkdownError::invalid_params(format!(
+            "Relationship '{}' is declared \"direction\":\"in\" without a targetType. An \
+             inbound declaration names another type's outbound relationship from this end, \
+             so targetType must name the type that declares '{}' as \"direction\":\"out\".",
+            rel.name, rel.reverse_name
+        )));
+    };
+
+    let mut forward = None;
+    for scope in type_chain(node_service, far_type, pending).await? {
+        forward = if scope == pending.id {
+            pending
+                .relationships
+                .iter()
+                .find(|r| r.name == rel.reverse_name)
+                .cloned()
+        } else {
+            node_service
+                .get_schema_node(&scope)
+                .await
+                .map_err(|e| MarkdownError::internal_error(format!("Failed to get schema: {}", e)))?
+                .and_then(|s| {
+                    s.relationships
+                        .into_iter()
+                        .find(|r| r.name == rel.reverse_name)
+                })
+        };
+        if forward.is_some() {
+            break;
+        }
+    }
+
+    let Some(forward) = forward.filter(|f| f.direction == RelationshipDirection::Out) else {
+        return Err(MarkdownError::invalid_params(format!(
+            "Relationship '{}' is declared \"direction\":\"in\" with reverseName '{}', but \
+             '{}' does not declare '{}' as \"direction\":\"out\". An inbound declaration is \
+             this type's name for another type's outbound relationship: declare '{}' on \
+             '{}' first (targetType '{}', reverseName '{}'), or declare the relationship \
+             only from that side — its reverseName already gives this end its accessor.",
+            rel.name,
+            rel.reverse_name,
+            far_type,
+            rel.reverse_name,
+            rel.reverse_name,
+            far_type,
+            owner,
+            rel.name
+        )));
+    };
+
+    let mut mismatches = Vec::new();
+    if forward.reverse_name != rel.name {
+        mismatches.push(format!(
+            "its reverseName is '{}', not '{}'",
+            forward.reverse_name, rel.name
+        ));
+    }
+    if let Some(target) = forward.target_type.as_deref() {
+        if !owner_chain.iter().any(|scope| scope == target) {
+            mismatches.push(format!("it targets '{}', which '{}' is not", target, owner));
+        }
+    }
+    if forward.reverse_cardinality != rel.cardinality {
+        mismatches.push(format!(
+            "its reverseCardinality ({:?}) differs from this cardinality ({:?})",
+            forward.reverse_cardinality, rel.cardinality
+        ));
+    }
+    if forward.cardinality != rel.reverse_cardinality {
+        mismatches.push(format!(
+            "its cardinality ({:?}) differs from this reverseCardinality ({:?})",
+            forward.cardinality, rel.reverse_cardinality
+        ));
+    }
+    if !mismatches.is_empty() {
+        return Err(MarkdownError::invalid_params(format!(
+            "Relationship '{}' is declared \"direction\":\"in\" as the inbound view of \
+             '{}.{}', but they do not describe the same edge: {}. Make the two \
+             declarations mirror each other.",
+            rel.name,
+            far_type,
+            rel.reverse_name,
+            mismatches.join("; ")
+        )));
+    }
+
+    if rel.edge_fields.as_ref().is_some_and(|f| !f.is_empty()) {
+        return Err(MarkdownError::invalid_params(format!(
+            "Relationship '{}' is declared \"direction\":\"in\" with edgeFields. Edge \
+             attributes belong on the outbound declaration '{}.{}', which validates them; \
+             declare them there.",
+            rel.name, far_type, rel.reverse_name
+        )));
+    }
+    Ok(())
+}
+
+/// Validate every `in` declaration a save could affect, against the schema
+/// as `pending` will leave it: its own, and — when `include_mirrors` —
+/// every other schema's `in` declaration whose forward half resolves through
+/// `pending`'s type. The second set is what keeps an update to the forward
+/// side (removing it, re-adding it with another reverse name or cardinality,
+/// or re-targeting `extends` away from the ancestor declaring it) from
+/// silently breaking a pair validated when it was saved.
+async fn validate_in_declarations_paired(
+    node_service: &Arc<NodeService>,
+    pending: &PendingSchema<'_>,
+    include_mirrors: bool,
+) -> Result<(), MarkdownError> {
+    use crate::models::schema::RelationshipDirection;
+
+    for rel in pending
+        .relationships
+        .iter()
+        .filter(|r| r.direction == RelationshipDirection::In)
+    {
+        validate_in_declaration(node_service, pending.id, pending.chain, rel, pending).await?;
+    }
+
+    if !include_mirrors {
+        return Ok(());
+    }
+    let schemas = node_service
+        .get_all_schemas()
+        .await
+        .map_err(|e| MarkdownError::internal_error(format!("Failed to list schemas: {}", e)))?;
+    for schema in schemas.iter().filter(|s| s.id != pending.id) {
+        for rel in schema
+            .relationships
+            .iter()
+            .filter(|r| r.direction == RelationshipDirection::In)
+        {
+            let Some(far_type) = rel.target_type.as_deref() else {
+                continue;
+            };
+            if !type_chain(node_service, far_type, pending)
+                .await?
+                .iter()
+                .any(|scope| scope == pending.id)
+            {
+                continue;
+            }
+            let owner_chain = type_chain(node_service, &schema.id, pending).await?;
+            // Only a pairing rejection is re-framed as this change's fault; a
+            // storage failure passes through with its own kind.
+            validate_in_declaration(node_service, &schema.id, &owner_chain, rel, pending)
+                .await
+                .map_err(|e| match e {
+                    MarkdownError::InvalidParams(message) => {
+                        MarkdownError::invalid_params(format!(
+                            "This change to '{}' would break '{}.{}', which mirrors it: {}",
+                            pending.id, schema.id, rel.name, message
+                        ))
+                    }
+                    other => other,
+                })?;
+        }
+    }
+    Ok(())
+}
+
 /// Reject relationship declarations named after a built-in structural
 /// relationship (`has_child`, `mentions`, `member_of`, `has_role`) — in either
 /// direction.
@@ -1581,6 +1808,35 @@ pub async fn handle_create_schema(
         validate_no_relationship_redeclaration(node_service, parent_id, &relationships).await?;
     }
 
+    // The new schema cannot be looked up yet, so its chain is itself plus
+    // the declared parent's.
+    let mut own_chain = vec![schema_id.clone()];
+    if let Some(parent_id) = extends_parent {
+        own_chain.extend(
+            node_service
+                .resolve_type_chain(parent_id)
+                .await
+                .map_err(|e| {
+                    MarkdownError::internal_error(format!(
+                        "Failed to resolve extends chain of '{}': {}",
+                        parent_id, e
+                    ))
+                })?,
+        );
+    }
+    // No mirrors to re-check: nothing can declare an `in` toward a schema
+    // that does not exist yet.
+    validate_in_declarations_paired(
+        node_service,
+        &PendingSchema {
+            id: &schema_id,
+            chain: &own_chain,
+            relationships: &relationships,
+        },
+        false,
+    )
+    .await?;
+
     // Check if schema already exists — return a clear error so the agent knows
     // to use create_node instead of retrying create_schema. The rejection
     // carries the existing type's real, rendered definition: without it the
@@ -2685,6 +2941,51 @@ pub async fn handle_update_schema(
     // ancestor. Runs unconditionally: no extends chain is needed to produce
     // the ambiguity ADR-078 exists to prevent.
     validate_no_same_schema_field_relationship_collision(&fields, &relationships)?;
+
+    // In/out pairing, against the relationship set and extends chain as this
+    // call leaves them — after the `extends` re-target above, so a combined
+    // call is judged by its result. Only when declarations changed: that is
+    // the only way this call can break a pair, here or on a schema mirroring
+    // one of this schema's forward declarations. An `extends` re-target is
+    // one of those changes — it bumps `relationships_added` above, since the
+    // `extends` edge is itself a declaration — which is what brings a
+    // re-parent that drops an inherited forward under this check.
+    if relationships_added > 0 || relationships_removed > 0 {
+        let own_chain =
+            match params.extends.as_deref().map(str::trim) {
+                Some(new_parent) => {
+                    let mut chain = vec![params.schema_id.clone()];
+                    chain.extend(node_service.resolve_type_chain(new_parent).await.map_err(
+                        |e| {
+                            MarkdownError::internal_error(format!(
+                                "Failed to resolve extends chain of '{}': {}",
+                                new_parent, e
+                            ))
+                        },
+                    )?);
+                    chain
+                }
+                None => node_service
+                    .resolve_type_chain(&params.schema_id)
+                    .await
+                    .map_err(|e| {
+                        MarkdownError::internal_error(format!(
+                            "Failed to resolve extends chain of '{}': {}",
+                            params.schema_id, e
+                        ))
+                    })?,
+            };
+        validate_in_declarations_paired(
+            node_service,
+            &PendingSchema {
+                id: &params.schema_id,
+                chain: &own_chain,
+                relationships: &relationships,
+            },
+            true,
+        )
+        .await?;
+    }
 
     // Resolve title_template: use new value if provided, otherwise keep existing
     let title_template = params.title_template.or(schema.title_template);

@@ -3,7 +3,8 @@
 //! Typed orchestration for relationship CRUD. Extracted from MCP handlers.
 
 use crate::models::schema::{
-    builtin_forward_name, EdgeField, RelationshipCardinality, BUILTIN_RELATIONSHIP_NAMES,
+    builtin_forward_name, EdgeField, RelationshipCardinality, RelationshipDirection,
+    BUILTIN_RELATIONSHIP_NAMES,
 };
 use crate::ops::OpsError;
 use crate::services::NodeService;
@@ -226,10 +227,19 @@ pub async fn resolve_relationship_name(
         .resolve_relationships(node_type)
         .await
         .map_err(|e| OpsError::Internal(format!("Failed to resolve relationships: {}", e)))?;
-    if own_relationships
+    if let Some(own) = own_relationships
         .iter()
-        .any(|r| r.name == relationship_name)
+        .find(|r| r.name == relationship_name)
     {
+        // An `in` declaration is this type's own name for a forward edge
+        // stored under its `reverse_name` — writes through it are normalized
+        // to that shape — so it traverses as that edge's reverse.
+        if own.direction == RelationshipDirection::In {
+            return Ok(ResolvedRelName::Reverse {
+                forward_name: own.reverse_name.clone(),
+                source_type: own.target_type.clone(),
+            });
+        }
         return Ok(ResolvedRelName::Forward);
     }
 
@@ -654,6 +664,13 @@ pub async fn get_node_relationships(
         .map_err(|e| OpsError::Internal(format!("Failed to resolve relationships: {}", e)))?;
     for rel in &own_relationships {
         if BUILTIN_RELATIONSHIP_NAMES.contains(&rel.name.as_str()) {
+            continue;
+        }
+        // An own `in` declaration names the far end's forward edge, which the
+        // inbound branch below already renders (labelled by its reverse name).
+        // No edge is ever stored under the `in` name, so an outbound group for
+        // it would be permanently empty yet still offered for adding edges.
+        if rel.direction == RelationshipDirection::In {
             continue;
         }
         // Emit the group even when it has no edges yet: an empty declared

@@ -214,9 +214,10 @@ async fn required_inbound_relationship_satisfied_from_other_side_reports_complet
     Ok(())
 }
 
-/// The write path also accepts an edge written through the `in` name itself
-/// (stored under `superseded_by` from this node's own end). That shape must
-/// satisfy the required relationship too.
+/// An edge written through the `in` name itself is normalized to the forward
+/// `supersedes` edge with this node as target, so it satisfies the required
+/// relationship through the same inbound lookup as an edge written from the
+/// other side.
 #[tokio::test]
 async fn required_inbound_relationship_written_through_in_name_reports_complete() -> Result<()> {
     let (svc, _t) = create_test_service().await?;
