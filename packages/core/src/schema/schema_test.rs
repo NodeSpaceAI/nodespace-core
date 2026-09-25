@@ -214,6 +214,18 @@ async fn create_base_schema(svc: &Arc<NodeService>, name: &str, field_names: &[&
         .to_string()
 }
 
+/// Test-only stand-in for the deleted `SchemaNode::get_relationship`
+/// accessor — its only production caller was folded into
+/// `NodeService::resolve_relationships`. A schema's own directly-declared
+/// relationships only, exactly as `get_relationship` read them; several
+/// assertions below still want to pluck one out by name.
+fn find_relationship<'a>(
+    schema: &'a crate::models::SchemaNode,
+    name: &str,
+) -> Option<&'a crate::models::schema::SchemaRelationship> {
+    schema.relationships.iter().find(|r| r.name == name)
+}
+
 #[tokio::test]
 async fn test_update_schema_add_valid_title_template() {
     let (svc, _tmp) = create_test_service().await;
@@ -3176,8 +3188,7 @@ async fn test_create_schema_accepts_self_referential_relationship() {
         .await
         .expect("get_schema_node failed")
         .expect("schema should exist");
-    let rel = schema
-        .get_relationship("supersedes")
+    let rel = find_relationship(&schema, "supersedes")
         .expect("self-referential declaration should be persisted");
     assert_eq!(rel.target_type.as_deref(), Some("adr"));
 }
@@ -3245,12 +3256,10 @@ async fn test_create_schema_self_reference_reverse_edge_resolves() {
         .expect("get_schema_node failed")
         .expect("schema should exist");
 
-    let forward = schema
-        .get_relationship("supersedes")
-        .expect("forward edge should be persisted");
-    let reverse = schema
-        .get_relationship("superseded_by")
-        .expect("reverse edge should be persisted");
+    let forward =
+        find_relationship(&schema, "supersedes").expect("forward edge should be persisted");
+    let reverse =
+        find_relationship(&schema, "superseded_by").expect("reverse edge should be persisted");
 
     assert_eq!(forward.target_type.as_deref(), Some("adr"));
     assert_eq!(reverse.target_type.as_deref(), Some("adr"));
@@ -3288,8 +3297,7 @@ async fn test_create_schema_self_reference_uses_normalized_schema_id() {
         .expect("get_schema_node failed")
         .expect("schema should exist");
     assert_eq!(
-        schema
-            .get_relationship("supersedes")
+        find_relationship(&schema, "supersedes")
             .expect("declaration should be persisted")
             .target_type
             .as_deref(),
@@ -3485,8 +3493,7 @@ async fn test_update_schema_accepts_self_referential_relationship() {
         .expect("get_schema_node failed")
         .expect("schema should exist");
     assert_eq!(
-        schema
-            .get_relationship("supersedes")
+        find_relationship(&schema, "supersedes")
             .expect("self-referential declaration should be persisted")
             .target_type
             .as_deref(),
@@ -4783,6 +4790,131 @@ async fn test_unextended_schema_resolves_to_its_own_fields() {
         persisted_extends_target(&svc, "standalone").await,
         None,
         "an unextended schema declares no extends edge"
+    );
+}
+
+/// Pins the single-source-of-truth property this consolidation establishes:
+/// `resolve_effective_fields` (this module, via the private `load_parent_map`
+/// helper) and `NodeService::resolve_field_owners` (`services::node_service`,
+/// via `resolve_type_chain`) are two independent call paths that both walk
+/// the same `extends` chain and must resolve the exact same effective field
+/// set for it. Before this consolidation they read the chain from two
+/// different underlying sources (`get_all_schemas()`'s hydrated
+/// `declared_parent` vs. `get_extends_parent_map()`'s direct query) with
+/// nothing guarding that the two stayed in agreement — a regression here
+/// would mean the two walkers have silently diverged again.
+#[tokio::test]
+async fn test_resolve_effective_fields_agrees_with_resolve_field_owners_across_extends_chain() {
+    let (svc, _tmp) = create_test_service().await;
+    // Root's field carries attributes beyond just a name/type — `required`
+    // and an enum vocabulary — so the equality check below has real surface
+    // area to catch a divergence in anything other than which names resolve.
+    handle_create_schema(
+        &svc,
+        json!({
+            "name": "Root",
+            "fields": [{
+                "name": "root_field",
+                "type": "enum",
+                "protection": "user",
+                "indexed": false,
+                "required": true,
+                "extensible": true,
+                "coreValues": [{ "value": "open", "label": "Open" }]
+            }]
+        }),
+    )
+    .await
+    .expect("root creation should succeed");
+    handle_create_schema(
+        &svc,
+        json!({
+            "name": "Mid",
+            "extends": "root",
+            "fields": [
+                { "name": "mid_field", "type": "string", "protection": "user", "indexed": false }
+            ]
+        }),
+    )
+    .await
+    .expect("mid extends root should succeed");
+    handle_create_schema(
+        &svc,
+        json!({
+            "name": "Leaf",
+            "extends": "mid",
+            "fields": [
+                { "name": "leaf_field", "type": "string", "protection": "user", "indexed": false }
+            ]
+        }),
+    )
+    .await
+    .expect("leaf extends mid should succeed");
+
+    let via_schema_layer = resolve_effective_fields(&svc, "leaf")
+        .await
+        .expect("resolve_effective_fields should succeed");
+    let (via_node_service, _owners, chain) = svc
+        .resolve_field_owners("leaf")
+        .await
+        .expect("resolve_field_owners should succeed");
+
+    let mut schema_layer_names: Vec<&str> =
+        via_schema_layer.iter().map(|f| f.name.as_str()).collect();
+    let mut node_service_names: Vec<&str> =
+        via_node_service.iter().map(|f| f.name.as_str()).collect();
+    schema_layer_names.sort_unstable();
+    node_service_names.sort_unstable();
+
+    assert_eq!(
+        schema_layer_names,
+        vec!["leaf_field", "mid_field", "root_field"],
+        "sanity: the full 3-level chain's fields should all resolve"
+    );
+    assert_eq!(
+        schema_layer_names, node_service_names,
+        "resolve_effective_fields (schema layer, load_parent_map) and \
+         resolve_field_owners (NodeService, resolve_type_chain) must resolve \
+         the exact same effective FIELD NAME set for the same extends chain — \
+         they are two independent walkers over what must be the same edges"
+    );
+    assert_eq!(
+        chain,
+        vec!["leaf", "mid", "root"],
+        "resolve_field_owners's own chain, nearest-first, should match the \
+         extends edges load_parent_map resolves against"
+    );
+
+    // Name agreement alone would miss a divergence in anything ELSE a
+    // resolved field carries (field_type, protection, required, indexed,
+    // core_values, ...) — e.g. one path picking up a same-named field from a
+    // different chain scope than the other, which the name-only check above
+    // cannot distinguish from a genuine match. Compare every attribute via
+    // each field's own serialized form: `SchemaField` doesn't derive
+    // `PartialEq` (it lives in `nodespace-types`, shared far more broadly
+    // than this test), so this reuses `Serialize` instead of adding one just
+    // for this assertion, and it automatically covers any field added to
+    // `SchemaField` later with no change needed here.
+    fn sorted_field_json(fields: &[SchemaField]) -> Vec<serde_json::Value> {
+        let mut values: Vec<serde_json::Value> = fields
+            .iter()
+            .map(|f| serde_json::to_value(f).expect("SchemaField should serialize"))
+            .collect();
+        values.sort_by(|a, b| {
+            a.get("name")
+                .and_then(serde_json::Value::as_str)
+                .cmp(&b.get("name").and_then(serde_json::Value::as_str))
+        });
+        values
+    }
+
+    assert_eq!(
+        sorted_field_json(&via_schema_layer),
+        sorted_field_json(&via_node_service),
+        "resolve_effective_fields and resolve_field_owners must agree on every \
+         attribute of each resolved field, not merely which names resolve — a \
+         match on names alone could still hide the two paths disagreeing on \
+         field_type/protection/required/core_values/etc."
     );
 }
 

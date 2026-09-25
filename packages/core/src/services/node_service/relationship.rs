@@ -485,30 +485,83 @@ impl NodeService {
     /// Checking only the node's own type made inherited relationships
     /// unusable — `create_relationship` rejected them outright, which meant a
     /// subtype could never participate in an edge its parent declares.
+    ///
+    /// Delegates to [`Self::resolve_relationships`] rather than hand-walking
+    /// the chain itself — same chain source (`resolve_type_chain`), same
+    /// nearest-first shadowing (`flatten_chain_by_name`), so this can't drift
+    /// from the resolver every other relationship-reading call site already
+    /// uses. Two behavioral differences from the old per-scope hand-walk,
+    /// both deliberate:
+    ///
+    /// - `resolve_relationships` excludes the `extends`/`extended_by`
+    ///   type-system bookkeeping row (see its own doc comment), which the old
+    ///   `SchemaNode::get_relationship` lookup did not — that lookup would
+    ///   happily return a schema's own `extends` declaration if a caller
+    ///   named it as `relationship_name`, letting `create_relationship`
+    ///   create a real data-level `extends` edge between two ordinary node
+    ///   instances. That was never a reachable, intentional path (nothing
+    ///   creates such an edge), and is closed now rather than preserved.
+    /// - The old hand-walk stopped at the first scope that declared
+    ///   `relationship_name`, so a match on the node's own (nearest) schema
+    ///   never touched a farther ancestor at all. `resolve_relationships`
+    ///   always resolves every scope in the chain before this function's own
+    ///   `.find()` picks the nearest match, so (a) a chain of depth N always
+    ///   costs N `get_schema_node` reads rather than stopping early, and (b)
+    ///   a real `Err` from a farther ancestor's read (a DB failure, not the
+    ///   ordinary "no schema there" `Ok(None)`) now propagates even when the
+    ///   nearest scope already had the answer, where it previously would
+    ///   never have been reached. Both are accepted, not incidental: extends
+    ///   chains are shallow by construction (ADR-078 composition is a rare,
+    ///   administrative act, and nothing about this call site changes
+    ///   `MAX_EXTENDS_DEPTH`'s cap — the only real production `extends`
+    ///   declaration in this codebase, the built-in `linear` methodology, is
+    ///   a single level), and every other single-name lookup through
+    ///   `resolve_relationships`/`resolve_field_owners` in this codebase
+    ///   (e.g. `check_node_completeness`, `find_duplicate_for`) already
+    ///   resolves the full chain unconditionally rather than
+    ///   short-circuiting — this brings the relationship-creation path's cost
+    ///   and failure shape in line with theirs instead of leaving it as the
+    ///   one outlier with a bespoke early exit. A short-circuit-then-fallback
+    ///   variant was considered and rejected: it would need its own
+    ///   nearest-scope peek ahead of `resolve_relationships`, reintroducing a
+    ///   second, slightly different chain-walk this consolidation exists to
+    ///   eliminate, to save work on a path that's already cheap in practice.
+    ///
+    /// Returns the owners map alongside the match (mirroring
+    /// `resolve_relationships`'s own shape) rather than discarding it —
+    /// `create_relationship_in_tx`'s `reverse_cardinality: One` branch needs
+    /// the declaring schema for this exact `schema_id`/`relationship_name`
+    /// pair immediately after, and previously re-derived it with a second,
+    /// redundant full-chain `resolve_relationships` call of its own while
+    /// the write transaction was still open.
     async fn resolve_declared_relationship(
         &self,
         schema_id: &str,
         relationship_name: &str,
-    ) -> Result<crate::models::schema::SchemaRelationship, NodeServiceError> {
-        // Hydrated fetch: declarations come from the relationship table via
-        // the one shared store query path (`get_schema_declarations`).
-        let chain = self.resolve_type_chain(schema_id).await?;
+    ) -> Result<
+        (
+            crate::models::schema::SchemaRelationship,
+            std::collections::HashMap<String, String>,
+        ),
+        NodeServiceError,
+    > {
+        let (relationships, owners) = self.resolve_relationships(schema_id).await?;
 
-        for scope in &chain {
-            let Some(schema_node) = self.get_schema_node(scope).await? else {
-                continue;
-            };
-            if let Some(rel) = schema_node.get_relationship(relationship_name) {
-                return Ok(rel.clone());
-            }
-        }
+        let relationship = relationships
+            .into_iter()
+            .find(|rel| rel.name == relationship_name)
+            .ok_or_else(|| {
+                // Nearest scope first is already `resolve_relationships`'s own
+                // resolution order; `schema_id` is reported unconditionally
+                // here regardless of how deep a match would have been in the
+                // chain — that is the type the caller named.
+                NodeServiceError::invalid_update(format!(
+                    "Relationship '{}' not defined in schema '{}'. Built-in relationships (member_of, has_child, mentions, has_role) are universal.",
+                    relationship_name, schema_id
+                ))
+            })?;
 
-        // Nearest scope first, so the node's own type is reported even when the
-        // chain is longer — that is the type the caller named.
-        Err(NodeServiceError::invalid_update(format!(
-            "Relationship '{}' not defined in schema '{}'. Built-in relationships (member_of, has_child, mentions, has_role) are universal.",
-            relationship_name, schema_id
-        )))
+        Ok((relationship, owners))
     }
 
     /// `_in_tx` equivalent of [`Self::get_node`]'s virtual-date fallback.
@@ -920,7 +973,7 @@ impl NodeService {
             }
 
             let schema_id = &source.node_type;
-            let relationship = self
+            let (relationship, declared_owners) = self
                 .resolve_declared_relationship(schema_id, relationship_name)
                 .await?;
 
@@ -1021,8 +1074,11 @@ impl NodeService {
             if relationship.reverse_cardinality
                 == crate::models::schema::RelationshipCardinality::One
             {
-                let (_, owners) = self.resolve_relationships(schema_id).await?;
-                let declaring_type = owners
+                // Reuses the owners map `resolve_declared_relationship` above
+                // already built for this same `schema_id` rather than paying
+                // for a second full-chain `resolve_relationships` call while
+                // this write transaction is still open.
+                let declaring_type = declared_owners
                     .get(relationship_name)
                     .cloned()
                     .unwrap_or_else(|| schema_id.clone());
@@ -1228,7 +1284,10 @@ impl NodeService {
                     .resolve_declared_relationship(schema_id, relationship_type)
                     .await
                 {
-                    Ok(rel) => rel,
+                    // Owners map unused on this branch — only the reverse
+                    // branch below needs it, to resolve the declaring schema
+                    // for a `reverse_cardinality: One` collision check.
+                    Ok((rel, _owners)) => rel,
                     // Not a declared relationship on this schema (e.g. the
                     // schema changed since the edge was created) — nothing to
                     // enforce here.
@@ -1273,11 +1332,11 @@ impl NodeService {
                     continue;
                 };
 
-                let relationship = match self
+                let (relationship, owners) = match self
                     .resolve_declared_relationship(&source.node_type, relationship_type)
                     .await
                 {
-                    Ok(rel) => rel,
+                    Ok(found) => found,
                     Err(NodeServiceError::InvalidUpdate(_)) => continue,
                     Err(e) => return Err(e),
                 };
@@ -1285,7 +1344,12 @@ impl NodeService {
                 if relationship.reverse_cardinality
                     == crate::models::schema::RelationshipCardinality::One
                 {
-                    let (_, owners) = self.resolve_relationships(&source.node_type).await?;
+                    // Reuses the owners map `resolve_declared_relationship`
+                    // above already built for this same `source.node_type`
+                    // rather than paying for a second full-chain
+                    // `resolve_relationships` call while this write
+                    // transaction is still open — same rationale as
+                    // `create_relationship_in_tx`'s identical reuse.
                     let declaring_type = owners
                         .get(relationship_type)
                         .cloned()

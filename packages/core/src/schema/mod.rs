@@ -726,28 +726,27 @@ fn reject_reserved_relationship_removal_names(names: &[String]) -> Result<(), Ma
 /// Resolution needs a [`ParentLookup`](extends_chain::ParentLookup) that can
 /// answer repeatedly while walking, but the store's accessors are `async` and
 /// a walk is not. Loading the whole parent map once up front sidesteps that
-/// without an `async` recursion: the map is small (one entry per *extending*
-/// schema, and extension is rare), and validation already reads every schema
-/// it touches.
+/// without an `async` recursion.
 ///
-/// `pending` lets a caller overlay an edge that is not committed yet — the
-/// schema being created, or a re-target about to replace an existing edge —
-/// so the same snapshot serves both handlers.
+/// Sourced from [`crate::db::SqliteStore::get_extends_parent_map`] — the same
+/// single query every other extends-chain resolver in the codebase reads
+/// from ([`NodeService::resolve_type_chain`], the playbook engine's own chain
+/// resolution) — rather than re-deriving the map by loading and hydrating
+/// every schema node and reading each one's declaration back off
+/// [`extends_chain::declared_parent`]. Both describe the same edges, but
+/// `get_extends_parent_map` reads `in_node`/`out_node` directly off the
+/// indexed `relationship` columns rather than parsing each declaration row's
+/// `properties` JSON into a `SchemaRelationship` first, so this can no longer
+/// independently drift from every other extends-chain reader the way two
+/// separately-derived views of the same edges otherwise could.
 async fn load_parent_map(
     node_service: &Arc<NodeService>,
 ) -> Result<std::collections::HashMap<String, String>, MarkdownError> {
-    let schemas = node_service.get_all_schemas().await.map_err(|e| {
-        MarkdownError::internal_error(format!(
-            "Failed to load schemas for extends resolution: {e}"
-        ))
-    })?;
-
-    Ok(schemas
-        .iter()
-        .filter_map(|schema| {
-            extends_chain::declared_parent(schema).map(|parent| (schema.id.clone(), parent))
-        })
-        .collect())
+    node_service
+        .store()
+        .get_extends_parent_map()
+        .await
+        .map_err(|e| MarkdownError::internal_error(format!("Failed to load extends edges: {e}")))
 }
 
 /// Validate a pending `extends` target: it must exist, must be a schema, and

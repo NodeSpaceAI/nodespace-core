@@ -154,3 +154,39 @@ async fn get_relationship_graph_includes_inherited_relationships() -> Result<()>
     );
     Ok(())
 }
+
+/// `create_relationship`'s declaration lookup (`resolve_declared_relationship`)
+/// now delegates to `NodeService::resolve_relationships` instead of hand-walking
+/// the chain with its own per-scope `SchemaNode::get_relationship` calls.
+/// `resolve_relationships` deliberately excludes the `extends`/`extended_by`
+/// type-system bookkeeping row from the relationship set it returns — it is a
+/// statement about the schema graph, not a data relationship any node instance
+/// ever carries an edge for. The old hand-walk had no such exclusion: naming
+/// `extends` as `relationship_name` found `gadget`'s own `extends` declaration
+/// (a real row in its `relationships` list) and would have let this create a
+/// bogus data-level `extends` edge between two ordinary node instances. Pins
+/// that this is now rejected the same way any other undeclared relationship
+/// name is.
+#[tokio::test]
+async fn create_relationship_rejects_the_extends_type_system_name() -> Result<()> {
+    let (svc, _t) = service_with_extending_schemas().await?;
+    make_node(&svc, "gadget-1", "gadget", "Widget").await?;
+    make_node(&svc, "gadget-2", "gadget", "Sprocket").await?;
+
+    let err = svc
+        .create_relationship("gadget-1", "extends", "gadget-2", json!({}))
+        .await;
+    assert!(
+        err.is_err(),
+        "'extends' must not resolve as a declared relationship a data-level edge \
+         can be created under, even though 'gadget' genuinely has an 'extends' \
+         row in its own relationship declarations"
+    );
+    let msg = format!("{:?}", err.unwrap_err());
+    assert!(
+        msg.contains("not defined in schema"),
+        "should fail exactly like any other undeclared relationship name, not \
+         with some other error class: {msg}"
+    );
+    Ok(())
+}
