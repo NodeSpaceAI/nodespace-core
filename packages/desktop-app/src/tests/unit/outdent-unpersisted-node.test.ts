@@ -7,7 +7,10 @@
  *    structureTree at execution time, so the tree must report the node as a
  *    root — otherwise the CREATE lands under the OLD parent.
  * 2. Trailing siblings under the old parent become children of the outdented
- *    node, both in structureTree and in the backend.
+ *    node, both in structureTree and in the backend — in one atomic RPC.
+ * 3. When that sibling transfer fails after the node's own CREATE/MOVE has
+ *    committed, only the siblings are rolled back, so the local tree keeps
+ *    matching the backend, and the failure is surfaced.
  *
  * Uses the REAL structureTree (not a mock) so the CREATE's parentId is read
  * from the same tree the service mutates, and spies on the shared
@@ -27,6 +30,7 @@ import { structureTree } from '$lib/stores/reactive-structure-tree.svelte';
 import { focusManager } from '$lib/services/focus-manager.svelte';
 import { waitForPendingMoveOperations } from '$lib/services/pending-operations';
 import { backendAdapter } from '$lib/services/backend-adapter';
+import { conflictNotifications } from '$lib/stores/conflict-notifications.svelte';
 import type { Node } from '$lib/types';
 
 function makeNode(id: string, version = 1): Node {
@@ -46,6 +50,7 @@ describe('outdentNode propagates root reparenting and sibling transfer', () => {
   let sharedNodeStore: SharedNodeStore;
   let createNodeSpy: MockInstance<typeof backendAdapter.createNode>;
   let moveNodeSpy: MockInstance<typeof backendAdapter.moveNode>;
+  let moveChildrenSpy: MockInstance<typeof backendAdapter.moveChildrenToParent>;
 
   beforeEach(() => {
     SharedNodeStore.resetInstance();
@@ -61,6 +66,10 @@ describe('outdentNode propagates root reparenting and sibling transfer', () => {
     moveNodeSpy = vi
       .spyOn(backendAdapter, 'moveNode')
       .mockImplementation(async (id) => makeNode(id, 2));
+    moveChildrenSpy = vi
+      .spyOn(backendAdapter, 'moveChildrenToParent')
+      .mockImplementation(async (_parentId, children) => children.map((c) => makeNode(c.id, 2)));
+    conflictNotifications.dismissAll();
 
     service = createReactiveNodeService({
       focusRequested: vi.fn(),
@@ -74,6 +83,7 @@ describe('outdentNode propagates root reparenting and sibling transfer', () => {
     service.destroy();
     structureTree.clear();
     focusManager.clearEditing();
+    conflictNotifications.dismissAll();
     vi.restoreAllMocks();
   });
 
@@ -95,6 +105,20 @@ describe('outdentNode propagates root reparenting and sibling transfer', () => {
   async function settle() {
     await sharedNodeStore.flushAllPendingSaves();
     await waitForPendingMoveOperations();
+  }
+
+  /** [newParentId, childIds] of each atomic child transfer sent to the backend */
+  function childTransfers() {
+    return moveChildrenSpy.mock.calls.map(([parentId, children]) => [
+      parentId,
+      children.map((c) => c.id)
+    ]);
+  }
+
+  function childTransferFailures() {
+    return conflictNotifications.notifications.filter(
+      (n) => n.conflictType === 'child-transfer-failure'
+    );
   }
 
   /** parentId of each CREATE sent to the backend for `id` */
@@ -141,15 +165,12 @@ describe('outdentNode propagates root reparenting and sibling transfer', () => {
     expect(createParentsFor('child')).toEqual(['grandparent']);
 
     // The node itself is CREATEd under the right parent — no MOVE for it. Its
-    // trailing siblings are moved under it, in their original order, only
-    // after the CREATE has landed.
-    const moves = moveNodeSpy.mock.calls.map(([id, , parentId]) => [id, parentId]);
-    expect(moves).toEqual([
-      ['after1', 'child'],
-      ['after2', 'child']
-    ]);
+    // trailing siblings are moved under it in ONE atomic call, in their original
+    // order, only after the CREATE has landed.
+    expect(moveNodeSpy).not.toHaveBeenCalled();
+    expect(childTransfers()).toEqual([['child', ['after1', 'after2']]]);
     expect(createNodeSpy.mock.invocationCallOrder[0]).toBeLessThan(
-      moveNodeSpy.mock.invocationCallOrder[0]
+      moveChildrenSpy.mock.invocationCallOrder[0]
     );
   });
 
@@ -193,6 +214,7 @@ describe('outdentNode propagates root reparenting and sibling transfer', () => {
     // macrotask so a MOVE scheduled a few ticks later would still be caught
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(moveNodeSpy).not.toHaveBeenCalled();
+    expect(moveChildrenSpy).not.toHaveBeenCalled();
 
     releaseCreate();
     await firstFlush;
@@ -200,9 +222,12 @@ describe('outdentNode propagates root reparenting and sibling transfer', () => {
 
     // The node converges on the new parent even though its CREATE used the old one
     expect(moveNodeSpy.mock.calls.map(([id, , parentId]) => [id, parentId])).toEqual([
-      ['child', 'grandparent'],
-      ['after1', 'child']
+      ['child', 'grandparent']
     ]);
+    expect(childTransfers()).toEqual([['child', ['after1']]]);
+    expect(moveNodeSpy.mock.invocationCallOrder[0]).toBeLessThan(
+      moveChildrenSpy.mock.invocationCallOrder[0]
+    );
   });
 
   it('rolls back an outdent to root when the CREATE re-trigger is declined', async () => {
@@ -233,6 +258,61 @@ describe('outdentNode propagates root reparenting and sibling transfer', () => {
     expect(structureTree.getParent('child')).toBe('parent');
     expect(structureTree.getChildren('parent')).toEqual(['child', 'after1', 'after2']);
     expect(structureTree.getChildren('child')).toEqual([]);
+    // The node's own MOVE failed first, so the sibling transfer was never attempted
+    expect(moveChildrenSpy).not.toHaveBeenCalled();
+  });
+
+  it('a new node whose sibling transfer fails stays under its new parent; only the siblings return', async () => {
+    addPersistedNode('grandparent', null, 1);
+    addPersistedNode('parent', 'grandparent', 1);
+    addPersistedNode('before', 'parent', 1);
+    addUnpersistedFocusedNode('child', 'parent', 2);
+    addPersistedNode('after1', 'parent', 3);
+    addPersistedNode('after2', 'parent', 4);
+    moveChildrenSpy.mockRejectedValue(new Error('version conflict'));
+
+    expect(await service.outdentNode('child')).toBe(true);
+    await settle();
+
+    // The re-triggered CREATE committed under 'grandparent' — the local tree must agree
+    expect(createParentsFor('child')).toEqual(['grandparent']);
+    expect(structureTree.getParent('child')).toBe('grandparent');
+    expect(structureTree.getChildren('parent')).toEqual(['before', 'after1', 'after2']);
+    expect(structureTree.getChildren('child')).toEqual([]);
+    expect(childTransferFailures().map((n) => n.nodeId)).toEqual(['child']);
+  });
+
+  it('a saved node whose own MOVE committed but sibling transfer fails stays moved; only the siblings return', async () => {
+    addPersistedNode('grandparent', null, 1);
+    addPersistedNode('parent', 'grandparent', 1);
+    addPersistedNode('child', 'parent', 1);
+    addPersistedNode('after1', 'parent', 2);
+    addPersistedNode('after2', 'parent', 3);
+    moveChildrenSpy.mockRejectedValue(new Error('version conflict'));
+
+    expect(await service.outdentNode('child')).toBe(true);
+    await settle();
+
+    expect(moveNodeSpy.mock.calls.map(([id, , parentId]) => [id, parentId])).toEqual([
+      ['child', 'grandparent']
+    ]);
+    expect(structureTree.getParent('child')).toBe('grandparent');
+    expect(structureTree.getChildren('parent')).toEqual(['after1', 'after2']);
+    expect(structureTree.getChildren('child')).toEqual([]);
+    expect(childTransferFailures().map((n) => n.nodeId)).toEqual(['child']);
+  });
+
+  it('a failed MOVE of the node itself is not reported as a child-transfer failure', async () => {
+    addPersistedNode('grandparent', null, 1);
+    addPersistedNode('parent', 'grandparent', 1);
+    addPersistedNode('child', 'parent', 1);
+    addPersistedNode('after1', 'parent', 2);
+    moveNodeSpy.mockRejectedValue(new Error('move rejected'));
+
+    await service.outdentNode('child');
+    await settle();
+
+    expect(childTransferFailures()).toEqual([]);
   });
 
   it('rolls back an indent of a root node when the CREATE re-trigger is declined', async () => {
