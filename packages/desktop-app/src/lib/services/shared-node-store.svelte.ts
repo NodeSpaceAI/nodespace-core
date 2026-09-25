@@ -1214,16 +1214,14 @@ export class SharedNodeStore {
   // ========================================================================
 
   /**
-   * Determine persistence behavior from explicit options or legacy source type.
-   *
-   * This helper implements the new explicit persistence API while maintaining
-   * backward compatibility with the legacy `source.type === 'database'` checks.
+   * Determine persistence behavior from explicit options and the source type.
    *
    * Priority (highest to lowest):
    * 1. options.markAsPersistedOnly - Mark as persisted without re-persisting
-   * 2. options.skipPersistence - Skip persistence
+   * 2. options.skipPersistence - Suppress the write; a database source is
+   *    still marked persisted, since the row exists in the backend
    * 3. options.persist - Explicit persistence control
-   * 4. Legacy: source.type === 'database' - Auto-skip persistence
+   * 4. source.type === 'database' - No write, mark persisted
    * 5. Default: Auto-determine based on source type and changes
    *
    * @returns Object with shouldPersist and shouldMarkAsPersisted flags

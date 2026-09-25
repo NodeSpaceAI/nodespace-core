@@ -2410,6 +2410,14 @@ describe('SharedNodeStore', () => {
         // Node should not be marked as persisted
         expect(store.isNodePersisted(testNode.id)).toBe(false);
       });
+
+      it('still marks a database-sourced node persisted when skipping persistence', () => {
+        const testNode = createTestNode('persist-skip-db-1');
+        store.setNode(testNode, { type: 'database', reason: 'test' }, true);
+
+        // skipPersistence suppresses the write only — the row exists in the backend
+        expect(store.isNodePersisted(testNode.id)).toBe(true);
+      });
     });
 
     describe('batchSetNodes', () => {

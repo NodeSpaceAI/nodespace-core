@@ -137,8 +137,9 @@ export class NavigationService {
           return null;
         }
 
-        // Add to store for future use.
-        // Use type 'database' and skipPersistence since already in backend (or virtual)
+        // Add to store for future use. The 'database' source is what records the
+        // node in persistedNodeIds, so its first edit takes the update path;
+        // skipPersistence only suppresses the write (already in backend, or virtual).
         sharedNodeStore.setNode(
           node,
           { type: 'database', reason: 'fetched-for-link-click' },
