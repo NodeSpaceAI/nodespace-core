@@ -428,6 +428,137 @@ async fn validate_relationship_targets_exist(
     Ok(())
 }
 
+/// Reject an `in`-direction declaration that is not the exact mirror of a
+/// forward (`out`) declaration on its `targetType`.
+///
+/// An `in` declaration never has edges of its own: it is this type's name for
+/// the far type's forward edge, and every write through it is stored as that
+/// edge (see `NodeService::in_declaration_forward_name`). So it is only
+/// meaningful when the far type's extends chain declares `reverseName` as
+/// `out`, that declaration names this one back as its `reverseName`, targets
+/// this type (or an ancestor), and the two agree on cardinality from each end.
+/// Anything else saves a declaration that either can never be written — a
+/// `required` one then reports missing forever — or that says one thing about
+/// cardinality while storage enforces the forward side's.
+///
+/// `edgeFields` are rejected too: edge attributes are validated against the
+/// forward declaration, so any declared here would be silently ignored.
+///
+/// `schema_id` is the schema being saved and `own_chain` its extends chain
+/// (nearest first, starting with `schema_id`). `declared` is its full
+/// relationship set after this call, which is where a self-referential pair's
+/// forward half lives — the schema may not exist yet to be looked up.
+async fn validate_in_declarations_paired(
+    node_service: &Arc<NodeService>,
+    schema_id: &str,
+    own_chain: &[String],
+    declared: &[crate::models::schema::SchemaRelationship],
+    to_check: &[crate::models::schema::SchemaRelationship],
+) -> Result<(), MarkdownError> {
+    use crate::models::schema::RelationshipDirection;
+
+    for rel in to_check
+        .iter()
+        .filter(|r| r.direction == RelationshipDirection::In)
+    {
+        let Some(far_type) = rel.target_type.as_deref() else {
+            return Err(MarkdownError::invalid_params(format!(
+                "Relationship '{}' is declared \"direction\":\"in\" without a targetType. An \
+                 inbound declaration names another type's outbound relationship from this end, \
+                 so targetType must name the type that declares '{}' as \"direction\":\"out\".",
+                rel.name, rel.reverse_name
+            )));
+        };
+
+        let forward = if far_type == schema_id {
+            declared
+                .iter()
+                .find(|r| r.name == rel.reverse_name)
+                .cloned()
+        } else {
+            let (far_relationships, _) = node_service
+                .resolve_relationships(far_type)
+                .await
+                .map_err(|e| {
+                    MarkdownError::internal_error(format!(
+                        "Failed to resolve relationships for '{}': {}",
+                        far_type, e
+                    ))
+                })?;
+            far_relationships
+                .into_iter()
+                .find(|r| r.name == rel.reverse_name)
+        };
+
+        let Some(forward) = forward.filter(|f| f.direction == RelationshipDirection::Out) else {
+            return Err(MarkdownError::invalid_params(format!(
+                "Relationship '{}' is declared \"direction\":\"in\" with reverseName '{}', but \
+                 '{}' does not declare '{}' as \"direction\":\"out\". An inbound declaration is \
+                 this type's name for another type's outbound relationship: declare '{}' on \
+                 '{}' first (targetType '{}', reverseName '{}'), or declare the relationship \
+                 only from that side — its reverseName already gives this end its accessor.",
+                rel.name,
+                rel.reverse_name,
+                far_type,
+                rel.reverse_name,
+                rel.reverse_name,
+                far_type,
+                schema_id,
+                rel.name
+            )));
+        };
+
+        let mut mismatches = Vec::new();
+        if forward.reverse_name != rel.name {
+            mismatches.push(format!(
+                "its reverseName is '{}', not '{}'",
+                forward.reverse_name, rel.name
+            ));
+        }
+        if let Some(target) = forward.target_type.as_deref() {
+            if !own_chain.iter().any(|scope| scope == target) {
+                mismatches.push(format!(
+                    "it targets '{}', which '{}' is not",
+                    target, schema_id
+                ));
+            }
+        }
+        if forward.reverse_cardinality != rel.cardinality {
+            mismatches.push(format!(
+                "its reverseCardinality ({:?}) differs from this cardinality ({:?})",
+                forward.reverse_cardinality, rel.cardinality
+            ));
+        }
+        if forward.cardinality != rel.reverse_cardinality {
+            mismatches.push(format!(
+                "its cardinality ({:?}) differs from this reverseCardinality ({:?})",
+                forward.cardinality, rel.reverse_cardinality
+            ));
+        }
+        if !mismatches.is_empty() {
+            return Err(MarkdownError::invalid_params(format!(
+                "Relationship '{}' is declared \"direction\":\"in\" as the inbound view of \
+                 '{}.{}', but they do not describe the same edge: {}. Make the two \
+                 declarations mirror each other.",
+                rel.name,
+                far_type,
+                rel.reverse_name,
+                mismatches.join("; ")
+            )));
+        }
+
+        if rel.edge_fields.as_ref().is_some_and(|f| !f.is_empty()) {
+            return Err(MarkdownError::invalid_params(format!(
+                "Relationship '{}' is declared \"direction\":\"in\" with edgeFields. Edge \
+                 attributes belong on the outbound declaration '{}.{}', which validates them; \
+                 declare them there.",
+                rel.name, far_type, rel.reverse_name
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Reject relationship declarations named after a built-in structural
 /// relationship (`has_child`, `mentions`, `member_of`, `has_role`) — in either
 /// direction.
@@ -1571,6 +1702,31 @@ pub async fn handle_create_schema(
         validate_no_relationship_redeclaration(node_service, parent_id, &relationships).await?;
     }
 
+    // The new schema cannot be looked up yet, so its chain is itself plus
+    // the declared parent's.
+    let mut own_chain = vec![schema_id.clone()];
+    if let Some(parent_id) = extends_parent {
+        own_chain.extend(
+            node_service
+                .resolve_type_chain(parent_id)
+                .await
+                .map_err(|e| {
+                    MarkdownError::internal_error(format!(
+                        "Failed to resolve extends chain of '{}': {}",
+                        parent_id, e
+                    ))
+                })?,
+        );
+    }
+    validate_in_declarations_paired(
+        node_service,
+        &schema_id,
+        &own_chain,
+        &relationships,
+        &relationships,
+    )
+    .await?;
+
     // Check if schema already exists — return a clear error so the agent knows
     // to use create_node instead of retrying create_schema. The rejection
     // carries the existing type's real, rendered definition: without it the
@@ -2617,6 +2773,23 @@ pub async fn handle_update_schema(
         validate_relationship_targets_exist(node_service, add_rels, None).await?;
         relationships_added = add_rels.len();
         relationships.extend(add_rels.clone());
+        let own_chain = node_service
+            .resolve_type_chain(&params.schema_id)
+            .await
+            .map_err(|e| {
+                MarkdownError::internal_error(format!(
+                    "Failed to resolve extends chain of '{}': {}",
+                    params.schema_id, e
+                ))
+            })?;
+        validate_in_declarations_paired(
+            node_service,
+            &params.schema_id,
+            &own_chain,
+            &relationships,
+            add_rels,
+        )
+        .await?;
     }
 
     // `extends` re-target (ADR-078). Absent leaves the current edge alone,

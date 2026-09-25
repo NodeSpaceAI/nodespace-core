@@ -387,39 +387,131 @@ async fn cross_type_read_through_in_name_narrows_to_declared_type() -> Result<()
     Ok(())
 }
 
-/// An `in` declaration whose far type never declares the forward name has no
-/// storage shape to normalize to; the error names what the caller wrote.
+/// A `direction: in` declaration as `add_relationships` on `in_norm_doc`,
+/// mirroring `in_norm_person.approves` except where `overrides` says.
+fn doc_in_declaration(overrides: serde_json::Value) -> serde_json::Value {
+    let mut rel = json!({
+        "name": "endorsed_by",
+        "targetType": "in_norm_person",
+        "direction": "in",
+        "cardinality": "many",
+        "reverseName": "approves",
+        "reverseCardinality": "many"
+    });
+    for (k, v) in overrides.as_object().cloned().unwrap_or_default() {
+        rel[k] = v;
+    }
+    json!({ "schema_id": "in_norm_doc", "add_relationships": [rel] })
+}
+
+/// Saving an `in` declaration is rejected unless it exactly mirrors a forward
+/// declaration on its `targetType` — otherwise it could never be written, or
+/// would describe cardinality storage does not enforce.
 #[tokio::test]
-async fn write_through_unpaired_in_name_is_rejected() -> Result<()> {
+async fn unpaired_or_mismatched_in_declaration_is_rejected_at_save() -> Result<()> {
     let (svc, _t) = create_test_service().await?;
     create_cross_type_schemas(&svc).await?;
-    handle_create_schema(
+
+    // A "forward" that is itself an `in` declaration is not a forward: the
+    // doc's `approved_by` is inbound, so nothing can mirror it.
+    let err = handle_create_schema(
         &svc,
         json!({
-            "name": "in_norm_lone_doc",
+            "name": "in_norm_team",
             "fields": [],
             "relationships": [{
-                "name": "reviewed_by",
-                "targetType": "in_norm_person",
+                "name": "approval_of",
+                "targetType": "in_norm_doc",
                 "direction": "in",
                 "cardinality": "many",
-                "reverseName": "reviews",
+                "reverseName": "approved_by",
                 "reverseCardinality": "many"
             }]
         }),
     )
     .await
-    .map_err(|e| anyhow::anyhow!("lone doc schema: {e}"))?;
-    make_node(&svc, "lone1", "in_norm_lone_doc").await?;
+    .expect_err("an in declaration mirroring another in declaration is rejected");
+    assert!(
+        err.to_string()
+            .contains("does not declare 'approved_by' as \"direction\":\"out\""),
+        "got: {err}"
+    );
+
+    // Drop the doc's valid declaration so the cases below can reuse its name
+    // without colliding.
+    handle_update_schema(
+        &svc,
+        json!({ "schema_id": "in_norm_doc", "remove_relationships": ["approved_by"] }),
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("drop approved_by: {e}"))?;
+
+    let cases = [
+        // No forward `reviews` on the person at all.
+        (
+            json!({ "reverseName": "reviews" }),
+            "does not declare 'reviews'",
+        ),
+        // The forward names a different reverse (`approved_by`).
+        (json!({}), "its reverseName is 'approved_by'"),
+        // Cardinality disagrees with the forward's reverseCardinality.
+        (
+            json!({ "name": "approved_by", "cardinality": "one" }),
+            "reverseCardinality",
+        ),
+        // Edge attributes belong on the forward declaration.
+        (
+            json!({
+                "name": "approved_by",
+                "edgeFields": [{ "name": "note", "type": "string" }]
+            }),
+            "edgeFields",
+        ),
+        // No targetType to find the forward declaration on.
+        (json!({ "targetType": null }), "without a targetType"),
+    ];
+    for (overrides, expected) in cases {
+        let err = handle_update_schema(&svc, doc_in_declaration(overrides.clone()))
+            .await
+            .expect_err(&format!("{overrides} must be rejected"));
+        assert!(
+            err.to_string().contains(expected),
+            "{overrides}: expected '{expected}' in: {err}"
+        );
+    }
+    Ok(())
+}
+
+/// The self-referential pair is declared in one payload, before the schema
+/// exists to be looked up, and must still validate.
+#[tokio::test]
+async fn self_referential_pair_in_one_payload_is_accepted() -> Result<()> {
+    let (svc, _t) = create_test_service().await?;
+    create_adr_schema(&svc).await
+}
+
+/// If the forward half is removed after the `in` declaration was saved, a
+/// write through the `in` name has no storage shape to normalize to; the
+/// error names what the caller wrote rather than the rewritten call.
+#[tokio::test]
+async fn write_through_in_name_after_forward_removed_is_rejected() -> Result<()> {
+    let (svc, _t) = create_test_service().await?;
+    create_cross_type_schemas(&svc).await?;
+    handle_update_schema(
+        &svc,
+        json!({ "schema_id": "in_norm_person", "remove_relationships": ["approves"] }),
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("remove person.approves: {e}"))?;
 
     let err = svc
-        .create_relationship("lone1", "reviewed_by", "p1", json!({}))
+        .create_relationship("doc1", "approved_by", "p1", json!({}))
         .await
-        .expect_err("no forward `reviews` is declared on in_norm_person");
+        .expect_err("in_norm_person no longer declares `approves`");
     let message = err.to_string();
     assert!(
-        message.contains("'reviewed_by' on 'in_norm_lone_doc'")
-            && message.contains("in_norm_person.reviews"),
+        message.contains("'approved_by' on 'in_norm_doc'")
+            && message.contains("in_norm_person.approves"),
         "error should name the caller's spelling: {message}"
     );
     Ok(())
