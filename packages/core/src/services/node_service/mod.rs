@@ -5576,13 +5576,19 @@ mod tests {
             .move_children_to_parent(&new_parent_id, &children)
             .await;
 
-        assert!(result.is_err(), "stale version should cause failure");
-        let err = result.unwrap_err();
-        assert!(
-            matches!(err, NodeServiceError::VersionConflict { .. }),
-            "expected VersionConflict, got {:?}",
-            err
-        );
+        let child2_version = service.get_node(&child2_id).await.unwrap().unwrap().version;
+        match result {
+            Err(NodeServiceError::VersionConflict {
+                node_id,
+                expected_version,
+                actual_version,
+            }) => {
+                assert_eq!(node_id, child2_id);
+                assert_eq!(expected_version, stale_version);
+                assert_eq!(actual_version, child2_version);
+            }
+            other => panic!("expected VersionConflict, got {other:?}"),
+        }
 
         // ALL-OR-NOTHING: child1 must still be under old_parent, not new_parent
         let old_children = service.get_children(&old_parent_id).await.unwrap();
@@ -5649,7 +5655,8 @@ mod tests {
                         &[(child_id.as_str(), version_before)],
                     )
                     .await
-                    .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+                    .map_err(|e| NodeServiceError::query_failed(e.to_string()))?
+                    .expect("the edge swap runs at the child's current version");
 
                     // A concurrent writer bumped the child after the edge swap.
                     service
@@ -5744,6 +5751,24 @@ mod tests {
                     if relationship.id == format!("relationship:{new_parent_id}:{child_id}") {
                         relationship_events += 1;
                     }
+                }
+            }
+            if let Err(err) = &moved {
+                match err {
+                    NodeServiceError::VersionConflict {
+                        node_id,
+                        expected_version,
+                        actual_version,
+                    } => {
+                        assert_eq!(node_id, &child_id);
+                        assert_eq!(*expected_version, version);
+                        assert_eq!(
+                            *actual_version,
+                            version + 1,
+                            "the conflict must carry the concurrent writer's version (iteration {i})"
+                        );
+                    }
+                    other => panic!("expected VersionConflict (iteration {i}), got {other:?}"),
                 }
             }
             if moved.is_ok() {
@@ -6007,12 +6032,20 @@ mod tests {
             .unwrap();
 
         // Delete with stale version → VersionConflict, nothing deleted
+        let root_version = service.get_node(&root_id).await.unwrap().unwrap().version;
         let result = service.delete_node(&root_id, 999).await;
-        assert!(
-            matches!(result, Err(NodeServiceError::VersionConflict { .. })),
-            "expected VersionConflict, got {:?}",
-            result
-        );
+        match result {
+            Err(NodeServiceError::VersionConflict {
+                node_id,
+                expected_version,
+                actual_version,
+            }) => {
+                assert_eq!(node_id, root_id);
+                assert_eq!(expected_version, 999);
+                assert_eq!(actual_version, root_version);
+            }
+            other => panic!("expected VersionConflict, got {other:?}"),
+        }
 
         // Subtree intact
         assert!(service.get_node(&root_id).await.unwrap().is_some());

@@ -1335,18 +1335,20 @@ impl SqliteStore {
     /// drifting from — a second walk.
     ///
     /// Returns `(existed, deleted_nodes)` where `deleted_nodes` contains the target and all
-    /// descendants that were deleted (empty vec when target didn't exist).
+    /// descendants that were deleted (empty vec when target didn't exist), or
+    /// `Ok(Err(VersionConflict))` when the target's persisted version is not
+    /// `expected_version` — nothing is deleted in that case.
     pub async fn delete_subtree_atomic(
         &self,
         node_id: &str,
         expected_version: i64,
         subtree_ids: &[String],
         source: Option<String>,
-    ) -> Result<(bool, Vec<Node>)> {
+    ) -> Result<std::result::Result<(bool, Vec<Node>), VersionConflict>> {
         // Collect the target + all descendants before mutating.
         let target = match self.get_node(node_id).await? {
             Some(n) => n,
-            None => return Ok((false, vec![])),
+            None => return Ok(Ok((false, vec![]))),
         };
 
         // Only the target can be a schema node (descendants are its description
@@ -1356,12 +1358,11 @@ impl SqliteStore {
 
         // OCC check on target before entering the transaction.
         if target.version != expected_version {
-            return Err(anyhow::anyhow!(
-                "version_conflict:{}:{}:{}",
-                node_id,
-                expected_version,
-                target.version
-            ));
+            return Ok(Err(VersionConflict {
+                node_id: node_id.to_string(),
+                expected: expected_version,
+                actual: target.version,
+            }));
         }
 
         let all_ids: Vec<String> = subtree_ids.to_vec();
@@ -1412,16 +1413,16 @@ impl SqliteStore {
             Some(row) => row.get(0)?,
             None => {
                 // Node disappeared between pre-check and transaction — idempotent.
-                return Ok((false, vec![]));
+                return Ok(Ok((false, vec![])));
             }
         };
         if actual_version != expected_version {
-            return Err(anyhow::anyhow!(
-                "version_conflict:{}:{}:{}",
-                node_id,
-                expected_version,
-                actual_version
-            ));
+            // Dropping `tx` uncommitted rolls it back; nothing was written yet.
+            return Ok(Err(VersionConflict {
+                node_id: node_id.to_string(),
+                expected: expected_version,
+                actual: actual_version,
+            }));
         }
 
         // Chunked, but every chunk executes against the same `tx` opened above —
@@ -1460,7 +1461,7 @@ impl SqliteStore {
             });
         }
 
-        Ok((true, nodes_to_delete))
+        Ok(Ok((true, nodes_to_delete)))
     }
 
     /// Delete all descendants of `parent_id` (the full child subtree) without touching the parent.
@@ -2833,11 +2834,15 @@ impl SqliteStore {
 
     /// Re-parent an ordered set of existing children to `new_parent_id` inside
     /// `tx`. Validates each child's version using `SELECT changes()` after a
-    /// version-gated DELETE — any mismatch returns an error, so the caller's
-    /// transaction rolls back every edge moved so far (all-or-nothing OCC).
+    /// version-gated DELETE.
     ///
     /// Returns the assigned fractional order for each child, preserving input
-    /// array order as sibling order under the new parent.
+    /// array order as sibling order under the new parent, or
+    /// `Ok(Err(VersionConflict))` carrying the first mismatched child's
+    /// expected and persisted versions. On a conflict, edges for earlier
+    /// children have already been swapped in `tx`: the caller must turn the
+    /// conflict into an `Err` from its transaction closure so every one of
+    /// them rolls back (all-or-nothing OCC).
     ///
     /// `_in_tx` only (ADR-069 §1a): the service composes the version bumps and
     /// event emission into the same transaction, so edges and bumps commit
@@ -2846,9 +2851,9 @@ impl SqliteStore {
         tx: &Tx<'_>,
         new_parent_id: &str,
         children: &[(&str, i64)],
-    ) -> Result<Vec<f64>> {
+    ) -> Result<std::result::Result<Vec<f64>, VersionConflict>> {
         if children.is_empty() {
-            return Ok(Vec::new());
+            return Ok(Ok(Vec::new()));
         }
 
         let now = Utc::now().to_rfc3339();
@@ -2902,15 +2907,41 @@ impl SqliteStore {
                 .query("SELECT changes()", libsql::params![])
                 .await
                 .context("Failed to query changes()")?;
-            if let Some(row) = changes_rows.next().await? {
-                let affected: i64 = row.get(0)?;
-                if affected == 0 {
-                    return Err(anyhow::anyhow!(
-                        "VERSION_CONFLICT: node '{}' version mismatch (expected {})",
-                        child_id,
-                        expected_version
-                    ));
+            let affected: i64 = match changes_rows.next().await? {
+                Some(row) => row.get(0)?,
+                None => return Err(anyhow::anyhow!("SELECT changes() returned no row")),
+            };
+            if affected == 0 {
+                // Nothing was deleted: either the version moved on, or the
+                // child has no has_child edge to replace. Read the persisted
+                // version in this same transaction to tell them apart.
+                let mut version_rows = db
+                    .query(
+                        "SELECT version FROM node WHERE id = ?1",
+                        libsql::params![child_id.clone()],
+                    )
+                    .await
+                    .context("Failed to read child version after a gated DELETE")?;
+                let actual: i64 = match version_rows.next().await? {
+                    Some(row) => row.get(0)?,
+                    None => {
+                        return Err(anyhow::anyhow!(
+                            "Node not found while moving children: {}",
+                            child_id
+                        ))
+                    }
+                };
+                if actual != *expected_version {
+                    return Ok(Err(VersionConflict {
+                        node_id: child_id,
+                        expected: *expected_version,
+                        actual,
+                    }));
                 }
+                return Err(anyhow::anyhow!(
+                    "Node '{}' has no parent edge to replace",
+                    child_id
+                ));
             }
 
             // Insert new has_child edge under new_parent_id.
@@ -2931,7 +2962,7 @@ impl SqliteStore {
             .context("Failed to insert new has_child edge")?;
         }
 
-        Ok(orders)
+        Ok(Ok(orders))
     }
 
     pub async fn get_schema(&self, node_type: &str) -> Result<Option<Value>> {
@@ -5341,7 +5372,8 @@ mod large_subtree_chunking_tests {
         // subtree nodes" without deleting anything.
         let (existed, deleted_nodes) = store
             .delete_subtree_atomic(&root.id, root.version, &subtree_ids, None)
-            .await?;
+            .await?
+            .expect("target is at root.version");
 
         assert!(existed);
         assert_eq!(deleted_nodes.len(), DESCENDANT_COUNT + 1);
@@ -5368,7 +5400,8 @@ mod large_subtree_chunking_tests {
         // call's chunks committed together as one unit.
         let (existed_again, _) = store
             .delete_subtree_atomic(&root.id, root.version, &subtree_ids, None)
-            .await?;
+            .await?
+            .expect("target is at root.version");
         assert!(!existed_again);
 
         Ok(())
@@ -5442,7 +5475,8 @@ mod large_subtree_chunking_tests {
 
         let (existed, deleted_nodes) = store
             .delete_subtree_atomic(&root.id, root.version, &subtree_ids, None)
-            .await?;
+            .await?
+            .expect("target is at root.version");
 
         assert!(existed);
         assert_eq!(deleted_nodes.len(), MULTI_CHUNK_COUNT + 1);

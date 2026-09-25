@@ -713,9 +713,9 @@ impl NodeService {
                 )));
             }
 
-            // Root nodes have no has_child edge — the in-transaction DELETE would
-            // return 0 changes and be misidentified as a version conflict. Reject
-            // root nodes explicitly so callers get a clear InvalidParent error.
+            // Root nodes have no has_child edge to replace, so the in-transaction
+            // swap would fail with a generic store error. Reject them here so
+            // callers get a clear hierarchy-violation error before any write.
             let Some(former_parent) = self.get_parent(node_id).await?.map(|p| p.id) else {
                 return Err(NodeServiceError::hierarchy_violation(format!(
                     "Root node '{}' cannot be batch-moved (no parent edge to replace)",
@@ -752,24 +752,16 @@ impl NodeService {
                         .iter()
                         .map(|(id, ver)| (id.as_str(), *ver))
                         .collect();
+                    // The second `?` turns a `VersionConflict` into this
+                    // closure's `Err`, which is what rolls back the edges
+                    // already swapped for earlier children.
                     let orders = crate::db::SqliteStore::move_children_to_parent_in_tx(
                         tx.store_tx(),
                         &new_parent_id,
                         &children_with_versions,
                     )
                     .await
-                    .map_err(|e| {
-                        let msg = e.to_string();
-                        // The store embeds the node ID in the error string:
-                        // "VERSION_CONFLICT: node '<id>' ...". Parse it out so
-                        // the caller gets an actionable conflict message.
-                        if let Some(rest) = msg.strip_prefix("VERSION_CONFLICT: node '") {
-                            let node_id = rest.split('\'').next().unwrap_or("unknown");
-                            NodeServiceError::version_conflict(node_id, 0, 0)
-                        } else {
-                            NodeServiceError::query_failed(msg)
-                        }
-                    })?;
+                    .map_err(|e| NodeServiceError::query_failed(e.to_string()))??;
 
                     let mut updated = Vec::with_capacity(nodes.len());
                     for ((node, order), former_parent) in

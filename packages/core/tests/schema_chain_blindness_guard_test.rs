@@ -217,7 +217,7 @@ const ALLOWLIST: &[Allowed] = &[
         file: "services/node_service/schema.rs",
         function: "update_schema_field_friendly_name",
         field_kind: "fields",
-        why: "Same reasoning as rename_schema_field's source-field check: a \
+        why: "Same reasoning as validate_schema_field_rename's source-field check: a \
               friendly_name relabel is a modification of a field definition, \
               only valid for a field type_id itself declares.",
     },
