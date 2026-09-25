@@ -96,7 +96,15 @@ describe('NavigationSidebar — nav items', () => {
     expect(container.querySelector('button[aria-label="Settings"]')).not.toBeNull();
   });
 
-  it('a badged Settings item still opens Settings', async () => {
+  it('an unbadged Settings item opens Settings with no section preselected', async () => {
+    const { container } = render(NavigationSidebar);
+
+    await fireEvent.click(container.querySelector('button[aria-label="Settings"]') as HTMLButtonElement);
+
+    expect(openSettings).toHaveBeenCalledWith(undefined);
+  });
+
+  it('a badged Settings item opens Settings on the Database section', async () => {
     setActiveDatabaseStatus('missing');
     const { container } = render(NavigationSidebar);
 
@@ -106,5 +114,6 @@ describe('NavigationSidebar — nav items', () => {
     await fireEvent.click(settings);
 
     expect(openSettings).toHaveBeenCalledOnce();
+    expect(openSettings).toHaveBeenCalledWith('database');
   });
 });

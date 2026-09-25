@@ -5,7 +5,8 @@
     toggleSidebar,
     setCollectionsExpanded,
     setSchemaTypesExpanded,
-    setAiChatsExpanded
+    setAiChatsExpanded,
+    type NavigationItem
   } from '$lib/stores/layout.svelte';
   import { navigationStore, setActiveTab, addTab } from '$lib/stores/navigation.svelte';
   import { openSettings } from '$lib/utils/open-settings';
@@ -15,7 +16,6 @@
   import CollectionSubPanel from './collection-sub-panel.svelte';
   import TriangleAlert from '@lucide/svelte/icons/triangle-alert';
   import { databaseStore } from '$lib/stores/database.svelte';
-  import type { NavigationItem } from '$lib/stores/layout.svelte';
   import { onMount, onDestroy } from 'svelte';
   import { schemasStore, schemasData } from '$lib/stores/schemas.svelte';
   import { aiChatsData } from '$lib/stores/ai-chats.svelte';
@@ -34,9 +34,12 @@
    * An alert marker on a nav item's icon. It sits on the icon so it survives the
    * collapsed rail, and `label` joins the item's accessible name — the glyph
    * itself is decorative, so the alert is never conveyed by colour alone.
+   * `settingsCategory` sends a badged Settings click straight to the section
+   * that resolves the alert.
    */
   interface NavBadge {
     label: string;
+    settingsCategory?: string;
   }
 
   // Keyed by nav item id. Settings carries the missing-database alert because
@@ -44,7 +47,7 @@
   let navBadges = $derived<Record<string, NavBadge | undefined>>({
     settings:
       databaseStore.activeDatabase?.status === 'missing'
-        ? { label: 'Active database is missing' }
+        ? { label: 'Active database is missing', settingsCategory: 'database' }
         : undefined
   });
 
@@ -289,7 +292,7 @@
       openSearchTab();
     } else if (itemId === 'settings') {
       // Shared singleton tab (same one the File menu opens).
-      openSettings();
+      openSettings(navBadges.settings?.settingsCategory);
     }
 
     // Update active state in navigation items

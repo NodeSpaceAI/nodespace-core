@@ -38,7 +38,8 @@
           <span class="text-foreground text-[0.9375rem] font-semibold">Team synchronization</span>
         </div>
         <!-- Shown but not operable until Team synchronization is ready: the card
-             keeps the capability discoverable, the disabled switch keeps it off. -->
+             keeps the capability discoverable, and the disabled switch means this
+             UI can no longer change `syncEnabled` (it still reflects the stored value). -->
         <Switch checked={labsFlags.syncEnabled} disabled aria-label="Team synchronization" />
       </div>
       <p class="text-muted-foreground m-0 text-sm leading-relaxed">

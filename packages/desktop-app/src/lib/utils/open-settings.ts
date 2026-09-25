@@ -3,8 +3,8 @@ import { settingsStore } from '$lib/stores/settings.svelte';
 
 /**
  * Open (or focus) the Settings tab — the single `type: 'settings'` singleton tab
- * shared by the sidebar entry, the database indicator, and the File menu, so they
- * never spawn duplicate settings tabs. Pass a category id (e.g. `'database'`) to
+ * shared by the sidebar entry and the File menu, so they never spawn duplicate
+ * settings tabs. Pass a category id (e.g. `'database'`) to
  * focus that section on open.
  */
 export function openSettings(category?: string): void {
