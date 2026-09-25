@@ -329,13 +329,13 @@ export class ReactiveStructureTree {
    * This is necessary because domain events don't fire automatically in browser mode.
    *
    * @param oldParentId - The current parent ID (null if root)
-   * @param newParentId - The new parent ID
+   * @param newParentId - The new parent ID (null to make the child a root node)
    * @param childId - The child node ID being moved
    * @param order - Optional order value for the new position (defaults to appending)
    */
   moveInMemoryRelationship(
     oldParentId: string | null,
-    newParentId: string,
+    newParentId: string | null,
     childId: string,
     order?: number
   ) {
@@ -347,6 +347,9 @@ export class ReactiveStructureTree {
         order: 0 // order not used for removal
       });
     }
+
+    // Root nodes have no parent edge — removal alone makes childId a root
+    if (!newParentId) return;
 
     // Calculate order if not provided - append after last child by value (not count)
     let newOrder = order;
