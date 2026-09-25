@@ -14,9 +14,10 @@
  * - Classify each group as a `table` (carries edge attributes) or `chips`
  *   (bare edge with no edge data) layout.
  * - Compute the ordered edge-attribute column set for the table layout.
- * - Decide how the panel surfaces each group: a populated section, an entry in
- *   the Add chooser, or nothing at all (`partitionGroups`), and whether its
- *   edges can be edited from this node (`groupSupportsEdgeEditing`).
+ * - Decide where each group surfaces: a field on the property form, a populated
+ *   modal section, an entry in the modal's Add chooser, or nothing at all
+ *   (`partitionGroups`), and whether its edges can be edited from this node
+ *   (`groupSupportsEdgeEditing`).
  */
 
 import type { EnumValue } from '$lib/types/schema-node';
@@ -287,22 +288,52 @@ export function filterUnlinkedTargets<T extends { id: string }>(
   return nodes.filter((node) => !existing.has(node.id.toLowerCase()));
 }
 
-/** The groups a node's relationship panel renders, partitioned by what each needs. */
+/**
+ * Whether a group is edited as a field on the property form rather than in the
+ * Relationships modal.
+ *
+ * A relationship whose LOCAL end is `one` reads as a property of the node —
+ * "this task's assignee" — not as a graph edge, so it is promoted to a
+ * single-select field next to the node's scalar properties. `cardinality` is
+ * already the local end's (the backend reports `reverse_cardinality` for an
+ * inbound group), so direction plays no part here; it only decides which way
+ * round the edge is written (`resolveEdgeEndpoints`).
+ *
+ * A `one` group that declares edge fields stays in the modal: a form field
+ * holds only the related node, so promoting it would strand the edge's own
+ * values with no editor.
+ */
+export function isFormPromoted(group: RelationshipGroupView): boolean {
+  return group.cardinality === 'one' && group.edgeFields.length === 0;
+}
+
+/** The groups a node's relationship surfaces render, partitioned by what each needs. */
 export interface PartitionedGroups {
-  /** Groups with at least one edge — rendered as full sections, either direction. */
+  /**
+   * Single-valued groups edited as fields on the property form (see
+   * `isFormPromoted`), whether or not they have an edge yet. Never part of
+   * `populated` or `addable`: each edge is edited in exactly one place.
+   */
+  promoted: RelationshipGroupView[];
+  /** Modal groups with at least one edge — rendered as full sections, either direction. */
   populated: RelationshipGroupView[];
   /**
-   * Outbound groups with no edges yet. They get no section of their own; they
-   * are the entries of the single "Add relationship" chooser.
+   * Outbound modal groups with no edges yet. They get no section of their own;
+   * they are the entries of the single "Add relationship" chooser.
    */
   addable: RelationshipGroupView[];
 }
 
 /**
- * Split groups into what the panel renders as sections versus what it offers
+ * Split groups between the property form and the Relationships modal, and
+ * within the modal between what it renders as sections versus what it offers
  * behind the single Add control.
  *
- * The panel's size must track the node's DATA, not the schema's declared
+ * The form takes every promoted group, so the two surfaces partition rather
+ * than duplicate — one edge, one control, no question of which is
+ * authoritative.
+ *
+ * The modal's size must track the node's DATA, not the schema's declared
  * relationship count — a type declaring six relationships with no edges yet is
  * six empty sections' worth of scaffolding carrying zero information. So an
  * empty group never gets a section:
@@ -313,10 +344,22 @@ export interface PartitionedGroups {
  *    it has no Add of its own to justify standing open and empty.
  */
 export function partitionGroups(groups: RelationshipGroupView[]): PartitionedGroups {
+  const modal = groups.filter((group) => !isFormPromoted(group));
   return {
-    populated: groups.filter((group) => group.rows.length > 0),
-    addable: groups.filter((group) => group.direction === 'out' && group.rows.length === 0)
+    promoted: groups.filter(isFormPromoted),
+    populated: modal.filter((group) => group.rows.length > 0),
+    addable: modal.filter((group) => group.direction === 'out' && group.rows.length === 0)
   };
+}
+
+/**
+ * Whether the Relationships modal has anything to show once promoted groups
+ * have moved to the form — the gate for its entry point. A node whose only
+ * relationships are promoted fields, or empty inbound groups the modal drops,
+ * would otherwise open a modal with nothing in it.
+ */
+export function hasModalContent(partitioned: PartitionedGroups): boolean {
+  return partitioned.populated.length > 0 || partitioned.addable.length > 0;
 }
 
 /** A group plus one of its rows, resolved together against the current view. */
@@ -369,8 +412,8 @@ export function findRowByKey(
 /**
  * Build the modal's view model from the command payload. Every group returned by
  * the command is retained — including declared groups with no related nodes yet —
- * and `partitionGroups` decides how each is surfaced (a populated section, or an
- * entry in the Add chooser). `isEmpty` is true when no group has any rows, i.e.
+ * and `partitionGroups` decides how each is surfaced (a form field, a populated
+ * modal section, or an entry in the Add chooser). `isEmpty` is true when no group has any rows, i.e.
  * there is genuinely nothing populated to show.
  */
 export function buildRelationshipsView(raw: RawNodeRelationships): NodeRelationshipsView {

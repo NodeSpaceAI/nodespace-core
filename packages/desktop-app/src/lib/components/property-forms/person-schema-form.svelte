@@ -34,43 +34,26 @@
   import { pushComputedTitle } from '$lib/utils/title-preview';
   import type { Node, PersonNode, PersonNodeUpdate } from '$lib/types';
   import RelationshipViewerModal from '$lib/components/relationships/relationship-viewer-modal.svelte';
-  import { loadNodeRelationshipsView } from '$lib/services/relationship-viewer-service';
+  import RelationshipField from '$lib/components/relationships/relationship-field.svelte';
+  import { NodeRelationshipsState } from '$lib/services/node-relationships-state.svelte';
   import WaypointsIcon from '@lucide/svelte/icons/waypoints';
   import UserRoundSearchIcon from '@lucide/svelte/icons/user-round-search';
 
   const log = createLogger('PersonSchemaForm');
 
-  // Relationships viewer entry point — inbound relationships (e.g.
-  // tasks assigned to this person) surface here.
+  // Relationships viewer entry point — e.g. the tasks assigned to this person
+  // surface here.
   let showRelationships = $state(false);
 
   let { nodeId }: { nodeId: string } = $props();
 
-  // Gate the Relationships trigger the same way TypedFormShell now gates it for
-  // TaskSchemaForm/GenericSchemaForm — shown only when this node's
-  // type actually has a typed relationship (outbound declared on its schema, or
-  // inbound declared by another schema targeting it), resolved once per nodeId.
-  // Default hidden; fail-open on a query error so a transient failure never
-  // hides a real feature. PersonSchemaForm doesn't route through TypedFormShell
-  // (it stays hardcoded, not schema-driven — see the issue's recorded decision),
-  // so this gate is duplicated here rather than shared; it's copied verbatim,
-  // not reimplemented, to keep the two in agreement.
-  let hasRelationships = $state(false);
-  let relCheckedFor = '';
-  $effect(() => {
-    const id = nodeId;
-    if (relCheckedFor === id) return;
-    relCheckedFor = id;
-    hasRelationships = false;
-    loadNodeRelationshipsView(id)
-      .then((view) => {
-        if (nodeId === id) hasRelationships = view.groups.length > 0;
-      })
-      .catch((err) => {
-        log.error('Failed to check relationships for the trigger gate', err);
-        if (nodeId === id) hasRelationships = true;
-      });
-  });
+  // PersonSchemaForm doesn't route through TypedFormShell (it stays hardcoded,
+  // not schema-driven), so it drives the same NodeRelationshipsState itself:
+  // single-valued relationships render as fields after the person's own, and
+  // the Relationships trigger shows only when the modal has something left.
+  const relationships = new NodeRelationshipsState();
+  $effect(() => relationships.load(nodeId));
+  const promotedGroups = $derived(relationships.partitioned.promoted);
 
   const node = $derived(sharedNodeStore.getNode(nodeId));
   const person = $derived(node as PersonNode | undefined);
@@ -339,9 +322,16 @@
     </Alert>
   {/if}
 
-  <!-- Relationships entry point, gated on the type actually having
-       typed relationships (outbound declared or inbound) — see hasRelationships above. -->
-  {#if hasRelationships}
+  {#each promotedGroups as group (group.key)}
+    {@const fieldId = `person-relationship-${group.key}`}
+    <div class="field">
+      <label for={fieldId}>{group.label}</label>
+      <RelationshipField {nodeId} {group} {fieldId} onChanged={() => relationships.reload()} />
+    </div>
+  {/each}
+
+  <!-- Relationships entry point, for everything not already a field above. -->
+  {#if relationships.showModalTrigger}
     <button
       type="button"
       class="flex w-full items-center gap-2 py-2 text-sm font-medium text-muted-foreground transition-all hover:opacity-80"

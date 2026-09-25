@@ -7,6 +7,8 @@ import {
   findGroupByKey,
   findRowByKey,
   groupSupportsEdgeEditing,
+  hasModalContent,
+  isFormPromoted,
   isTargetLinked,
   linkedTargetIds,
   partitionGroups,
@@ -420,6 +422,98 @@ describe('relationship-grouping: partitionGroups', () => {
     const { populated, addable } = partitionGroups(groups);
     expect(populated.map((g) => g.relationshipName)).toEqual(['supersedes']);
     expect(addable.map((g) => g.relationshipName)).toEqual(['depends_on']);
+  });
+});
+
+describe('relationship-grouping: single-valued groups are promoted to the form', () => {
+  const person = {
+    id: 'person-1',
+    nodeType: 'person',
+    title: 'Sam Lee',
+    contentPreview: '',
+    edgeProperties: {}
+  };
+
+  // A task's view: `assignee`/`project` are the inbound `one` ends of person's
+  // and project's outbound `tasks`; `blocks` is task's own many-to-many.
+  function taskView(overrides: { assigned?: boolean } = {}) {
+    return buildRelationshipsView({
+      nodeId: 'task-1',
+      nodeType: 'task',
+      groups: [
+        makeGroup({ relationshipName: 'blocks', targetType: 'task', reverseName: 'blocked_by' }),
+        makeGroup({
+          relationshipName: 'tasks',
+          direction: 'in',
+          targetType: 'person',
+          sourceType: 'person',
+          reverseName: 'assignee',
+          cardinality: 'one',
+          related: overrides.assigned ? [person] : [],
+          count: overrides.assigned ? 1 : 0
+        }),
+        makeGroup({
+          relationshipName: 'tasks',
+          direction: 'in',
+          targetType: 'project',
+          sourceType: 'project',
+          reverseName: 'project',
+          cardinality: 'one'
+        })
+      ]
+    }).groups;
+  }
+
+  it('promotes every local-`one` group, populated or empty, whatever its direction', () => {
+    const outboundOne = buildRelationshipsView({
+      nodeId: 'invoice-1',
+      nodeType: 'invoice',
+      groups: [makeGroup({ relationshipName: 'billed_to', cardinality: 'one' })]
+    }).groups;
+    expect(isFormPromoted(outboundOne[0])).toBe(true);
+
+    const { promoted } = partitionGroups(taskView({ assigned: true }));
+    expect(promoted.map((g) => g.label)).toEqual(['Assignee', 'Project']);
+  });
+
+  it('keeps promoted groups out of the modal, so no edge has two controls', () => {
+    const { populated, addable } = partitionGroups(taskView({ assigned: true }));
+    // The assigned (populated, inbound) assignee does not become a rail section...
+    expect(populated).toHaveLength(0);
+    // ...and only task's own many-to-many remains addable.
+    expect(addable.map((g) => g.relationshipName)).toEqual(['blocks']);
+  });
+
+  it('leaves a `one` group that declares edge fields in the modal, where they can be edited', () => {
+    const [group] = buildRelationshipsView({
+      nodeId: 'person-1',
+      nodeType: 'person',
+      groups: [
+        makeGroup({
+          relationshipName: 'employed_by',
+          cardinality: 'one',
+          edgeFields: [{ name: 'role', type: 'string' }]
+        })
+      ]
+    }).groups;
+    expect(isFormPromoted(group)).toBe(false);
+    expect(partitionGroups([group]).addable).toEqual([group]);
+  });
+
+  it('gates the modal on what is left for it once promoted groups have moved out', () => {
+    expect(hasModalContent(partitionGroups(taskView()))).toBe(true);
+
+    // Only promoted groups and an empty inbound group: the modal would be empty.
+    const onlyPromoted = taskView().filter((g) => g.relationshipName !== 'blocks');
+    const withEmptyInbound = [
+      ...onlyPromoted,
+      ...buildRelationshipsView({
+        nodeId: 'task-1',
+        nodeType: 'task',
+        groups: [makeGroup({ direction: 'in', relationshipName: 'watches', reverseName: 'watchers' })]
+      }).groups
+    ];
+    expect(hasModalContent(partitionGroups(withEmptyInbound))).toBe(false);
   });
 });
 
