@@ -122,24 +122,73 @@ describe('Adapter contract: live round-trip (HttpAdapter → dev-proxy → daemo
 
     // dev-proxy must translate this into { clear:false, value:'high' } for
     // priority via buildTaskNodeUpdatePatch, not a hand-rolled equivalent.
-    // The raw dev-proxy response stores task fields flat under properties
-    // (packages/core/src/models/task_node.rs) — client-side promotion to
-    // top-level TaskNode fields is a separate concern (nodeToTaskNode), not
-    // something this HTTP-shape contract test needs to exercise.
-    const updated = (await h.adapter.updateTaskNode(id, created!.version, {
+    // The response is a typed TaskNode: core fields top-level, never in
+    // `properties`.
+    const updated = await h.adapter.updateTaskNode(id, created!.version, {
       priority: 'high',
       status: 'in_progress',
-    })) as unknown as { properties: { priority?: string; status?: string }; version: number };
+    });
 
-    expect(updated.properties.priority).toBe('high');
-    expect(updated.properties.status).toBe('in_progress');
+    expect(updated.priority).toBe('high');
+    expect(updated.status).toBe('in_progress');
+    expect(updated.properties).toEqual({});
 
     // Clearing priority (null) must round-trip to "no priority", not the
     // literal string "null" or an unset-vs-cleared ambiguity.
-    const cleared = (await h.adapter.updateTaskNode(id, updated.version, {
+    const cleared = await h.adapter.updateTaskNode(id, updated.version, {
       priority: null,
-    })) as unknown as { properties: { priority?: string | null } };
-    expect(cleared.properties.priority == null).toBe(true);
+    });
+    expect(cleared.priority == null).toBe(true);
+    expect(cleared.status).toBe('in_progress');
+  });
+
+  it('create → typed person update → read back carries typed fields and the templated title', async () => {
+    const id = crypto.randomUUID();
+    await h.adapter.createNode({
+      id,
+      nodeType: 'person',
+      content: '',
+      properties: { first_name: 'Ada' },
+    });
+    const created = await h.adapter.getNode(id);
+    expect((created as unknown as { firstName?: string }).firstName).toBe('Ada');
+
+    const updated = await h.adapter.updatePersonNode(id, created!.version, {
+      lastName: 'Lovelace',
+      email: 'ada@example.com',
+    });
+    expect(updated.firstName).toBe('Ada');
+    expect(updated.lastName).toBe('Lovelace');
+    expect(updated.email).toBe('ada@example.com');
+    expect(updated.properties).toEqual({});
+
+    // A fresh read agrees — the write is durable, and the title_template
+    // recomputed from the typed fields.
+    const reread = (await h.adapter.getNode(id)) as unknown as {
+      lastName?: string;
+      title?: string;
+    };
+    expect(reread.lastName).toBe('Lovelace');
+    expect(reread.title).toBe('Ada Lovelace');
+
+    // null clears.
+    const cleared = await h.adapter.updatePersonNode(id, updated.version, { email: null });
+    expect(cleared.email).toBeUndefined();
+  });
+
+  it('create → typed project update → read back carries typed fields', async () => {
+    const id = crypto.randomUUID();
+    await h.adapter.createNode({ id, nodeType: 'project', content: 'Launch' });
+    const created = await h.adapter.getNode(id);
+    expect((created as unknown as { status?: string }).status).toBe('planning');
+
+    const updated = await h.adapter.updateProjectNode(id, created!.version, {
+      status: 'active',
+      startDate: '2026-03-01T09:00:00Z',
+    });
+    expect(updated.status).toBe('active');
+    expect(updated.startDate).toBe('2026-03-01');
+    expect(updated.properties).toEqual({});
   });
 
   it('createNode honors an explicit InsertPosition the same way move/reorder do', async () => {

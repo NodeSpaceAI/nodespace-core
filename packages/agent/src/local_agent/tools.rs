@@ -2615,7 +2615,9 @@ impl GraphToolExecutor {
                         v.get("content").and_then(|v| v.as_str()).unwrap_or(""),
                         BODY_TRUNCATE_SUMMARY
                     ),
-                    "properties": v.get("properties").cloned().unwrap_or(json!({})),
+                    // The flat, storage-keyed map (core fields folded back in) —
+                    // the same bare keys the model writes with update_node.
+                    "properties": nodespace_core::models::flat_properties_view(v),
                 })
             })
             .collect())
@@ -3104,6 +3106,15 @@ impl GraphToolExecutor {
             };
             match node_ops::get_node(&ns, input).await {
                 Ok(mut node_data) => {
+                    // The model reads and writes properties by their bare
+                    // storage keys (`update_node` field_values), so its view
+                    // of `properties` is the flat, storage-keyed map — a core
+                    // type's fields folded back in from the typed top level.
+                    let flat = nodespace_core::models::flat_properties_view(&node_data);
+                    if let Some(obj) = node_data.as_object_mut() {
+                        obj.insert("properties".to_string(), flat);
+                    }
+
                     // Attach the type's full schema field list. `node_data`
                     // carries only *populated* properties, so without this a
                     // defined-but-unset field (`due_date` on a fresh task) is
@@ -3132,10 +3143,11 @@ impl GraphToolExecutor {
                     if let Some(node_type) = node_data.get("nodeType").and_then(|v| v.as_str()) {
                         let node_type = node_type.to_string();
                         if let Ok(Some(schema)) = ns.get_schema_node(&node_type).await {
-                            let properties = node_data
-                                .get("properties")
-                                .cloned()
-                                .unwrap_or_else(|| json!({}));
+                            // Flat, storage-keyed view: a core type's
+                            // fields are top-level on the typed node, but the
+                            // schema names them by storage key (`due_date`).
+                            let properties =
+                                nodespace_core::models::flat_properties_view(&node_data);
                             let available =
                                 nodespace_core::ops::entity_types_block::build_available_properties(
                                     &schema,
@@ -3264,10 +3276,8 @@ impl GraphToolExecutor {
         // recorded the user's particulars apart from one that persisted a bare
         // shell — indistinguishable by tool name alone, which is the hole
         // `fields` already closes for create_schema.
-        let property_count = output
-            .node_data
-            .get("properties")
-            .and_then(|p| p.as_object())
+        let property_count = nodespace_core::models::flat_properties_view(&output.node_data)
+            .as_object()
             .map(|o| o.len())
             .unwrap_or(0);
 

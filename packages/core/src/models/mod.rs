@@ -79,7 +79,15 @@ pub use text_node::TextNode;
 
 // node_to_typed_value and nodes_to_typed_values are the single canonical
 // implementations in nodespace-types, re-exported here for all entry points.
-pub use nodespace_types::{node_to_typed_value, nodes_to_typed_values};
+pub use nodespace_types::{
+    flat_properties_view, node_to_typed_value, nodes_to_typed_values, promoted_fields,
+};
+
+// Typed update payloads for the core types whose writes route through the
+// generic update pipeline (`NodeService::update_person_node` /
+// `update_project_node`). Defined once in nodespace-types so the Tauri
+// command layer deserializes the same struct the service consumes.
+pub use nodespace_types::{PersonNodeUpdate, ProjectNodeUpdate};
 
 // The lifecycle-status allow-list and its validator live in nodespace-types
 // (owner of the `Node`/`NodeUpdate` types), re-exported here as the single

@@ -14,8 +14,9 @@
  * file closes the remaining gap: that the rendered form actually shows
  * project's real fields — status, priority, start_date, end_date, mirroring
  * the schema exactly as `core_schemas.rs` declares it — with correct labels
- * and values, and persists an edit back in the flat shape every transport
- * delivers (the backend re-buckets it under `project` in storage).
+ * and values read from the typed ProjectNode's top-level fields, and persists an
+ * edit as a typed change (which the store routes through the typed project
+ * update) rather than as a properties write.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { render, cleanup, screen, fireEvent, waitFor } from '@testing-library/svelte';
@@ -101,7 +102,8 @@ const PROJECT_SCHEMA: SchemaNode = {
   // out of scope for these field-rendering assertions.
 };
 
-function projectNode(properties: Record<string, unknown>): Node {
+/** A project node in wire shape: core fields top-level, `properties` extension-only. */
+function projectNode(typed: Record<string, unknown>): Node {
   return {
     id: 'project-1',
     nodeType: 'project',
@@ -109,7 +111,8 @@ function projectNode(properties: Record<string, unknown>): Node {
     createdAt: '2026-01-01T00:00:00Z',
     modifiedAt: '2026-01-01T00:00:00Z',
     version: 1,
-    properties
+    properties: {},
+    ...typed
   } as Node;
 }
 
@@ -174,8 +177,8 @@ describe('GenericSchemaForm — real project schema', () => {
       projectNode({
         status: 'active',
         priority: 'high',
-        start_date: '2026-01-01',
-        end_date: '2026-03-31'
+        startDate: '2026-01-01',
+        endDate: '2026-03-31'
       })
     );
     render(GenericSchemaForm, { props: { nodeId: 'project-1', schema: PROJECT_SCHEMA, autoOpen: true } });
@@ -185,7 +188,7 @@ describe('GenericSchemaForm — real project schema', () => {
     expect(screen.getByText('High')).toBeTruthy();
   });
 
-  it('persists a date-field edit flat, preserving siblings', async () => {
+  it('persists a date-field edit as a typed change touching only that field', async () => {
     // Exercises the write path through a real leaf control (the date Popover trigger is a
     // plain button, unlike the enum Select's portalled listbox, so it is a reliable target
     // in Happy-DOM). The enum write path itself —
@@ -209,14 +212,11 @@ describe('GenericSchemaForm — real project schema', () => {
     await fireEvent.click(dayButton);
 
     await waitFor(() => expect(updateNodeSpy).toHaveBeenCalledTimes(1));
-    const [, changes] = updateNodeSpy.mock.calls[0] as [string, Partial<Node>];
-    const persisted = changes.properties as Record<string, unknown>;
+    const [, changes] = updateNodeSpy.mock.calls[0] as [string, Record<string, unknown>];
     // The exact date depends on "today" (the Calendar's default view), which is not the
-    // point of this test — the point is that status/priority survive the write untouched
-    // and end_date is not spuriously introduced.
-    expect(persisted.status).toBe('planning');
-    expect(persisted.priority).toBe('low');
-    expect(persisted.start_date).toEqual(expect.any(String));
-    expect(persisted.end_date).toBeUndefined();
+    // point of this test — the point is that the edit is a typed `startDate` change and
+    // nothing else: no properties write, no other core field.
+    expect(Object.keys(changes)).toEqual(['startDate']);
+    expect(changes.startDate).toEqual(expect.any(String));
   });
 });

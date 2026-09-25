@@ -1,6 +1,9 @@
 import type { Node } from '$lib/types/node';
 import { nodeToTaskNode } from '$lib/types/task-node';
+import { nodeToPersonNode } from '$lib/types/person-node';
+import { nodeToProjectNode } from '$lib/types/project-node';
 import { nodeToAiChatNode } from '$lib/types/ai-chat-node';
+import { TYPED_CORE_DEFAULTS, TYPED_CORE_FIELDS } from '$lib/types/typed-core-fields';
 
 /**
  * Normalize raw node data from a sync boundary (Tauri domain events or SSE) to the
@@ -10,23 +13,26 @@ import { nodeToAiChatNode } from '$lib/types/ai-chat-node';
  * so a future type branch (e.g. SchemaNode) is added in exactly one place.
  */
 export function normalizeNodeData(nodeData: Node): Node {
-  if (nodeData.nodeType === 'task') {
-    return nodeToTaskNode(nodeData) as unknown as Node;
+  switch (nodeData.nodeType) {
+    case 'task':
+      return nodeToTaskNode(nodeData) as unknown as Node;
+    case 'person':
+      return nodeToPersonNode(nodeData) as unknown as Node;
+    case 'project':
+      return nodeToProjectNode(nodeData) as unknown as Node;
+    case 'ai-chat':
+      return nodeToAiChatNode(nodeData) as unknown as Node;
+    default:
+      return nodeData;
   }
-  if (nodeData.nodeType === 'ai-chat') {
-    return nodeToAiChatNode(nodeData) as unknown as Node;
-  }
-  return nodeData;
 }
 
 /**
- * One promoted field: `from` is the property key the write payload actually
- * uses (what `changesProperties`/`mergedProperties` are keyed by), `to` is the
- * top-level `Node` key viewers read. The two differ for ai-chat's canonical
- * snake_case property keys (`turn_status`, `session_status`), which the
- * backend promotes to camelCase top-level fields (`turnStatus`,
- * `sessionStatus`) — see `ai_chat_node_to_value` in
- * `packages/nodespace-types/src/convert.rs`. They're equal everywhere else.
+ * One ai-chat field the backend promotes: `from` is the property key the write
+ * payload uses (what `changesProperties`/`mergedProperties` are keyed by), `to`
+ * is the top-level `Node` key viewers read. They differ for the canonical
+ * snake_case keys (`turn_status` → `turnStatus`) — see `ai_chat_node_to_value`
+ * in `packages/nodespace-types/src/convert.rs`.
  */
 interface PromotedField {
   from: string;
@@ -34,26 +40,21 @@ interface PromotedField {
 }
 
 /**
- * Mirror of the backend's typed-field promotion (`node_to_typed_value` /
- * `flatten_properties_for_api` in `packages/nodespace-types/src/convert.rs`).
- * For each node type, lists the type-specific fields the backend lifts from
- * the stored `properties` bag up to the TOP LEVEL of the node (the fields
- * viewers actually read).
+ * ai-chat fields the backend lifts from `properties` to the top level while
+ * also leaving them in `properties` — ai-chat writes them through the
+ * generic properties path, unlike the typed core types (`task`, `person`,
+ * `project`, see `TYPED_CORE_FIELDS`), whose core fields have exactly one home.
  *
- * Two independent consumers:
- * - `promoteTypedFields` below, for an optimistic (pre-round-trip)
- *   `updateNode` — reflects these fields immediately instead of waiting a
- *   full RPC round trip. The backend response is always spread over the node
- *   afterward, so drift here degrades optimistic latency only.
- * - `storageNodeToApiFields` below, for the browser/dev-proxy HTTP
- *   transport (`packages/dev-tools/src/dev-proxy.ts`), which has no access to
- *   `node_to_typed_value` (Rust) and returns nodes straight from storage
- *   shape. Drift here is NOT latency-only — a promoted field this map omits
- *   never reaches the top level over that transport at all, silently
- *   breaking any viewer that reads it (e.g. `AiChatNodeViewer`'s
- *   `node?.provider`/`node?.model`).
+ * Two consumers:
+ * - `promoteTypedFields`, for an optimistic (pre-round-trip) `updateNode` —
+ *   reflects these fields immediately instead of waiting a full RPC round
+ *   trip. The backend response is spread over the node afterward, so drift
+ *   here degrades optimistic latency only.
+ * - `storageNodeToApiFields`, for the browser/dev-proxy transport. Drift there
+ *   is NOT latency-only: a field this map omits never reaches the top level
+ *   over that transport (e.g. `AiChatNodeViewer`'s `node?.provider`).
  *
- * Keep in sync with convert.rs when the promoted field set changes.
+ * Keep in sync with convert.rs.
  */
 export const OPTIMISTIC_TYPED_FIELDS: Record<string, readonly PromotedField[]> = {
   'ai-chat': [
@@ -62,13 +63,6 @@ export const OPTIMISTIC_TYPED_FIELDS: Record<string, readonly PromotedField[]> =
     { from: 'provider', to: 'provider' },
     { from: 'model', to: 'model' },
     { from: 'messages', to: 'messages' }
-  ],
-  task: [
-    { from: 'status', to: 'status' },
-    { from: 'priority', to: 'priority' },
-    { from: 'dueDate', to: 'dueDate' },
-    { from: 'startedAt', to: 'startedAt' },
-    { from: 'completedAt', to: 'completedAt' }
   ]
 };
 
@@ -111,8 +105,17 @@ export function promoteTypedFields(
 }
 
 /**
+ * Mirror `normalize_date_field`: a `YYYY-MM-DD` date passes through and an
+ * RFC 3339 datetime reduces to its date in its own offset — the literal date
+ * prefix. Only `T`-separated datetimes are reduced, the only form written.
+ */
+function normalizeDate(value: string): string {
+  return /^\d{4}-\d{2}-\d{2}T/.test(value) ? value.slice(0, 10) : value;
+}
+
+/**
  * Convert a node's storage-shape `properties` into the API shape the frontend
- * reads: `properties` flattened, plus typed fields promoted to the top level.
+ * reads: `properties` flattened, typed core fields moved to the top level.
  *
  * This is the browser-transport counterpart to the backend's
  * `node_to_typed_value` (`packages/nodespace-types/src/convert.rs`), which the
@@ -120,14 +123,18 @@ export function promoteTypedFields(
  * (`packages/dev-tools/src/dev-proxy.ts`) has no access to that Rust function
  * and receives storage-shape `properties` (`{ person: { first_name } }`) from
  * gRPC, so it must call this before handing a node to the frontend. Without it
- * the two transports deliver different shapes and every reader has to guess
- * which one it got.
+ * the two transports deliver different shapes. Keep in sync with convert.rs:
  *
- * The flattening mirrors `flatten_namespaced_properties` exactly: when the
- * type's own bucket is present, its non-`_` keys become the properties
- * (object-valued fields included); otherwise the bag is already flat and only
- * its non-object, non-`_` keys survive — a nested object there can only be
- * another type's dormant namespace. Keep in sync with convert.rs.
+ * - Flattening mirrors `flatten_namespaced_properties`: when the type's own
+ *   bucket is present, its non-`_` keys become the properties (object-valued
+ *   fields included); otherwise the bag is already flat and only its
+ *   non-object, non-`_` keys survive — a nested object there can only be
+ *   another type's dormant namespace.
+ * - Typed core types (`TYPED_CORE_FIELDS`) move each core field to its typed
+ *   key — read under either spelling, typed key first, as the Rust converters
+ *   do — normalize dates, fill the backend's defaults, and drop both
+ *   spellings from `properties`.
+ * - ai-chat promotes its fields and leaves them in `properties`.
  */
 export function storageNodeToApiFields(
   nodeType: string,
@@ -147,7 +154,15 @@ export function storageNodeToApiFields(
     }
   }
 
-  const promoted: Record<string, unknown> = {};
+  const promoted: Record<string, unknown> = { ...(TYPED_CORE_DEFAULTS[nodeType] ?? {}) };
+  for (const { storage, wire, date } of TYPED_CORE_FIELDS[nodeType] ?? []) {
+    const raw = properties[wire] ?? properties[storage];
+    if (typeof raw === 'string') {
+      promoted[wire] = date ? normalizeDate(raw) : raw;
+    }
+    delete properties[storage];
+    delete properties[wire];
+  }
   for (const { from, to } of OPTIMISTIC_TYPED_FIELDS[nodeType] ?? []) {
     if (Object.prototype.hasOwnProperty.call(properties, from)) {
       promoted[to] = properties[from];

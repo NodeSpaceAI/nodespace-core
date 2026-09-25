@@ -1,9 +1,9 @@
 /**
- * Generic schema form field resolution.
+ * Schema field resolution.
  *
- * Every transport flattens a node's storage bucket (`properties[nodeType]`) away before it
- * reaches the frontend, so the form reads and writes bare keys for core and user-defined
- * types alike. The backend re-buckets bare keys on write.
+ * A core type's schema-declared fields are typed top-level fields (project's
+ * `start_date` is `node.startDate`); every other field is an extension field,
+ * flat in `properties`. Reads and writes must agree on which slot a field uses.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -13,58 +13,87 @@ import {
 } from '$lib/components/schema/schema-field-resolution';
 
 describe('resolveFieldValue', () => {
-  it('reads a flat field for a core type', () => {
-    const node = { nodeType: 'project', properties: { status: 'planning', priority: 'high' } };
+  it('reads a core type field from its typed top-level key', () => {
+    const node = {
+      nodeType: 'project',
+      status: 'active',
+      startDate: '2026-03-01',
+      properties: {}
+    };
 
-    expect(resolveFieldValue(node, 'status')).toBe('planning');
-    expect(resolveFieldValue(node, 'priority')).toBe('high');
+    expect(resolveFieldValue(node, 'status')).toBe('active');
+    expect(resolveFieldValue(node, 'start_date')).toBe('2026-03-01');
   });
 
-  it('reads a flat field for a user-defined schema type', () => {
+  it('never reads a core type field from properties', () => {
+    const node = { nodeType: 'person', properties: { first_name: 'stale copy' } };
+
+    expect(resolveFieldValue(node, 'first_name')).toBe(null);
+  });
+
+  it('reads an extension field on a core type from properties', () => {
+    const node = { nodeType: 'task', status: 'open', properties: { 'custom:store': 'Costco' } };
+
+    expect(resolveFieldValue(node, 'custom:store')).toBe('Costco');
+  });
+
+  it('reads a flat field for a user-defined schema type, even one named like a core field', () => {
     const node = {
       nodeType: '7b1c2d3e-4f56-7890-abcd-ef1234567890',
-      properties: { capacity: 250 }
+      properties: { capacity: 250, status: 'booked' }
     };
 
     expect(resolveFieldValue(node, 'capacity')).toBe(250);
+    expect(resolveFieldValue(node, 'status')).toBe('booked');
   });
 
   it('returns null for an unset field', () => {
-    expect(resolveFieldValue({ nodeType: 'project', properties: {} }, 'status')).toBe(null);
-    expect(resolveFieldValue({ nodeType: 'project' }, 'status')).toBe(null);
+    expect(resolveFieldValue({ nodeType: 'project', properties: {} }, 'priority')).toBe(null);
+    expect(resolveFieldValue({ nodeType: 'venue' }, 'capacity')).toBe(null);
   });
 });
 
 describe('buildFieldWrite', () => {
-  it('writes flat and preserves sibling fields', () => {
-    const node = { nodeType: 'project', properties: { status: 'planning', priority: 'high' } };
+  it('writes a core type field as a typed top-level change', () => {
+    const node = { nodeType: 'project', status: 'planning', properties: { 'custom:x': 1 } };
 
-    expect(buildFieldWrite(node, 'status', 'active')).toEqual({
-      status: 'active',
-      priority: 'high'
+    expect(buildFieldWrite(node, 'start_date', '2026-03-01')).toEqual({
+      startDate: '2026-03-01'
     });
   });
 
-  it('writes flat when the node has no properties yet', () => {
-    expect(buildFieldWrite({ nodeType: 'project' }, 'status', 'active')).toEqual({
-      status: 'active'
+  it('clears a typed field with null rather than an empty string', () => {
+    const node = { nodeType: 'person', properties: {} };
+
+    expect(buildFieldWrite(node, 'email', '')).toEqual({ email: null });
+  });
+
+  it('writes an extension field flat and preserves sibling extension fields', () => {
+    const node = { nodeType: 'venue', properties: { capacity: 100, city: 'Austin' } };
+
+    expect(buildFieldWrite(node, 'capacity', 250)).toEqual({
+      properties: { capacity: 250, city: 'Austin' }
     });
   });
 
   it('does not mutate the original properties', () => {
-    const properties = { status: 'planning' };
-    const node = { nodeType: 'project', properties };
+    const properties = { capacity: 100 };
+    const node = { nodeType: 'venue', properties };
 
-    buildFieldWrite(node, 'status', 'active');
+    buildFieldWrite(node, 'capacity', 250);
 
-    expect(properties.status).toBe('planning');
+    expect(properties.capacity).toBe(100);
   });
 
-  it('round-trips with resolveFieldValue', () => {
-    const node = { nodeType: 'venue-uuid', properties: { capacity: 100 } };
+  it('round-trips with resolveFieldValue for both slots', () => {
+    const venue = { nodeType: 'venue', properties: { capacity: 100 } };
+    const project = { nodeType: 'project', status: 'planning', properties: {} };
 
     expect(
-      resolveFieldValue({ ...node, properties: buildFieldWrite(node, 'capacity', 250) }, 'capacity')
+      resolveFieldValue({ ...venue, ...buildFieldWrite(venue, 'capacity', 250) }, 'capacity')
     ).toBe(250);
+    expect(
+      resolveFieldValue({ ...project, ...buildFieldWrite(project, 'status', 'active') }, 'status')
+    ).toBe('active');
   });
 });

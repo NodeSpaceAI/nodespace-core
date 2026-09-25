@@ -17,7 +17,17 @@
 // resolution). Keep every `$lib`-aliased import type-only — TypeScript erases
 // type-only imports before Bun ever needs to resolve the specifier, but a
 // value-level `$lib` import here would break dev-proxy at runtime.
-import type { Node, NodeReference, NodeWithChildren, TaskNode, TaskNodeUpdate } from '$lib/types';
+import type {
+  Node,
+  NodeReference,
+  NodeWithChildren,
+  PersonNode,
+  PersonNodeUpdate,
+  ProjectNode,
+  ProjectNodeUpdate,
+  TaskNode,
+  TaskNodeUpdate
+} from '$lib/types';
 import type { SchemaNode } from '$lib/types/schema-node';
 import type { QueryFilter, SortConfig } from '$lib/types/query';
 // Type-only: relationship-grouping is a pure module (no Tauri/DOM/$lib value
@@ -109,6 +119,8 @@ export interface BackendAdapter {
   getNode(id: string): Promise<Node | null>;
   updateNode(id: string, version: number, update: UpdateNodeInput): Promise<Node>;
   updateTaskNode(id: string, version: number, update: TaskNodeUpdate): Promise<TaskNode>;
+  updatePersonNode(id: string, version: number, update: PersonNodeUpdate): Promise<PersonNode>;
+  updateProjectNode(id: string, version: number, update: ProjectNodeUpdate): Promise<ProjectNode>;
   deleteNode(id: string, version: number): Promise<DeleteResult>;
 
   // Hierarchy
@@ -274,6 +286,38 @@ export function buildTaskNodeUpdatePatch(update: TaskNodeUpdate): TaskNodeUpdate
   };
 }
 
+export interface PersonNodeUpdatePatch {
+  firstName: ClearableField<string>;
+  lastName: ClearableField<string>;
+  email: ClearableField<string>;
+}
+
+/** `PersonNodeUpdate` → tri-state wire patch. See `buildTaskNodeUpdatePatch`. */
+export function buildPersonNodeUpdatePatch(update: PersonNodeUpdate): PersonNodeUpdatePatch {
+  return {
+    firstName: clearable(update.firstName),
+    lastName: clearable(update.lastName),
+    email: clearable(update.email),
+  };
+}
+
+export interface ProjectNodeUpdatePatch {
+  status?: string;
+  priority: ClearableField<string>;
+  startDate: ClearableField<string>;
+  endDate: ClearableField<string>;
+}
+
+/** `ProjectNodeUpdate` → tri-state wire patch. See `buildTaskNodeUpdatePatch`. */
+export function buildProjectNodeUpdatePatch(update: ProjectNodeUpdate): ProjectNodeUpdatePatch {
+  return {
+    status: update.status,
+    priority: clearable(update.priority),
+    startDate: clearable(update.startDate),
+    endDate: clearable(update.endDate),
+  };
+}
+
 // ============================================================================
 // ExecuteQuery — structured query wire encoding
 // ============================================================================
@@ -427,6 +471,8 @@ export const HTTP_ROUTES = {
   updateNode: (id: string) => `/api/nodes/${encodeURIComponent(id)}`,
   deleteNode: (id: string) => `/api/nodes/${encodeURIComponent(id)}`,
   updateTaskNode: (id: string) => `/api/tasks/${encodeURIComponent(id)}`,
+  updatePersonNode: (id: string) => `/api/persons/${encodeURIComponent(id)}`,
+  updateProjectNode: (id: string) => `/api/projects/${encodeURIComponent(id)}`,
   moveNode: (id: string) => `/api/nodes/${encodeURIComponent(id)}/parent`,
   moveChildrenToParent: (parentId: string) => `/api/nodes/${encodeURIComponent(parentId)}/move-children`,
   getChildren: (parentId: string) => `/api/nodes/${encodeURIComponent(parentId)}/children`,
@@ -463,6 +509,8 @@ export const HTTP_ROUTE_PATTERNS = {
   updateNode: /^\/api\/nodes\/([^/]+)$/,
   deleteNode: /^\/api\/nodes\/([^/]+)$/,
   updateTaskNode: /^\/api\/tasks\/([^/]+)$/,
+  updatePersonNode: /^\/api\/persons\/([^/]+)$/,
+  updateProjectNode: /^\/api\/projects\/([^/]+)$/,
   moveNode: /^\/api\/nodes\/([^/]+)\/parent$/,
   moveChildrenToParent: /^\/api\/nodes\/([^/]+)\/move-children$/,
   getChildren: /^\/api\/nodes\/([^/]+)\/children$/,

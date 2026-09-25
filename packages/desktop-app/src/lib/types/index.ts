@@ -54,6 +54,12 @@ export {
   TaskNodeHelpers
 } from './task-node';
 
+export type { PersonNode, PersonNodeUpdate } from './person-node';
+export { isPersonNode, nodeToPersonNode } from './person-node';
+
+export type { ProjectNode, ProjectNodeUpdate, ProjectStatus } from './project-node';
+export { isProjectNode, nodeToProjectNode } from './project-node';
+
 export type { SchemaNode, SchemaField, ProtectionLevel, EnumValue } from './schema-node';
 // Only isSchemaNode remains - type guard for runtime checking
 // All other properties are typed top-level fields accessed directly (e.g., node.isCore, node.fields)

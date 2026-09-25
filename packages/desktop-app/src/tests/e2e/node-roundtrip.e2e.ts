@@ -98,9 +98,9 @@ describe('Node CRUD round-trip (HTTP → gRPC → SQLite)', () => {
     expect(node!.properties).toEqual(properties);
   });
 
-  it('serves flat properties for nodes inside a children tree', async () => {
+  it('serves typed nodes inside a children tree', async () => {
     // Node pages populate the store from this tree, so its nodes must share the
-    // single-node read's flat shape rather than storage's type bucket.
+    // single-node read's typed shape rather than storage's type bucket.
     const parentId = crypto.randomUUID();
     const childId = crypto.randomUUID();
     await h.adapter.createNode({ id: parentId, nodeType: 'text', content: 'tree parent' });
@@ -113,9 +113,12 @@ describe('Node CRUD round-trip (HTTP → gRPC → SQLite)', () => {
     });
 
     const tree = await h.adapter.getChildrenTree(parentId);
-    const child = tree?.children?.find((c) => c.id === childId);
-    expect(child?.properties).toMatchObject({ first_name: 'Ada', last_name: 'Lovelace' });
-    expect(child?.properties).not.toHaveProperty('person');
+    const child = tree?.children?.find((c) => c.id === childId) as
+      | (Record<string, unknown> & { properties?: Record<string, unknown> })
+      | undefined;
+    expect(child?.firstName).toBe('Ada');
+    expect(child?.lastName).toBe('Lovelace');
+    expect(child?.properties).toEqual({});
   });
 
   it('createNode returns the new node id string', async () => {

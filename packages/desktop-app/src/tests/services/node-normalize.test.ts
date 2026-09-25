@@ -103,11 +103,10 @@ describe('promoteTypedFields', () => {
     expect('turnStatus' in promoted).toBe(false);
   });
 
-  it('promotes flat task fields present in the write', () => {
-    const changes = { status: 'done' };
-    const merged = { status: 'done', priority: 'high' };
-    const promoted = promoteTypedFields('task', changes, merged);
-    expect(promoted).toEqual({ status: 'done' });
+  it('never promotes a typed core type field from a properties write', () => {
+    // task/person/project core fields have one home, the top level, and are
+    // written through the typed update — a properties write can't carry them.
+    expect(promoteTypedFields('task', { status: 'done' }, { status: 'done' })).toEqual({});
   });
 
   it('returns nothing for a node type with no typed-field map', () => {
@@ -122,7 +121,7 @@ describe('promoteTypedFields', () => {
   });
 
   it('map stays aligned with the documented promoted types', () => {
-    expect(Object.keys(OPTIMISTIC_TYPED_FIELDS).sort()).toEqual(['ai-chat', 'task']);
+    expect(Object.keys(OPTIMISTIC_TYPED_FIELDS).sort()).toEqual(['ai-chat']);
     expect(OPTIMISTIC_TYPED_FIELDS['ai-chat']).toEqual([
       { from: 'turn_status', to: 'turnStatus' },
       { from: 'session_status', to: 'sessionStatus' },
@@ -161,12 +160,32 @@ describe('storageNodeToApiFields', () => {
   // typed fields; this is the proxy's mirror of it, so both transports hand the
   // frontend the same shape.
 
-  it('flattens a person node in real storage shape', () => {
+  it('moves person core fields to typed keys, leaving extension fields', () => {
     const fields = storageNodeToApiFields('person', {
-      person: { first_name: 'Michael', last_name: 'Libio', email: 'm@example.com' }
+      person: {
+        first_name: 'Michael',
+        last_name: 'Libio',
+        email: 'm@example.com',
+        'custom:team': 'Core'
+      }
     });
     expect(fields).toEqual({
-      properties: { first_name: 'Michael', last_name: 'Libio', email: 'm@example.com' }
+      firstName: 'Michael',
+      lastName: 'Libio',
+      email: 'm@example.com',
+      properties: { 'custom:team': 'Core' }
+    });
+  });
+
+  it('moves project core fields, normalizing dates and defaulting status', () => {
+    const fields = storageNodeToApiFields('project', {
+      project: { start_date: '2026-03-01T09:00:00Z', end_date: '2026-04-30' }
+    });
+    expect(fields).toEqual({
+      status: 'planning',
+      startDate: '2026-03-01',
+      endDate: '2026-04-30',
+      properties: {}
     });
   });
 
@@ -191,15 +210,29 @@ describe('storageNodeToApiFields', () => {
     });
   });
 
-  it('flattens and promotes a task node in real storage shape', () => {
+  it('moves task core fields to typed keys, reading either date spelling', () => {
     const fields = storageNodeToApiFields('task', {
-      task: { status: 'in_progress', priority: 'high', dueDate: '2024-12-31' }
+      task: {
+        status: 'in_progress',
+        priority: 'high',
+        due_date: '2024-12-31',
+        startedAt: '2024-12-01T08:00:00Z',
+        'custom:store': 'Costco'
+      }
     });
-    expect(fields).toMatchObject({ status: 'in_progress', priority: 'high', dueDate: '2024-12-31' });
-    expect(fields.properties).toEqual({
+    expect(fields).toEqual({
       status: 'in_progress',
       priority: 'high',
-      dueDate: '2024-12-31'
+      dueDate: '2024-12-31',
+      startedAt: '2024-12-01',
+      properties: { 'custom:store': 'Costco' }
+    });
+  });
+
+  it('defaults an unset task status to open, as task_node_to_value does', () => {
+    expect(storageNodeToApiFields('task', { task: {} })).toEqual({
+      status: 'open',
+      properties: {}
     });
   });
 
@@ -214,9 +247,9 @@ describe('storageNodeToApiFields', () => {
       _schema_version: 1,
       _seed: { id: 'x' },
       text: { dormant: true },
-      person: { first_name: 'Ann', _internal: 'hidden' }
+      person: { 'custom:team': 'Core', _internal: 'hidden' }
     });
-    expect(fields.properties).toEqual({ first_name: 'Ann' });
+    expect(fields.properties).toEqual({ 'custom:team': 'Core' });
   });
 
   it('passes an already-flat bag through, dropping only nested objects and _ keys', () => {

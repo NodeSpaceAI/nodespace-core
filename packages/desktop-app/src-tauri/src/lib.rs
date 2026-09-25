@@ -760,6 +760,8 @@ pub fn run() {
             commands::nodes::update_relationship_properties,
             commands::nodes::delete_node_mention,
             commands::nodes::update_task_node,
+            commands::nodes::update_person_node,
+            commands::nodes::update_project_node,
             // Collection commands (browsing and management UI)
             commands::collections::get_all_collections,
             commands::collections::get_collection_members,

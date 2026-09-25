@@ -23,3 +23,15 @@ pub(crate) fn is_active_lifecycle(s: &str) -> bool {
 pub fn is_valid_lifecycle_status(status: &str) -> bool {
     LIFECYCLE_STATUSES.contains(&status)
 }
+
+/// Deserialize a tri-state `Option<Option<String>>` field: absent → `None`
+/// (via `#[serde(default)]`), `null` → `Some(None)` (clear), a string →
+/// `Some(Some(s))` (set). A plain `Option<Option<T>>` collapses `null` into
+/// `None`, which would turn every "clear this field" into a no-op.
+pub(crate) fn deserialize_clearable<'de, D>(d: D) -> Result<Option<Option<String>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::Deserialize;
+    Option::<String>::deserialize(d).map(Some)
+}

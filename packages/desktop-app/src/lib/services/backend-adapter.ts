@@ -24,7 +24,17 @@
  * ```
  */
 
-import type { Node, NodeReference, NodeWithChildren, TaskNode, TaskNodeUpdate } from '$lib/types';
+import type {
+  Node,
+  NodeReference,
+  NodeWithChildren,
+  PersonNode,
+  PersonNodeUpdate,
+  ProjectNode,
+  ProjectNodeUpdate,
+  TaskNode,
+  TaskNodeUpdate
+} from '$lib/types';
 import type { SchemaNode } from '$lib/types/schema-node';
 import type { RawNodeRelationships } from './relationship-grouping';
 import { createLogger } from '$lib/utils/logger';
@@ -102,6 +112,27 @@ class TauriAdapter implements BackendAdapter {
     return withDiagnosticLogging(
       'updateTaskNode',
       () => invoke<TaskNode>('update_task_node', { id, version, update }),
+      [id, version, update]
+    );
+  }
+
+  async updatePersonNode(id: string, version: number, update: PersonNodeUpdate): Promise<PersonNode> {
+    // Like updateTaskNode, the tri-state encoding happens in the Rust command.
+    return withDiagnosticLogging(
+      'updatePersonNode',
+      () => invoke<PersonNode>('update_person_node', { id, version, update }),
+      [id, version, update]
+    );
+  }
+
+  async updateProjectNode(
+    id: string,
+    version: number,
+    update: ProjectNodeUpdate
+  ): Promise<ProjectNode> {
+    return withDiagnosticLogging(
+      'updateProjectNode',
+      () => invoke<ProjectNode>('update_project_node', { id, version, update }),
       [id, version, update]
     );
   }
@@ -491,6 +522,28 @@ export class HttpAdapter implements BackendAdapter {
     return await this.handleResponse<TaskNode>(response);
   }
 
+  async updatePersonNode(id: string, version: number, update: PersonNodeUpdate): Promise<PersonNode> {
+    const response = await fetch(`${this.baseUrl}${HTTP_ROUTES.updatePersonNode(id)}`, {
+      method: 'PATCH',
+      headers: this.getHeaders(),
+      body: JSON.stringify({ ...update, version })
+    });
+    return await this.handleResponse<PersonNode>(response);
+  }
+
+  async updateProjectNode(
+    id: string,
+    version: number,
+    update: ProjectNodeUpdate
+  ): Promise<ProjectNode> {
+    const response = await fetch(`${this.baseUrl}${HTTP_ROUTES.updateProjectNode(id)}`, {
+      method: 'PATCH',
+      headers: this.getHeaders(),
+      body: JSON.stringify({ ...update, version })
+    });
+    return await this.handleResponse<ProjectNode>(response);
+  }
+
   async deleteNode(id: string, version: number): Promise<DeleteResult> {
     const response = await fetch(`${this.baseUrl}${HTTP_ROUTES.deleteNode(id)}`, {
       method: 'DELETE',
@@ -727,6 +780,20 @@ class MockAdapter implements BackendAdapter {
   }
   async updateTaskNode(_id: string, _version: number, _update: TaskNodeUpdate): Promise<TaskNode> {
     return {} as TaskNode;
+  }
+  async updatePersonNode(
+    _id: string,
+    _version: number,
+    _update: PersonNodeUpdate
+  ): Promise<PersonNode> {
+    return {} as PersonNode;
+  }
+  async updateProjectNode(
+    _id: string,
+    _version: number,
+    _update: ProjectNodeUpdate
+  ): Promise<ProjectNode> {
+    return {} as ProjectNode;
   }
   async deleteNode(_id: string, _version: number): Promise<DeleteResult> {
     return { existed: true, deletedCount: 0 };

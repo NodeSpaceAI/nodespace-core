@@ -38,7 +38,8 @@ const FILLED = {
   isBlank: false
 };
 
-function personNode(overrides: Partial<Node> = {}): Node {
+/** A person node in wire shape: core fields top-level, `properties` extension-only. */
+function personNode(overrides: Partial<Node> & Record<string, unknown> = {}): Node {
   return {
     id: 'person-1',
     nodeType: 'person',
@@ -47,7 +48,10 @@ function personNode(overrides: Partial<Node> = {}): Node {
     createdAt: '2026-01-01T00:00:00Z',
     modifiedAt: '2026-01-01T00:00:00Z',
     version: 1,
-    properties: { first_name: 'Alice', last_name: 'Example', email: 'alice@example.com' },
+    properties: {},
+    firstName: 'Alice',
+    lastName: 'Example',
+    email: 'alice@example.com',
     ...overrides
   } as Node;
 }
@@ -222,11 +226,9 @@ describe('IdentityCard', () => {
     });
     // Simulate the store already holding fresher data than the Tauri
     // snapshot — e.g. because PersonSchemaForm, open in the other pane,
-    // already committed an edit through sharedNodeStore.updateNode.
+    // already committed an edit through the store's typed person update.
     vi.spyOn(sharedNodeStore, 'getNode').mockReturnValue(
-      personNode({
-        properties: { first_name: 'Alicia', last_name: 'Updated', email: 'alicia@example.com' }
-      })
+      personNode({ firstName: 'Alicia', lastName: 'Updated', email: 'alicia@example.com' })
     );
 
     const { container } = render(IdentityCard);

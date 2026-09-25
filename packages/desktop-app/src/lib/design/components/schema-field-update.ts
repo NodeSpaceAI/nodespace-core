@@ -1,12 +1,15 @@
 /**
  * Schema-aware property updates for viewer-rendered nodes.
  *
- * Routes task node fields through the type-safe task update path and everything
- * else through the generic flat properties path (`properties[fieldName]`).
+ * A typed core field (`task.status`, `project.start_date`, …) is written as a
+ * top-level typed change, which the store routes through the type's typed
+ * update; every other field is written flat into `properties`. See
+ * `schema-field-resolution.ts`.
  */
 
 import { sharedNodeStore } from '$lib/services/shared-node-store.svelte';
 import { pluginRegistry } from '$lib/plugins/plugin-registry';
+import { buildFieldWrite } from '$lib/components/schema/schema-field-resolution';
 
 /**
  * Extract and transform node properties into component-compatible metadata.
@@ -22,10 +25,6 @@ export function extractNodeMetadata(node: {
 /**
  * Update a schema field value for a node.
  *
- * For task nodes, task-specific fields (status, priority, dueDate) route
- * through the type-safe task update path. All other fields — and all non-task
- * nodes — use the generic properties path.
- *
  * @param viewerId - Origin viewer id, recorded on the store update for echo suppression
  * @param targetNodeId - Node to update
  * @param fieldName - Schema field name (e.g. 'status', 'due_date')
@@ -40,28 +39,8 @@ export function updateSchemaField(
   const targetNode = sharedNodeStore.getNode(targetNodeId);
   if (!targetNode) return;
 
-  // Route task node property updates through type-safe path
-  if (targetNode.nodeType === 'task') {
-    // Map field names to TaskNodeUpdate structure
-    // The task-specific fields are: status, priority, dueDate
-    const taskFields = ['status', 'priority', 'due_date', 'dueDate'];
-
-    if (taskFields.includes(fieldName)) {
-      // Use type-safe task node update
-      sharedNodeStore.updateTaskNode(
-        targetNodeId,
-        { [fieldName === 'due_date' ? 'dueDate' : fieldName]: value },
-        { type: 'viewer', viewerId }
-      );
-      return;
-    }
-  }
-
-  // Generic path: write the field flat — the shape the frontend receives. The
-  // backend moves bare keys into the type's storage bucket.
-  sharedNodeStore.updateNode(
-    targetNodeId,
-    { properties: { ...targetNode.properties, [fieldName]: value } },
-    { type: 'viewer', viewerId }
-  );
+  sharedNodeStore.updateNode(targetNodeId, buildFieldWrite(targetNode, fieldName, value), {
+    type: 'viewer',
+    viewerId
+  });
 }

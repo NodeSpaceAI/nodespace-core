@@ -33,11 +33,15 @@ vi.mock('$lib/services/relationship-viewer-service', () => ({
   loadNodeRelationshipsView: (...args: unknown[]) => loadNodeRelationshipsView(...args)
 }));
 
+import type { PersonNode } from '$lib/types';
 import PersonSchemaForm from '$lib/components/property-forms/person-schema-form.svelte';
 import { sharedNodeStore } from '$lib/services/shared-node-store.svelte';
 import { backendAdapter } from '$lib/services/backend-adapter';
 
-function personNode(overrides: Partial<Node> = {}): Node {
+type PersonOverrides = Partial<Node> & Partial<Pick<PersonNode, 'firstName' | 'lastName' | 'email'>>;
+
+/** A person node in wire shape: core fields top-level, `properties` extension-only. */
+function personNode(overrides: PersonOverrides = {}): Node {
   return {
     id: 'person-1',
     nodeType: 'person',
@@ -46,12 +50,13 @@ function personNode(overrides: Partial<Node> = {}): Node {
     createdAt: '2026-01-01T00:00:00Z',
     modifiedAt: '2026-01-01T00:00:00Z',
     version: 1,
-    properties: { first_name: 'Alice', last_name: '', email: '' },
+    properties: {},
+    firstName: 'Alice',
     ...overrides
   } as Node;
 }
 
-function existingMatch(overrides: Partial<Node> = {}): Node {
+function existingMatch(overrides: PersonOverrides = {}): Node {
   return {
     id: 'person-existing',
     nodeType: 'person',
@@ -60,23 +65,32 @@ function existingMatch(overrides: Partial<Node> = {}): Node {
     createdAt: '2026-01-01T00:00:00Z',
     modifiedAt: '2026-01-01T00:00:00Z',
     version: 1,
-    properties: { first_name: 'Bob', last_name: 'Existing', email: 'bob@example.com' },
+    properties: {},
+    firstName: 'Bob',
+    lastName: 'Existing',
+    email: 'bob@example.com',
     ...overrides
   } as Node;
 }
 
 let updateNodeSpy: ReturnType<typeof vi.fn>;
+let updatePersonNodeSpy: ReturnType<typeof vi.fn>;
 let findDuplicateForSpy: ReturnType<typeof vi.fn>;
 
 beforeEach(() => {
-  // The save path is sharedNodeStore.updateNode (ADR-049), matching every
-  // other property form — not backendAdapter.updateNode directly. It's
-  // synchronous (void), not a Promise: the store applies the change
-  // optimistically and hands persistence off in the background.
+  // The save path is the store's typed person update (ADR-049) — not
+  // backendAdapter directly. It's synchronous (void), not a Promise: the store
+  // applies the change optimistically and hands persistence off in the
+  // background. `updateNode` is still stubbed because the title preview
+  // pushes through it.
   updateNodeSpy = vi.fn();
+  updatePersonNodeSpy = vi.fn();
   vi.spyOn(sharedNodeStore, 'getNode').mockReturnValue(personNode());
   vi.spyOn(sharedNodeStore, 'updateNode').mockImplementation(
     updateNodeSpy as unknown as typeof sharedNodeStore.updateNode
+  );
+  vi.spyOn(sharedNodeStore, 'updatePersonNode').mockImplementation(
+    updatePersonNodeSpy as unknown as typeof sharedNodeStore.updatePersonNode
   );
   findDuplicateForSpy = vi.fn().mockResolvedValue(null);
   vi.spyOn(backendAdapter, 'findDuplicateFor').mockImplementation(
@@ -119,14 +133,13 @@ describe('PersonSchemaForm — field placeholders', () => {
   });
 });
 
-describe('PersonSchemaForm — flat property shape', () => {
-  // Every transport hands the frontend `properties` flattened — storage's
-  // `{ person: {...} }` bucket is collapsed at the wire boundary — so the form
-  // reads and writes bare keys.
-  it('populates first name, last name and email from flat properties', () => {
+describe('PersonSchemaForm — typed person fields', () => {
+  // Every transport delivers a person's core fields as top-level typed fields
+  // (firstName/lastName/email); `properties` holds extension fields only.
+  it('populates first name, last name and email from the typed fields', () => {
     vi.mocked(sharedNodeStore.getNode).mockReturnValue(
       personNode({
-        properties: { first_name: 'Michael', last_name: 'Libio', email: 'm@example.com' }
+        firstName: 'Michael', lastName: 'Libio', email: 'm@example.com'
       })
     );
     render(PersonSchemaForm, { props: { nodeId: 'person-1' } });
@@ -136,12 +149,32 @@ describe('PersonSchemaForm — flat property shape', () => {
     expect((screen.getByLabelText('Email') as HTMLInputElement).value).toBe('m@example.com');
   });
 
-  it('writes the edited field flat, with no nested person bucket', async () => {
+  it('never reads a core field from properties', () => {
+    vi.mocked(sharedNodeStore.getNode).mockReturnValue(
+      personNode({ firstName: undefined, properties: { first_name: 'stale copy' } })
+    );
+    render(PersonSchemaForm, { props: { nodeId: 'person-1' } });
+
+    expect((screen.getByLabelText('First name') as HTMLInputElement).value).toBe('');
+  });
+
+  it('writes only the edited field, through the typed person update', async () => {
     render(PersonSchemaForm, { props: { nodeId: 'person-1' } });
     await fireEvent.blur(screen.getByLabelText('Last name'), { target: { value: 'Smith' } });
 
-    const [, changes] = updateNodeSpy.mock.calls[0];
-    expect(changes.properties).toEqual({ first_name: 'Alice', last_name: 'Smith', email: '' });
+    expect(updatePersonNodeSpy).toHaveBeenCalledTimes(1);
+    const [, update] = updatePersonNodeSpy.mock.calls[0];
+    expect(update).toEqual({ lastName: 'Smith' });
+    expect(updateNodeSpy.mock.calls.some(([, changes]) => 'properties' in changes)).toBe(false);
+  });
+
+  it('clears an emptied field instead of storing an empty string', async () => {
+    vi.mocked(sharedNodeStore.getNode).mockReturnValue(personNode({ lastName: 'Smith' }));
+    render(PersonSchemaForm, { props: { nodeId: 'person-1' } });
+    await fireEvent.blur(screen.getByLabelText('Last name'), { target: { value: '' } });
+
+    const [, update] = updatePersonNodeSpy.mock.calls[0];
+    expect(update).toEqual({ lastName: null });
   });
 });
 
@@ -167,9 +200,9 @@ describe('PersonSchemaForm — adopt-existing suggestion', () => {
     await waitFor(() => expect(screen.getByText(/already exists/i)).toBeTruthy());
 
     // The write happens regardless of the suggestion — suggest, never block.
-    expect(updateNodeSpy).toHaveBeenCalledTimes(1);
-    const [, changes] = updateNodeSpy.mock.calls[0];
-    expect(changes.properties.email).toBe('bob@example.com');
+    expect(updatePersonNodeSpy).toHaveBeenCalledTimes(1);
+    const [, update] = updatePersonNodeSpy.mock.calls[0];
+    expect(update.email).toBe('bob@example.com');
   });
 
   it('"Use existing" navigates to the match and dismisses the suggestion', async () => {
@@ -185,7 +218,7 @@ describe('PersonSchemaForm — adopt-existing suggestion', () => {
     expect(screen.queryByText(/already exists/i)).toBeNull();
 
     // Non-destructive: adopting never touches the current node.
-    expect(updateNodeSpy.mock.calls.every(([id]) => id === 'person-1')).toBe(true);
+    expect(updatePersonNodeSpy.mock.calls.every(([id]) => id === 'person-1')).toBe(true);
   });
 
   it('"Keep as new" dismisses the suggestion without navigating', async () => {
@@ -243,7 +276,7 @@ describe('PersonSchemaForm — adopt-existing suggestion', () => {
     // starting the duplicate check, so by the time the check ran, this
     // node's own freshly-saved row already held the value too — a real
     // false-negative risk given the lookup has no ORDER BY. The save now
-    // goes through sharedNodeStore.updateNode, which applies optimistically
+    // goes through the store's typed person update, which applies optimistically
     // and returns synchronously (persistence happens in the background) —
     // so it must already have landed by the time a still-pending duplicate
     // lookup resolves, not queued behind it.
@@ -261,7 +294,7 @@ describe('PersonSchemaForm — adopt-existing suggestion', () => {
     // The save is synchronous — it must already have happened even though
     // the duplicate lookup is still pending.
     await waitFor(() => expect(findDuplicateForSpy).toHaveBeenCalled());
-    expect(updateNodeSpy).toHaveBeenCalledTimes(1);
+    expect(updatePersonNodeSpy).toHaveBeenCalledTimes(1);
 
     resolveLookup(null);
     await blurPromise;
@@ -365,8 +398,7 @@ describe('PersonSchemaForm — Relationships trigger gate', () => {
 });
 
 /**
- * Field saves route through sharedNodeStore.updateNode (ADR-049), title
- * resolution regression.
+ * Field saves route through the store (ADR-049), title resolution regression.
  *
  * Before this fix, `updateField()` called `backendAdapter.updateNode(...)`
  * directly and discarded its response — the only property form in the
@@ -385,43 +417,47 @@ describe('PersonSchemaForm — Relationships trigger gate', () => {
  * store-staleness bug.
  */
 describe('PersonSchemaForm — save path routes through the store (title-update regression)', () => {
-  it('calls sharedNodeStore.updateNode, not backendAdapter.updateNode, on a name edit', async () => {
+  it('saves through the store, not the backend adapter, on a name edit', async () => {
+    const adapterSpy = vi.spyOn(backendAdapter, 'updatePersonNode');
     render(PersonSchemaForm, { props: { nodeId: 'person-1' } });
 
     const firstName = screen.getByLabelText('First name');
     await fireEvent.blur(firstName, { target: { value: 'Carol' } });
 
-    expect(updateNodeSpy).toHaveBeenCalledTimes(1);
-    const [calledNodeId, changes, source] = updateNodeSpy.mock.calls[0];
+    expect(updatePersonNodeSpy).toHaveBeenCalledTimes(1);
+    const [calledNodeId, update, source] = updatePersonNodeSpy.mock.calls[0];
     expect(calledNodeId).toBe('person-1');
-    expect(changes.properties.first_name).toBe('Carol');
+    expect(update).toEqual({ firstName: 'Carol' });
     expect(source).toEqual({ type: 'viewer', viewerId: 'person-schema-form' });
+    expect(adapterSpy).not.toHaveBeenCalled();
   });
 
   it('resolves the title to "{first_name} {last_name}" in the store immediately after editing, with no reload', async () => {
     // Exercise the REAL sharedNodeStore (not the spy the rest of this file
     // uses) so this test proves the actual store-mediated round trip, not
     // just that the component calls the right method name. Only the network
-    // boundary (backendAdapter.updateNode) is stubbed — and deliberately
+    // boundary (backendAdapter.updatePersonNode) is stubbed — and deliberately
     // returns NO `title` field at all, matching the real daemon's
     // previously-broken wire contract, which never sent one. The title must
     // still resolve correctly without it: per ADR-077 the editing client
     // computes its own title locally (see the "client-side title preview"
     // block below) rather than depending on this response.
     (sharedNodeStore.updateNode as unknown as ReturnType<typeof vi.fn>).mockRestore();
+    (sharedNodeStore.updatePersonNode as unknown as ReturnType<typeof vi.fn>).mockRestore();
     (sharedNodeStore.getNode as unknown as ReturnType<typeof vi.fn>).mockRestore();
 
     const seeded = personNode({
       title: 'Untitled',
-      properties: { first_name: '', last_name: '', email: '' }
+      properties: {}
     });
     sharedNodeStore.setNode(seeded, { type: 'database', reason: 'test-seed' }, true);
 
-    // The response carries the flat shape every transport delivers — the
+    // The response carries the typed shape every transport delivers — the
     // daemon's authoritative node, which is what used to wipe the fields.
-    vi.spyOn(backendAdapter, 'updateNode').mockImplementation(async (id, version, update) => {
-      const patched = (update as { properties?: Record<string, unknown> }).properties;
-      const merged = { first_name: '', last_name: '', email: '', ...patched };
+    // The server keeps its own state across the two writes, as the daemon does.
+    let serverFields: Record<string, unknown> = {};
+    vi.spyOn(backendAdapter, 'updatePersonNode').mockImplementation(async (id, version, update) => {
+      serverFields = { ...serverFields, ...update };
       // Deliberately omit `title` from the response — `...seeded` would
       // otherwise leak `seeded.title` ("Untitled") back in, which is exactly
       // the stale-response-fighting-the-preview failure mode this test
@@ -431,10 +467,10 @@ describe('PersonSchemaForm — save path routes through the store (title-update 
       const { title: _seededTitle, ...seededWithoutTitle } = seeded;
       return {
         ...seededWithoutTitle,
+        ...serverFields,
         id,
-        version: (version as number) + 1,
-        properties: merged
-      } as Node;
+        version: (version as number) + 1
+      } as unknown as PersonNode;
     });
 
     render(PersonSchemaForm, { props: { nodeId: 'person-1' } });
@@ -471,16 +507,17 @@ describe('PersonSchemaForm — save path routes through the store (title-update 
 describe('PersonSchemaForm — client-side title preview (ADR-077)', () => {
   it('computes and displays the title as the user types, before any blur and with the backend write never resolving', async () => {
     (sharedNodeStore.updateNode as unknown as ReturnType<typeof vi.fn>).mockRestore();
+    (sharedNodeStore.updatePersonNode as unknown as ReturnType<typeof vi.fn>).mockRestore();
     (sharedNodeStore.getNode as unknown as ReturnType<typeof vi.fn>).mockRestore();
 
     const seeded = personNode({
       title: '',
-      properties: { first_name: '', last_name: '', email: '' }
+      properties: {}
     });
     sharedNodeStore.setNode(seeded, { type: 'database', reason: 'test-seed' }, true);
 
     // Never resolves — proves the preview does not wait on this at all.
-    vi.spyOn(backendAdapter, 'updateNode').mockImplementation(() => new Promise(() => {}));
+    vi.spyOn(backendAdapter, 'updatePersonNode').mockImplementation(() => new Promise(() => {}));
 
     render(PersonSchemaForm, { props: { nodeId: 'person-1' } });
 
@@ -501,11 +538,12 @@ describe('PersonSchemaForm — client-side title preview (ADR-077)', () => {
     // ADR-077 point 6 / regression check: a server-provided title on a
     // normal read must never be ignored or clobbered.
     (sharedNodeStore.updateNode as unknown as ReturnType<typeof vi.fn>).mockRestore();
+    (sharedNodeStore.updatePersonNode as unknown as ReturnType<typeof vi.fn>).mockRestore();
     (sharedNodeStore.getNode as unknown as ReturnType<typeof vi.fn>).mockRestore();
 
     const seeded = personNode({
       title: 'Server Computed Title',
-      properties: { first_name: 'Server', last_name: 'Computed', email: '' }
+      firstName: 'Server', lastName: 'Computed'
     });
     sharedNodeStore.setNode(seeded, { type: 'database', reason: 'test-seed' }, true);
 
@@ -516,11 +554,12 @@ describe('PersonSchemaForm — client-side title preview (ADR-077)', () => {
 
   it('does not push a redundant store update when the computed title already matches', async () => {
     (sharedNodeStore.updateNode as unknown as ReturnType<typeof vi.fn>).mockRestore();
+    (sharedNodeStore.updatePersonNode as unknown as ReturnType<typeof vi.fn>).mockRestore();
     (sharedNodeStore.getNode as unknown as ReturnType<typeof vi.fn>).mockRestore();
 
     const seeded = personNode({
       title: 'Jane Doe',
-      properties: { first_name: 'Jane', last_name: 'Doe', email: '' }
+      firstName: 'Jane', lastName: 'Doe'
     });
     sharedNodeStore.setNode(seeded, { type: 'database', reason: 'test-seed' }, true);
 

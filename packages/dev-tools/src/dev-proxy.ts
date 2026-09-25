@@ -11,7 +11,11 @@
  */
 
 import * as grpc from '@grpc/grpc-js';
+import type { PersonNodeUpdate } from '../../desktop-app/src/lib/types/person-node.ts';
+import type { ProjectNodeUpdate } from '../../desktop-app/src/lib/types/project-node.ts';
 import {
+  buildPersonNodeUpdatePatch,
+  buildProjectNodeUpdatePatch,
   buildTaskNodeUpdatePatch,
   encodeInsertPosition,
   HTTP_ROUTE_PATTERNS,
@@ -512,6 +516,57 @@ async function handleRequest(req: Request): Promise<Response> {
         request
       );
       if (!res.nodeData) return error('NO_DATA', 'UpdateTaskNode returned no data');
+      return json(nodeDataToApiNode(res.nodeData));
+    } catch (err) {
+      return grpcError(err as grpc.ServiceError);
+    }
+  }
+
+  // PATCH /api/persons/:id — tri-state encoding via the shared builder, as for tasks.
+  const personMatch = pathname.match(HTTP_ROUTE_PATTERNS.updatePersonNode);
+  if (method === 'PATCH' && personMatch) {
+    const nodeId = decodeURIComponent(personMatch[1]);
+    try {
+      const body = await req.json() as Record<string, unknown>;
+      const patch = buildPersonNodeUpdatePatch(body as PersonNodeUpdate);
+      const request = {
+        nodeId,
+        version: body.version ?? 0,
+        firstName: patch.firstName ?? null,
+        lastName: patch.lastName ?? null,
+        email: patch.email ?? null
+      };
+      const res = await call<typeof request, { nodeData?: ProtoNodeData }>(
+        (nodeClient as unknown as Record<string, Function>).updatePersonNode,
+        request
+      );
+      if (!res.nodeData) return error('NO_DATA', 'UpdatePersonNode returned no data');
+      return json(nodeDataToApiNode(res.nodeData));
+    } catch (err) {
+      return grpcError(err as grpc.ServiceError);
+    }
+  }
+
+  // PATCH /api/projects/:id
+  const projectMatch = pathname.match(HTTP_ROUTE_PATTERNS.updateProjectNode);
+  if (method === 'PATCH' && projectMatch) {
+    const nodeId = decodeURIComponent(projectMatch[1]);
+    try {
+      const body = await req.json() as Record<string, unknown>;
+      const patch = buildProjectNodeUpdatePatch(body as ProjectNodeUpdate);
+      const request = {
+        nodeId,
+        version: body.version ?? 0,
+        status: patch.status ?? null,
+        priority: patch.priority ?? null,
+        startDate: patch.startDate ?? null,
+        endDate: patch.endDate ?? null
+      };
+      const res = await call<typeof request, { nodeData?: ProtoNodeData }>(
+        (nodeClient as unknown as Record<string, Function>).updateProjectNode,
+        request
+      );
+      if (!res.nodeData) return error('NO_DATA', 'UpdateProjectNode returned no data');
       return json(nodeDataToApiNode(res.nodeData));
     } catch (err) {
       return grpcError(err as grpc.ServiceError);

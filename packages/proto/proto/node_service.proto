@@ -68,6 +68,11 @@ service NodeService {
 
   // Type-specific updates
   rpc UpdateTaskNode(UpdateTaskNodeRequest) returns (NodeResponse);
+  // Typed core-field updates for person and project (same tri-state
+  // encoding as UpdateTaskNode). The daemon writes them through the generic
+  // update pipeline; the response carries the stored node.
+  rpc UpdatePersonNode(UpdatePersonNodeRequest) returns (NodeResponse);
+  rpc UpdateProjectNode(UpdateProjectNodeRequest) returns (NodeResponse);
 
   // Local identity (ADR-037): the seeded local-user PersonNode.
   // GetLocalPerson resolves it via the has_role owner edge to the
@@ -921,6 +926,29 @@ message UpdateTaskNodeRequest {
   optional string content = 9;
   // JSON-encoded properties patch; unset = no change.
   optional string properties = 10;
+}
+
+// ---------------------------------------------------------------------------
+// UpdatePersonNode / UpdateProjectNode
+// ---------------------------------------------------------------------------
+
+// Unset = no change; OptionalStringClear.clear = clear the field.
+message UpdatePersonNodeRequest {
+  string node_id = 1;
+  int64 version = 2;
+  optional OptionalStringClear first_name = 3;
+  optional OptionalStringClear last_name = 4;
+  optional OptionalStringClear email = 5;
+}
+
+// status has no clear path (the project schema requires it).
+message UpdateProjectNodeRequest {
+  string node_id = 1;
+  int64 version = 2;
+  optional string status = 3;
+  optional OptionalStringClear priority = 4;
+  optional OptionalTimestampClear start_date = 5;
+  optional OptionalTimestampClear end_date = 6;
 }
 
 // All fields are written together (whole-value replace, not a patch); pass

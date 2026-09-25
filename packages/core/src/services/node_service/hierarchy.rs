@@ -1263,7 +1263,7 @@ mod tree_size_limit_tests {
     }
 
     #[tokio::test]
-    async fn get_children_tree_serves_flat_properties_like_single_node_reads() -> Result<()> {
+    async fn get_children_tree_serves_typed_nodes_like_single_node_reads() -> Result<()> {
         // A node page populates the frontend store from this tree, so its nodes
         // must carry the same flattened `properties` a single-node read returns —
         // not storage's `{ "person": { ... } }` bucket.
@@ -1304,12 +1304,12 @@ mod tree_size_limit_tests {
         assert_eq!(tree["children"][1]["status"], "in_progress");
 
         assert_eq!(person["nodeType"], "person");
-        assert_eq!(person["properties"]["first_name"], "Ada");
-        assert_eq!(person["properties"]["last_name"], "Lovelace");
-        assert!(
-            person["properties"].get("person").is_none(),
-            "tree nodes must not carry the storage bucket: {}",
-            person["properties"]
+        assert_eq!(person["firstName"], "Ada");
+        assert_eq!(person["lastName"], "Lovelace");
+        assert_eq!(
+            person["properties"],
+            serde_json::json!({}),
+            "tree nodes carry neither the storage bucket nor a copy of the typed fields"
         );
         Ok(())
     }

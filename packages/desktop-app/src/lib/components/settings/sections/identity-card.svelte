@@ -3,7 +3,7 @@
   PersonNode's name/email, with a link that opens the node so
   PersonSchemaForm can edit it. PersonSchemaForm is the person lazy-load
   form registered in `core-plugins.ts`, and it already owns editing these
-  fields: optimistic writes through `sharedNodeStore.updateNode`, the
+  fields: optimistic writes through `sharedNodeStore.updatePersonNode`, the
   ADR-065 duplicate-email suggestion, the ADR-077 instant title preview,
   and the Relationships entry point. This card intentionally does not
   reimplement any of that — it only displays the current values and links
@@ -42,6 +42,7 @@
   import { DEFAULT_PANE_ID } from '$lib/stores/navigation.svelte';
   import { sharedNodeStore } from '$lib/services/shared-node-store.svelte';
   import { pinReachableNodes } from '$lib/utils/pin-node-reachability';
+  import type { PersonNode } from '$lib/types';
 
   const log = createLogger('IdentityCard');
 
@@ -99,17 +100,12 @@
   // edits made through PersonSchemaForm anywhere in the app); fall back to
   // the one-time `get_local_identity` snapshot until then, so the card has
   // something to show on the very first paint rather than flashing empty.
-  const liveNode = $derived(identity ? sharedNodeStore.getNode(identity.nodeId) : undefined);
-  const personProps = $derived(liveNode ? (liveNode.properties ?? {}) : null);
-  const firstName = $derived(
-    personProps ? ((personProps['first_name'] as string | undefined) ?? '') : (identity?.firstName ?? '')
+  const liveNode = $derived(
+    identity ? (sharedNodeStore.getNode(identity.nodeId) as PersonNode | undefined) : undefined
   );
-  const lastName = $derived(
-    personProps ? ((personProps['last_name'] as string | undefined) ?? '') : (identity?.lastName ?? '')
-  );
-  const email = $derived(
-    personProps ? ((personProps['email'] as string | undefined) ?? '') : (identity?.email ?? '')
-  );
+  const firstName = $derived(liveNode ? (liveNode.firstName ?? '') : (identity?.firstName ?? ''));
+  const lastName = $derived(liveNode ? (liveNode.lastName ?? '') : (identity?.lastName ?? ''));
+  const email = $derived(liveNode ? (liveNode.email ?? '') : (identity?.email ?? ''));
   const isBlank = $derived(!firstName && !lastName && !email);
   const fullName = $derived([firstName, lastName].filter(Boolean).join(' '));
 

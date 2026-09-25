@@ -152,23 +152,20 @@
   // User-Defined Field Helpers
   // ============================================================================
 
-  // User-defined fields are read and written flat, under `properties.<fieldName>` —
-  // the shape every transport delivers. The backend moves bare keys into the
-  // type's storage bucket on write.
+  // User-defined fields are extension fields: read and written flat, under
+  // `properties.<fieldName>`, which holds nothing else — the core fields are the
+  // TaskNode's typed fields. The backend moves bare keys into the type's storage
+  // bucket on write. The write carries the other extension fields along, since
+  // the persistence queue keeps only a node's newest write.
   function getUserFieldValue(fieldName: string): unknown {
-    // `node` is the TaskNode view, which carries no `properties` — read the raw node.
-    return sharedNodeStore.getNode(nodeId)?.properties?.[fieldName];
+    return node?.properties?.[fieldName];
   }
 
   function updateUserField(fieldName: string, value: unknown) {
     if (!node) return;
-
-    const rawNode = sharedNodeStore.getNode(nodeId);
-    if (!rawNode) return;
-
     sharedNodeStore.updateNode(
       nodeId,
-      { properties: { ...rawNode.properties, [fieldName]: value } },
+      { properties: { ...node.properties, [fieldName]: value } },
       { type: 'viewer', viewerId: 'task-schema-form' }
     );
   }
