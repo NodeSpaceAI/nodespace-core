@@ -4448,16 +4448,18 @@ mod tests {
         assert!(imperative.contains("does not") && imperative.contains("prevent duplicates"));
     }
 
-    /// Every field-property key `create_schema`/`update_schema` declare must
-    /// be a real `SchemaField` wire key.
+    /// Every item-property key `create_schema`/`update_schema` declare must
+    /// be a real wire key of the struct that item deserializes into.
     ///
     /// These JSON Schemas are the literal contract handed to the tool-calling
     /// model, and `exec_create_schema`/`exec_update_schema` pass the model's
     /// raw arguments straight through to `handle_create_schema`/
     /// `handle_update_schema`, which `serde_json::from_value` them into
     /// `CreateSchemaParams`/`UpdateSchemaParams` — no key normalization
-    /// anywhere in between. Since `SchemaField` is `rename_all = "camelCase"`
-    /// plus `deny_unknown_fields`, a declared key in the wrong case is not
+    /// anywhere in between. `SchemaField`, `SchemaRelationship`, `EdgeField`,
+    /// `FieldRename`, `FieldValueAddition` and `EnumValue` are all
+    /// `rename_all = "camelCase"` plus
+    /// `deny_unknown_fields`, so a declared key in the wrong case is not
     /// ignored: the whole call is rejected as an unknown field. A model that
     /// faithfully follows the schema is the thing that breaks.
     ///
@@ -4467,53 +4469,217 @@ mod tests {
     /// identical mistake was fixed in the skill text: single-word keys like
     /// `unique` are spelled the same in both conventions, so only a
     /// multi-word key exposes the drift.
+    ///
+    /// The walk descends into every declared array whose items declare
+    /// properties (a relationship's `edgeFields`, a field's `coreValues`), so a
+    /// nested item schema added later is covered without a new test — or, if
+    /// its struct isn't mapped in [`WireShape::nested`], fails asking for it.
     #[test]
-    fn schema_tool_field_keys_are_accepted_schema_field_wire_keys() {
+    fn schema_tool_item_keys_are_accepted_wire_keys() {
+        let surfaces = [
+            (Tool::CreateSchema, "fields", &SCHEMA_FIELD_SHAPE),
+            (
+                Tool::CreateSchema,
+                "relationships",
+                &SCHEMA_RELATIONSHIP_SHAPE,
+            ),
+            (Tool::UpdateSchema, "add_fields", &SCHEMA_FIELD_SHAPE),
+            (
+                Tool::UpdateSchema,
+                "add_relationships",
+                &SCHEMA_RELATIONSHIP_SHAPE,
+            ),
+            (Tool::UpdateSchema, "rename_fields", &FIELD_RENAME_SHAPE),
+            (
+                Tool::UpdateSchema,
+                "add_field_values",
+                &FIELD_VALUE_ADDITION_SHAPE,
+            ),
+        ];
+        let mut visited = Vec::new();
+        for (tool, key, shape) in surfaces {
+            let schema = tool.definition().parameters_schema;
+            assert_declared_item_keys_are_wire_keys(
+                &format!("{tool:?}.{key}[]"),
+                &schema["properties"][key]["items"],
+                shape,
+                &mut visited,
+            );
+        }
+
+        // Fail closed at the top level too, the same way the walk does for a
+        // nested item schema: a new top-level item array with no row above
+        // would otherwise go unchecked.
         for tool in [Tool::CreateSchema, Tool::UpdateSchema] {
             let schema = tool.definition().parameters_schema;
-            let fields_key = if tool == Tool::CreateSchema {
-                "fields"
-            } else {
-                "add_fields"
-            };
-            let declared = schema["properties"][fields_key]["items"]["properties"]
+            let params = schema["properties"]
                 .as_object()
-                .unwrap_or_else(|| panic!("{tool:?} declares no {fields_key} item properties"));
-
-            // A minimal field that is valid on its own, so any failure below
-            // is attributable to the one key under test.
-            let base = serde_json::json!({ "name": "probe", "type": "text" });
-
-            for key in declared.keys() {
-                let mut field = base.clone();
-                field[key] = sample_value_for_declared_key(&declared[key]);
-
-                if let Err(e) =
-                    serde_json::from_value::<nodespace_core::models::SchemaField>(field.clone())
-                {
-                    // Only an `unknown field` error indicts the KEY, which is
-                    // what this test is about. Any other error (a bad enum
-                    // variant, a type mismatch) means the probe VALUE below
-                    // didn't suit this key — a gap in the test harness, not a
-                    // schema bug. Distinguishing the two keeps a correctly
-                    // spelled key from failing with a message blaming its
-                    // spelling.
+                .unwrap_or_else(|| panic!("{tool:?} declares no parameters"));
+            for (key, declared) in params {
+                if declared["items"]["properties"].is_object() {
                     assert!(
-                        e.to_string().contains("unknown field"),
-                        "test-harness gap, not a schema bug: {tool:?}'s {fields_key} key {key:?} \
-                         is spelled correctly, but the probe value \
-                         {probe} did not deserialize: {e}. Teach \
-                         `sample_value_for_declared_key` how to build a valid value for this \
-                         key's declared shape.",
-                        probe = field[key],
-                    );
-                    panic!(
-                        "{tool:?} declares field key {key:?} in its {fields_key} JSON Schema, \
-                         but SchemaField rejects it: {e}. The tool schema is what the model \
-                         copies verbatim, so this key breaks every call that sets it. Fix the \
-                         declared key to match SchemaField's camelCase wire form."
+                        surfaces.iter().any(|(t, k, _)| *t == tool && k == key),
+                        "{tool:?}.{key} declares item properties but has no row in this \
+                         test's `surfaces` table. Add ({tool:?}, {key:?}, &<shape>) so its \
+                         keys are checked against the struct its items deserialize into."
                     );
                 }
+            }
+        }
+
+        // A walk that silently stopped short would pass vacuously, so pin
+        // that it reached the nested surfaces, not just the top-level ones.
+        for expected in [
+            "CreateSchema.fields[].coreValues[]",
+            "CreateSchema.relationships[].edgeFields[]",
+            "UpdateSchema.add_fields[].coreValues[]",
+            "UpdateSchema.add_relationships[].edgeFields[]",
+            "UpdateSchema.add_field_values[].values[]",
+        ] {
+            assert!(
+                visited.iter().any(|p| p == expected),
+                "the wire-key walk never reached {expected}; visited: {visited:?}"
+            );
+        }
+    }
+
+    /// The struct an item schema deserializes into, for
+    /// [`assert_declared_item_keys_are_wire_keys`].
+    struct WireShape {
+        name: &'static str,
+        /// A minimal item that is valid on its own, so a probe failure is
+        /// attributable to the one key under test.
+        base: fn() -> serde_json::Value,
+        round_trip: fn(serde_json::Value) -> Result<(), serde_json::Error>,
+        /// Which shape each nested item-array key deserializes into. Every
+        /// nested array the struct has is listed, whether or not the tool
+        /// schemas declare its item properties yet, so declaring them later
+        /// is checked without touching this test.
+        nested: &'static [(&'static str, &'static WireShape)],
+    }
+
+    fn round_trip<T: serde::de::DeserializeOwned>(
+        value: serde_json::Value,
+    ) -> Result<(), serde_json::Error> {
+        serde_json::from_value::<T>(value).map(|_| ())
+    }
+
+    static SCHEMA_FIELD_SHAPE: WireShape = WireShape {
+        name: "SchemaField",
+        base: || serde_json::json!({ "name": "probe", "type": "text" }),
+        round_trip: round_trip::<nodespace_core::models::schema::SchemaField>,
+        nested: &[
+            ("coreValues", &ENUM_VALUE_SHAPE),
+            ("userValues", &ENUM_VALUE_SHAPE),
+            ("fields", &SCHEMA_FIELD_SHAPE),
+            ("itemFields", &SCHEMA_FIELD_SHAPE),
+        ],
+    };
+
+    static SCHEMA_RELATIONSHIP_SHAPE: WireShape = WireShape {
+        name: "SchemaRelationship",
+        base: || {
+            serde_json::json!({
+                "name": "probe",
+                "direction": "out",
+                "cardinality": "one",
+                "reverseName": "probes",
+                "reverseCardinality": "many",
+            })
+        },
+        round_trip: round_trip::<nodespace_core::models::schema::SchemaRelationship>,
+        nested: &[("edgeFields", &EDGE_FIELD_SHAPE)],
+    };
+
+    static EDGE_FIELD_SHAPE: WireShape = WireShape {
+        name: "EdgeField",
+        base: || serde_json::json!({ "name": "probe", "type": "text" }),
+        round_trip: round_trip::<nodespace_core::models::schema::EdgeField>,
+        nested: &[("coreValues", &ENUM_VALUE_SHAPE)],
+    };
+
+    static FIELD_RENAME_SHAPE: WireShape = WireShape {
+        name: "FieldRename",
+        base: || serde_json::json!({ "from": "probe", "to": "probe_renamed" }),
+        round_trip: round_trip::<nodespace_core::schema::FieldRename>,
+        nested: &[],
+    };
+
+    static FIELD_VALUE_ADDITION_SHAPE: WireShape = WireShape {
+        name: "FieldValueAddition",
+        base: || serde_json::json!({ "field": "probe", "values": [] }),
+        round_trip: round_trip::<nodespace_core::schema::FieldValueAddition>,
+        nested: &[("values", &ENUM_VALUE_SHAPE)],
+    };
+
+    static ENUM_VALUE_SHAPE: WireShape = WireShape {
+        name: "EnumValue",
+        base: || serde_json::json!({ "value": "probe", "label": "Probe" }),
+        round_trip: round_trip::<nodespace_core::models::schema::EnumValue>,
+        nested: &[],
+    };
+
+    /// Round-trips each key `item_schema` declares through `shape`'s struct,
+    /// then recurses into nested item schemas. `path` names the surface in
+    /// failure messages; every visited path is appended to `visited`.
+    fn assert_declared_item_keys_are_wire_keys(
+        path: &str,
+        item_schema: &serde_json::Value,
+        shape: &WireShape,
+        visited: &mut Vec<String>,
+    ) {
+        visited.push(path.to_string());
+        let declared = item_schema["properties"]
+            .as_object()
+            .unwrap_or_else(|| panic!("{path} declares no item properties"));
+
+        for (key, declared_key) in declared {
+            let mut item = (shape.base)();
+            item[key] = sample_value_for_declared_key(declared_key);
+
+            if let Err(e) = (shape.round_trip)(item.clone()) {
+                // Only an `unknown field` error indicts the KEY, which is
+                // what this test is about. Any other error (a bad enum
+                // variant, a type mismatch) means the probe VALUE below
+                // didn't suit this key — a gap in the test harness, not a
+                // schema bug. Distinguishing the two keeps a correctly
+                // spelled key from failing with a message blaming its
+                // spelling.
+                assert!(
+                    e.to_string().contains("unknown field"),
+                    "test-harness gap, not a schema bug: {path} key {key:?} is spelled \
+                     correctly for {name}, but the probe value {probe} did not deserialize: \
+                     {e}. Teach `sample_value_for_declared_key` how to build a valid value \
+                     for this key's declared shape.",
+                    name = shape.name,
+                    probe = item[key],
+                );
+                panic!(
+                    "{path} declares key {key:?} in its JSON Schema, but {name} rejects it: \
+                     {e}. The tool schema is what the model copies verbatim, so this key \
+                     breaks every call that sets it. Fix the declared key to match {name}'s \
+                     camelCase wire form.",
+                    name = shape.name,
+                );
+            }
+
+            let nested_items = &declared_key["items"];
+            if nested_items["properties"].is_object() {
+                let nested = shape.nested.iter().find(|(k, _)| k == key);
+                let Some((_, nested_shape)) = nested else {
+                    panic!(
+                        "{path}.{key} declares item properties, but {name}'s WireShape doesn't \
+                         say which struct its items deserialize into. Add ({key:?}, &<shape>) \
+                         to its `nested` list.",
+                        name = shape.name,
+                    );
+                };
+                assert_declared_item_keys_are_wire_keys(
+                    &format!("{path}.{key}[]"),
+                    nested_items,
+                    nested_shape,
+                    visited,
+                );
             }
         }
     }
@@ -4521,13 +4687,16 @@ mod tests {
     /// Builds a type-appropriate placeholder for a declared JSON Schema
     /// property, so the round-trip above tests the *key*, not the value.
     ///
-    /// Every key the two tools declare today is a string, boolean or array, so
-    /// the arms below cover them. The string fallback is deliberately naive: a
-    /// key whose value has more structure than "any string" (an enum-typed
-    /// field like `protection`, say) would need its own arm, and the caller's
-    /// `unknown field` check turns that into an explicit test-harness message
-    /// rather than a misleading failure.
+    /// An `enum`-constrained key (a relationship's `direction`/`cardinality`)
+    /// takes its first declared variant; otherwise the declared `type` picks
+    /// the shape. The string fallback is deliberately naive: a key whose value
+    /// has more structure than "any string" but declares no `enum` would need
+    /// its own arm, and the caller's `unknown field` check turns that into an
+    /// explicit test-harness message rather than a misleading failure.
     fn sample_value_for_declared_key(declared: &serde_json::Value) -> serde_json::Value {
+        if let Some(first) = declared["enum"].as_array().and_then(|v| v.first()) {
+            return first.clone();
+        }
         match declared["type"].as_str() {
             Some("boolean") => serde_json::json!(true),
             Some("number") | Some("integer") => serde_json::json!(1),
