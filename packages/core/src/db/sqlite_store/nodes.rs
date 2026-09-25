@@ -2799,7 +2799,7 @@ impl SqliteStore {
                 // (constraint / IO / crash / cancel) after the DELETE committed, the
                 // node is left with NO has_child edge: a silently-orphaned root.
                 // Wrapping in a tx makes it all-or-nothing, matching the atomicity
-                // of `move_children_to_parent` / `delete_subtree_atomic`.
+                // of `move_children_to_parent_in_tx` / `delete_subtree_atomic`.
                 let rel_id = uuid::Uuid::new_v4().to_string();
                 let props = serde_json::json!({"order": new_order}).to_string();
                 let tx = db
@@ -2831,15 +2831,19 @@ impl SqliteStore {
         Ok(new_order)
     }
 
-    /// Re-parent an ordered set of existing children to `new_parent_id` in a
-    /// single transaction. Validates each child's version inside the transaction
-    /// using `SELECT changes()` after a version-gated DELETE — any mismatch causes
-    /// the full transaction to roll back (all-or-nothing OCC).
+    /// Re-parent an ordered set of existing children to `new_parent_id` inside
+    /// `tx`. Validates each child's version using `SELECT changes()` after a
+    /// version-gated DELETE — any mismatch returns an error, so the caller's
+    /// transaction rolls back every edge moved so far (all-or-nothing OCC).
     ///
     /// Returns the assigned fractional order for each child, preserving input
     /// array order as sibling order under the new parent.
-    pub async fn move_children_to_parent(
-        &self,
+    ///
+    /// `_in_tx` only (ADR-069 §1a): the service composes the version bumps and
+    /// event emission into the same transaction, so edges and bumps commit
+    /// together or not at all.
+    pub(crate) async fn move_children_to_parent_in_tx(
+        tx: &Tx<'_>,
         new_parent_id: &str,
         children: &[(&str, i64)],
     ) -> Result<Vec<f64>> {
@@ -2849,11 +2853,10 @@ impl SqliteStore {
 
         let now = Utc::now().to_rfc3339();
 
-        // Held across the existing-max-order read → compute → write below, so a
-        // concurrent move/create under the same parent cannot assign a colliding
-        // key. No re-entrancy: the transaction below issues raw DELETE/INSERT and
-        // calls no other guard-taking path.
-        let db = self.write().await;
+        // The transaction's write guard is held across the existing-max-order
+        // read → compute → write below, so a concurrent move/create under the
+        // same parent cannot assign a colliding key.
+        let db = tx.conn();
 
         // Append the moved children AFTER new_parent_id's existing children: read
         // the current max has_child order under the new parent and seed the
@@ -2881,18 +2884,13 @@ impl SqliteStore {
             orders.push(FractionalOrderCalculator::calculate_order(prev, None));
         }
 
-        let tx = db
-            .transaction()
-            .await
-            .context("Failed to begin move_children_to_parent transaction")?;
-
         for ((child_id, expected_version), &order) in children.iter().zip(orders.iter()) {
             let child_id = child_id.to_string();
 
             // Delete the old has_child edge only if the node's version matches.
             // If no rows are affected the version has been bumped by a concurrent
             // writer — detect that with SELECT changes() and abort the transaction.
-            tx.execute(
+            db.execute(
                 "DELETE FROM relationship WHERE out_node = ?1 AND relationship_type = 'has_child' AND EXISTS (SELECT 1 FROM node WHERE id = ?1 AND version = ?2)",
                 libsql::params![child_id.clone(), *expected_version],
             )
@@ -2900,7 +2898,7 @@ impl SqliteStore {
             .context("Failed to delete old has_child edge")?;
 
             // Verify the DELETE actually removed a row (i.e. the version matched).
-            let mut changes_rows = tx
+            let mut changes_rows = db
                 .query("SELECT changes()", libsql::params![])
                 .await
                 .context("Failed to query changes()")?;
@@ -2918,7 +2916,7 @@ impl SqliteStore {
             // Insert new has_child edge under new_parent_id.
             let rel_id = uuid::Uuid::new_v4().to_string();
             let rel_props = serde_json::json!({"order": order}).to_string();
-            tx.execute(
+            db.execute(
                 "INSERT INTO relationship (id, in_node, out_node, relationship_type, reverse_relationship_type, properties, version, created_at, modified_at) VALUES (?1, ?2, ?3, 'has_child', 'child_of', ?4, 1, ?5, ?6)",
                 libsql::params![
                     rel_id,
@@ -2932,10 +2930,6 @@ impl SqliteStore {
             .await
             .context("Failed to insert new has_child edge")?;
         }
-
-        tx.commit()
-            .await
-            .context("Failed to commit move_children_to_parent")?;
 
         Ok(orders)
     }

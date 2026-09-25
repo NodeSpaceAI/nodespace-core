@@ -651,10 +651,12 @@ impl NodeService {
     /// Atomically re-parent an ordered set of existing children to `new_parent_id`
     /// in a single transaction (all-or-nothing OCC).
     ///
-    /// All version checks happen up-front inside a single DB transaction. If any
-    /// child has a version mismatch the entire batch is rolled back — nothing moves.
-    /// On success each child's version is bumped and a `RelationshipUpdated` event
-    /// is emitted so the frontend hierarchy-sync path reconciles order idempotently.
+    /// The edge swap, each child's title refresh and version bump all run in ONE
+    /// transaction. If any child has a version mismatch — at the edge swap or at
+    /// the bump — the entire batch is rolled back: nothing moves, nothing is
+    /// bumped. Each child's `RelationshipUpdated` event (for the frontend
+    /// hierarchy-sync path to reconcile order idempotently) is buffered and
+    /// flushed only after that transaction commits (ADR-069 §2).
     ///
     /// # Arguments
     ///
@@ -733,59 +735,57 @@ impl NodeService {
             former_parents.push(former_parent);
         }
 
-        // Delegate the atomic edge-swap to the store. Version tokens are passed
-        // so the store can re-validate inside the transaction (eliminates TOCTOU).
-        let children_with_versions: Vec<(&str, i64)> = children
-            .iter()
-            .map(|(id, ver)| (id.as_str(), *ver))
-            .collect();
-        let orders = self
-            .store
-            .move_children_to_parent(new_parent_id, &children_with_versions)
-            .await
-            .map_err(|e| {
-                let msg = e.to_string();
-                // Re-map in-transaction VERSION_CONFLICT errors. The store embeds the
-                // node ID in the error string: "VERSION_CONFLICT: node '<id>' ...".
-                // Parse it out so the caller gets an actionable conflict message.
-                if let Some(rest) = msg.strip_prefix("VERSION_CONFLICT: node '") {
-                    let node_id = rest.split('\'').next().unwrap_or("unknown");
-                    NodeServiceError::version_conflict(node_id, 0, 0)
-                } else {
-                    NodeServiceError::query_failed(msg)
-                }
-            })?;
-        // The new parent need not be in the children's tree, so each child
-        // may have left one.
-        for ((node_id, _), former_parent) in children.iter().zip(&former_parents) {
-            self.refresh_for_rootness(
-                node_id,
-                false,
-                Some(former_parent.as_str()).filter(|p| *p != new_parent_id),
-            )
-            .await;
-        }
-
-        // ADR-069 §1b/S4, closing F9: the version-bump loop now runs in ONE
-        // transaction, so a version conflict on child k rolls back bumps
-        // 0..k too, instead of leaving them bumped+evented while k..N are
-        // neither — the doc comment's "nothing moves" guarantee previously
-        // covered only the edge swap above, not this loop. Events are
-        // buffered in per-child order and flushed only after the whole
-        // batch commits (ADR-069 §2).
-        let new_parent_id_owned = new_parent_id.to_string();
-        let nodes_and_orders: Vec<(Node, f64)> =
-            nodes.iter().cloned().zip(orders.iter().copied()).collect();
+        // The edge swap, rootness refresh, version bumps and event emission
+        // form one unit of work (ADR-069 §1a): committing the swap on its own
+        // let a concurrent write to a child between it and the bump fail the
+        // RPC after the edges had already moved, so the frontend rolled back
+        // children the backend had re-parented, and their events never fired.
+        // The store re-validates each version inside the transaction
+        // (eliminates the TOCTOU against the pre-validation above).
+        let new_parent_id = new_parent_id.to_string();
+        let children: Vec<(String, i64)> = children.to_vec();
         let service = self.clone();
-        let service_for_tx = service.clone();
-        let updated: Vec<Node> = service
+        let updated: Vec<Node> = self
             .with_transaction(move |tx| {
-                let service = service_for_tx.clone();
-                let new_parent_id = new_parent_id_owned.clone();
-                let nodes_and_orders = nodes_and_orders.clone();
                 Box::pin(async move {
-                    let mut updated = Vec::with_capacity(nodes_and_orders.len());
-                    for (node, order) in &nodes_and_orders {
+                    let children_with_versions: Vec<(&str, i64)> = children
+                        .iter()
+                        .map(|(id, ver)| (id.as_str(), *ver))
+                        .collect();
+                    let orders = crate::db::SqliteStore::move_children_to_parent_in_tx(
+                        tx.store_tx(),
+                        &new_parent_id,
+                        &children_with_versions,
+                    )
+                    .await
+                    .map_err(|e| {
+                        let msg = e.to_string();
+                        // The store embeds the node ID in the error string:
+                        // "VERSION_CONFLICT: node '<id>' ...". Parse it out so
+                        // the caller gets an actionable conflict message.
+                        if let Some(rest) = msg.strip_prefix("VERSION_CONFLICT: node '") {
+                            let node_id = rest.split('\'').next().unwrap_or("unknown");
+                            NodeServiceError::version_conflict(node_id, 0, 0)
+                        } else {
+                            NodeServiceError::query_failed(msg)
+                        }
+                    })?;
+
+                    let mut updated = Vec::with_capacity(nodes.len());
+                    for ((node, order), former_parent) in
+                        nodes.iter().zip(&orders).zip(&former_parents)
+                    {
+                        // The new parent need not be in the child's tree, so
+                        // the child may have left one.
+                        service
+                            .refresh_for_rootness_in_tx(
+                                tx,
+                                &node.id,
+                                false,
+                                Some(former_parent.as_str()).filter(|p| *p != new_parent_id),
+                            )
+                            .await?;
+
                         let updated_node = service
                             .update_node_with_version_bump_in_tx(tx, &node.id, node.version)
                             .await?;

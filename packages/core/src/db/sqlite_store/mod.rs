@@ -644,6 +644,31 @@ mod tests {
         Ok((store_arc, temp_dir))
     }
 
+    /// Run [`SqliteStore::move_children_to_parent_in_tx`] as its own
+    /// transaction, the way the store-level tests below exercise it.
+    async fn move_children_to_parent(
+        store: &SqliteStore,
+        new_parent_id: &str,
+        children: &[(&str, i64)],
+    ) -> Result<Vec<f64>> {
+        let new_parent_id = new_parent_id.to_string();
+        let children: Vec<(String, i64)> = children
+            .iter()
+            .map(|(id, ver)| (id.to_string(), *ver))
+            .collect();
+        store
+            .with_transaction(move |tx| {
+                Box::pin(async move {
+                    let refs: Vec<(&str, i64)> = children
+                        .iter()
+                        .map(|(id, ver)| (id.as_str(), *ver))
+                        .collect();
+                    SqliteStore::move_children_to_parent_in_tx(tx, &new_parent_id, &refs).await
+                })
+            })
+            .await
+    }
+
     /// Reopening a database this build created must be a no-op that preserves
     /// its data: `create_schema` is all-`IF NOT EXISTS`, so the second open
     /// adds nothing and drops nothing.
@@ -2229,15 +2254,15 @@ mod tests {
         store.create_node(child2, None, None).await?;
         store.move_node(&child2_id, Some(&parent_id), None).await?;
 
-        let result = store
-            .move_children_to_parent(
-                &new_parent_id,
-                &[
-                    (child1_id.as_str(), child1_version),
-                    (child2_id.as_str(), stale_version),
-                ],
-            )
-            .await;
+        let result = move_children_to_parent(
+            &store,
+            &new_parent_id,
+            &[
+                (child1_id.as_str(), child1_version),
+                (child2_id.as_str(), stale_version),
+            ],
+        )
+        .await;
 
         assert!(
             result.is_err(),
@@ -2341,9 +2366,7 @@ mod tests {
             .map(|(id, &ver)| (id.as_str(), ver))
             .collect();
 
-        let orders = store
-            .move_children_to_parent(&new_parent_id, &pairs)
-            .await?;
+        let orders = move_children_to_parent(&store, &new_parent_id, &pairs).await?;
 
         assert_eq!(orders.len(), 3);
         // Orders must be strictly increasing (sibling order preserved).
@@ -2408,9 +2431,7 @@ mod tests {
             .zip(moved_vers.iter())
             .map(|(id, &v)| (id.as_str(), v))
             .collect();
-        let mut moved_orders = store
-            .move_children_to_parent(&new_parent_id, &pairs)
-            .await?;
+        let mut moved_orders = move_children_to_parent(&store, &new_parent_id, &pairs).await?;
 
         // All four children now live under new_parent.
         let children = store.get_children(&new_parent_id).await?;
