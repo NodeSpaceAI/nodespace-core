@@ -75,7 +75,7 @@ interface PendingOperation {
   resolve: () => void;
   reject: (error: Error) => void;
   /** Still waiting on its debounce timer (not yet started). */
-  debounced?: boolean;
+  debounced: boolean;
 }
 
 const coordLog = createLogger('PersistenceCoordinator');
@@ -204,7 +204,8 @@ export class SimplePersistenceCoordinator {
         resolve: () => {},
         reject: () => {},
         promise: queuedPromise,
-        timeoutId: setTimeout(() => {}, 0)
+        timeoutId: setTimeout(() => {}, 0),
+        debounced: false
       });
       coordLog.debug(
         `[op#${opId}] operation already executing for ${shortNodeId}, collapsed into latest-wins pending write (mode=${options.mode})`
@@ -324,7 +325,8 @@ export class SimplePersistenceCoordinator {
             resolve: () => {},
             reject: () => {},
             promise: queued.promise,
-            timeoutId: setTimeout(() => {}, 0)
+            timeoutId: setTimeout(() => {}, 0),
+            debounced: false
           });
           coordLog.debug(
             `[op#${opId}] queued operation taking over for ${shortNodeId} (mode=${queued.options.mode})`
@@ -360,6 +362,7 @@ export class SimplePersistenceCoordinator {
         // This ensures flushAndWaitForNodes() properly tracks execution state
         operation: executeOperation,
         timeoutId: setTimeout(() => {}, 0),
+        debounced: false,
         promise,
         resolve,
         reject
@@ -3422,9 +3425,12 @@ export class SharedNodeStore {
       }
     );
     // Superseded (OperationCancelledError) is expected — the replacing write
-    // sends these fields. Every other outcome is settled inside
-    // sendPendingTypedFields, which never rejects.
-    handle.promise.catch(() => {});
+    // sends these fields. sendPendingTypedFields itself never rejects, so
+    // anything else (e.g. a failed dependency) is unexpected and logged.
+    handle.promise.catch((err) => {
+      if (err instanceof OperationCancelledError) return;
+      log.error(`Typed ${nodeType} write for node ${nodeId} did not run:`, err);
+    });
   }
 
   /**
