@@ -355,3 +355,132 @@ async fn control_prompt_still_routes_organization_every_rep() {
          for query {query:?} — rankings were: {rankings:?}"
     );
 }
+
+/// Top `limit` skills for `query` as `name=confidence`, for diagnosing *how*
+/// a skill missed the cut rather than only *that* it did.
+async fn scored_ranking(
+    embedding_service: &Arc<NodeEmbeddingService>,
+    node_service: &Arc<NodeService>,
+    query: &str,
+    limit: usize,
+) -> Vec<String> {
+    let output = find_skills(
+        embedding_service,
+        node_service,
+        FindSkillsInput {
+            query: query.to_string(),
+            limit: Some(limit),
+        },
+    )
+    .await
+    .expect("find_skills must succeed");
+    output
+        .skills
+        .iter()
+        .map(|s| {
+            format!(
+                "{}={:.3}",
+                s.get("name").and_then(|v| v.as_str()).unwrap_or_default(),
+                s.get("confidence")
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or_default()
+            )
+        })
+        .collect()
+}
+
+/// Queries whose top-`RETRIEVAL_TOP_K` ranking misses `skill` on any rep, or —
+/// with `rank_one` — does not put it first. Prints each query's wider ranking
+/// with scores so a miss shows by how much.
+async fn routing_misses(
+    embedding_service: &Arc<NodeEmbeddingService>,
+    node_service: &Arc<NodeService>,
+    queries: &[&'static str],
+    skill: &str,
+    rank_one: bool,
+) -> Vec<&'static str> {
+    let mut misses = Vec::new();
+    for &query in queries {
+        eprintln!(
+            "{query:?}: {:?}",
+            scored_ranking(embedding_service, node_service, query, 6).await
+        );
+        let rankings = repeated_rankings(embedding_service, node_service, query).await;
+        let hit = |ranked: &Vec<String>| {
+            if rank_one {
+                ranked.first().is_some_and(|n| n == skill)
+            } else {
+                ranked.iter().any(|n| n == skill)
+            }
+        };
+        if !rankings.iter().all(hit) {
+            misses.push(query);
+        }
+    }
+    misses
+}
+
+/// "Mark X resolved/done/closed" sets a field on an existing record, so it
+/// must reach Graph Editing — the skill that whitelists `update_node`. The
+/// completion word shares vocabulary with other skills ("resolve" with
+/// Conflict Resolution), and a lexical false positive there left no write
+/// tool on Stage 2's surface: the model found the record and then could not
+/// change it. Stage 2 does not recover from that on the locked model, so the
+/// right skill has to be retrieved in the first place.
+///
+/// Covers the raw message (what retrieval embeds when Stage 1 emits no usable
+/// query) and capability phrasings Stage 1 produces for such requests.
+#[tokio::test]
+#[ignore = "requires the locked nomic-embed-text-v1.5 GGUF on disk"]
+async fn completion_state_updates_route_graph_editing() {
+    let Some((embedding_service, node_service, _temp_dir)) = seed_and_embed().await else {
+        return;
+    };
+    let misses = routing_misses(
+        &embedding_service,
+        &node_service,
+        &[
+            "The incident Rowan was on call for — mark it resolved",
+            "mark the incident as resolved",
+            "mark incident resolved",
+            "set the incident's resolved field to true",
+            "mark the invoice as paid",
+            "close out the support ticket",
+            "mark the outage report done",
+        ],
+        "Graph Editing",
+        false,
+    )
+    .await;
+    assert!(
+        misses.is_empty(),
+        "Graph Editing missed the top-{RETRIEVAL_TOP_K} for {misses:?}"
+    );
+}
+
+/// Control for the case above: requests that really are about the conflict
+/// journal must keep routing to Conflict Resolution first, or widening Graph
+/// Editing's vocabulary has only moved the false positive.
+#[tokio::test]
+#[ignore = "requires the locked nomic-embed-text-v1.5 GGUF on disk"]
+async fn control_conflict_requests_still_route_conflict_resolution() {
+    let Some((embedding_service, node_service, _temp_dir)) = seed_and_embed().await else {
+        return;
+    };
+    let misses = routing_misses(
+        &embedding_service,
+        &node_service,
+        &[
+            "resolve the conflict between the two Sarah Chen records",
+            "show me the open conflicts",
+            "dismiss that duplicate collision, it's fine",
+        ],
+        "Conflict Resolution",
+        true,
+    )
+    .await;
+    assert!(
+        misses.is_empty(),
+        "Conflict Resolution lost rank 1 for {misses:?}"
+    );
+}
