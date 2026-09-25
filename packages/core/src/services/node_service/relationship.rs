@@ -547,6 +547,90 @@ impl NodeService {
             .map(|r| r.reverse_name))
     }
 
+    /// The `required: true` `in` declarations on `target_type` (extends-chain
+    /// aware, ADR-078) that view a `forward_name` edge from the target's end —
+    /// the declarations that deleting a `forward_name` edge into a node of
+    /// that type can leave unsatisfied. Empty in the common case, letting the
+    /// caller skip reading the target's inbound edges.
+    ///
+    /// The source-side last-edge guard in [`Self::delete_relationship`] and
+    /// [`Self::remove_relationship_in_tx`] resolves the SOURCE's schema, so it
+    /// only ever sees `out` declarations; an `in` declaration lives on the
+    /// target's schema and needs this separate lookup.
+    async fn required_in_declarations(
+        &self,
+        target_type: &str,
+        forward_name: &str,
+    ) -> Result<Vec<crate::models::schema::SchemaRelationship>, NodeServiceError> {
+        let (relationships, _) = self.resolve_relationships(target_type).await?;
+        Ok(relationships
+            .into_iter()
+            .filter(|r| {
+                r.required == Some(true)
+                    && r.direction == crate::models::schema::RelationshipDirection::In
+                    && r.reverse_name == forward_name
+            })
+            .collect())
+    }
+
+    /// Rejects deleting `source_id`'s edge into `target_id` when it is the
+    /// last qualifying inbound edge of one of `declarations` (from
+    /// [`Self::required_in_declarations`]). `inbound_edges` is every
+    /// `(source id, source type)` edge of the forward name into `target_id`,
+    /// read by the caller in its own consistency scope; a no-op when
+    /// `source_id` is not among them, so deleting a nonexistent edge stays
+    /// harmless.
+    ///
+    /// Counts the way `check_node_completeness` does: only an edge from a
+    /// source satisfying the declaration's `target_type` (itself or an
+    /// ADR-078 descendant) qualifies, since another schema may declare the
+    /// same forward name toward this type. An edge that doesn't qualify is
+    /// neither protected nor counted toward the remaining edges.
+    async fn ensure_not_last_required_in_edge(
+        &self,
+        declarations: &[crate::models::schema::SchemaRelationship],
+        target_id: &str,
+        source_id: &str,
+        inbound_edges: &[(String, String)],
+    ) -> Result<(), NodeServiceError> {
+        let Some((_, source_type)) = inbound_edges.iter().find(|(id, _)| id == source_id) else {
+            return Ok(());
+        };
+        for declaration in declarations {
+            let Some(expected) = declaration.target_type.as_deref() else {
+                // No declared source type: every inbound edge qualifies.
+                if inbound_edges.len() <= 1 {
+                    return Err(Self::last_required_in_edge_error(declaration, target_id));
+                }
+                continue;
+            };
+            if !self.type_satisfies(source_type, expected).await? {
+                continue;
+            }
+            let mut another_remains = false;
+            for (id, node_type) in inbound_edges {
+                if id != source_id && self.type_satisfies(node_type, expected).await? {
+                    another_remains = true;
+                    break;
+                }
+            }
+            if !another_remains {
+                return Err(Self::last_required_in_edge_error(declaration, target_id));
+            }
+        }
+        Ok(())
+    }
+
+    fn last_required_in_edge_error(
+        declaration: &crate::models::schema::SchemaRelationship,
+        target_id: &str,
+    ) -> NodeServiceError {
+        NodeServiceError::invalid_update(format!(
+            "Relationship '{}' on '{}' is required and this is its last edge; add another source before removing this one",
+            declaration.name, target_id
+        ))
+    }
+
     /// `_in_tx` equivalent of [`Self::get_node`]'s virtual-date fallback.
     ///
     /// A date node (`YYYY-MM-DD`) with no row yet is still a legitimate
@@ -1252,10 +1336,12 @@ impl NodeService {
     /// by the store's raw unique-index check either (different `in_node`
     /// values, same `out_node`).
     ///
-    /// **The reverse branch can abort the whole merge, unlike the forward
-    /// one.** The forward branch's eviction target is always the survivor's
-    /// OWN edge count, which the repoint has already grown to two — so a
-    /// `required` last-edge check there can never fire (see above). The
+    /// **Either branch can abort the whole merge.** The forward branch's
+    /// source-side check counts the survivor's OWN edges, which the repoint
+    /// has already grown to two, so it can never fire (see above) — but the
+    /// evicted edge's target is a different node, and if that edge is its
+    /// last qualifying inbound edge of a `required: true` `in` declaration,
+    /// the target-side guard rejects the eviction just as described below. The
     /// reverse branch's eviction target is a DIFFERENT node (the repointed
     /// edge's `source_id`, e.g. the loser's own former counterpart), and
     /// that node's edge count is genuinely unaffected by the repoint: if
@@ -1500,6 +1586,35 @@ impl NodeService {
                     }
                 }
             }
+            // Target end: a required `in` declaration on the target's schema.
+            if let Some(target) = crate::db::SqliteStore::get_node_in_tx(tx.store_tx(), target_id)
+                .await
+                .map_err(|e| NodeServiceError::query_failed(e.to_string()))?
+            {
+                let declarations = self
+                    .required_in_declarations(&target.node_type, relationship_name)
+                    .await?;
+                if !declarations.is_empty() {
+                    let inbound_edges: Vec<(String, String)> =
+                        crate::db::SqliteStore::get_relationship_edges_into_target_in_tx(
+                            tx.store_tx(),
+                            target_id,
+                            relationship_name,
+                        )
+                        .await
+                        .map_err(|e| NodeServiceError::query_failed(e.to_string()))?
+                        .into_iter()
+                        .map(|(_, id, node_type)| (id, node_type))
+                        .collect();
+                    self.ensure_not_last_required_in_edge(
+                        &declarations,
+                        target_id,
+                        source_id,
+                        &inbound_edges,
+                    )
+                    .await?;
+                }
+            }
         }
 
         let rel_id = crate::db::SqliteStore::get_relationship_id_in_tx(
@@ -1716,6 +1831,33 @@ impl NodeService {
                             relationship_name
                         )));
                     }
+                }
+            }
+            // Target end: the check above resolves the source's schema, so it
+            // never sees a required `in` declaration on the target's schema —
+            // see `required_in_declarations`.
+            if let Some(target) = self.get_node(target_id).await? {
+                let declarations = self
+                    .required_in_declarations(&target.node_type, relationship_name)
+                    .await?;
+                if !declarations.is_empty() {
+                    let inbound_edges = self
+                        .store
+                        .get_relationship_sources_into_target(target_id, relationship_name)
+                        .await
+                        .map_err(|e| {
+                            NodeServiceError::query_failed(format!(
+                                "Failed to read inbound relationship edges: {}",
+                                e
+                            ))
+                        })?;
+                    self.ensure_not_last_required_in_edge(
+                        &declarations,
+                        target_id,
+                        source_id,
+                        &inbound_edges,
+                    )
+                    .await?;
                 }
             }
         }
@@ -2197,4 +2339,216 @@ fn validate_edge_data_against_fields(
     }
 
     Ok(())
+}
+
+/// Last-edge protection for a `required: true` `in` declaration, which lives
+/// on the TARGET's schema: `adr.superseded_by` (in, `reverseName: supersedes`)
+/// is satisfied by an inbound `supersedes` edge from an ADR. `memo` declares
+/// its own `supersedes` toward ADRs, sharing the stored forward name — its
+/// edges neither satisfy nor are protected by the ADR's declaration.
+#[cfg(test)]
+mod required_in_last_edge_tests {
+    use crate::db::SqliteStore;
+    use crate::models::Node;
+    use crate::services::error::NodeServiceError;
+    use crate::services::NodeService;
+    use serde_json::json;
+    use std::sync::Arc;
+    use tempfile::TempDir;
+
+    async fn service() -> (Arc<NodeService>, TempDir) {
+        let tmp = TempDir::new().unwrap();
+        let mut store = Arc::new(SqliteStore::new(tmp.path().join("test.db")).await.unwrap());
+        let svc = Arc::new(NodeService::new(&mut store).await.unwrap());
+        crate::schema::handle_create_schema(
+            &svc,
+            json!({
+                "name": "guard_adr",
+                "fields": [],
+                "relationships": [
+                    {
+                        "name": "supersedes",
+                        "targetType": "guard_adr",
+                        "direction": "out",
+                        "cardinality": "many",
+                        "reverseName": "superseded_by",
+                        "reverseCardinality": "many"
+                    },
+                    {
+                        "name": "superseded_by",
+                        "targetType": "guard_adr",
+                        "direction": "in",
+                        "cardinality": "many",
+                        "required": true,
+                        "reverseName": "supersedes",
+                        "reverseCardinality": "many"
+                    }
+                ]
+            }),
+        )
+        .await
+        .expect("adr schema");
+        crate::schema::handle_create_schema(
+            &svc,
+            json!({
+                "name": "guard_memo",
+                "fields": [],
+                "relationships": [{
+                    "name": "supersedes",
+                    "targetType": "guard_adr",
+                    "direction": "out",
+                    "cardinality": "many",
+                    "reverseName": "memo_superseded_by",
+                    "reverseCardinality": "many"
+                }]
+            }),
+        )
+        .await
+        .expect("memo schema");
+        (svc, tmp)
+    }
+
+    async fn node(svc: &NodeService, id: &str, node_type: &str) {
+        svc.create_node(Node::new_with_id(
+            id.to_string(),
+            node_type.to_string(),
+            id.to_string(),
+            json!({}),
+        ))
+        .await
+        .unwrap();
+    }
+
+    async fn supersede(svc: &NodeService, source: &str, target: &str) {
+        svc.create_relationship(source, "supersedes", target, json!({}))
+            .await
+            .unwrap();
+    }
+
+    async fn superseders(svc: &NodeService, id: &str) -> Vec<String> {
+        let mut ids: Vec<String> = svc
+            .get_related_nodes(id, "supersedes", "in")
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|n| n.id)
+            .collect();
+        ids.sort();
+        ids
+    }
+
+    /// Deletes through `remove_relationship_in_tx`, committing on success.
+    async fn remove_in_tx(
+        svc: &Arc<NodeService>,
+        source: &str,
+        name: &str,
+        target: &str,
+    ) -> Result<(), NodeServiceError> {
+        let inner = svc.clone();
+        let (source, name, target) = (source.to_string(), name.to_string(), target.to_string());
+        svc.with_transaction(move |tx| {
+            Box::pin(async move {
+                inner
+                    .remove_relationship_in_tx(tx, &source, &name, &target)
+                    .await
+            })
+        })
+        .await
+    }
+
+    fn assert_last_edge_rejection(result: Result<(), NodeServiceError>) {
+        let message = result
+            .expect_err("last qualifying inbound edge")
+            .to_string();
+        assert!(
+            message.contains("'superseded_by' on 'old' is required and this is its last edge"),
+            "{message}"
+        );
+    }
+
+    #[tokio::test]
+    async fn deleting_the_last_inbound_edge_is_rejected() {
+        let (svc, _tmp) = service().await;
+        node(&svc, "old", "guard_adr").await;
+        node(&svc, "new", "guard_adr").await;
+        supersede(&svc, "new", "old").await;
+
+        assert_last_edge_rejection(svc.delete_relationship("new", "supersedes", "old").await);
+        // Through the `in` spelling, normalized to the same forward edge.
+        assert_last_edge_rejection(svc.delete_relationship("old", "superseded_by", "new").await);
+        assert_last_edge_rejection(remove_in_tx(&svc, "new", "supersedes", "old").await);
+        assert_last_edge_rejection(remove_in_tx(&svc, "old", "superseded_by", "new").await);
+
+        assert_eq!(superseders(&svc, "old").await, ["new"]);
+        assert!(
+            svc.check_node_completeness("old")
+                .await
+                .unwrap()
+                .is_complete
+        );
+    }
+
+    #[tokio::test]
+    async fn deleting_one_of_several_inbound_edges_succeeds() {
+        let (svc, _tmp) = service().await;
+        for id in ["old", "a", "b", "c"] {
+            node(&svc, id, "guard_adr").await;
+        }
+        for source in ["a", "b", "c"] {
+            supersede(&svc, source, "old").await;
+        }
+
+        svc.delete_relationship("a", "supersedes", "old")
+            .await
+            .unwrap();
+        remove_in_tx(&svc, "old", "superseded_by", "b")
+            .await
+            .unwrap();
+        assert_eq!(superseders(&svc, "old").await, ["c"]);
+
+        assert_last_edge_rejection(svc.delete_relationship("c", "supersedes", "old").await);
+        assert_last_edge_rejection(remove_in_tx(&svc, "c", "supersedes", "old").await);
+    }
+
+    #[tokio::test]
+    async fn edge_from_an_unqualified_source_neither_counts_nor_is_protected() {
+        let (svc, _tmp) = service().await;
+        node(&svc, "old", "guard_adr").await;
+        node(&svc, "new", "guard_adr").await;
+        node(&svc, "memo", "guard_memo").await;
+        node(&svc, "memo2", "guard_memo").await;
+        supersede(&svc, "new", "old").await;
+        supersede(&svc, "memo", "old").await;
+        supersede(&svc, "memo2", "old").await;
+
+        // The memo edges don't keep `superseded_by` satisfied...
+        assert_last_edge_rejection(svc.delete_relationship("new", "supersedes", "old").await);
+        assert_last_edge_rejection(remove_in_tx(&svc, "new", "supersedes", "old").await);
+
+        // ...and aren't protected by it.
+        svc.delete_relationship("memo", "supersedes", "old")
+            .await
+            .unwrap();
+        remove_in_tx(&svc, "memo2", "supersedes", "old")
+            .await
+            .unwrap();
+        assert_eq!(superseders(&svc, "old").await, ["new"]);
+    }
+
+    #[tokio::test]
+    async fn deleting_a_nonexistent_inbound_edge_stays_a_no_op() {
+        let (svc, _tmp) = service().await;
+        node(&svc, "old", "guard_adr").await;
+        node(&svc, "new", "guard_adr").await;
+        node(&svc, "other", "guard_adr").await;
+        supersede(&svc, "new", "old").await;
+
+        svc.delete_relationship("other", "supersedes", "old")
+            .await
+            .unwrap();
+        remove_in_tx(&svc, "other", "supersedes", "old")
+            .await
+            .unwrap();
+        assert_eq!(superseders(&svc, "old").await, ["new"]);
+    }
 }

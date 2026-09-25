@@ -1593,6 +1593,33 @@ impl SqliteStore {
         Ok(types)
     }
 
+    /// Non-tx counterpart to [`Self::get_relationship_edges_into_target_in_tx`]:
+    /// `(source id, source node type)` for every `rel_type` edge into
+    /// `target_id`. Per edge rather than
+    /// [`Self::get_inbound_relationship_source_types`]'s distinct types, for a
+    /// caller that must count the qualifying edges, not just detect one.
+    pub async fn get_relationship_sources_into_target(
+        &self,
+        target_id: &str,
+        rel_type: &str,
+    ) -> Result<Vec<(String, String)>> {
+        let mut rows = self
+            .read()
+            .await?
+            .query(
+                "SELECT n.id, n.node_type FROM node n JOIN relationship r ON r.in_node = n.id \
+                 WHERE r.out_node = ?1 AND r.relationship_type = ?2",
+                libsql::params![target_id.to_string(), rel_type.to_string()],
+            )
+            .await
+            .context("Failed to get inbound relationship sources")?;
+        let mut sources = Vec::new();
+        while let Some(row) = rows.next().await? {
+            sources.push((row.get::<String>(0)?, row.get::<String>(1)?));
+        }
+        Ok(sources)
+    }
+
     pub async fn relationship_exists(
         &self,
         source_id: &str,
