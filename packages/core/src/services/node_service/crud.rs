@@ -2913,31 +2913,74 @@ impl NodeService {
     ///   (a root's is its content, a child's is none). Without the refresh an
     ///   indented root keeps its title and title search returns it as a
     ///   document, and an outdented child stays unfindable by name.
-    /// - **Embedding.** Only an embedding root carries an embedding: a tree
-    ///   root, or a descendant re-rooted at an access boundary (ADR-059 §7),
-    ///   which keeps its own. Any other node that becomes a child drops its
-    ///   own, or vector search would still return it bare. Its (new) embedding
-    ///   root is queued either way: a new root needs its
-    ///   first embedding, and a tree that gained a child needs its aggregate
-    ///   rebuilt.
+    /// - **Embedding.** See [`Self::refresh_embedding_for_rootness`].
+    ///
+    /// `former_parent` is the `has_child` parent the write took away: `None`
+    /// when the node had no parent, or kept it. A path that detaches or
+    /// reparents a node must pass it, or the tree the node left keeps the
+    /// node's text in its embedding.
     ///
     /// Best-effort: it runs after the edge write has committed, so a failure is
     /// logged rather than returned — a derived index must not turn a committed
     /// move into a reported failure that skips the caller's version bump and
     /// events.
-    pub(crate) async fn refresh_for_rootness(&self, node_id: &str, is_root: bool) {
-        if let Err(e) = self.try_refresh_for_rootness(node_id, is_root).await {
+    pub(crate) async fn refresh_for_rootness(
+        &self,
+        node_id: &str,
+        is_root: bool,
+        former_parent: Option<&str>,
+    ) {
+        if let Err(e) = self.try_refresh_title_for_rootness(node_id, is_root).await {
             tracing::warn!(
                 node_id = %node_id,
                 error = %e,
-                "failed to refresh title/embedding after a rootness change"
+                "failed to refresh title after a rootness change"
+            );
+        }
+        self.refresh_embedding_for_rootness(node_id, is_root, former_parent)
+            .await;
+    }
+
+    /// The embedding half of [`Self::refresh_for_rootness`]. The tx paths run
+    /// it after commit (see [`Self::refresh_for_rootness_in_tx`]).
+    ///
+    /// Only an embedding root carries an embedding: a tree root, or a
+    /// descendant re-rooted at an access boundary (ADR-059 §7), which keeps its
+    /// own. Any other node that becomes a child drops its own, or vector search
+    /// would still return it bare. Its (new) embedding root is queued either
+    /// way: a new root needs its first embedding, and a tree that gained a
+    /// child needs its aggregate rebuilt. The tree `former_parent` belongs to
+    /// lost the node's subtree, so its embedding root is queued too. Otherwise
+    /// its vector keeps ranking for text it no longer holds, including text
+    /// since filed behind an access boundary.
+    pub(crate) async fn refresh_embedding_for_rootness(
+        &self,
+        node_id: &str,
+        is_root: bool,
+        former_parent: Option<&str>,
+    ) {
+        if let Err(e) = self.try_drop_child_embedding(node_id, is_root).await {
+            tracing::warn!(
+                node_id = %node_id,
+                error = %e,
+                "failed to drop a child's embedding after a rootness change"
             );
         }
         #[cfg(feature = "nlp")]
-        self.queue_root_for_embedding(node_id).await;
+        {
+            self.queue_root_for_embedding(node_id).await;
+            if let Some(former_parent) = former_parent {
+                self.queue_former_embedding_root(node_id, former_parent)
+                    .await;
+            }
+        }
     }
 
-    async fn try_refresh_for_rootness(&self, node_id: &str, is_root: bool) -> anyhow::Result<()> {
+    async fn try_refresh_title_for_rootness(
+        &self,
+        node_id: &str,
+        is_root: bool,
+    ) -> anyhow::Result<()> {
         let Some(node) = self.store.get_node(node_id).await? else {
             return Ok(());
         };
@@ -2947,6 +2990,10 @@ impl NodeService {
                 .set_title(node_id, title.as_deref(), node.version)
                 .await?;
         }
+        Ok(())
+    }
+
+    async fn try_drop_child_embedding(&self, node_id: &str, is_root: bool) -> anyhow::Result<()> {
         // A child carries no embedding, unless it is an access-boundary
         // descendant re-rooted by ADR-059 §7.
         if !is_root
@@ -2958,17 +3005,18 @@ impl NodeService {
         Ok(())
     }
 
-    /// `_in_tx` twin of [`Self::refresh_for_rootness`], for the title only.
-    /// The tx paths (invariant-rule relationship actions, node merge) rarely
-    /// change rootness, and the embedding store has no transaction-scoped
-    /// writers; a stale embedding there is corrected the next time the node's
-    /// tree is re-embedded.
+    /// `_in_tx` twin of [`Self::refresh_for_rootness`]. The title is written
+    /// inside the transaction. The embedding store has no transaction-scoped
+    /// writers, so the embedding half is recorded on `tx`, and
+    /// [`Self::with_transaction`] runs it once the transaction commits.
     pub(crate) async fn refresh_for_rootness_in_tx(
         &self,
         tx: &NodeServiceTx<'_>,
         node_id: &str,
         is_root: bool,
+        former_parent: Option<&str>,
     ) -> Result<(), NodeServiceError> {
+        tx.defer_embedding_refresh(node_id, is_root, former_parent);
         let Some(node) = crate::db::SqliteStore::get_node_in_tx(tx.store_tx(), node_id)
             .await
             .map_err(|e| NodeServiceError::query_failed(e.to_string()))?

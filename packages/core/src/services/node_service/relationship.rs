@@ -761,7 +761,7 @@ impl NodeService {
                 .map_err(|e| {
                     NodeServiceError::query_failed(format!("Failed to append child edge: {}", e))
                 })?;
-            self.refresh_for_rootness(target_id, false).await;
+            self.refresh_for_rootness(target_id, false, None).await;
 
             self.emit_event(DomainEvent::RelationshipCreated {
                 relationship: crate::db::events::RelationshipEvent::new(
@@ -800,7 +800,7 @@ impl NodeService {
                 NodeServiceError::query_failed(format!("Failed to create relationship: {}", e))
             })?;
         if relationship_name == "has_child" {
-            self.refresh_for_rootness(target_id, false).await;
+            self.refresh_for_rootness(target_id, false, None).await;
         }
 
         self.emit_event(DomainEvent::RelationshipCreated {
@@ -1094,7 +1094,7 @@ impl NodeService {
             NodeServiceError::query_failed(format!("Failed to create relationship: {}", e))
         })?;
         if relationship_name == "has_child" {
-            self.refresh_for_rootness_in_tx(tx, target_id, false)
+            self.refresh_for_rootness_in_tx(tx, target_id, false, None)
                 .await?;
         }
 
@@ -1228,7 +1228,8 @@ impl NodeService {
             NodeServiceError::query_failed(format!("Failed to delete relationship: {}", e))
         })?;
         if relationship_name == "has_child" && rel_id.is_some() {
-            self.refresh_for_rootness_in_tx(tx, target_id, true).await?;
+            self.refresh_for_rootness_in_tx(tx, target_id, true, Some(source_id))
+                .await?;
         }
 
         if let Some(id) = rel_id {
@@ -1420,7 +1421,8 @@ impl NodeService {
                 NodeServiceError::query_failed(format!("Failed to delete relationship: {}", e))
             })?;
         if relationship_name == "has_child" && rel_id.is_some() {
-            self.refresh_for_rootness(target_id, true).await;
+            self.refresh_for_rootness(target_id, true, Some(source_id))
+                .await;
         }
 
         // Emit RelationshipDeleted event. Normalize ids — same

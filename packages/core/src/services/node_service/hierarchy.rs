@@ -366,6 +366,7 @@ impl NodeService {
             }
         }
 
+        let former_parent = self.get_parent(node_id).await?.map(|p| p.id);
         let insert_after = self.resolve_insert_position(position, new_parent).await?;
 
         // Hierarchy is now managed via relationships - use store's move_node
@@ -374,8 +375,12 @@ impl NodeService {
             .move_node(node_id, new_parent, insert_after.as_deref())
             .await
             .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
-        self.refresh_for_rootness(node_id, new_parent.is_none())
-            .await;
+        self.refresh_for_rootness(
+            node_id,
+            new_parent.is_none(),
+            former_parent.as_deref().filter(|p| Some(*p) != new_parent),
+        )
+        .await;
 
         // Emit RelationshipUpdated event (unified relationship events)
         if let Some(parent_id) = new_parent {
@@ -505,8 +510,12 @@ impl NodeService {
             .move_node(node_id, new_parent, insert_after.as_deref())
             .await
             .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
-        self.refresh_for_rootness(node_id, new_parent.is_none())
-            .await;
+        self.refresh_for_rootness(
+            node_id,
+            new_parent.is_none(),
+            old_parent_id.as_deref().filter(|p| Some(*p) != new_parent),
+        )
+        .await;
 
         // ADR-069 §2: bump the version BEFORE emitting any event, not after.
         // The store's move_node and this bump remain two separate atomic
@@ -679,6 +688,7 @@ impl NodeService {
         // Pre-validation: fetch all children, check versions, apply move_node guards.
         // Version conflicts return immediately before any write touches the DB.
         let mut nodes = Vec::with_capacity(children.len());
+        let mut former_parents = Vec::with_capacity(children.len());
         for (node_id, expected_version) in children {
             let node = self
                 .get_node(node_id)
@@ -704,12 +714,12 @@ impl NodeService {
             // Root nodes have no has_child edge — the in-transaction DELETE would
             // return 0 changes and be misidentified as a version conflict. Reject
             // root nodes explicitly so callers get a clear InvalidParent error.
-            if self.is_root_node(node_id).await? {
+            let Some(former_parent) = self.get_parent(node_id).await?.map(|p| p.id) else {
                 return Err(NodeServiceError::hierarchy_violation(format!(
                     "Root node '{}' cannot be batch-moved (no parent edge to replace)",
                     node_id
                 )));
-            }
+            };
 
             // Cycle guard: the new parent must not be a descendant of any moved child.
             if self.is_descendant(node_id, new_parent_id).await? {
@@ -720,6 +730,7 @@ impl NodeService {
             }
 
             nodes.push(node);
+            former_parents.push(former_parent);
         }
 
         // Delegate the atomic edge-swap to the store. Version tokens are passed
@@ -744,6 +755,16 @@ impl NodeService {
                     NodeServiceError::query_failed(msg)
                 }
             })?;
+        // The new parent need not be in the children's tree, so each child
+        // may have left one.
+        for ((node_id, _), former_parent) in children.iter().zip(&former_parents) {
+            self.refresh_for_rootness(
+                node_id,
+                false,
+                Some(former_parent.as_str()).filter(|p| *p != new_parent_id),
+            )
+            .await;
+        }
 
         // ADR-069 §1b/S4, closing F9: the version-bump loop now runs in ONE
         // transaction, so a version conflict on child k rolls back bumps
@@ -841,17 +862,16 @@ impl NodeService {
         // `child_id` is already a child of `parent_id` AND the position is
         // End (no explicit reorder hint), treat this call as a no-op.
         // `Beginning` and `After(_)` still trigger a real reorder.
-        if matches!(position, crate::services::InsertPosition::End) {
-            if let Some(existing_parent) = self.get_parent(child_id).await? {
-                if existing_parent.id == parent_id {
-                    tracing::debug!(
-                        child_id = %child_id,
-                        parent_id = %parent_id,
-                        "create_parent_edge: edge already exists with End position, treating as no-op"
-                    );
-                    return Ok(());
-                }
-            }
+        let existing_parent = self.get_parent(child_id).await?.map(|p| p.id);
+        if matches!(position, crate::services::InsertPosition::End)
+            && existing_parent.as_deref() == Some(parent_id)
+        {
+            tracing::debug!(
+                child_id = %child_id,
+                parent_id = %parent_id,
+                "create_parent_edge: edge already exists with End position, treating as no-op"
+            );
+            return Ok(());
         }
 
         // Resolve InsertPosition::End to the actual last sibling id so the
@@ -868,7 +888,13 @@ impl NodeService {
             .move_node(child_id, Some(parent_id), insert_after_id)
             .await
             .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
-        self.refresh_for_rootness(child_id, false).await;
+        // `move_node` replaces any existing parent, so this can reparent.
+        self.refresh_for_rootness(
+            child_id,
+            false,
+            existing_parent.as_deref().filter(|p| *p != parent_id),
+        )
+        .await;
 
         // Emit RelationshipCreated event (unified relationship events)
         self.emit_event(DomainEvent::RelationshipCreated {
@@ -957,7 +983,7 @@ impl NodeService {
             .await
             .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
         for (parent, child, order) in &created {
-            self.refresh_for_rootness(child, false).await;
+            self.refresh_for_rootness(child, false, None).await;
             self.emit_event(DomainEvent::RelationshipCreated {
                 relationship: crate::db::events::RelationshipEvent::new(
                     format!("relationship:{}:{}", parent, child),
