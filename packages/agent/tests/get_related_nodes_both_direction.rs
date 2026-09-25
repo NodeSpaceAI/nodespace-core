@@ -115,7 +115,92 @@ async fn reverse_name_with_both_direction_reports_each_node_once() {
             vec!["nodespace://inv1", "nodespace://inv2"],
             "{args}"
         );
+        // Each hit is labelled with the traversal that actually ran.
+        for node in result.result["nodes"].as_array().unwrap() {
+            assert_eq!(node["direction"], "in", "{args}");
+            assert_eq!(node["relationship_type"], "billed_to", "{args}");
+        }
     }
+}
+
+/// A `reverseName` spelled the same as its forward name comes back
+/// un-rewritten, so the fan-out must not rely on the name changing to spot a
+/// reverse resolution.
+#[tokio::test]
+async fn reverse_name_equal_to_forward_name_reports_each_node_once() {
+    let (executor, ns, _tmp) = make_executor().await;
+    handle_create_schema(
+        &ns,
+        json!({
+            "name": "Customer",
+            "fields": [{ "name": "email", "type": "string", "protection": "user", "indexed": false }]
+        }),
+    )
+    .await
+    .unwrap();
+    handle_create_schema(
+        &ns,
+        json!({
+            "name": "Invoice",
+            "fields": [{ "name": "amount", "type": "number", "protection": "user", "indexed": false }],
+            "relationships": [{
+                "name": "related",
+                "targetType": "customer",
+                "direction": "out",
+                "cardinality": "many",
+                "reverseName": "related",
+                "reverseCardinality": "many"
+            }]
+        }),
+    )
+    .await
+    .unwrap();
+    make_node(&ns, "c1", "customer").await;
+    for inv in ["inv1", "inv2"] {
+        make_node(&ns, inv, "invoice").await;
+        ns.create_relationship(inv, "related", "c1", json!({}))
+            .await
+            .unwrap();
+    }
+
+    let result = executor
+        .execute(
+            "get_related_nodes",
+            json!({ "id": "c1", "relationship_type": "related" }),
+        )
+        .await
+        .unwrap();
+    assert!(!result.is_error, "{:?}", result.result);
+    assert_eq!(result.result["count"], 2, "{:?}", result.result);
+    assert_eq!(
+        ids(&result.result),
+        vec!["nodespace://inv1", "nodespace://inv2"]
+    );
+}
+
+/// A built-in inverse (`child_of`) resolves through a different branch than a
+/// schema-declared `reverseName` and must be reported once too.
+#[tokio::test]
+async fn builtin_reverse_name_with_both_direction_reports_each_node_once() {
+    let (executor, ns, _tmp) = make_executor().await;
+    make_node(&ns, "parent", "text").await;
+    make_node(&ns, "child", "text").await;
+    ns.create_relationship("parent", "has_child", "child", json!({}))
+        .await
+        .unwrap();
+
+    let result = executor
+        .execute(
+            "get_related_nodes",
+            json!({ "id": "child", "relationship_type": "child_of" }),
+        )
+        .await
+        .unwrap();
+    assert!(!result.is_error, "{:?}", result.result);
+    assert_eq!(result.result["count"], 1, "{:?}", result.result);
+    assert_eq!(ids(&result.result), vec!["nodespace://parent"]);
+    assert_eq!(result.result["nodes"][0]["relationship_type"], "has_child");
+    assert_eq!(result.result["nodes"][0]["direction"], "in");
 }
 
 /// A forward name still fans out to both directions: `both` must return the
