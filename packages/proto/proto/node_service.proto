@@ -52,7 +52,6 @@ service NodeService {
   // adopt-existing suggestion (core#1734).
   rpc FindDuplicate(FindDuplicateRequest) returns (NodeResponse);
   rpc MentionAutocomplete(MentionAutocompleteRequest) returns (NodeListResponse);
-  rpc UpsertNodeWithParent(UpsertNodeWithParentRequest) returns (NodeResponse);
 
   // Hierarchy mutations
   rpc MoveNode(MoveNodeRequest) returns (NodeResponse);
@@ -764,21 +763,6 @@ message MentionAutocompleteRequest {
   string query = 1;
   // 0 = use server default (10)
   uint32 limit = 2;
-}
-
-// ---------------------------------------------------------------------------
-// UpsertNodeWithParent — transactional auto-save upsert
-// ---------------------------------------------------------------------------
-
-message UpsertNodeWithParentRequest {
-  string node_id = 1;
-  string content = 2;
-  string node_type = 3;
-  string parent_id = 4;
-  string root_id = 5;
-  // before_sibling_id field is intentionally omitted — packages/core's
-  // upsert_node_with_parent currently passes None per Issue #616 (fractional
-  // ordering on edges).
 }
 
 // ---------------------------------------------------------------------------

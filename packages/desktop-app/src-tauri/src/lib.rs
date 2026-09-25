@@ -750,7 +750,6 @@ pub fn run() {
             commands::nodes::execute_query,
             commands::nodes::count_query,
             commands::nodes::mention_autocomplete,
-            commands::nodes::save_node_with_parent,
             commands::nodes::get_outgoing_mentions,
             commands::nodes::get_incoming_mentions,
             commands::nodes::get_mentioning_roots,

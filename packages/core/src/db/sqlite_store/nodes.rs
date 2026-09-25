@@ -2618,7 +2618,7 @@ impl SqliteStore {
     /// `has_child` parent — that would make it a forbidden interior member with no
     /// `member_of` write for the store's forward guard to catch. Called at BOTH
     /// store-level sites that attach an *existing* node to a parent — `move_node`
-    /// (the service `move_node` and `upsert_node_with_parent` reparent paths) and
+    /// (the service `move_node` reparent path) and
     /// `bulk_create_has_child` (the sync-apply cold-sweep) — so every reparent
     /// path is covered, symmetrically with the forward guard `assert_root_only_
     /// membership` on the `member_of` INSERT sites. (Fresh-node attach sites can't

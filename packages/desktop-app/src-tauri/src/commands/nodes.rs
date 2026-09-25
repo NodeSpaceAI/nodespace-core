@@ -17,7 +17,7 @@ use nodespace_proto::nodespace::{
     MoveChildrenToParentRequest, MoveNodeRequest, NodeData, NodeResponse, NodeSortOrder,
     OptionalStringClear, OptionalTimestampClear, QueryNodesSimpleRequest, ReorderNodeRequest,
     UpdateNodeRequest, UpdatePersonNodeRequest, UpdateProjectNodeRequest,
-    UpdateRelationshipPropertiesRequest, UpdateTaskNodeRequest, UpsertNodeWithParentRequest,
+    UpdateRelationshipPropertiesRequest, UpdateTaskNodeRequest,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -300,18 +300,6 @@ pub struct CreateRootNodeInput {
     pub properties: serde_json::Value,
     #[serde(default)]
     pub mentioned_by: Option<String>,
-}
-
-/// Input for saving a node with automatic parent creation
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SaveNodeWithParentInput {
-    pub node_id: String,
-    pub content: String,
-    pub node_type: String,
-    pub parent_id: String,
-    pub root_id: String,
-    // before_sibling_id removed - backend uses fractional ordering on has_child edges
 }
 
 /// Create a new node of any type with a registered schema
@@ -881,28 +869,6 @@ pub async fn mention_autocomplete(
         .collect();
 
     nodes_to_typed_values(nodes?)
-}
-
-/// Save a node with automatic parent creation - unified upsert operation
-#[tauri::command]
-pub async fn save_node_with_parent(
-    client: State<'_, GrpcClient>,
-    input: SaveNodeWithParentInput,
-) -> Result<(), CommandError> {
-    let mut c = client.client().await;
-    validate_node_type(&input.node_type, &mut c).await?;
-
-    c.upsert_node_with_parent(Request::new(UpsertNodeWithParentRequest {
-        node_id: input.node_id,
-        content: input.content,
-        node_type: input.node_type,
-        parent_id: input.parent_id,
-        root_id: input.root_id,
-    }))
-    .await
-    .map_err(status_to_command_error)?;
-
-    Ok(())
 }
 
 /// Get outgoing mentions (nodes that this node mentions)

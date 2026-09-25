@@ -5213,9 +5213,8 @@ mod tests {
     async fn test_reparenting_a_collection_member_is_rejected() {
         // ADR-059 §2 (reparent side): a content node that holds a `member_of` edge
         // is a root member; moving it under a parent would make it a forbidden
-        // interior member. The store-level guard rejects it on every reparent path
-        // — service `move_node` AND `upsert_node_with_parent` (the gRPC /
-        // save_node_with_parent path) — and must NOT silently drop the membership.
+        // interior member. The store-level guard rejects it and must NOT silently
+        // drop the membership.
         // A move to root stays allowed.
         let (service, _temp) = create_test_service().await;
 
@@ -5232,7 +5231,7 @@ mod tests {
         let parent = Node::new("text".to_string(), "a parent".to_string(), json!({}));
         let parent_id = service.create_node(parent).await.unwrap();
 
-        // Path 1 — service move_node reparent → rejected, naming the collection.
+        // A move_node reparent is rejected, naming the collection.
         let root_node = service.get_node(&root_id).await.unwrap().unwrap();
         let err = service
             .move_node(
@@ -5264,17 +5263,6 @@ mod tests {
             again
         );
 
-        // Path 2 — upsert_node_with_parent is a DISTINCT reparent path (gRPC
-        // upsert / the save_node_with_parent Tauri command); it must be gated too.
-        let err2 = service
-            .upsert_node_with_parent(&root_id, "root doc", "text", &parent_id, &root_id, None)
-            .await
-            .expect_err("reparenting via upsert_node_with_parent must be rejected");
-        assert!(
-            err2.to_string().contains("member_of_not_root"),
-            "upsert_node_with_parent reparent must be gated; got: {err2}"
-        );
-
         // Moving a member to root (new_parent = None) is still allowed.
         let root_node = service.get_node(&root_id).await.unwrap().unwrap();
         let to_root = service
@@ -5290,75 +5278,6 @@ mod tests {
             "moving a collection member to root must remain allowed; got: {:?}",
             to_root
         );
-    }
-
-    /// `upsert_node_with_parent` is the transactional auto-save upsert (the
-    /// gRPC `UpsertNodeWithParent` / desktop autosave path). Its "update
-    /// existing node" branch must recompute `title` from the new content —
-    /// the same class of gap `update_node_unchecked` already closes for
-    /// schema updates — otherwise an ordinary content edit through autosave
-    /// leaves the DB `title` column (and therefore every subsequent
-    /// `GetNode`) describing the node's OLD content.
-    #[tokio::test]
-    async fn test_upsert_node_with_parent_recomputes_title_on_content_change() {
-        let (service, _temp) = create_test_service().await;
-
-        let parent = Node::new("text".to_string(), "a parent".to_string(), json!({}));
-        let parent_id = service.create_node(parent).await.unwrap();
-
-        let task = Node::new("task".to_string(), "Buy milk".to_string(), json!({}));
-        let task_id = task.id.clone();
-        service.create_node(task).await.unwrap();
-        service
-            .upsert_node_with_parent(&task_id, "Buy milk", "task", &parent_id, &task_id, None)
-            .await
-            .unwrap();
-
-        let before = service.get_node(&task_id).await.unwrap().unwrap();
-        assert_eq!(before.title.as_deref(), Some("Buy milk"));
-
-        // Autosave-style content edit through the SAME upsert path.
-        service
-            .upsert_node_with_parent(&task_id, "Buy eggs", "task", &parent_id, &task_id, None)
-            .await
-            .unwrap();
-
-        let after = service.get_node(&task_id).await.unwrap().unwrap();
-        assert_eq!(
-            after.title.as_deref(),
-            Some("Buy eggs"),
-            "upsert_node_with_parent must recompute title from the new content, \
-             not leave the DB title stale"
-        );
-    }
-
-    /// The create branch of `upsert_node_with_parent` must title the node the
-    /// same way `create_node_with_parent` does, not leave `title` empty.
-    #[tokio::test]
-    async fn test_upsert_node_with_parent_create_branch_computes_title() {
-        let (service, _temp) = create_test_service().await;
-
-        let parent = Node::new("text".to_string(), "a parent".to_string(), json!({}));
-        let parent_id = service.create_node(parent).await.unwrap();
-
-        let task_id = uuid::Uuid::new_v4().to_string();
-        service
-            .upsert_node_with_parent(&task_id, "Buy milk", "task", &parent_id, &task_id, None)
-            .await
-            .unwrap();
-
-        let created = service.get_node(&task_id).await.unwrap().unwrap();
-        assert_eq!(created.title.as_deref(), Some("Buy milk"));
-
-        // A text node is titled only as a root; upsert always attaches the
-        // node to a parent, so a created text child must stay untitled.
-        let text_id = uuid::Uuid::new_v4().to_string();
-        service
-            .upsert_node_with_parent(&text_id, "a child", "text", &parent_id, &text_id, None)
-            .await
-            .unwrap();
-        let text = service.get_node(&text_id).await.unwrap().unwrap();
-        assert_eq!(text.title, None);
     }
 
     /// `create_node_with_parent` must reject an unknown node type before it
@@ -5392,40 +5311,6 @@ mod tests {
                 .unwrap()
                 .is_none(),
             "a rejected create must not leave an auto-created date parent behind"
-        );
-    }
-
-    /// The create branch of `upsert_node_with_parent` must reject an unknown
-    /// node type — and do so before auto-creating the missing parent.
-    #[tokio::test]
-    async fn test_upsert_node_with_parent_create_branch_rejects_unknown_type() {
-        let (service, _temp) = create_test_service().await;
-
-        let node_id = uuid::Uuid::new_v4().to_string();
-        let err = service
-            .upsert_node_with_parent(
-                &node_id,
-                "content",
-                "not-a-real-type",
-                "2026-09-25",
-                &node_id,
-                None,
-            )
-            .await
-            .expect_err("unknown node_type must be rejected");
-        assert!(
-            matches!(err, NodeServiceError::UnknownNodeType { .. }),
-            "expected UnknownNodeType; got: {err:?}"
-        );
-        assert!(service.get_node(&node_id).await.unwrap().is_none());
-        assert!(
-            service
-                .store
-                .get_node("2026-09-25")
-                .await
-                .unwrap()
-                .is_none(),
-            "a rejected upsert must not leave an auto-created parent behind"
         );
     }
 

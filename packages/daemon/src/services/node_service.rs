@@ -70,8 +70,7 @@ use crate::nodespace::{
     SchemaParamsRequest, SchemaResultResponse, SearchRequest, SetLocalPersonIdentityRequest,
     UpdateNodeRequest, UpdateNodesBatchRequest, UpdateNodesBatchResponse, UpdatePersonNodeRequest,
     UpdateProjectNodeRequest, UpdateRelationshipPropertiesRequest,
-    UpdateRelationshipPropertiesResponse, UpdateTaskNodeRequest, UpsertNodeWithParentRequest,
-    WatchRequest,
+    UpdateRelationshipPropertiesResponse, UpdateTaskNodeRequest, WatchRequest,
 };
 
 /// The most rows a paged query RPC will return, whatever the request asks for:
@@ -1112,34 +1111,6 @@ impl GrpcNodeService for NodeServiceImpl {
             nodes: proto_nodes,
             count,
             collection_id: String::new(),
-        }))
-    }
-
-    async fn upsert_node_with_parent(
-        &self,
-        request: Request<UpsertNodeWithParentRequest>,
-    ) -> Result<Response<NodeResponse>, Status> {
-        let this = self.route(&request).await?;
-        let req = request.into_inner();
-
-        this.node_service
-            .upsert_node_with_parent(
-                &req.node_id,
-                &req.content,
-                &req.node_type,
-                &req.parent_id,
-                &req.root_id,
-                None, // before_sibling_id intentionally None for fractional ordering
-            )
-            .await
-            .map_err(service_error_to_status)?;
-
-        let node = fetch_node(&this.node_service, &req.node_id).await?;
-        let node_type = node.node_type.clone();
-        Ok(Response::new(NodeResponse {
-            node_id: req.node_id,
-            node_type,
-            node_data: Some(node_to_proto_collapsed(&this.node_service, node).await?),
         }))
     }
 
