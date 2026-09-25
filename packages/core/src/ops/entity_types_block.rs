@@ -444,8 +444,8 @@ impl EntityTypeDescriptor {
     ///
     /// All call sites — workspace-context and the `already_exists` error
     /// (`name: Some`), per-candidate routing (`name: None`) — share this one
-    /// shape; only whether the quoted
-    /// name segment appears differs, per the doc comment above.
+    /// shape; only whether the quoted name segment appears differs, per the
+    /// doc comment above.
     ///
     /// A type with no fields renders with no `->`: a trailing separator would
     /// read as a promise of a field list that never arrives.

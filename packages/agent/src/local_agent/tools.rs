@@ -1243,7 +1243,7 @@ fn def_create_relationship() -> ToolDefinition {
 fn def_get_related_nodes() -> ToolDefinition {
     ToolDefinition {
         name: "get_related_nodes".into(),
-        description: "Get nodes related to a given node. Defaults to 'mentions' relationship type if not specified. A schema relationship can be traversed from either end by its forward name — the name shown after '~>' in an EXISTING SCHEMAS line — with direction 'both'; its declared reverseName also works from the target. Use this — not search_nodes's 'filters' — for any name shown after '~>' in an EXISTING SCHEMAS line; that syntax marks a relationship, and 'filters' only accepts a type's own fields.".into(),
+        description: "Get nodes related to a given node. Defaults to 'mentions' relationship type if not specified. Pass the name shown after '~>' in an EXISTING SCHEMAS line, from a node of the type that line describes or, usually, from a node of its target type (direction 'both'); its declared reverseName also works from the target. A name that does not apply is rejected with an error listing the ones that do. Use this — not search_nodes's 'filters' — for any name shown after '~>' in an EXISTING SCHEMAS line; that syntax marks a relationship, and 'filters' only accepts a type's own fields.".into(),
         parameters_schema: json!({
             "type": "object",
             "properties": {
