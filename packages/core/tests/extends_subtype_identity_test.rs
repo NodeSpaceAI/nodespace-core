@@ -760,6 +760,39 @@ async fn the_wire_flattener_keeps_inherited_fields() {
 }
 
 #[tokio::test]
+async fn children_tree_nodes_keep_inherited_fields() {
+    let (svc, _tmp) = test_service().await;
+    seed_ticket_and_bug(&svc).await;
+    let root_id = create_instance(&svc, "text", json!({})).await;
+    svc.create_node_with_parent(nodespace_core::CreateNodeParams {
+        id: None,
+        node_type: "bug".to_string(),
+        content: "a bug".to_string(),
+        parent_id: Some(root_id.clone()),
+        position: nodespace_core::InsertPositionOwned::End,
+        properties: json!({ "status": "open", "severity": "high" }),
+        lifecycle_status: None,
+    })
+    .await
+    .expect("creating the bug child failed");
+
+    // Node pages load through the children tree, so a subtype instance inside
+    // it must arrive exactly as a single-node wire read gives it: chain
+    // collapsed and flattened, inherited fields included.
+    let tree = svc
+        .get_children_tree(&root_id)
+        .await
+        .expect("tree load failed");
+    let props = &tree["children"][0]["properties"];
+
+    assert_eq!(
+        props["status"], "open",
+        "an inherited field must survive the tree, got {props:?}"
+    );
+    assert_eq!(props["severity"], "high");
+}
+
+#[tokio::test]
 async fn a_projected_node_flattens_to_exactly_its_scope() {
     let (svc, _tmp) = test_service().await;
     seed_ticket_and_bug(&svc).await;
