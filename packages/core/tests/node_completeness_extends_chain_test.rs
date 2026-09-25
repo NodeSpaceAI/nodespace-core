@@ -213,3 +213,87 @@ async fn required_inbound_relationship_satisfied_from_other_side_reports_complet
     );
     Ok(())
 }
+
+/// The write path also accepts an edge written through the `in` name itself
+/// (stored under `superseded_by` from this node's own end). That shape must
+/// satisfy the required relationship too.
+#[tokio::test]
+async fn required_inbound_relationship_written_through_in_name_reports_complete() -> Result<()> {
+    let (svc, _t) = create_test_service().await?;
+    create_inbound_required_schema(&svc).await?;
+    make_node(&svc, "old", "completeness_in_adr").await?;
+    make_node(&svc, "new", "completeness_in_adr").await?;
+
+    svc.create_relationship("old", "superseded_by", "new", json!({}))
+        .await?;
+
+    let result = svc.check_node_completeness("old").await?;
+
+    assert!(
+        result.is_complete,
+        "missing: {:?}",
+        result.missing_relationships
+    );
+    Ok(())
+}
+
+/// Another schema declaring the same forward name toward the same type shares
+/// the stored `relationship_type`. Its edge must not satisfy an `in`
+/// declaration whose `targetType` names a different source type — but an
+/// ADR-078 subtype of the declared source type does.
+#[tokio::test]
+async fn required_inbound_relationship_narrows_by_source_type() -> Result<()> {
+    let (svc, _t) = create_test_service().await?;
+    create_inbound_required_schema(&svc).await?;
+    handle_create_schema(
+        &svc,
+        json!({
+            "name": "completeness_in_memo",
+            "fields": [],
+            "relationships": [{
+                "name": "supersedes",
+                "targetType": "completeness_in_adr",
+                "direction": "out",
+                "cardinality": "one",
+                "reverseName": "superseded_by_memo",
+                "reverseCardinality": "one"
+            }]
+        }),
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("memo schema: {e}"))?;
+    handle_create_schema(
+        &svc,
+        json!({
+            "name": "completeness_in_adr_sub",
+            "extends": "completeness_in_adr",
+            "fields": []
+        }),
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("adr subtype schema: {e}"))?;
+
+    make_node(&svc, "old", "completeness_in_adr").await?;
+    make_node(&svc, "memo1", "completeness_in_memo").await?;
+    svc.create_relationship("memo1", "supersedes", "old", json!({}))
+        .await?;
+
+    let result = svc.check_node_completeness("old").await?;
+    assert_eq!(
+        result.missing_relationships,
+        vec!["superseded_by".to_string()],
+        "a memo's `supersedes` edge is not an adr superseding this one"
+    );
+
+    make_node(&svc, "sub1", "completeness_in_adr_sub").await?;
+    svc.create_relationship("sub1", "supersedes", "old", json!({}))
+        .await?;
+
+    let result = svc.check_node_completeness("old").await?;
+    assert!(
+        result.is_complete,
+        "an adr subtype source satisfies it; missing: {:?}",
+        result.missing_relationships
+    );
+    Ok(())
+}

@@ -1565,24 +1565,32 @@ impl SqliteStore {
         Ok(row.get::<i64>(0).unwrap_or(0))
     }
 
-    /// Inbound counterpart to [`Self::check_relationship_exists`]: counts
-    /// edges of `rel_type` pointing INTO `target_id` (`out_node = target_id`),
-    /// from any source.
-    pub async fn check_inbound_relationship_exists(
+    /// Inbound counterpart to [`Self::check_relationship_exists`]: the
+    /// distinct node types of every source with a `rel_type` edge INTO
+    /// `target_id` (`out_node = target_id`). Types rather than a count
+    /// because the store keys an edge on `relationship_type` alone — two
+    /// schemas declaring the same forward name toward the same target share
+    /// it — so the caller narrows by the declared source type.
+    pub async fn get_inbound_relationship_source_types(
         &self,
         target_id: &str,
         rel_type: &str,
-    ) -> Result<i64> {
-        let mut rows = self.read().await?.query(
-            "SELECT COUNT(*) as cnt FROM relationship WHERE out_node = ?1 AND relationship_type = ?2",
-            libsql::params![target_id.to_string(), rel_type.to_string()],
-        ).await.context("Failed to check inbound relationship existence")?;
-        let row = rows
-            .next()
+    ) -> Result<Vec<String>> {
+        let mut rows = self
+            .read()
+            .await?
+            .query(
+                "SELECT DISTINCT n.node_type FROM node n JOIN relationship r ON r.in_node = n.id \
+                 WHERE r.out_node = ?1 AND r.relationship_type = ?2",
+                libsql::params![target_id.to_string(), rel_type.to_string()],
+            )
             .await
-            .context("No row returned")?
-            .ok_or_else(|| anyhow::anyhow!("Empty result for relationship count"))?;
-        Ok(row.get::<i64>(0).unwrap_or(0))
+            .context("Failed to get inbound relationship source types")?;
+        let mut types = Vec::new();
+        while let Some(row) = rows.next().await? {
+            types.push(row.get::<String>(0)?);
+        }
+        Ok(types)
     }
 
     pub async fn relationship_exists(

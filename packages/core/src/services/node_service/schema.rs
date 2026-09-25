@@ -1,6 +1,7 @@
 //! Schema-related operations for NodeService.
 
 use super::*;
+use crate::models::schema::RelationshipDirection;
 
 /// Result of [`NodeService::update_task_node_in_tx`] — the task-node twin of
 /// `crud.rs`'s `VersionCheckedUpdateOutcome`. See that type's own doc for why
@@ -1306,31 +1307,53 @@ impl NodeService {
                 continue;
             }
 
-            // Check whether at least one edge of this relationship exists.
-            // Edges are stored once, keyed by the forward (`out`) name with
-            // the source as `in_node`. An `in` declaration is the target's
-            // view of such an edge: the stored type is its `reverse_name`
-            // (the forward name) and this node sits at `out_node`, so the
-            // outbound lookup by `name` could never find it.
-            let existing = match relationship.direction {
-                crate::models::schema::RelationshipDirection::Out => {
-                    self.store
-                        .check_relationship_exists(node_id, &relationship.name)
-                        .await
-                }
-                crate::models::schema::RelationshipDirection::In => {
-                    self.store
-                        .check_inbound_relationship_exists(node_id, &relationship.reverse_name)
-                        .await
-                }
-            };
-            let existing_count = existing.map_err(|e| {
+            let query_failed = |e: anyhow::Error| {
                 NodeServiceError::query_failed(format!(
                     "Failed to check required relationship '{}': {}",
                     relationship.name, e
                 ))
-            })?;
-            if existing_count == 0 {
+            };
+
+            // Check whether at least one edge of this relationship exists
+            // from this node's own end (`in_node = node_id`, stored under
+            // `name`). For an `in` declaration that shape only arises when
+            // the edge was written through the `in` name itself.
+            let mut satisfied = self
+                .store
+                .check_relationship_exists(node_id, &relationship.name)
+                .await
+                .map_err(query_failed)?
+                > 0;
+
+            // An `in` declaration is more usually the target's view of a
+            // forward edge written from the other side: stored under its
+            // `reverse_name` (the forward name) with this node at
+            // `out_node`, which the lookup above can never see. Only edges
+            // from a source satisfying the declared `target_type` (itself or
+            // an ADR-078 descendant) count, since another schema may declare
+            // the same forward name toward this type.
+            if !satisfied && relationship.direction == RelationshipDirection::In {
+                let source_types = self
+                    .store
+                    .get_inbound_relationship_source_types(node_id, &relationship.reverse_name)
+                    .await
+                    .map_err(query_failed)?;
+                satisfied = match &relationship.target_type {
+                    None => !source_types.is_empty(),
+                    Some(expected) => {
+                        let mut any = false;
+                        for source_type in &source_types {
+                            if self.type_satisfies(source_type, expected).await? {
+                                any = true;
+                                break;
+                            }
+                        }
+                        any
+                    }
+                };
+            }
+
+            if !satisfied {
                 missing.push(relationship.name.clone());
             }
         }

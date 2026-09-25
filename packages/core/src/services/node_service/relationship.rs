@@ -555,7 +555,7 @@ impl NodeService {
     /// Whether `node_type` satisfies a declaration expecting `expected_type` —
     /// true when they match, or when `expected_type` is an ancestor of
     /// `node_type` (ADR-078).
-    async fn type_satisfies(
+    pub(super) async fn type_satisfies(
         &self,
         node_type: &str,
         expected_type: &str,
