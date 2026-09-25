@@ -1107,13 +1107,15 @@ const CONFIRMATION_REQUEST: &str =
 /// Lead-in for a suppressed response when a write genuinely went through but
 /// the model's account of it could not be trusted (an invented id, a leaked
 /// pseudo-call). [`CONFIRMATION_REQUEST`] would read as "nothing happened" and
-/// invite a redundant retry, so the replacement states the change landed and
-/// lists what actually ran instead of relaying the model's wording.
+/// invite a redundant retry, so the replacement states that changes landed and
+/// lists what actually ran instead of relaying the model's wording. It claims
+/// no more than "changes were saved" because the list that follows may also
+/// carry a failed call.
 ///
 /// Worded to avoid every [`contains_action_claim`] phrase: the no-op guard runs
 /// after the guards that emit this, and must judge the model's claim, not ours.
 const WRITE_MISREPORTED_NOTICE: &str =
-    "Your change went through, but my description of it wasn't reliable. Here's what actually ran:";
+    "Changes were saved, but my description of them wasn't reliable. Here's what actually ran:";
 
 /// Replacement when the model claimed an action backed only by writes that
 /// persisted zero of the fields they carried. The write call itself did run,
@@ -1126,19 +1128,35 @@ const NOTHING_SAVED_NOTICE: &str =
 ///
 /// Whether the user should be asked to confirm depends on the turn, not the
 /// guard: a leaked pseudo-call or an invented id can follow a real write
-/// earlier in the same turn. Any successful write selects
-/// [`WRITE_MISREPORTED_NOTICE`] plus the same error-aware summary the
-/// empty-text fallback uses; otherwise nothing changed and
-/// [`CONFIRMATION_REQUEST`] is accurate.
+/// earlier in the same turn.
+///
+/// A successful write counts as landed unless it reports persisting zero of
+/// the fields it carried — the same [`persisted_field_count`] signal the no-op
+/// guard trusts. Without that, an empty write followed by an invented id would
+/// be announced as a saved change, the false success the no-op guard exists
+/// to prevent; the no-op guard cannot catch it afterwards because our
+/// replacement is deliberately not an action claim.
+///
+/// - any landed write → [`WRITE_MISREPORTED_NOTICE`] plus the same
+///   error-aware summary the empty-text fallback uses
+/// - only empty writes → [`NOTHING_SAVED_NOTICE`]
+/// - no successful write → [`CONFIRMATION_REQUEST`]
 fn suppressed_response_replacement(executions: &[ToolExecutionRecord]) -> String {
-    if executions
+    let (mut any_write, mut any_landed) = (false, false);
+    for r in executions
         .iter()
-        .any(|r| !r.is_error && super::tools::is_write_tool(&r.name))
+        .filter(|r| !r.is_error && super::tools::is_write_tool(&r.name))
     {
+        any_write = true;
+        any_landed |= persisted_field_count(&r.name, &r.result) != Some(0);
+    }
+    if any_landed {
         format!(
             "{WRITE_MISREPORTED_NOTICE}\n\n{}",
             summarize_executions(executions)
         )
+    } else if any_write {
+        NOTHING_SAVED_NOTICE.to_string()
     } else {
         CONFIRMATION_REQUEST.to_string()
     }
@@ -7450,7 +7468,9 @@ mod tests {
         let response = run_guard_turn(
             "create_node",
             r#"{"content":"Rebuild reports page functionality","node_type":"task"}"#,
-            json!({"id": "nodespace://d7e3bb35-170a-4865-a6f6-063fbd1e0a09", "property_count": 0}),
+            // `content_only` is what `create_node` reports for a create that
+            // carried no properties — a complete success, not an empty write.
+            json!({"id": "nodespace://d7e3bb35-170a-4865-a6f6-063fbd1e0a09", "property_count": 0, "content_only": true}),
             "The task \"Rebuild reports page functionality to support client-side rendering (CSR) instead of SSR.\" was created as a new record with ID nodespace://cbaedefg-abcd-1234-wxyz-deadbeefcafe in the 'task' schema.",
         )
         .await;
@@ -7488,6 +7508,122 @@ mod tests {
         assert_eq!(
             response,
             format!("{WRITE_MISREPORTED_NOTICE}\n\n• node update completed")
+        );
+    }
+
+    /// An empty write is not a landed change: announcing it as saved would be
+    /// the false success the no-op guard prevents, and that guard cannot catch
+    /// it after our replacement text (which is not an action claim).
+    #[tokio::test]
+    async fn misreport_guards_do_not_announce_an_empty_write_as_saved() {
+        for final_text in [
+            "Updated nodespace://invented-id.",
+            "update_node(id='abc', due_date='2026-08-06')",
+        ] {
+            let response = run_guard_turn(
+                "update_node",
+                r#"{"id":"abc","field_values":{"due_date":"2026-08-06"}}"#,
+                json!({"id": "nodespace://abc", "property_count": 0}),
+                final_text,
+            )
+            .await;
+            assert_eq!(response, NOTHING_SAVED_NOTICE, "{final_text}");
+        }
+    }
+
+    /// A landed write plus an unretried failure: the notice must not contradict
+    /// the failure bullet, and the tool-failure guard must let the summary
+    /// through (it names the failure itself) rather than swap in its generic
+    /// warning and hide the write that did land.
+    #[tokio::test]
+    async fn misreport_notice_reports_a_landed_write_alongside_a_failure() {
+        struct MixedExecutor;
+
+        #[async_trait]
+        impl AgentToolExecutor for MixedExecutor {
+            async fn available_tools(&self) -> Result<Vec<ToolDefinition>, ToolError> {
+                Ok(["update_node", "search_nodes"]
+                    .into_iter()
+                    .map(|name| ToolDefinition {
+                        name: name.into(),
+                        description: "test tool".into(),
+                        parameters_schema: json!({"type": "object"}),
+                    })
+                    .collect())
+            }
+            async fn execute(
+                &self,
+                name: &str,
+                _a: serde_json::Value,
+            ) -> Result<ToolResult, ToolError> {
+                let is_error = name == "search_nodes";
+                Ok(ToolResult {
+                    tool_call_id: format!("tc_{name}"),
+                    name: name.into(),
+                    result: if is_error {
+                        json!({"error": "index unavailable"})
+                    } else {
+                        json!({"id": "nodespace://abc", "updated": true, "property_count": 1})
+                    },
+                    is_error,
+                })
+            }
+        }
+
+        let tool_call = |id: &str, name: &str, args: &str| {
+            vec![
+                StreamingChunk::ToolCallStart {
+                    id: id.into(),
+                    name: name.into(),
+                    provider_extra: None,
+                },
+                StreamingChunk::ToolCallArgs {
+                    id: id.into(),
+                    args_json: args.into(),
+                },
+                StreamingChunk::Done {
+                    usage: InferenceUsage {
+                        prompt_tokens: 20,
+                        completion_tokens: 10,
+                    },
+                },
+            ]
+        };
+        let engine = Arc::new(MockEngine::new(vec![
+            tool_call(
+                "tc_1",
+                "update_node",
+                r#"{"id":"abc","field_values":{"due_date":"2026-08-06"}}"#,
+            ),
+            tool_call("tc_2", "search_nodes", r#"{"query":"invoice"}"#),
+            vec![
+                StreamingChunk::Token {
+                    text: "Done: nodespace://invented-id.".into(),
+                },
+                StreamingChunk::Done {
+                    usage: InferenceUsage {
+                        prompt_tokens: 30,
+                        completion_tokens: 15,
+                    },
+                },
+            ],
+        ]));
+        let agent_loop = LocalAgentLoop::new(engine, Arc::new(MixedExecutor));
+        let mut session = new_session();
+        let response = agent_loop
+            .run_turn(
+                &mut session,
+                "do the thing",
+                |_| {},
+                |_| {},
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap()
+            .response;
+        assert_eq!(
+            response,
+            format!("{WRITE_MISREPORTED_NOTICE}\n\n• node update completed\n• node search failed")
         );
     }
 
