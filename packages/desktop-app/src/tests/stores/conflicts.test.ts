@@ -71,10 +71,72 @@ describe('conflicts store', () => {
     it('clears records and marks loaded on failure, without throwing', async () => {
       mockInvoke.mockRejectedValueOnce(new Error('daemon unreachable'));
 
-      await expect(conflictsStore.load()).resolves.toBeUndefined();
+      await expect(conflictsStore.load()).resolves.toBe(true);
 
       expect(conflictsStore.records).toEqual([]);
       expect(conflictsStore.loaded).toBe(true);
+    });
+  });
+
+  describe('invalidateForDatabaseSwitch()', () => {
+    it('clears the previous database records immediately', () => {
+      conflictsStore.records = [record()];
+      conflictsStore.loaded = true;
+
+      conflictsStore.invalidateForDatabaseSwitch();
+
+      expect(conflictsStore.records).toEqual([]);
+      expect(conflictsStore.loaded).toBe(false);
+      expect(conflictsStore.hasOpenFor('n1')).toBe(false);
+    });
+
+    it('drops a load issued before the switch that resolves after the reload', async () => {
+      let resolveStale!: (v: ConflictRecord[]) => void;
+      mockInvoke.mockImplementationOnce(
+        () => new Promise<ConflictRecord[]>((r) => (resolveStale = r))
+      );
+      const stale = conflictsStore.load();
+
+      conflictsStore.invalidateForDatabaseSwitch();
+      mockInvoke.mockResolvedValueOnce([record({ id: 'new-db', nodeIds: ['m1'] })]);
+      await expect(conflictsStore.load()).resolves.toBe(true);
+
+      resolveStale([record({ id: 'old-db', nodeIds: ['n1'] })]);
+      await expect(stale).resolves.toBe(false);
+
+      expect(conflictsStore.records.map((r) => r.id)).toEqual(['new-db']);
+      expect(conflictsStore.hasOpenFor('n1')).toBe(false);
+    });
+
+    it('drops a failed load issued before the switch instead of clearing the new records', async () => {
+      let rejectStale!: (e: Error) => void;
+      mockInvoke.mockImplementationOnce(
+        () => new Promise<ConflictRecord[]>((_, rej) => (rejectStale = rej))
+      );
+      const stale = conflictsStore.load();
+
+      conflictsStore.invalidateForDatabaseSwitch();
+      mockInvoke.mockResolvedValueOnce([record({ id: 'new-db' })]);
+      await conflictsStore.load();
+
+      rejectStale(new Error('daemon unreachable'));
+      await expect(stale).resolves.toBe(false);
+
+      expect(conflictsStore.records.map((r) => r.id)).toEqual(['new-db']);
+    });
+
+    it('drops a per-node load issued before the switch', async () => {
+      let resolveStale!: (v: ConflictRecord[]) => void;
+      mockInvoke.mockImplementationOnce(
+        () => new Promise<ConflictRecord[]>((r) => (resolveStale = r))
+      );
+      const stale = conflictsStore.loadForNode('n1');
+
+      conflictsStore.invalidateForDatabaseSwitch();
+      resolveStale([record({ id: 'old-db', nodeIds: ['n1'] })]);
+
+      await expect(stale).resolves.toEqual([]);
+      expect(conflictsStore.records).toEqual([]);
     });
   });
 

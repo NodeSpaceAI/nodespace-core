@@ -74,8 +74,22 @@
   // per-node indicator and the Conflicts view both read `conflictsStore`
   // directly; this only decides whether a one-time startup nudge is worth
   // showing when open conflicts already exist.
+  //
+  // Started only once `databaseStore` has a selection: `list_conflicts` is a
+  // routed command, so issued any earlier it would be answered by the daemon
+  // default rather than the restored database. A load discarded by a database
+  // switch shows no notice — its count described no database in particular.
+  let conflictsNoticeStarted = false;
+  $effect(() => {
+    if (conflictsNoticeStarted || databaseStore.activeDatabaseId === null) return;
+    if (!(window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__) return;
+    conflictsNoticeStarted = true;
+    loadConflicts();
+  });
+
   function loadConflicts(): void {
-    conflictsStore.load().then(() => {
+    conflictsStore.load().then((applied) => {
+      if (!applied) return;
       const open = conflictsStore.records.filter((r) => r.status === 'open');
       if (open.length === 0) return;
       conflictNotifications.add({
@@ -245,11 +259,6 @@
         .start()
         .then((stop) => (cleanupProSync = stop))
         .catch((e) => log.warn('proSync.start failed', { error: e }));
-
-      // Load the conflict journal on every startup — unconditional, not
-      // gated on Pro tier (ADR-068: the journal works on a purely
-      // local-only install, which is exactly the defect it fixes).
-      loadConflicts();
 
       // Sync theme from backend preferences (overrides localStorage if different)
       invoke<{ activeDatabasePath: string; display: { renderMarkdown: boolean; theme: string } }>('get_settings')
