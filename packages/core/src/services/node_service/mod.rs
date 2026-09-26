@@ -3904,7 +3904,8 @@ mod tests {
 
             // Simulate a pre-existing database that predates the agent-guidance
             // schema: remove it with the unchecked store delete (core schemas
-            // are refused by every guarded delete path).
+            // are refused by every guarded delete path). Test-only — production
+            // must never pass a schema id to the unchecked delete.
             service
                 .store
                 .delete_nodes_by_ids_unchecked(&["agent-guidance".to_string()])
