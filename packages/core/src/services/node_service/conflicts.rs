@@ -300,10 +300,10 @@ impl NodeService {
                     // edge, changing whether it is a root, so its title
                     // follows. The loser's parent is passed as the former
                     // parent: the tree it heads lost the loser's text. When
-                    // the survivor already had a parent, the loser's parent
-                    // edge was dropped and that tree is queued only through
-                    // this. When the edge was re-pointed instead, both
-                    // resolve to the same root and it is queued once.
+                    // the merge dropped the loser's parent edge, that tree is
+                    // queued only through this. When the edge was re-pointed
+                    // instead, both resolve to the same root and it is
+                    // queued once.
                     let survivor_is_root =
                         crate::db::SqliteStore::get_parent_id_in_tx(ns_tx.store_tx(), &survivor_id)
                             .await

@@ -239,15 +239,16 @@ impl SqliteStore {
     ///
     /// 0. **Tree invariants.** Checked before anything is written; a
     ///    violation refuses the whole merge, the same as `move_node` would.
-    ///    The node is left with at most one `has_child` parent: its own if it
-    ///    has one, otherwise the loser's (see step 2). If it ends up with a
+    ///    The survivor is left with at most one `has_child` parent: its own if
+    ///    it has one, otherwise the loser's (see step 2). If it ends up with a
     ///    parent, the merge is refused when it is a `collection`
     ///    (`collection_not_root`) or when either side holds `member_of` and
-    ///    the survivor is not a `person` (`member_of_not_root`, ADR-059 §2).
-    ///    It is also refused (`merge_would_cycle`) when one node sits deeper
-    ///    than a direct child in the other's subtree, because re-pointing
-    ///    would make the survivor its own ancestor. A direct parent/child
-    ///    pair merges fine: the edge between them becomes a self-edge.
+    ///    the survivor's type may not hold membership under a parent
+    ///    (`member_of_not_root`, ADR-059 §2). It is also refused
+    ///    (`merge_would_cycle`) when the survivor sits deeper than a direct
+    ///    child in the loser's subtree: the loser's children would re-point
+    ///    onto their own descendant. A direct parent/child pair merges fine,
+    ///    because the edge between them becomes a self-edge.
     /// 1. **Property union.** Every property present on `loser` but absent on
     ///    `survivor` is copied. Where both hold a value, `survivor` wins and
     ///    the loser's value is captured into the returned `superseded` map —
@@ -264,9 +265,11 @@ impl SqliteStore {
     ///
     ///    `has_child` keeps the tree single-parent. The loser's children
     ///    always re-point and join the survivor's tree. The loser's own parent
-    ///    edge re-points only when the survivor is otherwise a root; when the
-    ///    survivor already has a parent, that edge is dropped and counted, and
-    ///    the survivor keeps its own position. `member_of` re-points as usual:
+    ///    edge re-points only when the survivor is otherwise a root and that
+    ///    parent lies outside the survivor's subtree. Otherwise the edge is
+    ///    dropped and counted, and the survivor keeps its own position (a
+    ///    parent inside its own subtree would close a cycle). `member_of`
+    ///    re-points as usual:
     ///    step 0 has already refused any merge where it would land on a node
     ///    with a parent.
     ///
@@ -301,8 +304,8 @@ impl SqliteStore {
     /// where `repointed_edges` is `(relationship_type, new_source_id,
     /// new_target_id)` for every edge this step actually re-pointed (i.e.
     /// `in_node`/`out_node` after the update) — `edges_dropped` counts only
-    /// this step's own self-edge, parent-edge and unique-constraint drops, not anything
-    /// the caller's cardinality pass may additionally evict.
+    /// this step's own self-edge, parent-edge and unique-constraint drops,
+    /// not anything the caller's cardinality pass may additionally evict.
     pub(crate) async fn merge_nodes_in_tx(
         tx: &Tx<'_>,
         survivor_id: &str,
@@ -346,52 +349,46 @@ impl SqliteStore {
         let loser_parent = Self::get_parent_id_in_tx(tx, loser_id)
             .await?
             .filter(|p| p != survivor_id);
-        // The survivor keeps its own position; the loser's parent edge is
-        // re-pointed only onto a survivor that would otherwise be a root.
-        let takes_loser_parent = survivor_parent.is_none() && loser_parent.is_some();
-        let has_parent_after = survivor_parent.is_some() || loser_parent.is_some();
+        // Re-pointing the loser's children onto the survivor closes a cycle
+        // when the survivor sits below one of them.
+        if let Some(survivor_parent) = survivor_parent.as_deref() {
+            if Self::is_ancestor_in_tx(tx, loser_id, survivor_parent).await? {
+                anyhow::bail!(
+                    "merge_would_cycle: survivor '{}' sits inside the subtree of '{}', so merging would make the survivor its own ancestor. Move the survivor out of that subtree first.",
+                    survivor_id,
+                    loser_id
+                );
+            }
+        }
+        // The survivor keeps its own position. The loser's parent edge is
+        // re-pointed only onto a survivor that would otherwise be a root, and
+        // only when that parent is outside the survivor's subtree; taking a
+        // parent from its own subtree would close a cycle.
+        let takes_loser_parent = match (&survivor_parent, &loser_parent) {
+            (None, Some(loser_parent)) => {
+                !Self::is_ancestor_in_tx(tx, survivor_id, loser_parent).await?
+            }
+            _ => false,
+        };
+        let has_parent_after = survivor_parent.is_some() || takes_loser_parent;
 
         if has_parent_after {
             if survivor.node_type == "collection" {
                 anyhow::bail!(super::collection_not_root(Some(survivor_id)));
             }
-            if survivor.node_type != "person" {
+            if !super::relationships::member_may_have_parent(&survivor.node_type) {
                 let memberships =
                     Self::member_of_targets_in_tx(tx, &[survivor_id, loser_id]).await?;
                 if !memberships.is_empty() {
                     anyhow::bail!(
-                        "member_of_not_root: merging '{}' into '{}' would leave it holding collection membership ({}) while it has a parent — only root nodes may hold collection membership (ADR-059 §2). Remove the node from the collection(s) first, or move it to the root.",
+                        "member_of_not_root: merging '{}' into '{}' would leave survivor '{}' holding collection membership ({}) while it has a parent — only root nodes may hold collection membership (ADR-059 §2). Remove the node from the collection(s) first, or move it to the root.",
                         loser_id,
+                        survivor_id,
                         survivor_id,
                         memberships.join(", ")
                     );
                 }
             }
-        }
-
-        // Re-pointing the loser's children onto the survivor closes a cycle
-        // when the survivor sits below one of them; re-pointing the loser's
-        // parent edge does when that parent sits below the survivor.
-        let cycle_via = if survivor_parent.is_some()
-            && Self::is_descendant_in_tx(tx, loser_id, survivor_id).await?
-        {
-            Some(loser_id)
-        } else if takes_loser_parent {
-            let loser_parent = loser_parent.as_deref().expect("takes_loser_parent");
-            Self::is_descendant_in_tx(tx, survivor_id, loser_parent)
-                .await?
-                .then_some(loser_parent)
-        } else {
-            None
-        };
-        if let Some(via) = cycle_via {
-            anyhow::bail!(
-                "merge_would_cycle: merging '{}' into '{}' would make '{}' its own ancestor through '{}'. Move one of the nodes out of the other's subtree first.",
-                loser_id,
-                survivor_id,
-                survivor_id,
-                via
-            );
         }
 
         // --- Step 1: property union, survivor wins ties ---
@@ -624,24 +621,25 @@ impl SqliteStore {
         Ok(targets)
     }
 
-    /// Whether `node_id` lies in `ancestor_id`'s `has_child` subtree, at any
-    /// depth below it.
-    async fn is_descendant_in_tx(tx: &Tx<'_>, ancestor_id: &str, node_id: &str) -> Result<bool> {
+    /// Whether `ancestor_id` is `node_id` or one of its `has_child`
+    /// ancestors. Walks up the parent chain, so the cost is the node's depth,
+    /// not the size of any subtree.
+    async fn is_ancestor_in_tx(tx: &Tx<'_>, ancestor_id: &str, node_id: &str) -> Result<bool> {
         let mut rows = tx
             .conn()
             .query(
-                r#"WITH RECURSIVE desc(node_id) AS (
-                    SELECT out_node FROM relationship WHERE in_node = ?1 AND relationship_type = 'has_child'
+                r#"WITH RECURSIVE up(node_id) AS (
+                    SELECT ?2
                     UNION
-                    SELECT r.out_node FROM relationship r
-                    JOIN desc d ON r.in_node = d.node_id
+                    SELECT r.in_node FROM relationship r
+                    JOIN up u ON r.out_node = u.node_id
                     WHERE r.relationship_type = 'has_child'
                 )
-                SELECT 1 FROM desc WHERE node_id = ?2 LIMIT 1"#,
+                SELECT 1 FROM up WHERE node_id = ?1 LIMIT 1"#,
                 libsql::params![ancestor_id.to_string(), node_id.to_string()],
             )
             .await
-            .context("Failed to check subtree membership")?;
+            .context("Failed to walk the parent chain")?;
         Ok(rows.next().await?.is_some())
     }
 }
