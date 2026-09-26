@@ -29,10 +29,9 @@ pub enum SchemaAction {
     Update(SchemaParamsArgs),
     /// Delete a schema definition by ID.
     ///
-    /// Remove the type's relationship declarations first (`schema update`
-    /// with `remove_relationships`), including any declared on *other* types
-    /// that point at this one — the daemon refuses the delete while any
-    /// remain, naming the count.
+    /// The daemon refuses to delete a core schema, or a schema that other
+    /// schemas `extends` — delete the extending schemas first. Relationship
+    /// declarations on or pointing at the type are removed with it.
     Delete(SchemaDeleteArgs),
 }
 

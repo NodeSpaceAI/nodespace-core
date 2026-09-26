@@ -1880,6 +1880,14 @@ impl NodeService {
     /// deny. This check runs before the transaction opens, not inside it — a rollback-based
     /// check would do wasted work every time.
     ///
+    /// **Schema guard:** the delete is refused with [`NodeServiceError::SchemaDeleteRefused`]
+    /// when the subtree contains a core schema, or a schema that another schema outside the
+    /// subtree `extends` — every chain resolver skips a missing ancestor, so deleting a parent
+    /// would silently strip its descendants of all inherited fields and relationships
+    /// (ADR-078). Delete the extending schemas first. Like the access gate, this runs before
+    /// the transaction opens: an `extends` edge created in between is not seen, and the
+    /// relationship cascade drops it along with the parent.
+    ///
     /// Returns `DeleteResult` with `existed=true` and `deleted_count` (target + all descendants)
     /// on success, or `existed=false` when the target node was already gone.
     pub async fn delete_node(
@@ -1905,11 +1913,13 @@ impl NodeService {
             });
         }
 
-        // Compute the subtree once; both the access gate and the delete itself use this exact
-        // set so they can never see different subtrees.
+        // Compute the subtree once; the schema guard, the access gate and the delete itself
+        // all use this exact set so they can never see different subtrees.
         let subtree_ids = self.store.collect_subtree_ids(node_id).await.map_err(|e| {
             NodeServiceError::query_failed(format!("Failed to collect subtree: {}", e))
         })?;
+
+        self.ensure_schemas_deletable(&subtree_ids).await?;
 
         if let access_gate::SubtreeAccessDecision::Denied { inaccessible_count } = self
             .subtree_access_gate()
@@ -1954,6 +1964,81 @@ impl NodeService {
             existed: true,
             deleted_count: deleted_nodes.len() as u64,
         })
+    }
+
+    /// Refuse to delete any schema in `subtree_ids` that the type system still depends on.
+    ///
+    /// Only core schemas and `extends` parents can be refused, so those ids are the only
+    /// candidates fetched — a subtree holding neither costs one edge query and no node reads.
+    /// A parent whose children are all in the same subtree is deletable: the whole chain goes.
+    /// Only direct children are checked: a grandchild's `extends` edge points at its own
+    /// parent, which is refused in turn while the grandchild exists.
+    async fn ensure_schemas_deletable(
+        &self,
+        subtree_ids: &[String],
+    ) -> Result<(), NodeServiceError> {
+        let doomed: std::collections::HashSet<&str> =
+            subtree_ids.iter().map(String::as_str).collect();
+        let parent_map = self.store.get_extends_parent_map().await.map_err(|e| {
+            NodeServiceError::query_failed(format!("Failed to load extends edges: {}", e))
+        })?;
+        let core_ids: std::collections::HashSet<String> =
+            crate::models::core_schemas::get_core_schemas()
+                .into_iter()
+                .map(|schema| schema.id)
+                .collect();
+
+        let candidates: Vec<String> = subtree_ids
+            .iter()
+            .filter(|id| core_ids.contains(*id) || parent_map.values().any(|p| p == *id))
+            .cloned()
+            .collect();
+        if candidates.is_empty() {
+            return Ok(());
+        }
+
+        let nodes = self
+            .store
+            .get_nodes_by_ids(&candidates)
+            .await
+            .map_err(|e| {
+                NodeServiceError::query_failed(format!("Failed to read schemas: {}", e))
+            })?;
+        for id in &candidates {
+            let Some(schema) = nodes.get(id).filter(|n| n.node_type == "schema") else {
+                continue;
+            };
+
+            let is_core = schema
+                .properties
+                .get("isCore")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            if is_core {
+                return Err(NodeServiceError::schema_delete_refused(
+                    id,
+                    "it is a core schema",
+                ));
+            }
+
+            let mut children: Vec<&str> = parent_map
+                .iter()
+                .filter(|(child, parent)| *parent == id && !doomed.contains(child.as_str()))
+                .map(|(child, _)| child.as_str())
+                .collect();
+            if !children.is_empty() {
+                children.sort_unstable();
+                return Err(NodeServiceError::schema_delete_refused(
+                    id,
+                    format!(
+                        "extended by {} — delete those schemas first",
+                        children.join(", ")
+                    ),
+                ));
+            }
+        }
+
+        Ok(())
     }
 
     /// Bump a node's version without changing any content.
