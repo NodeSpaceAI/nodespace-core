@@ -69,6 +69,11 @@ describe("planCargoConfig", () => {
     expect(plan.action).toBe("manual");
   });
 
+  test("hands off when a legacy ~/.cargo/config exists — cargo would ignore config.toml", () => {
+    const plan = planCargoConfig(null, SCCACHE, true);
+    expect(plan.action).toBe("manual");
+  });
+
   test("hands off when the file is not valid TOML", () => {
     const plan = planCargoConfig("[build\nnot toml", SCCACHE);
     expect(plan.action).toBe("manual");

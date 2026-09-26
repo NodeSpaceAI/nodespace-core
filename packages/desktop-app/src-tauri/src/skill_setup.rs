@@ -1142,7 +1142,7 @@ mod tests {
         let handle = app.handle().clone();
 
         let resolved = resolve_installer_path(&handle)
-            .expect("dist/install.js must exist — run `bun run build:skill` first");
+            .expect("dist/install.js must exist — run `bun run --cwd packages/skill build` first");
 
         assert!(
             resolved.ends_with("skill/dist/install.js"),
@@ -1562,7 +1562,7 @@ mod tests {
     fn run_skill_installer_actually_installs_into_an_isolated_home() {
         let app = tauri::test::mock_app();
         let installer_path = resolve_installer_path(&app.handle().clone())
-            .expect("dist/install.js must exist — run `bun run build:skill` first");
+            .expect("dist/install.js must exist — run `bun run --cwd packages/skill build` first");
 
         let fake_home = tempfile::tempdir().expect("create isolated fake $HOME");
         std::fs::create_dir_all(fake_home.path().join(".claude"))
@@ -1616,7 +1616,7 @@ mod tests {
     fn run_skill_installer_reports_agents_skipped_for_a_genuinely_incomplete_package() {
         let app = tauri::test::mock_app();
         let real_resource_root = resolve_installer_path(&app.handle().clone())
-            .expect("dist/install.js must exist — run `bun run build:skill` first")
+            .expect("dist/install.js must exist — run `bun run --cwd packages/skill build` first")
             .parent()
             .and_then(Path::parent)
             .expect("dist/install.js is two levels under the skill package root")
@@ -1752,7 +1752,7 @@ mod tests {
     fn status_subcommand_stops_reporting_an_agent_whose_skill_dir_was_deleted_by_hand() {
         let app = tauri::test::mock_app();
         let installer_path = resolve_installer_path(&app.handle().clone())
-            .expect("dist/install.js must exist — run `bun run build:skill` first");
+            .expect("dist/install.js must exist — run `bun run --cwd packages/skill build` first");
 
         let fake_home = tempfile::tempdir().expect("create isolated fake $HOME");
         std::fs::create_dir_all(fake_home.path().join(".claude"))
@@ -1807,7 +1807,7 @@ mod tests {
     fn detect_subcommand_reports_present_agents_before_anything_is_installed() {
         let app = tauri::test::mock_app();
         let installer_path = resolve_installer_path(&app.handle().clone())
-            .expect("dist/install.js must exist — run `bun run build:skill` first");
+            .expect("dist/install.js must exist — run `bun run --cwd packages/skill build` first");
 
         let fake_home = tempfile::tempdir().expect("create isolated fake $HOME");
         std::fs::create_dir_all(fake_home.path().join(".claude"))
@@ -1874,7 +1874,7 @@ mod tests {
     fn uninstall_subcommand_removes_the_skill_from_every_installed_agent() {
         let app = tauri::test::mock_app();
         let installer_path = resolve_installer_path(&app.handle().clone())
-            .expect("dist/install.js must exist — run `bun run build:skill` first");
+            .expect("dist/install.js must exist — run `bun run --cwd packages/skill build` first");
 
         let fake_home = tempfile::tempdir().expect("create isolated fake $HOME");
         std::fs::create_dir_all(fake_home.path().join(".claude"))

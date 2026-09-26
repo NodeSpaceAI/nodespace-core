@@ -69,8 +69,17 @@ export function cargoConfigBlock(sccachePath: string): string {
  * Decides what to do with ~/.cargo/config.toml. `existing` is its contents,
  * or null when the file doesn't exist.
  */
-export function planCargoConfig(existing: string | null, sccachePath: string): CargoConfigPlan {
+export function planCargoConfig(
+  existing: string | null,
+  sccachePath: string,
+  legacyConfigExists = false,
+): CargoConfigPlan {
   const block = cargoConfigBlock(sccachePath);
+  // Cargo reads the extensionless legacy file in preference to config.toml,
+  // so anything appended to config.toml would be silently ignored.
+  if (legacyConfigExists) {
+    return { action: "manual", reason: "~/.cargo/config (legacy, no extension) takes precedence over config.toml", lines: block };
+  }
   if (existing === null || existing.trim() === "") {
     return { action: "write", content: block };
   }
@@ -114,6 +123,10 @@ function cargoConfigPath(): string {
   return join(process.env.CARGO_HOME ?? join(homedir(), ".cargo"), "config.toml");
 }
 
+function legacyCargoConfigPath(): string {
+  return join(process.env.CARGO_HOME ?? join(homedir(), ".cargo"), "config");
+}
+
 function cargoBinDir(): string {
   return join(process.env.CARGO_HOME ?? join(homedir(), ".cargo"), "bin");
 }
@@ -135,12 +148,7 @@ export function sha256Hex(bytes: Uint8Array): string {
   return new Bun.CryptoHasher("sha256").update(bytes).digest("hex");
 }
 
-async function installSccache(): Promise<string> {
-  const release = SCCACHE_RELEASES[`${process.platform}-${process.arch}`];
-  if (release === undefined) {
-    throw new Error(`no pinned sccache build for ${process.platform}-${process.arch} — install sccache manually`);
-  }
-
+async function installSccache(release: { asset: string; sha256: string }, target: string): Promise<void> {
   const url = `https://github.com/mozilla/sccache/releases/download/v${SCCACHE_VERSION}/${release.asset}.tar.gz`;
   const response = await fetch(url, { signal: AbortSignal.timeout(60_000) });
   if (!response.ok) {
@@ -157,11 +165,14 @@ async function installSccache(): Promise<string> {
     const archivePath = join(work, "sccache.tar.gz");
     writeFileSync(archivePath, archive);
     await $`tar -xzf ${archivePath} -C ${work}`.quiet();
-    const target = join(cargoBinDir(), "sccache");
-    mkdirSync(cargoBinDir(), { recursive: true });
-    copyFileSync(join(work, release.asset, "sccache"), target);
-    chmodSync(target, 0o755);
-    return target;
+    // Copy-then-rename: another worktree's `bun install` may be running this
+    // binary right now, and rewriting a running binary in place on macOS gets
+    // it SIGKILLed for an invalid code signature.
+    mkdirSync(dirname(target), { recursive: true });
+    const tmp = `${target}.${process.pid}.tmp`;
+    copyFileSync(join(work, release.asset, "sccache"), tmp);
+    chmodSync(tmp, 0o755);
+    renameSync(tmp, target);
   } finally {
     rmSync(work, { recursive: true, force: true });
   }
@@ -175,19 +186,32 @@ async function main(): Promise<void> {
   // Someone already routes rustc through a wrapper of their own choosing.
   if (process.env.RUSTC_WRAPPER) return;
 
+  const existingPath = findOnPath("sccache");
+  const release = SCCACHE_RELEASES[`${process.platform}-${process.arch}`];
+  // Not installed, and no pinned build for this Mac (Intel): nothing this
+  // script can do, and nothing worth a warning on every install.
+  if (existingPath === null && release === undefined) return;
+  const sccachePath = existingPath ?? join(cargoBinDir(), "sccache");
+
   const configPath = cargoConfigPath();
   const existing = existsSync(configPath) ? readFileSync(configPath, "utf8") : null;
+  const plan = planCargoConfig(existing, sccachePath, existsSync(legacyCargoConfigPath()));
 
-  // The fast path: every `bun install` after the first lands here.
-  let sccachePath = findOnPath("sccache");
-  if (sccachePath !== null) {
-    const plan = planCargoConfig(existing, sccachePath);
-    if (plan.action === "skip" && existsSync(sccacheConfigPath())) return;
+  // A wrapper is already configured — this script's own earlier run (the
+  // fast path every later `bun install` takes) or the user's own choice.
+  // Either way nothing to enable, so nothing to download.
+  if (plan.action === "skip") {
+    if (existingPath !== null && !existsSync(sccacheConfigPath())) {
+      writeAtomically(sccacheConfigPath(), sccacheConfigContent());
+    }
+    return;
   }
 
-  if (sccachePath === null) {
+  // Installed even when the config needs a manual merge, so the printed
+  // lines work as-is once merged.
+  if (existingPath === null && release !== undefined) {
     console.log(`▶ Installing sccache ${SCCACHE_VERSION} (shared Rust compiler cache) into ${cargoBinDir()}`);
-    sccachePath = await installSccache();
+    await installSccache(release, sccachePath);
   }
 
   if (!existsSync(sccacheConfigPath())) {
@@ -196,7 +220,6 @@ async function main(): Promise<void> {
 
   // Only now, with the binary known to exist: a rustc-wrapper pointing at a
   // missing binary would fail every cargo build on the machine.
-  const plan = planCargoConfig(existing, sccachePath);
   switch (plan.action) {
     case "write":
       writeAtomically(configPath, plan.content);
@@ -205,8 +228,7 @@ async function main(): Promise<void> {
     case "manual":
       console.warn(`⚠ sccache is installed but not enabled: ${plan.reason}.`);
       console.warn(`  Merge these keys into ${configPath} (into its existing tables, not as duplicates):\n\n${plan.lines}`);
-      break;
-    case "skip":
+      console.warn(`  Or set ${SKIP_ENV_VAR}=1 to stop this notice.`);
       break;
   }
 }

@@ -13,8 +13,8 @@
  * build.rs drops every unstaged sidecar and the unstaged skill from a debug
  * build (see its `drop_unstaged_bundle_entries`), so none of those gate
  * compiling. What is left is the `resources/models` glob, which survives on a
- * tracked `.gitkeep`, and `build:skill`'s installer — required here by a TEST
- * (see `TEST_PREREQUISITES`), not by the build.
+ * tracked `.gitkeep`, and the skill package's compiled installer script —
+ * required here by a TEST (see `TEST_PREREQUISITES`), not by the build.
  *
  * Left alone, that surfaces from deep inside a build script naming one
  * missing path, with no hint which command produces it. This checks every
@@ -23,16 +23,15 @@
  *
  * The check and the cargo invocation live together because the answer to
  * "are the prerequisites there?" has three outcomes, not two: ready, missing
- * (build them), and unbuildable-on-this-platform (skip). Linux ships CLI +
- * daemon binaries only, no packaged GUI app — `build:skill` stages no
- * installer there, so the test prerequisite cannot be produced at all.
+ * (build them), and not-on-this-platform (skip). Linux ships CLI + daemon
+ * binaries only — there is no desktop app there to build or test.
  * Expressing that three-way result as a shell `&&` chain in
  * package.json would either fail the suite on Linux or swallow real failures.
  */
 
 import { Glob } from 'bun';
 import { existsSync, readFileSync } from 'node:fs';
-import { arch, platform } from 'node:os';
+import { platform } from 'node:os';
 import { join } from 'node:path';
 
 const TAURI_DIR = join(
@@ -52,7 +51,7 @@ const TAURI_DIR = join(
  * would otherwise invite.
  */
 const PRODUCERS: { prefix: string; command: string }[] = [
-  { prefix: '../../skill/', command: 'bun run build:skill' },
+  { prefix: '../../skill/', command: 'bun run --cwd packages/skill build' },
   // `:bundle`, not the bare script — only `--bundle` targets
   // resources/models; without it the download lands in ~/.nodespace/models
   // and stages nothing here.
@@ -65,15 +64,9 @@ const producerFor = (path: string): string =>
     .find(({ prefix }) => path.startsWith(prefix))?.command ??
   'see tauri.conf.json';
 
-const hostTriple = (): string | null => {
-  if (platform() === 'darwin') {
-    return `${arch() === 'arm64' ? 'aarch64' : 'x86_64'}-apple-darwin`;
-  }
-  if (platform() === 'win32') {
-    return 'x86_64-pc-windows-msvc';
-  }
-  return null;
-};
+/** The desktop app ships on macOS and Windows only. */
+const hasDesktopApp = (): boolean =>
+  platform() === 'darwin' || platform() === 'win32';
 
 interface RequiredPath {
   path: string;
@@ -137,8 +130,7 @@ const requiredPaths = (): RequiredPath[] => {
   ];
 };
 
-const triple = hostTriple();
-if (!triple) {
+if (!hasDesktopApp()) {
   console.log(
     'Skipping nodespace-app unit tests (no Tauri desktop app on this platform).',
   );

@@ -3,14 +3,13 @@ mod build_support;
 use std::env;
 use std::path::PathBuf;
 
-/// `externalBin` entries from `tauri.conf.json`, without the `binaries/`
-/// prefix or platform triple — kept in sync with that file by hand since
-/// build.rs has no cheap way to parse it (serde_json isn't a
-/// `[build-dependencies]` of this crate, and pulling it in only for this
-/// would be disproportionate). If a new sidecar is added there, add its bin
-/// name here too, or it simply won't get the staleness guard below — every
-/// other `externalBin` behaviour (including tauri-build's own copy step)
-/// keeps working either way.
+/// `externalBin` entries from `tauri.conf.json` that the workspace itself
+/// builds (so have a `target/<profile>/<bin>` to compare against), without the
+/// `binaries/` prefix or platform triple. The skill installer is built by
+/// `build:skill`, not cargo, so it has no entry. If a new cargo-built sidecar
+/// is added there, add its bin name here too, or it simply won't get the
+/// staleness guard below — every other `externalBin` behaviour (including
+/// tauri-build's own copy step) keeps working either way.
 const EXTERNAL_BIN_NAMES: &[&str] = &["nodespaced", "nodespace"];
 
 /// Reconciles each `externalBin` sidecar's staging copy
@@ -120,21 +119,15 @@ fn drop_unstaged_bundle_entries() {
         .read_dir()
         .is_ok_and(|mut entries| entries.next().is_some());
 
-    let mut missing: Vec<PathBuf> = Vec::new();
-    let external_bins: Vec<serde_json::Value> = declared_bins
+    // Non-string entries are kept as declared rather than guessed at.
+    let (external_bins, unstaged_bins): (Vec<serde_json::Value>, Vec<serde_json::Value>) =
+        declared_bins
+            .iter()
+            .cloned()
+            .partition(|entry| entry.as_str().is_none_or(|bin| staged_path(bin).is_file()));
+    let mut missing: Vec<PathBuf> = unstaged_bins
         .iter()
-        .filter(|entry| {
-            let Some(bin) = entry.as_str() else {
-                return true;
-            };
-            let path = staged_path(bin);
-            let staged = path.is_file();
-            if !staged {
-                missing.push(path);
-            }
-            staged
-        })
-        .cloned()
+        .filter_map(|entry| entry.as_str().map(staged_path))
         .collect();
     let resources: Vec<serde_json::Value> = declared_resources
         .iter()
