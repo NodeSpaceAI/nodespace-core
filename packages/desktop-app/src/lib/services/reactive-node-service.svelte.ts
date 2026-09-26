@@ -949,7 +949,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     // Track move operation to prevent race conditions with subsequent indent/outdent
     // CRITICAL: Other hierarchy operations must wait for this move to complete
     // before they can reference this node's edges in the database
-    const moveOperation = (async () => {
+    void trackMoveOperation(nodeId, async (ticket) => {
       try {
         // CRITICAL: Wait for any pending move operations to complete first.
         // This ensures move operations are processed in order, preventing edge conflicts.
@@ -963,6 +963,9 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
         if (targetParentId) {
           nodesToFlush.push(targetParentId);
         }
+        // Writes registered up to here are ones this flush waits on, so they
+        // must not wait on this move — see `movesAheadOfWrite()`.
+        ticket.coverWritesThrough(sharedNodeStore.persistenceSequence());
         await sharedNodeStore.flushNodeSaves(nodesToFlush);
 
         // Get fresh node data to ensure we have the latest version
@@ -1005,10 +1008,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
         }
         // Ignorable error: keep UI updates (for unit tests without server)
       }
-    })();
-
-    // Track this move so subsequent indent/outdent operations wait for it
-    trackMoveOperation(nodeId, moveOperation);
+    });
 
     return true;
   }
@@ -1123,7 +1123,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
 
     // Track move operation to prevent race conditions with subsequent indent/outdent
     // CRITICAL: Other hierarchy operations must wait for this move to complete
-    const moveOperation = (async () => {
+    void trackMoveOperation(nodeId, async (ticket) => {
       // Whether the node itself now sits under newParentId in the backend (its CREATE or MOVE
       // committed). Decides how much of the optimistic outdent a later failure may undo.
       let nodeCommitted = false;
@@ -1137,6 +1137,9 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
 
         // CRITICAL: Flush ALL pending saves before moveNode.
         // Ensures all node creations (and their edges) are persisted.
+        // Writes registered up to here are ones this flush waits on, so they
+        // must not wait on this move — see `movesAheadOfWrite()`.
+        ticket.coverWritesThrough(sharedNodeStore.persistenceSequence());
         await sharedNodeStore.flushAllPendingSaves();
 
         // Get fresh node data to ensure we have the latest versions
@@ -1220,10 +1223,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
         }
         // Ignorable error: keep UI updates (for unit tests without server)
       }
-    })();
-
-    // Track this move so subsequent indent/outdent operations wait for it
-    trackMoveOperation(nodeId, moveOperation);
+    });
 
     return true;
   }

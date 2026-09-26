@@ -23,7 +23,7 @@ import { isVersionConflict, isSubtreeAccessDenied, isPlayRuleRejected } from '$l
 import { showSubtreeAccessDenied } from './subtree-access-denied.svelte';
 import { isValidDateId } from '$lib/types/date-node';
 import { createLogger } from '$lib/utils/logger';
-import { getPendingMoveOperation } from './pending-operations';
+import { movesAheadOfWrite } from './pending-operations';
 import { onDaemonReconnect } from './daemon-status';
 import { focusManager } from './focus-manager.svelte';
 import type { Node } from '$lib/types';
@@ -92,14 +92,34 @@ interface PendingOperation {
   reject: (error: Error) => void;
   /** Still waiting on its debounce timer (not yet started). */
   debounced: boolean;
+  /** See `PersistOptions.collapseKey`. */
+  collapseKey?: string;
 }
 
 const coordLog = createLogger('PersistenceCoordinator');
 
+export interface PersistOptions {
+  mode: 'immediate' | 'debounce';
+  dependencies?: Array<string | (() => Promise<void>)>;
+  /**
+   * Which later writes may replace this one while it waits (behind an
+   * in-flight write, or on its debounce timer).
+   *
+   * Omitted: the write re-reads everything it sends at execution time, so any
+   * later write may replace it — the keystroke collapse. With a key, only a
+   * later write with the same key replaces it; any other write is kept and runs
+   * after it, in order. A write carrying changes no later write will re-send
+   * gives itself a key no other write shares.
+   */
+  collapseKey?: string;
+}
+
 /** Pending operation to run after current execution completes */
 interface QueuedOperation {
   operation: () => Promise<void>;
-  options: { mode: 'immediate' | 'debounce'; dependencies?: Array<string | (() => Promise<void>)> };
+  options: PersistOptions;
+  /** Persistence sequence of the `persist()` call that queued it. */
+  sequence: number;
   resolve: () => void;
   reject: (error: Error) => void;
   /** The queued write's own completion promise, settled by resolve/reject above. */
@@ -112,10 +132,14 @@ interface QueuedOperation {
 export class SimplePersistenceCoordinator {
   private static instance: SimplePersistenceCoordinator | null = null;
   private pendingOperations = new Map<string, PendingOperation>();
-  private executingOperations = new Set<string>(); // Track in-flight operations
-  // Track nodes that need re-persistence after current operation completes
-  // Stores the QUEUED operation so DELETE isn't overwritten by UPDATE re-run
-  private queuedOperations = new Map<string, QueuedOperation>();
+  // In-flight operations, with the persistence sequence of the `persist()`
+  // call each one belongs to (see `executingSequence()`).
+  private executingOperations = new Map<string, number>();
+  // Writes waiting, in order, for the node's in-flight write to finish. A new
+  // write replaces the last one unless that one's collapse key forbids it (see
+  // `PersistOptions.collapseKey`), so a DELETE isn't overwritten by an UPDATE
+  // re-run and a burst of keystrokes still collapses to the latest edit.
+  private queuedOperations = new Map<string, QueuedOperation[]>();
   private readonly DEBOUNCE_MS = 500;
   private operationCounter = 0; // For tracking operation IDs
 
@@ -153,13 +177,26 @@ export class SimplePersistenceCoordinator {
     SimplePersistenceCoordinator.instance = null;
   }
 
+  /**
+   * The persistence sequence: the number of the latest `persist()` call. Every
+   * write registered so far has a sequence at or below it.
+   */
+  sequence(): number {
+    return this.operationCounter;
+  }
+
+  /**
+   * Persistence sequence of the write executing for `nodeId`, or undefined
+   * when none is. A write's closure reads this for its own sequence.
+   */
+  executingSequence(nodeId: string): number | undefined {
+    return this.executingOperations.get(nodeId);
+  }
+
   persist(
     nodeId: string,
     operation: () => Promise<void>,
-    options: {
-      mode: 'immediate' | 'debounce';
-      dependencies?: Array<string | (() => Promise<void>)>;
-    } = { mode: 'debounce' }
+    options: PersistOptions = { mode: 'debounce' }
   ): { promise: Promise<void> } {
     const opId = ++this.operationCounter;
     const shortNodeId = nodeId.substring(0, 8);
@@ -173,25 +210,28 @@ export class SimplePersistenceCoordinator {
         `hasPending=${hasPending}, isExecuting=${isExecuting}`
     );
 
-    // If an operation is already executing for this node, collapse the new
-    // operation into a single latest-wins pending write. It runs immediately
-    // after the in-flight write's version confirmation lands (see the
-    // `finally` block below) — never re-debounced, never re-fired per RPC
-    // round-trip. This makes a conflict-with-self structurally impossible:
-    // the queued closure always re-reads the version only after the prior
-    // write's `localNode.version` write-back has happened.
+    // If an operation is already executing for this node, queue the new
+    // operation behind it. It runs immediately after the in-flight write's
+    // version confirmation lands (see the `finally` block below) — never
+    // re-debounced, never re-fired per RPC round-trip. This makes a
+    // conflict-with-self structurally impossible: the queued closure always
+    // re-reads the version only after the prior write's `localNode.version`
+    // write-back has happened.
     if (isExecuting) {
-      // Queue the new operation - it supersedes any previously queued operation
-      // (single-slot Map so DELETE isn't lost behind a re-run UPDATE, and a
-      // burst of keystrokes collapses to the single latest edit).
+      // The new operation replaces the last queued one when that one allows
+      // it (see `PersistOptions.collapseKey`): a burst of keystrokes collapses
+      // to the single latest edit, while a write carrying changes of its own
+      // is kept and runs first.
       //
-      // CRITICAL: Reject any previously-queued entry's promise before it's
-      // overwritten below. Without this, a burst of keystrokes during an
-      // in-flight write leaves one never-settled promise per superseded
-      // queued edit — mirrors clearQueued's settlement rule.
-      const previouslyQueued = this.queuedOperations.get(nodeId);
-      if (previouslyQueued) {
-        previouslyQueued.reject(new OperationCancelledError('Superseded by a newer write'));
+      // CRITICAL: Reject a replaced entry's promise before dropping it.
+      // Without this, a burst of keystrokes during an in-flight write leaves
+      // one never-settled promise per superseded queued edit — mirrors
+      // clearQueued's settlement rule.
+      const queue = this.queuedOperations.get(nodeId) ?? [];
+      const last = queue[queue.length - 1];
+      if (last && canReplace(last.options.collapseKey, options.collapseKey)) {
+        queue.pop();
+        last.reject(new OperationCancelledError('Superseded by a newer write'));
       }
       let queuedResolve: () => void = () => {};
       let queuedReject: (error: Error) => void = () => {};
@@ -199,21 +239,25 @@ export class SimplePersistenceCoordinator {
         queuedResolve = res;
         queuedReject = rej;
       });
-      this.queuedOperations.set(nodeId, {
+      queue.push({
         operation,
         options,
+        sequence: opId,
         resolve: queuedResolve,
         reject: queuedReject,
         promise: queuedPromise
       });
+      this.queuedOperations.set(nodeId, queue);
       // Also register a pendingOperations placeholder so flush/wait helpers
       // (which only look at pendingOperations) see this node as outstanding
-      // even though its write is collapsed behind an in-flight RPC rather
-      // than sitting on a debounce timer. `operation()` here does NOT force
-      // early execution — it just resolves once the coordinator's own
-      // finally-chain runs the queued write after confirmation lands.
-      // resolve/reject below are dead no-ops: real settlement flows through
-      // `promise` (== queuedPromise), settled via queued.resolve/reject.
+      // even though its write is queued behind an in-flight RPC rather
+      // than sitting on a debounce timer. Its promise is the LAST queued
+      // write's, which settles only after every earlier one has run.
+      // `operation()` here does NOT force early execution — it just resolves
+      // once the coordinator's own finally-chain runs the queued write after
+      // confirmation lands. resolve/reject below are dead no-ops: real
+      // settlement flows through `promise` (== queuedPromise), settled via
+      // the queued entry's resolve/reject.
       this.pendingOperations.set(nodeId, {
         nodeId,
         operation: () => queuedPromise,
@@ -224,20 +268,24 @@ export class SimplePersistenceCoordinator {
         debounced: false
       });
       coordLog.debug(
-        `[op#${opId}] operation already executing for ${shortNodeId}, collapsed into latest-wins pending write (mode=${options.mode})`
+        `[op#${opId}] operation already executing for ${shortNodeId}, queued behind it (mode=${options.mode}, queued=${queue.length})`
       );
       return { promise: queuedPromise };
     }
 
     // An immediate write must not discard a debounced write still waiting on
     // its timer (typically a content edit): each captures only its own
-    // changes, so cancelling it would lose the typed text. Start the debounced
-    // write now instead; this write then collapses behind it through the
+    // changes, so cancelling it would lose the typed text. Nor may a write
+    // discard a debounced one its collapse key protects. Start the debounced
+    // write now instead; this write then queues behind it through the
     // executing branch above, so both reach the server in order. A debounced
     // write replacing another debounced write is the intended keystroke
     // collapse and still cancels below.
     const waiting = this.pendingOperations.get(nodeId);
-    if (options.mode === 'immediate' && waiting?.debounced) {
+    if (
+      waiting?.debounced &&
+      (options.mode === 'immediate' || !canReplace(waiting.collapseKey, options.collapseKey))
+    ) {
       coordLog.debug(
         `[op#${opId}] promoting pending debounced write for ${shortNodeId} ahead of an immediate write`
       );
@@ -260,11 +308,12 @@ export class SimplePersistenceCoordinator {
     const runOperation = async (
       op: () => Promise<void>,
       deps: Array<string | (() => Promise<void>)> | undefined,
+      sequence: number,
       onDone: () => void,
       onError: (error: Error) => void
     ) => {
       // Mark as executing
-      this.executingOperations.add(nodeId);
+      this.executingOperations.set(nodeId, sequence);
       coordLog.debug(`[op#${opId}] executeOperation() starting for ${shortNodeId}`);
 
       try {
@@ -317,30 +366,32 @@ export class SimplePersistenceCoordinator {
         // that hasPending() returns true with no gap. A WatchNodes setNode
         // arriving between "execution done" and "queued op taking over" would
         // otherwise see hasPending=false and clobber the optimistic store.
-        const queued = this.queuedOperations.get(nodeId);
-        if (queued) {
-          this.queuedOperations.delete(nodeId);
+        const queue = this.queuedOperations.get(nodeId);
+        const queued = queue?.shift();
+        if (queue && queued) {
+          if (queue.length === 0) this.queuedOperations.delete(nodeId);
           // Re-register in pendingOperations immediately so hasPending() stays
           // true until the queued write actually starts below. `promise` is
-          // the queued write's OWN completion promise (already registered at
+          // the LAST queued write's completion promise (already registered at
           // queue time) so waitForPersistence()/flush callers awaiting
-          // `pending.promise` block on the actual queued write, not resolve
-          // prematurely.
+          // `pending.promise` block until every queued write has run, not
+          // resolve prematurely.
           // resolve/reject below are dead no-ops: real settlement flows
-          // through `promise` (== queued.promise), settled via runOperation's
-          // onDone/onError, which are queued.resolve/reject.
+          // through each queued write's own promise, settled via
+          // runOperation's onDone/onError, which are queued.resolve/reject.
           this.pendingOperations.set(nodeId, {
             nodeId,
             operation: () =>
               runOperation(
                 queued.operation,
                 queued.options.dependencies,
+                queued.sequence,
                 queued.resolve,
                 queued.reject
               ),
             resolve: () => {},
             reject: () => {},
-            promise: queued.promise,
+            promise: (queue[queue.length - 1] ?? queued).promise,
             timeoutId: setTimeout(() => {}, 0),
             debounced: false
           });
@@ -360,6 +411,7 @@ export class SimplePersistenceCoordinator {
             void runOperation(
               queued.operation,
               queued.options.dependencies,
+              queued.sequence,
               queued.resolve,
               queued.reject
             );
@@ -368,7 +420,8 @@ export class SimplePersistenceCoordinator {
       }
     };
 
-    const executeOperation = () => runOperation(operation, options.dependencies, resolve, reject);
+    const executeOperation = () =>
+      runOperation(operation, options.dependencies, opId, resolve, reject);
 
     if (options.mode === 'immediate') {
       coordLog.debug(`[op#${opId}] scheduling IMMEDIATE for ${shortNodeId}`);
@@ -379,6 +432,7 @@ export class SimplePersistenceCoordinator {
         operation: executeOperation,
         timeoutId: setTimeout(() => {}, 0),
         debounced: false,
+        collapseKey: options.collapseKey,
         promise,
         resolve,
         reject
@@ -399,7 +453,8 @@ export class SimplePersistenceCoordinator {
         promise,
         resolve,
         reject,
-        debounced: true
+        debounced: true,
+        collapseKey: options.collapseKey
       };
       this.pendingOperations.set(nodeId, pending);
     }
@@ -448,15 +503,19 @@ export class SimplePersistenceCoordinator {
    * database broadcasts for this node and hanging any flush/wait call on it.
    */
   clearQueued(nodeId: string): void {
-    const queued = this.queuedOperations.get(nodeId);
-    if (queued) {
-      coordLog.debug(`Cleared queued operation for ${nodeId.substring(0, 8)} (OCC conflict)`);
-      this.queuedOperations.delete(nodeId);
-      queued.reject(
-        new OperationCancelledError('Queued write cancelled: prior write hit an OCC conflict')
+    const queue = this.queuedOperations.get(nodeId);
+    if (queue) {
+      coordLog.debug(
+        `Cleared ${queue.length} queued operation(s) for ${nodeId.substring(0, 8)} (OCC conflict)`
       );
+      this.queuedOperations.delete(nodeId);
+      for (const queued of queue) {
+        queued.reject(
+          new OperationCancelledError('Queued write cancelled: prior write hit an OCC conflict')
+        );
+      }
       const pending = this.pendingOperations.get(nodeId);
-      if (pending && pending.promise === queued.promise) {
+      if (pending && queue.some((queued) => queued.promise === pending.promise)) {
         this.pendingOperations.delete(nodeId);
       }
     }
@@ -471,7 +530,7 @@ export class SimplePersistenceCoordinator {
   }
 
   /**
-   * True only when a genuinely different write is collapsed behind this
+   * True only when a genuinely different write is queued behind this
    * node's currently-executing one (see `persist()`'s `isExecuting` branch).
    * Unlike `isPending`/`isExecuting`/`hasPending`, this is never true purely
    * because of an operation's OWN bookkeeping — a write is never routed
@@ -643,7 +702,7 @@ export class SimplePersistenceCoordinator {
     // write actually lands.
     const allNodeIds = new Set<string>([
       ...this.pendingOperations.keys(),
-      ...this.executingOperations,
+      ...this.executingOperations.keys(),
       ...this.queuedOperations.keys()
     ]);
     if (allNodeIds.size === 0) {
@@ -651,6 +710,14 @@ export class SimplePersistenceCoordinator {
     }
     return this.flushAndWaitForNodes(Array.from(allNodeIds), timeoutMs);
   }
+}
+
+/**
+ * Whether a later write with `nextKey` may replace a waiting write with
+ * `waitingKey` — see `PersistOptions.collapseKey`.
+ */
+function canReplace(waitingKey: string | undefined, nextKey: string | undefined): boolean {
+  return waitingKey === undefined || waitingKey === nextKey;
 }
 
 // All production call sites in this file go through this alias rather than
@@ -838,9 +905,12 @@ export class SharedNodeStore {
   // Typed fields written optimistically but not yet sent, per node, with the
   // node type they belong to. Whichever write for the node runs next — typed,
   // generic or batch — sends and clears the whole set first (see
-  // `sendPendingTypedFields()`), so a typed write superseded in the
-  // coordinator's single queued slot doesn't lose its fields.
+  // `sendPendingTypedFields()`), so a typed write superseded while queued
+  // in the coordinator doesn't lose its fields.
   private pendingTypedFields = new Map<string, PendingTypedWrite>();
+
+  // Source of collapse keys no other write shares — see `updateNode()`.
+  private uniqueWriteKeyCounter = 0;
 
   /**
    * Bump the write-sequence number for a single typed field on a node.
@@ -1823,6 +1893,21 @@ export class SharedNodeStore {
               ];
             }
           }
+          // Content is re-read at execution time, so a later write that also
+          // carries content replaces this one while it waits. A write that
+          // changes anything else carries a change no later write re-sends,
+          // so nothing replaces it (see `PersistOptions.collapseKey`).
+          // `nodeType` rides along unchanged on every keystroke; only a
+          // genuine change counts.
+          const changesOtherFields = Object.entries(capturedNonContentFields).some(
+            ([field, value]) =>
+              field === 'properties' ||
+              value !== (existingNode as unknown as Record<string, unknown>)[field]
+          );
+          const collapseKey = changesOtherFields
+            ? `node-fields:${++this.uniqueWriteKeyCounter}`
+            : 'content';
+
           // Captured at schedule time alongside the other options above —
           // `options` itself doesn't change, but naming it here keeps it next
           // to the rest of what this closure reads from the outer scope.
@@ -1858,8 +1943,17 @@ export class SharedNodeStore {
                   // CRITICAL: Read current node state at execution time, not capture time
                   // This ensures we persist the latest content, not stale content from when persist() was called
                   // Typed fields a superseded typed write left pending go
-                  // first — see `sendPendingTypedFields()`.
-                  await this.sendPendingTypedFields(nodeId);
+                  // first — see `sendPendingTypedFields()`. A conflict there
+                  // has already been reported and leaves this write's version
+                  // stale too, so it does not send — and tells its caller so,
+                  // since its own change never reached the server.
+                  if ((await this.sendPendingTypedFields(nodeId)) === 'conflict') {
+                    this.rollbackUpdate(nodeId, update);
+                    onPersistError?.(
+                      new Error(`Update for node ${nodeId} skipped after a version conflict`)
+                    );
+                    return;
+                  }
 
                   let currentNode = this.nodes.get(nodeId);
                   if (!currentNode) {
@@ -1869,15 +1963,12 @@ export class SharedNodeStore {
                     return;
                   }
 
-                  // CRITICAL: Wait for any pending move operation to complete before UPDATE.
+                  // CRITICAL: Wait for any move this UPDATE must follow.
                   // Move operations (indent/outdent) increment the version in the backend.
                   // If we UPDATE before the move completes, we'll have a version mismatch.
-                  const pendingMove = getPendingMoveOperation(nodeId);
-                  if (pendingMove) {
-                    log.debug(
-                      `[UPDATE] Waiting for pending move operation on ${nodeId.substring(0, 8)}`
-                    );
-                    await pendingMove;
+                  const movesAhead = this.movesAhead(nodeId);
+                  if (movesAhead) {
+                    await movesAhead;
                     // Re-read current node to get updated version after move
                     const refreshedNode = this.nodes.get(nodeId);
                     if (refreshedNode) {
@@ -1983,8 +2074,8 @@ export class SharedNodeStore {
                       // `PersistenceCoordinator` (`persist()` above) executes
                       // at most one real RPC per node at a time — a second
                       // write for the same node while this one is executing
-                      // collapses into a single queued slot and only starts
-                      // once this write's response has already been applied.
+                      // is queued behind it and only starts once this
+                      // write's response has already been applied.
                       // A future change that let two RPCs for the same node
                       // race concurrently would need this branch to also
                       // check the snapshot, not just field ownership.
@@ -2327,7 +2418,8 @@ export class SharedNodeStore {
                 isStructuralChange || isPropertyChange || isNodeTypeChange
                   ? 'immediate'
                   : 'debounce',
-              dependencies: dependencies.length > 0 ? dependencies : undefined
+              dependencies: dependencies.length > 0 ? dependencies : undefined,
+              collapseKey
             }
           );
 
@@ -2551,15 +2643,12 @@ export class SharedNodeStore {
               // Check if node has been persisted - use in-memory tracking to avoid database query
               const isPersistedToDatabase = this.persistedNodeIds.has(nodeId);
               if (isPersistedToDatabase) {
-                // CRITICAL: Wait for any pending move operation to complete before UPDATE.
+                // CRITICAL: Wait for any move this UPDATE must follow.
                 // Move operations (indent/outdent) increment the version in the backend.
                 // If we UPDATE before the move completes, we'll have a version mismatch.
-                const pendingMove = getPendingMoveOperation(nodeId);
-                if (pendingMove) {
-                  log.debug(
-                    `[UPDATE] Waiting for pending move operation on ${nodeId.substring(0, 8)}`
-                  );
-                  await pendingMove;
+                const movesAhead = this.movesAhead(nodeId);
+                if (movesAhead) {
+                  await movesAhead;
                   // Re-read current node to get updated version after move
                   const refreshedNode = this.nodes.get(nodeId);
                   if (refreshedNode) {
@@ -3117,10 +3206,10 @@ export class SharedNodeStore {
    *
    * Called from every persistence closure that writes the node — typed,
    * generic (`updateNode()`) and batch — before its own RPC, and right after
-   * each create path. The coordinator keeps one queued write per node and a
-   * newer write replaces it, so a queued typed write can be superseded by a
-   * generic one; flushing first means its fields still reach the server,
-   * ahead of (and at the version before) the generic write.
+   * each create path. A queued typed write can be replaced by a later write
+   * for the node (see `PersistOptions.collapseKey`); flushing first means its
+   * fields still reach the server, ahead of (and at the version before) the
+   * replacing write.
    *
    * Owns its own failures and never throws: a typed-update error is reported
    * (notification, OCC hydration, the staging callers' `onPersistError`) here,
@@ -3128,29 +3217,31 @@ export class SharedNodeStore {
    * write whose closure happened to flush it. No-op when nothing is pending,
    * and while the node has not been created yet (its fields wait for the
    * create).
+   *
+   * Returns `'conflict'` when the send hit a version conflict. The conflict is
+   * already reported, and the node's local version may not have been
+   * refreshed (hydration is skipped while the node is being edited), so a
+   * calling write must not send its own update — it would conflict again and
+   * raise a second notification.
    */
-  private async sendPendingTypedFields(nodeId: string): Promise<void> {
-    // Nothing staged is the common case for a generic or create closure —
-    // return before touching anything, in particular before the move wait
-    // below: a move can itself be waiting on this node's in-flight create.
-    if (!this.persistedNodeIds.has(nodeId)) return;
+  private async sendPendingTypedFields(nodeId: string): Promise<'sent' | 'conflict'> {
+    // Nothing staged is the common case for a generic or create closure.
+    if (!this.persistedNodeIds.has(nodeId)) return 'sent';
     const staged = this.pendingTypedFields.get(nodeId);
-    if (!staged || Object.keys(staged.fields).length === 0) return;
+    if (!staged || Object.keys(staged.fields).length === 0) return 'sent';
 
     // A move (indent/outdent) bumps the version server-side; sending before it
     // lands would conflict on a stale version.
-    const pendingMove = getPendingMoveOperation(nodeId);
-    if (pendingMove) {
-      await pendingMove;
-    }
+    const moves = this.movesAhead(nodeId);
+    if (moves) await moves;
 
     // Re-read after the wait: fields staged meanwhile go in this same send.
     const pending = this.pendingTypedFields.get(nodeId);
     this.pendingTypedFields.delete(nodeId);
-    if (!pending || Object.keys(pending.fields).length === 0) return;
+    if (!pending || Object.keys(pending.fields).length === 0) return 'sent';
     const payload = pending.fields;
     const localBeforeSend = this.nodes.get(nodeId);
-    if (!localBeforeSend) return; // Evicted or deleted — nothing to write for.
+    if (!localBeforeSend) return 'sent'; // Evicted or deleted — nothing to write for.
 
     // Sequence numbers as of THIS send: a same-field write after this point
     // bumps past them, and its value must win over this response.
@@ -3186,9 +3277,27 @@ export class SharedNodeStore {
         this.nodesSet(nodeId, localNode);
       }
       for (const callbacks of pending.callbacks) callbacks.onPersistSuccess?.();
+      return 'sent';
     } catch (dbError) {
       this.handleTypedWriteFailure(nodeId, pending, dbError);
+      return isVersionConflict(dbError) ? 'conflict' : 'sent';
     }
+  }
+
+  /**
+   * The moves of `nodeId` that the write executing for it must follow — see
+   * `movesAheadOfWrite()` — or undefined when there are none. Called from
+   * inside a write's closure. Synchronous so a write with nothing to wait for
+   * doesn't yield before reading the state it sends.
+   */
+  private movesAhead(nodeId: string): Promise<void> | undefined {
+    // Every caller runs inside the node's executing coordinator write, so the
+    // sequence is always defined; without one, wait for every flushed move.
+    const sequence =
+      PersistenceCoordinator.getInstance().executingSequence(nodeId) ?? Number.POSITIVE_INFINITY;
+    const moves = movesAheadOfWrite(nodeId, sequence);
+    if (moves) log.debug(`Waiting for pending move operation on ${nodeId.substring(0, 8)}`);
+    return moves;
   }
 
   /**
@@ -3228,8 +3337,16 @@ export class SharedNodeStore {
       const hadQueuedWrite = PersistenceCoordinator.getInstance().isQueued(nodeId);
       PersistenceCoordinator.getInstance().clearQueued(nodeId);
       // The queued write is gone and the node is being rehydrated from the
-      // server, so any typed fields staged since go with it.
+      // server, so any typed fields staged since go with it — never sent, so
+      // their callers hear about it.
+      const dropped = this.pendingTypedFields.get(nodeId);
       this.pendingTypedFields.delete(nodeId);
+      if (dropped) {
+        const droppedError = new Error(
+          `Typed ${nodeType} update for node ${nodeId} dropped after a version conflict`
+        );
+        for (const callbacks of dropped.callbacks) callbacks.onPersistError?.(droppedError);
+      }
 
       // Normalized like any sync-boundary node: the conflict payload is
       // written straight into the store.
@@ -3352,8 +3469,8 @@ export class SharedNodeStore {
    *
    * Two guarantees, both field-scoped:
    *
-   * - **No lost fields.** The coordinator keeps one queued write per node and
-   *   a newer write supersedes it. Staged fields accumulate, and whichever
+   * - **No lost fields.** A queued typed write can be replaced by a later
+   *   write for the node. Staged fields accumulate, and whichever
    *   write for the node runs next — typed, generic or batch — sends them all
    *   first, so a superseded write's fields ride along with its replacement.
    * - **No transient clobber.** See `bumpTypedFieldSeq()`: a response only
@@ -3435,7 +3552,9 @@ export class SharedNodeStore {
 
     const handle = PersistenceCoordinator.getInstance().persist(
       nodeId,
-      () => this.sendPendingTypedFields(nodeId),
+      async () => {
+        await this.sendPendingTypedFields(nodeId);
+      },
       {
         mode: 'immediate' // Typed field edits are discrete (selects, blurs), not keystrokes
       }
@@ -3805,6 +3924,14 @@ export class SharedNodeStore {
   }
 
   /**
+   * The persistence sequence: every write registered so far has a sequence at
+   * or below it. A move records it just before flushing — see `MoveTicket`.
+   */
+  persistenceSequence(): number {
+    return PersistenceCoordinator.getInstance().sequence();
+  }
+
+  /**
    * Check if a node has a pending save operation
    * Delegates to PersistenceCoordinator
    *
@@ -3994,8 +4121,7 @@ export class SharedNodeStore {
     // Idempotency guard: prevent concurrent resync operations on same node.
     // A second caller while one is already in flight doesn't get dropped
     // outright, though — it queues exactly one follow-up (single-slot,
-    // latest-wins, mirroring PersistenceCoordinator's own queued-write
-    // pattern above). Without that follow-up, two failures landing close
+    // latest-wins). Without that follow-up, two failures landing close
     // together for the same node — e.g. two rapid Kanban drags, or a drag
     // plus a property edit, both failing during a short daemon outage —
     // would silently drop the second correction: the in-flight fetch can
@@ -4630,19 +4756,23 @@ export class SharedNodeStore {
           // STRATEGY: Try UPDATE first if we know node is persisted, otherwise CREATE
           if (isPersistedToDatabase) {
             // Typed fields a superseded typed write left pending go first —
-            // see `sendPendingTypedFields()`.
-            await this.sendPendingTypedFields(nodeId);
+            // see `sendPendingTypedFields()`. A conflict there has already
+            // been reported and leaves this write's version stale too.
+            if ((await this.sendPendingTypedFields(nodeId)) === 'conflict') {
+              log.warn(
+                `Batched update for node ${nodeId} skipped after a version conflict ` +
+                  `(dropped: ${Object.keys(changes).join(', ')})`
+              );
+              return;
+            }
 
-            // CRITICAL: Wait for any pending move operation to complete before UPDATE.
+            // CRITICAL: Wait for any move this UPDATE must follow.
             // Move operations (indent/outdent) increment the version in the backend.
             // If we UPDATE before the move completes, we'll have a version mismatch.
             let currentNode = this.nodes.get(nodeId);
-            const pendingMove = getPendingMoveOperation(nodeId);
-            if (pendingMove) {
-              log.debug(
-                `[BATCH UPDATE] Waiting for pending move operation on ${nodeId.substring(0, 8)}`
-              );
-              await pendingMove;
+            const movesAhead = this.movesAhead(nodeId);
+            if (movesAhead) {
+              await movesAhead;
               // Re-read current node to get updated version after move
               const refreshedNode = this.nodes.get(nodeId);
               if (refreshedNode) {
@@ -4704,14 +4834,11 @@ export class SharedNodeStore {
               ) {
                 // Race detected: Old debounced path persisted before batch started
                 // Update with batched changes to fix inconsistent state
-                // First check for pending move operations
+                // First wait for any move this UPDATE must follow
                 let raceCurrentNode = this.nodes.get(nodeId);
-                const raceMove = getPendingMoveOperation(nodeId);
-                if (raceMove) {
-                  log.debug(
-                    `[BATCH RACE] Waiting for pending move operation on ${nodeId.substring(0, 8)}`
-                  );
-                  await raceMove;
+                const movesAhead = this.movesAhead(nodeId);
+                if (movesAhead) {
+                  await movesAhead;
                   const refreshed = this.nodes.get(nodeId);
                   if (refreshed) {
                     raceCurrentNode = refreshed;
@@ -4754,7 +4881,10 @@ export class SharedNodeStore {
       },
       {
         mode: 'immediate', // Batches are already accumulated, persist immediately
-        dependencies: dependencies.length > 0 ? dependencies : undefined
+        dependencies: dependencies.length > 0 ? dependencies : undefined,
+        // Sends the `changes` captured at commit, which no later write
+        // re-sends — so nothing may replace it (see `PersistOptions.collapseKey`).
+        collapseKey: `batch:${++this.uniqueWriteKeyCounter}`
       }
     );
 
