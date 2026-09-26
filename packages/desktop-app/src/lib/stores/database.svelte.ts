@@ -201,15 +201,34 @@ class DatabaseStore {
         // launch — the daemon-reconnect listener fires one — and both can pass
         // the outer check before either assigns. Assigning unconditionally lets
         // whichever finishes last overwrite a selection already made.
-        if (this.activeDatabaseId === null) {
-          this.activeDatabaseId = resolved;
+        if (this.activeDatabaseId !== null) return;
+
+        // Point the routed gRPC clients (and the node-event watcher) at the
+        // restored database before committing the selection, as `switchTo`
+        // does. Otherwise the switcher and window pin show the restored
+        // database while node/import/agent requests still route to the daemon
+        // default. A tray pick (`switchTo`) that commits while this awaits
+        // wins: its `set_active_database` was sent after this one, and the
+        // re-check below leaves its selection alone.
+        await invoke('set_active_database', { id: resolved });
+        if (this.activeDatabaseId !== null) return;
+
+        this.activeDatabaseId = resolved;
+        if (resolved !== null) {
+          this.pinWindowDatabase(resolved);
+          this.activateProSync(resolved);
+        }
+
+        if (resolved !== null && resolved !== this.defaultDatabaseId) {
+          // The sidebar's boot-time loads went out before routing was set, so
+          // the daemon default answered them. Drop and reload them from the
+          // restored database. Workspace panes mount only once a database is
+          // selected, so restored tabs never read before this point.
+          this.evictAndReloadActiveDatabase();
+        } else {
           // Hydrate the active database's DatabaseSettingsNode so the Pro-sync
           // variant machine can read sync_enabled/auth_status.
           this.refreshDatabaseSettings();
-          if (resolved !== null) {
-            this.pinWindowDatabase(resolved);
-            this.activateProSync(resolved);
-          }
         }
       }
     } catch (err) {
@@ -408,15 +427,7 @@ class DatabaseStore {
       // failure must not abort the already-committed routing switch.
       this.activateProSync(id);
 
-      // Evict the previous database's cached data. `clearAll()` also bumps the
-      // store's database epoch, which closes the in-flight-read window: a read
-      // (e.g. loadChildren/getNode) dispatched against the previous database
-      // *before* this switch whose response resolves after this clear captured
-      // the old epoch and is dropped instead of writing the previous
-      // database's rows into the now-active store (see
-      // `sharedNodeStore.currentEpoch()`).
-      sharedNodeStore.clearAll();
-      structureTree.clear();
+      this.evictAndReloadActiveDatabase();
 
       // Reset the workspace: open tabs referenced the previous database's
       // nodes, so drop them and land on the new database's daily journal
@@ -434,51 +445,69 @@ class DatabaseStore {
         },
         true
       );
-
-      // Reload the sidebar from the new database. The locally-created
-      // exemptions belong to the database being left — collection ids are
-      // derived from the name, so keeping them would wrongly un-hide a
-      // same-named empty collection in the new one.
-      collectionsData.forgetLocallyCreated();
-      // The per-collection member-node cache is keyed by collection id, which
-      // is name-derived and can collide across databases — without this, a
-      // same-named collection in the new database would render the *previous*
-      // database's cached member nodes as its own contents.
-      collectionsData.invalidateAllMembers();
-      collectionsData.loadCollections();
-      // Drop the sub-panel selection too: `collectionsState.selectedCollectionId`
-      // / `subPanelOpen` are not evicted by anything above, so a panel left open
-      // on a DB-A collection would otherwise keep rendering (now-stale) DB-A
-      // members against DB-B, including for a DB-B collection that happens to
-      // share the id.
-      collectionsState.reset();
-      // Same id-collision hazard as the member cache above, for the Pro
-      // membership roster/invites/requests cache (has_role edges are
-      // per-database — ADR-053).
-      membership.invalidateForDatabaseSwitch();
-      // As with collectionsData.forgetLocallyCreated() above: invalidate any
-      // in-flight loadSchemas before reloading, so its result can't land in
-      // a store that now represents a different database.
-      schemasData.invalidateForDatabaseSwitch();
-      schemasData.loadSchemas();
-      // As with collectionsData.forgetLocallyCreated() above: invalidate any
-      // in-flight "+ New chat" create before reloading, so its result can't
-      // land in a store that now represents a different database.
-      aiChatsData.invalidateForDatabaseSwitch();
-      aiChatsData.loadAiChats();
-      // Re-sync the schema plugin registry (hasTitleTemplate/titleTemplate)
-      // against the newly-active database's schemas — otherwise a custom type
-      // keeps resolving titles via the previous database's template (or, for a
-      // type unique to the new database, via no template at all) until the
-      // next app restart.
-      void resyncSchemaPluginsForDatabaseSwitch();
-      // Re-hydrate the new database's DatabaseSettingsNode (the previous one was
-      // evicted by clearAll) so the Pro-sync variant re-resolves for it.
-      this.refreshDatabaseSettings();
     } catch (err) {
       this.error = toError(err).message;
       log.error('Failed to switch database', { id, error: err });
     }
+  }
+
+  /**
+   * Evict every per-database cache and reload the database-scoped stores
+   * from the currently-routed database. Used by `switchTo`, and by `load()`
+   * when the restored database is not the daemon default (reads issued
+   * before routing was set were answered by the default).
+   */
+  private evictAndReloadActiveDatabase(): void {
+    // Evict the previous database's cached data. `clearAll()` also bumps the
+    // store's database epoch, which closes the in-flight-read window: a read
+    // (e.g. loadChildren/getNode) dispatched against the previous database
+    // *before* this switch whose response resolves after this clear captured
+    // the old epoch and is dropped instead of writing the previous
+    // database's rows into the now-active store (see
+    // `sharedNodeStore.currentEpoch()`).
+    sharedNodeStore.clearAll();
+    structureTree.clear();
+
+    // Reload the sidebar from the new database. The locally-created
+    // exemptions belong to the database being left — collection ids are
+    // derived from the name, so keeping them would wrongly un-hide a
+    // same-named empty collection in the new one.
+    collectionsData.forgetLocallyCreated();
+    // The per-collection member-node cache is keyed by collection id, which
+    // is name-derived and can collide across databases — without this, a
+    // same-named collection in the new database would render the *previous*
+    // database's cached member nodes as its own contents.
+    collectionsData.invalidateAllMembers();
+    collectionsData.loadCollections();
+    // Drop the sub-panel selection too: `collectionsState.selectedCollectionId`
+    // / `subPanelOpen` are not evicted by anything above, so a panel left open
+    // on a DB-A collection would otherwise keep rendering (now-stale) DB-A
+    // members against DB-B, including for a DB-B collection that happens to
+    // share the id.
+    collectionsState.reset();
+    // Same id-collision hazard as the member cache above, for the Pro
+    // membership roster/invites/requests cache (has_role edges are
+    // per-database — ADR-053).
+    membership.invalidateForDatabaseSwitch();
+    // As with collectionsData.forgetLocallyCreated() above: invalidate any
+    // in-flight loadSchemas before reloading, so its result can't land in
+    // a store that now represents a different database.
+    schemasData.invalidateForDatabaseSwitch();
+    schemasData.loadSchemas();
+    // As with collectionsData.forgetLocallyCreated() above: invalidate any
+    // in-flight "+ New chat" create before reloading, so its result can't
+    // land in a store that now represents a different database.
+    aiChatsData.invalidateForDatabaseSwitch();
+    aiChatsData.loadAiChats();
+    // Re-sync the schema plugin registry (hasTitleTemplate/titleTemplate)
+    // against the newly-active database's schemas — otherwise a custom type
+    // keeps resolving titles via the previous database's template (or, for a
+    // type unique to the new database, via no template at all) until the
+    // next app restart.
+    void resyncSchemaPluginsForDatabaseSwitch();
+    // Re-hydrate the new database's DatabaseSettingsNode (the previous one was
+    // evicted by clearAll) so the Pro-sync variant re-resolves for it.
+    this.refreshDatabaseSettings();
   }
 
   /**
