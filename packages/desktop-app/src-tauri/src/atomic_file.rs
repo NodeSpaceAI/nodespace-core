@@ -1,7 +1,7 @@
 //! Small shared helper: atomic write-to-temp-then-rename for a JSON file.
-//! `preferences.rs` and `window_state.rs` each persist a different JSON
-//! shape into the app's config directory; this is the one place their
-//! shared write mechanics live instead of being copied between them.
+//! `preferences.rs`, `window_state.rs` and `commands/onboarding.rs` each
+//! persist a different JSON shape; this is the one place their shared write
+//! mechanics live instead of being copied between them.
 
 use std::path::Path;
 

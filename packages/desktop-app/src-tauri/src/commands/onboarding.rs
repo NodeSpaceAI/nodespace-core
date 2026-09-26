@@ -4,11 +4,12 @@
 //! installation. Completion state is persisted to `~/.nodespace/config.json`.
 //! Skill installation state is tracked separately in `~/.nodespace/setup.json`.
 
+use crate::atomic_file;
 use crate::services::GrpcClient;
 use crate::skill_setup::{self, SkillSetupResult};
 use nodespace_proto::nodespace::{Empty, NodeData, SetLocalPersonIdentityRequest};
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tauri::State;
 use tonic::Request;
 
@@ -78,34 +79,57 @@ struct IntegrationsConfig {
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
-fn nodespace_config_path() -> Result<PathBuf, String> {
+const CONFIG_FILE: &str = "config.json";
+
+/// Serializes every read-modify-write of `config.json` (see [`update_config`]).
+/// Settings → Integrations gates its PATH and skill actions behind
+/// independent loading flags, so two commands updating different fields can
+/// genuinely overlap; without this, both read the file before either write
+/// lands and the later rename silently drops the earlier field. It also keeps
+/// two writers off `atomic_file::write_json`'s shared temp path. This process
+/// is the file's only writer, so an in-process lock suffices — the same
+/// pattern as `window_state.rs`'s `SAVE_LOCK`.
+static CONFIG_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+fn nodespace_dir() -> Result<PathBuf, String> {
     let home = dirs::home_dir().ok_or("Could not determine home directory")?;
-    Ok(home.join(".nodespace").join("config.json"))
+    Ok(home.join(".nodespace"))
 }
 
 async fn read_config() -> Result<NodespaceConfig, String> {
-    let path = nodespace_config_path()?;
-    if !path.exists() {
-        return Ok(NodespaceConfig::default());
-    }
-    let raw = tokio::fs::read_to_string(&path)
-        .await
-        .map_err(|e| format!("Failed to read config: {e}"))?;
+    read_config_at(&nodespace_dir()?).await
+}
+
+async fn read_config_at(dir: &Path) -> Result<NodespaceConfig, String> {
+    let raw = match tokio::fs::read_to_string(dir.join(CONFIG_FILE)).await {
+        Ok(raw) => raw,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(NodespaceConfig::default()),
+        Err(e) => return Err(format!("Failed to read config: {e}")),
+    };
     serde_json::from_str(&raw).map_err(|e| format!("Failed to parse config: {e}"))
 }
 
-async fn write_config(cfg: &NodespaceConfig) -> Result<(), String> {
-    let path = nodespace_config_path()?;
-    if let Some(parent) = path.parent() {
-        tokio::fs::create_dir_all(parent)
-            .await
-            .map_err(|e| format!("Failed to create ~/.nodespace dir: {e}"))?;
-    }
-    let serialized = serde_json::to_string_pretty(cfg)
-        .map_err(|e| format!("Failed to serialize config: {e}"))?;
-    tokio::fs::write(&path, serialized)
-        .await
-        .map_err(|e| format!("Failed to write config: {e}"))
+/// Apply `mutate` to the persisted config under [`CONFIG_LOCK`] and write the
+/// result back atomically (temp file + rename), so neither a concurrent
+/// update nor a crash mid-write can lose or corrupt a field. A read or parse
+/// failure aborts rather than writing defaults over the real file.
+async fn update_config(mutate: impl FnOnce(&mut NodespaceConfig)) -> Result<(), String> {
+    update_config_at(&nodespace_dir()?, mutate).await
+}
+
+async fn update_config_at(
+    dir: &Path,
+    mutate: impl FnOnce(&mut NodespaceConfig),
+) -> Result<(), String> {
+    let _guard = CONFIG_LOCK.lock().await;
+    let mut cfg = read_config_at(dir).await.map_err(|e| {
+        format!(
+            "refusing to update {CONFIG_FILE}: it could not be read ({e}) — \
+             writing now would reset every other persisted field"
+        )
+    })?;
+    mutate(&mut cfg);
+    atomic_file::write_json(dir, CONFIG_FILE, &cfg).await
 }
 
 /// Return true if the PATH export line is already present in the given file.
@@ -221,9 +245,7 @@ pub async fn configure_path() -> Result<(), String> {
     append_path_to_file(&home.join(".zshrc")).await?;
     append_path_to_file(&home.join(".bash_profile")).await?;
 
-    let mut cfg = read_config().await?;
-    cfg.integrations.path_configured = true;
-    write_config(&cfg).await
+    update_config(|cfg| cfg.integrations.path_configured = true).await
 }
 
 /// Install the NodeSpace skill into detected agents (delegates to skill_setup).
@@ -291,9 +313,7 @@ pub async fn remove_from_path() -> Result<(), String> {
     remove_path_from_file(&home.join(".zshrc")).await?;
     remove_path_from_file(&home.join(".bash_profile")).await?;
 
-    let mut cfg = read_config().await?;
-    cfg.integrations.path_configured = false;
-    write_config(&cfg).await
+    update_config(|cfg| cfg.integrations.path_configured = false).await
 }
 
 /// Return live integration status (path + skill) without running any installer.
@@ -311,9 +331,7 @@ pub async fn get_integrations_status() -> Result<OnboardingStatus, String> {
 pub async fn remove_skill(app_handle: tauri::AppHandle) -> Result<(), String> {
     skill_setup::uninstall_skill(&app_handle).await?;
 
-    let mut cfg = read_config().await?;
-    cfg.integrations.skill_configured = false;
-    write_config(&cfg).await
+    update_config(|cfg| cfg.integrations.skill_configured = false).await
 }
 
 /// Persist the onboarding completion state to `~/.nodespace/config.json`.
@@ -329,14 +347,15 @@ pub async fn complete_onboarding(
     skill_configured: bool,
     identity_skipped: bool,
 ) -> Result<(), String> {
-    let mut cfg = read_config().await?;
-    cfg.onboarding_completed = true;
-    cfg.integrations.path_configured = path_configured;
-    cfg.integrations.skill_configured = skill_configured;
-    if identity_skipped {
-        cfg.identity_prompt_dismissed = true;
-    }
-    write_config(&cfg).await
+    update_config(|cfg| {
+        cfg.onboarding_completed = true;
+        cfg.integrations.path_configured = path_configured;
+        cfg.integrations.skill_configured = skill_configured;
+        if identity_skipped {
+            cfg.identity_prompt_dismissed = true;
+        }
+    })
+    .await
 }
 
 // ── local identity (ADR-037) ─────────────────────────────────────────────────
@@ -525,7 +544,59 @@ pub async fn should_prompt_identity_backfill(
 /// identity itself stays editable any time from Settings regardless.
 #[tauri::command]
 pub async fn dismiss_identity_backfill_prompt() -> Result<(), String> {
-    let mut cfg = read_config().await?;
-    cfg.identity_prompt_dismissed = true;
-    write_config(&cfg).await
+    update_config(|cfg| cfg.identity_prompt_dismissed = true).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Proves `CONFIG_LOCK` prevents the lost-update race: concurrent updates
+    /// to DIFFERENT fields, all racing the same read-modify-write cycle.
+    /// Without the lock a later rename can overwrite a file read before an
+    /// earlier update landed, dropping that update's field.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_updates_to_different_fields_all_survive() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let dir_path = dir.path().to_path_buf();
+
+        let mut tasks = Vec::new();
+        for i in 0..20u32 {
+            let dir_path = dir_path.clone();
+            tasks.push(tokio::spawn(async move {
+                update_config_at(&dir_path, |cfg| match i % 4 {
+                    0 => cfg.onboarding_completed = true,
+                    1 => cfg.integrations.path_configured = true,
+                    2 => cfg.integrations.skill_configured = true,
+                    _ => cfg.identity_prompt_dismissed = true,
+                })
+                .await
+            }));
+        }
+        for t in tasks {
+            t.await.expect("task panicked").expect("update failed");
+        }
+
+        let cfg = read_config_at(&dir_path).await.expect("read failed");
+        assert!(cfg.onboarding_completed);
+        assert!(cfg.integrations.path_configured);
+        assert!(cfg.integrations.skill_configured);
+        assert!(cfg.identity_prompt_dismissed);
+        assert!(!dir_path.join("config.json.tmp").exists());
+    }
+
+    /// An unparseable config must abort the update rather than write defaults
+    /// over it, which would silently reset every other persisted field.
+    #[tokio::test]
+    async fn unparseable_config_is_not_overwritten() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join(CONFIG_FILE);
+        tokio::fs::write(&path, "{ not json").await.expect("seed");
+
+        let result = update_config_at(dir.path(), |cfg| cfg.onboarding_completed = true).await;
+
+        assert!(result.is_err());
+        let raw = tokio::fs::read_to_string(&path).await.expect("read");
+        assert_eq!(raw, "{ not json");
+    }
 }
