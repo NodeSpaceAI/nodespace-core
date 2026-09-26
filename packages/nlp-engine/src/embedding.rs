@@ -291,10 +291,9 @@ pub fn release_llama_backend() {
 
 /// Reject a token count that exceeds the embedding context window.
 ///
-/// Mirrors the chat engine's `ContextOverflow` guard. Callers that embed raw
-/// user text (search queries, workspace-context retrieval) have no length cap
-/// of their own, so this is the only bound between them and llama.cpp, which
-/// does not clamp `n_batch`/`n_ubatch` to `n_ctx` for non-causal models.
+/// Mirrors the chat engine's `ContextOverflow` guard. llama.cpp does not clamp
+/// `n_batch`/`n_ubatch` to `n_ctx` for non-causal (embedding) models, so
+/// without this an oversized input would size a batch larger than its window.
 #[cfg(feature = "embedding-service")]
 fn check_fits_context(token_count: usize, context_size: u32) -> Result<()> {
     if token_count > context_size as usize {
