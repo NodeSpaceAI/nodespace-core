@@ -11,9 +11,20 @@
 //! `StreamingTaskRegistry`. When `terminate_session` is called, the registry
 //! cancels the token, which causes the background streaming loop to exit
 //! promptly rather than waiting for the next gRPC message or a closed stream.
+//!
+//! ## Client-side timeouts
+//!
+//! The shared lazy channel has no client-side timeout, so a wedged h2
+//! connection (healthy daemon, stuck transport) would hang a unary call until
+//! the app's channel probe rebuilds it. The unary session commands
+//! (`write_input`, `resize_terminal`, `terminate_session`, `list_sessions`) are
+//! bounded by [`PTY_RPC_TIMEOUT`] so a wedge surfaces as an error instead of a
+//! frozen terminal.
 
 use std::collections::HashMap;
+use std::future::Future;
 use std::sync::Mutex;
+use std::time::Duration;
 
 use futures::StreamExt;
 use nodespace_proto::{
@@ -132,6 +143,29 @@ pub struct LaunchSessionInput {
 // ---------------------------------------------------------------------------
 // Helper
 // ---------------------------------------------------------------------------
+
+/// Bound on the unary PTY RPCs (`WriteInput`, `ResizeTerminal`,
+/// `TerminateSession`, `ListSessions`). Each is a local, sub-millisecond
+/// operation on a healthy daemon, so this only ever fires on a wedged channel.
+const PTY_RPC_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Await a unary RPC under `timeout`, mapping an elapsed deadline to
+/// `DeadlineExceeded` so it flows through [`status_to_command_error`] like any
+/// other gRPC failure.
+async fn with_timeout<T>(
+    timeout: Duration,
+    rpc: &str,
+    call: impl Future<Output = Result<tonic::Response<T>, tonic::Status>>,
+) -> Result<T, CommandError> {
+    match tokio::time::timeout(timeout, call).await {
+        Ok(result) => result
+            .map(tonic::Response::into_inner)
+            .map_err(status_to_command_error),
+        Err(_elapsed) => Err(status_to_command_error(tonic::Status::deadline_exceeded(
+            format!("{rpc} timed out"),
+        ))),
+    }
+}
 
 fn status_to_command_error(status: tonic::Status) -> CommandError {
     let code = match status.code() {
@@ -266,11 +300,13 @@ pub async fn write_input(
     data: Vec<u8>,
 ) -> Result<i64, CommandError> {
     let mut c = client.agent_session_client().await;
-    let resp = c
-        .write_input(Request::new(WriteInputRequest { session_id, data }))
-        .await
-        .map_err(status_to_command_error)?;
-    Ok(resp.into_inner().bytes_written)
+    let resp = with_timeout(
+        PTY_RPC_TIMEOUT,
+        "WriteInput",
+        c.write_input(Request::new(WriteInputRequest { session_id, data })),
+    )
+    .await?;
+    Ok(resp.bytes_written)
 }
 
 /// Notify the PTY session of a terminal resize.
@@ -282,35 +318,42 @@ pub async fn resize_terminal(
     rows: u32,
 ) -> Result<(), CommandError> {
     let mut c = client.agent_session_client().await;
-    c.resize_terminal(Request::new(ResizeRequest {
-        session_id,
-        cols,
-        rows,
-    }))
-    .await
-    .map_err(status_to_command_error)?;
+    with_timeout(
+        PTY_RPC_TIMEOUT,
+        "ResizeTerminal",
+        c.resize_terminal(Request::new(ResizeRequest {
+            session_id,
+            cols,
+            rows,
+        })),
+    )
+    .await?;
     Ok(())
 }
 
 /// Terminate a PTY session and clean up its resources.
 ///
-/// Cancels the background `StreamOutput` reader task in addition to sending the
-/// gRPC `TerminateSession` RPC, so the reader exits immediately rather than
-/// waiting for the next message from a now-dead stream.
+/// Once the daemon confirms the `TerminateSession` RPC, cancels the background
+/// `StreamOutput` reader task so it exits immediately rather than waiting for
+/// the next message from a now-dead stream. The reader is left running when
+/// the RPC fails or times out: the session may still be alive, and cancelling
+/// first would orphan it with no output reader.
 #[tauri::command]
 pub async fn terminate_session(
     client: State<'_, GrpcClient>,
     registry: State<'_, StreamingTaskRegistry>,
     session_id: String,
 ) -> Result<TerminateSessionResult, CommandError> {
-    registry.cancel_and_remove(&session_id);
-
     let mut c = client.agent_session_client().await;
-    let resp = c
-        .terminate_session(Request::new(TerminateSessionRequest { session_id }))
-        .await
-        .map_err(status_to_command_error)?;
-    let inner = resp.into_inner();
+    let inner = with_timeout(
+        PTY_RPC_TIMEOUT,
+        "TerminateSession",
+        c.terminate_session(Request::new(TerminateSessionRequest {
+            session_id: session_id.clone(),
+        })),
+    )
+    .await?;
+    registry.cancel_and_remove(&session_id);
     Ok(TerminateSessionResult {
         session_id: inner.session_id,
         was_running: inner.was_running,
@@ -323,11 +366,12 @@ pub async fn list_sessions(
     client: State<'_, GrpcClient>,
 ) -> Result<ListSessionsResult, CommandError> {
     let mut c = client.agent_session_client().await;
-    let resp = c
-        .list_sessions(Request::new(ListSessionsRequest {}))
-        .await
-        .map_err(status_to_command_error)?;
-    let inner = resp.into_inner();
+    let inner = with_timeout(
+        PTY_RPC_TIMEOUT,
+        "ListSessions",
+        c.list_sessions(Request::new(ListSessionsRequest {})),
+    )
+    .await?;
     let sessions = inner
         .sessions
         .into_iter()
@@ -367,4 +411,38 @@ pub async fn check_agent_availability(
         })
         .collect();
     Ok(CheckAvailabilityResult { agents })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn with_timeout_maps_a_hung_call_to_deadline_exceeded() {
+        let hung = std::future::pending::<Result<tonic::Response<()>, tonic::Status>>();
+        let err = with_timeout(Duration::from_millis(10), "WriteInput", hung)
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, "GRPC_ERROR");
+        assert_eq!(err.details.as_deref(), Some("DeadlineExceeded"));
+        assert_eq!(err.message, "WriteInput timed out");
+    }
+
+    #[tokio::test]
+    async fn with_timeout_passes_through_responses_and_statuses() {
+        let ok = async { Ok(tonic::Response::new(7_i64)) };
+        assert_eq!(
+            with_timeout(PTY_RPC_TIMEOUT, "WriteInput", ok)
+                .await
+                .unwrap(),
+            7
+        );
+
+        let not_found =
+            async { Err::<tonic::Response<()>, _>(tonic::Status::not_found("no session")) };
+        let err = with_timeout(PTY_RPC_TIMEOUT, "WriteInput", not_found)
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, "SESSION_NOT_FOUND");
+    }
 }
