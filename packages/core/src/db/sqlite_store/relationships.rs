@@ -228,14 +228,21 @@ fn root_only_membership_query(chunk: &[&str]) -> (String, Vec<libsql::Value>) {
     (sql, params)
 }
 
-/// The root-only membership rule for one row of [`root_only_membership_query`]:
-/// a member with a parent is rejected unless it is a `person`. There is no
-/// collection exemption — a collection is always a root (enforced by the
-/// `collection_is_root_*` triggers), so it can never reach this with a parent.
+/// Whether a collection member of `node_type` may also have a `has_child`
+/// parent. Only a `person` may. There is no collection exemption — a
+/// collection is always a root (enforced by the `collection_is_root_*`
+/// triggers), so it can never reach this with a parent.
 ///
-/// The single source of the rule for both guard twins, so they cannot drift.
+/// The single source of the root-only membership rule (ADR-059 §2) for the
+/// guard twins below and for `merge_nodes_in_tx`, so they cannot drift.
+pub(super) fn member_may_have_parent(node_type: &str) -> bool {
+    node_type == "person"
+}
+
+/// The root-only membership rule ([`member_may_have_parent`]) for one row of
+/// [`root_only_membership_query`], shared by both guard twins.
 fn check_root_only_member(id: String, node_type: String, has_parent: i64) -> Result<()> {
-    if has_parent != 0 && node_type != "person" {
+    if has_parent != 0 && !member_may_have_parent(&node_type) {
         return Err(anyhow::anyhow!(
             "member_of_not_root: content node '{}' (type '{}') has a parent, so it cannot be a member of a collection directly — file its root node instead",
             id,
