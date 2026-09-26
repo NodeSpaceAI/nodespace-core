@@ -261,6 +261,7 @@ impl NodeService {
         }
 
         self.behaviors.validate_node(&node)?;
+        self.validate_templated_content(&node).await?;
 
         if node.node_type != "schema" {
             node.properties =
@@ -881,6 +882,9 @@ impl NodeService {
 
         // Sync title when content, node_type, or properties change
         // Schema-driven title_template — also trigger on properties_changed
+        if content_changed || node_type_changed {
+            self.validate_templated_content(&updated).await?;
+        }
         let title_update = if content_changed || node_type_changed || properties_changed {
             let new_title = self.compute_title(&updated, None).await?;
             Some(new_title)
@@ -986,6 +990,9 @@ impl NodeService {
                 .await?;
         }
 
+        if content_changed || node_type_changed {
+            self.validate_templated_content(&updated).await?;
+        }
         let title_update = if content_changed || node_type_changed || properties_changed {
             Some(self.compute_title(&updated, None).await?)
         } else {
@@ -1103,6 +1110,9 @@ impl NodeService {
                 .await?;
         }
 
+        if content_changed || node_type_changed {
+            self.validate_templated_content(&updated).await?;
+        }
         let title_update = if content_changed || node_type_changed || properties_changed {
             Some(self.compute_title(&updated, None).await?)
         } else {
@@ -1379,6 +1389,9 @@ impl NodeService {
 
         // Sync title when content, node_type, or properties change
         // Schema-driven title_template — also trigger on properties_changed
+        if content_changed || node_type_changed {
+            self.validate_templated_content(&updated).await?;
+        }
         let title_update = if content_changed || node_type_changed || properties_changed {
             let new_title = self.compute_title(&updated, None).await?;
             Some(new_title)
@@ -2631,7 +2644,6 @@ impl NodeService {
         schema: Option<&crate::models::SchemaNode>,
         chain_fields: Option<&(Vec<crate::models::SchemaField>, Vec<String>)>,
     ) -> Result<Option<String>, NodeServiceError> {
-        Self::reject_content_on_templated_type(node, schema)?;
         if let Some(schema) = schema {
             if let Some(template) = &schema.title_template {
                 let resolved;
@@ -2664,10 +2676,10 @@ impl NodeService {
     /// template rather than on type names, so a user type that declares one is
     /// held to it exactly as `person` is.
     ///
-    /// [`Self::derive_title`] runs this, which puts it on every write that
-    /// derives a title (single-node create and update, bulk hierarchy inserts,
-    /// moves); `bulk_create` and `bulk_update`, which persist without deriving
-    /// one, call it directly.
+    /// A write-validation rule, run next to the other validation on every
+    /// create, and on an update only when content or type changes — so a move
+    /// or a field-only edit never trips it, even on a node whose type gained a
+    /// template after the node was written.
     pub(crate) fn reject_content_on_templated_type(
         node: &Node,
         schema: Option<&crate::models::SchemaNode>,
@@ -2678,11 +2690,28 @@ impl NodeService {
         if node.content.is_empty() {
             return Ok(());
         }
-        Err(NodeServiceError::invalid_update(format!(
-            "{} takes its name from {}; content is not allowed",
-            node.node_type,
-            crate::utils::title_template_fields(template).join("/")
-        )))
+        let fields = crate::utils::title_template_fields(template);
+        let source = if fields.is_empty() {
+            "its title template".to_string()
+        } else {
+            fields.join("/")
+        };
+        Err(NodeServiceError::ValidationFailed(
+            crate::models::ValidationError::InvalidProperties(format!(
+                "{} takes its name from {}; content is not allowed",
+                node.node_type, source
+            )),
+        ))
+    }
+
+    /// [`Self::reject_content_on_templated_type`] with the node type's schema
+    /// looked up, for the single-node write paths.
+    pub(crate) async fn validate_templated_content(
+        &self,
+        node: &Node,
+    ) -> Result<(), NodeServiceError> {
+        let schema = self.title_schema(&node.node_type).await;
+        Self::reject_content_on_templated_type(node, schema.as_ref())
     }
 
     /// Merge a node's per-scope property buckets across an `extends` chain

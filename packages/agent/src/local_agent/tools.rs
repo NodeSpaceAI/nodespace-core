@@ -3245,6 +3245,28 @@ impl GraphToolExecutor {
         // - strip_markdown(content) for root nodes (all custom schema instances)
         let content = params.content.unwrap_or_default();
 
+        // `content` is optional only because a templated type rejects it. For
+        // every other type it is the record's title, and omitting it would
+        // create an untitled record that still reports as saved.
+        if content.trim().is_empty() {
+            let templated = ns
+                .get_schema_node(&params.node_type)
+                .await
+                .ok()
+                .flatten()
+                .is_some_and(|s| s.title_template.is_some());
+            if !templated {
+                return Err(ToolError::InvalidArguments {
+                    tool: "create_node".to_string(),
+                    reason: format!(
+                        "'content' is required for a {} record: pass its title. Only a type \
+                         with a title_template omits it.",
+                        params.node_type
+                    ),
+                });
+            }
+        }
+
         let input = node_ops::CreateNodeInput {
             id: None,
             node_type: params.node_type,

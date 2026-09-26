@@ -9193,6 +9193,78 @@ mod tests {
             .expect("a type without a title_template accepts content");
     }
 
+    /// A caller-supplied title does not skip the rule: the insert path checks
+    /// content whether or not it derives the title itself.
+    #[tokio::test]
+    async fn content_is_rejected_on_a_templated_create_with_a_preset_title() {
+        let (service, _temp) = create_test_service().await;
+        let mut node = Node::new("person".to_string(), "Rowan".to_string(), json!({}));
+        node.title = Some("Rowan".to_string());
+        let err = service
+            .create_node(node)
+            .await
+            .expect_err("a preset title must not bypass the content rule");
+        assert!(
+            err.to_string()
+                .contains("person takes its name from first_name/last_name"),
+            "{err}"
+        );
+    }
+
+    /// The rule guards writes that set content or change type, not every
+    /// write: a node whose type gained a template after it was written can
+    /// still be moved and have a field edited.
+    #[tokio::test]
+    async fn move_and_field_only_update_succeed_after_a_type_gains_a_template() {
+        use crate::models::{TaskNodeUpdate, TaskPriority};
+
+        let (service, _temp) = create_test_service().await;
+        let parent_id = service
+            .create_node(Node::new(
+                "text".to_string(),
+                "Parent".to_string(),
+                json!({}),
+            ))
+            .await
+            .unwrap();
+        let task_id = service
+            .create_node(Node::new(
+                "task".to_string(),
+                "Draft the spec".to_string(),
+                json!({}),
+            ))
+            .await
+            .unwrap();
+        set_task_title_template(&service, "Priority: {priority}").await;
+
+        let task = service.get_node(&task_id).await.unwrap().unwrap();
+        service
+            .update_task_node(
+                &task_id,
+                task.version,
+                TaskNodeUpdate::new().with_priority(Some(TaskPriority::High)),
+            )
+            .await
+            .expect("a field-only update must not trip the content rule");
+        let task = service.get_node(&task_id).await.unwrap().unwrap();
+        service
+            .update_node(
+                &task_id,
+                task.version,
+                NodeUpdate::new().with_properties(json!({ "custom:note": "x" })),
+            )
+            .await
+            .expect("a field-only generic update must not trip the content rule");
+        service
+            .move_node_unchecked(
+                &task_id,
+                Some(&parent_id),
+                crate::services::InsertPosition::End,
+            )
+            .await
+            .expect("a move must not trip the content rule");
+    }
+
     /// A `titleTemplate` on a subtype schema may reference a field
     /// only an ancestor in its `extends` chain (ADR-078) declares — the field
     /// is never redeclared on the subtype (redeclaration is itself rejected),

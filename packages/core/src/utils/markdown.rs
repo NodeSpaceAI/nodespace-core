@@ -205,6 +205,24 @@ mod tests {
     use super::*;
 
     #[test]
+    fn title_template_fields_lists_tokens_in_order() {
+        assert_eq!(
+            title_template_fields("{first_name} {last_name}"),
+            vec!["first_name", "last_name"]
+        );
+        assert_eq!(
+            title_template_fields("Priority: {priority}"),
+            vec!["priority"]
+        );
+    }
+
+    #[test]
+    fn title_template_fields_skips_empty_and_unclosed_tokens() {
+        assert!(title_template_fields("no tokens").is_empty());
+        assert_eq!(title_template_fields("{} {a} {b"), vec!["a"]);
+    }
+
+    #[test]
     fn test_strip_headers() {
         assert_eq!(strip_markdown("# Header 1"), "Header 1");
         assert_eq!(strip_markdown("## Header 2"), "Header 2");

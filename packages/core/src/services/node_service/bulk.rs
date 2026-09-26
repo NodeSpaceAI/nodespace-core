@@ -60,6 +60,12 @@ impl NodeService {
                 title: None,
                 lifecycle_status: "active".to_string(),
             };
+            // Every caller is a bulk hierarchy insert, so this is a create:
+            // always held to the templated-type content rule.
+            Self::reject_content_on_templated_type(
+                &node,
+                schemas.get(&node.node_type).and_then(Option::as_ref),
+            )?;
             let title = self
                 .derive_title(
                     &node,
@@ -139,8 +145,7 @@ impl NodeService {
             // Step 1: Core behavior validation
             self.behaviors.validate_node(node)?;
 
-            // This path persists without deriving titles, so it runs the
-            // templated-type content check `derive_title` would have.
+            // A create: always held to the templated-type content rule.
             if !schemas.contains_key(&node.node_type) {
                 let schema = self.title_schema(&node.node_type).await;
                 schemas.insert(node.node_type.clone(), schema);
@@ -680,6 +685,8 @@ impl NodeService {
         let mut pending_events: Vec<(String, Node, Vec<crate::db::events::PropertyChange>)> =
             Vec::with_capacity(updates.len());
 
+        let mut schemas: std::collections::HashMap<String, Option<crate::models::SchemaNode>> =
+            std::collections::HashMap::new();
         for (id, update) in &updates {
             let existing = existing_nodes
                 .get(id)
@@ -740,8 +747,15 @@ impl NodeService {
                 ))
             })?;
             if update.content.is_some() || node_type_changed {
-                let schema = self.title_schema(&updated.node_type).await;
-                Self::reject_content_on_templated_type(&updated, schema.as_ref()).map_err(|e| {
+                if !schemas.contains_key(&updated.node_type) {
+                    let schema = self.title_schema(&updated.node_type).await;
+                    schemas.insert(updated.node_type.clone(), schema);
+                }
+                Self::reject_content_on_templated_type(
+                    &updated,
+                    schemas.get(&updated.node_type).and_then(Option::as_ref),
+                )
+                .map_err(|e| {
                     NodeServiceError::bulk_operation_failed(format!(
                         "Failed to validate node {}: {}",
                         id, e

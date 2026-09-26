@@ -947,3 +947,30 @@ async fn a_typeless_sorted_search_orders_by_the_property() {
         "the 21-day node must sort first under `desc`: {found:?}"
     );
 }
+
+/// `create_node` takes no content for a templated type — its name is its
+/// template fields — but still requires it for every other type, where
+/// omitting it would save an untitled record that reports as saved.
+#[tokio::test(flavor = "multi_thread")]
+async fn create_node_content_is_omitted_only_for_a_templated_type() {
+    let (executor, _tmp) = make_executor().await;
+
+    call(
+        &executor,
+        "create_node",
+        json!({
+            "node_type": "person",
+            "field_values": {"first_name": "Rowan", "last_name": "Price"},
+        }),
+    )
+    .await;
+
+    let err = executor
+        .execute("create_node", json!({"node_type": "task"}))
+        .await
+        .expect_err("a task without content must be refused");
+    assert!(
+        format!("{err:?}").contains("'content' is required for a task record"),
+        "{err:?}"
+    );
+}

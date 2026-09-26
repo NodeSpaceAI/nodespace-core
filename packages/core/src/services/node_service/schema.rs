@@ -376,6 +376,9 @@ impl NodeService {
             if let Some(ref new_content) = update.content {
                 merged.content = new_content.clone();
             }
+            if content_changed {
+                self.validate_templated_content(&merged).await?;
+            }
             update.apply_to_properties(&mut merged.properties);
             self.compute_title(&merged, None).await?
         } else {
