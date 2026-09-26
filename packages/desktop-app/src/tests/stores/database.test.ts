@@ -98,6 +98,15 @@ vi.mock('$lib/stores/ai-chats.svelte', () => ({
   }
 }));
 
+const loadConflicts = vi.fn((..._a: unknown[]) => Promise.resolve(true));
+const conflictsInvalidateForDatabaseSwitch = vi.fn((..._a: unknown[]) => undefined);
+vi.mock('$lib/stores/conflicts.svelte', () => ({
+  conflictsStore: {
+    load: (...a: unknown[]) => loadConflicts(...a),
+    invalidateForDatabaseSwitch: (...a: unknown[]) => conflictsInvalidateForDatabaseSwitch(...a)
+  }
+}));
+
 const clearAllTabs = vi.fn((..._a: unknown[]) => undefined);
 const addTab = vi.fn((..._a: unknown[]) => undefined);
 vi.mock('$lib/stores/navigation.svelte', () => ({
@@ -333,6 +342,8 @@ describe('Database Store', () => {
       expect(loadSchemas).toHaveBeenCalledOnce();
       expect(invalidateForDatabaseSwitch).toHaveBeenCalledOnce();
       expect(loadAiChats).toHaveBeenCalledOnce();
+      expect(conflictsInvalidateForDatabaseSwitch).toHaveBeenCalledOnce();
+      expect(loadConflicts).toHaveBeenCalledOnce();
       expect(mockGetNode).toHaveBeenCalledWith(DATABASE_SETTINGS_NODE_ID);
       // Startup keeps the restored tabs; only a switch resets the workspace.
       expect(clearAllTabs).not.toHaveBeenCalled();
@@ -494,6 +505,13 @@ describe('Database Store', () => {
       expect(schemasInvalidateForDatabaseSwitch).toHaveBeenCalledOnce();
       expect(schemasInvalidateForDatabaseSwitch.mock.invocationCallOrder[0]).toBeLessThan(
         loadSchemas.mock.invocationCallOrder[0]
+      );
+      // The conflict journal is per-database: its records and any in-flight
+      // load against the previous database are dropped before the reload.
+      expect(conflictsInvalidateForDatabaseSwitch).toHaveBeenCalledOnce();
+      expect(loadConflicts).toHaveBeenCalledOnce();
+      expect(conflictsInvalidateForDatabaseSwitch.mock.invocationCallOrder[0]).toBeLessThan(
+        loadConflicts.mock.invocationCallOrder[0]
       );
       // The per-collection member cache and the sub-panel selection
       // are both keyed on a collection id that is name-derived and can collide

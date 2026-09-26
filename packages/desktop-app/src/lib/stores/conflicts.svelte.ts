@@ -56,6 +56,15 @@ class ConflictsStore {
   records = $state<ConflictRecord[]>([]);
   loaded = $state(false);
 
+  /**
+   * Bumped by `invalidateForDatabaseSwitch()`. `load`/`loadForNode` capture
+   * this before awaiting and drop their result if it changed, so a read
+   * issued against the previous database cannot write that database's
+   * journal into a store that now represents a different one (mirrors the
+   * `#generation` guard in `schemasStore` / `aiChatsData`).
+   */
+  #generation = 0;
+
   private openNodeIds = $derived(
     new Set(
       this.records.filter((r) => r.status === 'open').flatMap((r) => r.nodeIds)
@@ -69,26 +78,52 @@ class ConflictsStore {
     return this.openNodeIds.has(nodeId);
   }
 
-  /** Load every conflict record (used by the Conflicts view). */
-  async load(): Promise<void> {
+  /**
+   * Load every conflict record (used by the Conflicts view). Resolves `true`
+   * when the result was applied, `false` when a database switch landed while
+   * it was in flight and the result was discarded.
+   */
+  async load(): Promise<boolean> {
+    const generation = this.#generation;
+    let records: ConflictRecord[];
     try {
-      const records = await invoke<ConflictRecord[]>('list_conflicts', {
-        input: { status: null, kind: null, limit: null }
-      });
-      this.records = records ?? [];
+      records =
+        (await invoke<ConflictRecord[]>('list_conflicts', {
+          input: { status: null, kind: null, limit: null }
+        })) ?? [];
     } catch (e) {
       log.warn('Failed to load conflicts', { error: e });
-      this.records = [];
-    } finally {
-      this.loaded = true;
+      records = [];
     }
+    if (generation !== this.#generation) {
+      log.debug('Discarding conflicts load that resolved after a database switch');
+      return false;
+    }
+    this.records = records;
+    this.loaded = true;
+    return true;
+  }
+
+  /**
+   * Forget the previous database's journal and invalidate any load still in
+   * flight against it. Call before reloading for a newly-active database.
+   * Clears `records` immediately rather than waiting on the reload: node ids
+   * can repeat across databases (date nodes are keyed by date), so stale
+   * records would otherwise flag the new database's nodes as conflicted.
+   */
+  invalidateForDatabaseSwitch(): void {
+    this.#generation++;
+    this.records = [];
+    this.loaded = false;
   }
 
   /** Load only the records naming `nodeId` — used by the inline indicator so
    * it doesn't have to wait on (or trigger) a full-list load. */
   async loadForNode(nodeId: string): Promise<ConflictRecord[]> {
+    const generation = this.#generation;
     try {
       const records = await invoke<ConflictRecord[]>('conflicts_for_node', { nodeId });
+      if (generation !== this.#generation) return [];
       // Merge into the shared cache by id so the full Conflicts view (if open
       // in another pane) and this per-node lookup never disagree.
       const byId = new Map(this.records.map((r) => [r.id, r]));
@@ -102,11 +137,16 @@ class ConflictsStore {
   }
 
   private async resolve(conflictId: string, resolution: Resolution): Promise<void> {
+    // Conflict ids are deterministic (derived from kind + node ids), so the
+    // same id can exist in another database — don't patch the new database's
+    // copy with the previous one's resolved record.
+    const generation = this.#generation;
     try {
       const updated = await invoke<ConflictRecord>('resolve_conflict', {
         conflictId,
         resolution
       });
+      if (generation !== this.#generation) return;
       this.records = this.records.map((r) => (r.id === conflictId ? updated : r));
     } catch (e) {
       log.warn('Failed to resolve conflict', { error: e, conflictId, resolution });
@@ -160,12 +200,15 @@ class ConflictsStore {
     loserId: string,
     conflictId?: string
   ): Promise<MergeOutcome> {
+    // Captured before the merge: a refresh issued after a database switch
+    // would read the survivor's records from the newly-active database.
+    const generation = this.#generation;
     const outcome = await invoke<MergeOutcome>('merge_nodes', {
       survivorId,
       loserId,
       conflictId: conflictId ?? null
     });
-    if (conflictId) {
+    if (conflictId && generation === this.#generation) {
       await this.loadForNode(survivorId);
     }
     return outcome;

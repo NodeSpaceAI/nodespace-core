@@ -7,6 +7,7 @@ import { structureTree } from '$lib/stores/reactive-structure-tree.svelte';
 import { collectionsData, collectionsState } from '$lib/stores/collections.svelte';
 import { schemasData } from '$lib/stores/schemas.svelte';
 import { aiChatsData } from '$lib/stores/ai-chats.svelte';
+import { conflictsStore } from '$lib/stores/conflicts.svelte';
 import { membership } from '$lib/stores/membership.svelte';
 import { resyncSchemaPluginsForDatabaseSwitch } from '$lib/plugins/schema-plugin-loader';
 import {
@@ -515,6 +516,10 @@ class DatabaseStore {
     // land in a store that now represents a different database.
     aiChatsData.invalidateForDatabaseSwitch();
     aiChatsData.loadAiChats();
+    // The conflict journal is per-database too (ADR-068): drop the previous
+    // database's records and any load still in flight against it, then reload.
+    conflictsStore.invalidateForDatabaseSwitch();
+    void conflictsStore.load();
     // Re-sync the schema plugin registry (hasTitleTemplate/titleTemplate)
     // against the newly-active database's schemas — otherwise a custom type
     // keeps resolving titles via the previous database's template (or, for a
