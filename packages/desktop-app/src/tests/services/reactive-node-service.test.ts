@@ -1778,6 +1778,52 @@ describe('ReactiveNodeService - CreateNode Edge Cases', () => {
 
     expect(conflictNotifications.notifications[0].conflictType).toBe('child-transfer-failure');
   });
+
+  it('skips the child transfer and rolls back when the new node save fails or times out', async () => {
+    const { backendAdapter } = await import('$lib/services/backend-adapter');
+    const { SharedNodeStore: SS } = await import('$lib/services/shared-node-store.svelte');
+    const { structureTree } = await import('$lib/stores/reactive-structure-tree.svelte');
+    const moveChildrenMock = vi.mocked(backendAdapter.moveChildrenToParent);
+    const moveInMemoryMock = vi.mocked(structureTree.moveInMemoryRelationship);
+
+    conflictNotifications.dismissAll();
+
+    const parentId = service.createNode('reference', 'Parent');
+    const childId = service.createNode(parentId, 'Child');
+    service.setExpanded(parentId, true);
+
+    const store = SS.getInstance();
+    const childNode = store.getNode(childId);
+    if (!childNode) throw new Error('childId not in store');
+
+    const getNodesForParentSpy = vi.spyOn(store, 'getNodesForParent').mockImplementation(
+      (id) => (id === parentId ? [childNode] : [])
+    );
+    // waitForNodeSaves reports failures rather than throwing: every awaited node failed
+    const waitSpy = vi
+      .spyOn(store, 'waitForNodeSaves')
+      .mockImplementation(async (ids) => new Set(ids));
+
+    const callsBefore = moveChildrenMock.mock.calls.length;
+    moveInMemoryMock.mockClear();
+
+    let newNodeId: string;
+    try {
+      newNodeId = service.createNode(parentId, 'New node');
+
+      // The rollback reverses the optimistic move: child goes from the new node back to parent
+      await vi.waitFor(() => {
+        expect(moveInMemoryMock).toHaveBeenCalledWith(newNodeId, parentId, childId);
+      }, { timeout: 1000 });
+    } finally {
+      waitSpy.mockRestore();
+      getNodesForParentSpy.mockRestore();
+    }
+
+    expect(moveInMemoryMock).toHaveBeenCalledWith(parentId, newNodeId, childId);
+    expect(moveChildrenMock.mock.calls.length).toBe(callsBefore);
+    expect(conflictNotifications.notifications[0].conflictType).toBe('child-transfer-failure');
+  });
 });
 
 describe('ReactiveNodeService - CombineNodes with Children', () => {
