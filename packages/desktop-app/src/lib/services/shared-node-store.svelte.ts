@@ -362,10 +362,11 @@ export class SimplePersistenceCoordinator {
       } finally {
         this.pendingOperations.delete(nodeId);
 
-        // Check for a queued operation BEFORE clearing executingOperations so
-        // that hasPending() returns true with no gap. A WatchNodes setNode
-        // arriving between "execution done" and "queued op taking over" would
-        // otherwise see hasPending=false and clobber the optimistic store.
+        // Check for a queued operation BEFORE handing over or clearing
+        // executingOperations so that hasPending() returns true with no gap.
+        // A WatchNodes setNode arriving between "execution done" and "queued
+        // op taking over" would otherwise see hasPending=false and clobber the
+        // optimistic store.
         const queue = this.queuedOperations.get(nodeId);
         const queued = queue?.shift();
         if (queue && queued) {
@@ -400,9 +401,14 @@ export class SimplePersistenceCoordinator {
           );
         }
 
-        this.executingOperations.delete(nodeId);
-
         if (queued) {
+          // Hand the executing marker straight to the queued write rather than
+          // clearing it until that write starts a microtask later. A
+          // `persist()` running in between (e.g. code awaiting this write's
+          // promise) would otherwise see the node idle, cancel the placeholder
+          // above and start a second write alongside the queued one. With the
+          // marker held, it queues behind the queued write instead.
+          this.executingOperations.set(nodeId, queued.sequence);
           // Run the queued write now that this write's version confirmation
           // has landed — deferred via microtask (not setTimeout/debounce) to
           // avoid unbounded stack growth while still running as soon as
@@ -416,6 +422,8 @@ export class SimplePersistenceCoordinator {
               queued.reject
             );
           });
+        } else {
+          this.executingOperations.delete(nodeId);
         }
       }
     };
