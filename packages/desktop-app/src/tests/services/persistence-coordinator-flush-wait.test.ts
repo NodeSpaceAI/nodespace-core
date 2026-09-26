@@ -204,6 +204,27 @@ describe('SimplePersistenceCoordinator - waitForPersistence', () => {
     expect(await waited).toEqual(new Set([nodeId]));
   }, 3000);
 
+  it('follows a debounced write replaced by another debounced write', async () => {
+    const nodeId = 'wait-debounce-replaced';
+    const done: string[] = [];
+
+    const replaced = coordinator.persist(nodeId, async () => {}, { mode: 'debounce' });
+    replaced.promise.catch(() => {});
+    const waited = coordinator.waitForPersistence([nodeId], 2000);
+
+    // Nothing is executing, so this replaces the debounced entry outright.
+    coordinator.persist(
+      nodeId,
+      async () => {
+        done.push('replacement');
+      },
+      { mode: 'debounce' }
+    );
+
+    expect(await waited).toEqual(new Set());
+    expect(done).toEqual(['replacement']);
+  }, 3000);
+
   it('does not start a debounced write early', async () => {
     const nodeId = 'wait-debounced';
     const done: string[] = [];

@@ -570,8 +570,8 @@ export class SimplePersistenceCoordinator {
   /**
    * Flush specific pending operations immediately and wait for completion.
    *
-   * Unlike waitForPersistence which only waits for in-flight operations,
-   * this method also triggers debounced operations that haven't started yet.
+   * Unlike waitForPersistence, which waits out a debounced write's timer,
+   * this method starts debounced operations that haven't started yet.
    *
    * Use this when you need to ensure specific nodes are fully persisted
    * before performing dependent operations (e.g., moveNode that references them).
@@ -3935,8 +3935,9 @@ export class SharedNodeStore {
    * Wait for pending node saves to complete with timeout
    * Delegates to PersistenceCoordinator
    *
-   * NOTE: This only waits for already-executing operations. It does NOT trigger
-   * debounced operations that haven't started yet. For that, use flushNodeSaves().
+   * NOTE: This waits for pending, executing and queued writes, but does NOT
+   * start a debounced write early; it settles once the debounce timer fires
+   * and the write lands. To start it immediately, use flushNodeSaves().
    *
    * @param nodeIds - Array of node IDs to wait for
    * @param timeoutMs - Timeout in milliseconds (default 5000)
@@ -3949,8 +3950,8 @@ export class SharedNodeStore {
   /**
    * Flush specific pending node saves immediately and wait for completion.
    *
-   * Unlike waitForNodeSaves which only waits for in-flight operations,
-   * this method also TRIGGERS debounced operations that haven't started yet.
+   * Unlike waitForNodeSaves, which waits out a debounced write's timer,
+   * this method STARTS debounced operations that haven't started yet.
    *
    * Use this when you need to ensure specific nodes are fully persisted
    * before performing dependent operations (e.g., moveNode that references them).
