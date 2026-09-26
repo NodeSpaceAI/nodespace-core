@@ -5,7 +5,7 @@
 // multi-minute suite to tell them apart. These tests exercise the pattern
 // matching directly against captured cargo/test-harness output strings.
 import { describe, expect, test } from "bun:test";
-import { classifyFailure, extractFailureOutput, formatAbortNote } from "./classify-test-failure";
+import { classifyFailure, formatAbortNote } from "./classify-test-failure";
 
 describe("classifyFailure", () => {
   test("classifies real cargo SIGSEGV output as an abort", () => {
@@ -63,34 +63,6 @@ assertion \`left == right\` failed
   });
 });
 
-describe("extractFailureOutput", () => {
-  test("joins stdout and stderr Buffers from a Bun-ShellError-shaped object", () => {
-    const shellLikeError = {
-      stdout: Buffer.from("normal test output"),
-      stderr: Buffer.from("(signal: 11, SIGSEGV: invalid memory reference)"),
-    };
-    const text = extractFailureOutput(shellLikeError);
-    expect(text).toContain("normal test output");
-    expect(text).toContain("SIGSEGV");
-  });
-
-  test("falls back to .message for a plain Error with no stdout/stderr", () => {
-    const text = extractFailureOutput(new Error("plain failure, no buffers"));
-    expect(text).toContain("plain failure, no buffers");
-  });
-
-  test("returns empty string for a non-object thrown value", () => {
-    expect(extractFailureOutput("a string, not an Error")).toBe("");
-    expect(extractFailureOutput(undefined)).toBe("");
-    expect(extractFailureOutput(42)).toBe("");
-  });
-
-  test("ignores a non-Buffer stdout/stderr field rather than throwing", () => {
-    const malformed = { stdout: "not a buffer", stderr: 123 };
-    expect(() => extractFailureOutput(malformed)).not.toThrow();
-    expect(extractFailureOutput(malformed)).toBe("");
-  });
-});
 
 describe("formatAbortNote", () => {
   test("names the label and states the suite is known to hit resource contention", () => {

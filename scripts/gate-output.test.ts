@@ -5,7 +5,27 @@
 // DOM-free on purpose: this file runs under `bun test scripts/`, which
 // bypasses the Happy-DOM vitest config (see CLAUDE.md).
 import { describe, expect, test } from "bun:test";
-import { freeGiBFromDf, stageLogName, tail } from "./gate-output";
+import { classifyFailure } from "./classify-test-failure";
+import { exitStatusLine, freeGiBFromDf, stageLogName, tail } from "./gate-output";
+
+describe("exitStatusLine", () => {
+  test("names a signal the stage process itself died of", () => {
+    expect(exitStatusLine(null, "SIGSEGV")).toBe("[stage killed by SIGSEGV]");
+  });
+
+  test("names the signal behind sh's 128+N exit code", () => {
+    expect(exitStatusLine(137, null)).toBe("[stage exited with code 137: killed by SIGKILL]");
+  });
+
+  test("gives a plain failure its exit code", () => {
+    expect(exitStatusLine(1, null)).toBe("[stage exited with code 1]");
+  });
+
+  test("a crash's closing line is classified as an abort, a plain failure's is not", () => {
+    expect(classifyFailure(`tests running…\n${exitStatusLine(139, null)}`)).toBe("abort");
+    expect(classifyFailure(`1 failed\n${exitStatusLine(1, null)}`)).toBe("failure");
+  });
+});
 
 describe("freeGiBFromDf", () => {
   test("reads the Available column of macOS df -k output", () => {

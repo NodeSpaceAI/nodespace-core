@@ -45,7 +45,7 @@ import { classifyFailure, formatAbortNote } from "./classify-test-failure";
 import { reportUpstreamFixes } from "./correlate-upstream-fixes";
 import { acquireGateLock, registerLockRelease } from "./gate-lock";
 import { describeScope, FULL_SCOPE, gateScope } from "./gate-scope";
-import { freeGiBFromDf, stageLogName, tail } from "./gate-output";
+import { exitStatusLine, freeGiBFromDf, stageLogName, tail } from "./gate-output";
 
 export type GateMode = "push" | "merge";
 
@@ -88,6 +88,7 @@ async function run(label: string, command: string, env: Record<string, string> =
   console.log(`▶ ${label}`);
   const fd = openSync(logPath, "w");
   let exitCode: number;
+  let signalCode: string | null;
   try {
     const proc = Bun.spawn(["sh", "-c", command], {
       stdout: fd,
@@ -96,6 +97,7 @@ async function run(label: string, command: string, env: Record<string, string> =
       env: { ...process.env, ...env },
     });
     exitCode = await proc.exited;
+    signalCode = proc.signalCode;
   } finally {
     closeSync(fd);
   }
@@ -104,7 +106,7 @@ async function run(label: string, command: string, env: Record<string, string> =
     return;
   }
 
-  const failureOutput = readFileSync(logPath, "utf8");
+  const failureOutput = `${readFileSync(logPath, "utf8")}\n${exitStatusLine(exitCode, signalCode)}`;
   console.error(`\n${tail(failureOutput, 40)}\n`);
   console.error(`  full output: ${logPath}`);
   // A load-induced process abort (e.g. a SIGSEGV under parallel-test
