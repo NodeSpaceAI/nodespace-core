@@ -397,6 +397,30 @@ async fn scored_ranking(
         .collect()
 }
 
+/// `skill`'s raw confidence for `query` across the whole registry, or `None`
+/// if it is not returned.
+async fn skill_confidence(
+    embedding_service: &Arc<NodeEmbeddingService>,
+    node_service: &Arc<NodeService>,
+    query: &str,
+    skill: &str,
+) -> Option<f64> {
+    find_skills(
+        embedding_service,
+        node_service,
+        FindSkillsInput {
+            query: query.to_string(),
+            limit: Some(10),
+        },
+    )
+    .await
+    .expect("find_skills must succeed")
+    .skills
+    .iter()
+    .find(|s| s.get("name").and_then(|v| v.as_str()) == Some(skill))
+    .and_then(|s| s.get("confidence").and_then(|v| v.as_f64()))
+}
+
 /// Queries whose top-`RETRIEVAL_TOP_K` ranking misses `skill` on any rep, or —
 /// with `rank_one` — does not put it first. Prints each query's wider ranking
 /// with scores so a miss shows by how much.
@@ -655,11 +679,6 @@ async fn graph_editing_exclusion_leaves_completion_state_scores_unchanged() {
         return;
     };
 
-    let graph_editing = |ranked: Vec<String>| {
-        ranked
-            .into_iter()
-            .find_map(|r| r.strip_prefix("Graph Editing=").map(str::to_string))
-    };
     let mut changed = Vec::new();
     for query in [
         "The incident Rowan was on call for — mark it resolved",
@@ -670,9 +689,14 @@ async fn graph_editing_exclusion_leaves_completion_state_scores_unchanged() {
         "mark the outage report done",
         "mark the task as done",
     ] {
-        let a = graph_editing(scored_ranking(&with, &with_ns, query, 8).await);
-        let b = graph_editing(scored_ranking(&without, &without_ns, query, 8).await);
+        // Raw confidences, not `scored_ranking`'s 3-decimal strings, which
+        // would hide a penalty below 0.0005.
+        let a = skill_confidence(&with, &with_ns, query, "Graph Editing").await;
+        let b = skill_confidence(&without, &without_ns, query, "Graph Editing").await;
         eprintln!("{query:?}: with={a:?} without={b:?}");
+        let (Some(a), Some(b)) = (a, b) else {
+            panic!("Graph Editing must be ranked for {query:?}: with={a:?} without={b:?}");
+        };
         if a != b {
             changed.push(query);
         }

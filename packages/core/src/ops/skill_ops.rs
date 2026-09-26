@@ -38,10 +38,12 @@ const MAX_SKILL_LIMIT: usize = 10;
 /// and truncating to the caller's `limit`.
 ///
 /// A penalty only ever lowers a skill, so it can promote a skill that ranked
-/// below `limit` on raw similarity. Re-ranking a pool larger than the whole
-/// registry makes that promotion exact: every skill that could move into the
-/// returned set was scored. Twice [`MAX_SKILL_LIMIT`] covers the registry
-/// sizes that cap is sized for.
+/// below `limit` on raw similarity. The promotion is exact when the pool holds
+/// every skill: that needs a registry of at most this many skills, all of them
+/// surviving the typed search's KNN window (which ranks every embedding before
+/// filtering by type — see `search_embeddings_by_node_type`). Past that, a
+/// skill ranked below the pool on raw similarity cannot be promoted. Twice
+/// [`MAX_SKILL_LIMIT`] covers the registry sizes that cap is sized for.
 const SKILL_RERANK_POOL: usize = 2 * MAX_SKILL_LIMIT;
 
 /// Weight on a skill's exclusion margin in [`exclusion_penalized_score`].
@@ -464,6 +466,11 @@ fn rerank_with_exclusions(
                 Ok(exclusion_vector) => {
                     // Scored as a single fully-matching chunk, the same
                     // composite a one-chunk skill node gets in the KNN search.
+                    // Assumes the skill's own embedding is one chunk too, as
+                    // every seeded skill's is. A description long enough to
+                    // split scores below that full-density composite, so its
+                    // exclusion would weigh more than the same text on a
+                    // short skill.
                     let exclusion_score = crate::db::composite_similarity_score(
                         crate::db::cosine_similarity(query_vector, &exclusion_vector),
                         1,
@@ -1228,12 +1235,9 @@ mod tests {
 
     #[test]
     fn exclusion_penalty_lowers_by_the_weighted_margin() {
+        // At λ = 1.0: 0.855 − (0.90 − 0.855) = 0.81.
         let adjusted = exclusion_penalized_score(0.855, 0.90);
-        let expected = 0.855 - EXCLUSION_PENALTY_WEIGHT * (0.90 - 0.855);
-        assert!(
-            (adjusted - expected).abs() < 1e-12,
-            "{adjusted} != {expected}"
-        );
+        assert!((adjusted - 0.81).abs() < 1e-12, "{adjusted} != 0.81");
         assert!(adjusted < 0.855);
     }
 
