@@ -101,13 +101,11 @@ async fn read_config() -> Result<NodespaceConfig, String> {
 }
 
 async fn read_config_at(dir: &Path) -> Result<NodespaceConfig, String> {
-    let path = dir.join(CONFIG_FILE);
-    if !path.exists() {
-        return Ok(NodespaceConfig::default());
-    }
-    let raw = tokio::fs::read_to_string(&path)
-        .await
-        .map_err(|e| format!("Failed to read config: {e}"))?;
+    let raw = match tokio::fs::read_to_string(dir.join(CONFIG_FILE)).await {
+        Ok(raw) => raw,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(NodespaceConfig::default()),
+        Err(e) => return Err(format!("Failed to read config: {e}")),
+    };
     serde_json::from_str(&raw).map_err(|e| format!("Failed to parse config: {e}"))
 }
 
@@ -124,7 +122,12 @@ async fn update_config_at(
     mutate: impl FnOnce(&mut NodespaceConfig),
 ) -> Result<(), String> {
     let _guard = CONFIG_LOCK.lock().await;
-    let mut cfg = read_config_at(dir).await?;
+    let mut cfg = read_config_at(dir).await.map_err(|e| {
+        format!(
+            "refusing to update {CONFIG_FILE}: it could not be read ({e}) — \
+             writing now would reset every other persisted field"
+        )
+    })?;
     mutate(&mut cfg);
     atomic_file::write_json(dir, CONFIG_FILE, &cfg).await
 }
