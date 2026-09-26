@@ -667,8 +667,13 @@
 
         <!-- Pane Manager - positioned to span both tabs and content grid areas -->
         <div class="pane-manager-wrapper">
-          <!-- PaneManager now renders content directly via PaneContent components -->
-          <PaneManager />
+          <!-- PaneManager now renders content directly via PaneContent components.
+               Mounted only once a database is selected: `databaseStore.load()`
+               points the routed clients at it before committing the selection,
+               so restored tabs never read from the daemon default first. -->
+          {#if databaseStore.activeDatabaseId !== null}
+            <PaneManager />
+          {/if}
         </div>
 
         <!-- Overlay chrome slot — registry-driven, floats top-right of the

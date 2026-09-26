@@ -285,6 +285,130 @@ describe('Database Store', () => {
       expect(databaseStore.activeDatabaseId).toBe('b');
     });
 
+    it('routes the gRPC clients to the restored database before committing the selection', async () => {
+      // A remembered (non-default) database must also become the routing
+      // target; otherwise the switcher shows it while every request still goes
+      // to the daemon default.
+      localStorage.setItem('nodespace.activeDatabaseId', 'a');
+      let activeWhenRouted: string | null | undefined;
+      mockInvoke.mockImplementation((cmd: string) => {
+        if (cmd === 'list_databases') {
+          return Promise.resolve({
+            databases: [db('a'), db('b', { isDefault: true })],
+            defaultDatabaseId: 'b'
+          });
+        }
+        if (cmd === 'set_active_database') activeWhenRouted = databaseStore.activeDatabaseId;
+        return Promise.resolve(undefined);
+      });
+
+      await databaseStore.load();
+
+      expect(mockInvoke).toHaveBeenCalledWith('set_active_database', { id: 'a' });
+      expect(activeWhenRouted).toBeNull();
+      expect(databaseStore.activeDatabaseId).toBe('a');
+      expect(mockInvoke).toHaveBeenCalledWith('pin_window_database', { id: 'a' });
+    });
+
+    it('reloads the database-scoped stores when the restored database is not the default', async () => {
+      // The sidebar's boot-time loads went out unrouted (answered by the
+      // default), so they must be dropped and reloaded from the restored one.
+      localStorage.setItem('nodespace.activeDatabaseId', 'a');
+      mockInvoke.mockImplementation((cmd: string) => {
+        if (cmd === 'list_databases') {
+          return Promise.resolve({
+            databases: [db('a'), db('b', { isDefault: true })],
+            defaultDatabaseId: 'b'
+          });
+        }
+        return Promise.resolve(undefined);
+      });
+
+      await databaseStore.load();
+
+      expect(clearAll).toHaveBeenCalledOnce();
+      expect(forgetLocallyCreated).toHaveBeenCalledOnce();
+      expect(loadCollections).toHaveBeenCalledOnce();
+      expect(schemasInvalidateForDatabaseSwitch).toHaveBeenCalledOnce();
+      expect(loadSchemas).toHaveBeenCalledOnce();
+      expect(invalidateForDatabaseSwitch).toHaveBeenCalledOnce();
+      expect(loadAiChats).toHaveBeenCalledOnce();
+      expect(mockGetNode).toHaveBeenCalledWith(DATABASE_SETTINGS_NODE_ID);
+      // Startup keeps the restored tabs; only a switch resets the workspace.
+      expect(clearAllTabs).not.toHaveBeenCalled();
+    });
+
+    it('does not reload the stores when the restored database is the default', async () => {
+      mockInvoke.mockResolvedValueOnce({
+        databases: [db('a'), db('b', { isDefault: true })],
+        defaultDatabaseId: 'b'
+      });
+
+      await databaseStore.load();
+
+      expect(mockInvoke).toHaveBeenCalledWith('set_active_database', { id: 'b' });
+      expect(clearAll).not.toHaveBeenCalled();
+      expect(loadCollections).not.toHaveBeenCalled();
+      expect(mockGetNode).toHaveBeenCalledWith(DATABASE_SETTINGS_NODE_ID);
+    });
+
+    it('lets a tray switch that lands while load() is routing win', async () => {
+      let releaseRouting: () => void = () => {};
+      mockInvoke.mockImplementation((cmd: string, args?: { id?: string }) => {
+        if (cmd === 'list_databases') {
+          return Promise.resolve({
+            databases: [db('a'), db('b', { isDefault: true })],
+            defaultDatabaseId: 'b'
+          });
+        }
+        if (cmd === 'set_active_database' && args?.id === 'b') {
+          return new Promise<void>((resolve) => (releaseRouting = resolve));
+        }
+        return Promise.resolve(undefined);
+      });
+
+      const loading = databaseStore.load();
+      await vi.waitFor(() =>
+        expect(mockInvoke).toHaveBeenCalledWith('set_active_database', { id: 'b' })
+      );
+      await databaseStore.switchTo('a');
+      releaseRouting();
+      await loading;
+
+      expect(databaseStore.activeDatabaseId).toBe('a');
+    });
+
+    it('does not route when a tray switch already sent its own routing call', async () => {
+      // The reverse ordering: switchTo('a') has sent set_active_database but
+      // not committed yet when load() resolves. A later send from load() would
+      // re-point routing to 'b' while the switch commits 'a'.
+      let releaseSwitch: () => void = () => {};
+      mockInvoke.mockImplementation((cmd: string, args?: { id?: string }) => {
+        if (cmd === 'list_databases') {
+          return Promise.resolve({
+            databases: [db('a'), db('b', { isDefault: true })],
+            defaultDatabaseId: 'b'
+          });
+        }
+        if (cmd === 'set_active_database' && args?.id === 'a') {
+          return new Promise<void>((resolve) => (releaseSwitch = resolve));
+        }
+        return Promise.resolve(undefined);
+      });
+      databaseStore.databases = [db('a'), db('b', { isDefault: true })];
+
+      const switching = databaseStore.switchTo('a');
+      await vi.waitFor(() =>
+        expect(mockInvoke).toHaveBeenCalledWith('set_active_database', { id: 'a' })
+      );
+      await databaseStore.load();
+      releaseSwitch();
+      await switching;
+
+      expect(mockInvoke).not.toHaveBeenCalledWith('set_active_database', { id: 'b' });
+      expect(databaseStore.activeDatabaseId).toBe('a');
+    });
+
     it('records an error when the list fails', async () => {
       mockInvoke.mockRejectedValueOnce(new Error('boom'));
       await databaseStore.load();
