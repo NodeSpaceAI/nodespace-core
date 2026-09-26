@@ -72,6 +72,10 @@ pub struct LaunchSessionResult {
 pub struct PtyOutputPayload {
     pub data: Vec<u8>,
     pub timestamp_ms: i64,
+    /// Non-zero when the daemon dropped this many chunks because the stream
+    /// fell behind; `data` is then empty and the frontend shows a truncation
+    /// notice in place of the missing output.
+    pub dropped_chunks: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -219,6 +223,7 @@ pub async fn launch_session(
                             let payload = PtyOutputPayload {
                                 data: chunk.data.to_vec(),
                                 timestamp_ms: chunk.timestamp_ms,
+                                dropped_chunks: chunk.dropped_chunks,
                             };
                             if let Err(e) = app.emit(&event_name, payload) {
                                 tracing::warn!(

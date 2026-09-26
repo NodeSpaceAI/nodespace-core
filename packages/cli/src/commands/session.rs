@@ -193,6 +193,9 @@ async fn stream_bridge(client: &mut SessionClient, session_id: String) -> Result
     // Drive the output stream to stdout.
     loop {
         match output_stream.message().await {
+            Ok(Some(chunk)) if chunk.dropped_chunks > 0 => {
+                write_stdout(dropped_notice(chunk.dropped_chunks).as_bytes())?;
+            }
             Ok(Some(chunk)) => {
                 write_stdout(&chunk.data)?;
             }
@@ -211,6 +214,19 @@ async fn stream_bridge(client: &mut SessionClient, session_id: String) -> Result
     Ok(())
 }
 
+/// Text written in place of output the daemon dropped because this stream fell
+/// behind a burst. Starts on a fresh line (raw mode needs the explicit `\r`)
+/// so it does not splice into a partially written line. Keep the wording in
+/// step with the desktop terminal's `formatDroppedNotice` (`pty-output.ts`).
+fn dropped_notice(dropped_chunks: u64) -> String {
+    let unit = if dropped_chunks == 1 {
+        "chunk"
+    } else {
+        "chunks"
+    };
+    format!("\r\n\x1b[33m[output truncated: {dropped_chunks} {unit} dropped]\x1b[0m\r\n")
+}
+
 fn detect_terminal_size(cols_override: Option<u32>, rows_override: Option<u32>) -> (u32, u32) {
     let (detected_cols, detected_rows) = terminal::size().unwrap_or((80, 24));
     let cols = cols_override.unwrap_or(detected_cols as u32);
@@ -225,5 +241,19 @@ fn format_unix_time(unix_secs: i64) -> String {
     match Local.timestamp_opt(unix_secs, 0).single() {
         Some(dt) => dt.format("%H:%M:%S").to_string(),
         None => "unknown".to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::dropped_notice;
+
+    #[test]
+    fn dropped_notice_starts_on_a_fresh_line_and_pluralises() {
+        assert_eq!(
+            dropped_notice(1),
+            "\r\n\x1b[33m[output truncated: 1 chunk dropped]\x1b[0m\r\n"
+        );
+        assert!(dropped_notice(42).contains("[output truncated: 42 chunks dropped]"));
     }
 }

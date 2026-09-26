@@ -413,3 +413,61 @@ async fn terminate_unknown_session_reports_was_not_running() {
 
     let _ = shutdown.send(());
 }
+
+#[tokio::test]
+async fn stream_output_reports_dropped_chunks_when_subscriber_lags() {
+    let (mut client, manager, shutdown, _tempdir) = spawn_test_daemon().await;
+
+    // Flood far more output than the broadcast buffer (256 chunks of at most
+    // 4 KiB) plus the HTTP/2 receive window can hold, while the client
+    // deliberately does not read. The daemon's subscriber must then lag, and
+    // the gap has to reach the client as a loss marker rather than vanish.
+    // The leading sleep lets the stream subscribe before the flood starts.
+    let session = PtySession::launch_for_test(
+        "sh",
+        vec!["-c".into(), "sleep 0.2 && yes | head -c 33554432".into()],
+    )
+    .expect("launch flood session");
+    let id = manager.insert(session).await;
+
+    let mut stream = client
+        .stream_output(StreamOutputRequest {
+            session_id: id.to_string(),
+        })
+        .await
+        .expect("stream_output rpc accepted")
+        .into_inner();
+
+    // Not reading for a while is what creates the backpressure: the HTTP/2
+    // window fills, the daemon stops polling its receiver, and the flood
+    // overruns the broadcast buffer. Removing this sleep removes the lag.
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    let marker = timeout(Duration::from_secs(10), async {
+        while let Some(Ok(chunk)) = stream.next().await {
+            if chunk.dropped_chunks > 0 {
+                return Some(chunk);
+            }
+        }
+        None
+    })
+    .await
+    .ok()
+    .flatten()
+    .expect("a lagging subscriber should receive a dropped-chunks marker");
+
+    assert!(
+        marker.data.is_empty(),
+        "loss marker must not carry output bytes"
+    );
+    assert!(marker.timestamp_ms > 0);
+
+    client
+        .terminate_session(TerminateSessionRequest {
+            session_id: id.to_string(),
+        })
+        .await
+        .expect("terminate rpc");
+
+    let _ = shutdown.send(());
+}

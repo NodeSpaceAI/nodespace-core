@@ -264,28 +264,27 @@ impl AgentSessionService for AgentSessionHandler {
                         yield Ok(OutputChunk {
                             data: chunk.data,
                             timestamp_ms,
+                            dropped_chunks: 0,
                         });
                     }
                     Err(RecvError::Lagged(skipped)) => {
                         // Client (or this handler) fell behind the broadcast
-                        // buffer. Continue draining rather than tearing the
+                        // buffer. Keep draining rather than tearing the
                         // stream down — losing a render frame is preferable
-                        // to losing the whole session view.
-                        //
-                        // TODO(review): Lag is invisible to the client
-                        // today (only a server-side tracing::warn). Options
-                        // for surfacing it: a sentinel OutputChunk with an
-                        // in-band "[N bytes dropped]" notice, or a session-
-                        // level metric on ListSessions. Deferred — current
-                        // behavior matches what a real terminal does when
-                        // the kernel buffer overflows (silent drop).
+                        // to losing the whole session view — but tell the
+                        // client about the gap with a loss-marker chunk so it
+                        // can show that output was truncated.
                         debug_assert!(skipped > 0, "RecvError::Lagged with zero skipped chunks");
                         tracing::warn!(
                             session_id = %id,
                             skipped,
                             "StreamOutput subscriber lagged; some chunks dropped"
                         );
-                        continue;
+                        yield Ok(OutputChunk {
+                            data: Vec::new(),
+                            timestamp_ms: Utc::now().timestamp_millis(),
+                            dropped_chunks: skipped,
+                        });
                     }
                     Err(RecvError::Closed) => break,
                 }
