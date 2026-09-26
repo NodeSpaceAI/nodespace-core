@@ -2,7 +2,7 @@
 ///
 /// Provides streaming text generation from GGUF chat models with tool-call
 /// parsing via llama.cpp's native `ChatParseStateOaicompat` streaming parser.
-/// This handles all model families (Mistral, Gemma 4, etc.) natively at the
+/// This handles every model family's tool-call format natively at the
 /// C++ level without custom sentinel detection. Designed to coexist with the
 /// embedding service on the same GPU (validated in PoC with shared Metal backend).
 ///
@@ -18,12 +18,10 @@
 /// one generation runs at a time. This prevents Metal command-buffer
 /// collisions between concurrent requests.
 pub mod error;
-pub mod parser;
 pub mod prompt_dump;
 pub mod types;
 
 pub use error::{ChatError, Result};
-pub use parser::{parse_tool_calls, ParseResult, StreamingToolCallParser};
 pub use types::{
     ChatChunk, ChatConfig, ChatMessage, ChatUsage, LoadedModelInfo, Role, ToolCallRaw, ToolSpec,
 };
@@ -580,8 +578,8 @@ impl ChatEngine {
         let mut grammar_sampler = build_grammar_sampler(&llama.model, &tmpl_result)?;
 
         // --- Initialize llama.cpp's native streaming tool-call parser ---
-        // ChatParseStateOaicompat handles all model families (Mistral, Gemma 4,
-        // etc.) natively at the C++ level — no custom sentinel detection needed.
+        // ChatParseStateOaicompat handles every model family's tool-call format
+        // natively at the C++ level — no custom sentinel detection needed.
         let mut oai_parser = tmpl_result.streaming_state_oaicompat().map_err(|e| {
             ChatError::InferenceError(format!("Failed to init streaming parser: {}", e))
         })?;
@@ -1010,7 +1008,7 @@ fn merge_provider_extra(tool_call: &mut serde_json::Value, extra: Option<&serde_
 ///   non-object (empty, malformed) is normalized to `"{}"`.
 fn chat_message_to_oai_value(msg: &ChatMessage) -> serde_json::Value {
     if msg.role == Role::Tool {
-        // Ministral's Jinja template requires "name" (the function name) on tool-result
+        // Jinja chat templates may require "name" (the function name) on tool-result
         // messages — absent → C++ exception → ffi error -3.
         let mut v = serde_json::json!({
             "role": "tool",
@@ -1105,7 +1103,7 @@ fn emit_oai_delta(
                 .and_then(|n| n.as_str())
                 .unwrap_or("");
             // Only present when the delta actually carries arguments — absent on
-            // name-only deltas (common in Mistral streaming where args arrive later).
+            // name-only deltas (streams where args arrive after the name).
             let args: Option<&str> = function
                 .and_then(|f| f.get("arguments"))
                 .and_then(|a| a.as_str());
@@ -1224,7 +1222,7 @@ fn sample_with_grammar_rejection(
 /// grammar (`LlamaSampler::grammar`) and a lazily-triggered one
 /// (`LlamaSampler::grammar_lazy_patterns`) that only engages once one of the
 /// template's trigger words/patterns/tokens is seen in the stream — e.g.
-/// Mistral only wraps tool calls in `[TOOL_CALLS]`, so unconstrained prose
+/// Gemma 4 only wraps tool calls in `<|tool_call>`, so unconstrained prose
 /// must remain possible until that marker appears.
 #[cfg(feature = "chat-service")]
 fn build_grammar_sampler(
@@ -1321,7 +1319,7 @@ impl ChatEngine {
     ///
     /// Routes through llama.cpp's OAI-compat Jinja machinery (`common_chat_*`),
     /// which handles family-specific prompt and tool formatting natively for
-    /// Mistral, Gemma 4, and any other model with an embedded Jinja template.
+    /// Gemma 4 and any other model with an embedded Jinja template.
     /// The simple `apply_chat_template` C API does not work for Gemma 4 — its
     /// chat template requires the full Jinja engine plus llama.cpp's chat
     /// specialization layer.
@@ -1336,7 +1334,7 @@ impl ChatEngine {
     ) -> Result<ChatTemplateResult> {
         // Build OpenAI-format messages JSON. Tool-result messages carry
         // `tool_call_id`; the Jinja template handles family-specific wrapping
-        // (Mistral [TOOL_RESULTS], Gemma 4 turn format, etc.).
+        // (e.g. the Gemma 4 turn format).
         let messages_value: Vec<serde_json::Value> =
             messages.iter().map(chat_message_to_oai_value).collect();
 
@@ -1344,7 +1342,7 @@ impl ChatEngine {
             .map_err(|e| ChatError::TemplateError(format!("Message JSON error: {}", e)))?;
 
         // Build OpenAI tool-spec JSON if tools are provided. The Jinja template
-        // formats these per-family (Ministral [AVAILABLE_TOOLS], Gemma 4 <tools>).
+        // formats these per-family (e.g. Gemma 4 <tools>).
         let tools_json_string = if let Some(tool_specs) = tools.as_ref() {
             if tool_specs.is_empty() {
                 None
@@ -2106,14 +2104,14 @@ mod tests {
     }
 
     #[test]
-    fn oai_value_tool_result_includes_name_for_ministral() {
-        // Ministral's Jinja template requires "name" on tool-result messages.
+    fn oai_value_tool_result_includes_name() {
+        // Jinja chat templates may require "name" on tool-result messages.
         // Missing "name" → Jinja exception → ffi error -3.
         let m = ChatMessage::tool_result("[]", "tc_1", "search_nodes");
         let v = chat_message_to_oai_value(&m);
         assert_eq!(
             v["name"], "search_nodes",
-            "tool-result must carry \"name\" for Ministral Jinja template"
+            "tool-result must carry \"name\" for the Jinja template"
         );
         assert_eq!(v["tool_call_id"], "tc_1");
         assert_eq!(v["content"], "[]");
@@ -2121,7 +2119,7 @@ mod tests {
 
     #[test]
     fn oai_value_multi_turn_tool_calls_have_name_on_every_result() {
-        // Regression: ffi error -3 on Ministral 8B after 6+ tool-call round-trips.
+        // Regression: ffi error -3 after 6+ tool-call round-trips.
         // Each tool-result message must carry "name" regardless of conversation depth.
         let results = [
             ("tc_1", "search_nodes"),
@@ -2233,7 +2231,7 @@ mod tests {
 
     #[test]
     fn augment_gemma4_does_not_modify_non_gemma4_format() {
-        // chat_format=0 (CONTENT_ONLY) or 1 (Mistral) — must leave stops unchanged.
+        // chat_format=0 (CONTENT_ONLY) — must leave stops unchanged.
         let mut stops: Vec<String> = vec![];
         augment_gemma4_stops(0, &mut stops);
         assert!(stops.is_empty(), "must not add stops for non-Gemma4 format");
@@ -2515,13 +2513,11 @@ mod tests {
     }
 
     #[test]
-    fn fit_loads_the_8gb_tier_model_on_an_8gb_machine() {
-        // Ministral 3B is catalogued at min_memory_gb: 8 (32 layers, n_embd
-        // 4096, GQA 32/8, F16 → 128 KiB/token, ~2.1GB weights). A flat 3GiB OS
-        // reserve consumed enough of an 8GB machine to push it under
-        // N_CTX_MINIMUM, making a model the catalog advertises as fitting
-        // refuse to load. With the reserve capped proportionally it gets a
-        // usable window.
+    fn fit_loads_a_small_model_on_an_8gb_machine() {
+        // A ~2.1GB-weight model (32 layers, n_embd 4096, GQA 32/8, F16 →
+        // 128 KiB/token). A flat 3GiB OS reserve consumed enough of an 8GB
+        // machine to push it under N_CTX_MINIMUM, refusing a model that fits.
+        // With the reserve capped proportionally it gets a usable window.
         let n = fit_n_ctx_to_budget(
             KvGeometry {
                 n_layer: 32,
@@ -2536,7 +2532,7 @@ mod tests {
         );
         assert!(
             n >= N_CTX_MINIMUM,
-            "the 8GB-tier model must load on an 8GB machine, got {n}"
+            "a small model must load on an 8GB machine, got {n}"
         );
     }
 
@@ -2663,7 +2659,7 @@ mod tests {
         // Every character regex_escape (common/common.cpp) treats as special
         // must come back backslash-prefixed so a Word trigger only ever
         // matches its literal text.
-        assert_eq!(regex_escape("[TOOL_CALLS]"), r"\[TOOL_CALLS\]");
+        assert_eq!(regex_escape("[call]"), r"\[call\]");
         // `<` and `>` are not in llama.cpp's special-char set — only `|` is escaped.
         assert_eq!(regex_escape("<|tool_call>"), r"<\|tool_call>");
         assert_eq!(regex_escape("plain_word"), "plain_word");
@@ -2680,12 +2676,12 @@ mod tests {
 
     #[test]
     fn word_trigger_becomes_escaped_pattern() {
-        // Mistral's tool-call marker is a Word trigger; it must survive as an
-        // escaped literal-match pattern, not a raw (and here, invalid-looking)
-        // regex fragment.
+        // A tool-call marker Word trigger must survive as an escaped
+        // literal-match pattern, not a raw (and here, invalid-looking) regex
+        // fragment.
         let (patterns, tokens) =
-            convert_grammar_triggers(&[trigger(GrammarTriggerType::Word, "[TOOL_CALLS]")]);
-        assert_eq!(patterns, vec![r"\[TOOL_CALLS\]".to_string()]);
+            convert_grammar_triggers(&[trigger(GrammarTriggerType::Word, "[call]")]);
+        assert_eq!(patterns, vec![r"\[call\]".to_string()]);
         assert!(tokens.is_empty());
     }
 

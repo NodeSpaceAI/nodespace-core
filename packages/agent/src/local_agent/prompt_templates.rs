@@ -65,7 +65,7 @@ pub fn title_generation_prompt(conversation: &str) -> String {
 /// Format a tool result as JSON for the conversation history.
 ///
 /// The content is serialized as JSON so that the nlp-engine can parse it and
-/// wrap it in Mistral's `[TOOL_RESULTS]` tags during template application.
+/// wrap it in the model's tool-result turn format during template application.
 pub fn format_tool_result(_name: &str, result: &serde_json::Value, is_error: bool) -> String {
     if is_error {
         serde_json::to_string(&serde_json::json!({"error": result})).unwrap_or_default()

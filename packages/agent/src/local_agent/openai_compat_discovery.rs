@@ -179,18 +179,15 @@ mod tests {
         // id/object/created/owned_by, no size or context length.
         //
         // The ids are incidental to what this asserts (that every `id` is
-        // extracted, in order), so they name models NodeSpace actually carries.
-        // An earlier capture listed `ornith:9b`, which ADR-056 removed from the
-        // catalog outright — a removed model has no business appearing as a
-        // sample id in current code.
+        // extracted, in order).
         let body = r#"{"object":"list","data":[
-            {"id":"mistral:7b","object":"model","created":1783255193,"owned_by":"library"},
-            {"id":"mistral-nemo:12b","object":"model","created":1783252404,"owned_by":"library"},
+            {"id":"llama3.1:8b","object":"model","created":1783255193,"owned_by":"library"},
+            {"id":"llama3.2:3b","object":"model","created":1783252404,"owned_by":"library"},
             {"id":"gemma4:e4b","object":"model","created":1775681349,"owned_by":"library"}
         ]}"#;
 
         let models = parse_models_response(body).expect("should parse");
-        assert_eq!(models, vec!["mistral:7b", "mistral-nemo:12b", "gemma4:e4b"]);
+        assert_eq!(models, vec!["llama3.1:8b", "llama3.2:3b", "gemma4:e4b"]);
     }
 
     #[test]
@@ -211,9 +208,9 @@ mod tests {
             is_openai_compat, strip_openai_compat_prefix,
         };
 
-        let info = discovered_model_info("abc-123", "Local Ollama", "mistral:7b");
+        let info = discovered_model_info("abc-123", "Local Ollama", "llama3.1:8b");
 
-        assert_eq!(info.id, "openai-compat:abc-123:mistral:7b");
+        assert_eq!(info.id, "openai-compat:abc-123:llama3.1:8b");
         assert!(is_openai_compat(&info.id));
 
         // The model name itself contains a colon, so the config id must be
@@ -222,12 +219,12 @@ mod tests {
         let rest = strip_openai_compat_prefix(&info.id);
         let (config_id, model) = rest.split_once(':').expect("id carries a model segment");
         assert_eq!(config_id, "abc-123");
-        assert_eq!(model, "mistral:7b");
+        assert_eq!(model, "llama3.1:8b");
     }
 
     #[test]
     fn discovered_row_leaves_unreported_fields_at_unknown_sentinels() {
-        let info = discovered_model_info("abc-123", "Local Ollama", "mistral:7b");
+        let info = discovered_model_info("abc-123", "Local Ollama", "llama3.1:8b");
 
         // /models reports none of these; they must not be invented.
         assert_eq!(info.size_bytes, 0);

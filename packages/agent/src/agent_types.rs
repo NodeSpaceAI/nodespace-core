@@ -246,12 +246,8 @@ pub enum LocalAgentStatus {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ModelFamily {
-    /// Ministral -- Mistral AI's small model series (Ministral 3B, Ministral 8B).
-    Ministral,
-    /// Gemma 4 -- Google's multimodal model series (E4B, 31B).
+    /// Gemma 4 -- Google's multimodal model series (E4B, 26B-A4B).
     Gemma4,
-    /// MistralSmall -- Mistral AI's Small series (24B dense, strong reasoning).
-    MistralSmall,
     /// Model served via a user-configured OpenAI-compatible endpoint (family
     /// determined by the remote server).
     OpenAiCompat,
@@ -363,7 +359,7 @@ pub struct ToolExecutionRecord {
 pub struct ModelInfo {
     /// Unique identifier for this model.
     pub id: String,
-    /// Model family (e.g. Ministral).
+    /// Model family (e.g. Gemma4).
     pub family: ModelFamily,
     /// Human-readable model name.
     pub name: String,

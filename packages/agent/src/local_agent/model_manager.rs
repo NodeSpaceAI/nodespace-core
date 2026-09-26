@@ -60,99 +60,8 @@ struct CatalogEntry {
     min_memory_gb: u8,
 }
 
-/// Ministral 3B -- fast, lightweight, identical tool reliability.
-const MINISTRAL_3B: CatalogEntry = CatalogEntry {
-    id: "ministral-3b-q4km",
-    family: ModelFamily::Ministral,
-    name: "Ministral 3B Instruct Q4_K_M",
-    filename: "Ministral-3-3B-Instruct-2512-Q4_K_M.gguf",
-    size_bytes: 2_147_023_008, // ~2.1 GB
-    quantization: "Q4_K_M",
-    url: "https://huggingface.co/mistralai/Ministral-3-3B-Instruct-2512-GGUF/resolve/eb599d408350ea2bb60452cb86be7c7b2fc28227/Ministral-3-3B-Instruct-2512-Q4_K_M.gguf",
-    sha256: "9ed150d4367e68df0ac8e1540f6ddc65b42d0ee26378329d1ecbca60f93fc5f8",
-    context_window: 32_768,
-    default_temperature: 0.3,
-    type_k: None, // F16 — KV cache is not the bottleneck at 3B
-    type_v: None,
-    min_memory_gb: 8,
-};
-
-/// Ministral 8B -- deeper reasoning, vision capable.
-const MINISTRAL_8B: CatalogEntry = CatalogEntry {
-    id: "ministral-8b-q4km",
-    family: ModelFamily::Ministral,
-    name: "Ministral 8B Instruct Q4_K_M",
-    filename: "Ministral-3-8B-Instruct-2512-Q4_K_M.gguf",
-    size_bytes: 5_198_911_904, // ~5.2 GB
-    quantization: "Q4_K_M",
-    url: "https://huggingface.co/mistralai/Ministral-3-8B-Instruct-2512-GGUF/resolve/0102285ad796bd99af90f58de616092e5630e970/Ministral-3-8B-Instruct-2512-Q4_K_M.gguf",
-    sha256: "33e7a72cf5e6e2cfc2f2847075acc013d68bba023e35310cef86b5cf8fdca761",
-    context_window: 32_768,
-    default_temperature: 0.3,
-    type_k: None, // F16 — KV cache is not the bottleneck at 8B
-    type_v: None,
-    min_memory_gb: 16,
-};
-
-/// Ministral 14B -- Mistral's mid-tier edge model (Dec 2025); 13.5B language +
-/// 0.4B vision encoder, Apache 2.0. Same [TOOL_CALLS] format as Ministral 3B/8B.
-/// ~8.2 GB Q4_K_M; fits on 16GB+ Apple Silicon with Q8_0 KV cache.
-const MINISTRAL_14B: CatalogEntry = CatalogEntry {
-    id: "ministral-14b-q4km",
-    family: ModelFamily::Ministral,
-    name: "Ministral 3 14B Instruct Q4_K_M",
-    filename: "Ministral-3-14B-Instruct-2512-Q4_K_M.gguf",
-    size_bytes: 8_239_593_024, // ~7.7 GB (verified via HF LFS metadata)
-    quantization: "Q4_K_M",
-    url: "https://huggingface.co/mistralai/Ministral-3-14B-Instruct-2512-GGUF/resolve/74fac473c43357d7fb2671713608183cc72496d0/Ministral-3-14B-Instruct-2512-Q4_K_M.gguf",
-    sha256: "824e0f3373e69b84f2cae46fdcb9bd1ebc6ab3bfc7acc125d818b7b8178cc613",
-    context_window: 32_768,
-    default_temperature: 0.3,
-    type_k: Some(nodespace_nlp_engine::KvCacheQuantType::Q8_0),
-    type_v: Some(nodespace_nlp_engine::KvCacheQuantType::Q8_0),
-    min_memory_gb: 16,
-};
-
-/// Mistral NeMo 12B -- Mistral+NVIDIA collaboration (July 2024); native
-/// [TOOL_CALLS] handler in llama.cpp (grammar-constrained). ~7.5 GB Q4_K_M;
-/// fits on 16GB Apple Silicon. The only Mistral-family model with a confirmed
-/// native tool-call handler in llama.cpp.
-const MISTRAL_NEMO_12B: CatalogEntry = CatalogEntry {
-    id: "mistral-nemo-12b-q4km",
-    family: ModelFamily::Ministral, // same [TOOL_CALLS] format, same parser
-    name: "Mistral NeMo 12B Instruct Q4_K_M",
-    filename: "Mistral-Nemo-Instruct-2407.Q4_K_M.gguf",
-    size_bytes: 7_477_204_928, // ~7.5 GB
-    quantization: "Q4_K_M",
-    url: "https://huggingface.co/MaziyarPanahi/Mistral-Nemo-Instruct-2407-GGUF/resolve/eba4e7492de28b8ab2ff44b0bb819004181b3db4/Mistral-Nemo-Instruct-2407.Q4_K_M.gguf",
-    sha256: "5964f3e6d9c17b99e3d2174022048f3ec58b12ee8fefa987888e0562d070d52e",
-    context_window: 128_000,
-    default_temperature: 0.3,
-    type_k: None, // F16 — 7.5GB leaves plenty of headroom on 16GB
-    type_v: None,
-    min_memory_gb: 16,
-};
-
-/// Mistral Small 3.2 -- Mistral's 24B dense small model (June 2026); strong
-/// reasoning and tool calling. ~13.4 GB Q4_K_M; fits on 24GB+ Apple Silicon.
-const MISTRAL_SMALL_3_2: CatalogEntry = CatalogEntry {
-    id: "mistral-small-3-2-q4km",
-    family: ModelFamily::MistralSmall,
-    name: "Mistral Small 3.2 24B Instruct Q4_K_M",
-    filename: "Mistral-Small-3.2-24B-Instruct-2506-Q4_K_M.gguf",
-    size_bytes: 14_333_922_848, // ~13.4 GB
-    quantization: "Q4_K_M",
-    url: "https://huggingface.co/unsloth/Mistral-Small-3.2-24B-Instruct-2506-GGUF/resolve/b750ec2299225e492f1bd27cab88a0a595fa848f/Mistral-Small-3.2-24B-Instruct-2506-Q4_K_M.gguf",
-    sha256: "a3cc56310807ed0d145eaf9f018ccda9ae7ad8edb41ec870aa2454b0d4700b3c",
-    context_window: 32_768,
-    default_temperature: 0.3,
-    type_k: Some(nodespace_nlp_engine::KvCacheQuantType::Q8_0),
-    type_v: Some(nodespace_nlp_engine::KvCacheQuantType::Q8_0),
-    min_memory_gb: 24,
-};
-
-/// Gemma 4 E4B -- Google's efficient ~4B-effective model; stronger reasoning
-/// than Ministral 3B/8B at competitive speed (16GB+ Apple Silicon).
+/// Gemma 4 E4B -- Google's efficient ~4B-effective model; the default
+/// (16GB+ Apple Silicon).
 const GEMMA_4_E4B: CatalogEntry = CatalogEntry {
     id: "gemma-4-e4b-q4km",
     family: ModelFamily::Gemma4,
@@ -169,40 +78,14 @@ const GEMMA_4_E4B: CatalogEntry = CatalogEntry {
     min_memory_gb: 16,
 };
 
-/// Gemma 4 31B -- Google's larger dense quality-tier option (24GB+ Apple
-/// Silicon, e.g. M3 Pro/Max, M4 Pro). This tier is 31B: Gemma 4's dense
-/// large variant is 31B, whereas 27B was a Gemma 2 size.
-const GEMMA_4_31B: CatalogEntry = CatalogEntry {
-    id: "gemma-4-31b-q4km",
-    family: ModelFamily::Gemma4,
-    name: "Gemma 4 31B Instruct Q4_K_M",
-    filename: "gemma-4-31B-it-Q4_K_M.gguf",
-    size_bytes: 18_687_061_792, // ~18.7 GB
-    quantization: "Q4_K_M",
-    url: "https://huggingface.co/ggml-org/gemma-4-31B-it-GGUF/resolve/fb5801c702a472691c6eba168f28af79a076fbe9/gemma-4-31B-it-Q4_K_M.gguf",
-    sha256: "4f369f8fe0e1bedc5caee9abb89316887f548f80f3035398a5d222a737e699e6",
-    context_window: 32_768,
-    default_temperature: 0.3,
-    // Q8_0 cuts the 32K KV cache from ~10GB (F16) to ~5GB, making 31B viable
-    // on 24GB Apple Silicon alongside the ~19GB weights.
-    type_k: Some(nodespace_nlp_engine::KvCacheQuantType::Q8_0),
-    type_v: Some(nodespace_nlp_engine::KvCacheQuantType::Q8_0),
-    min_memory_gb: 24,
-};
-
 /// Gemma 4 26B-A4B -- Google's MoE tier (25.2B total / 3.8B active experts).
-/// Optional high-RAM tier, not the default: the agent-matrix eval (issue
-/// #1956) scored it 12.3/16 mean across 3 reps, below Gemma 4 E4B's 13.7/16
-/// -- it under-calls `search_nodes` on query-style follow-ups more often
-/// than E4B. Its failure mode is qualitatively different from dense Gemma 4
-/// 12B's, though: across all 3 reps and every tool call attempted, argument
-/// JSON was never malformed (no corrupted field names, no truncated nested
-/// structures) -- MoE's ~3.8B active-parameter footprint per token appears
-/// to avoid the JSON-generation failures dense 12B/Q4_K_M exhibits on
-/// complex nested payloads like `create_schema`. Q8_0 (not Q4) to keep
-/// quantization precision loss out of that comparison. Exposed as an
-/// additional selectable tier for users with RAM to spare, not a
-/// replacement for the E4B default (`recommended_model_id()` is unchanged).
+/// Optional high-RAM tier, not the default: the agent-matrix eval scored it
+/// 12.3/16 mean across 3 reps, below Gemma 4 E4B's 13.7/16 -- it under-calls
+/// `search_nodes` on query-style follow-ups more often than E4B. Across all 3
+/// reps and every tool call attempted, argument JSON was never malformed (no
+/// corrupted field names, no truncated nested structures), unlike the dense
+/// 12B tier evaluated alongside it. Q8_0 (not Q4) to keep quantization
+/// precision loss out of that comparison.
 const GEMMA_4_26B_A4B: CatalogEntry = CatalogEntry {
     id: "gemma-4-26b-a4b-q8",
     family: ModelFamily::Gemma4,
@@ -219,98 +102,8 @@ const GEMMA_4_26B_A4B: CatalogEntry = CatalogEntry {
     min_memory_gb: 32,
 };
 
-/// Gemma 4 12B -- Google's mid-tier dense model. Parked, not exposed: the
-/// agent-matrix eval found it repeatedly emits malformed
-/// tool-call JSON (escaped underscores, garbled/truncated nested structures)
-/// on complex payloads like `create_schema`, across both this ggml-org GGUF
-/// and the Unsloth re-upload below -- confirmed identical template/tokenizer
-/// metadata between the two sources (byte-for-byte matching embedded Jinja
-/// template, `eos_token_id`, and `<turn|>` token-type flag), so the failure
-/// is a model-capability property of dense 12B at this quantization, not a
-/// GGUF-source defect. See `GEMMA_4_26B_A4B` for a Gemma 4 tier that avoids
-/// this failure mode. `min_memory_gb: 24` (not the 16 an earlier revision
-/// claimed) reflects repeated hard GPU OOM on a 16GB machine -- the Q8_0
-/// KV-cache quantization here reduces but does not eliminate that headroom
-/// problem.
-const GEMMA_4_12B: CatalogEntry = CatalogEntry {
-    id: "gemma-4-12b-q4km",
-    family: ModelFamily::Gemma4,
-    name: "Gemma 4 12B Instruct Q4_K_M",
-    filename: "gemma-4-12B-it-Q4_K_M.gguf",
-    size_bytes: 7_381_382_048, // ~7.4 GB
-    quantization: "Q4_K_M",
-    url: "https://huggingface.co/ggml-org/gemma-4-12B-it-GGUF/resolve/44ee90c4b61e888ac5b318a54ec7a94df61e9cd7/gemma-4-12B-it-Q4_K_M.gguf",
-    sha256: "1278394b693672ac2799eadc9a83fd98259a6a88a40acfb1dcaa6c6fc895a606",
-    context_window: 32_768,
-    default_temperature: 0.3,
-    // Q8_0 cuts the 32K KV cache from ~5GB (F16) to ~2.5GB, but this alone
-    // does not make 16GB viable -- see the doc comment above.
-    type_k: Some(nodespace_nlp_engine::KvCacheQuantType::Q8_0),
-    type_v: Some(nodespace_nlp_engine::KvCacheQuantType::Q8_0),
-    min_memory_gb: 24,
-};
-
-/// Gemma 4 12B (Unsloth) -- April 11 re-upload. Parked, not exposed: fails
-/// identically to `GEMMA_4_12B` above (same malformed-JSON failure on
-/// `create_schema`, confirmed via the agent-matrix eval).
-/// The two GGUF sources have byte-for-byte identical embedded chat template
-/// and tokenizer EOG metadata (verified against both files directly), so
-/// there is no template-level difference between them -- whatever Unsloth's
-/// re-upload changes, if anything, is not visible at this metadata layer.
-/// `min_memory_gb: 24` for the same reason as `GEMMA_4_12B` (the repeated
-/// 16GB OOM reproductions apply equally to this file).
-const GEMMA_4_12B_UNSLOTH: CatalogEntry = CatalogEntry {
-    id: "gemma-4-12b-unsloth-q4km",
-    family: ModelFamily::Gemma4,
-    name: "Gemma 4 12B Instruct Q4_K_M (Unsloth)",
-    filename: "gemma-4-12b-it-unsloth-Q4_K_M.gguf",
-    size_bytes: 7_121_860_000,
-    quantization: "Q4_K_M",
-    url: "https://huggingface.co/unsloth/gemma-4-12b-it-GGUF/resolve/3249fa54d5efa384afc552cc6700ad091efd5c39/gemma-4-12b-it-Q4_K_M.gguf",
-    sha256: "43fec98c5102b1c446b4ddd0a9439f1db3a2e1f2e0b8cd143ce1ea619a9403d6",
-    context_window: 32_768,
-    default_temperature: 0.3,
-    type_k: Some(nodespace_nlp_engine::KvCacheQuantType::Q8_0),
-    type_v: Some(nodespace_nlp_engine::KvCacheQuantType::Q8_0),
-    min_memory_gb: 24,
-};
-
 /// All catalog entries, in preference order.
-const CATALOG: &[&CatalogEntry] = &[
-    &MINISTRAL_3B,
-    &MINISTRAL_8B,
-    &MINISTRAL_14B,
-    &MISTRAL_NEMO_12B,
-    &MISTRAL_SMALL_3_2,
-    &GEMMA_4_E4B,
-    &GEMMA_4_12B,
-    &GEMMA_4_12B_UNSLOTH,
-    &GEMMA_4_31B,
-    &GEMMA_4_26B_A4B,
-];
-
-/// RAM threshold (in bytes) at or above which the mid-tier Ministral model
-/// (Ministral 8B) is selected instead of the small one (Ministral 3B).
-/// Matches `MINISTRAL_8B.min_memory_gb`. NOT used for Gemma4's medium tier --
-/// see [`RAM_THRESHOLD_GEMMA4_MEDIUM`], which tracks a different value
-/// (`GEMMA_4_12B.min_memory_gb`, corrected to 24GB per measured OOM
-/// evidence) and would silently drift from that catalog value again if the
-/// two families shared one constant.
-const RAM_THRESHOLD_MEDIUM: u64 = 16 * 1024 * 1024 * 1024; // 16 GB
-
-/// RAM threshold (in bytes) at or above which Gemma4's mid-tier model
-/// (Gemma 4 12B) is selected instead of the small one (Gemma 4 E4B). Matches
-/// `GEMMA_4_12B.min_memory_gb` -- kept as its own constant (not shared with
-/// [`RAM_THRESHOLD_MEDIUM`]) because 12B's real memory floor is 24GB, not
-/// 16GB like Ministral 8B's.
-const RAM_THRESHOLD_GEMMA4_MEDIUM: u64 = 24 * 1024 * 1024 * 1024; // 24 GB
-
-/// RAM threshold (in bytes) at or above which the large recommended model
-/// (Gemma 4 26B-A4B) is selected instead of the mid-tier one (Gemma 4 12B).
-/// Matches `GEMMA_4_26B_A4B.min_memory_gb`. Not Gemma 4 31B -- see
-/// `recommended_model_id_for`'s doc comment for why the large tier
-/// recommends 26B-A4B instead.
-const RAM_THRESHOLD_LARGE: u64 = 32 * 1024 * 1024 * 1024; // 32 GB
+const CATALOG: &[&CatalogEntry] = &[&GEMMA_4_E4B, &GEMMA_4_26B_A4B];
 
 // ---------------------------------------------------------------------------
 // Download state (per-model)
@@ -406,73 +199,11 @@ impl GgufModelManager {
         guard.remove(model_id);
     }
 
-    /// Get the recommended model based on system RAM.
-    ///
-    /// Returns Gemma 4 E4B as the primary llama.cpp default, per ADR-056.
-    /// Unlike [`Self::recommended_model_id_for`]'s general three-tier Gemma4
-    /// behavior, this always recommends E4B regardless of RAM: the mid tier
-    /// of that ladder is 12B, which remains parked per ADR-046 (unresolved
-    /// tool-call defects, reconfirmed via the agent-matrix eval's
-    /// re-evaluation) and must not become the default recommendation on
-    /// higher-RAM machines. (The large tier, 26B-A4B, is not parked -- it was
-    /// validated and exposed by that same eval -- but the ladder is still bypassed here
-    /// wholesale rather than partially, since this function's contract is a
-    /// single fixed default, not a RAM-tiered one.) Callers that want the
-    /// full RAM-tiered within-family recommendation should use
-    /// [`Self::recommended_model_id_for`] directly.
+    /// The default local model: Gemma 4 E4B, per ADR-056. Fixed rather than
+    /// RAM-tiered -- 26B-A4B scored below E4B on the agent-matrix eval, so a
+    /// machine with more RAM is not a reason to recommend it.
     fn recommended_model_id() -> &'static str {
-        // NOT recommended_model_id_for(ModelFamily::Gemma4) -- that RAM-tiers
-        // into 12B/26B-A4B, and 12B is parked per ADR-046/ADR-056. Do not
-        // "simplify" this to the _for() call without re-checking 12B's
-        // parking status.
         GEMMA_4_E4B.id
-    }
-
-    /// Recommend the appropriately-sized model within a given family for the
-    /// current system's RAM.
-    ///
-    /// - `Ministral`: 8B at or above [`RAM_THRESHOLD_MEDIUM`] (16 GB), otherwise 3B.
-    /// - `Gemma4`:    three-tier — 26B-A4B at or above [`RAM_THRESHOLD_LARGE`],
-    ///   12B at or above [`RAM_THRESHOLD_GEMMA4_MEDIUM`] (24 GB), otherwise E4B.
-    ///   Recommends 26B-A4B rather than 31B at the large tier: 31B is parked
-    ///   (unevaluated by the agent-matrix eval) while 26B-A4B is the tier this project
-    ///   actually validated and exposed. Neither 12B tier is recommended by
-    ///   this function's Gemma4 branch reaching production, though -- see
-    ///   [`Self::recommended_model_id`], which pins the real default to E4B
-    ///   regardless of RAM for exactly that parked-model reason.
-    /// - `OpenAiCompat`: has no GGUF catalog entries; falls back to the default
-    ///   Ministral recommendation.
-    pub fn recommended_model_id_for(family: ModelFamily) -> &'static str {
-        let total_ram = detect_system_ram();
-        let large = total_ram >= RAM_THRESHOLD_LARGE;
-        let medium = total_ram >= RAM_THRESHOLD_MEDIUM;
-        let gemma4_medium = total_ram >= RAM_THRESHOLD_GEMMA4_MEDIUM;
-        match family {
-            ModelFamily::Ministral => {
-                if medium {
-                    MINISTRAL_8B.id
-                } else {
-                    MINISTRAL_3B.id
-                }
-            }
-            ModelFamily::Gemma4 => {
-                if large {
-                    GEMMA_4_26B_A4B.id
-                } else if gemma4_medium {
-                    GEMMA_4_12B.id
-                } else {
-                    GEMMA_4_E4B.id
-                }
-            }
-            ModelFamily::MistralSmall => MISTRAL_SMALL_3_2.id,
-            ModelFamily::OpenAiCompat => {
-                if medium {
-                    MINISTRAL_8B.id
-                } else {
-                    MINISTRAL_3B.id
-                }
-            }
-        }
     }
 
     /// Get a [`ChatModelSpec`] for the recommended model.
@@ -1424,12 +1155,8 @@ mod tests {
     async fn list_returns_all_catalog_models() {
         let (mgr, _tmp) = test_manager();
         let models = mgr.list().await.unwrap();
-        assert_eq!(models.len(), 10);
-        assert!(models.iter().any(|m| m.id == "ministral-3b-q4km"));
-        assert!(models.iter().any(|m| m.id == "ministral-8b-q4km"));
+        assert_eq!(models.len(), 2);
         assert!(models.iter().any(|m| m.id == "gemma-4-e4b-q4km"));
-        assert!(models.iter().any(|m| m.id == "gemma-4-12b-q4km"));
-        assert!(models.iter().any(|m| m.id == "gemma-4-31b-q4km"));
         assert!(models.iter().any(|m| m.id == "gemma-4-26b-a4b-q8"));
     }
 
@@ -1448,25 +1175,6 @@ mod tests {
             .is_some_and(|u| u.contains("ggml-org/gemma-4-E4B-it-GGUF")));
         assert_eq!(e4b.min_memory_gb, 16);
 
-        let g31 = models.iter().find(|m| m.id == "gemma-4-31b-q4km").unwrap();
-        assert_eq!(g31.family, ModelFamily::Gemma4);
-        assert_eq!(g31.quantization, "Q4_K_M");
-        assert!(g31.size_bytes > 18_000_000_000); // ~18.7 GB
-        assert!(g31
-            .url
-            .as_ref()
-            .is_some_and(|u| u.contains("ggml-org/gemma-4-31B-it-GGUF")));
-        assert_eq!(g31.min_memory_gb, 24);
-
-        let g12 = models.iter().find(|m| m.id == "gemma-4-12b-q4km").unwrap();
-        assert_eq!(g12.min_memory_gb, 24);
-
-        let g12_unsloth = models
-            .iter()
-            .find(|m| m.id == "gemma-4-12b-unsloth-q4km")
-            .unwrap();
-        assert_eq!(g12_unsloth.min_memory_gb, 24);
-
         let g26 = models
             .iter()
             .find(|m| m.id == "gemma-4-26b-a4b-q8")
@@ -1479,23 +1187,6 @@ mod tests {
             .as_ref()
             .is_some_and(|u| u.contains("ggml-org/gemma-4-26B-A4B-it-GGUF")));
         assert_eq!(g26.min_memory_gb, 32);
-    }
-
-    #[tokio::test]
-    async fn list_models_have_correct_metadata() {
-        let (mgr, _tmp) = test_manager();
-        let models = mgr.list().await.unwrap();
-
-        let m3b = models.iter().find(|m| m.id == "ministral-3b-q4km").unwrap();
-        assert_eq!(m3b.family, ModelFamily::Ministral);
-        assert_eq!(m3b.quantization, "Q4_K_M");
-        assert!(m3b.url.as_ref().is_some_and(|u| !u.is_empty()));
-        assert!(m3b.sha256.as_ref().is_some_and(|h| h.len() == 64));
-        assert!(m3b.size_bytes > 0);
-        assert_eq!(m3b.min_memory_gb, 8);
-
-        let m8b = models.iter().find(|m| m.id == "ministral-8b-q4km").unwrap();
-        assert_eq!(m8b.min_memory_gb, 16);
     }
 
     #[tokio::test]
@@ -1628,17 +1319,20 @@ mod tests {
     async fn list_detects_existing_model_file_as_ready() {
         let tmp = TempDir::new().unwrap();
         // Pre-create a model file
-        std::fs::write(tmp.path().join(MINISTRAL_3B.filename), b"fake model data").unwrap();
+        std::fs::write(tmp.path().join(GEMMA_4_E4B.filename), b"fake model data").unwrap();
 
         let mgr = GgufModelManager::with_dir(tmp.path().to_path_buf()).unwrap();
         let models = mgr.list().await.unwrap();
 
-        let m3b = models.iter().find(|m| m.id == "ministral-3b-q4km").unwrap();
-        assert!(matches!(m3b.status, ModelStatus::Ready));
+        let e4b = models.iter().find(|m| m.id == "gemma-4-e4b-q4km").unwrap();
+        assert!(matches!(e4b.status, ModelStatus::Ready));
 
-        // 8B should still be NotDownloaded
-        let m8b = models.iter().find(|m| m.id == "ministral-8b-q4km").unwrap();
-        assert!(matches!(m8b.status, ModelStatus::NotDownloaded));
+        // 26B-A4B should still be NotDownloaded
+        let g26 = models
+            .iter()
+            .find(|m| m.id == "gemma-4-26b-a4b-q8")
+            .unwrap();
+        assert!(matches!(g26.status, ModelStatus::NotDownloaded));
     }
 
     // -- RAM recommendation tests --------------------------------------------
@@ -1675,28 +1369,10 @@ mod tests {
         // E4B is small enough that F16 KV cache is not the bottleneck.
         assert!(spec.type_k.is_none());
 
-        let spec = mgr.model_spec_for("ministral-3b-q4km").unwrap();
-        assert_eq!(spec.model_id, "ministral-3b-q4km");
-        assert_eq!(spec.family, ModelFamily::Ministral);
-        assert_eq!(spec.context_window, 32_768);
-        assert!(spec.type_k.is_none());
-
-        // 12B uses Q8_0 KV compression to reduce (not eliminate) memory pressure
-        // from the ~7.4GB weights -- min_memory_gb is 24, not 16.
-        let spec = mgr.model_spec_for("gemma-4-12b-q4km").unwrap();
-        assert_eq!(spec.model_id, "gemma-4-12b-q4km");
+        // 26B-A4B uses Q8_0 KV compression alongside its ~27GB weights.
+        let spec = mgr.model_spec_for("gemma-4-26b-a4b-q8").unwrap();
+        assert_eq!(spec.model_id, "gemma-4-26b-a4b-q8");
         assert_eq!(spec.family, ModelFamily::Gemma4);
-        assert_eq!(
-            spec.type_k,
-            Some(nodespace_nlp_engine::KvCacheQuantType::Q8_0)
-        );
-        assert_eq!(
-            spec.type_v,
-            Some(nodespace_nlp_engine::KvCacheQuantType::Q8_0)
-        );
-
-        // 31B uses Q8_0 KV compression to fit alongside the ~19GB weights on 24GB RAM.
-        let spec = mgr.model_spec_for("gemma-4-31b-q4km").unwrap();
         assert_eq!(
             spec.type_k,
             Some(nodespace_nlp_engine::KvCacheQuantType::Q8_0)
@@ -1715,46 +1391,6 @@ mod tests {
     }
 
     #[test]
-    fn recommended_model_id_for_family_returns_family_match() {
-        let ministral_rec = GgufModelManager::recommended_model_id_for(ModelFamily::Ministral);
-        assert!(ministral_rec.starts_with("ministral-"));
-
-        let gemma_rec = GgufModelManager::recommended_model_id_for(ModelFamily::Gemma4);
-        assert!(gemma_rec.starts_with("gemma-4-"));
-
-        // The two should never accidentally collide.
-        assert_ne!(ministral_rec, gemma_rec);
-    }
-
-    #[test]
-    fn ram_thresholds_agree_with_the_catalog_entries_they_gate() {
-        // recommended_model_id_for's RAM tiering constants must match the
-        // min_memory_gb of the catalog entry each threshold gates -- a
-        // catalog correction (e.g. the 12B min_memory_gb: 16 -> 24 fix)
-        // that isn't mirrored here silently recommends a model to machines
-        // that don't meet its own declared memory floor. Asserted directly
-        // against the constants rather than by RAM-mocking
-        // recommended_model_id_for, since detect_system_ram() reads the real
-        // host and cannot be faked from a unit test.
-        assert_eq!(
-            RAM_THRESHOLD_MEDIUM,
-            MINISTRAL_8B.min_memory_gb as u64 * 1024 * 1024 * 1024,
-            "RAM_THRESHOLD_MEDIUM must match MINISTRAL_8B.min_memory_gb"
-        );
-        assert_eq!(
-            RAM_THRESHOLD_GEMMA4_MEDIUM,
-            GEMMA_4_12B.min_memory_gb as u64 * 1024 * 1024 * 1024,
-            "RAM_THRESHOLD_GEMMA4_MEDIUM must match GEMMA_4_12B.min_memory_gb"
-        );
-        assert_eq!(
-            RAM_THRESHOLD_LARGE,
-            GEMMA_4_26B_A4B.min_memory_gb as u64 * 1024 * 1024 * 1024,
-            "RAM_THRESHOLD_LARGE must match GEMMA_4_26B_A4B.min_memory_gb -- \
-             the large Gemma4 tier recommends 26B-A4B, not the parked 31B"
-        );
-    }
-
-    #[test]
     fn detect_system_ram_returns_nonzero() {
         let ram = detect_system_ram();
         assert!(ram > 0, "system RAM should be > 0, got {}", ram);
@@ -1765,78 +1401,78 @@ mod tests {
     #[tokio::test]
     async fn load_on_not_downloaded_model_fails() {
         let (mgr, _tmp) = test_manager();
-        let result = mgr.load("ministral-3b-q4km").await;
+        let result = mgr.load("gemma-4-e4b-q4km").await;
         assert!(result.is_err());
     }
 
     #[tokio::test]
     async fn load_on_ready_model_transitions_to_loaded() {
         let tmp = TempDir::new().unwrap();
-        std::fs::write(tmp.path().join(MINISTRAL_3B.filename), b"fake").unwrap();
+        std::fs::write(tmp.path().join(GEMMA_4_E4B.filename), b"fake").unwrap();
         let mgr = GgufModelManager::with_dir(tmp.path().to_path_buf()).unwrap();
 
-        mgr.load("ministral-3b-q4km").await.unwrap();
+        mgr.load("gemma-4-e4b-q4km").await.unwrap();
 
         let loaded = mgr.loaded_model().await.unwrap();
-        assert_eq!(loaded, Some("ministral-3b-q4km".to_string()));
+        assert_eq!(loaded, Some("gemma-4-e4b-q4km".to_string()));
 
         let models = mgr.list().await.unwrap();
-        let m = models.iter().find(|m| m.id == "ministral-3b-q4km").unwrap();
+        let m = models.iter().find(|m| m.id == "gemma-4-e4b-q4km").unwrap();
         assert!(matches!(m.status, ModelStatus::Loaded));
     }
 
     #[tokio::test]
     async fn load_already_loaded_is_idempotent() {
         let tmp = TempDir::new().unwrap();
-        std::fs::write(tmp.path().join(MINISTRAL_3B.filename), b"fake").unwrap();
+        std::fs::write(tmp.path().join(GEMMA_4_E4B.filename), b"fake").unwrap();
         let mgr = GgufModelManager::with_dir(tmp.path().to_path_buf()).unwrap();
 
-        mgr.load("ministral-3b-q4km").await.unwrap();
+        mgr.load("gemma-4-e4b-q4km").await.unwrap();
         // Loading again should succeed (idempotent)
-        mgr.load("ministral-3b-q4km").await.unwrap();
+        mgr.load("gemma-4-e4b-q4km").await.unwrap();
         assert_eq!(
             mgr.loaded_model().await.unwrap(),
-            Some("ministral-3b-q4km".to_string())
+            Some("gemma-4-e4b-q4km".to_string())
         );
     }
 
     #[tokio::test]
     async fn load_different_model_unloads_previous() {
         let tmp = TempDir::new().unwrap();
-        std::fs::write(tmp.path().join(MINISTRAL_3B.filename), b"fake").unwrap();
-        std::fs::write(tmp.path().join(MINISTRAL_8B.filename), b"fake").unwrap();
+        std::fs::write(tmp.path().join(GEMMA_4_E4B.filename), b"fake").unwrap();
+        std::fs::write(tmp.path().join(GEMMA_4_26B_A4B.filename), b"fake").unwrap();
         let mgr = GgufModelManager::with_dir(tmp.path().to_path_buf()).unwrap();
 
-        mgr.load("ministral-3b-q4km").await.unwrap();
-        mgr.load("ministral-8b-q4km").await.unwrap();
+        mgr.load("gemma-4-e4b-q4km").await.unwrap();
+        mgr.load("gemma-4-26b-a4b-q8").await.unwrap();
 
         assert_eq!(
             mgr.loaded_model().await.unwrap(),
-            Some("ministral-8b-q4km".to_string())
+            Some("gemma-4-26b-a4b-q8".to_string())
         );
 
         // Previous model should be back to Ready
         let models = mgr.list().await.unwrap();
-        let m3b = models.iter().find(|m| m.id == "ministral-3b-q4km").unwrap();
+        let e4b = models.iter().find(|m| m.id == "gemma-4-e4b-q4km").unwrap();
         assert!(
-            matches!(m3b.status, ModelStatus::Ready),
+            matches!(e4b.status, ModelStatus::Ready),
             "expected Ready after unload, got {:?}",
-            m3b.status
+            e4b.status
         );
     }
 
     #[tokio::test]
     async fn unload_sets_status_back_to_ready() {
         let tmp = TempDir::new().unwrap();
-        std::fs::write(tmp.path().join(MINISTRAL_3B.filename), b"fake").unwrap();
+        std::fs::write(tmp.path().join(GEMMA_4_E4B.filename), b"fake").unwrap();
         let mgr = GgufModelManager::with_dir(tmp.path().to_path_buf()).unwrap();
 
-        mgr.load("ministral-3b-q4km").await.unwrap();
+        mgr.load("gemma-4-e4b-q4km").await.unwrap();
         mgr.unload().await.unwrap();
 
         assert_eq!(mgr.loaded_model().await.unwrap(), None);
         let models = mgr.list().await.unwrap();
-        let m = models.iter().find(|m| m.id == "ministral-3b-q4km").unwrap();
+        let m = models.iter().find(|m| m.id == "gemma-4-e4b-q4km").unwrap();
         assert!(matches!(m.status, ModelStatus::Ready));
     }
 
@@ -1851,26 +1487,26 @@ mod tests {
     #[tokio::test]
     async fn delete_removes_file_and_resets_status() {
         let tmp = TempDir::new().unwrap();
-        let path = tmp.path().join(MINISTRAL_3B.filename);
+        let path = tmp.path().join(GEMMA_4_E4B.filename);
         std::fs::write(&path, b"fake model").unwrap();
         let mgr = GgufModelManager::with_dir(tmp.path().to_path_buf()).unwrap();
 
-        mgr.delete("ministral-3b-q4km").await.unwrap();
+        mgr.delete("gemma-4-e4b-q4km").await.unwrap();
 
         assert!(!path.exists());
         let models = mgr.list().await.unwrap();
-        let m = models.iter().find(|m| m.id == "ministral-3b-q4km").unwrap();
+        let m = models.iter().find(|m| m.id == "gemma-4-e4b-q4km").unwrap();
         assert!(matches!(m.status, ModelStatus::NotDownloaded));
     }
 
     #[tokio::test]
     async fn delete_loaded_model_fails() {
         let tmp = TempDir::new().unwrap();
-        std::fs::write(tmp.path().join(MINISTRAL_3B.filename), b"fake").unwrap();
+        std::fs::write(tmp.path().join(GEMMA_4_E4B.filename), b"fake").unwrap();
         let mgr = GgufModelManager::with_dir(tmp.path().to_path_buf()).unwrap();
 
-        mgr.load("ministral-3b-q4km").await.unwrap();
-        let result = mgr.delete("ministral-3b-q4km").await;
+        mgr.load("gemma-4-e4b-q4km").await.unwrap();
+        let result = mgr.delete("gemma-4-e4b-q4km").await;
         assert!(result.is_err());
     }
 
@@ -1878,7 +1514,7 @@ mod tests {
     async fn delete_nonexistent_file_is_ok() {
         let (mgr, _tmp) = test_manager();
         // File doesn't exist, but model is in catalog -- should succeed
-        mgr.delete("ministral-3b-q4km").await.unwrap();
+        mgr.delete("gemma-4-e4b-q4km").await.unwrap();
     }
 
     // -- Unknown model tests -------------------------------------------------
@@ -1926,8 +1562,8 @@ mod tests {
     #[tokio::test]
     async fn model_path_returns_correct_path() {
         let (mgr, tmp) = test_manager();
-        let path = mgr.model_path("ministral-3b-q4km").unwrap();
-        assert_eq!(path, tmp.path().join(MINISTRAL_3B.filename));
+        let path = mgr.model_path("gemma-4-e4b-q4km").unwrap();
+        assert_eq!(path, tmp.path().join(GEMMA_4_E4B.filename));
     }
 
     // -- Disk space check test -----------------------------------------------
@@ -1957,7 +1593,7 @@ mod tests {
         let (tx, rx) = tokio::sync::mpsc::channel::<()>(1);
 
         mgr.set_progress_callback(
-            "ministral-8b-q4km",
+            "gemma-4-26b-a4b-q8",
             Box::new(move |_evt| {
                 // Hold a sender clone, mirroring the daemon's real callback.
                 let _ = tx.try_send(());
@@ -1968,7 +1604,7 @@ mod tests {
         // Sender is alive via the stored callback: the channel is not yet closed.
         assert!(!rx.is_closed());
 
-        mgr.clear_progress_callback("ministral-8b-q4km").await;
+        mgr.clear_progress_callback("gemma-4-26b-a4b-q8").await;
 
         // With no other sender clones outstanding, dropping the callback
         // must drop its captured sender, which closes the channel.
@@ -1979,8 +1615,8 @@ mod tests {
     async fn clear_progress_callback_is_idempotent_when_unset() {
         let (mgr, _tmp) = test_manager();
         // Clearing with nothing registered must not panic.
-        mgr.clear_progress_callback("ministral-8b-q4km").await;
-        mgr.clear_progress_callback("ministral-8b-q4km").await;
+        mgr.clear_progress_callback("gemma-4-26b-a4b-q8").await;
+        mgr.clear_progress_callback("gemma-4-26b-a4b-q8").await;
     }
 
     #[tokio::test]
@@ -1994,14 +1630,14 @@ mod tests {
         let (tx_b, rx_b) = tokio::sync::mpsc::channel::<()>(1);
 
         mgr.set_progress_callback(
-            "ministral-8b-q4km",
+            "gemma-4-26b-a4b-q8",
             Box::new(move |_evt| {
                 let _ = tx_a.try_send(());
             }),
         )
         .await;
         mgr.set_progress_callback(
-            "ministral-3b-q4km",
+            "gemma-4-e4b-q4km",
             Box::new(move |_evt| {
                 let _ = tx_b.try_send(());
             }),
@@ -2009,14 +1645,14 @@ mod tests {
         .await;
 
         // Model A's download finishes and its callback is cleared...
-        mgr.clear_progress_callback("ministral-8b-q4km").await;
+        mgr.clear_progress_callback("gemma-4-26b-a4b-q8").await;
         assert!(rx_a.is_closed());
 
         // ...but model B's download is still in flight, so its callback (and
         // the sender it holds) must remain untouched.
         assert!(!rx_b.is_closed());
         let guard = mgr.on_progress.read().await;
-        assert!(guard.contains_key("ministral-3b-q4km"));
-        assert!(!guard.contains_key("ministral-8b-q4km"));
+        assert!(guard.contains_key("gemma-4-e4b-q4km"));
+        assert!(!guard.contains_key("gemma-4-26b-a4b-q8"));
     }
 }

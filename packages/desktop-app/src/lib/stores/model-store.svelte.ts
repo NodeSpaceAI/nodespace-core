@@ -9,7 +9,6 @@ import { createLogger } from '$lib/utils/logger';
 import { toError } from '$lib/types/errors';
 import type {
   ModelInfo,
-  ModelFamily,
   ModelStatus,
   DownloadEvent,
   ModelDownloadReadyEvent,
@@ -39,12 +38,10 @@ function toModelStatus(s: ChatModelStatus): ModelStatus {
  * those aren't surfaced for catalog-sourced models.
  */
 function chatEntryToModelInfo(entry: ChatModelEntry): ModelInfo {
-  // GGUF family isn't carried by the catalog row; infer from the id where known,
-  // defaulting to the predominant built-in family.
-  const family: ModelFamily = entry.id.startsWith('gemma') ? 'gemma4' : 'ministral';
   return {
     id: entry.id,
-    family,
+    // Every GGUF catalog model is Gemma 4; the lean catalog row doesn't carry it.
+    family: 'gemma4',
     name: entry.name,
     filename: '',
     size_bytes: entry.sizeBytes,
@@ -76,30 +73,6 @@ export function formatBytes(bytes: number): string {
 function createMockModels(): ModelInfo[] {
   return [
     {
-      id: 'ministral-3b-q4km',
-      family: 'ministral',
-      name: 'Ministral 3B Instruct Q4_K_M',
-      filename: 'Ministral-3-3B-Instruct-2512-Q4_K_M.gguf',
-      size_bytes: 2_147_023_008,
-      quantization: 'Q4_K_M',
-      url: '',
-      sha256: '',
-      status: { status: 'not_downloaded' },
-      min_memory_gb: 8,
-    },
-    {
-      id: 'ministral-8b-q4km',
-      family: 'ministral',
-      name: 'Ministral 8B Instruct Q4_K_M',
-      filename: 'Ministral-3-8B-Instruct-2512-Q4_K_M.gguf',
-      size_bytes: 5_198_911_904,
-      quantization: 'Q4_K_M',
-      url: '',
-      sha256: '',
-      status: { status: 'not_downloaded' },
-      min_memory_gb: 16,
-    },
-    {
       id: 'gemma-4-e4b-q4km',
       family: 'gemma4',
       name: 'Gemma 4 E4B Instruct Q4_K_M',
@@ -112,16 +85,16 @@ function createMockModels(): ModelInfo[] {
       min_memory_gb: 16,
     },
     {
-      id: 'gemma-4-31b-q4km',
+      id: 'gemma-4-26b-a4b-q8',
       family: 'gemma4',
-      name: 'Gemma 4 31B Instruct Q4_K_M',
-      filename: 'gemma-4-31B-it-Q4_K_M.gguf',
-      size_bytes: 18_687_061_792,
-      quantization: 'Q4_K_M',
+      name: 'Gemma 4 26B-A4B Instruct Q8_0',
+      filename: 'gemma-4-26B-A4B-it-Q8_0.gguf',
+      size_bytes: 26_859_860_992,
+      quantization: 'Q8_0',
       url: '',
       sha256: '',
       status: { status: 'not_downloaded' },
-      min_memory_gb: 24,
+      min_memory_gb: 32,
     },
   ];
 }
@@ -144,19 +117,6 @@ class ModelStore {
     );
   }
 
-  /** Recommend the largest model that fits within available system RAM. */
-  get recommendedModel(): ModelInfo | undefined {
-    const available = this.models.filter(
-      (m) => m.status.status === 'not_downloaded' || m.status.status === 'ready'
-    );
-    const candidates = available.length > 0 ? available : this.models;
-    if (candidates.length === 0) return undefined;
-    const ram = this.systemRamGb;
-    const fits = ram > 0 ? candidates.filter((m) => m.min_memory_gb <= ram) : candidates;
-    const pool = fits.length > 0 ? fits : candidates;
-    return pool.reduce((best, m) => (m.size_bytes > best.size_bytes ? m : best));
-  }
-
   /** The currently loaded model. */
   get loadedModel(): ModelInfo | undefined {
     if (!this.loadedModelId) return undefined;
@@ -173,11 +133,10 @@ class ModelStore {
           tauriCommands.getSystemRamGb(),
         ]);
         // This store manages the *built-in* (GGUF) download/load lifecycle; its
-        // consumers (model-manager, onboarding) download by URL and recommend a
-        // model to fetch. Remotely-served models have no URL here and
-        // are surfaced separately by AiChatModelSelector, so exclude them — letting
-        // them in would render dead download buttons and let `recommendedModel`
-        // pick an un-downloadable row.
+        // consumers (model-manager, onboarding) download by URL. Remotely-served
+        // models have no URL here and are surfaced separately by
+        // AiChatModelSelector, so exclude them — letting them in would render
+        // dead download buttons.
         this.models = entries
           .filter((e) => e.backend === 'gguf')
           .map(chatEntryToModelInfo);

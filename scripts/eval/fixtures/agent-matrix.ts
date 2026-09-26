@@ -6,7 +6,7 @@
  * the turn ends.
  *
  * This is the third eval layer, distinct from the other two:
- *   - chat::parser::tests           — tool-call PARSING shape (fixtures)
+ *   - packages/agent/src/golden     — tool-call EMISSION shape (golden corpus)
  *   - scripts/eval/fixtures/routing — skill ROUTING accuracy (which skill fires)
  *   - this                          — END-TO-END behavior (did the requested
  *                                     change actually reach storage)

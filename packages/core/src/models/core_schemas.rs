@@ -585,7 +585,6 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                         EnumValue::new("native".to_string(), "Native (Local)".to_string()),
                         EnumValue::new("anthropic".to_string(), "Anthropic".to_string()),
                         EnumValue::new("gemini".to_string(), "Gemini".to_string()),
-                        EnumValue::new("mistral".to_string(), "Mistral".to_string()),
                     ]),
                     user_values: Some(vec![]),
                     indexed: true,

@@ -20,14 +20,10 @@
 //! logic in `packages/daemon/src/services/local_agent_service.rs` — a
 //! change to a real inference subsystem's behavior, not a test concern.
 //! Instead, this uses `gemma-4-e4b-q4km` — the ADR-056-locked native model,
-//! already downloaded under `~/.nodespace/models/` on this machine. (An
-//! earlier interim fix on this test used `ministral-8b-q4km` after the
-//! original `ministral-3b-q4km` reproducibly stalled to 0 tokens generated
-//! within the 300s timeout, independent of machine load; ADR-056 later
-//! superseded that interim fix by locking the native path to Gemma 4 E4B
-//! instead of any Ministral variant.) It is a real inference call, not
-//! instant, so this test's timeout is generous (well beyond CRUD test
-//! scale) and it is the slowest test in this suite by design.
+//! already downloaded under `~/.nodespace/models/` on this machine. It is a
+//! real inference call, not instant, so this test's timeout is generous
+//! (well beyond CRUD test scale) and it is the slowest test in this suite by
+//! design.
 
 use std::time::Duration;
 

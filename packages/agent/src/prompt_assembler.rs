@@ -425,7 +425,7 @@ mod tests {
         let env = minijinja::Environment::new();
         let ctx = TemplateContext {
             current_date: "2026-04-06".to_string(),
-            model_name: "ministral-3b".to_string(),
+            model_name: "gemma-4-e4b".to_string(),
             workspace_context: "test context".to_string(),
         };
         let result = env.render_str(plain, &ctx).unwrap();
@@ -436,13 +436,13 @@ mod tests {
     fn render_minijinja_template() {
         let ctx = TemplateContext {
             current_date: "2026-04-06".to_string(),
-            model_name: "ministral-3b".to_string(),
+            model_name: "gemma-4-e4b".to_string(),
             workspace_context: "Entity types: customer, invoice".to_string(),
         };
         let template = "Date: {{ current_date }}\nModel: {{ model_name }}";
         let result = PromptAssembler::render_template(template, &ctx);
         assert!(result.contains("2026-04-06"));
-        assert!(result.contains("ministral-3b"));
+        assert!(result.contains("gemma-4-e4b"));
     }
 
     #[test]
@@ -521,11 +521,11 @@ mod tests {
     fn template_context_serializable() {
         let ctx = TemplateContext {
             current_date: "2026-04-06".to_string(),
-            model_name: "ministral-3b".to_string(),
+            model_name: "gemma-4-e4b".to_string(),
             workspace_context: "some context".to_string(),
         };
         let json = serde_json::to_value(&ctx).unwrap();
         assert_eq!(json["current_date"], "2026-04-06");
-        assert_eq!(json["model_name"], "ministral-3b");
+        assert_eq!(json["model_name"], "gemma-4-e4b");
     }
 }

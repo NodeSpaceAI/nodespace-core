@@ -1837,7 +1837,7 @@ impl LocalAgentServiceImpl {
             };
 
             // `model` is the wire-protocol identifier (e.g. "gpt-4o" or
-            // "mistral:7b"); `name` is only a cosmetic UI label and must never
+            // "llama3.1:8b"); `name` is only a cosmetic UI label and must never
             // be sent as the request's "model" field — real OpenAI-API and
             // multi-model servers reject or misroute an arbitrary display
             // string. A model discovered via /models wins over the config's

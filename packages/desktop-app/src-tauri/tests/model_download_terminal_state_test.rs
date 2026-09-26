@@ -16,8 +16,8 @@
 //! load/unload commands take only `State<GrpcClient>` (no `AppHandle`), so
 //! those run through the real `#[tauri::command]` functions as usual.
 //!
-//! Uses `ministral-3b-q4km` — already present under `~/.nodespace/models/`
-//! on this machine (the smallest model in the catalog) — so `download`
+//! Uses `gemma-4-e4b-q4km` — the default model, so already present under
+//! `~/.nodespace/models/` on a machine that has run the app — so `download`
 //! exercises the real "already downloaded, ready immediately" terminal path
 //! without a network fetch. This deliberately does not test a fresh
 //! multi-gigabyte download (too slow/flaky for a test gate); the terminal-
@@ -34,11 +34,11 @@ use nodespace_proto::nodespace::DownloadModelRequest;
 use serde_json::json;
 use tokio_stream::StreamExt;
 
-const MODEL_ID: &str = "ministral-3b-q4km";
+const MODEL_ID: &str = "gemma-4-e4b-q4km";
 // Filename mapped from MODEL_ID by the CATALOG entry in
 // packages/agent/src/local_agent/model_manager.rs — kept in sync manually
 // since this test has no dependency on that crate.
-const MODEL_FILENAME: &str = "Ministral-3-3B-Instruct-2512-Q4_K_M.gguf";
+const MODEL_FILENAME: &str = "gemma-4-E4B-it-Q4_K_M.gguf";
 
 /// No provisioning step downloads this model in bun install/test-gate.ts
 /// today. Tests that need it already present skip cleanly with a clear
@@ -111,16 +111,12 @@ async fn chat_model_list_still_succeeds_after_a_download() {
 
     drain_download_events(&harness, MODEL_ID).await;
 
-    // ministral-3b-q4km isn't in the frontend-curated EXPOSED_GGUF_MODEL_IDS
-    // list, so it won't itself appear here — that filter is a UI curation
-    // concern independent of download/load capability. This only asserts the
-    // command layer isn't broken by having downloaded an unexposed model.
     let models = chat_model_list(state, None)
         .await
         .expect("chat_model_list failed");
     assert!(
-        !models.is_empty(),
-        "curated catalog list must still be non-empty"
+        models.iter().any(|m| m["id"] == MODEL_ID),
+        "downloaded model must appear in the catalog list"
     );
 }
 

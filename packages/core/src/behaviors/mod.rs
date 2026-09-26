@@ -1739,7 +1739,7 @@ impl NodeBehavior for CollectionNodeBehavior {
 ///     "Implement webhook handler".to_string(),
 ///     json!({
 ///         "provider": "native",
-///         "model": "ministral-3b-instruct-q4_k_m",
+///         "model": "gemma-4-e4b-q4km",
 ///         "turn_status": "idle",
 ///         "session_status": "active",
 ///         "messages": [
@@ -4790,7 +4790,7 @@ mod tests {
             "Implement webhook handler".to_string(),
             json!({
                 "provider": "native",
-                "model": "ministral-3b-instruct-q4_k_m",
+                "model": "gemma-4-e4b-q4km",
                 "turn_status": "idle",
                 "session_status": "active",
                 "messages": []

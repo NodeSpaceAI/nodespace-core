@@ -34,31 +34,10 @@ fn grpc_err(msg: impl std::fmt::Display) -> CommandError {
     }
 }
 
-/// GGUF catalog IDs exposed to the frontend model picker.
-///
-/// Deliberately curated, not the full Rust catalog — models are added here
-/// only after evaluation. Per ADR-056, Gemma 4 E4B is the locked native
-/// default model (superseding the prior Ministral 8B lock) — unchanged by
-/// this list. Gemma 4 12B (both the `ggml-org` and Unsloth GGUF sources)
-/// remains parked: re-evaluated against the agent-matrix eval for issue
-/// #1956, it still produces malformed tool-call JSON on complex nested
-/// payloads (`create_schema`) — see the `GEMMA_4_12B`/`GEMMA_4_12B_UNSLOTH`
-/// catalog entries' doc comments in `model_manager.rs`. Gemma 4 26B-A4B
-/// (MoE) is exposed as an additional optional tier for high-RAM machines —
-/// it scored below E4B overall but never exhibited 12B's JSON-malformation
-/// failure mode (see `GEMMA_4_26B_A4B`'s doc comment); it is not the
-/// default. Gemma 4 31B (dense) remains parked, unevaluated by this issue.
-/// The Qwen-family catalog entries (Qwen3, Qwen3.5, Qwen3.6, and the
-/// Qwen3.5-based Ornith 1.0 9B) have been removed from the catalog
-/// entirely, not just withheld here.
-const EXPOSED_GGUF_MODEL_IDS: &[&str] = &["gemma-4-e4b-q4km", "gemma-4-26b-a4b-q8"];
-
 /// List models in the catalog with their current status.
 ///
-/// Returns a curated set of GGUF models ([`EXPOSED_GGUF_MODEL_IDS`]) plus every
-/// model discovered at a configured OpenAI-compatible endpoint. Other GGUF
-/// models remain in the Rust catalog for internal use but are not exposed to
-/// the frontend.
+/// Returns every GGUF catalog model plus every model discovered at a
+/// configured OpenAI-compatible endpoint.
 ///
 /// OpenAI-compat discovery is cached daemon-side for a short TTL (see
 /// `OPENAI_COMPAT_DISCOVERY_CACHE_TTL` in `local_agent_service.rs`) so the
@@ -83,9 +62,6 @@ pub async fn chat_model_list(
         .into_inner()
         .models
         .into_iter()
-        .filter(|entry| {
-            entry.backend != "gguf" || EXPOSED_GGUF_MODEL_IDS.contains(&entry.id.as_str())
-        })
         .map(|entry| {
             serde_json::json!({
                 "id": entry.id,
