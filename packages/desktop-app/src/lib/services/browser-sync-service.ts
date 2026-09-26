@@ -20,7 +20,7 @@
 
 import { sharedNodeStore, SimplePersistenceCoordinator } from './shared-node-store.svelte';
 import { structureTree } from '$lib/stores/reactive-structure-tree.svelte';
-import type { SseEvent } from '$lib/types/sse-events';
+import type { ModelLoadProgressSseEvent, SseEvent } from '$lib/types/sse-events';
 import { backendAdapter } from './backend-adapter';
 import { createLogger } from '$lib/utils/logger';
 import { scheduleCollectionRefresh, scheduleSchemaRefresh } from '$lib/utils/collection-refresh';
@@ -101,6 +101,7 @@ class BrowserSyncService {
   private baseReconnectDelay = 1000; // 1 second
   private connectionState: ConnectionState = 'disconnected';
   private reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
+  private modelLoadProgressListeners = new Set<(event: ModelLoadProgressSseEvent) => void>();
 
   /**
    * Base URL for the dev-proxy SSE endpoint
@@ -325,6 +326,10 @@ class BrowserSyncService {
         break;
       }
 
+      case 'modelLoadProgress':
+        for (const listener of this.modelLoadProgressListeners) listener(event);
+        break;
+
       default:
         log.warn('Unknown event type:', (event as SseEvent).type);
     }
@@ -385,6 +390,19 @@ class BrowserSyncService {
       this.reconnectTimeout = null;
       this.connect();
     }, delay);
+  }
+
+  /**
+   * Subscribe to model download/verify/load progress — the browser-mode
+   * counterpart of listening for Tauri's `model://status` event.
+   *
+   * @returns An unsubscribe function
+   */
+  onModelLoadProgress(listener: (event: ModelLoadProgressSseEvent) => void): () => void {
+    this.modelLoadProgressListeners.add(listener);
+    return () => {
+      this.modelLoadProgressListeners.delete(listener);
+    };
   }
 
   /**

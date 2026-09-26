@@ -392,6 +392,19 @@
 
   let destroyed = false;
 
+  /**
+   * Phase update for the in-flight ensureModelReady call (see isEnsuringModel).
+   * Filtered by model id so a stale or cross-talk event for a different model
+   * (e.g. another view's ensureModelReady call) can't flip this viewer's label.
+   */
+  function applyModelPhase(eventModelId: string, status: string): void {
+    if (destroyed || !isEnsuringModel) return;
+    if (eventModelId !== model) return;
+    if (status === 'verifying' || status === 'loading') {
+      ensuringModelPhase = status;
+    }
+  }
+
   onMount(async () => {
     log.debug('AiChatNodeViewer mounted', { nodeId });
 
@@ -433,23 +446,22 @@
         });
         eventUnlisteners.push(unlistenError);
 
-        // Phase updates for the in-flight ensureModelReady call (see
-        // isEnsuringModel below). Filtered by model_id so a stale or
-        // cross-talk event for a different model (e.g. another view's
-        // ensureModelReady call) can't flip this viewer's phase label.
         const unlistenModelStatus = await listen<{
           model_id: string;
           status: string;
           message?: string;
         }>(AGENT_EVENTS.MODEL_STATUS, (event) => {
-          if (destroyed || !isEnsuringModel) return;
-          if (event.payload.model_id !== model) return;
-          const { status } = event.payload;
-          if (status === 'verifying' || status === 'loading') {
-            ensuringModelPhase = status;
-          }
+          applyModelPhase(event.payload.model_id, event.payload.status);
         });
         eventUnlisteners.push(unlistenModelStatus);
+      } else {
+        // Browser mode: the dev-proxy relays the same daemon progress stream
+        // over SSE while its /ensure-model-ready request is in flight.
+        eventUnlisteners.push(
+          browserSyncService.onModelLoadProgress((event) => {
+            applyModelPhase(event.modelId, event.status);
+          })
+        );
       }
     } finally {
       nodeReady = true;

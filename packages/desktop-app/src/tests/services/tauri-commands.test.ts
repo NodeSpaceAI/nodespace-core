@@ -497,6 +497,15 @@ describe('Tauri System Commands - API Surface', () => {
       vi.unstubAllGlobals();
     });
 
+    it('surfaces the proxy error body message when present', async () => {
+      fetchMock.mockResolvedValue({
+        ok: false,
+        status: 500,
+        json: async () => ({ code: 'GRPC_ERROR', message: 'Out of memory' })
+      });
+      await expect(tauriCommands.ensureModelReady('model-x')).rejects.toThrow('Out of memory');
+    });
+
     it('proxyGet (via chatModelRecommended) throws a descriptive Error on a non-ok response', async () => {
       fetchMock.mockResolvedValue({ ok: false, status: 503 });
 

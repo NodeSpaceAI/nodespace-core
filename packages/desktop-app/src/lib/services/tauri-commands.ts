@@ -24,9 +24,25 @@ function isTauri(): boolean {
 
 const PROXY_BASE = 'http://localhost:3001';
 
+/**
+ * Error for a failed proxy response. The dev-proxy answers failures with a
+ * JSON `{ code, message }` body carrying the daemon's reason (mirroring the
+ * Tauri `CommandError`); surface that message rather than a bare status, and
+ * fall back to the status when there is no parseable body.
+ */
+async function proxyFailure(res: Response, label: string): Promise<Error> {
+  try {
+    const body = (await res.json()) as { message?: unknown };
+    if (typeof body?.message === 'string' && body.message) return new Error(body.message);
+  } catch {
+    // No JSON body — fall through to the status-only message.
+  }
+  return new Error(`Proxy ${label} failed: ${res.status}`);
+}
+
 async function proxyGet<T>(path: string): Promise<T> {
   const res = await fetch(`${PROXY_BASE}${path}`);
-  if (!res.ok) throw new Error(`Proxy ${path} failed: ${res.status}`);
+  if (!res.ok) throw await proxyFailure(res, path);
   return res.json() as Promise<T>;
 }
 
@@ -36,14 +52,14 @@ async function proxyPost<T>(path: string, body?: unknown): Promise<T> {
     headers: body !== undefined ? { 'Content-Type': 'application/json' } : {},
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
-  if (!res.ok) throw new Error(`Proxy ${path} failed: ${res.status}`);
+  if (!res.ok) throw await proxyFailure(res, path);
   if (res.status === 204) return undefined as T;
   return res.json() as Promise<T>;
 }
 
 async function proxyDelete(path: string): Promise<void> {
   const res = await fetch(`${PROXY_BASE}${path}`, { method: 'DELETE' });
-  if (!res.ok) throw new Error(`Proxy DELETE ${path} failed: ${res.status}`);
+  if (!res.ok) throw await proxyFailure(res, `DELETE ${path}`);
 }
 
 // ============================================================================
