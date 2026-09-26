@@ -64,6 +64,59 @@ pub struct QueryDefinition {
     pub limit: Option<usize>,
 }
 
+impl QueryDefinition {
+    /// Check every identifier this definition would place into SQL text
+    ///
+    /// The target type, each property filter's property and each sort field
+    /// become JSON path segments (`json_extract(properties, '$.<type>.<field>')`)
+    /// or column names, and SQL cannot bind an identifier, so they are
+    /// formatted into the statement. Each must match `[A-Za-z0-9_:-]+`, which
+    /// covers every real node type, property key and metadata field while
+    /// leaving no quote, dot or whitespace to break out of the path literal.
+    /// `*` is accepted only as the target type, where it means "all types" and
+    /// never reaches the text.
+    ///
+    /// [`QueryService`] runs this before building any statement, so a
+    /// definition constructed directly is held to the same rule as one mapped
+    /// from agent input. Callers that want to report a malformed query as a
+    /// caller error rather than an execution failure may run it first.
+    pub fn validate_identifiers(&self) -> Result<()> {
+        if self.target_type != "*" {
+            validate_identifier(&self.target_type, "target_type")?;
+        }
+        for filter in &self.filters {
+            if let Some(property) = &filter.property {
+                validate_identifier(property, "filter property")?;
+            }
+        }
+        for sort in self.sorting.iter().flatten() {
+            validate_identifier(&sort.field, "sort field")?;
+        }
+        Ok(())
+    }
+}
+
+/// Reject an identifier that is unsafe to format into SQL text
+///
+/// See [`QueryDefinition::validate_identifiers`] for the allowlist and why it
+/// is needed.
+fn validate_identifier(value: &str, label: &str) -> Result<()> {
+    if value.is_empty() {
+        anyhow::bail!("{} must not be empty", label);
+    }
+    if !value
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == ':')
+    {
+        anyhow::bail!(
+            "{} '{}' contains invalid characters; only [A-Za-z0-9_:-] are allowed",
+            label,
+            value
+        );
+    }
+    Ok(())
+}
+
 /// Filter type category
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -156,8 +209,9 @@ pub struct SortConfig {
 ///
 /// Identifier positions (table, column and JSON path fragments) are the
 /// exception SQL itself imposes: they cannot be bound, so they are still
-/// formatted into the text and must keep arriving pre-validated by
-/// `query_ops::validate_identifier`.
+/// formatted into the text, and [`QueryService::build_where_clause`] rejects
+/// the definition first unless [`QueryDefinition::validate_identifiers`]
+/// passes.
 #[derive(Debug, Default)]
 struct BoundSql {
     sql: String,
@@ -393,12 +447,19 @@ impl QueryService {
     /// Because all of them live in the WHERE clause, both callers inherit the
     /// binding by sharing this, and neither can reintroduce interpolation on its
     /// own. Identifiers (the JSON path segments naming a node type and property)
-    /// cannot be bound in SQL and are still interpolated; they arrive
-    /// allowlisted by `query_ops::validate_identifier`.
+    /// cannot be bound in SQL and are still interpolated, so this checks them
+    /// against [`QueryDefinition::validate_identifiers`] before emitting any
+    /// text. It is the one step every statement shares, which makes the check
+    /// unskippable: no caller can reach SQL with an identifier it has not
+    /// passed. Sort fields are checked here too, although only
+    /// [`Self::build_query`] emits them, so that a malformed definition is
+    /// rejected the same way whichever verb it is asked with.
     ///
     /// The returned placeholders are numbered from `?1`, so a caller must not
     /// bind anything of its own ahead of this clause.
     fn build_where_clause(&self, query: &QueryDefinition) -> Result<BoundSql> {
+        query.validate_identifiers()?;
+
         let mut built = BoundSql::default();
         let mut conditions = Vec::new();
 
