@@ -24,6 +24,7 @@ import {
 import { storageNodeToApiFields } from '../../desktop-app/src/lib/services/node-normalize.ts';
 import { createNodeSpaceClients, createRunOnceGuard } from './grpc-client.ts';
 import { mapGrpcError } from './grpc-error-mapping.ts';
+import { createModelLoadRelay } from './model-load-progress.ts';
 
 const PORT = parseInt(process.env.DEV_PROXY_PORT ?? '3001', 10);
 
@@ -1010,10 +1011,14 @@ async function handleRequest(req: Request): Promise<Response> {
   if (method === 'POST' && modelDownloadMatch) {
     const modelId = decodeURIComponent(modelDownloadMatch[1]);
     try {
+      const relay = createModelLoadRelay(broadcast);
       await agentStream(
         (agentClient as unknown as Record<string, Function>).downloadModel,
-        { modelId }
+        { modelId },
+        relay.onEvent
       );
+      const failure = relay.failure({ requireTerminal: false });
+      if (failure !== null) return error('MODEL_ERROR', failure);
       return new Response(null, { status: 204, headers: corsHeaders });
     } catch (err) {
       return grpcError(err as grpc.ServiceError);
@@ -1109,10 +1114,16 @@ async function handleRequest(req: Request): Promise<Response> {
   if (method === 'POST' && pathname === '/api/agent/ensure-model-ready') {
     try {
       const body = await req.json() as { modelId: string };
+      // Each phase is relayed over /api/events as it arrives (see
+      // ./model-load-progress.ts) so the browser can label the overlay.
+      const relay = createModelLoadRelay(broadcast);
       await agentStream(
         (agentClient as unknown as Record<string, Function>).ensureModelReady,
-        { modelId: body.modelId }
+        { modelId: body.modelId },
+        relay.onEvent
       );
+      const failure = relay.failure({ requireTerminal: true });
+      if (failure !== null) return error('GRPC_ERROR', failure);
       return new Response(null, { status: 204, headers: corsHeaders });
     } catch (err) {
       return grpcError(err as grpc.ServiceError);

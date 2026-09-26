@@ -92,6 +92,23 @@ export interface RelationshipDeletedEvent extends SseEventBase {
 }
 
 /**
+ * Progress from the daemon's `EnsureModelReady` / `DownloadModel` stream,
+ * relayed live by the dev-proxy (packages/dev-tools/src/model-load-progress.ts).
+ * The browser-mode counterpart of Tauri's `model://status` and
+ * `model://download-progress` events.
+ */
+export interface ModelLoadProgressSseEvent extends SseEventBase {
+  type: 'modelLoadProgress';
+  modelId: string;
+  /** `downloading` | `verifying` | `loading` | `ready` | `error` | `engine_swapped` */
+  status: string;
+  message?: string;
+  /** Present on `downloading` events when the daemon reported byte counts. */
+  bytesDownloaded?: number;
+  bytesTotal?: number;
+}
+
+/**
  * Union type of all SSE events
  */
 export type SseEvent =
@@ -100,4 +117,5 @@ export type SseEvent =
   | NodeDeletedEvent
   | RelationshipCreatedEvent
   | RelationshipUpdatedEvent
-  | RelationshipDeletedEvent;
+  | RelationshipDeletedEvent
+  | ModelLoadProgressSseEvent;

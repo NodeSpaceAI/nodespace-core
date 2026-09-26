@@ -977,6 +977,34 @@ describe('BrowserSyncService - SSE Event Ordering', () => {
     });
   });
 
+  describe('Model load progress', () => {
+    const progress = {
+      type: 'modelLoadProgress',
+      modelId: 'gemma-e4b',
+      status: 'verifying'
+    } as const;
+
+    it('delivers modelLoadProgress events to subscribers', () => {
+      const listener = vi.fn();
+      const unsubscribe = browserSyncService.onModelLoadProgress(listener);
+
+      testableService.handleEvent(progress);
+
+      expect(listener).toHaveBeenCalledWith(progress);
+      unsubscribe();
+    });
+
+    it('stops delivering after unsubscribe', () => {
+      const listener = vi.fn();
+      const unsubscribe = browserSyncService.onModelLoadProgress(listener);
+      unsubscribe();
+
+      testableService.handleEvent(progress);
+
+      expect(listener).not.toHaveBeenCalled();
+    });
+  });
+
   describe('Service Lifecycle', () => {
     it('should clean up resources on destroy', () => {
       // Destroy should clear timeouts and close connections

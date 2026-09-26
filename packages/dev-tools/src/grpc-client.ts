@@ -242,8 +242,17 @@ export interface NodeSpaceGrpcClients {
   call: <TReq, TRes>(method: Function, request: TReq) => Promise<TRes>;
   /** Promisified unary call on agentClient, gated on the channel being READY. */
   agentCall: <TReq, TRes>(method: Function, request: TReq) => Promise<TRes>;
-  /** Server-streaming call on agentClient, gated on the channel being READY. */
-  agentStream: <TReq, TEvent>(method: Function, request: TReq) => Promise<TEvent[]>;
+  /**
+   * Server-streaming call on agentClient, gated on the channel being READY.
+   * `onEvent` sees each event as it arrives (not buffered until the stream
+   * ends), so a long-running stream can be relayed live; the promise settles
+   * when the stream ends or errors.
+   */
+  agentStream: <TReq, TEvent>(
+    method: Function,
+    request: TReq,
+    onEvent: (event: TEvent) => void
+  ) => Promise<void>;
   /**
    * Close every client this factory built. Callers that tear down should use
    * this rather than closing clients individually: enumerating them by hand
@@ -307,15 +316,18 @@ export function createNodeSpaceClients(
         })
     );
 
-  const agentStream = <TReq, TEvent>(method: Function, request: TReq): Promise<TEvent[]> =>
+  const agentStream = <TReq, TEvent>(
+    method: Function,
+    request: TReq,
+    onEvent: (event: TEvent) => void
+  ): Promise<void> =>
     ready(agentClient).then(
       () =>
-        new Promise<TEvent[]>((resolve, reject) => {
+        new Promise<void>((resolve, reject) => {
           const stream = method.call(agentClient, request) as grpc.ClientReadableStream<TEvent>;
-          const events: TEvent[] = [];
-          stream.on('data', (evt: TEvent) => events.push(evt));
+          stream.on('data', (evt: TEvent) => onEvent(evt));
           stream.on('error', (err: grpc.ServiceError) => reject(err));
-          stream.on('end', () => resolve(events));
+          stream.on('end', () => resolve());
         })
     );
 
