@@ -2451,4 +2451,117 @@ mod tests {
     // The `exists` alternative that error points at is already covered by
     // `test_property_filter_exists_status` above — it is the operator that
     // needs no value, and it compiles to IS NOT NULL.
+
+    // ========== Identifier validation ==========
+
+    fn definition(
+        target_type: &str,
+        property: Option<&str>,
+        sort: Option<&str>,
+    ) -> QueryDefinition {
+        QueryDefinition {
+            target_type: target_type.to_string(),
+            filters: property
+                .map(|p| QueryFilter {
+                    filter_type: FilterType::Property,
+                    operator: FilterOperator::Exists,
+                    property: Some(p.to_string()),
+                    value: None,
+                    case_sensitive: None,
+                    relationship_type: None,
+                    node_id: None,
+                })
+                .into_iter()
+                .collect(),
+            sorting: sort.map(|f| {
+                vec![SortConfig {
+                    field: f.to_string(),
+                    direction: SortDirection::Ascending,
+                }]
+            }),
+            limit: None,
+        }
+    }
+
+    #[test]
+    fn validate_identifiers_accepts_real_identifiers() {
+        for id in ["task", "due_date", "custom:field", "my-type"] {
+            assert!(
+                definition(id, Some(id), Some(id))
+                    .validate_identifiers()
+                    .is_ok(),
+                "{id}"
+            );
+        }
+        assert!(definition("*", Some("status"), Some("created_at"))
+            .validate_identifiers()
+            .is_ok());
+    }
+
+    #[test]
+    fn validate_identifiers_rejects_unsafe_identifiers_in_every_position() {
+        for bad in ["'; DROP TABLE node; --", "a b", "a.b", ""] {
+            assert!(
+                definition(bad, None, None).validate_identifiers().is_err(),
+                "target {bad:?}"
+            );
+            assert!(
+                definition("task", Some(bad), None)
+                    .validate_identifiers()
+                    .is_err(),
+                "property {bad:?}"
+            );
+            assert!(
+                definition("task", None, Some(bad))
+                    .validate_identifiers()
+                    .is_err(),
+                "sort {bad:?}"
+            );
+        }
+        // `*` means "all types" only as the target; as a path segment it is
+        // just an invalid identifier.
+        assert!(definition("task", Some("*"), None)
+            .validate_identifiers()
+            .is_err());
+        assert!(definition("task", None, Some("*"))
+            .validate_identifiers()
+            .is_err());
+    }
+
+    /// A definition built directly — bypassing the ops layer — must still be
+    /// refused before any SQL is built, by both verbs, and leave the store intact.
+    #[tokio::test]
+    async fn a_directly_constructed_definition_cannot_inject_through_an_identifier() {
+        let (query_service, node_service, _temp) = create_test_services().await;
+        node_service
+            .create_node_with_parent(CreateNodeParams {
+                id: None,
+                node_type: "task".to_string(),
+                content: "Survivor".to_string(),
+                parent_id: None,
+                position: crate::services::InsertPositionOwned::End,
+                properties: json!({"task": {"status": "open"}}),
+                lifecycle_status: None,
+            })
+            .await
+            .unwrap();
+
+        let injection = "status')) IS NULL OR 1=1; DROP TABLE node; --";
+        for query in [
+            definition(injection, None, None),
+            definition("task", Some(injection), None),
+            definition("task", None, Some(injection)),
+        ] {
+            let err = query_service.execute(&query).await.unwrap_err();
+            assert!(err.to_string().contains("invalid characters"), "got: {err}");
+            let err = query_service.count(&query).await.unwrap_err();
+            assert!(err.to_string().contains("invalid characters"), "got: {err}");
+        }
+
+        let intact = query_service
+            .execute(&definition("task", None, None))
+            .await
+            .unwrap();
+        assert_eq!(intact.len(), 1);
+    }
 }

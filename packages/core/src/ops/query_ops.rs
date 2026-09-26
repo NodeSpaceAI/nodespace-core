@@ -248,37 +248,6 @@ fn nodes_to_typed_values(nodes: Vec<Node>) -> Result<Vec<Value>, OpsError> {
 }
 
 // ============================================================================
-// Identifier validation
-// ============================================================================
-
-/// Validate that an identifier (node type, property name, sort field) only
-/// contains characters that are safe to interpolate into a SQL identifier
-/// position. The allowlist is `[A-Za-z0-9_:-]` which covers all real node
-/// types, property keys, and metadata fields while blocking injection vectors.
-fn validate_identifier(value: &str, label: &str) -> Result<(), OpsError> {
-    if value == "*" {
-        return Ok(());
-    }
-    if value.is_empty() {
-        return Err(OpsError::InvalidParams(format!(
-            "{} must not be empty",
-            label
-        )));
-    }
-    if value
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == ':')
-    {
-        Ok(())
-    } else {
-        Err(OpsError::InvalidParams(format!(
-            "{} '{}' contains invalid characters; only [A-Za-z0-9_:-] are allowed",
-            label, value
-        )))
-    }
-}
-
-// ============================================================================
 // Operation
 // ============================================================================
 
@@ -310,20 +279,6 @@ pub async fn execute_query_nodes(
 /// the identifier validation and the filter/sort mapping are what decide which
 /// set that is.
 fn to_query_definition(input: ExecuteQueryInput) -> Result<QueryDefinition, OpsError> {
-    validate_identifier(&input.target_type, "target_type")?;
-
-    for item in &input.filters {
-        if let Some(prop) = &item.property {
-            validate_identifier(prop, "filter property")?;
-        }
-    }
-
-    if let Some(sorting) = &input.sorting {
-        for sort in sorting {
-            validate_identifier(&sort.field, "sort field")?;
-        }
-    }
-
     let limit = input.limit.unwrap_or(50);
 
     let filters: Vec<QueryFilter> = input
@@ -342,12 +297,18 @@ fn to_query_definition(input: ExecuteQueryInput) -> Result<QueryDefinition, OpsE
             .collect()
     });
 
-    Ok(QueryDefinition {
+    let query = QueryDefinition {
         target_type: input.target_type,
         filters,
         sorting,
         limit: Some(limit),
-    })
+    };
+    // `QueryService` enforces this itself; checking here too classifies a bad
+    // identifier as the caller's error rather than an execution failure.
+    query
+        .validate_identifiers()
+        .map_err(|e| OpsError::InvalidParams(e.to_string()))?;
+    Ok(query)
 }
 
 /// Count the nodes a structured query matches, without materializing them.
@@ -629,23 +590,6 @@ mod tests {
             err.to_string().contains("order"),
             "expected error naming `order`, got: {err}"
         );
-    }
-
-    #[test]
-    fn validate_identifier_accepts_valid() {
-        assert!(validate_identifier("task", "t").is_ok());
-        assert!(validate_identifier("due_date", "t").is_ok());
-        assert!(validate_identifier("custom:field", "t").is_ok());
-        assert!(validate_identifier("my-type", "t").is_ok());
-        assert!(validate_identifier("*", "t").is_ok());
-    }
-
-    #[test]
-    fn validate_identifier_rejects_injection() {
-        assert!(validate_identifier("'; DROP TABLE node; --", "t").is_err());
-        assert!(validate_identifier("a b", "t").is_err());
-        assert!(validate_identifier("a.b", "t").is_err());
-        assert!(validate_identifier("", "t").is_err());
     }
 
     mod integration {

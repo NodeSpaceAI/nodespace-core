@@ -1902,7 +1902,7 @@ impl SqliteStore {
         // `ExecuteQueryInput::target_type` and `QueryService::build_query`'s
         // identical `!= "*"` guard) — filtering for the *literal* node_type
         // '*' would never match a real row (no stored type name can be '*';
-        // `validate_identifier` reserves it), so a caller-supplied wildcard
+        // `QueryDefinition::validate_identifiers` reserves it), so a caller-supplied wildcard
         // must skip the condition entirely rather than add one that can only
         // ever produce zero rows.
         if let Some(ref nt) = query.node_type {
