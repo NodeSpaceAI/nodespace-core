@@ -362,10 +362,11 @@ export class SimplePersistenceCoordinator {
       } finally {
         this.pendingOperations.delete(nodeId);
 
-        // Check for a queued operation BEFORE clearing executingOperations so
-        // that hasPending() returns true with no gap. A WatchNodes setNode
-        // arriving between "execution done" and "queued op taking over" would
-        // otherwise see hasPending=false and clobber the optimistic store.
+        // Check for a queued operation BEFORE handing over or clearing
+        // executingOperations so that hasPending() returns true with no gap.
+        // A WatchNodes setNode arriving between "execution done" and "queued
+        // op taking over" would otherwise see hasPending=false and clobber the
+        // optimistic store.
         const queue = this.queuedOperations.get(nodeId);
         const queued = queue?.shift();
         if (queue && queued) {
