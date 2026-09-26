@@ -423,9 +423,9 @@ async fn routing_misses(
 /// "Mark X resolved/done/closed" sets a field on an existing record, so it
 /// must reach Graph Editing — the skill that whitelists `update_node`. The
 /// completion word shares vocabulary with other skills ("resolve" with the
-/// conflict skill, before it was retitled Conflict Journal), and a lexical false positive there left no write
-/// tool on Stage 2's surface: the model found the record and then could not
-/// change it. Stage 2 does not recover from that on the locked model, so the
+/// conflict skill, before it was retitled Conflict Journal), and a lexical
+/// false positive there left no write tool on Stage 2's surface: the model
+/// found the record and then could not change it. Stage 2 does not recover from that on the locked model, so the
 /// right skill has to be retrieved in the first place.
 ///
 /// Covers the raw message (what retrieval embeds when Stage 1 emits no usable

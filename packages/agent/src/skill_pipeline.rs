@@ -518,9 +518,10 @@ STRUCTURED PROPERTY QUERIES: To filter by property values (status, due_date, etc
                 // resolved", "mark it paid"). The prior wording ("Modify
                 // existing nodes... update content, properties, titles, and
                 // metadata") missed the top-3 for 5 of 7 such requests on the
-                // locked embedding model, while the conflict-journal skill won them on
-                // the shared word "resolve" and left no write tool on Stage 2's
-                // surface. Now in the top-3 for all 7.
+                // locked embedding model, while the conflict skill (then
+                // titled "Conflict Resolution") won them on the shared word
+                // "resolve" and left no write tool on Stage 2's surface. Now
+                // in the top-3 for all 7.
                 //
                 // Kept narrow on purpose. A broader draft listing "closed" and
                 // "paid" as nouns ("the invoice is paid, the ticket is closed")
@@ -633,8 +634,9 @@ STRUCTURED PROPERTY QUERIES: To filter by property values (status, due_date, etc
             content: None,
             root_node_type: "skill".to_string(),
             root_properties: serde_json::json!({
-                // No form of "resolve" in the title or description. Both are
-                // embedded, and the shared word made this skill the rank-1
+                // No form of "resolve" in the title or description. Those two
+                // are what gets embedded (the guidance markdown is not), and
+                // the shared word made this skill the rank-1
                 // attractor for any request mentioning "resolved": "delete
                 // the resolved incidents" ranked it above Node Deletion
                 // (0.978 vs 0.904) on the locked embedding model, and since
