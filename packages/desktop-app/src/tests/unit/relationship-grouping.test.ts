@@ -14,6 +14,8 @@ import {
   linkedTargetIds,
   partitionGroups,
   humanizeName,
+  farEndHolders,
+  reassignmentPrompt,
   type RawNodeRelationships,
   type RawRelationshipGroup
 } from '$lib/services/relationship-grouping';
@@ -26,6 +28,7 @@ function makeGroup(overrides: Partial<RawRelationshipGroup> = {}): RawRelationsh
     reverseName: 'tasks',
     sourceType: 'task',
     cardinality: 'many',
+    farCardinality: 'many',
     required: null,
     edgeFields: null,
     description: null,
@@ -476,6 +479,7 @@ describe('relationship-grouping: single-valued groups are promoted to the form',
           sourceType: 'person',
           reverseName: 'assignee',
           cardinality: 'one',
+          farCardinality: 'many',
           related: overrides.assigned ? [person] : [],
           count: overrides.assigned ? 1 : 0
         }),
@@ -519,6 +523,7 @@ describe('relationship-grouping: single-valued groups are promoted to the form',
         makeGroup({
           relationshipName: 'employed_by',
           cardinality: 'one',
+          farCardinality: 'many',
           edgeFields: [{ name: 'role', type: 'string' }]
         })
       ]
@@ -865,5 +870,66 @@ describe('relationship-grouping: linkedTargetIds / isTargetLinked / filterUnlink
     const group = groupWithRows(['550e8400-e29b-41d4-a716-446655440000']);
     const candidates = [{ id: '550E8400-E29B-41D4-A716-446655440000' }, { id: 'p9' }];
     expect(filterUnlinkedTargets(group, candidates)).toEqual([{ id: 'p9' }]);
+  });
+});
+
+describe('relationship-grouping: reassignment detection', () => {
+  const related = (id: string, title: string) => ({
+    id,
+    nodeType: 'person',
+    title,
+    contentPreview: '',
+    edgeProperties: {}
+  });
+  const view = (groups: RawRelationshipGroup[]) =>
+    buildRelationshipsView({ nodeId: 'x', nodeType: 'x', groups });
+
+  // Bob's inbound `assigned_to`: many tasks per person, one person per task.
+  const bobsTasks = view([
+    makeGroup({ direction: 'in', cardinality: 'many', farCardinality: 'one' })
+  ]).groups[0];
+
+  it("names the candidate's current holder on the mirror group", () => {
+    const task = view([
+      makeGroup({ cardinality: 'one', related: [related('alice', 'Alice')], count: 1 })
+    ]);
+    expect(farEndHolders(task, bobsTasks, 'bob').map((row) => row.label)).toEqual(['Alice']);
+  });
+
+  it('ignores the node itself, case-insensitively', () => {
+    const task = view([
+      makeGroup({ cardinality: 'one', related: [related('BOB', 'Bob')], count: 1 })
+    ]);
+    expect(farEndHolders(task, bobsTasks, 'bob')).toEqual([]);
+  });
+
+  it('finds nothing when the far end is many', () => {
+    const many = view([makeGroup({ direction: 'in', farCardinality: 'many' })]).groups[0];
+    const task = view([
+      makeGroup({ cardinality: 'one', related: [related('alice', 'Alice')], count: 1 })
+    ]);
+    expect(farEndHolders(task, many, 'bob')).toEqual([]);
+  });
+
+  it('ignores same-direction and differently named groups', () => {
+    const task = view([
+      makeGroup({ direction: 'in', cardinality: 'one', related: [related('a', 'A')], count: 1 }),
+      makeGroup({
+        relationshipName: 'reviewer',
+        cardinality: 'one',
+        related: [related('b', 'B')],
+        count: 1
+      })
+    ]);
+    expect(farEndHolders(task, bobsTasks, 'bob')).toEqual([]);
+  });
+
+  it('builds a prompt only when something would be displaced', () => {
+    const alice = { id: 'alice', nodeType: 'person', label: 'Alice', edgeValues: {} };
+    const old = { id: 'old', nodeType: 'person', label: 'Old', edgeValues: {} };
+    expect(reassignmentPrompt('Ship it', [])).toBeNull();
+    const prompt = reassignmentPrompt('Ship it', [alice], [old]);
+    expect(prompt).toContain('"Ship it" is currently linked to "Alice"');
+    expect(prompt).toContain('"Old" will be replaced');
   });
 });

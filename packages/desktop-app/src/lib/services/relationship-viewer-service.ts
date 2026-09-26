@@ -14,10 +14,13 @@ import { backendAdapter } from '$lib/services/backend-adapter';
 import type { Node } from '$lib/types';
 import {
   buildRelationshipsView,
+  farEndHolders,
   resolveEdgeEndpoints,
   type NodeRelationshipsView,
   type RawNodeRelationships,
-  type RelationshipGroupView
+  type RelationshipGroupView,
+  type RelationshipRowView,
+  type ReplacedEdge
 } from './relationship-grouping';
 
 const log = createLogger('RelationshipViewer');
@@ -39,21 +42,48 @@ export async function loadNodeRelationshipsView(nodeId: string): Promise<NodeRel
  * `group`. Orientation follows the group's direction (see `resolveEdgeEndpoints`):
  * for an outbound group the modal's node is the source; for an inbound group it
  * is the target. `edgeData` carries declared edge-field values (omit for a bare
- * edge). The daemon validates target type and cardinality.
+ * edge).
+ *
+ * The daemon validates the target type, but a `one` end is enforced by
+ * REPLACING the prior edge, not by rejecting the write — so this can silently
+ * reassign. Call `findDisplacedHolders` first to confirm with the user; the
+ * returned edges are what the daemon actually evicted.
  */
 export async function addEdge(
   nodeId: string,
   group: RelationshipGroupView,
   targetId: string,
   edgeData?: Record<string, unknown>
-): Promise<void> {
+): Promise<ReplacedEdge[]> {
   const { sourceId, targetId: resolvedTarget } = resolveEdgeEndpoints(
     nodeId,
     group.direction,
     targetId
   );
   log.debug('Adding edge', { sourceId, relationshipName: group.relationshipName, targetId: resolvedTarget });
-  await backendAdapter.createRelationship(sourceId, group.relationshipName, resolvedTarget, edgeData);
+  const { replaced } = await backendAdapter.createRelationship(
+    sourceId,
+    group.relationshipName,
+    resolvedTarget,
+    edgeData
+  );
+  if (replaced.length > 0) log.info('Edge replaced a cardinality-one link', { replaced });
+  return replaced;
+}
+
+/**
+ * The nodes that linking `nodeId` to `targetId` through `group` would unlink
+ * from `targetId` (see `farEndHolders`). Only fetches the candidate's
+ * relationships when the far end is `one` — otherwise nothing can be displaced.
+ */
+export async function findDisplacedHolders(
+  nodeId: string,
+  group: RelationshipGroupView,
+  targetId: string
+): Promise<RelationshipRowView[]> {
+  if (group.farCardinality !== 'one') return [];
+  const candidate = await loadNodeRelationshipsView(targetId);
+  return farEndHolders(candidate, group, nodeId);
 }
 
 /**

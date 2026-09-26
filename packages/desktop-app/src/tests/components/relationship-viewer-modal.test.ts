@@ -27,6 +27,7 @@ function group(overrides: Partial<RawRelationshipGroup>): RawRelationshipGroup {
     reverseName: 'blocked_by',
     sourceType: 'task',
     cardinality: 'many',
+    farCardinality: 'many',
     required: null,
     edgeFields: null,
     description: null,
@@ -55,7 +56,7 @@ let searchNodesByTitle: ReturnType<typeof vi.fn>;
 
 beforeEach(() => {
   getNodeRelationships = vi.fn();
-  createRelationship = vi.fn().mockResolvedValue(undefined);
+  createRelationship = vi.fn().mockResolvedValue({ replaced: [] });
   deleteRelationship = vi.fn().mockResolvedValue(undefined);
   searchNodesByTitle = vi.fn().mockResolvedValue([]);
   vi.spyOn(backendAdapter, 'getNodeRelationships').mockImplementation(
@@ -139,5 +140,83 @@ describe('RelationshipViewerModal: inbound many-to-many', () => {
     expect(await screen.findByText('Sam Lee')).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Remove Sam Lee' })).toBeNull();
     expect(screen.queryByText('Add')).toBeNull();
+  });
+});
+
+describe('RelationshipViewerModal: cardinality-one reassignment', () => {
+  // `task-a` owns many tasks, but each task has ONE owner: linking a task that
+  // already has an owner takes it from them (the daemon replaces, not rejects).
+  const owns = group({ relationshipName: 'owns', farCardinality: 'one' });
+
+  function candidateOwnedBy(holder: string | null) {
+    getNodeRelationships.mockImplementation(async (id: string) =>
+      id === 'task-b'
+        ? {
+            nodeId: 'task-b',
+            nodeType: 'task',
+            groups: [
+              group({
+                relationshipName: 'owns',
+                direction: 'in',
+                cardinality: 'one',
+                farCardinality: 'many',
+                related: holder ? [related('task-c', holder)] : [],
+                count: holder ? 1 : 0
+              })
+            ]
+          }
+        : payload([owns])
+    );
+  }
+
+  async function pickShipApi(relationshipLabel: RegExp) {
+    searchNodesByTitle.mockResolvedValue([taskNode('task-b', 'Ship API')]);
+    render(RelationshipViewerModal, { props: { open: true, nodeId: 'task-a' } });
+    await fireEvent.click(await screen.findByText('Add'));
+    await fireEvent.click(await screen.findByRole('button', { name: relationshipLabel }));
+    const input = await screen.findByPlaceholderText('Search task…');
+    await fireEvent.input(input, { target: { value: 'ship' } });
+    await fireEvent.click(await screen.findByText('Ship API'));
+  }
+
+  it('asks before taking a target from its current holder, and writes nothing on decline', async () => {
+    candidateOwnedBy('Old Owner');
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+
+    await pickShipApi(/Owns/);
+
+    await waitFor(() => expect(confirm).toHaveBeenCalled());
+    expect(confirm.mock.calls[0][0]).toContain('"Old Owner"');
+    expect(createRelationship).not.toHaveBeenCalled();
+  });
+
+  it('writes the edge once the reassignment is confirmed', async () => {
+    candidateOwnedBy('Old Owner');
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+
+    await pickShipApi(/Owns/);
+
+    await waitFor(() =>
+      expect(createRelationship).toHaveBeenCalledWith('task-a', 'owns', 'task-b', undefined)
+    );
+  });
+
+  it('does not ask when the target has no current holder', async () => {
+    candidateOwnedBy(null);
+    const confirm = vi.spyOn(window, 'confirm');
+
+    await pickShipApi(/Owns/);
+
+    await waitFor(() => expect(createRelationship).toHaveBeenCalled());
+    expect(confirm).not.toHaveBeenCalled();
+  });
+
+  it('never looks the target up when its end is many', async () => {
+    getNodeRelationships.mockResolvedValue(payload([group({})]));
+
+    await pickShipApi(/Blocks/);
+
+    await waitFor(() => expect(createRelationship).toHaveBeenCalled());
+    expect(getNodeRelationships).not.toHaveBeenCalledWith('task-b');
   });
 });

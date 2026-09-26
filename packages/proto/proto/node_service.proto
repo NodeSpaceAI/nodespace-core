@@ -706,6 +706,15 @@ message CreateRelationshipResponse {
   string source_id = 1;
   string relationship_name = 2;
   string target_id = 3;
+  // Edges evicted to honor a `cardinality: one` / `reverse_cardinality: one`
+  // end — the create replaces rather than rejects. Empty for a plain create.
+  repeated RelationshipEdge replaced = 4;
+}
+
+message RelationshipEdge {
+  string source_id = 1;
+  string relationship_name = 2;
+  string target_id = 3;
 }
 
 message DeleteRelationshipRequest {

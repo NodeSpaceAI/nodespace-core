@@ -32,7 +32,7 @@ import type { SchemaNode } from '$lib/types/schema-node';
 import type { QueryFilter, SortConfig } from '$lib/types/query';
 // Type-only: relationship-grouping is a pure module (no Tauri/DOM/$lib value
 // imports), so this is erased before the dev-proxy's Bun runtime resolves it.
-import type { RawNodeRelationships } from './relationship-grouping';
+import type { CreateRelationshipResult, RawNodeRelationships } from './relationship-grouping';
 
 // ============================================================================
 // Shared types (public BackendAdapter surface)
@@ -187,7 +187,7 @@ export interface BackendAdapter {
     relationshipName: string,
     targetId: string,
     edgeData?: Record<string, unknown>
-  ): Promise<void>;
+  ): Promise<CreateRelationshipResult>;
   deleteRelationship(sourceId: string, relationshipName: string, targetId: string): Promise<void>;
   updateRelationshipProperties(
     sourceId: string,

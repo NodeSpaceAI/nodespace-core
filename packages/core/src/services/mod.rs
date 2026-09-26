@@ -191,8 +191,8 @@ pub use embedding_processor::{
 pub use embedding_service::{NodeEmbeddingService, EMBEDDING_DIMENSION};
 pub use error::NodeServiceError;
 pub use node_service::{
-    flatten_subtree_content, CompletenessResult, CreateNodeParams, NodeService, SubtreeData,
-    WriteVerificationFault, DEFAULT_QUERY_LIMIT,
+    flatten_subtree_content, CompletenessResult, CreateNodeParams, NodeService, ReplacedEdge,
+    SubtreeData, WriteVerificationFault, DEFAULT_QUERY_LIMIT,
 };
 pub use query_service::{
     FilterOperator, FilterType, QueryDefinition, QueryFilter, QueryService, RelationshipType,

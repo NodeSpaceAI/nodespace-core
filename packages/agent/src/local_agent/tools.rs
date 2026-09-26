@@ -3512,15 +3512,38 @@ impl GraphToolExecutor {
             edge_data: None,
         };
 
-        rel_ops::create_relationship(&ns, input)
+        let output = rel_ops::create_relationship(&ns, input)
             .await
             .map_err(|e| ops_error_to_tool(e, "create_relationship"))?;
 
-        Ok(ok_result(
-            tool_call_id,
-            "create_relationship",
-            json!({ "from_id": params.from_id, "to_id": params.to_id, "type": params.relationship_type, "created": true }),
-        ))
+        let mut result = json!({ "from_id": params.from_id, "to_id": params.to_id, "type": params.relationship_type, "created": true });
+        // A cardinality-one end replaces rather than rejects: "assign this task
+        // to Bob" unassigns Alice as a side effect. Name the evicted edges so
+        // the model can tell the user instead of reporting a plain create.
+        if !output.replaced.is_empty() {
+            let obj = result.as_object_mut().expect("literal is an object");
+            obj.insert(
+                "replaced".into(),
+                json!(output
+                    .replaced
+                    .iter()
+                    .map(|edge| json!({
+                        "from_id": node_uri(&edge.source_id),
+                        "to_id": node_uri(&edge.target_id),
+                        "type": edge.relationship_name,
+                    }))
+                    .collect::<Vec<_>>()),
+            );
+            obj.insert(
+                "note".into(),
+                json!(
+                    "This relationship allows only one link, so creating it removed the \
+                     relationship(s) listed in `replaced`. Tell the user which link was removed."
+                ),
+            );
+        }
+
+        Ok(ok_result(tool_call_id, "create_relationship", result))
     }
 
     async fn exec_get_related_nodes(
@@ -7210,6 +7233,76 @@ mod tests {
             }
             other => panic!("Expected InvalidArguments, got {:?}", other),
         }
+    }
+
+    /// A cardinality-one end replaces rather than rejects, so reassigning a
+    /// task must tell the model who lost it — otherwise "assign this to Bob"
+    /// silently unassigns Alice and the model reports a plain create.
+    #[tokio::test]
+    async fn create_relationship_reports_replaced_edge() {
+        use nodespace_core::db::SqliteStore;
+        use nodespace_core::services::{CreateNodeParams, InsertPositionOwned};
+        use tempfile::TempDir;
+
+        let tmp = TempDir::new().unwrap();
+        let mut store: Arc<SqliteStore> =
+            Arc::new(SqliteStore::new(tmp.path().join("test.db")).await.unwrap());
+        let ns = Arc::new(NodeService::new(&mut store).await.unwrap());
+        let mut ids = Vec::new();
+        for (node_type, content) in [("person", ""), ("person", ""), ("task", "Ship it")] {
+            ids.push(
+                ns.create_node_with_parent(CreateNodeParams {
+                    id: None,
+                    node_type: node_type.to_string(),
+                    content: content.to_string(),
+                    parent_id: None,
+                    position: InsertPositionOwned::End,
+                    properties: json!({}),
+                    lifecycle_status: None,
+                })
+                .await
+                .unwrap(),
+            );
+        }
+        let (alice, bob, task) = (&ids[0], &ids[1], &ids[2]);
+        let executor = GraphToolExecutor {
+            node_service: Some(ns),
+            embedding_service: Arc::new(RwLock::new(None)),
+            inference_engine: None,
+            playbook_lifecycle: None,
+        };
+
+        let first = executor
+            .execute(
+                "create_relationship",
+                json!({ "from_id": alice, "to_id": task, "relationship_type": "tasks" }),
+            )
+            .await
+            .unwrap();
+        assert!(
+            first.result.get("replaced").is_none(),
+            "a plain create reports no replacement: {}",
+            first.result
+        );
+
+        let second = executor
+            .execute(
+                "create_relationship",
+                json!({ "from_id": bob, "to_id": task, "relationship_type": "tasks" }),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            second.result["replaced"],
+            json!([{
+                "from_id": node_uri(alice),
+                "to_id": node_uri(task),
+                "type": "tasks",
+            }]),
+            "the evicted assignment must be named: {}",
+            second.result
+        );
+        assert!(second.result["note"].is_string());
     }
 
     #[tokio::test]

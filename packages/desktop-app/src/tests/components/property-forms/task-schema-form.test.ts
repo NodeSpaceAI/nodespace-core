@@ -140,6 +140,7 @@ function taskRelationships(opts: { assignee?: string; blocks?: boolean } = {}) {
   const base = {
     reverseName: '',
     sourceType: 'task',
+    farCardinality: 'many' as const,
     required: null,
     edgeFields: null,
     description: null,

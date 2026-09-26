@@ -78,6 +78,7 @@
   import {
     loadNodeRelationshipsView,
     addEdge,
+    findDisplacedHolders,
     removeEdge,
     updateEdgeProperties,
     searchTargets
@@ -89,6 +90,7 @@
     groupAcceptsEdgesHere,
     groupSupportsEdgeEditing,
     partitionGroups,
+    reassignmentPrompt,
     type NodeRelationshipsView,
     type RawEdgeField,
     type RelationshipGroupView,
@@ -315,7 +317,7 @@
    * the open picker) and never wipes an unrelated row's unsaved edit. On failure
    * nothing is cleared so the user can retry, and the error is surfaced.
    */
-  async function runMutation(fn: () => Promise<void>): Promise<boolean> {
+  async function runMutation(fn: () => Promise<unknown>): Promise<boolean> {
     busy = true;
     mutationError = null;
     try {
@@ -548,9 +550,43 @@
     return node.title?.trim() || node.content?.trim() || node.id;
   }
 
-  /** Pick a target: create immediately when the group has no edge fields, else
-   *  stage it and prompt for the declared edge-attribute values. */
-  function pickTarget(group: RelationshipGroupView, targetId: string, label: string) {
+  /**
+   * Confirm a link that would silently reassign. The daemon enforces a `one`
+   * end by REPLACING the prior edge rather than rejecting the write, so
+   * without this an add could take the candidate from whoever holds it — or
+   * drop this node's own current link — with no signal at all. Returns
+   * `false` when the user declines or the check itself failed (surfaced).
+   */
+  async function confirmReassignment(
+    group: RelationshipGroupView,
+    targetId: string,
+    label: string
+  ): Promise<boolean> {
+    let holders: RelationshipRowView[];
+    busy = true;
+    mutationError = null;
+    try {
+      holders = await findDisplacedHolders(nodeId, group, targetId);
+    } catch (error) {
+      log.error('Failed to check for a reassignment', error);
+      mutationError = toError(error).message;
+      return false;
+    } finally {
+      busy = false;
+    }
+    const target = targetId.toLowerCase();
+    const replaced =
+      group.cardinality === 'one' ? group.rows.filter((row) => row.id.toLowerCase() !== target) : [];
+    const prompt = reassignmentPrompt(label, holders, replaced);
+    return prompt === null || window.confirm(prompt);
+  }
+
+  /** Pick a target: confirm any reassignment it implies, then create
+   *  immediately when the group has no edge fields, else stage it and prompt
+   *  for the declared edge-attribute values. */
+  async function pickTarget(group: RelationshipGroupView, targetId: string, label: string) {
+    if (busy) return;
+    if (!(await confirmReassignment(group, targetId, label))) return;
     if (group.edgeFields.length === 0) {
       void confirmAdd(group, targetId, {});
       return;
@@ -1064,7 +1100,7 @@
                       type="button"
                       class="rail-item truncate"
                       disabled={busy}
-                      onclick={() => pickTarget(group, node.id, nodeLabel(node))}
+                      onclick={() => void pickTarget(group, node.id, nodeLabel(node))}
                     >
                       {nodeLabel(node)}
                     </button>

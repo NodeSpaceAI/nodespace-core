@@ -49,6 +49,7 @@ pub(crate) mod schema;
 
 pub use conflicts::deterministic_conflict_id;
 pub use hierarchy::flatten_subtree_content;
+pub use relationship::ReplacedEdge;
 
 /// Reserved ID for the DatabaseSettingsNode singleton instance.
 ///
@@ -4050,6 +4051,7 @@ mod tests {
                 service
                     .create_relationship("p", "has_child", &format!("n{i}"), json!({}))
                     .await
+                    .map(|_| ())
             }));
         }
         // A concurrent reorder contending on the same parent's sibling order.
@@ -10367,15 +10369,32 @@ mod tests {
             .await
             .unwrap();
 
-        service
+        let first = service
             .create_relationship(&person1_id, "tasks", &task_id, serde_json::json!({}))
             .await
             .expect("first assignment must succeed");
+        assert!(first.is_empty(), "a plain create evicts nothing");
 
-        service
+        let replaced = service
             .create_relationship(&person2_id, "tasks", &task_id, serde_json::json!({}))
             .await
             .expect("a second edge into a reverse-cardinality-one target must replace the first");
+        assert_eq!(
+            replaced,
+            vec![ReplacedEdge {
+                source_id: person1_id.clone(),
+                relationship_name: "tasks".to_string(),
+                target_id: task_id.clone(),
+            }],
+            "the evicted edge must be reported so callers can surface the reassignment"
+        );
+
+        // Re-asserting the current assignment is idempotent: nothing to evict.
+        let repeat = service
+            .create_relationship(&person2_id, "tasks", &task_id, serde_json::json!({}))
+            .await
+            .unwrap();
+        assert!(repeat.is_empty(), "an idempotent repeat evicts nothing");
 
         // The task must show exactly one assignee — person2, not both.
         let inbound = crate::ops::rel_ops::get_node_relationships(&service, &task_id)
@@ -10391,6 +10410,11 @@ mod tests {
             "the replaced edge must not leave the task with two assignees"
         );
         assert_eq!(in_group.related[0].id, person2_id);
+        // The far end (the assignee side) holds many; this end holds one.
+        assert_eq!(
+            in_group.far_cardinality,
+            crate::models::schema::RelationshipCardinality::Many
+        );
 
         // person1's outbound side must no longer show the task.
         let person1_outbound = crate::ops::rel_ops::get_node_relationships(&service, &person1_id)
@@ -10401,6 +10425,12 @@ mod tests {
             .iter()
             .find(|g| g.relationship_name == "tasks" && g.direction == "out")
             .expect("person1 still shows the declared (now empty) tasks group");
+        // Seen from the person, the far end is the task's single assignee
+        // slot — what tells the viewer a link here can steal an assignment.
+        assert_eq!(
+            person1_group.far_cardinality,
+            crate::models::schema::RelationshipCardinality::One
+        );
         assert_eq!(
             person1_group.count, 0,
             "person1's evicted edge must actually be gone, not merely hidden"
@@ -10504,10 +10534,18 @@ mod tests {
             .await
             .expect("first edge from a cardinality-one source must succeed");
 
-        service
+        let replaced = service
             .create_relationship("g1", "primary_widget", "w2", serde_json::json!({}))
             .await
             .expect("a second edge from a cardinality-one source must replace the first");
+        assert_eq!(
+            replaced,
+            vec![ReplacedEdge {
+                source_id: "g1".to_string(),
+                relationship_name: "primary_widget".to_string(),
+                target_id: "w1".to_string(),
+            }]
+        );
 
         let targets = service
             .get_related_nodes("g1", "primary_widget", "out")

@@ -36,7 +36,7 @@ import type {
   TaskNodeUpdate
 } from '$lib/types';
 import type { SchemaNode } from '$lib/types/schema-node';
-import type { RawNodeRelationships } from './relationship-grouping';
+import type { CreateRelationshipResult, RawNodeRelationships } from './relationship-grouping';
 import { createLogger } from '$lib/utils/logger';
 import { withDiagnosticLogging } from './diagnostic-logger';
 import { invoke } from '@tauri-apps/api/core';
@@ -340,10 +340,10 @@ class TauriAdapter implements BackendAdapter {
     relationshipName: string,
     targetId: string,
     edgeData?: Record<string, unknown>
-  ): Promise<void> {
+  ): Promise<CreateRelationshipResult> {
     return withDiagnosticLogging(
       'createRelationship',
-      () => invoke<void>('create_relationship', {
+      () => invoke<CreateRelationshipResult>('create_relationship', {
         sourceId,
         relationshipName,
         targetId,
@@ -705,13 +705,13 @@ export class HttpAdapter implements BackendAdapter {
     relationshipName: string,
     targetId: string,
     edgeData?: Record<string, unknown>
-  ): Promise<void> {
+  ): Promise<CreateRelationshipResult> {
     const response = await fetch(`${this.baseUrl}${HTTP_ROUTES.createRelationship()}`, {
       method: 'POST',
       headers: this.getHeaders(),
       body: JSON.stringify({ sourceId, relationshipName, targetId, edgeData: edgeData ?? null })
     });
-    await this.handleResponse<void>(response);
+    return this.handleResponse<CreateRelationshipResult>(response);
   }
 
   async deleteRelationship(sourceId: string, relationshipName: string, targetId: string): Promise<void> {
@@ -890,7 +890,9 @@ class MockAdapter implements BackendAdapter {
     _relationshipName: string,
     _targetId: string,
     _edgeData?: Record<string, unknown>
-  ): Promise<void> {}
+  ): Promise<CreateRelationshipResult> {
+    return { replaced: [] };
+  }
   async deleteRelationship(_sourceId: string, _relationshipName: string, _targetId: string): Promise<void> {}
   async updateRelationshipProperties(
     _sourceId: string,

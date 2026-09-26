@@ -1100,12 +1100,11 @@ pub async fn get_node_relationships(
 /// Wraps `rel_ops::create_relationship`: the daemon validates the relationship
 /// against the source node's schema (target type, edge fields) before writing.
 /// A `cardinality: One` source or `reverse_cardinality: One` target does not
-/// reject a second edge — the prior edge is replaced — so a write here can
-/// silently supersede an existing assignment with no conflict signal returned
-/// to the frontend; the caller is responsible for confirming a reassignment
-/// before calling this if that matters to the surface it's driving.
-/// `edge_data` carries the edge's `edge_fields` values as a JSON object; omit or
-/// pass `null` for a bare edge. Returns `()` — the frontend reloads via
+/// reject a second edge — the prior edge is replaced — and the evicted edges
+/// come back in `replaced`. The viewer confirms a reassignment BEFORE calling
+/// this (it knows the far end's cardinality); `replaced` reports what actually
+/// happened. `edge_data` carries the edge's `edge_fields` values as a JSON
+/// object; omit or pass `null` for a bare edge. The frontend reloads via
 /// `get_node_relationships` to see the new edge in context.
 #[tauri::command]
 pub async fn create_relationship(
@@ -1114,7 +1113,7 @@ pub async fn create_relationship(
     relationship_name: String,
     target_id: String,
     edge_data: Option<Value>,
-) -> Result<(), CommandError> {
+) -> Result<Value, CommandError> {
     let edge_data_json = match edge_data {
         Some(v) if !v.is_null() => Some(serde_json::to_string(&v).map_err(|e| CommandError {
             message: format!("Failed to serialize edge_data: {}", e),
@@ -1125,15 +1124,28 @@ pub async fn create_relationship(
         _ => None,
     };
     let mut c = client.client().await;
-    c.create_relationship(Request::new(CreateRelationshipRequest {
-        source_id,
-        relationship_name,
-        target_id,
-        edge_data_json,
-    }))
-    .await
-    .map_err(status_to_command_error)?;
-    Ok(())
+    let response = c
+        .create_relationship(Request::new(CreateRelationshipRequest {
+            source_id,
+            relationship_name,
+            target_id,
+            edge_data_json,
+        }))
+        .await
+        .map_err(status_to_command_error)?
+        .into_inner();
+    let replaced: Vec<Value> = response
+        .replaced
+        .into_iter()
+        .map(|edge| {
+            serde_json::json!({
+                "sourceId": edge.source_id,
+                "relationshipName": edge.relationship_name,
+                "targetId": edge.target_id,
+            })
+        })
+        .collect();
+    Ok(serde_json::json!({ "replaced": replaced }))
 }
 
 /// Delete a schema-declared typed relationship edge.

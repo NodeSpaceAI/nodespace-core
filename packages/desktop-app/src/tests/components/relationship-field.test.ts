@@ -34,6 +34,7 @@ function assigneeGroup(overrides: Partial<RawRelationshipGroup> = {}) {
         reverseName: 'assignee',
         sourceType: 'person',
         cardinality: 'one',
+        farCardinality: 'many',
         required: null,
         edgeFields: null,
         description: null,
@@ -63,7 +64,7 @@ let searchNodesByTitle: ReturnType<typeof vi.fn>;
 let onChanged: ReturnType<typeof vi.fn>;
 
 beforeEach(() => {
-  createRelationship = vi.fn().mockResolvedValue(undefined);
+  createRelationship = vi.fn().mockResolvedValue({ replaced: [] });
   deleteRelationship = vi.fn().mockResolvedValue(undefined);
   searchNodesByTitle = vi.fn().mockResolvedValue([]);
   onChanged = vi.fn().mockResolvedValue(undefined);
@@ -247,6 +248,7 @@ describe('RelationshipField', () => {
           reverseName: 'invoices',
           sourceType: 'invoice',
           cardinality: 'one',
+          farCardinality: 'many',
           required: null,
           edgeFields: null,
           description: null,
@@ -268,7 +270,9 @@ describe('RelationshipField', () => {
 
   it('ignores a second pick while the first write is in flight', async () => {
     let finish!: () => void;
-    createRelationship.mockReturnValue(new Promise<void>((resolve) => (finish = resolve)));
+    createRelationship.mockReturnValue(
+      new Promise((resolve) => (finish = () => resolve({ replaced: [] })))
+    );
     searchNodesByTitle.mockResolvedValue([
       personNode('person-sam', 'Sam Lee'),
       personNode('person-ana', 'Ana Ruiz')
@@ -325,5 +329,84 @@ describe('RelationshipField', () => {
     await fireEvent.click(screen.getByRole('button', { name: 'Clear assignee' }));
     await screen.findByText('daemon offline');
     expect(onChanged).not.toHaveBeenCalled();
+  });
+});
+
+describe('RelationshipField: one-to-one reassignment', () => {
+  // A person has one desk and a desk one person: picking a desk someone else
+  // holds takes it from them, since the daemon replaces rather than rejects.
+  const deskGroup = () =>
+    buildRelationshipsView({
+      nodeId: 'person-1',
+      nodeType: 'person',
+      groups: [
+        {
+          relationshipName: 'desk',
+          direction: 'out',
+          targetType: 'desk',
+          reverseName: 'occupant',
+          sourceType: 'person',
+          cardinality: 'one',
+          farCardinality: 'one',
+          required: null,
+          edgeFields: null,
+          description: null,
+          related: [],
+          count: 0
+        }
+      ]
+    }).groups[0];
+
+  beforeEach(() => {
+    vi.spyOn(backendAdapter, 'getNodeRelationships').mockResolvedValue({
+      nodeId: 'desk-7',
+      nodeType: 'desk',
+      groups: [
+        {
+          relationshipName: 'desk',
+          direction: 'in',
+          targetType: 'person',
+          reverseName: 'occupant',
+          sourceType: 'person',
+          cardinality: 'one',
+          farCardinality: 'one',
+          required: null,
+          edgeFields: null,
+          description: null,
+          related: [
+            { id: 'person-2', nodeType: 'person', title: 'Carol', contentPreview: '', edgeProperties: {} }
+          ],
+          count: 1
+        }
+      ]
+    });
+    searchNodesByTitle.mockResolvedValue([
+      { id: 'desk-7', nodeType: 'desk', title: 'Desk 7', content: '', properties: {} } as unknown as Node
+    ]);
+  });
+
+  async function pickDesk() {
+    render(RelationshipField, {
+      props: { nodeId: 'person-1', group: deskGroup(), fieldId: 'f', onChanged }
+    });
+    const input = screen.getByRole('combobox');
+    await fireEvent.input(input, { target: { value: 'desk' } });
+    await fireEvent.mouseDown(await screen.findByRole('option', { name: 'Desk 7' }));
+  }
+
+  it('asks before taking the desk from Carol and writes nothing on decline', async () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    await pickDesk();
+    await waitFor(() => expect(confirm).toHaveBeenCalled());
+    expect(confirm.mock.calls[0][0]).toContain('"Carol"');
+    expect(createRelationship).not.toHaveBeenCalled();
+  });
+
+  it('writes once the reassignment is confirmed', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    await pickDesk();
+    await waitFor(() =>
+      expect(createRelationship).toHaveBeenCalledWith('person-1', 'desk', 'desk-7', undefined)
+    );
   });
 });
