@@ -354,7 +354,12 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
       Promise.resolve().then(async () => {
         try {
           // Wait for newNode to be persisted so children can reference it as parent.
-          await sharedNodeStore.waitForNodeSaves([nodeId]);
+          // waitForNodeSaves reports failures rather than throwing: a new node whose save
+          // failed or timed out may not exist in the daemon, so it cannot take the children.
+          const failedSaves = await sharedNodeStore.waitForNodeSaves([nodeId]);
+          if (failedSaves.has(nodeId)) {
+            throw new Error(`Save of new node ${nodeId} failed or timed out`);
+          }
 
           await persistChildTransfer(
             nodeId,
