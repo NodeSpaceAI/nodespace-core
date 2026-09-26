@@ -3,9 +3,8 @@ pub struct FractionalOrderCalculator;
 
 impl FractionalOrderCalculator {
     /// Smallest gap between adjacent sibling orders that is still safe to
-    /// bisect. Below it, callers re-spread the siblings with [`Self::rebalance`]
-    /// before inserting, so repeated same-position inserts never converge onto
-    /// an existing key.
+    /// bisect. Below it, callers re-spread the siblings before inserting, so
+    /// repeated same-position inserts never converge onto an existing key.
     pub const MIN_GAP: f64 = 0.0001;
 
     /// Calculate order value for inserting between prev and next.
@@ -43,15 +42,6 @@ impl FractionalOrderCalculator {
             }
         }
         false
-    }
-
-    /// Rebalance orders to have even spacing
-    ///
-    /// # Example
-    /// Input:  [1.0, 1.0001, 1.0002, 1.0003]
-    /// Output: [1.0, 2.0, 3.0, 4.0]
-    pub fn rebalance(count: usize) -> Vec<f64> {
-        (1..=count).map(|i| i as f64).collect()
     }
 }
 

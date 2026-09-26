@@ -497,53 +497,45 @@ impl SqliteStore {
         insert_after_sibling_id: Option<&str>,
     ) -> Result<f64> {
         let mut rows = tx.conn().query(
-            "SELECT id, out_node, json_extract(properties, '$.order') as ord FROM relationship WHERE in_node = ?1 AND relationship_type = 'has_child' ORDER BY json_extract(properties, '$.order') ASC",
+            "SELECT out_node, json_extract(properties, '$.order') as ord FROM relationship WHERE in_node = ?1 AND relationship_type = 'has_child' ORDER BY json_extract(properties, '$.order') ASC, id ASC",
             libsql::params![parent_id.to_string()],
         ).await.context("Failed to get sibling relationships")?;
 
-        // (relationship id, sibling node id, order)
-        let mut siblings: Vec<(String, String, f64)> = Vec::new();
+        // Read in `respread_children`'s `(order, id)` sequence so a sibling's
+        // index here is its rank there.
+        let mut siblings: Vec<(String, f64)> = Vec::new();
         while let Some(row) = rows.next().await? {
-            let rel_id: String = row.get(0)?;
-            let sibling_id: String = row.get(1)?;
-            let ord: Option<f64> = row.get(2)?;
-            siblings.push((rel_id, sibling_id, ord.unwrap_or(0.0)));
+            let sibling_id: String = row.get(0)?;
+            let ord: Option<f64> = row.get(1)?;
+            siblings.push((sibling_id, ord.unwrap_or(0.0)));
         }
 
         let new_order = if let Some(after_id) = insert_after_sibling_id {
-            if let Some(after_index) = siblings.iter().position(|(_, id, _)| id == after_id) {
-                let prev_order = siblings[after_index].2;
-                let next_order = siblings.get(after_index + 1).map(|(_, _, o)| *o);
+            if let Some(after_index) = siblings.iter().position(|(id, _)| id == after_id) {
+                let prev_order = siblings[after_index].1;
+                let next_order = siblings.get(after_index + 1).map(|(_, o)| *o);
                 match next_order {
                     Some(next) if next - prev_order < FractionalOrderCalculator::MIN_GAP => {
                         // Repeated inserts at one anchor halve this gap each time;
                         // re-spread the siblings before it collapses into a
-                        // duplicate key — `move_node`'s same safeguard, but written
-                        // through `tx` so it commits or rolls back with the insert.
-                        let respread = FractionalOrderCalculator::rebalance(siblings.len());
-                        for ((rel_id, _, _), order) in siblings.iter().zip(&respread) {
-                            let props = serde_json::json!({ "order": order }).to_string();
-                            tx.conn()
-                                .execute(
-                                    "UPDATE relationship SET properties = ?1 WHERE id = ?2",
-                                    libsql::params![props, rel_id.clone()],
-                                )
-                                .await
-                                .context("Failed to rebalance sibling order")?;
-                        }
+                        // duplicate key — `move_node`'s same safeguard, run on
+                        // `tx` so it commits or rolls back with the insert. The
+                        // anchor at index `i` now holds key `i + 1`.
+                        Self::respread_children(tx.conn(), parent_id).await?;
+                        let anchor_order = (after_index + 1) as f64;
                         FractionalOrderCalculator::calculate_order(
-                            Some(respread[after_index]),
-                            Some(respread[after_index + 1]),
+                            Some(anchor_order),
+                            Some(anchor_order + 1.0),
                         )
                     }
                     _ => FractionalOrderCalculator::calculate_order(Some(prev_order), next_order),
                 }
             } else {
-                let last = siblings.last().map(|(_, _, o)| *o);
+                let last = siblings.last().map(|(_, o)| *o);
                 FractionalOrderCalculator::calculate_order(last, None)
             }
         } else {
-            let first = siblings.first().map(|(_, _, o)| *o);
+            let first = siblings.first().map(|(_, o)| *o);
             FractionalOrderCalculator::calculate_order(None, first)
         };
 
@@ -2592,49 +2584,25 @@ impl SqliteStore {
         Ok(())
     }
 
-    /// Re-spread a parent's `has_child` order keys evenly.
+    /// Re-spread a parent's `has_child` order keys to `1.0, 2.0, …, n` in their
+    /// current `(order, id)` sequence, leaving every other edge property intact.
     ///
-    /// Takes the caller's writer connection rather than acquiring one: its only
-    /// caller (`move_node`) is already holding the guard around its own
-    /// read → compute → write, and the guard is not re-entrant. Passing it down
-    /// also keeps the rebalance inside that same serialized span, so the
-    /// re-read `move_node` does afterwards is guaranteed to see these new keys.
-    async fn rebalance_children_for_parent(
-        &self,
-        db: &libsql::Connection,
-        parent_id: &str,
-    ) -> Result<()> {
-        let mut rows = db.query(
-            "SELECT id, out_node FROM relationship WHERE in_node = ?1 AND relationship_type = 'has_child' ORDER BY json_extract(properties, '$.order') ASC",
+    /// One statement, so it is atomic on its own and can run on whatever
+    /// connection the caller already holds: `move_node`'s writer connection
+    /// (the guard is not re-entrant) or an `_in_tx` caller's transaction. Either
+    /// way the caller's re-read or index arithmetic sees these new keys. The
+    /// `(order, id)` sequence is the one callers must read siblings in for
+    /// index `i` to map to key `i + 1`.
+    async fn respread_children(conn: &libsql::Connection, parent_id: &str) -> Result<()> {
+        conn.execute(
+            "UPDATE relationship SET properties = json_set(properties, '$.order', ranked.new_order) \
+             FROM (SELECT id, CAST(ROW_NUMBER() OVER (ORDER BY json_extract(properties, '$.order') ASC, id ASC) AS REAL) AS new_order \
+                   FROM relationship WHERE in_node = ?1 AND relationship_type = 'has_child') AS ranked \
+             WHERE relationship.id = ranked.id",
             libsql::params![parent_id.to_string()],
-        ).await.context("Failed to get children for rebalancing")?;
-
-        let mut rels: Vec<(String, String)> = Vec::new();
-        while let Some(row) = rows.next().await? {
-            rels.push((row.get(0)?, row.get(1)?));
-        }
-
-        if rels.is_empty() {
-            return Ok(());
-        }
-
-        let new_orders = FractionalOrderCalculator::rebalance(rels.len());
-        let tx = db
-            .transaction()
-            .await
-            .context("Failed to begin rebalance transaction")?;
-
-        for (i, (rel_id, _)) in rels.iter().enumerate() {
-            let props = serde_json::json!({"order": new_orders[i]}).to_string();
-            tx.execute(
-                "UPDATE relationship SET properties = ?1 WHERE id = ?2",
-                libsql::params![props, rel_id.clone()],
-            )
-            .await
-            .context("Failed to rebalance relationship")?;
-        }
-
-        tx.commit().await.context("Failed to commit rebalance")?;
+        )
+        .await
+        .context("Failed to rebalance sibling order")?;
         Ok(())
     }
 
@@ -2770,7 +2738,7 @@ impl SqliteStore {
 
                     if let Some(next) = next_order {
                         if (next - prev_order) < FractionalOrderCalculator::MIN_GAP {
-                            self.rebalance_children_for_parent(&db, parent_id).await?;
+                            Self::respread_children(&db, parent_id).await?;
                             // Re-query after rebalancing
                             let mut rows2 = db.query(
                                 "SELECT out_node, json_extract(properties, '$.order') as ord FROM relationship WHERE in_node = ?1 AND relationship_type = 'has_child' AND out_node != ?2 ORDER BY json_extract(properties, '$.order') ASC",
