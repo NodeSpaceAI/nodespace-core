@@ -422,8 +422,8 @@ async fn routing_misses(
 
 /// "Mark X resolved/done/closed" sets a field on an existing record, so it
 /// must reach Graph Editing — the skill that whitelists `update_node`. The
-/// completion word shares vocabulary with other skills ("resolve" with
-/// Conflict Resolution), and a lexical false positive there left no write
+/// completion word shares vocabulary with other skills ("resolve" with the
+/// conflict skill, before it was retitled Conflict Journal), and a lexical false positive there left no write
 /// tool on Stage 2's surface: the model found the record and then could not
 /// change it. Stage 2 does not recover from that on the locked model, so the
 /// right skill has to be retrieved in the first place.
@@ -459,11 +459,12 @@ async fn completion_state_updates_route_graph_editing() {
 }
 
 /// Control for the case above: requests that really are about the conflict
-/// journal must keep routing to Conflict Resolution first, or widening Graph
-/// Editing's vocabulary has only moved the false positive.
+/// journal must keep routing to Conflict Journal first, or widening Graph
+/// Editing's vocabulary — or narrowing Conflict Journal's own — has only
+/// moved the false positive.
 #[tokio::test]
 #[ignore = "requires the locked nomic-embed-text-v1.5 GGUF on disk"]
-async fn control_conflict_requests_still_route_conflict_resolution() {
+async fn control_conflict_requests_still_route_conflict_journal() {
     let Some((embedding_service, node_service, _temp_dir)) = seed_and_embed().await else {
         return;
     };
@@ -474,14 +475,16 @@ async fn control_conflict_requests_still_route_conflict_resolution() {
             "resolve the conflict between the two Sarah Chen records",
             "show me the open conflicts",
             "dismiss that duplicate collision, it's fine",
+            "are there any unresolved conflicts?",
+            "keep the existing node for that conflict",
         ],
-        "Conflict Resolution",
+        "Conflict Journal",
         true,
     )
     .await;
     assert!(
         misses.is_empty(),
-        "Conflict Resolution lost rank 1 for {misses:?}"
+        "Conflict Journal lost rank 1 for {misses:?}"
     );
 }
 
@@ -491,9 +494,9 @@ async fn control_conflict_requests_still_route_conflict_resolution() {
 /// here — `delete_node` is offered only from the top tool-bearing candidate,
 /// so a Graph Editing that outranks Node Deletion silently withholds it.
 ///
-/// Scoped to Graph Editing on purpose: "delete the resolved incidents" also
-/// ranks Conflict Resolution above Node Deletion, on the shared word
-/// "resolve", independently of Graph Editing's wording.
+/// Scoped to Graph Editing on purpose; the conflict skill's pull on
+/// "resolved" is guarded separately by
+/// `deletion_requests_mentioning_resolved_route_node_deletion`.
 #[tokio::test]
 #[ignore = "requires the locked nomic-embed-text-v1.5 GGUF on disk"]
 async fn control_deletion_requests_are_not_outranked_by_graph_editing() {
@@ -521,5 +524,40 @@ async fn control_deletion_requests_are_not_outranked_by_graph_editing() {
     assert!(
         misses.is_empty(),
         "Graph Editing outranked Node Deletion for {misses:?}"
+    );
+}
+
+/// Deletion requests that mention "resolved" must put Node Deletion at rank 1.
+/// The conflict skill used to be titled "Conflict Resolution", and the shared
+/// word "resolve" ranked it first on every one of these (e.g. "delete the
+/// resolved incidents": 0.978 vs Node Deletion's 0.904). Since `delete_node` is
+/// offered only from the top tool-bearing candidate, the deletion was
+/// silently withheld.
+///
+/// "remove the resolved tickets" is deliberately absent: it ranks Graph
+/// Editing ("mark it resolved") above Node Deletion, a separate attractor
+/// that no wording of the conflict skill moves.
+#[tokio::test]
+#[ignore = "requires the locked nomic-embed-text-v1.5 GGUF on disk"]
+async fn deletion_requests_mentioning_resolved_route_node_deletion() {
+    let Some((embedding_service, node_service, _temp_dir)) = seed_and_embed().await else {
+        return;
+    };
+    let misses = routing_misses(
+        &embedding_service,
+        &node_service,
+        &[
+            "delete the resolved incidents",
+            "get rid of all the resolved bugs",
+            "purge resolved alerts from last month",
+            "delete the incident, it's resolved",
+        ],
+        "Node Deletion",
+        true,
+    )
+    .await;
+    assert!(
+        misses.is_empty(),
+        "Node Deletion lost rank 1 for {misses:?}"
     );
 }

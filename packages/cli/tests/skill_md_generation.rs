@@ -332,7 +332,7 @@ fn every_seeded_skill_is_represented() {
                     && skill.contains("nodespace relationship get")
             }
             "Node Deletion" => skill.contains("nodespace node delete"),
-            "Conflict Resolution" => {
+            "Conflict Journal" => {
                 skill.contains("nodespace conflicts list")
                     && skill.contains("nodespace conflicts dismiss")
             }

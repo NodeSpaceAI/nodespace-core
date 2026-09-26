@@ -11355,7 +11355,7 @@ mod tests {
         let exec = RoutingToolExecutor::new(
             inner,
             vec![skill_candidate(
-                "Conflict Resolution",
+                "Conflict Journal",
                 0.87,
                 &["list_conflicts"],
             )],
