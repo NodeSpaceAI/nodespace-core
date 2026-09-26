@@ -228,7 +228,11 @@ describe('KanbanView — consecutive status moves on a task node (browser mode)'
     });
     expect(cardsIn(columnFor(container, 'In Progress'))).toEqual([]);
 
-    expect(versionsSent).toEqual([1, 2]);
+    // The second move's write goes out after the card re-renders in its new
+    // column, so wait for it instead of asserting on the render's timing.
+    await waitFor(() => {
+      expect(versionsSent).toEqual([1, 2]);
+    });
     expect(conflictNotifications.notifications).toEqual([]);
   });
 
