@@ -199,7 +199,7 @@ IMPORTANT SUB-AGENT INSTRUCTIONS:
    ```
 
    - **Happy-DOM** (`bun run test`): 99% of tests — logic, services, utilities
-   - **Browser mode** (`bun run test:browser`): only for real focus/blur or browser-specific DOM APIs; requires `bunx playwright install chromium`
+   - **Browser mode** (`bun run test:browser`): only for real focus/blur or browser-specific DOM APIs; requires `bunx playwright install chromium` (the pre-push gate installs it when missing)
    - **Performance**: fast mode (default) for daily dev, `bun run test:perf` before perf-critical merges
    - **Database mode**: full integration validation before merging critical changes
 
@@ -225,7 +225,7 @@ IMPORTANT SUB-AGENT INSTRUCTIONS:
    >
    > The Status field accepts exactly six values — `Backlog`, `Todo`, `In Progress`, `In Review`, `Done`, `Blocked` — each mapped to a single-select option ID on the project board. Anything else is rejected; there is no "Ready for Review".
 
-   > ⚠️ **`git push` runs a pre-push gate (`scripts/test-gate.ts`, ADR-047)** that re-runs `test:all`, then `cargo build --bin nodespaced`, then the full `test:e2e` suite — every push, not just the first. On a fresh worktree with no Rust build cache this can take **several minutes** (cold `cargo build` alone can exceed 5 minutes). Give the push command a long timeout (10+ minutes) or run it in the background and wait for completion — a command that times out before the hook finishes looks identical to a real failure but isn't one; check the tail of the actual output for a real test failure vs. an incomplete cold build before concluding the push failed. Do not reach for `--no-verify` to work around slowness — it's reserved for WIP Handoff Commits.
+   > ⚠️ **`git push` runs a pre-push gate (`scripts/test-gate.ts`, ADR-047)** that re-runs `test:all`, `test:browser` (Chromium), `cargo build --bin nodespaced`, the SKILL.md drift check, `test:e2e`, and the Tauri-seam tests — every push, not just the first. Expect **~8–10 minutes**; a fresh worktree compiles its own crates cold, while crates.io dependencies come from the machine-wide sccache that `bun install` sets up (`scripts/setup-build-cache.ts`). Sidecar binaries don't need staging or copying in — debug builds leave unstaged ones out. Give the push command a long timeout (10+ minutes) or run it in the background and wait for completion — a command that times out before the hook finishes looks identical to a real failure but isn't one; check the tail of the actual output for a real test failure vs. an incomplete cold build before concluding the push failed. Do not reach for `--no-verify` to work around slowness — it's reserved for WIP Handoff Commits.
 
 5. **Code Review** — run `/pragmatic-code-review` on every PR before merge. NEVER merge without it. **Always follow it with `/address-review`, unconditionally — even when the review comes back APPROVE with zero findings.** Do not pre-judge from the review text whether anything is "just nits" or "nothing to address" and skip the step on that basis; `/address-review` itself owns that triage and the "is a re-review needed?" decision. Repeat review → address-review until `/address-review` reports no re-review needed. Then STOP — merging is the user's call, not automatic.
 
