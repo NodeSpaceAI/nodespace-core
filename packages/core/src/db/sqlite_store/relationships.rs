@@ -193,6 +193,58 @@ SELECT DISTINCT
          THEN t.sid ELSE t.nid END AS container_id
 FROM top t WHERE t.rn = 1"#;
 
+/// `IN (...)` chunk size for the root-only membership check — well under
+/// SQLite's compiled SQLITE_MAX_VARIABLE_NUMBER (32766).
+const ROOT_ONLY_ID_CHUNK: usize = 900;
+
+/// The deduplicated member ids of a root-only membership check, chunked for
+/// [`root_only_membership_query`]. Shared by
+/// `SqliteStore::assert_root_only_membership` and its `_in_tx` twin so the two
+/// differ only in which connection they read through.
+fn root_only_membership_chunks<'a>(member_ids: &[&'a str]) -> Vec<Vec<&'a str>> {
+    let mut unique: Vec<&str> = member_ids.to_vec();
+    unique.sort_unstable();
+    unique.dedup();
+    unique
+        .chunks(ROOT_ONLY_ID_CHUNK)
+        .map(<[&str]>::to_vec)
+        .collect()
+}
+
+/// `(id, node_type, has_parent)` for each id in `chunk`, with its bound params.
+fn root_only_membership_query(chunk: &[&str]) -> (String, Vec<libsql::Value>) {
+    let placeholders: Vec<String> = (1..=chunk.len()).map(|i| format!("?{}", i)).collect();
+    let sql = format!(
+        "SELECT n.id, n.node_type, \
+         EXISTS(SELECT 1 FROM relationship r \
+                WHERE r.out_node = n.id AND r.relationship_type = 'has_child') \
+         FROM node n WHERE n.id IN ({})",
+        placeholders.join(", ")
+    );
+    let params = chunk
+        .iter()
+        .map(|id| libsql::Value::Text(id.to_string()))
+        .collect();
+    (sql, params)
+}
+
+/// The root-only membership rule for one row of [`root_only_membership_query`]:
+/// a member with a parent is rejected unless it is a `person`. There is no
+/// collection exemption — a collection is always a root (enforced by the
+/// `collection_is_root_*` triggers), so it can never reach this with a parent.
+///
+/// The single source of the rule for both guard twins, so they cannot drift.
+fn check_root_only_member(id: String, node_type: String, has_parent: i64) -> Result<()> {
+    if has_parent != 0 && node_type != "person" {
+        return Err(anyhow::anyhow!(
+            "member_of_not_root: content node '{}' (type '{}') has a parent, so it cannot be a member of a collection directly — file its root node instead",
+            id,
+            node_type
+        ));
+    }
+    Ok(())
+}
+
 impl SqliteStore {
     pub async fn create_mention(&self, source_id: &str, target_id: &str) -> Result<Option<String>> {
         // Guard spans the existence check and the insert: without it two
@@ -446,25 +498,8 @@ impl SqliteStore {
         if member_ids.is_empty() {
             return Ok(());
         }
-        let mut unique: Vec<&str> = member_ids.to_vec();
-        unique.sort_unstable();
-        unique.dedup();
-
-        // Chunk the `IN (...)` under SQLite's compiled SQLITE_MAX_VARIABLE_NUMBER (32766).
-        const ID_CHUNK: usize = 900;
-        for chunk in unique.chunks(ID_CHUNK) {
-            let placeholders: Vec<String> = (1..=chunk.len()).map(|i| format!("?{}", i)).collect();
-            let sql = format!(
-                "SELECT n.id, n.node_type, \
-                 EXISTS(SELECT 1 FROM relationship r \
-                        WHERE r.out_node = n.id AND r.relationship_type = 'has_child') \
-                 FROM node n WHERE n.id IN ({})",
-                placeholders.join(", ")
-            );
-            let params: Vec<libsql::Value> = chunk
-                .iter()
-                .map(|id| libsql::Value::Text(id.to_string()))
-                .collect();
+        for chunk in root_only_membership_chunks(member_ids) {
+            let (sql, params) = root_only_membership_query(&chunk);
             let mut rows = self
                 .read()
                 .await?
@@ -472,16 +507,7 @@ impl SqliteStore {
                 .await
                 .context("Failed to validate root-only membership")?;
             while let Some(row) = rows.next().await? {
-                let id: String = row.get(0)?;
-                let node_type: String = row.get(1)?;
-                let has_parent: i64 = row.get(2)?;
-                if has_parent != 0 && node_type != "person" {
-                    return Err(anyhow::anyhow!(
-                        "member_of_not_root: content node '{}' (type '{}') has a parent, so it cannot be a member of a collection directly — file its root node instead",
-                        id,
-                        node_type
-                    ));
-                }
+                check_root_only_member(row.get(0)?, row.get(1)?, row.get(2)?)?;
             }
         }
         Ok(())
@@ -498,40 +524,15 @@ impl SqliteStore {
         if member_ids.is_empty() {
             return Ok(());
         }
-        let mut unique: Vec<&str> = member_ids.to_vec();
-        unique.sort_unstable();
-        unique.dedup();
-
-        const ID_CHUNK: usize = 900;
-        for chunk in unique.chunks(ID_CHUNK) {
-            let placeholders: Vec<String> = (1..=chunk.len()).map(|i| format!("?{}", i)).collect();
-            let sql = format!(
-                "SELECT n.id, n.node_type, \
-                 EXISTS(SELECT 1 FROM relationship r \
-                        WHERE r.out_node = n.id AND r.relationship_type = 'has_child') \
-                 FROM node n WHERE n.id IN ({})",
-                placeholders.join(", ")
-            );
-            let params: Vec<libsql::Value> = chunk
-                .iter()
-                .map(|id| libsql::Value::Text(id.to_string()))
-                .collect();
+        for chunk in root_only_membership_chunks(member_ids) {
+            let (sql, params) = root_only_membership_query(&chunk);
             let mut rows = tx
                 .conn()
                 .query(&sql, params)
                 .await
                 .context("Failed to validate root-only membership")?;
             while let Some(row) = rows.next().await? {
-                let id: String = row.get(0)?;
-                let node_type: String = row.get(1)?;
-                let has_parent: i64 = row.get(2)?;
-                if has_parent != 0 && node_type != "collection" && node_type != "person" {
-                    return Err(anyhow::anyhow!(
-                        "member_of_not_root: content node '{}' (type '{}') has a parent, so it cannot be a member of a collection directly — file its root node instead",
-                        id,
-                        node_type
-                    ));
-                }
+                check_root_only_member(row.get(0)?, row.get(1)?, row.get(2)?)?;
             }
         }
         Ok(())
@@ -2522,6 +2523,34 @@ impl SqliteStore {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    /// The shared root-only rule: a parented member is rejected unless it is a
+    /// `person`, with no collection exemption — the rule both guard twins run.
+    #[test]
+    fn root_only_member_rule_exempts_only_person() {
+        assert!(check_root_only_member("a".into(), "text".into(), 0).is_ok());
+        assert!(check_root_only_member("b".into(), "person".into(), 1).is_ok());
+        for node_type in ["text", "task", "collection"] {
+            let err = check_root_only_member("c".into(), node_type.into(), 1).unwrap_err();
+            assert!(err.to_string().starts_with("member_of_not_root:"));
+        }
+    }
+
+    #[test]
+    fn root_only_membership_chunks_dedup_and_split() {
+        let ids: Vec<String> = (0..ROOT_ONLY_ID_CHUNK + 1)
+            .map(|i| format!("n{i}"))
+            .collect();
+        let mut refs: Vec<&str> = ids.iter().map(String::as_str).collect();
+        refs.push("n0");
+        let chunks = root_only_membership_chunks(&refs);
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(
+            chunks.iter().map(Vec::len).sum::<usize>(),
+            ROOT_ONLY_ID_CHUNK + 1
+        );
+        assert!(root_only_membership_chunks(&[]).is_empty());
+    }
 
     /// Query-plan regression check for `get_incoming_mention_containers`'s
     /// recursive CTE. The recursive step must resolve via the correlated
