@@ -1,102 +1,83 @@
 <!--
   PersonSchemaForm - Property form for person nodes
 
-  Provides direct editing of a person's typed core fields — firstName,
-  lastName, email — read from the typed PersonNode and written through the
-  store's typed person update. Display identity (the
-  inline outline row and node title) is composed by the person schema's
-  title_template ("{first_name} {last_name}") — not synced into content
-  here; person nodes are read-only inline, like other title_template-driven
-  types (see resolveTitleOrContent / node-row.svelte).
+  Edits a person's typed core fields — firstName, lastName, email — read from
+  the typed PersonNode and written through the store's typed person update
+  (the same per-field write sequencing task's core fields get). Display
+  identity (the inline outline row and node title) is composed by the person
+  schema's title_template ("{first_name} {last_name}") — not synced into
+  content here; person nodes are read-only inline, like other
+  title_template-driven types (see resolveTitleOrContent / node-row.svelte).
 
-  Email carries a store-aware `unique` schema rule (ADR-065, case-insensitive,
-  ignores empty): on blur, a colliding value surfaces a dismissible "a person
-  with this email already exists" suggestion — adopt-existing (navigate to the
-  match) or keep-as-new (dismiss, keep editing this node). This is
-  suggest-don't-block by design: the field save above is never gated on the
-  lookup, and create-anyway always remains possible.
+  What stays person-specific is only presentation: the three inputs'
+  example placeholders and email's input type. Everything else is shared:
+  - Shell chrome (Collapsible, trigger row, promoted relationship fields, the
+    gated Relationships entry point) is owned by TypedFormShell.
+  - The duplicate-email suggestion is the schema-driven `unique` rule
+    (UniqueFieldCheck, ADR-065), enabled because the loaded person schema
+    flags `email` unique — not because this is person.
 
-  A duplicate that slips past this creation-time suggestion (offline write,
-  sync convergence) is surfaced instead as a durable `UniqueFieldCollision`
-  record in the conflict journal (ADR-068) — see the Conflicts view, not this
-  form.
+  Props:
+  - nodeId: ID of the person node to display properties for
 -->
 
 <script lang="ts">
+  import { onMount } from 'svelte';
   import { Input } from '$lib/components/ui/input';
-  import { Alert, AlertDescription } from '$lib/components/ui/alert';
-  import { Button } from '$lib/components/ui/button';
   import { backendAdapter } from '$lib/services/backend-adapter';
   import { sharedNodeStore } from '$lib/services/shared-node-store.svelte';
-  import { getNavigationService } from '$lib/services/navigation-service';
   import { createLogger } from '$lib/utils/logger';
   import { evaluateTitleTemplate } from '$lib/utils/title-template';
   import { pushComputedTitle } from '$lib/utils/title-preview';
-  import type { Node, PersonNode, PersonNodeUpdate } from '$lib/types';
-  import RelationshipViewerModal from '$lib/components/relationships/relationship-viewer-modal.svelte';
-  import RelationshipField from '$lib/components/relationships/relationship-field.svelte';
-  import { NodeRelationshipsState } from '$lib/services/node-relationships-state.svelte';
-  import WaypointsIcon from '@lucide/svelte/icons/waypoints';
-  import UserRoundSearchIcon from '@lucide/svelte/icons/user-round-search';
+  import type { PersonNode, PersonNodeUpdate } from '$lib/types';
+  import { type SchemaNode, type SchemaField, isSchemaNode } from '$lib/types/schema-node';
+  import { resolveFieldValue, buildFieldWrite } from '$lib/components/schema/schema-field-resolution';
+  import TypedFormShell from '$lib/components/schema/typed-form-shell.svelte';
+  import UniqueFieldSuggestion from '$lib/components/schema/unique-field-suggestion.svelte';
+  import { UniqueFieldCheck, isUniqueField } from '$lib/components/schema/unique-field-check.svelte';
 
   const log = createLogger('PersonSchemaForm');
 
-  // Relationships viewer entry point — e.g. the tasks assigned to this person
-  // surface here.
-  let showRelationships = $state(false);
-
   let { nodeId }: { nodeId: string } = $props();
 
-  // PersonSchemaForm doesn't route through TypedFormShell (it stays hardcoded,
-  // not schema-driven), so it drives the same NodeRelationshipsState itself:
-  // single-valued relationships render as fields after the person's own, and
-  // the Relationships trigger shows only when the modal has something left.
-  const relationships = new NodeRelationshipsState();
-  $effect(() => relationships.load(nodeId));
-  const promotedGroups = $derived(relationships.partitioned.promoted);
-
   const node = $derived(sharedNodeStore.getNode(nodeId));
-  const person = $derived(node as PersonNode | undefined);
+  const person = $derived(node?.nodeType === 'person' ? (node as PersonNode) : undefined);
 
   const firstName = $derived(person?.firstName ?? '');
   const lastName = $derived(person?.lastName ?? '');
   const email = $derived(person?.email ?? '');
 
-  // Adopt-existing suggestion state (ADR-065). `duplicateMatch` is
-  // the existing person the current email collides with, or null when there is
-  // none / the suggestion was dismissed. `checkedForEmail` skips re-issuing a
-  // lookup for a value already checked (e.g. tabbing through an unchanged
-  // field). Staleness itself — whether an in-flight lookup's result is still
-  // allowed to land — is decided by `checkGeneration`, NOT by comparing values:
-  // two different triggers (a blur check and a badge re-check) can
-  // race for the SAME or DIFFERENT email, and a monotonic generation is the
-  // only thing that correctly says "only the most recently STARTED lookup may
-  // ever write `duplicateMatch`" regardless of which resolves first or what
-  // value each was for.
-  let duplicateMatch = $state<Node | null>(null);
-  let checkedForEmail: string | null = null;
-  let checkGeneration = 0;
-
-  // A component instance can be reused across different person nodes (no
-  // `{#key nodeId}` at the call site) — reset the suggestion when the node
-  // being edited changes, or a suggestion computed for the PREVIOUS person
-  // (a different existing-node id, a different email) would linger on screen
-  // and "Use existing" would navigate using a match that no longer applies.
-  $effect(() => {
-    void nodeId;
-    duplicateMatch = null;
-    checkedForEmail = null;
-    checkGeneration++;
+  // Loaded once (constant type). Drives the `unique` rule on email; until it
+  // lands, or if it fails, email simply gets no duplicate suggestion.
+  let schema = $state<SchemaNode | null>(null);
+  onMount(() => {
+    backendAdapter
+      .getSchema('person')
+      .then((schemaNode) => {
+        if (isSchemaNode(schemaNode)) schema = schemaNode;
+      })
+      .catch((error) => log.error('Failed to load schema:', error));
   });
 
-  // Routed through the store's typed person update (ADR-049) — NOT
-  // backendAdapter directly. The store applies the change optimistically and
-  // synchronously, and owns persistence + error reporting itself; callers
-  // don't need their own try/catch around it. An emptied field is cleared
-  // rather than stored as "". The title itself does NOT wait on this — see
-  // pushTitlePreview below (ADR-077).
+  const emailField = $derived(schema?.fields.find((f) => f.name === 'email'));
+  // Rebuilt per node: the instance can be reused across person nodes, and a
+  // suggestion computed for the previous one must not linger.
+  const emailCheck = $derived.by(() => {
+    void nodeId;
+    return new UniqueFieldCheck('person', 'email');
+  });
+
+  const fieldStats = $derived({
+    filled: [firstName, lastName, email].filter((value) => value !== '').length,
+    total: 3
+  });
+
+  // Routed through the store's typed person update (ADR-049). The store
+  // applies the change optimistically and synchronously, and owns
+  // persistence + error reporting. An emptied field is cleared rather than
+  // stored as "".
   function updateField(field: keyof PersonNodeUpdate, value: string) {
-    if (!node) return;
+    if (!person) return;
     sharedNodeStore.updatePersonNode(
       nodeId,
       { [field]: value === '' ? null : value },
@@ -104,28 +85,32 @@
     );
   }
 
-  // Mirrors the person schema's real title_template ("{first_name}
-  // {last_name}", core_schemas.rs) so the preview below matches what the
-  // backend will independently compute and persist. PersonSchemaForm is
-  // deliberately hardcoded rather than schema-driven (see the file header),
-  // so this is a literal, not a schema lookup — keep in sync with
-  // core_schemas.rs's person schema if that template ever changes.
+  // Person has no nested (object/array) fields, so the shell's nested-field
+  // modal never opens; these back it with the shared schema-field read/write.
+  function getFieldValue(fieldName: string): unknown {
+    return node ? resolveFieldValue(node, fieldName) : undefined;
+  }
+
+  function onFieldChange(fieldName: string, value: unknown) {
+    if (!node) return;
+    sharedNodeStore.updateNode(nodeId, buildFieldWrite(node, fieldName, value), {
+      type: 'viewer',
+      viewerId: 'person-schema-form'
+    });
+  }
+
+  // Mirrors the person schema's title_template ("{first_name} {last_name}",
+  // core_schemas.rs) — a literal, since the preview below supplies exactly
+  // those two fields. Keep in sync if that template ever changes.
   const PERSON_TITLE_TEMPLATE = '{first_name} {last_name}';
 
-  // Live, in-progress values for the title preview below — NOT the same as
-  // `firstName`/`lastName` above, which only track the last COMMITTED
-  // (blurred/persisted) value. Tracking both fields' in-progress values
-  // independently (rather than pairing "this field's fresh keystroke" with
-  // "the other field's last commit") matters because a user can tab from
-  // one name field straight into the other and keep typing before either
-  // ever blurs — pairing against the stale committed value would silently
-  // drop the first field's not-yet-blurred edit from the preview.
-  //
-  // Resynced from the committed values whenever those actually change
-  // (`$effect` below) — covers both the nodeId-changes-to-a-different-person
-  // case and this form's own blur-commit landing (a same-value, harmless
-  // no-op resync) and a remote update to this same node's name fields
-  // arriving from elsewhere while this form is open.
+  // Live, in-progress values for the title preview — NOT the same as
+  // `firstName`/`lastName`, which track the last COMMITTED (blurred) value. A
+  // user can tab from one name field into the other and keep typing before
+  // either blurs; pairing one field's keystroke with the other's stale
+  // committed value would drop the first field's edit from the preview.
+  // Resynced whenever the committed values change (a different node, this
+  // form's own commit landing, or a remote update).
   let firstNameDraft = $state('');
   let lastNameDraft = $state('');
   $effect(() => {
@@ -137,23 +122,13 @@
 
   /**
    * Per ADR-077: the editing client computes its own title instantly from
-   * in-progress field values, with no dependency on a completed round trip
-   * or a `NodeUpdated` echo. Pushed into the store via `isComputedField`
-   * (skips persistence and OCC entirely — this is a pure, synchronous local
-   * UI echo) so every reader of the store (header, tab, inline row) reflects
-   * it in the same tick, not just this form. The backend still
-   * independently computes and persists the authoritative title on save;
-   * once that response lands, the store's existing reconciliation logic
-   * (shared-node-store.svelte.ts) reapplies it — which should already match
-   * this preview exactly, since both sides evaluate the same template over
-   * the same field values.
+   * in-progress field values, pushed into the store via `isComputedField`
+   * (no persistence, no OCC) so every reader reflects it in the same tick.
+   * The backend independently computes and persists the authoritative title
+   * on save, which should match this preview exactly.
    */
   function pushTitlePreview() {
     if (!node) return;
-    // No `fields` arg: neither first_name nor last_name is an enum (both
-    // are plain "string" per core_schemas.rs), so there is nothing for
-    // evaluateTitleTemplate to resolve — see generic-schema-form.svelte's
-    // equivalent call for the case where that matters.
     const title = evaluateTitleTemplate(PERSON_TITLE_TEMPLATE, {
       first_name: firstNameDraft,
       last_name: lastNameDraft
@@ -181,210 +156,57 @@
     if (value !== lastName) updateField('lastName', value);
   }
 
-  async function handleEmailBlur(e: FocusEvent) {
+  function handleEmailBlur(e: FocusEvent) {
     const value = (e.currentTarget as HTMLInputElement).value;
-    // The store write below is synchronous (it applies optimistically and
-    // hands persistence off in the background), so issuing it before
-    // awaiting the duplicate lookup already guarantees the check is never
-    // gated behind the save landing — since both write and read this node's
-    // own email, a check that ran AFTER the save landed would see two rows
-    // holding `value` (this node's own freshly-saved copy, plus any real
-    // duplicate), and with no ORDER BY on the lookup, could match itself and
-    // hide the real duplicate entirely. `excludeId` below closes this
-    // structurally regardless of ordering, but issuing the check immediately
-    // also means the suggestion isn't held back by an in-flight save.
+    // Save first, then look up: the store write is synchronous, so the save
+    // is never gated on the lookup (suggest-don't-block).
     if (value !== email) updateField('email', value);
-    await checkForDuplicate(value);
+    if (isUniqueField(emailField)) void emailCheck.check(nodeId, value);
   }
-
-  /**
-   * Suggest-don't-block uniqueness check (ADR-065): looks up an existing
-   * active person with the same (case-insensitive) email, excluding this
-   * node itself via `excludeId`. Runs on blur (commit), never on every
-   * keystroke — a single indexed lookup, not a per-character scan. Skips the
-   * round-trip entirely when re-blurring a value already checked, so tabbing
-   * through an unchanged field doesn't re-issue it. Never blocks or reverts
-   * the save; a lookup failure is logged and simply surfaces no suggestion.
-   */
-  async function checkForDuplicate(value: string) {
-    if (checkedForEmail === value) return;
-    checkedForEmail = value;
-    // Claim this attempt's generation BEFORE the await — any earlier
-    // in-flight call (whatever value or trigger it was for) is now
-    // unconditionally superseded and must not write `duplicateMatch` when it
-    // eventually resolves, even if it resolves AFTER this one.
-    const generation = ++checkGeneration;
-    if (!value.trim()) {
-      duplicateMatch = null;
-      return;
-    }
-    try {
-      const match = await backendAdapter.findDuplicateFor('person', 'email', value, nodeId);
-      // Ignore a superseded response — from either a newer blur check for a
-      // different value, or a badge-triggered recheck that
-      // started after this one. The backend already excludes this node via
-      // excludeId above — the `match.id !== nodeId` check is a defensive
-      // backstop, not the primary exclusion mechanism (an earlier version
-      // relied on it alone, which could hide a REAL different duplicate
-      // whenever this node's own not-yet-excluded row satisfied the query
-      // first).
-      if (generation !== checkGeneration) return;
-      duplicateMatch = match && match.id !== nodeId ? match : null;
-    } catch (err) {
-      // Same staleness guard as the success path — a slow, now-superseded
-      // request that fails after a newer one has already resolved must not
-      // clobber that newer (possibly valid) result.
-      if (generation !== checkGeneration) return;
-      log.error('Duplicate lookup failed (non-blocking)', { err });
-      duplicateMatch = null;
-    }
-  }
-
-  function dismissDuplicateSuggestion() {
-    // "Keep as new" — create-anyway. Nothing to undo: the field save already
-    // went through above: this only clears the suggestion banner.
-    duplicateMatch = null;
-  }
-
-  function adoptExisting() {
-    if (!duplicateMatch) return;
-    // "Use existing" — open the existing person instead. Deliberately
-    // non-destructive: this does not delete or merge the current node (full
-    // merge machinery is out of scope for this rule), it just gets the user to
-    // the record they meant to use. No sourcePaneId is available from this
-    // form's props, so with two panes open this resolves against the current
-    // active pane rather than necessarily the pane hosting this form — the
-    // same fallback other unparented call sites of this navigation helper
-    // already accept.
-    getNavigationService().navigateToNodeInOtherPane(duplicateMatch.id);
-    duplicateMatch = null;
-  }
-
-  // duplicateMatch.title is the person schema's title_template-composed display
-  // name (server-computed, same rule PersonNodeBehavior::compute_display_name
-  // mirrors) — not hand-recomposed from first_name/last_name here.
-  const duplicateDisplayName = $derived(duplicateMatch?.title || undefined);
 </script>
 
-<div class="person-schema-form">
-  <div class="field">
-    <label for="person-first-name">First name</label>
-    <Input
-      id="person-first-name"
-      type="text"
-      value={firstName}
-      placeholder="Jane"
-      oninput={handleFirstNameInput}
-      onblur={handleFirstNameBlur}
-    />
-  </div>
-  <div class="field">
-    <label for="person-last-name">Last name</label>
-    <Input
-      id="person-last-name"
-      type="text"
-      value={lastName}
-      placeholder="Doe"
-      oninput={handleLastNameInput}
-      onblur={handleLastNameBlur}
-    />
-  </div>
-  <div class="field">
-    <label for="person-email">Email</label>
-    <Input
-      id="person-email"
-      type="email"
-      value={email}
-      placeholder="email@example.com"
-      onblur={handleEmailBlur}
-    />
-  </div>
-
-  {#if duplicateMatch}
-    <Alert variant="warning">
-      <UserRoundSearchIcon class="h-4 w-4" />
-      <AlertDescription class="duplicate-message">
-        A person with this email already exists{duplicateDisplayName
-          ? `: ${duplicateDisplayName}`
-          : ''} — use them instead?
-      </AlertDescription>
-      <!-- AlertDescription renders a <p>, which cannot contain block content
-           (another <p>, a <div>) without the browser silently restructuring
-           the DOM — so the action buttons are a sibling, not a child. -->
-      <div class="duplicate-actions">
-        <Button type="button" size="sm" variant="outline" onclick={adoptExisting}>
-          Use existing
-        </Button>
-        <Button type="button" size="sm" variant="ghost" onclick={dismissDuplicateSuggestion}>
-          Keep as new
-        </Button>
+{#if person}
+  <TypedFormShell {nodeId} {fieldStats} autoOpen {getFieldValue} {onFieldChange}>
+    {#snippet fields(_openNestedModal: (_field: SchemaField) => void)}
+      <div class="grid grid-cols-2 gap-4">
+        <div class="space-y-2">
+          <label for="person-first-name" class="text-sm font-medium">First name</label>
+          <Input
+            id="person-first-name"
+            type="text"
+            value={firstName}
+            placeholder="Jane"
+            oninput={handleFirstNameInput}
+            onblur={handleFirstNameBlur}
+          />
+        </div>
+        <div class="space-y-2">
+          <label for="person-last-name" class="text-sm font-medium">Last name</label>
+          <Input
+            id="person-last-name"
+            type="text"
+            value={lastName}
+            placeholder="Doe"
+            oninput={handleLastNameInput}
+            onblur={handleLastNameBlur}
+          />
+        </div>
+        <div class="space-y-2">
+          <label for="person-email" class="text-sm font-medium">Email</label>
+          <Input
+            id="person-email"
+            type="email"
+            value={email}
+            placeholder="email@example.com"
+            onblur={handleEmailBlur}
+          />
+        </div>
+        {#if emailField}
+          <div class="col-span-2 empty:hidden">
+            <UniqueFieldSuggestion check={emailCheck} field={emailField} />
+          </div>
+        {/if}
       </div>
-    </Alert>
-  {/if}
-
-  {#each promotedGroups as group (group.key)}
-    {@const fieldId = `person-relationship-${group.key}`}
-    <div class="field">
-      <label for={fieldId}>{group.label}</label>
-      <RelationshipField {nodeId} {group} {fieldId} onChanged={() => relationships.reload()} />
-    </div>
-  {/each}
-
-  <!-- Relationships entry point, for everything not already a field above. -->
-  {#if relationships.showModalTrigger}
-    <button
-      type="button"
-      class="flex w-full items-center gap-2 py-2 text-sm font-medium text-muted-foreground transition-all hover:opacity-80"
-      onclick={() => (showRelationships = true)}
-    >
-      <WaypointsIcon class="h-4 w-4" />
-      <span>Relationships</span>
-    </button>
-  {/if}
-</div>
-
-<!-- Reload on close, as TypedFormShell does. -->
-<RelationshipViewerModal
-  bind:open={
-    () => showRelationships,
-    (open) => {
-      showRelationships = open;
-      if (!open) void relationships.reload();
-    }
-  }
-  {nodeId}
-/>
-
-<style>
-  .person-schema-form {
-    display: flex;
-    flex-direction: column;
-    gap: 0.75rem;
-    padding: 0.5rem 0;
-  }
-
-  .field {
-    display: flex;
-    flex-direction: column;
-    gap: 0.25rem;
-  }
-
-  label {
-    font-size: 0.75rem;
-    color: hsl(var(--muted-foreground));
-    font-weight: 500;
-  }
-
-  /* `class` on <AlertDescription> is forwarded to that component's own
-     internal element rather than applied to one in THIS template, so the
-     Svelte compiler can't see the usage and would otherwise warn this
-     selector unused. */
-  :global(.duplicate-message) {
-    margin: 0 0 0.5rem 0;
-  }
-
-  .duplicate-actions {
-    display: flex;
-    gap: 0.5rem;
-  }
-</style>
+    {/snippet}
+  </TypedFormShell>
+{/if}

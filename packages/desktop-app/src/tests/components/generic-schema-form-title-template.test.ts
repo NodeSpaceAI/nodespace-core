@@ -2,7 +2,7 @@
  * GenericSchemaForm — client-side title preview for a title_template schema
  * (ADR-077), covering a NON-person title-templated type.
  *
- * person-schema-form.test.ts covers PersonSchemaForm's hardcoded title
+ * person-schema-form.test.ts covers PersonSchemaForm's own title
  * preview. Per the issue's explicit "not person-specific" framing, this file
  * proves the same mechanism works for GenericSchemaForm — the path any
  * user-defined `titleTemplate` schema actually renders through — using a

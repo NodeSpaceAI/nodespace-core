@@ -7,6 +7,10 @@
   presentational component: it renders a control bound to `value` and calls
   `onChange(newValue)` on every edit. It never touches the store.
 
+  `onCommit(value)`, when given, fires when a text (string/text) control loses
+  focus — the commit point a blur-driven check (the `unique` rule, ADR-065)
+  hangs off. Other controls never call it.
+
   Field type → control:
   - enum    → Select (coreValues + userValues)
   - date    → Popover + Calendar
@@ -30,11 +34,13 @@
     field,
     value,
     onChange,
+    onCommit,
     fieldId
   }: {
     field: SchemaField;
     value: unknown;
     onChange: (_value: unknown) => void;
+    onCommit?: (_value: string) => void;
     fieldId: string;
   } = $props();
 
@@ -114,6 +120,7 @@
     type="text"
     value={(value as string) || ''}
     oninput={(e) => onChange(e.currentTarget.value)}
+    onblur={(e) => onCommit?.(e.currentTarget.value)}
     placeholder={field.default ? String(field.default) : ''}
   />
 {:else}
