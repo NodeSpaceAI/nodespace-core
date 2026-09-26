@@ -29,6 +29,10 @@ use crate::nodespace::{
 };
 use crate::services::node_service::{nodes_to_proto, ops_error_to_status};
 
+/// Maximum node ids accepted by one `batch_queue_embeddings` call, matching
+/// the node service's batch RPCs.
+const MAX_BATCH_QUEUE_EMBEDDINGS: usize = 100;
+
 /// Live embedding state once the model has finished loading.
 pub struct EmbeddingReady {
     pub embedding_service: Arc<NodeEmbeddingService>,
@@ -273,6 +277,16 @@ impl GrpcEmbeddingsService for EmbeddingsServiceImpl {
         let this = self.route(&request).await?;
         let req = request.into_inner();
 
+        // Each id costs a node fetch plus a queue write while the state read
+        // guard is held, so cap the batch like the node service's batch RPCs.
+        if req.node_ids.len() > MAX_BATCH_QUEUE_EMBEDDINGS {
+            return Err(Status::invalid_argument(format!(
+                "Batch size exceeds maximum of {} (got {})",
+                MAX_BATCH_QUEUE_EMBEDDINGS,
+                req.node_ids.len()
+            )));
+        }
+
         let guard = this.state.read().await;
         let state = guard.as_ref().ok_or_else(|| this.unavailable())?;
 
@@ -360,5 +374,41 @@ mod tests {
             "expected a failure message distinct from 'loading', got: {}",
             status.message()
         );
+    }
+
+    fn batch_request(len: usize) -> Request<BatchQueueEmbeddingsRequest> {
+        Request::new(BatchQueueEmbeddingsRequest {
+            node_ids: (0..len).map(|i| format!("node-{i}")).collect(),
+        })
+    }
+
+    /// An oversized batch is rejected up front with `INVALID_ARGUMENT`,
+    /// before the state guard is taken -- so even with no model loaded the
+    /// caller learns the request itself is wrong, not that it should retry.
+    #[tokio::test]
+    async fn batch_queue_embeddings_rejects_oversized_batch() {
+        let (svc, _tmp) = test_service(false).await;
+        let status = svc
+            .batch_queue_embeddings(batch_request(MAX_BATCH_QUEUE_EMBEDDINGS + 1))
+            .await
+            .expect_err("oversized batch must be rejected");
+        assert_eq!(status.code(), tonic::Code::InvalidArgument);
+        assert!(
+            status.message().contains("exceeds maximum"),
+            "expected a batch-size message, got: {}",
+            status.message()
+        );
+    }
+
+    /// A batch exactly at the cap passes the size check and reaches the
+    /// model-state check (here: still loading).
+    #[tokio::test]
+    async fn batch_queue_embeddings_accepts_batch_at_cap() {
+        let (svc, _tmp) = test_service(false).await;
+        let status = svc
+            .batch_queue_embeddings(batch_request(MAX_BATCH_QUEUE_EMBEDDINGS))
+            .await
+            .expect_err("no model is loaded in the test service");
+        assert_eq!(status.code(), tonic::Code::Unavailable);
     }
 }
