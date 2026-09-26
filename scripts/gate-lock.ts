@@ -452,6 +452,37 @@ function ticketsAhead(
   return ahead;
 }
 
+/** How often an unchanged waiting status is repeated, so a wait never looks hung. */
+export const STATUS_HEARTBEAT_MS = 5 * 60 * 1000;
+
+/**
+ * A logger for the waiting status that prints only when what it reports
+ * changes (keyed by `key`), or once per heartbeat.
+ *
+ * A waiting gate used to print a line every poll — every 2s — into the
+ * terminal of whichever session pushed. When that terminal isn't being read,
+ * the pipe fills within minutes and the waiter blocks mid-print. It is still
+ * alive, so its ticket is never reaped; when its turn comes it can't take the
+ * lock, and with first-come-first-served ordering every gate behind it waits
+ * until someone looks at that session. A handful of lines per wait can't
+ * fill a pipe.
+ */
+export function statusLogger(
+  log: (message: string) => void,
+  now: () => number,
+  heartbeatMs: number = STATUS_HEARTBEAT_MS
+): (key: string, line: string) => void {
+  let lastKey: string | null = null;
+  let lastAt = 0;
+  return (key, line) => {
+    const t = now();
+    if (key === lastKey && t - lastAt < heartbeatMs) return;
+    lastKey = key;
+    lastAt = t;
+    log(line);
+  };
+}
+
 const realSleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
@@ -473,6 +504,7 @@ export async function acquireGateLock(options: AcquireOptions = {}): Promise<Gat
   const host = options.host ?? hostname();
   const isAlive = options.isAlive ?? ((pid: number) => isPidAlive(pid));
   const what = options.what ?? "test gate";
+  const status = statusLogger(log, now);
 
   if (process.env[DISABLE_ENV_VAR]) {
     log(`\n⚠ ${DISABLE_ENV_VAR} set — running without the gate lock (gates may run concurrently).\n`);
@@ -521,7 +553,8 @@ export async function acquireGateLock(options: AcquireOptions = {}): Promise<Gat
         log("   (gates are serialized so they don't starve each other of CPU; see ADR-047)");
         announced = true;
       }
-      log(formatQueuedLine(ahead.length, current.state === "held" ? current.holder : null, now(), waitedMs));
+      const holding = current.state === "held" ? current.holder : null;
+      status(`queued:${ahead.length}:${holding?.pid ?? ""}`, formatQueuedLine(ahead.length, holding, now(), waitedMs));
       await sleep(pollIntervalMs);
       continue;
     }
@@ -599,7 +632,7 @@ export async function acquireGateLock(options: AcquireOptions = {}): Promise<Gat
       log("   (gates are serialized so they don't starve each other of CPU; see ADR-047)");
       announced = true;
     }
-    log(formatWaitingLine(holderNow, now(), waitedMs));
+    status(`waiting:${holderNow.pid}`, formatWaitingLine(holderNow, now(), waitedMs));
     await sleep(pollIntervalMs);
   }
 }

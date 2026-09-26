@@ -21,6 +21,7 @@ import {
   formatDuration,
   formatTimeoutWarning,
   formatWaitingLine,
+  statusLogger,
   isForeignHost,
   isPidAlive,
   parseHolder,
@@ -244,8 +245,9 @@ describe("acquireGateLock", () => {
     expect(polls).toBe(3);
     expect(logged.join("\n")).toContain("queueing behind it");
     expect(logged.join("\n")).toContain("lock acquired");
-    // The waiting line repeats as it waits, so the push never looks hung.
-    expect(logged.filter((l) => l.includes("waiting for another gate")).length).toBe(3);
+    // The waiting line is printed once while nothing changes — not per poll,
+    // which could fill an unread terminal's pipe and freeze the waiter.
+    expect(logged.filter((l) => l.includes("waiting for another gate")).length).toBe(1);
 
     second.release();
   });
@@ -668,5 +670,42 @@ describe("FIFO queue", () => {
     expect(order).toEqual(["first", "second"]);
     expect(firstLock.held && secondLock.held).toBe(true);
     secondLock.release();
+  });
+});
+
+describe("statusLogger", () => {
+  test("prints a status once while it is unchanged, again when it changes", () => {
+    const lines: string[] = [];
+    let t = 0;
+    const status = statusLogger((m) => lines.push(m), () => t, 1000);
+    status("a", "first");
+    t = 10;
+    status("a", "first again");
+    status("b", "second");
+    expect(lines).toEqual(["first", "second"]);
+  });
+
+  test("repeats an unchanged status once per heartbeat, so a wait never looks hung", () => {
+    const lines: string[] = [];
+    let t = 0;
+    const status = statusLogger((m) => lines.push(m), () => t, 1000);
+    status("a", "one");
+    t = 999;
+    status("a", "two");
+    t = 1000;
+    status("a", "three");
+    expect(lines).toEqual(["one", "three"]);
+  });
+
+  test("a long wait on an unread terminal stays far below a pipe buffer", () => {
+    let bytes = 0;
+    let t = 0;
+    const status = statusLogger((m) => (bytes += m.length + 1), () => t);
+    // Two hours of 2s polls, same position throughout.
+    for (let i = 0; i < 3600; i++) {
+      status("queued:3:1234", "  queued (3 gates ahead, current: pid 1234, running 10m00s) — waited 1h00m00s");
+      t += 2000;
+    }
+    expect(bytes).toBeLessThan(16 * 1024);
   });
 });
