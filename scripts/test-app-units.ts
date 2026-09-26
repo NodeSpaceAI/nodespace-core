@@ -10,13 +10,10 @@
  * matching nothing is `GlobPathNotFound`. Both are gitignored, so a fresh
  * checkout satisfies neither.
  *
- * build.rs's own `sync_stale_sidecar` guard rescues only `nodespaced` and
- * `nodespace`, and only when `target/<profile>/<bin>` already exists to copy
- * from — on a fresh worktree it doesn't, so the guard is a no-op and the
- * build fails. The `resources/models` glob survives only because a tracked
- * `.gitkeep` keeps it non-empty. The skill's two bundle entries are the
- * exception: build.rs drops them from a debug build when unstaged, so they
- * don't gate compiling. `build:skill` is still required here, but by a TEST
+ * build.rs drops every unstaged sidecar and the unstaged skill from a debug
+ * build (see its `drop_unstaged_bundle_entries`), so none of those gate
+ * compiling. What is left is the `resources/models` glob, which survives on a
+ * tracked `.gitkeep`, and `build:skill`'s installer — required here by a TEST
  * (see `TEST_PREREQUISITES`), not by the build.
  *
  * Left alone, that surfaces from deep inside a build script naming one
@@ -28,9 +25,8 @@
  * "are the prerequisites there?" has three outcomes, not two: ready, missing
  * (build them), and unbuildable-on-this-platform (skip). Linux ships CLI +
  * daemon binaries only, no packaged GUI app — `build:skill` stages no
- * installer there and `build-sidecars.ts` hardcodes an `-apple-darwin`
- * triple, so the sidecars cannot be produced at all and the crate cannot
- * compile. Expressing that three-way result as a shell `&&` chain in
+ * installer there, so the test prerequisite cannot be produced at all.
+ * Expressing that three-way result as a shell `&&` chain in
  * package.json would either fail the suite on Linux or swallow real failures.
  */
 
@@ -57,7 +53,6 @@ const TAURI_DIR = join(
  */
 const PRODUCERS: { prefix: string; command: string }[] = [
   { prefix: '../../skill/', command: 'bun run build:skill' },
-  { prefix: 'binaries/', command: 'bun run build:sidecars --debug' },
   // `:bundle`, not the bare script — only `--bundle` targets
   // resources/models; without it the download lands in ~/.nodespace/models
   // and stages nothing here.
@@ -103,13 +98,11 @@ const resourcePatterns = (resources: unknown): string[] => {
 };
 
 /**
- * Bundle entries build.rs drops from a DEBUG build when unstaged (see its
- * `drop_unstaged_skill`), so they don't gate compiling these tests.
+ * The `resources` entry build.rs drops from a DEBUG build when unstaged (see
+ * its `drop_unstaged_bundle_entries`), so it doesn't gate compiling these
+ * tests. Every `externalBin` sidecar is dropped the same way.
  */
-const DEBUG_OPTIONAL_ENTRIES = new Set([
-  'binaries/nodespace-skill-installer',
-  'resources/skill/**/*',
-]);
+const DEBUG_OPTIONAL_RESOURCE = 'resources/skill/**/*';
 
 /**
  * Paths the tests themselves read, beyond what the build needs:
@@ -121,34 +114,21 @@ const TEST_PREREQUISITES: RequiredPath[] = [
 ];
 
 /**
- * Every path these tests need: what `tauri_build::build()` will insist on in
- * a debug build, read from the config it reads, plus `TEST_PREREQUISITES`.
- * `externalBin` entries gain the host triple and exe suffix and must exist as
- * files; `resources` entries are globs that must match at least one file (an
- * empty match is `GlobPathNotFound`, a hard error just like a missing file).
+ * Every path these tests need: the `resources` globs `tauri_build::build()`
+ * will insist on in a debug build, read from the config it reads, plus
+ * `TEST_PREREQUISITES`. A glob must match at least one file (an empty match
+ * is `GlobPathNotFound`, a hard error just like a missing file).
  */
-const requiredPaths = (triple: string): RequiredPath[] => {
+const requiredPaths = (): RequiredPath[] => {
   const config: unknown = JSON.parse(
     readFileSync(join(TAURI_DIR, 'tauri.conf.json'), 'utf8'),
   );
   const bundle =
-    (config as { bundle?: { externalBin?: unknown; resources?: unknown } })
-      .bundle ?? {};
-  const ext = platform() === 'win32' ? '.exe' : '';
-
-  const externalBin = Array.isArray(bundle.externalBin)
-    ? bundle.externalBin.filter((b): b is string => typeof b === 'string')
-    : [];
+    (config as { bundle?: { resources?: unknown } }).bundle ?? {};
 
   return [
-    ...externalBin
-      .filter((bin) => !DEBUG_OPTIONAL_ENTRIES.has(bin))
-      .map((bin): RequiredPath => ({
-        path: `${bin}-${triple}${ext}`,
-        kind: 'file' as const,
-      })),
     ...resourcePatterns(bundle.resources)
-      .filter((pattern) => !DEBUG_OPTIONAL_ENTRIES.has(pattern))
+      .filter((pattern) => pattern !== DEBUG_OPTIONAL_RESOURCE)
       .map((pattern): RequiredPath => ({
         path: pattern,
         kind: 'glob' as const,
@@ -165,7 +145,7 @@ if (!triple) {
   process.exit(0);
 }
 
-const missing = requiredPaths(triple).filter(({ path, kind }) => {
+const missing = requiredPaths().filter(({ path, kind }) => {
   if (kind === 'file') {
     return !existsSync(join(TAURI_DIR, path));
   }
@@ -197,9 +177,7 @@ if (missing.length > 0) {
   for (const command of commands) {
     console.error(`  ${command}`);
   }
-  console.error(
-    `\nThen re-run. (A cold sidecar build takes several minutes.)\n`,
-  );
+  console.error(`\nThen re-run.\n`);
   process.exit(1);
 }
 

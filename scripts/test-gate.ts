@@ -85,16 +85,14 @@ try {
   console.warn(`  ${err instanceof Error ? err.message : String(err)}\n`);
 }
 
-// Builds the skill BEFORE `test:all`, because one of nodespace-app's `src/`
-// unit tests (run by `rust:test`) asserts the source checkout's built
-// installer, `packages/skill/dist/install.js`, exists. Compiling that crate no
-// longer needs it — build.rs drops the unstaged skill from a debug build's
-// bundle — so this is a test prerequisite, not a build one. Cheap enough (a
-// tsc build + file copy) to run unconditionally. The remaining sidecars aren't
-// staged here — a cold build of them takes minutes, too much for every push —
-// so `rust:test` checks every required path up front and names the command
-// that produces each.
-await run("bun run build:skill (stage bundled skill installer resource)", () => $`bun run build:skill`);
+// Compiles the skill installer script BEFORE `test:all`: a nodespace-app unit
+// test asserts the source checkout's `packages/skill/dist/install.js` exists,
+// and the CLI's MCP integration test skips itself without it. That is just
+// the skill package's `tsc` build — under a second. The rest of
+// `build:skill` (staging the bundle, compiling the standalone installer) is
+// release packaging; no build or test here reads it, and build.rs leaves
+// anything unstaged out of a debug build's bundle.
+await run("bun run --cwd packages/skill build (skill installer script)", () => $`bun run --cwd packages/skill build`);
 await run("bun run quality:scripts:check (scripts/ lint + typecheck)", () => $`bun run quality:scripts:check`);
 // The design-token gate (Stylelint over CSS and Svelte <style> blocks). It is
 // wired into the desktop-app quality scripts, but nothing automated runs those
@@ -106,7 +104,20 @@ await run(
   () => $`bun run --cwd packages/desktop-app quality:design-tokens`
 );
 await run("bun run test:all (frontend + skill + Rust)", () => $`bun run test:all`);
+// The browser tier: real focus/blur, drag-and-drop and layout that Happy-DOM
+// can't model. About five seconds, so there's no reason to leave it to chance.
+// The install is a no-op once Chromium is present and fetches it once on a
+// fresh machine.
+await run("bun run test:browser (Chromium)", async () => {
+  await $`bun run --cwd packages/desktop-app playwright install chromium`.quiet();
+  await $`bun run --cwd packages/desktop-app test:browser`;
+});
 await run("cargo build --bin nodespaced (e2e harness daemon)", () => $`cargo build --bin nodespaced`);
+// SKILL.md drift check (generated sections vs. the CLI definitions). Placed
+// after the daemon build on purpose: its `cargo run --example` shares that
+// dev-profile dependency tree, so it compiles only the CLI crate and the
+// example. Run first, it paid for a cold dev-profile build on its own.
+await run("bun run skill:check (SKILL.md drift)", () => $`bun run skill:check`);
 await run("bun run test:e2e (headless daemon round-trip)", () => {
   const binaryName = process.platform === "win32" ? "nodespaced.exe" : "nodespaced";
   const binary = `${process.cwd()}/target/debug/${binaryName}`;
