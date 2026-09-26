@@ -326,6 +326,28 @@ fn trailing_chars(text: &str, max_chars: usize) -> &str {
     }
 }
 
+/// Cap on the current message's share of the schema-retrieval query.
+///
+/// Generous enough that an ordinary message is never touched; it exists for
+/// the pasted block of text. The embedder rejects input beyond its context
+/// window outright, so an uncapped paste would cost the turn its schema
+/// retrieval entirely. 8,000 characters stays under the 8,192-token window
+/// even at one token per character, and is near the ~2k-token length the
+/// embedder was trained on — beyond that the pooled embedding carries little
+/// extra signal anyway.
+///
+/// The leading characters are kept: a paste is usually introduced by the
+/// instruction that says what to do with it.
+const MAX_CHARS_CURRENT_MESSAGE: usize = 8_000;
+
+/// First `max_chars` characters of `text`, respecting char boundaries.
+fn leading_chars(text: &str, max_chars: usize) -> &str {
+    match text.char_indices().nth(max_chars) {
+        Some((end, _)) => &text[..end],
+        None => text,
+    }
+}
+
 /// Find schemas one relationship hop from `retrieved`, searching `all_schemas`.
 ///
 /// Traversal is bidirectional: a schema in `retrieved` reaches a target via its
@@ -462,7 +484,9 @@ fn append_schemas_named_in_query(
 /// ellipsis ("Set the Redwood one to rejected", "Which ones are still out?")
 /// still carries the discriminating words from the turn that introduced it.
 /// Each prior turn is capped at [`MAX_CHARS_PER_BLENDED_TURN`]; the current
-/// message is never truncated.
+/// message only at the far larger [`MAX_CHARS_CURRENT_MESSAGE`], which leaves
+/// ordinary messages intact and keeps a pasted block within the embedder's
+/// context window.
 ///
 /// Raw text is concatenated verbatim. Summarizing or entity-extracting the
 /// turns first was measured and made recall *worse* (100% → 73%): the
@@ -483,7 +507,7 @@ pub fn build_retrieval_query(prior_turns: &[&str], current_message: &str) -> Str
         .collect();
 
     let mut parts: Vec<&str> = recent.into_iter().rev().collect();
-    let current = current_message.trim();
+    let current = leading_chars(current_message.trim(), MAX_CHARS_CURRENT_MESSAGE);
     if !current.is_empty() {
         parts.push(current);
     }
@@ -1730,7 +1754,19 @@ mod tests {
     }
 
     #[test]
-    fn retrieval_query_caps_each_prior_turn_but_never_the_current_message() {
+    fn retrieval_query_caps_the_current_message_only_when_it_is_a_long_paste() {
+        let paste = format!("Add these venues: {}", "é".repeat(20_000));
+        let query = build_retrieval_query(&[], &paste);
+
+        assert_eq!(query.chars().count(), MAX_CHARS_CURRENT_MESSAGE);
+        assert!(
+            query.starts_with("Add these venues: "),
+            "the instruction leading a paste survives"
+        );
+    }
+
+    #[test]
+    fn retrieval_query_caps_each_prior_turn_but_not_an_ordinary_current_message() {
         let long_turn = "x".repeat(5_000);
         let long_current = "y".repeat(5_000);
         let query = build_retrieval_query(&[&long_turn], &long_current);
@@ -1744,7 +1780,7 @@ mod tests {
         assert_eq!(
             current.chars().count(),
             5_000,
-            "the current message is never truncated"
+            "an ordinary current message is not truncated"
         );
     }
 
