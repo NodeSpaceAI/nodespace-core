@@ -593,6 +593,40 @@ mod former_embedding_root_tests {
         );
     }
 
+    const SURVIVOR: &str = "22222222-0000-0000-0000-0000000000b2";
+
+    /// Merging LINE (under ROOT_A) into a survivor under ROOT_B drops LINE's
+    /// parent edge. ROOT_B gained the merged node and ROOT_A lost LINE; only
+    /// the former-parent re-queue reaches ROOT_A.
+    #[tokio::test]
+    async fn merging_children_of_two_trees_requeues_both_roots() {
+        let (svc, _tmp) = two_trees().await;
+        text(&svc, SURVIVOR, "SURVIVOR_TEXT", Some(ROOT_B)).await;
+        embed_fresh(&svc, &[ROOT_B]).await;
+
+        svc.merge_nodes(SURVIVOR, LINE, None).await.unwrap();
+
+        assert!(is_stale(&svc, ROOT_A).await, "the tree LINE left");
+        assert!(is_stale(&svc, ROOT_B).await, "the survivor's tree");
+    }
+
+    /// A merge that fails after the refresh was deferred commits nothing and
+    /// queues nothing. An unknown conflict id fails the final step.
+    #[tokio::test]
+    async fn rolled_back_merge_queues_nothing() {
+        let (svc, _tmp) = two_trees().await;
+        text(&svc, SURVIVOR, "SURVIVOR_TEXT", Some(ROOT_B)).await;
+        embed_fresh(&svc, &[ROOT_B]).await;
+
+        let result = svc
+            .merge_nodes(SURVIVOR, LINE, Some("no-such-conflict"))
+            .await;
+
+        assert!(result.is_err());
+        assert!(!is_stale(&svc, ROOT_A).await, "nothing committed");
+        assert!(!is_stale(&svc, ROOT_B).await, "nothing committed");
+    }
+
     async fn aggregate(svc: &NodeService, root_id: &str) -> String {
         use crate::behaviors::{NodeBehavior, TextNodeBehavior};
         let root = svc.get_node(root_id).await.unwrap().unwrap();
