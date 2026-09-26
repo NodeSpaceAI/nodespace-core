@@ -367,7 +367,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
           );
         } catch (error) {
           // ROLLBACK: Revert optimistic UI changes on failure (preserves the move-rejected notification).
-          log.error('[createNode] Failed to transfer children to database, rolling back:', error);
+          log.error('[createNode] Child transfer aborted or failed, rolling back:', error);
           for (const child of children) {
             structureTree.moveInMemoryRelationship(nodeId, afterNodeId, child.id);
           }

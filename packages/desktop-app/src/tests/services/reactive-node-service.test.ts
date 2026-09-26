@@ -1807,15 +1807,18 @@ describe('ReactiveNodeService - CreateNode Edge Cases', () => {
     const callsBefore = moveChildrenMock.mock.calls.length;
     moveInMemoryMock.mockClear();
 
-    const newNodeId = service.createNode(parentId, 'New node');
+    let newNodeId: string;
+    try {
+      newNodeId = service.createNode(parentId, 'New node');
 
-    // The rollback reverses the optimistic move: child goes from the new node back to parent
-    await vi.waitFor(() => {
-      expect(moveInMemoryMock).toHaveBeenCalledWith(newNodeId, parentId, childId);
-    }, { timeout: 1000 });
-
-    waitSpy.mockRestore();
-    getNodesForParentSpy.mockRestore();
+      // The rollback reverses the optimistic move: child goes from the new node back to parent
+      await vi.waitFor(() => {
+        expect(moveInMemoryMock).toHaveBeenCalledWith(newNodeId, parentId, childId);
+      }, { timeout: 1000 });
+    } finally {
+      waitSpy.mockRestore();
+      getNodesForParentSpy.mockRestore();
+    }
 
     expect(moveInMemoryMock).toHaveBeenCalledWith(parentId, newNodeId, childId);
     expect(moveChildrenMock.mock.calls.length).toBe(callsBefore);
