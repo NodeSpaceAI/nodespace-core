@@ -9,7 +9,7 @@ use anyhow::Result;
 use nodespace_core::db::SqliteStore;
 use nodespace_core::models::conflict::{ConflictKind, ConflictStatus};
 use nodespace_core::models::Node;
-use nodespace_core::services::NodeService;
+use nodespace_core::services::{CreateNodeParams, InsertPositionOwned, NodeService};
 use serde_json::json;
 use std::sync::Arc;
 use tempfile::TempDir;
@@ -593,5 +593,199 @@ async fn get_conflict_returns_none_for_an_unknown_id() -> Result<()> {
     let missing = svc.get_conflict("not-a-real-conflict-id").await?;
     assert!(missing.is_none());
 
+    Ok(())
+}
+
+// --- Tree invariants: single parent, root-only membership, no cycles ---
+
+async fn text(svc: &NodeService, content: &str, parent: Option<&str>) -> Result<String> {
+    Ok(svc
+        .create_node_with_parent(CreateNodeParams {
+            id: None,
+            node_type: "text".into(),
+            content: content.into(),
+            parent_id: parent.map(Into::into),
+            position: InsertPositionOwned::End,
+            properties: json!({}),
+            lifecycle_status: None,
+        })
+        .await?)
+}
+
+async fn collection(svc: &NodeService, name: &str) -> Result<String> {
+    Ok(svc
+        .create_node_with_parent(CreateNodeParams {
+            id: None,
+            node_type: "collection".into(),
+            content: name.into(),
+            parent_id: None,
+            position: InsertPositionOwned::End,
+            properties: json!({}),
+            lifecycle_status: None,
+        })
+        .await?)
+}
+
+async fn child_ids(svc: &NodeService, parent: &str) -> Result<Vec<String>> {
+    Ok(svc
+        .get_children(parent)
+        .await?
+        .into_iter()
+        .map(|n| n.id)
+        .collect())
+}
+
+async fn parent_id(svc: &NodeService, id: &str) -> Result<Option<String>> {
+    Ok(svc.get_parent(id).await?.map(|n| n.id))
+}
+
+/// Both nodes are children in different trees: the survivor keeps its own
+/// parent and the loser's parent edge is dropped, never added as a second.
+#[tokio::test]
+async fn merge_of_two_children_keeps_the_survivors_parent_only() -> Result<()> {
+    let (svc, _tmp) = service().await?;
+    let root_a = text(&svc, "Root A", None).await?;
+    let root_b = text(&svc, "Root B", None).await?;
+    let loser = text(&svc, "line", Some(&root_a)).await?;
+    let survivor = text(&svc, "line", Some(&root_b)).await?;
+
+    let outcome = svc.merge_nodes(&survivor, &loser, None).await?;
+
+    assert_eq!(outcome.edges_dropped, 1, "the loser's parent edge");
+    assert!(
+        !child_ids(&svc, &root_a).await?.contains(&survivor),
+        "the survivor must not gain a second parent"
+    );
+    assert_eq!(child_ids(&svc, &root_b).await?, vec![survivor.clone()]);
+    Ok(())
+}
+
+/// A root survivor still takes the loser's position.
+#[tokio::test]
+async fn merge_into_a_root_survivor_takes_the_losers_parent() -> Result<()> {
+    let (svc, _tmp) = service().await?;
+    let root_a = text(&svc, "Root A", None).await?;
+    let loser = text(&svc, "line", Some(&root_a)).await?;
+    let survivor = text(&svc, "line", None).await?;
+
+    let outcome = svc.merge_nodes(&survivor, &loser, None).await?;
+
+    assert_eq!(outcome.edges_repointed, 1);
+    assert_eq!(parent_id(&svc, &survivor).await?, Some(root_a));
+    Ok(())
+}
+
+/// A survivor directly under the loser: the edge between them becomes a
+/// self-edge and is dropped, and the survivor takes the loser's parent.
+#[tokio::test]
+async fn merge_into_the_losers_own_child_takes_the_losers_parent() -> Result<()> {
+    let (svc, _tmp) = service().await?;
+    let root = text(&svc, "Root", None).await?;
+    let loser = text(&svc, "loser", Some(&root)).await?;
+    let survivor = text(&svc, "survivor", Some(&loser)).await?;
+
+    svc.merge_nodes(&survivor, &loser, None).await?;
+
+    assert_eq!(parent_id(&svc, &survivor).await?, Some(root));
+    assert!(child_ids(&svc, &survivor).await?.is_empty(), "no self-edge");
+    Ok(())
+}
+
+/// ADR-059 §2 from the survivor's side: a filed root survivor may not take
+/// the loser's parent. The whole merge is refused and nothing is written.
+#[tokio::test]
+async fn merge_refuses_to_give_a_filed_survivor_a_parent() -> Result<()> {
+    let (svc, _tmp) = service().await?;
+    let coll = collection(&svc, "Filed").await?;
+    let root_a = text(&svc, "Root A", None).await?;
+    let loser = text(&svc, "line", Some(&root_a)).await?;
+    let survivor = text(&svc, "line", None).await?;
+    svc.store()
+        .add_to_collection(&survivor, &coll, &json!({}))
+        .await?;
+
+    let err = svc
+        .merge_nodes(&survivor, &loser, None)
+        .await
+        .expect_err("a filed node must not gain a parent");
+
+    let msg = err.to_string();
+    assert!(
+        msg.contains("member_of_not_root") && msg.contains("ADR-059 §2"),
+        "{msg}"
+    );
+    assert_eq!(parent_id(&svc, &survivor).await?, None);
+    assert_eq!(parent_id(&svc, &loser).await?, Some(root_a));
+    assert_eq!(
+        svc.get_node(&loser).await?.unwrap().lifecycle_status,
+        "active"
+    );
+    Ok(())
+}
+
+/// ADR-059 §2 from the loser's side: a filed root loser's membership may not
+/// move onto a survivor that has a parent.
+#[tokio::test]
+async fn merge_refuses_to_file_a_survivor_that_has_a_parent() -> Result<()> {
+    let (svc, _tmp) = service().await?;
+    let coll = collection(&svc, "Filed").await?;
+    let root_b = text(&svc, "Root B", None).await?;
+    let survivor = text(&svc, "line", Some(&root_b)).await?;
+    let loser = text(&svc, "line", None).await?;
+    svc.store()
+        .add_to_collection(&loser, &coll, &json!({}))
+        .await?;
+
+    let err = svc
+        .merge_nodes(&survivor, &loser, None)
+        .await
+        .expect_err("a child must not gain collection membership");
+
+    assert!(err.to_string().contains("member_of_not_root"), "{err}");
+    assert!(svc
+        .store()
+        .get_node_memberships(&survivor)
+        .await?
+        .is_empty());
+    assert_eq!(svc.store().get_node_memberships(&loser).await?, vec![coll]);
+    Ok(())
+}
+
+/// A survivor deeper than a direct child in the loser's subtree would become
+/// its own ancestor once the loser's children re-point onto it.
+#[tokio::test]
+async fn merge_refuses_a_survivor_below_the_losers_children() -> Result<()> {
+    let (svc, _tmp) = service().await?;
+    let loser = text(&svc, "loser", None).await?;
+    let middle = text(&svc, "middle", Some(&loser)).await?;
+    let survivor = text(&svc, "survivor", Some(&middle)).await?;
+
+    let err = svc
+        .merge_nodes(&survivor, &loser, None)
+        .await
+        .expect_err("the survivor would sit below itself");
+
+    assert!(err.to_string().contains("merge_would_cycle"), "{err}");
+    assert_eq!(child_ids(&svc, &loser).await?, vec![middle]);
+    Ok(())
+}
+
+/// A loser deeper than a direct child in a root survivor's subtree: taking
+/// the loser's parent would make the survivor its own ancestor.
+#[tokio::test]
+async fn merge_refuses_a_loser_below_the_survivors_children() -> Result<()> {
+    let (svc, _tmp) = service().await?;
+    let survivor = text(&svc, "survivor", None).await?;
+    let middle = text(&svc, "middle", Some(&survivor)).await?;
+    let loser = text(&svc, "loser", Some(&middle)).await?;
+
+    let err = svc
+        .merge_nodes(&survivor, &loser, None)
+        .await
+        .expect_err("the survivor would sit below itself");
+
+    assert!(err.to_string().contains("merge_would_cycle"), "{err}");
+    assert_eq!(parent_id(&svc, &survivor).await?, None);
+    assert_eq!(parent_id(&svc, &loser).await?, Some(middle));
     Ok(())
 }
