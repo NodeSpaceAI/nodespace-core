@@ -34,6 +34,24 @@ const MAX_UNSCOPED_SCHEMA_METADATA: usize = 5;
 /// models. Revisit if user-defined skill libraries grow past ~30 skills.
 const MAX_SKILL_LIMIT: usize = 10;
 
+/// How many skills `find_skills` scores before applying exclusion penalties
+/// and truncating to the caller's `limit`.
+///
+/// A penalty only ever lowers a skill, so it can promote a skill that ranked
+/// below `limit` on raw similarity. Re-ranking a pool larger than the whole
+/// registry makes that promotion exact: every skill that could move into the
+/// returned set was scored. Twice [`MAX_SKILL_LIMIT`] covers the registry
+/// sizes that cap is sized for.
+const SKILL_RERANK_POOL: usize = 2 * MAX_SKILL_LIMIT;
+
+/// Weight on a skill's exclusion margin in [`exclusion_penalized_score`].
+///
+/// Measured on the locked embedding model against the full seeded registry:
+/// at 1.0 Graph Editing's exclusion puts Node Deletion first on "remove the
+/// resolved tickets" by +0.047 (it ranked second, −0.014, without one). An
+/// offline sweep at 0.5 left a margin under +0.01, too thin to hold.
+const EXCLUSION_PENALTY_WEIGHT: f64 = 1.0;
+
 /// Confidence assigned to a schema recovered by the lexical backstop
 /// (`append_named_schema_candidates`) rather than found by semantic search.
 ///
@@ -120,6 +138,9 @@ async fn render_schema_description(node_service: &NodeService, schema_id: &str) 
 #[derive(Debug, PartialEq)]
 struct SkillProperties {
     description: String,
+    /// What the skill is *not* for — see [`exclusion_penalized_score`].
+    /// `None` when absent or blank.
+    exclusion: Option<String>,
     tool_whitelist: Value,
     scoped_type_ids: Vec<String>,
 }
@@ -146,6 +167,12 @@ impl SkillProperties {
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
+        let exclusion = skill_props
+            .get("exclusion")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
         let tool_whitelist = skill_props
             .get("tool_whitelist")
             .cloned()
@@ -162,6 +189,7 @@ impl SkillProperties {
 
         Self {
             description,
+            exclusion,
             tool_whitelist,
             scoped_type_ids,
         }
@@ -381,6 +409,95 @@ fn append_named_schema_candidates(
     hits
 }
 
+/// A skill's retrieval score after its exclusion is applied.
+///
+/// A skill may carry an `exclusion`: text describing what it is *not* for.
+/// It cannot go in the description, because a description is embedded and an
+/// embedding has no negation — "not for deleting" embeds *near* deleting. So
+/// the exclusion is embedded on its own and compared with the query, and the
+/// skill loses score by however much the query matches its exclusion better
+/// than its description:
+///
+/// `score − λ · max(0, exclusion_score − score)`
+///
+/// The margin form is deliberate. Subtracting the exclusion similarity
+/// outright would lower the skill on every query — unrelated texts on this
+/// model still score around 0.8 — shifting it against every skill without an
+/// exclusion and through the absolute score bars in routing. Here a query
+/// closer to the description than to the exclusion is left exactly as it was,
+/// so the penalty acts only where the two genuinely overlap.
+fn exclusion_penalized_score(score: f64, exclusion_score: f64) -> f64 {
+    score - EXCLUSION_PENALTY_WEIGHT * (exclusion_score - score).max(0.0)
+}
+
+/// Apply each skill's exclusion (see [`exclusion_penalized_score`]) to the
+/// raw similarity ranking, then re-rank and truncate to `limit`.
+///
+/// An exclusion that fails to embed leaves that skill's score unchanged: a
+/// missing penalty degrades to the ranking retrieval had before exclusions
+/// existed, rather than failing the whole search.
+fn rerank_with_exclusions(
+    embedding_service: &NodeEmbeddingService,
+    query_vector: &[f32],
+    pool: Vec<(crate::models::Node, f64)>,
+    limit: usize,
+) -> Vec<(crate::models::Node, f64)> {
+    let mut scored: Vec<(crate::models::Node, f64)> = pool
+        .into_iter()
+        .map(|(node, score)| {
+            let Some(exclusion) = SkillProperties::from_node_properties(&node.properties).exclusion
+            else {
+                return (node, score);
+            };
+            // Same shape `SkillNodeBehavior::get_embeddable_content` gives the
+            // description (name, blank line, text), so the two vectors share
+            // the name and differ only in what the skill does versus what it
+            // excludes. Embedded bare, the exclusion scored closer to
+            // completion-state requests than the description did, and
+            // lowered Graph Editing on "mark the outage report done" out of
+            // the top 3.
+            let exclusion_text = format!("{}\n\n{}", node.content, exclusion);
+            match embedding_service
+                .nlp_engine()
+                .embed_document(&exclusion_text)
+            {
+                Ok(exclusion_vector) => {
+                    // Scored as a single fully-matching chunk, the same
+                    // composite a one-chunk skill node gets in the KNN search.
+                    let exclusion_score = crate::db::composite_similarity_score(
+                        crate::db::cosine_similarity(query_vector, &exclusion_vector),
+                        1,
+                        1,
+                    );
+                    let adjusted = exclusion_penalized_score(score, exclusion_score);
+                    if adjusted < score {
+                        tracing::debug!(
+                            skill = %node.content,
+                            score,
+                            exclusion_score,
+                            adjusted,
+                            "find_skills: exclusion lowered a skill's score"
+                        );
+                    }
+                    (node, adjusted)
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        skill = %node.content,
+                        error = %e,
+                        "find_skills: failed to embed a skill's exclusion; scoring without it"
+                    );
+                    (node, score)
+                }
+            }
+        })
+        .filter(|(_, score)| *score > f64::from(SKILL_SEARCH_THRESHOLD))
+        .collect();
+    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    scored.truncate(limit);
+    scored
+}
+
 /// Search for skill nodes via semantic search and return flat results with
 /// schema metadata for the matched skill's scoped types.
 ///
@@ -432,10 +549,22 @@ pub async fn find_skills(
     // KNN cosine ranking over skill roots avoids both: no BM25 involvement at
     // all, and no children in scope (only `node_type = 'skill'` roots are
     // indexed by this query).
-    let skill_results = embedding_service
-        .semantic_search_nodes_of_type(&input.query, "skill", limit, SKILL_SEARCH_THRESHOLD)
+    //
+    // The query is embedded once and shared by the skill search, the schema
+    // search below, and the exclusion scoring in `rerank_with_exclusions`.
+    let query_vector = embedding_service
+        .embed_query_text(&input.query)
+        .map_err(|e| OpsError::Internal(format!("Skill search failed: {}", e)))?;
+    let skill_pool = embedding_service
+        .semantic_search_nodes_of_type_with_vector(
+            &query_vector,
+            "skill",
+            SKILL_RERANK_POOL.max(limit),
+            SKILL_SEARCH_THRESHOLD,
+        )
         .await
         .map_err(|e| OpsError::Internal(format!("Skill search failed: {}", e)))?;
+    let skill_results = rerank_with_exclusions(embedding_service, &query_vector, skill_pool, limit);
 
     // Schema discovery, independent of any hand-authored skill matching the
     // query — see this function's own doc comment. Same primitive
@@ -444,7 +573,12 @@ pub async fn find_skills(
     // separate calls rather than a combined query because they populate two
     // differently-shaped result kinds below.
     let schema_search_results = embedding_service
-        .semantic_search_nodes_of_type(&input.query, "schema", limit, SKILL_SEARCH_THRESHOLD)
+        .semantic_search_nodes_of_type_with_vector(
+            &query_vector,
+            "schema",
+            limit,
+            SKILL_SEARCH_THRESHOLD,
+        )
         .await
         .map_err(|e| OpsError::Internal(format!("Schema search failed: {}", e)))?;
 
@@ -482,8 +616,11 @@ pub async fn find_skills(
         std::collections::HashMap::new();
 
     for (node, confidence) in &skill_results {
+        // `exclusion` was spent on ranking in `rerank_with_exclusions`; it is
+        // retrieval-only and never reaches the model.
         let SkillProperties {
             description,
+            exclusion: _,
             tool_whitelist,
             scoped_type_ids,
         } = SkillProperties::from_node_properties(&node.properties);
@@ -1064,6 +1201,7 @@ mod tests {
         let properties = json!({
             "skill": {
                 "description": "Modify existing nodes",
+                "exclusion": "Delete records",
                 "tool_whitelist": ["update_node", "resolve_query"],
                 "node_types": ["invoice"],
             }
@@ -1073,9 +1211,38 @@ mod tests {
             SkillProperties::from_node_properties(&properties),
             SkillProperties {
                 description: "Modify existing nodes".to_string(),
+                exclusion: Some("Delete records".to_string()),
                 tool_whitelist: json!(["update_node", "resolve_query"]),
                 scoped_type_ids: vec!["invoice".to_string()],
             }
+        );
+    }
+
+    #[test]
+    fn exclusion_penalty_is_inert_when_the_query_fits_the_description_better() {
+        // The property the margin form exists for: a query closer to what the
+        // skill does than to what it excludes keeps its score exactly.
+        assert_eq!(exclusion_penalized_score(0.82, 0.70), 0.82);
+        assert_eq!(exclusion_penalized_score(0.82, 0.82), 0.82);
+    }
+
+    #[test]
+    fn exclusion_penalty_lowers_by_the_weighted_margin() {
+        let adjusted = exclusion_penalized_score(0.855, 0.90);
+        let expected = 0.855 - EXCLUSION_PENALTY_WEIGHT * (0.90 - 0.855);
+        assert!(
+            (adjusted - expected).abs() < 1e-12,
+            "{adjusted} != {expected}"
+        );
+        assert!(adjusted < 0.855);
+    }
+
+    #[test]
+    fn skill_properties_treats_a_blank_exclusion_as_absent() {
+        let properties = json!({"skill": {"description": "d", "exclusion": "   "}});
+        assert_eq!(
+            SkillProperties::from_node_properties(&properties).exclusion,
+            None
         );
     }
 
@@ -1093,6 +1260,7 @@ mod tests {
             SkillProperties::from_node_properties(&properties),
             SkillProperties {
                 description: "Modify existing nodes".to_string(),
+                exclusion: None,
                 tool_whitelist: json!(["update_node"]),
                 scoped_type_ids: vec![],
             }
@@ -1118,6 +1286,7 @@ mod tests {
             SkillProperties::from_node_properties(&properties),
             SkillProperties {
                 description: "Modify existing nodes".to_string(),
+                exclusion: None,
                 tool_whitelist: json!(["update_node"]),
                 scoped_type_ids: vec![],
             }
@@ -1130,6 +1299,7 @@ mod tests {
             SkillProperties::from_node_properties(&json!({})),
             SkillProperties {
                 description: String::new(),
+                exclusion: None,
                 tool_whitelist: json!([]),
                 scoped_type_ids: vec![],
             }

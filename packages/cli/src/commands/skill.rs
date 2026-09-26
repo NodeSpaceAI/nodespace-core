@@ -61,7 +61,7 @@ pub enum SkillAction {
     /// indistinguishable from the skill's own static instructions.
     Guidance(GuidanceArgs),
     /// Discard a user's customization of a seeded skill node's config
-    /// (description/tool_whitelist/max_iterations) and/or guidance
+    /// (description/exclusion/tool_whitelist/max_iterations) and/or guidance
     /// (procedural markdown), restoring it to the currently-compiled
     /// template. The one path in NodeSpace allowed to override a
     /// `_seed.config_modified` / `_seed.guidance_modified` durability guard
@@ -126,7 +126,7 @@ pub struct ResetArgs {
     #[arg(long)]
     pub guidance: bool,
 
-    /// Reset the config (description/tool_whitelist/max_iterations) to the
+    /// Reset the config (description/exclusion/tool_whitelist/max_iterations) to the
     /// currently-compiled template, discarding any customization.
     #[arg(long)]
     pub config: bool,

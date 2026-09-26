@@ -1380,6 +1380,29 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                     unique_case_insensitive: None,
                 },
                 SchemaField {
+                    name: "exclusion".to_string(),
+                    friendly_name: "Exclusion".to_string(),
+                    field_type: "string".to_string(),
+                    local_only: false,
+                    protection: SchemaProtectionLevel::Core,
+                    core_values: None,
+                    user_values: None,
+                    indexed: false,
+                    required: Some(false),
+                    extensible: None,
+                    default: None,
+                    description: Some(
+                        "What this skill is not for; lowers its discovery score on requests \
+                         that match this better than the description"
+                            .to_string(),
+                    ),
+                    item_type: None,
+                    fields: None,
+                    item_fields: None,
+                    unique: None,
+                    unique_case_insensitive: None,
+                },
+                SchemaField {
                     name: "tool_whitelist".to_string(),
                     friendly_name: "Tool whitelist".to_string(),
                     field_type: "array".to_string(),
@@ -1904,8 +1927,9 @@ mod tests {
         let schemas = get_core_schemas();
         let skill = schemas.iter().find(|s| s.id == "skill").unwrap();
 
-        assert_eq!(skill.fields.len(), 3);
+        assert_eq!(skill.fields.len(), 4);
         assert!(skill.get_field("description").is_some());
+        assert!(skill.get_field("exclusion").is_some());
         assert!(skill.get_field("tool_whitelist").is_some());
         assert!(skill.get_field("max_iterations").is_some());
 

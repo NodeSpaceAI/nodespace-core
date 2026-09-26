@@ -533,6 +533,33 @@ STRUCTURED PROPERTY QUERIES: To filter by property values (status, due_date, etc
                 // `control_conflict_requests_still_route_conflict_journal`,
                 // and `control_deletion_requests_are_not_outranked_by_graph_editing`.
                 "description": "Update a record that already exists and keep it: mark it resolved, done, or paid, or set or change one of its fields, status, title, or content. Use when the user wants an existing item to stay but move to a new state. For tasks, use update_task_status to change status.",
+                // "remove the resolved tickets" still out-ranked Node Deletion
+                // (0.855 vs 0.841) on "mark it resolved": the two requests
+                // differ only in the verb, which the embedding barely weights.
+                // No description wording separates them — every variant that
+                // lowered this skill on the deletion request lowered it by
+                // the same amount on "mark incident resolved", leaving that
+                // completion-state guard 0.003 from falling out of the top 3.
+                //
+                // An exclusion is scored against the query separately and
+                // costs this skill only on requests closer to it than to the
+                // description (`skill_ops::exclusion_penalized_score`). This
+                // one puts Node Deletion first on "remove the resolved
+                // tickets" by +0.047 and leaves every completion-state score
+                // unchanged. Its one measured cost: "remove the due date from
+                // the launch task" (a field, not a record) loses 0.009 and
+                // stays in the top 3.
+                //
+                // Wording is measured, not intuitive. Two longer drafts ("…or
+                // get rid of records so they no longer exist", "Delete or
+                // remove records.") also lowered "mark the outage report done"
+                // or "record that we decided to use Postgres" by 0.02–0.035;
+                // bare verbs aimed at "them" lowered nothing but deletions.
+                // Guarded in `tests/live_skill_retrieval_stability.rs` by
+                // `remove_requests_mentioning_a_state_route_node_deletion`,
+                // `removing_a_field_still_reaches_graph_editing`, and
+                // `graph_editing_exclusion_leaves_completion_state_scores_unchanged`.
+                "exclusion": "Remove them, delete them, get rid of them, purge them.",
                 // `create_node` is whitelisted here as the mirror of
                 // `update_node` on Node Creation: "record this" and "change
                 // that" are the same user intent inflected two ways, and either
@@ -1322,6 +1349,23 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// An exclusion misfiring is quieter than a missing tool — the right skill
+    /// simply ranks lower — and wording that reads as equivalent was measured
+    /// to behave very differently. So each one is a measured decision with its
+    /// own live guard, and adding one to another skill must be deliberate:
+    /// extend this list together with a test in
+    /// `tests/live_skill_retrieval_stability.rs` showing it leaves that
+    /// skill's intended requests unchanged.
+    #[test]
+    fn only_measured_skills_carry_an_exclusion() {
+        let with_exclusion: Vec<String> = seed_skill_nodes()
+            .into_iter()
+            .filter(|t| t.root_properties.get("exclusion").is_some())
+            .map(|t| t.title)
+            .collect();
+        assert_eq!(with_exclusion, vec!["Graph Editing".to_string()]);
     }
 
     /// The verbs a real deletion request uses must all be present, since the

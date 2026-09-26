@@ -769,6 +769,45 @@ impl SqliteStore {
     }
 }
 
+/// The score a node's embedding search result carries: peak chunk
+/// similarity, boosted by the share of the node's chunks that matched.
+///
+/// Shared so a vector scored outside the KNN query (a skill's exclusion
+/// text, see `skill_ops::find_skills`) lands on the same scale as the
+/// search results it is compared with.
+pub(crate) fn composite_similarity_score(
+    max_similarity: f64,
+    matching_chunks: i64,
+    total_chunks: i64,
+) -> f64 {
+    let density = if total_chunks > 0 {
+        matching_chunks as f64 / total_chunks as f64
+    } else {
+        1.0
+    };
+    max_similarity * (1.0 + 0.3 * density)
+}
+
+/// Cosine similarity of two equal-length vectors; `0.0` when either is zero
+/// or the lengths differ. Matches the `1 - distance` the vec0 table returns
+/// under `distance_metric=cosine`.
+pub(crate) fn cosine_similarity(a: &[f32], b: &[f32]) -> f64 {
+    if a.len() != b.len() {
+        return 0.0;
+    }
+    let (mut dot, mut na, mut nb) = (0.0f64, 0.0f64, 0.0f64);
+    for (x, y) in a.iter().zip(b) {
+        let (x, y) = (f64::from(*x), f64::from(*y));
+        dot += x * y;
+        na += x * x;
+        nb += y * y;
+    }
+    if na == 0.0 || nb == 0.0 {
+        return 0.0;
+    }
+    dot / (na.sqrt() * nb.sqrt())
+}
+
 /// Score, threshold and rank embedding candidates.
 ///
 /// Both `search_embeddings` and `search_embeddings_by_node_type` reduce their KNN
@@ -786,12 +825,8 @@ fn rank_candidates(
         .into_iter()
         .filter_map(
             |(node_id, (max_similarity, matching_chunks, total_chunks))| {
-                let density = if total_chunks > 0 {
-                    matching_chunks as f64 / total_chunks as f64
-                } else {
-                    1.0
-                };
-                let composite_score = max_similarity * (1.0 + 0.3 * density);
+                let composite_score =
+                    composite_similarity_score(max_similarity, matching_chunks, total_chunks);
                 (composite_score > min_score).then_some((
                     node_id,
                     composite_score,

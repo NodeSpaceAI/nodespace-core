@@ -997,21 +997,39 @@ impl NodeEmbeddingService {
         limit: usize,
         threshold: f32,
     ) -> Result<Vec<(Node, f64)>, NodeServiceError> {
+        let query_vector = self.embed_query_text(query)?;
+        self.semantic_search_nodes_of_type_with_vector(&query_vector, node_type, limit, threshold)
+            .await
+    }
+
+    /// Embed `query` the way [`Self::semantic_search_nodes_of_type`] does, for a
+    /// caller that needs the query vector itself — to run several typed
+    /// searches from one embedding, or to score it against text that is not
+    /// stored as a node embedding.
+    pub fn embed_query_text(&self, query: &str) -> Result<Vec<f32>, NodeServiceError> {
         if query.trim().is_empty() {
             return Err(NodeServiceError::invalid_update(
                 "Search query cannot be empty",
             ));
         }
-
-        let query_vector = self
-            .nlp_engine
+        self.nlp_engine
             .generate_embedding(query)
-            .map_err(query_embedding_error)?;
+            .map_err(query_embedding_error)
+    }
 
+    /// [`Self::semantic_search_nodes_of_type`] for an already-embedded query
+    /// (see [`Self::embed_query_text`]).
+    pub async fn semantic_search_nodes_of_type_with_vector(
+        &self,
+        query_vector: &[f32],
+        node_type: &str,
+        limit: usize,
+        threshold: f32,
+    ) -> Result<Vec<(Node, f64)>, NodeServiceError> {
         let results = self
             .store
             .search_embeddings_by_node_type(
-                &query_vector,
+                query_vector,
                 node_type,
                 limit as i64,
                 Some(threshold as f64),
