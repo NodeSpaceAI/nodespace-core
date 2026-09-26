@@ -274,7 +274,7 @@ SUCCESS: {success_no_reverify}"#,
     )
 }
 
-/// Builds the Conflict Resolution skill's markdown_content.
+/// Builds the Conflict Journal skill's markdown_content.
 ///
 /// Covers the read tools (`list_conflicts`, `get_conflict`) and the two
 /// non-destructive resolution actions (`dismiss_conflict`,
@@ -283,8 +283,8 @@ SUCCESS: {success_no_reverify}"#,
 /// "cannot be undone" shape as `delete_node`, so it stays single-owner (see
 /// `SINGLE_OWNER_BY_DESIGN` in this module's tests) rather than being offered
 /// alongside the lower-stakes actions in this skill.
-fn conflict_resolution_guidance() -> String {
-    r#"# Conflict Resolution Guidance
+fn conflict_journal_guidance() -> String {
+    r#"# Conflict Journal Guidance
 
 This skill inspects and resolves records from the conflict journal — durable evidence that two nodes collide (e.g. two active nodes share a unique field's value, or two collections share a name). It does not touch ordinary node reads or writes.
 
@@ -518,9 +518,10 @@ STRUCTURED PROPERTY QUERIES: To filter by property values (status, due_date, etc
                 // resolved", "mark it paid"). The prior wording ("Modify
                 // existing nodes... update content, properties, titles, and
                 // metadata") missed the top-3 for 5 of 7 such requests on the
-                // locked embedding model, while Conflict Resolution won them on
-                // the shared word "resolve" and left no write tool on Stage 2's
-                // surface. Now in the top-3 for all 7.
+                // locked embedding model, while the conflict skill (then
+                // titled "Conflict Resolution") won them on the shared word
+                // "resolve" and left no write tool on Stage 2's surface. Now
+                // in the top-3 for all 7.
                 //
                 // Kept narrow on purpose. A broader draft listing "closed" and
                 // "paid" as nouns ("the invoice is paid, the ticket is closed")
@@ -529,7 +530,7 @@ STRUCTURED PROPERTY QUERIES: To filter by property values (status, due_date, etc
                 // holds deletion requests on Node Deletion. Guarded in
                 // `tests/live_skill_retrieval_stability.rs` by
                 // `completion_state_updates_route_graph_editing`,
-                // `control_conflict_requests_still_route_conflict_resolution`,
+                // `control_conflict_requests_still_route_conflict_journal`,
                 // and `control_deletion_requests_are_not_outranked_by_graph_editing`.
                 "description": "Update a record that already exists and keep it: mark it resolved, done, or paid, or set or change one of its fields, status, title, or content. Use when the user wants an existing item to stay but move to a new state. For tasks, use update_task_status to change status.",
                 // `create_node` is whitelisted here as the mirror of
@@ -629,18 +630,31 @@ STRUCTURED PROPERTY QUERIES: To filter by property values (status, due_date, etc
             markdown_content: node_deletion_guidance(),
         },
         NodeTemplate {
-            title: "Conflict Resolution".to_string(),
+            title: "Conflict Journal".to_string(),
             content: None,
             root_node_type: "skill".to_string(),
             root_properties: serde_json::json!({
-                "description": "List, inspect, dismiss, or resolve conflicts between colliding nodes recorded in the conflict journal. Use when the user asks about duplicates, collisions, or conflicts that need a decision.",
+                // No form of "resolve" in the title or description. Those two
+                // are what gets embedded (the guidance markdown is not), and
+                // the shared word made this skill the rank-1
+                // attractor for any request mentioning "resolved": "delete
+                // the resolved incidents" ranked it above Node Deletion
+                // (0.978 vs 0.904) on the locked embedding model, and since
+                // `delete_node` is offered only from the top tool-bearing
+                // candidate, the deletion was silently withheld. Rewording
+                // the description alone never fixed it — the title "Conflict
+                // Resolution" carried the pull by itself. Guarded in
+                // `tests/live_skill_retrieval_stability.rs` by
+                // `deletion_requests_mentioning_resolved_route_node_deletion`
+                // and `control_conflict_requests_still_route_conflict_journal`.
+                "description": "List, inspect, or dismiss conflicts between colliding nodes recorded in the conflict journal: two records that claim the same identity, duplicates, or sync collisions.",
                 "tool_whitelist": ["list_conflicts", "get_conflict", "dismiss_conflict", "adopt_existing_conflict", "search_nodes"],
                 "max_iterations": 3,
             }),
             child_node_type: None,
             child_properties: None,
             tier: SeedTier::System,
-            markdown_content: conflict_resolution_guidance(),
+            markdown_content: conflict_journal_guidance(),
         },
         NodeTemplate {
             title: "Node Merge".to_string(),
@@ -651,7 +665,7 @@ STRUCTURED PROPERTY QUERIES: To filter by property values (status, due_date, etc
                 // re-points its edges) the same way delete_node is, so this
                 // skill is single-owner by the same ADR-038 reasoning
                 // (`SINGLE_OWNER_BY_DESIGN` in this module's tests) rather
-                // than being folded into Conflict Resolution's lower-stakes
+                // than being folded into Conflict Journal's lower-stakes
                 // whitelist.
                 "description": "Merge two nodes that both represent the same real thing into one, combining their data and archiving the loser. Use when the user wants two duplicate or colliding records combined into a single record.",
                 "tool_whitelist": ["merge_conflict", "dismiss_conflict", "adopt_existing_conflict", "get_conflict", "get_node", "search_nodes"],
@@ -1210,7 +1224,7 @@ mod tests {
             ("Graph Editing", true, false),
             ("Relationship Management", true, false),
             ("Node Deletion", true, true),
-            ("Conflict Resolution", true, false),
+            ("Conflict Journal", true, false),
             ("Node Merge", true, true),
             ("Bulk Import", true, false),
             ("Organization", true, false),
@@ -1432,7 +1446,7 @@ mod tests {
         // a node and re-points its edges, an irreversible-feeling structural
         // change. `stage2_permitted_names`-style destructive gating wants this
         // reachable from exactly one retrieval winner (Node Merge), not
-        // offered alongside Conflict Resolution's lower-stakes
+        // offered alongside Conflict Journal's lower-stakes
         // dismiss/adopt-existing actions.
         const SINGLE_OWNER_BY_DESIGN: &[&str] = &[
             "delete_node",
