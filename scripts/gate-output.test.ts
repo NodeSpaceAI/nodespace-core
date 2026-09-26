@@ -5,7 +5,21 @@
 // DOM-free on purpose: this file runs under `bun test scripts/`, which
 // bypasses the Happy-DOM vitest config (see CLAUDE.md).
 import { describe, expect, test } from "bun:test";
-import { commandOutput, stageLogName, tail } from "./gate-output";
+import { commandOutput, freeGiBFromDf, stageLogName, tail } from "./gate-output";
+
+describe("freeGiBFromDf", () => {
+  test("reads the Available column of macOS df -k output", () => {
+    const df =
+      "Filesystem 1024-blocks      Used Available Capacity iused ifree %iused  Mounted on\n" +
+      "/dev/disk3s1 482797652 409052356  38797296    92% 2700000 4000000   1%   /System/Volumes/Data\n";
+    expect(freeGiBFromDf(df)).toBeCloseTo(37.0, 1);
+  });
+
+  test("is null for output it can't read, so the gate doesn't refuse on a parse failure", () => {
+    expect(freeGiBFromDf("")).toBeNull();
+    expect(freeGiBFromDf("garbage")).toBeNull();
+  });
+});
 
 describe("stageLogName", () => {
   test("turns a stage label into a safe file name", () => {

@@ -23,6 +23,16 @@ export function tail(text: string, lines: number): string {
     .join("\n");
 }
 
+/**
+ * Free space in GiB from `df -k <path>` output (the "Available" column of
+ * the first data row), or null when it can't be read.
+ */
+export function freeGiBFromDf(dfOutput: string): number | null {
+  const row = dfOutput.trim().split("\n")[1];
+  const availableKiB = Number(row?.trim().split(/\s+/)[3]);
+  return Number.isFinite(availableKiB) ? availableKiB / 1024 ** 2 : null;
+}
+
 /** The stdout+stderr of a finished Bun shell command, or "" for anything else. */
 export function commandOutput(result: unknown): string {
   if (!result || typeof result !== "object") return "";

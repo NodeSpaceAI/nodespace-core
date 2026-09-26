@@ -45,7 +45,7 @@ import { classifyFailure, extractFailureOutput, formatAbortNote } from "./classi
 import { reportUpstreamFixes } from "./correlate-upstream-fixes";
 import { acquireGateLock, registerLockRelease } from "./gate-lock";
 import { describeScope, FULL_SCOPE, gateScope } from "./gate-scope";
-import { commandOutput, stageLogName, tail } from "./gate-output";
+import { commandOutput, freeGiBFromDf, stageLogName, tail } from "./gate-output";
 
 export type GateMode = "push" | "merge";
 
@@ -56,6 +56,30 @@ export function parseMode(argv: string[]): GateMode {
 
 const mode = parseMode(process.argv.slice(2));
 const merge = mode === "merge";
+
+/** Below this much free disk the gate refuses to start (see below). */
+const MIN_FREE_GIB = 20;
+
+// Every worktree compiles into its own target/, and a gate can need several
+// gigabytes more. Running out halfway surfaces as a confusing I/O failure in
+// whichever stage hit it — and fails every other queued gate the same way.
+// Checked up front instead, with the cause named.
+const free = freeGiBFromDf(await $`df -k .`.quiet().nothrow().text());
+if (free !== null && free < MIN_FREE_GIB) {
+  console.error(
+    `\n✗ Only ${free.toFixed(1)} GiB free on this disk; the gate needs at least ${MIN_FREE_GIB}.\n` +
+      "  Each worktree's target/ holds its own build output. Free space by removing finished\n" +
+      "  worktrees, or with `cargo clean` in worktrees that aren't building, then push again.\n"
+  );
+  process.exit(1);
+}
+
+// No incremental compilation in gate builds. The incremental cache is most
+// of a worktree's target/ (~15 GB), it is private to each worktree, and
+// sccache can't cache incremental compiles — so without it sccache covers
+// workspace crates too. The cost is recompiling a changed crate whole on a
+// repeat push, rather than incrementally.
+process.env.CARGO_INCREMENTAL = "0";
 
 const logDir = join(
   tmpdir(),
