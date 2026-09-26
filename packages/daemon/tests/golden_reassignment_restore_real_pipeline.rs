@@ -8,13 +8,20 @@
 //! write facts, so whatever the model said about the eviction is gone; only
 //! the completed-write record remains. This file builds the turn where
 //! "assign the launch checklist to Bob" evicted Alice, runs it through the
-//! real pipeline, and asks the next turn to undo it. The previous holder's id
-//! appears nowhere in history except the eviction record, so restoring her is
-//! only possible if that record reached the rendered history.
+//! real pipeline, and asks the next turn to give the task back. The previous
+//! holder's id appears nowhere in history except the eviction record, so
+//! restoring her is only possible if that record reached the rendered history.
 //!
-//! Ignored by default — loads the 5GB locked native GGUF. Run explicitly:
+//! The history is production's; the prompt around it is not. The system
+//! prompt is a single sentence and the tool definitions are restated by hand,
+//! so this isolates what history carries — it does not validate the resident
+//! prompt or skill guidance.
+//!
+//! `rendered_history_names_the_evicted_holder` runs with the ordinary suite.
+//! The model test is ignored by default — it loads the 5GB locked native GGUF.
+//! Run it explicitly:
 //! ```text
-//! cargo test -p nodespace-daemon --test golden_reassignment_undo_real_pipeline -- --ignored --nocapture --test-threads=1
+//! cargo test -p nodespace-daemon --test golden_reassignment_restore_real_pipeline -- --ignored --nocapture --test-threads=1
 //! ```
 
 use std::sync::Arc;

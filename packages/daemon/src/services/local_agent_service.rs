@@ -2255,15 +2255,19 @@ fn write_summary_arg(tool: &str) -> Option<&'static [&'static str]> {
 /// Clip an evidence label, marking it when clipped so a truncated summary is
 /// not mistaken for a complete one.
 fn clip_summary(s: &str) -> String {
-    // Newlines would let user-supplied content shape the evidence block's
-    // line structure; the label is a single line by construction.
-    let flat = s.replace(['\n', '\r'], " ");
+    let flat = flatten_label(s);
     if flat.chars().count() > SUMMARY_MAX_CHARS {
         let head: String = flat.chars().take(SUMMARY_MAX_CHARS).collect();
         format!("{head}…")
     } else {
         flat
     }
+}
+
+/// Newlines would let user-supplied content shape the evidence block's line
+/// structure; a label is a single line by construction.
+fn flatten_label(s: &str) -> String {
+    s.replace(['\n', '\r'], " ")
 }
 
 /// Pull the successful graph writes out of a turn's tool executions.
@@ -2353,9 +2357,13 @@ pub fn completed_writes_from(executions: &[ToolExecutionRecord]) -> Vec<AiChatCo
 /// Render an edge as `"from -[type]-> to"`, reading `from_id`/`to_id` and the
 /// relationship name under `type_key` — `relationship_type` in a
 /// `create_relationship` call's arguments, `type` in its `replaced` entries.
+///
+/// Never clipped: the endpoints are ids a later turn copies to restore or
+/// refer to the edge, and a clipped id is a wrong id. Two `nodespace://` UUIDs
+/// alone take most of `SUMMARY_MAX_CHARS`.
 fn edge_label(edge: &serde_json::Value, type_key: &str) -> String {
     let field = |k: &str| edge.get(k).and_then(|v| v.as_str()).unwrap_or("?");
-    clip_summary(&format!(
+    flatten_label(&format!(
         "{} -[{}]-> {}",
         field("from_id"),
         field(type_key),
@@ -2579,20 +2587,44 @@ pub fn resolved_entities_from(executions: &[ToolExecutionRecord]) -> Vec<AiChatR
 /// Rebuild the duplicate-guard's view of earlier turns from persisted messages.
 ///
 /// Filtering to the guarded tools here keeps the set small, since the
-/// execution-path check applies the same restriction anyway. Every recorded
-/// write carries an identity, so none are dropped.
+/// execution-path check applies the same restriction anyway.
+///
+/// A `create_relationship` whose edge a later write evicted is dropped: the
+/// edge no longer exists, so recreating it — "assign it to Alice", "actually
+/// Bob", "put it back on Alice" — is not a repeat, and refusing it would claim
+/// a write still stands that does not. Walked newest-first so a write is only
+/// ever cancelled by an eviction that came after it.
 fn prior_writes_from_history(messages: &[AiChatMessage]) -> Vec<PriorWrite> {
-    messages
+    let mut evicted_later = std::collections::HashSet::new();
+    let mut writes: Vec<PriorWrite> = messages
         .iter()
         .flat_map(|m| m.completed_writes.iter())
-        .filter(|w| is_cross_turn_guarded_tool(&w.tool))
+        .rev()
+        .filter(|w| {
+            let evicted = w.tool == "create_relationship"
+                && w.summary
+                    .as_deref()
+                    .is_some_and(|s| evicted_later.contains(&edge_key(s)));
+            evicted_later.extend(w.replaced.iter().map(|e| edge_key(e)));
+            !evicted && is_cross_turn_guarded_tool(&w.tool)
+        })
         .map(|w| PriorWrite {
             tool: w.tool.clone(),
             canonical_args: w.canonical_args.clone(),
             node_id: w.node_id.clone(),
             summary: w.summary.clone(),
         })
-        .collect()
+        .collect();
+    writes.reverse();
+    writes
+}
+
+/// An edge label with its ids' `nodespace://` scheme dropped. A call's own
+/// label spells ids as the model passed them, with or without the scheme,
+/// while a `replaced` entry always carries it; this is what lets the two
+/// compare as the same edge.
+fn edge_key(label: &str) -> String {
+    label.replace("nodespace://", "")
 }
 
 /// Render persisted writes as a system-role note for the rebuilt history.
@@ -2821,6 +2853,10 @@ fn terse_write_fact(w: &AiChatCompletedWrite) -> Option<String> {
             let id = w.node_id.as_deref()?;
             Some(format!("Fact: node {id} was deleted."))
         }
+        // `create_relationship` is rendered by the fallback in
+        // `terse_assistant_facts`, which is also where its `replaced` edges
+        // are named. A dedicated arm here must render them too, or a later
+        // turn loses the evicted holder again.
         _ => None,
     }
 }
@@ -5493,6 +5529,92 @@ model = "model-b"
         assert_eq!(
             prior[1].canonical_args, "sha256:abc123",
             "a digested identity must be carried through unchanged"
+        );
+    }
+
+    /// "Assign it to Alice", "actually Bob", "put it back on Alice": Bob's
+    /// write evicted Alice's edge, so recreating it is not a repeat. Alice's
+    /// earlier write must leave the guard; Bob's stays. The ids are spelled
+    /// bare in the call and with the scheme in `replaced`, as the model and
+    /// the tool result respectively produce them.
+    #[tokio::test]
+    async fn a_relationship_evicted_later_is_not_guarded_against_recreation() {
+        let rel = |from: &str, to: &str, result: serde_json::Value| {
+            completed_writes_from(&[exec(
+                "create_relationship",
+                serde_json::json!({"from_id": from, "to_id": to, "relationship_type": "tasks"}),
+                result,
+            )])
+        };
+        let alice = rel("alice", "task", serde_json::json!({"created": true}));
+        let bob = rel(
+            "bob",
+            "task",
+            serde_json::json!({
+                "created": true,
+                "replaced": [{"from_id": "nodespace://alice", "to_id": "nodespace://task", "type": "tasks"}]
+            }),
+        );
+        let msgs = vec![
+            assistant_turn("Assigned to Alice.", alice[0].clone()),
+            assistant_turn("Reassigned to Bob.", bob[0].clone()),
+        ];
+
+        let prior = prior_writes_from_history(&msgs);
+        assert_eq!(prior.len(), 1, "got {prior:?}");
+        assert_eq!(prior[0].canonical_args, bob[0].canonical_args);
+    }
+
+    /// An eviction only cancels writes before it. Re-assigning Alice after the
+    /// eviction records a live edge that the guard must still protect.
+    #[tokio::test]
+    async fn a_relationship_recreated_after_its_eviction_stays_guarded() {
+        let rel = |from: &str, result: serde_json::Value| {
+            completed_writes_from(&[exec(
+                "create_relationship",
+                serde_json::json!({"from_id": from, "to_id": "task", "relationship_type": "tasks"}),
+                result,
+            )])
+        };
+        let bob = rel(
+            "bob",
+            serde_json::json!({"replaced": [{"from_id": "nodespace://alice", "to_id": "nodespace://task", "type": "tasks"}]}),
+        );
+        let alice = rel(
+            "alice",
+            serde_json::json!({"replaced": [{"from_id": "nodespace://bob", "to_id": "nodespace://task", "type": "tasks"}]}),
+        );
+        let msgs = vec![
+            assistant_turn("Reassigned to Bob.", bob[0].clone()),
+            assistant_turn("Back to Alice.", alice[0].clone()),
+        ];
+
+        let prior = prior_writes_from_history(&msgs);
+        assert_eq!(prior.len(), 1, "got {prior:?}");
+        assert_eq!(prior[0].canonical_args, alice[0].canonical_args);
+    }
+
+    /// Edge labels carry ids a later turn must copy verbatim, so they are
+    /// never clipped — even with UUID ids and a long relationship name, which
+    /// together exceed `SUMMARY_MAX_CHARS`.
+    #[tokio::test]
+    async fn edge_labels_with_uuid_ids_are_not_clipped() {
+        let from = "nodespace://6f1c2a9e-3b4d-4e8f-9a1b-2c3d4e5f6a7b";
+        let old = "nodespace://0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d";
+        let to = "nodespace://9e8d7c6b-5a4f-4e3d-8c2b-1a0f9e8d7c6b";
+        let writes = completed_writes_from(&[exec(
+            "create_relationship",
+            serde_json::json!({"from_id": from, "to_id": to, "relationship_type": "primary_reviewer_of_record"}),
+            serde_json::json!({
+                "replaced": [{"from_id": old, "to_id": to, "type": "primary_reviewer_of_record"}]
+            }),
+        )]);
+        let expected = format!("{from} -[primary_reviewer_of_record]-> {to}");
+        assert!(expected.chars().count() > SUMMARY_MAX_CHARS);
+        assert_eq!(writes[0].summary.as_deref(), Some(expected.as_str()));
+        assert_eq!(
+            writes[0].replaced,
+            vec![format!("{old} -[primary_reviewer_of_record]-> {to}")]
         );
     }
 
