@@ -28,7 +28,7 @@ function blockedWrite(done: string[], name: string) {
   return { operation, release: () => release() };
 }
 
-const flushMicrotasks = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+const yieldToTimers = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 
 describe('SimplePersistenceCoordinator - flushAndWaitForNodes', () => {
   let coordinator: SimplePersistenceCoordinator;
@@ -60,11 +60,11 @@ describe('SimplePersistenceCoordinator - flushAndWaitForNodes', () => {
 
     // Replace the queued write the flush is waiting on.
     coordinator.persist(nodeId, replacement.operation, { mode: 'debounce' });
-    await flushMicrotasks();
+    await yieldToTimers();
     expect(settled).toBe(false);
 
     inFlight.release();
-    await flushMicrotasks();
+    await yieldToTimers();
     expect(settled).toBe(false);
 
     replacement.release();
@@ -101,14 +101,36 @@ describe('SimplePersistenceCoordinator - flushAndWaitForNodes', () => {
 
     first.release();
     expect(await flushed).toEqual(new Set());
-    await flushMicrotasks();
+    await yieldToTimers();
 
     // The second write is still running, so the node must still be pending.
     expect(done).toEqual(['first']);
     expect(coordinator.isPending(nodeId)).toBe(true);
 
     second.release();
-    await flushMicrotasks();
+    await yieldToTimers();
+    expect(coordinator.isPending(nodeId)).toBe(false);
+  }, 3000);
+
+  it('flushPending() also keeps the placeholder of a write queued behind the one it started', async () => {
+    const nodeId = 'flush-pending-placeholder';
+    const done: string[] = [];
+    const first = blockedWrite(done, 'first');
+    const second = blockedWrite(done, 'second');
+
+    coordinator.persist(nodeId, first.operation, { mode: 'debounce' });
+    const flushed = coordinator.flushPending();
+    coordinator.persist(nodeId, second.operation, { mode: 'debounce' });
+
+    first.release();
+    await flushed;
+    await yieldToTimers();
+
+    expect(done).toEqual(['first']);
+    expect(coordinator.isPending(nodeId)).toBe(true);
+
+    second.release();
+    await yieldToTimers();
     expect(coordinator.isPending(nodeId)).toBe(false);
   }, 3000);
 
