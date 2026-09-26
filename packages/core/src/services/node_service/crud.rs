@@ -1880,6 +1880,12 @@ impl NodeService {
     /// deny. This check runs before the transaction opens, not inside it — a rollback-based
     /// check would do wasted work every time.
     ///
+    /// **Schema guard:** a schema target is refused with
+    /// [`NodeServiceError::SchemaDeleteRefused`] when it is a core schema, or when other
+    /// schemas `extends` it — every chain resolver skips a missing ancestor, so deleting a
+    /// parent would silently strip its descendants of all inherited fields and
+    /// relationships (ADR-078). Delete the extending schemas first.
+    ///
     /// Returns `DeleteResult` with `existed=true` and `deleted_count` (target + all descendants)
     /// on success, or `existed=false` when the target node was already gone.
     pub async fn delete_node(
@@ -1892,17 +1898,19 @@ impl NodeService {
 
         // Nothing to check or delete if the target is already gone — matches the idempotent
         // absent-target behavior `delete_subtree_atomic` has always had.
-        let target_exists = self
-            .store
-            .get_node(node_id)
-            .await
-            .map_err(|e| NodeServiceError::query_failed(format!("Failed to read target: {}", e)))?
-            .is_some();
-        if !target_exists {
+        let Some(target) =
+            self.store.get_node(node_id).await.map_err(|e| {
+                NodeServiceError::query_failed(format!("Failed to read target: {}", e))
+            })?
+        else {
             return Ok(crate::models::DeleteResult {
                 existed: false,
                 deleted_count: 0,
             });
+        };
+
+        if target.node_type == "schema" {
+            self.ensure_schema_deletable(&target).await?;
         }
 
         // Compute the subtree once; both the access gate and the delete itself use this exact
@@ -1954,6 +1962,48 @@ impl NodeService {
             existed: true,
             deleted_count: deleted_nodes.len() as u64,
         })
+    }
+
+    /// Refuse to delete a schema the type system still depends on.
+    ///
+    /// Only direct children are checked: a grandchild's `extends` edge points at its own
+    /// parent, which must itself be deleted first and is refused while the grandchild exists.
+    async fn ensure_schema_deletable(&self, schema: &Node) -> Result<(), NodeServiceError> {
+        let is_core = schema
+            .properties
+            .get("isCore")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        if is_core {
+            return Err(NodeServiceError::schema_delete_refused(
+                &schema.id,
+                "it is a core schema",
+            ));
+        }
+
+        let mut children: Vec<String> = self
+            .store
+            .get_extends_parent_map()
+            .await
+            .map_err(|e| {
+                NodeServiceError::query_failed(format!("Failed to load extends edges: {}", e))
+            })?
+            .into_iter()
+            .filter(|(_, parent)| parent == &schema.id)
+            .map(|(child, _)| child)
+            .collect();
+        if !children.is_empty() {
+            children.sort();
+            return Err(NodeServiceError::schema_delete_refused(
+                &schema.id,
+                format!(
+                    "extended by {} — delete those schemas first",
+                    children.join(", ")
+                ),
+            ));
+        }
+
+        Ok(())
     }
 
     /// Bump a node's version without changing any content.

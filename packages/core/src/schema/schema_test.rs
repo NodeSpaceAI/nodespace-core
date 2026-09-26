@@ -6552,3 +6552,89 @@ async fn concurrent_friendly_name_update_cannot_revert_a_committed_rename() {
         }
     }
 }
+
+// ============================================================================
+// delete_node schema guard — an extended or core schema cannot be deleted
+// ============================================================================
+
+async fn delete_schema(
+    svc: &Arc<NodeService>,
+    schema_id: &str,
+) -> Result<crate::models::DeleteResult, crate::services::NodeServiceError> {
+    let node = svc
+        .get_node(schema_id)
+        .await
+        .expect("schema lookup failed")
+        .expect("schema should exist");
+    svc.delete_node(schema_id, node.version).await
+}
+
+#[tokio::test]
+async fn test_delete_schema_refused_while_another_schema_extends_it() {
+    let (svc, _tmp) = create_test_service().await;
+    create_base_schema(&svc, "Ticket", &["status"]).await;
+    handle_create_schema(
+        &svc,
+        json!({ "name": "Bug", "extends": "ticket", "fields": [] }),
+    )
+    .await
+    .expect("bug schema creation failed");
+
+    let err = delete_schema(&svc, "ticket")
+        .await
+        .expect_err("deleting an extended schema must be refused");
+    match &err {
+        crate::services::NodeServiceError::SchemaDeleteRefused { schema_id, reason } => {
+            assert_eq!(schema_id, "ticket");
+            assert!(
+                reason.contains("bug"),
+                "reason should name the child: {reason}"
+            );
+        }
+        other => panic!("expected SchemaDeleteRefused, got {other:?}"),
+    }
+    assert!(
+        svc.get_node("ticket").await.unwrap().is_some(),
+        "a refused delete must leave the schema in place"
+    );
+}
+
+#[tokio::test]
+async fn test_delete_schema_allowed_once_its_children_are_gone() {
+    let (svc, _tmp) = create_test_service().await;
+    create_base_schema(&svc, "Ticket", &["status"]).await;
+    handle_create_schema(
+        &svc,
+        json!({ "name": "Bug", "extends": "ticket", "fields": [] }),
+    )
+    .await
+    .expect("bug schema creation failed");
+
+    let leaf = delete_schema(&svc, "bug")
+        .await
+        .expect("a leaf schema is deletable");
+    assert!(leaf.existed);
+
+    let parent = delete_schema(&svc, "ticket")
+        .await
+        .expect("the parent is deletable once nothing extends it");
+    assert!(parent.existed);
+}
+
+#[tokio::test]
+async fn test_delete_core_schema_refused() {
+    let (svc, _tmp) = create_test_service().await;
+
+    let err = delete_schema(&svc, "task")
+        .await
+        .expect_err("deleting a core schema must be refused");
+    assert!(
+        matches!(
+            &err,
+            crate::services::NodeServiceError::SchemaDeleteRefused { schema_id, .. }
+                if schema_id == "task"
+        ),
+        "expected SchemaDeleteRefused, got {err:?}"
+    );
+    assert!(svc.get_node("task").await.unwrap().is_some());
+}
