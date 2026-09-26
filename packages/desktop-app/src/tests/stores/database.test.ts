@@ -378,6 +378,37 @@ describe('Database Store', () => {
       expect(databaseStore.activeDatabaseId).toBe('a');
     });
 
+    it('does not route when a tray switch already sent its own routing call', async () => {
+      // The reverse ordering: switchTo('a') has sent set_active_database but
+      // not committed yet when load() resolves. A later send from load() would
+      // re-point routing to 'b' while the switch commits 'a'.
+      let releaseSwitch: () => void = () => {};
+      mockInvoke.mockImplementation((cmd: string, args?: { id?: string }) => {
+        if (cmd === 'list_databases') {
+          return Promise.resolve({
+            databases: [db('a'), db('b', { isDefault: true })],
+            defaultDatabaseId: 'b'
+          });
+        }
+        if (cmd === 'set_active_database' && args?.id === 'a') {
+          return new Promise<void>((resolve) => (releaseSwitch = resolve));
+        }
+        return Promise.resolve(undefined);
+      });
+      databaseStore.databases = [db('a'), db('b', { isDefault: true })];
+
+      const switching = databaseStore.switchTo('a');
+      await vi.waitFor(() =>
+        expect(mockInvoke).toHaveBeenCalledWith('set_active_database', { id: 'a' })
+      );
+      await databaseStore.load();
+      releaseSwitch();
+      await switching;
+
+      expect(mockInvoke).not.toHaveBeenCalledWith('set_active_database', { id: 'b' });
+      expect(databaseStore.activeDatabaseId).toBe('a');
+    });
+
     it('records an error when the list fails', async () => {
       mockInvoke.mockRejectedValueOnce(new Error('boom'));
       await databaseStore.load();

@@ -146,6 +146,14 @@ class DatabaseStore {
    */
   private switchSeq = 0;
 
+  /**
+   * Number of `switchTo` calls between their `switchSeq` bump and settling.
+   * `load()` skips its startup routing while one is in flight: that switch
+   * may already have sent `set_active_database`, and a later send from
+   * `load()` would re-point routing away from the database the switch commits.
+   */
+  private switchesInFlight = 0;
+
   /** The database currently being viewed, or `null` if none is selected. */
   get activeDatabase(): DatabaseInfo | null {
     return this.databases.find((db) => db.id === this.activeDatabaseId) ?? null;
@@ -189,6 +197,7 @@ class DatabaseStore {
         // A database named for *this launch* wins over the remembered one: it is
         // set only when the user picked that database from the tray, which is a
         // more specific instruction than "whatever you had open last time".
+        const seqAtStart = this.switchSeq;
         const registered = (id: string | null): string | null =>
           id !== null && this.databases.some((db) => db.id === id) ? id : null;
 
@@ -200,18 +209,22 @@ class DatabaseStore {
         // Re-check after the awaits above. A second `load()` runs on every
         // launch — the daemon-reconnect listener fires one — and both can pass
         // the outer check before either assigns. Assigning unconditionally lets
-        // whichever finishes last overwrite a selection already made.
-        if (this.activeDatabaseId !== null) return;
+        // whichever finishes last overwrite a selection already made. A tray
+        // pick (`switchTo`) that started since this load began, or is still in
+        // flight, owns the selection and its routing, so defer to it too.
+        const superseded = (): boolean =>
+          this.activeDatabaseId !== null || this.switchSeq !== seqAtStart;
+        if (superseded() || this.switchesInFlight > 0) return;
 
         // Point the routed gRPC clients (and the node-event watcher) at the
         // restored database before committing the selection, as `switchTo`
         // does. Otherwise the switcher and window pin show the restored
         // database while node/import/agent requests still route to the daemon
-        // default. A tray pick (`switchTo`) that commits while this awaits
-        // wins: its `set_active_database` was sent after this one, and the
-        // re-check below leaves its selection alone.
+        // default. A switch that starts while this awaits sends its own
+        // `set_active_database` after this one, so it wins; the re-check
+        // below leaves its selection alone.
         await invoke('set_active_database', { id: resolved });
-        if (this.activeDatabaseId !== null) return;
+        if (superseded()) return;
 
         this.activeDatabaseId = resolved;
         if (resolved !== null) {
@@ -406,6 +419,7 @@ class DatabaseStore {
     }
     this.error = null;
     const seq = ++this.switchSeq;
+    this.switchesInFlight++;
     try {
       // Land any in-flight debounced saves in the database they were made
       // against before the routed clients re-point.
@@ -448,6 +462,8 @@ class DatabaseStore {
     } catch (err) {
       this.error = toError(err).message;
       log.error('Failed to switch database', { id, error: err });
+    } finally {
+      this.switchesInFlight--;
     }
   }
 
