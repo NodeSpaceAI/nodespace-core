@@ -108,6 +108,12 @@ export interface RelationshipGroupView {
    * create/delete/update mutation calls — distinct from the humanized `label`.
    */
   relationshipName: string;
+  /**
+   * The declaration's reverse name. With `relationshipName` it identifies the
+   * declaration: two schemas may both declare `tasks` into the same type (a
+   * person's and a project's), and only the pair tells them apart.
+   */
+  reverseName: string;
   /** Human-readable heading for the group. */
   label: string;
   direction: RelationshipDirection;
@@ -222,6 +228,7 @@ function buildGroupView(group: RawRelationshipGroup): RelationshipGroupView {
   return {
     key: `${group.direction}:${group.relationshipName}:${group.targetType ?? '*'}`,
     relationshipName: group.relationshipName,
+    reverseName: group.reverseName,
     label: groupDisplayLabel(group),
     direction: group.direction,
     targetType: group.targetType,
@@ -338,7 +345,10 @@ export function filterUnlinkedTargets<T extends { id: string }>(
  * rejecting the write — so when the far end of `group` is `one`, a candidate
  * already linked to someone else loses that link ("assign this task to Bob"
  * unassigns Alice). The candidate sees the same relationship from the opposite
- * direction, so its mirror group's rows are exactly what would be evicted.
+ * direction, so its mirror group's rows are exactly what would be evicted. The
+ * mirror is matched on the reverse name too: a task holds one assignee AND one
+ * project, both declared as `tasks`, and linking an assignee evicts only the
+ * assignee — the same declaring-schema scoping the daemon applies.
  */
 export function farEndHolders(
   candidate: NodeRelationshipsView,
@@ -352,6 +362,7 @@ export function farEndHolders(
     .filter(
       (mirror) =>
         mirror.relationshipName === group.relationshipName &&
+        mirror.reverseName === group.reverseName &&
         mirror.direction === opposite &&
         mirror.cardinality === 'one'
     )

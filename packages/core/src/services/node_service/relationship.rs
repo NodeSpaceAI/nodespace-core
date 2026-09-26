@@ -6,8 +6,10 @@ use super::*;
 /// `cardinality: One` / `reverse_cardinality: One` end. Replace, not reject,
 /// is the enforcement — so this is the only signal a caller gets that the
 /// write superseded an existing assignment.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
+///
+/// Endpoints are in STORED (forward) orientation under the forward name, even
+/// when the create was written through an `in` declaration's name.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReplacedEdge {
     pub source_id: String,
     pub relationship_name: String,

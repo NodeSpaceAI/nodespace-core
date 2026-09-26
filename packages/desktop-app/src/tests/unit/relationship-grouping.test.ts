@@ -924,6 +924,21 @@ describe('relationship-grouping: reassignment detection', () => {
     expect(farEndHolders(task, bobsTasks, 'bob')).toEqual([]);
   });
 
+  it("ignores another schema's same-named relationship", () => {
+    // A task's single project is also declared as `tasks` (by project), with
+    // a different reverse name; linking an assignee never evicts it.
+    const task = view([
+      makeGroup({
+        reverseName: 'project',
+        cardinality: 'one',
+        related: [related('proj', 'Project P')],
+        count: 1
+      }),
+      makeGroup({ cardinality: 'one', related: [related('alice', 'Alice')], count: 1 })
+    ]);
+    expect(farEndHolders(task, bobsTasks, 'bob').map((row) => row.label)).toEqual(['Alice']);
+  });
+
   it('builds a prompt only when something would be displaced', () => {
     const alice = { id: 'alice', nodeType: 'person', label: 'Alice', edgeValues: {} };
     const old = { id: 'old', nodeType: 'person', label: 'Old', edgeValues: {} };
