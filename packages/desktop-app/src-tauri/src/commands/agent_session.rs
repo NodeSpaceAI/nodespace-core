@@ -16,10 +16,11 @@
 //!
 //! The shared lazy channel has no client-side timeout, so a wedged h2
 //! connection (healthy daemon, stuck transport) would hang a unary call until
-//! the app's channel probe rebuilds it. The unary session commands
-//! (`write_input`, `resize_terminal`, `terminate_session`, `list_sessions`) are
-//! bounded by [`PTY_RPC_TIMEOUT`] so a wedge surfaces as an error instead of a
-//! frozen terminal.
+//! the app's channel probe rebuilds it. Every unary session command is bounded
+//! ([`PTY_RPC_TIMEOUT`], or [`TERMINATE_RPC_TIMEOUT`] for `terminate_session`)
+//! so a wedge surfaces as an error instead of a frozen terminal. A timeout does
+//! not prove the channel is wedged — the daemon can also be legitimately slow
+//! (see the constants) — so it is reported, never used to force a reconnect.
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -144,10 +145,16 @@ pub struct LaunchSessionInput {
 // Helper
 // ---------------------------------------------------------------------------
 
-/// Bound on the unary PTY RPCs (`WriteInput`, `ResizeTerminal`,
-/// `TerminateSession`, `ListSessions`). Each is a local, sub-millisecond
-/// operation on a healthy daemon, so this only ever fires on a wedged channel.
+/// Bound on the unary PTY RPCs other than `TerminateSession`. These are fast
+/// on a healthy daemon, with one exception: `WriteInput` blocks on the PTY
+/// write, so an agent that stops reading its stdin (e.g. a large paste into a
+/// busy agent) can exceed it without any channel fault.
 const PTY_RPC_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Bound on `TerminateSession`. The daemon SIGHUPs the agent and waits,
+/// unbounded, for it to exit — a CLI that shuts down gracefully can take a few
+/// seconds, so this is looser than [`PTY_RPC_TIMEOUT`].
+const TERMINATE_RPC_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Await a unary RPC under `timeout`, mapping an elapsed deadline to
 /// `DeadlineExceeded` so it flows through [`status_to_command_error`] like any
@@ -335,9 +342,11 @@ pub async fn resize_terminal(
 ///
 /// Once the daemon confirms the `TerminateSession` RPC, cancels the background
 /// `StreamOutput` reader task so it exits immediately rather than waiting for
-/// the next message from a now-dead stream. The reader is left running when
-/// the RPC fails or times out: the session may still be alive, and cancelling
-/// first would orphan it with no output reader.
+/// the next message from a now-dead stream. When the RPC fails or times out the
+/// reader is left running instead: if the request never reached the daemon the
+/// session is still alive and still needs its reader, and if it did, the
+/// session is shutting down and the reader ends on its own when the stream
+/// closes.
 #[tauri::command]
 pub async fn terminate_session(
     client: State<'_, GrpcClient>,
@@ -346,7 +355,7 @@ pub async fn terminate_session(
 ) -> Result<TerminateSessionResult, CommandError> {
     let mut c = client.agent_session_client().await;
     let inner = with_timeout(
-        PTY_RPC_TIMEOUT,
+        TERMINATE_RPC_TIMEOUT,
         "TerminateSession",
         c.terminate_session(Request::new(TerminateSessionRequest {
             session_id: session_id.clone(),
@@ -393,11 +402,12 @@ pub async fn check_agent_availability(
     client: State<'_, GrpcClient>,
 ) -> Result<CheckAvailabilityResult, CommandError> {
     let mut c = client.agent_session_client().await;
-    let resp = c
-        .check_agent_availability(Request::new(CheckAvailabilityRequest {}))
-        .await
-        .map_err(status_to_command_error)?;
-    let inner = resp.into_inner();
+    let inner = with_timeout(
+        PTY_RPC_TIMEOUT,
+        "CheckAgentAvailability",
+        c.check_agent_availability(Request::new(CheckAvailabilityRequest {})),
+    )
+    .await?;
     let agents = inner
         .agents
         .into_iter()
