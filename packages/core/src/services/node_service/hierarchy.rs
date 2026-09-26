@@ -354,7 +354,7 @@ impl NodeService {
     ///
     /// **Prefer `move_node()`** which enforces optimistic concurrency control.
     /// This unchecked variant enforces the same hierarchy rules but skips the
-    /// version check; it currently serves tests and benches that don't need OCC.
+    /// version check, for callers that don't hold the node's version.
     ///
     /// Updates the parent_id and root_id of a node, maintaining hierarchy consistency.
     ///
