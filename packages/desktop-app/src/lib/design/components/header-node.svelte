@@ -201,13 +201,15 @@
     line-height: var(--heading-4-lh);
   }
 
-  /* Ensure empty headers hold their level's full line height */
+  /* Ensure empty headers hold their level's full line height. `1lh` resolves against
+     .node__content's own line-height (set per level above); --font-size/--line-height
+     would not, because base-node's .node resets them to body values in between. */
   .header-h1 :global(.node__content:empty),
   .header-h2 :global(.node__content:empty),
   .header-h3 :global(.node__content:empty),
   .header-h4 :global(.node__content:empty),
   .header-h5 :global(.node__content:empty),
   .header-h6 :global(.node__content:empty) {
-    min-height: calc(var(--font-size) * var(--line-height));
+    min-height: 1lh;
   }
 </style>
