@@ -7,8 +7,9 @@
   presentational component: it renders a control bound to `value` and calls
   `onChange(newValue)` on every edit. It never touches the store.
 
-  `onCommit(value)`, when given, fires when a text control loses focus — the
-  commit point a blur-driven check (the `unique` rule, ADR-065) hangs off.
+  `onCommit(value)`, when given, fires when a text (string/text) control loses
+  focus — the commit point a blur-driven check (the `unique` rule, ADR-065)
+  hangs off. Other controls never call it.
 
   Field type → control:
   - enum    → Select (coreValues + userValues)

@@ -132,6 +132,24 @@ describe('GenericSchemaForm — unique field suggestion', () => {
     expect(screen.queryByText(/already exists/i)).toBeNull();
   });
 
+  it('drops a suggestion computed for the previous node when nodeId changes', async () => {
+    // The instance can be reused across nodes; "Use existing" must never
+    // navigate using a match computed for a node no longer shown. Note that
+    // @testing-library/svelte's rerender re-signals every prop (one shared
+    // $state.raw), so this cannot isolate the `nodeId` dependency itself —
+    // it guards the end-to-end behavior.
+    findDuplicateForSpy.mockResolvedValue(productNode({ id: 'product-existing', title: 'Old Widget' }));
+    const { rerender } = renderForm();
+
+    await commit('SKU', 'W-100');
+    await waitFor(() => expect(screen.getByText(/already exists/i)).toBeTruthy());
+
+    vi.mocked(sharedNodeStore.getNode).mockReturnValue(productNode({ id: 'product-2' }));
+    await rerender({ nodeId: 'product-2' });
+
+    expect(screen.queryByText(/already exists/i)).toBeNull();
+  });
+
   it('never looks up a field the schema does not flag unique', async () => {
     renderForm();
 

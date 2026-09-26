@@ -60,13 +60,11 @@
   });
 
   const emailField = $derived(schema?.fields.find((f) => f.name === 'email'));
-  const emailCheck = new UniqueFieldCheck('person', 'email');
-
-  // The instance can be reused across person nodes — drop any suggestion
-  // computed for the previous one.
-  $effect(() => {
+  // Rebuilt per node: the instance can be reused across person nodes, and a
+  // suggestion computed for the previous one must not linger.
+  const emailCheck = $derived.by(() => {
     void nodeId;
-    emailCheck.reset();
+    return new UniqueFieldCheck('person', 'email');
   });
 
   const fieldStats = $derived({
@@ -102,7 +100,8 @@
   }
 
   // Mirrors the person schema's title_template ("{first_name} {last_name}",
-  // core_schemas.rs), falling back to that literal until the schema loads.
+  // core_schemas.rs) — a literal, since the preview below supplies exactly
+  // those two fields. Keep in sync if that template ever changes.
   const PERSON_TITLE_TEMPLATE = '{first_name} {last_name}';
 
   // Live, in-progress values for the title preview — NOT the same as
@@ -130,7 +129,7 @@
    */
   function pushTitlePreview() {
     if (!node) return;
-    const title = evaluateTitleTemplate(schema?.titleTemplate ?? PERSON_TITLE_TEMPLATE, {
+    const title = evaluateTitleTemplate(PERSON_TITLE_TEMPLATE, {
       first_name: firstNameDraft,
       last_name: lastNameDraft
     });

@@ -26,9 +26,12 @@ import { createLogger } from '$lib/utils/logger';
 
 const log = createLogger('UniqueFieldCheck');
 
-/** Whether a schema field carries the `unique` rule. */
+/**
+ * Whether a schema field carries the `unique` rule in a form this check can
+ * serve: a text field, the only control that commits on blur.
+ */
 export function isUniqueField(field: SchemaField | undefined): boolean {
-  return field?.unique === true;
+  return field?.unique === true && (field.type === 'string' || field.type === 'text');
 }
 
 export class UniqueFieldCheck {
@@ -48,6 +51,8 @@ export class UniqueFieldCheck {
   private checkedValue: string | null = null;
   private generation = 0;
 
+  // One instance per (node, field): a form editing a different node builds a
+  // fresh one, so nothing computed for the previous node can linger.
   constructor(
     private readonly nodeType: string,
     private readonly fieldName: string
@@ -80,18 +85,6 @@ export class UniqueFieldCheck {
       log.error('Duplicate lookup failed (non-blocking)', { err });
       this.match = null;
     }
-  }
-
-  /**
-   * Forget everything: the suggestion, the last checked value, and any
-   * in-flight lookup. Call when the form starts editing a different node, or
-   * a suggestion computed for the previous node would linger and "Use
-   * existing" would navigate to a match that no longer applies.
-   */
-  reset(): void {
-    this.match = null;
-    this.checkedValue = null;
-    this.generation++;
   }
 
   /** "Keep as new" — create-anyway. The save already went through; this only clears the suggestion. */

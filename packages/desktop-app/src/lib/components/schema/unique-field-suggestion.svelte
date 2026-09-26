@@ -14,7 +14,7 @@
   import type { SchemaField } from '$lib/types/schema-node';
   import { labelForField } from '$lib/utils/schema-field-label';
   import type { UniqueFieldCheck } from './unique-field-check.svelte';
-  import UserRoundSearchIcon from '@lucide/svelte/icons/user-round-search';
+  import CopyIcon from '@lucide/svelte/icons/copy';
 
   let { check, field }: { check: UniqueFieldCheck; field: SchemaField } = $props();
 
@@ -25,9 +25,9 @@
 
 {#if check.match}
   <Alert variant="warning">
-    <UserRoundSearchIcon class="h-4 w-4" />
+    <CopyIcon class="h-4 w-4" />
     <AlertDescription class="unique-field-message">
-      This {labelForField(field).toLowerCase()} already exists{matchName ? `: ${matchName}` : ''} — use
+      This {labelForField(field)} already exists{matchName ? `: ${matchName}` : ''} — use
       the existing one instead?
     </AlertDescription>
     <!-- AlertDescription renders a <p>, which cannot contain block content

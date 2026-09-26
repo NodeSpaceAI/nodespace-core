@@ -58,20 +58,16 @@
 
   const node = $derived<Node | null>(nodeId ? (sharedNodeStore.getNode(nodeId) ?? null) : null);
 
-  // One duplicate check per `unique` field, rebuilt when the schema changes.
-  const uniqueChecks = $derived(
-    new Map(
+  // One duplicate check per `unique` field, rebuilt whenever the schema or
+  // the node changes — the instance can be reused across nodes, and a
+  // suggestion computed for the previous one must not linger.
+  const uniqueChecks = $derived.by(() => {
+    void nodeId;
+    return new Map(
       visibleFields
         .filter(isUniqueField)
         .map((field) => [field.name, new UniqueFieldCheck(schema.id, field.name)])
-    )
-  );
-
-  // The instance can be reused across nodes — drop any suggestion computed
-  // for the previous one.
-  $effect(() => {
-    void nodeId;
-    for (const check of uniqueChecks.values()) check.reset();
+    );
   });
 
   const fieldStats = $derived.by(() => {
