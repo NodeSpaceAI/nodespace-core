@@ -104,7 +104,7 @@
     "homebrew:drift-check": "bun run scripts/update-homebrew-cask.ts drift-check",
     "homebrew:sync-formula": "bun run scripts/update-homebrew-formula.ts",
     "homebrew:formula-drift-check": "bun run scripts/update-homebrew-formula.ts drift-check",
-    "prepare": "husky",
+    "prepare": "husky && bun run scripts/setup-build-cache.ts",
     "audit": "bun scripts/audit-npm.ts"
   },
   "devDependencies": {
