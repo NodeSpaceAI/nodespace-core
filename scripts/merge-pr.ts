@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 // `bun run merge <PR#>` — runs the full pre-merge gate on a PR rebased onto
-// current main, records the result as a commit status, then squash-merges.
+// current main, then squash-merges exactly the commit that passed.
 //
 // Why merge time and not push time (ADR-047): most pushes are WIP or
 // review-fix pushes, and running the full pyramid on each paid for it several
@@ -8,11 +8,6 @@
 // not what lands. Two branches can each pass alone and still break main
 // together. So a push runs a scoped check, and the full pyramid runs once,
 // here, on the rebased result.
-//
-// The `nodespace/gate` commit status is the receipt: branch protection on
-// main requires it, so GitHub refuses a merge whose exact head never passed
-// this gate. There is still no hosted CI — the testing happens on this
-// machine, and GitHub only checks the receipt.
 //
 // Two things keep a merge cheap and correct:
 //
@@ -29,15 +24,13 @@
 //
 // It tests the PR as pushed: commit and push first.
 //
-//   bun run merge <PR#>             gate, record, merge
-//   bun run merge <PR#> --dry-run   gate only; no push, status or merge
+//   bun run merge <PR#>             gate, then merge
+//   bun run merge <PR#> --dry-run   gate only; no push or merge
 
 import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { $ } from "bun";
 import { acquireGateLock, DISABLE_ENV_VAR, HELD_BY_MERGE_ENV_VAR, registerLockRelease } from "./gate-lock";
-
-export const STATUS_CONTEXT = "nodespace/gate";
 
 /** How many times main may move under us before giving up. */
 export const MAX_ATTEMPTS = 3;
@@ -79,12 +72,6 @@ export function isPrBranch(localBranch: string, prBranch: string): boolean {
   return localBranch === prBranch || localBranch === `worktree-${prBranch}`;
 }
 
-/** The description GitHub shows beside the status; its limit is 140 chars. */
-export function statusDescription(state: "success" | "failure", host: string): string {
-  const text = state === "success" ? `Full pre-merge gate passed on ${host}` : `Full pre-merge gate failed on ${host}`;
-  return text.slice(0, 140);
-}
-
 interface PullRequest {
   headRefName: string;
   headRefOid: string;
@@ -95,10 +82,6 @@ interface PullRequest {
 /** Runs git in `cwd` and returns its trimmed stdout. */
 async function git(cwd: string, ...args: string[]): Promise<string> {
   return (await $`git ${args}`.cwd(cwd).quiet().text()).trim();
-}
-
-async function setStatus(repo: string, sha: string, state: "success" | "failure", description: string) {
-  await $`gh api -X POST repos/${repo}/statuses/${sha} -f state=${state} -f context=${STATUS_CONTEXT} -f description=${description}`.quiet();
 }
 
 function fail(message: string): never {
@@ -169,7 +152,6 @@ async function main(): Promise<void> {
 
   const repoRoot = resolve(dirname(await git(here, "rev-parse", "--path-format=absolute", "--git-common-dir")));
   const gate = await prepareGateCheckout(repoRoot);
-  const host = (await $`hostname -s`.quiet().text()).trim();
 
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     await git(gate, "fetch", "--quiet", "origin", "main", info.headRefName);
@@ -205,10 +187,6 @@ async function main(): Promise<void> {
       .env({ ...process.env, [HELD_BY_MERGE_ENV_VAR]: "1" })
       .nothrow();
     if (result.exitCode !== 0) {
-      // A status only means something on a commit GitHub has: the PR head.
-      if (!dryRun && tested === info.headRefOid) {
-        await setStatus(repo, tested, "failure", statusDescription("failure", host)).catch(() => {});
-      }
       fail(
         `The merge gate failed on ${tested.slice(0, 8)}` +
           (tested === info.headRefOid
@@ -237,9 +215,6 @@ async function main(): Promise<void> {
       await $`git push --quiet --no-verify --force-with-lease=${info.headRefName}:${info.headRefOid} origin HEAD:${info.headRefName}`.cwd(gate);
     }
 
-    await setStatus(repo, tested, "success", statusDescription("success", host));
-    console.log(`\n▶ Recorded ${STATUS_CONTEXT}: success on ${tested.slice(0, 8)}`);
-
     // --match-head-commit: GitHub refuses the merge if the PR's head is no
     // longer the commit that passed. The branch is deleted through the API
     // rather than --delete-branch, which also tries to delete the local
@@ -252,7 +227,7 @@ async function main(): Promise<void> {
       if (merged.exitCode === 0) break;
       if (tries === MERGE_TRIES) {
         fail(
-          `GitHub refused the merge of ${tested.slice(0, 8)} (see above). The gate passed and ${STATUS_CONTEXT} is recorded on it;\n` +
+          `GitHub refused the merge of ${tested.slice(0, 8)} (see above), though the gate passed on it;\n` +
             `  once GitHub shows that commit as the PR head, merge with: gh pr merge ${pr} --squash --match-head-commit ${tested}`
         );
       }

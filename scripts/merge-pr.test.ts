@@ -5,7 +5,7 @@
 // DOM-free on purpose: this file runs under `bun test scripts/`, which
 // bypasses the Happy-DOM vitest config (see CLAUDE.md).
 import { describe, expect, test } from "bun:test";
-import { isPrBranch, parseArgs, statusDescription } from "./merge-pr";
+import { isPrBranch, parseArgs } from "./merge-pr";
 
 describe("isPrBranch", () => {
   test("matches the PR branch and its EnterWorktree-prefixed local name", () => {
@@ -35,15 +35,4 @@ describe("parseArgs", () => {
       expect(() => parseArgs(argv)).toThrow("usage: bun run merge <PR#>");
     }
   );
-});
-
-describe("statusDescription", () => {
-  test("names the outcome and the machine", () => {
-    expect(statusDescription("success", "studio")).toBe("Full pre-merge gate passed on studio");
-    expect(statusDescription("failure", "studio")).toBe("Full pre-merge gate failed on studio");
-  });
-
-  test("fits GitHub's 140-character limit", () => {
-    expect(statusDescription("success", "h".repeat(300)).length).toBe(140);
-  });
 });
