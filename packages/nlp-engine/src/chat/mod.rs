@@ -18,12 +18,10 @@
 /// one generation runs at a time. This prevents Metal command-buffer
 /// collisions between concurrent requests.
 pub mod error;
-pub mod parser;
 pub mod prompt_dump;
 pub mod types;
 
 pub use error::{ChatError, Result};
-pub use parser::{parse_tool_calls, ParseResult, StreamingToolCallParser};
 pub use types::{
     ChatChunk, ChatConfig, ChatMessage, ChatUsage, LoadedModelInfo, Role, ToolCallRaw, ToolSpec,
 };

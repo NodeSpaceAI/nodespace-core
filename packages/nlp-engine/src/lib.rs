@@ -15,7 +15,7 @@
 /// - **Efficient Caching**: LRU cache with automatic eviction for <5ms cache hits
 /// - **Asymmetric Embeddings**: Separate prefixes for documents vs queries
 /// - **Streaming Chat**: Token-by-token generation with callback-based streaming
-/// - **Tool-Call Parsing**: Mistral raw GGUF `[TOOL_CALLS]` format parser
+/// - **Tool-Call Parsing**: native llama.cpp streaming parser for all model families
 ///
 /// # Example
 ///
@@ -51,7 +51,6 @@ pub use error::{EmbeddingError, Result};
 
 // Re-export chat types
 pub use chat::error::ChatError;
-pub use chat::parser::{parse_tool_calls, ParseResult, ParsedToolCall, StreamingToolCallParser};
 pub use chat::types::{
     ChatChunk, ChatConfig, ChatMessage, ChatUsage, KvCacheQuantType, LoadedModelInfo, Role,
     ToolCallRaw, ToolSpec,
