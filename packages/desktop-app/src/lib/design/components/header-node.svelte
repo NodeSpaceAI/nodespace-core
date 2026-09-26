@@ -147,58 +147,58 @@
   /* Header wrapper - width handled by parent .node-content-wrapper flex rule */
   /* No additional styles needed - flex: 1 applied by parent */
 
-  /* Header-specific typography and icon positioning. H1–H3 step down from 1.5rem;
-     H4–H6 sit at body size — a heading never renders smaller than body text. */
+  /* Header-specific typography and icon positioning, from the heading type-scale
+     tokens in app.css. H4–H6 share heading-4. */
   .header-h1 {
-    --font-size: 1.5rem;
-    --line-height: 1.3;
-    --icon-vertical-position: calc(0.25rem + (1.5rem * 1.3 / 2));
+    --font-size: var(--heading-1-size);
+    --line-height: var(--heading-1-lh);
+    --icon-vertical-position: calc(0.25rem + (var(--font-size) * var(--line-height) / 2));
   }
 
   .header-h1 :global(.node__content) {
-    font-size: 1.5rem;
+    font-size: var(--heading-1-size);
     font-weight: 600;
-    line-height: 1.3;
+    line-height: var(--heading-1-lh);
   }
 
   .header-h2 {
-    --font-size: 1.25rem;
-    --line-height: 1.3;
-    --icon-vertical-position: calc(0.25rem + (1.25rem * 1.3 / 2));
+    --font-size: var(--heading-2-size);
+    --line-height: var(--heading-2-lh);
+    --icon-vertical-position: calc(0.25rem + (var(--font-size) * var(--line-height) / 2));
   }
 
   .header-h2 :global(.node__content) {
-    font-size: 1.25rem;
+    font-size: var(--heading-2-size);
     font-weight: 600;
-    line-height: 1.3;
+    line-height: var(--heading-2-lh);
   }
 
   .header-h3 {
-    --font-size: 1.125rem;
-    --line-height: 1.3;
-    --icon-vertical-position: calc(0.25rem + (1.125rem * 1.3 / 2));
+    --font-size: var(--heading-3-size);
+    --line-height: var(--heading-3-lh);
+    --icon-vertical-position: calc(0.25rem + (var(--font-size) * var(--line-height) / 2));
   }
 
   .header-h3 :global(.node__content) {
-    font-size: 1.125rem;
+    font-size: var(--heading-3-size);
     font-weight: 600;
-    line-height: 1.3;
+    line-height: var(--heading-3-lh);
   }
 
   .header-h4,
   .header-h5,
   .header-h6 {
-    --font-size: 1rem;
-    --line-height: 1.4;
-    --icon-vertical-position: calc(0.25rem + (1rem * 1.4 / 2));
+    --font-size: var(--heading-4-size);
+    --line-height: var(--heading-4-lh);
+    --icon-vertical-position: calc(0.25rem + (var(--font-size) * var(--line-height) / 2));
   }
 
   .header-h4 :global(.node__content),
   .header-h5 :global(.node__content),
   .header-h6 :global(.node__content) {
-    font-size: 1rem;
+    font-size: var(--heading-4-size);
     font-weight: 600;
-    line-height: 1.4;
+    line-height: var(--heading-4-lh);
   }
 
   /* Ensure empty headers hold their level's full line height */
