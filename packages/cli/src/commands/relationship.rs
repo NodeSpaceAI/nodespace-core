@@ -83,12 +83,24 @@ async fn create(client: &mut NodeClient, args: CreateArgs, json_out: bool) -> Re
         .into_inner();
 
     if json_out {
+        let replaced: Vec<_> = response
+            .replaced
+            .iter()
+            .map(|edge| {
+                json!({
+                    "source_id": edge.source_id,
+                    "relationship_name": edge.relationship_name,
+                    "target_id": edge.target_id,
+                })
+            })
+            .collect();
         println!(
             "{}",
             serde_json::to_string_pretty(&json!({
                 "source_id": response.source_id,
                 "relationship_name": response.relationship_name,
                 "target_id": response.target_id,
+                "replaced": replaced,
             }))?
         );
     } else {
@@ -96,6 +108,14 @@ async fn create(client: &mut NodeClient, args: CreateArgs, json_out: bool) -> Re
             "Created relationship: {} --[{}]--> {}",
             response.source_id, response.relationship_name, response.target_id
         );
+        // A cardinality-one end replaces rather than rejects, so a create can
+        // silently unassign someone else — say so.
+        for edge in &response.replaced {
+            println!(
+                "Replaced relationship: {} --[{}]--> {}",
+                edge.source_id, edge.relationship_name, edge.target_id
+            );
+        }
     }
     Ok(())
 }

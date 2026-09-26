@@ -2,6 +2,20 @@
 
 use super::*;
 
+/// An edge a `create_relationship` call evicted to honor a declared
+/// `cardinality: One` / `reverse_cardinality: One` end. Replace, not reject,
+/// is the enforcement — so this is the only signal a caller gets that the
+/// write superseded an existing assignment.
+///
+/// Endpoints are in STORED (forward) orientation under the forward name, even
+/// when the create was written through an `in` declaration's name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplacedEdge {
+    pub source_id: String,
+    pub relationship_name: String,
+    pub target_id: String,
+}
+
 impl NodeService {
     /// Create a mention relationship between two existing nodes
     ///
@@ -439,7 +453,8 @@ impl NodeService {
     ///
     /// # Returns
     ///
-    /// Ok(()) if successful
+    /// The edges this call evicted to honor a cardinality-one end (see Errors
+    /// below) — empty for a plain create, an idempotent repeat, or a builtin.
     ///
     /// # Errors
     ///
@@ -449,7 +464,8 @@ impl NodeService {
     /// - `TargetTypeMismatch` - Target node type doesn't match schema definition
     /// - A `cardinality: One` source or `reverse_cardinality: One` target does NOT
     ///   error on a second edge — the prior edge is replaced (evicted, then the
-    ///   new one inserted), atomically with the insert. This call can still fail
+    ///   new one inserted), atomically with the insert, and the evicted edge is
+    ///   returned. This call can still fail
     ///   if the evicted edge's own source relationship is declared `required:
     ///   true` and this was its last edge — the eviction refuses to leave that
     ///   invariant violated, surfacing an error instead.
@@ -696,7 +712,7 @@ impl NodeService {
         relationship_name: &str,
         target_id: &str,
         edge_data: serde_json::Value,
-    ) -> Result<(), NodeServiceError> {
+    ) -> Result<Vec<ReplacedEdge>, NodeServiceError> {
         // Unified relationship creation - ALL relationships use the `relationship` table
         // The relationship_type field distinguishes between different relationship types
 
@@ -846,7 +862,7 @@ impl NodeService {
                         ),
                     });
                 }
-                return Ok(());
+                return Ok(Vec::new());
             }
         }
 
@@ -863,7 +879,7 @@ impl NodeService {
             })?;
         if already_exists {
             // Relationship already exists, idempotent success
-            return Ok(());
+            return Ok(Vec::new());
         }
 
         // Auto-ordered `has_child` with no caller-supplied order: the next
@@ -893,7 +909,7 @@ impl NodeService {
                 ),
             });
 
-            return Ok(());
+            return Ok(Vec::new());
         }
 
         // Remaining relationships carry the caller's edge_data as-is: the two
@@ -933,7 +949,7 @@ impl NodeService {
             ),
         });
 
-        Ok(())
+        Ok(Vec::new())
     }
 
     /// Tx-scoped twin of [`Self::create_relationship`], for invariant-rule
@@ -962,7 +978,7 @@ impl NodeService {
         relationship_name: &str,
         target_id: &str,
         edge_data: serde_json::Value,
-    ) -> Result<(), NodeServiceError> {
+    ) -> Result<Vec<ReplacedEdge>, NodeServiceError> {
         let is_builtin = crate::models::schema::is_builtin_relationship(relationship_name);
 
         // A write through an `in` declaration's name is stored as the forward
@@ -1247,7 +1263,7 @@ impl NodeService {
             NodeServiceError::query_failed(format!("Failed to check existing relationship: {}", e))
         })?;
         if already_exists {
-            return Ok(());
+            return Ok(Vec::new());
         }
 
         let final_edge_data = if is_builtin {
@@ -1286,7 +1302,9 @@ impl NodeService {
         // Now that the new edge is durably inserted (above), evict whatever
         // cardinality-one replace gathered earlier — see the gathering
         // site's comment for why this must happen AFTER the insert rather
-        // than before it.
+        // than before it. Each eviction is reported back so the caller can
+        // tell a plain create from a reassignment.
+        let mut replaced = Vec::new();
         if let Some((forward_targets_to_evict, reverse_sources_to_evict)) = evict_after_insert {
             for existing_target_id in forward_targets_to_evict {
                 self.remove_relationship_in_tx(
@@ -1296,6 +1314,11 @@ impl NodeService {
                     &existing_target_id,
                 )
                 .await?;
+                replaced.push(ReplacedEdge {
+                    source_id: source_id.to_string(),
+                    relationship_name: relationship_name.to_string(),
+                    target_id: existing_target_id,
+                });
             }
             for existing_source_id in reverse_sources_to_evict {
                 self.remove_relationship_in_tx(
@@ -1305,10 +1328,15 @@ impl NodeService {
                     target_id,
                 )
                 .await?;
+                replaced.push(ReplacedEdge {
+                    source_id: existing_source_id,
+                    relationship_name: relationship_name.to_string(),
+                    target_id: target_id.to_string(),
+                });
             }
         }
 
-        Ok(())
+        Ok(replaced)
     }
 
     /// Closes the gap `SqliteStore::merge_nodes_in_tx` cannot close on its

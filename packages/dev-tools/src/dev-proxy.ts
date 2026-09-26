@@ -765,11 +765,15 @@ async function handleRequest(req: Request): Promise<Response> {
       if (body.edgeData !== undefined && body.edgeData !== null) {
         request.edgeDataJson = JSON.stringify(body.edgeData);
       }
-      await call(
+      const res = await call<
+        typeof request,
+        { replaced?: Array<{ sourceId: string; relationshipName: string; targetId: string }> }
+      >(
         (nodeClient as unknown as Record<string, Function>).createRelationship,
         request
       );
-      return new Response(null, { status: 204, headers: corsHeaders });
+      // Mirror the Tauri command: the edges a cardinality-one end evicted.
+      return json({ replaced: res.replaced ?? [] });
     } catch (err) {
       return grpcError(err as grpc.ServiceError);
     }

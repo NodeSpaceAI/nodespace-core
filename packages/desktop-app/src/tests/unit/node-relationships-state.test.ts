@@ -38,6 +38,7 @@ function view(nodeId: string, assignee?: string): NodeRelationshipsView {
         reverseName: 'assignee',
         sourceType: 'person',
         cardinality: 'one',
+        farCardinality: 'many',
         required: null,
         edgeFields: null,
         description: null,

@@ -64,7 +64,7 @@ use crate::nodespace::{
     MoveNodeRequest, NodeCollectionsRequest, NodeData, NodeDeleted, NodeEvent, NodeListResponse,
     NodeReference, NodeReferenceListResponse, NodeResponse, NodeSortOrder, NodeTreeResponse,
     OptionalConflictResponse, OptionalNodeResponse, OptionalStringClear, OptionalTimestampClear,
-    QueryNodesSimpleRequest, RelationshipDeletedPayload, RelationshipPayload,
+    QueryNodesSimpleRequest, RelationshipDeletedPayload, RelationshipEdge, RelationshipPayload,
     RemoveNodeFromCollectionRequest, RenameCollectionRequest, ReorderNodeRequest,
     ReorderNodeResponse, ResetSeedNodeRequest, ResetSeedNodeResponse, ResolveConflictRequest,
     SchemaParamsRequest, SchemaResultResponse, SearchRequest, SetLocalPersonIdentityRequest,
@@ -1353,6 +1353,15 @@ impl GrpcNodeService for NodeServiceImpl {
             source_id: output.source_id,
             relationship_name: output.relationship_name,
             target_id: output.target_id,
+            replaced: output
+                .replaced
+                .into_iter()
+                .map(|edge| RelationshipEdge {
+                    source_id: edge.source_id,
+                    relationship_name: edge.relationship_name,
+                    target_id: edge.target_id,
+                })
+                .collect(),
         }))
     }
 

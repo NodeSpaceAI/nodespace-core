@@ -49,6 +49,7 @@ const groupsResult = (n: number, cardinality: 'one' | 'many' = 'many') =>
       reverseName: `gadgets_${i}`,
       sourceType: 'gadget',
       cardinality,
+      farCardinality: 'many' as const,
       required: null,
       edgeFields: null,
       description: null,

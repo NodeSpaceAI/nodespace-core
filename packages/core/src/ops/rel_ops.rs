@@ -7,7 +7,7 @@ use crate::models::schema::{
     BUILTIN_RELATIONSHIP_NAMES,
 };
 use crate::ops::OpsError;
-use crate::services::NodeService;
+use crate::services::{NodeService, ReplacedEdge};
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -30,6 +30,9 @@ pub struct CreateRelOutput {
     pub source_id: String,
     pub relationship_name: String,
     pub target_id: String,
+    /// Edges evicted to honor a cardinality-one end — see
+    /// `NodeService::create_relationship`. Empty for a plain create.
+    pub replaced: Vec<ReplacedEdge>,
 }
 
 #[derive(Debug)]
@@ -80,7 +83,7 @@ pub async fn create_relationship(
 ) -> Result<CreateRelOutput, OpsError> {
     let edge_data = input.edge_data.unwrap_or(json!({}));
 
-    node_service
+    let replaced = node_service
         .create_relationship(
             &input.source_id,
             &input.relationship_name,
@@ -94,6 +97,7 @@ pub async fn create_relationship(
         source_id: input.source_id,
         relationship_name: input.relationship_name,
         target_id: input.target_id,
+        replaced,
     })
 }
 
@@ -552,6 +556,11 @@ pub struct RelationshipGroup {
     /// the `reverse_cardinality` inbound. Known on both sides, since a
     /// declaration must supply both.
     pub cardinality: RelationshipCardinality,
+    /// Effective cardinality for the FAR side — how many edges of this
+    /// relationship each related node may hold. When `one`, linking a node
+    /// that already holds such an edge replaces it (see
+    /// `NodeService::create_relationship`), so the viewer warns before doing so.
+    pub far_cardinality: RelationshipCardinality,
     /// Whether the forward relationship is required (outbound only). The viewer
     /// uses this to confirm-on-delete; last-edge removal is enforced server-side
     /// in `NodeService::delete_relationship`.
@@ -685,6 +694,7 @@ pub async fn get_node_relationships(
             reverse_name: rel.reverse_name.clone(),
             source_type: node_type.clone(),
             cardinality: rel.cardinality.clone(),
+            far_cardinality: rel.reverse_cardinality.clone(),
             required: rel.required,
             edge_fields: rel.edge_fields.clone(),
             description: rel.description.clone(),
@@ -776,6 +786,7 @@ pub async fn get_node_relationships(
             source_type,
             // Reading from the inbound side, the reverse cardinality governs.
             cardinality: rel.reverse_cardinality.clone(),
+            far_cardinality: rel.cardinality.clone(),
             required: None,
             edge_fields: rel.edge_fields.clone(),
             description: rel.description.clone(),

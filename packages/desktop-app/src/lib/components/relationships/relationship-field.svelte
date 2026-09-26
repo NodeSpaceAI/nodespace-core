@@ -27,9 +27,15 @@
   import { createLogger } from '$lib/utils/logger';
   import { toError } from '$lib/types/errors';
   import { getNavigationService } from '$lib/services/navigation-service';
-  import { addEdge, removeEdge, searchTargets } from '$lib/services/relationship-viewer-service';
+  import {
+    addEdge,
+    findDisplacedHolders,
+    removeEdge,
+    searchTargets
+  } from '$lib/services/relationship-viewer-service';
   import {
     filterUnlinkedTargets,
+    reassignmentPrompt,
     type RelationshipGroupView
   } from '$lib/services/relationship-grouping';
   import type { Node } from '$lib/types';
@@ -129,7 +135,7 @@
     }
   }
 
-  async function write(fn: () => Promise<void>) {
+  async function write(fn: () => Promise<unknown>) {
     // One write at a time: a second pick while the first is in flight would
     // race it, and the store keeps whichever commits last. The input goes
     // readonly rather than disabled meanwhile: disabling a focused input
@@ -150,8 +156,30 @@
     }
   }
 
-  function select(node: Node) {
-    void write(() => addEdge(nodeId, group, node.id));
+  /**
+   * Replacing this field's own value is what picking means. What is NOT
+   * visible is the far end: when it is also `one`, the picked node may already
+   * be linked to someone else, and the daemon replaces that link rather than
+   * rejecting — so confirm before taking it from them.
+   */
+  async function select(node: Node) {
+    // The check is part of the write for `busy`'s purposes: a second pick
+    // while it is in flight would otherwise race the first.
+    if (busy) return;
+    busy = true;
+    error = null;
+    let proceed = false;
+    try {
+      const holders = await findDisplacedHolders(nodeId, group, node.id);
+      const prompt = reassignmentPrompt(nodeLabel(node), holders);
+      proceed = prompt === null || window.confirm(prompt);
+    } catch (err) {
+      log.error('Failed to check for a reassignment', err);
+      error = toError(err).message;
+    } finally {
+      busy = false;
+    }
+    if (proceed) await write(() => addEdge(nodeId, group, node.id));
   }
 
   function clear() {
@@ -178,7 +206,7 @@
       highlighted = (highlighted - 1 + results.length) % results.length;
     } else if (event.key === 'Enter' && results[highlighted]) {
       event.preventDefault();
-      select(results[highlighted]);
+      void select(results[highlighted]);
     }
   }
 </script>
@@ -236,7 +264,7 @@
               class:bg-accent={index === highlighted}
               class:text-accent-foreground={index === highlighted}
               onmouseenter={() => (highlighted = index)}
-              onmousedown={() => select(node)}
+              onmousedown={() => void select(node)}
             >
               {nodeLabel(node)}
             </li>

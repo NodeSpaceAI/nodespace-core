@@ -61,11 +61,25 @@ export interface RawRelationshipGroup {
   reverseName: string;
   sourceType: string;
   cardinality: RelationshipCardinality;
+  /** The far end's cardinality: how many of these edges each related node may hold. */
+  farCardinality: RelationshipCardinality;
   required: boolean | null;
   edgeFields: RawEdgeField[] | null;
   description: string | null;
   related: RawRelatedNode[];
   count: number;
+}
+
+/** An edge `create_relationship` evicted to honor a `one` end. */
+export interface ReplacedEdge {
+  sourceId: string;
+  relationshipName: string;
+  targetId: string;
+}
+
+/** The `create_relationship` command's result. */
+export interface CreateRelationshipResult {
+  replaced: ReplacedEdge[];
 }
 
 /** The full command payload. */
@@ -94,11 +108,23 @@ export interface RelationshipGroupView {
    * create/delete/update mutation calls — distinct from the humanized `label`.
    */
   relationshipName: string;
+  /**
+   * The declaration's reverse name. With `relationshipName` it identifies the
+   * declaration: two schemas may both declare `tasks` into the same type (a
+   * person's and a project's), and only the pair tells them apart.
+   */
+  reverseName: string;
   /** Human-readable heading for the group. */
   label: string;
   direction: RelationshipDirection;
   targetType: string | null;
   cardinality: RelationshipCardinality | null;
+  /**
+   * The far end's cardinality. When `one`, linking a node that already holds
+   * this relationship with someone else REPLACES that edge (the daemon evicts
+   * rather than rejects) — see `farEndHolders`.
+   */
+  farCardinality: RelationshipCardinality | null;
   /** Whether the relationship requires at least one edge (blocks last-edge removal). */
   required: boolean;
   description: string | null;
@@ -202,10 +228,12 @@ function buildGroupView(group: RawRelationshipGroup): RelationshipGroupView {
   return {
     key: `${group.direction}:${group.relationshipName}:${group.targetType ?? '*'}`,
     relationshipName: group.relationshipName,
+    reverseName: group.reverseName,
     label: groupDisplayLabel(group),
     direction: group.direction,
     targetType: group.targetType,
     cardinality: group.cardinality,
+    farCardinality: group.farCardinality,
     required: group.required ?? false,
     description: group.description,
     edgeColumns,
@@ -307,6 +335,60 @@ export function filterUnlinkedTargets<T extends { id: string }>(
 ): T[] {
   const existing = linkedTargetIds(group);
   return nodes.filter((node) => !existing.has(node.id.toLowerCase()));
+}
+
+/**
+ * The nodes that linking `nodeId` to a candidate through `group` would UNLINK
+ * from that candidate, read off the candidate's own relationships.
+ *
+ * The daemon enforces a `one` end by replacing the prior edge, not by
+ * rejecting the write — so when the far end of `group` is `one`, a candidate
+ * already linked to someone else loses that link ("assign this task to Bob"
+ * unassigns Alice). The candidate sees the same relationship from the opposite
+ * direction, so its mirror group's rows are exactly what would be evicted. The
+ * mirror is matched on the reverse name too: a task holds one assignee AND one
+ * project, both declared as `tasks`, and linking an assignee evicts only the
+ * assignee — the same declaring-schema scoping the daemon applies.
+ */
+export function farEndHolders(
+  candidate: NodeRelationshipsView,
+  group: RelationshipGroupView,
+  nodeId: string
+): RelationshipRowView[] {
+  if (group.farCardinality !== 'one') return [];
+  const opposite: RelationshipDirection = group.direction === 'out' ? 'in' : 'out';
+  const self = nodeId.toLowerCase();
+  return candidate.groups
+    .filter(
+      (mirror) =>
+        mirror.relationshipName === group.relationshipName &&
+        mirror.reverseName === group.reverseName &&
+        mirror.direction === opposite &&
+        mirror.cardinality === 'one'
+    )
+    .flatMap((mirror) => mirror.rows)
+    .filter((row) => row.id.toLowerCase() !== self);
+}
+
+/**
+ * The confirmation shown before a link that would silently reassign, or `null`
+ * when the link displaces nothing. `holders` come from `farEndHolders`;
+ * `replaced` are this node's own rows a `one` end would drop.
+ */
+export function reassignmentPrompt(
+  targetLabel: string,
+  holders: RelationshipRowView[],
+  replaced: RelationshipRowView[] = []
+): string | null {
+  const quote = (rows: RelationshipRowView[]) => rows.map((row) => `"${row.label}"`).join(', ');
+  const lines: string[] = [];
+  if (holders.length > 0) {
+    lines.push(`"${targetLabel}" is currently linked to ${quote(holders)}. Linking it here removes that link.`);
+  }
+  if (replaced.length > 0) {
+    lines.push(`This relationship holds a single link, so ${quote(replaced)} will be replaced.`);
+  }
+  return lines.length > 0 ? `${lines.join('\n')}\n\nContinue?` : null;
 }
 
 /**
