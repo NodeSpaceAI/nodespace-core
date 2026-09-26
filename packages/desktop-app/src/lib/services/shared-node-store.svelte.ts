@@ -400,9 +400,14 @@ export class SimplePersistenceCoordinator {
           );
         }
 
-        this.executingOperations.delete(nodeId);
-
         if (queued) {
+          // Hand the executing marker straight to the queued write rather than
+          // clearing it until that write starts a microtask later. A
+          // `persist()` running in between (e.g. code awaiting this write's
+          // promise) would otherwise see the node idle, cancel the placeholder
+          // above and start a second write alongside the queued one. With the
+          // marker held, it queues behind the queued write instead.
+          this.executingOperations.set(nodeId, queued.sequence);
           // Run the queued write now that this write's version confirmation
           // has landed — deferred via microtask (not setTimeout/debounce) to
           // avoid unbounded stack growth while still running as soon as
@@ -416,6 +421,8 @@ export class SimplePersistenceCoordinator {
               queued.reject
             );
           });
+        } else {
+          this.executingOperations.delete(nodeId);
         }
       }
     };
