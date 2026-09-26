@@ -288,30 +288,30 @@
     transform: translate(-50%, -50%) rotate(90deg);
   }
 
-  /* Inherit font-size, line-height, and icon positioning from HeaderNode wrapper classes */
+  /* Mirror HeaderNode's heading scale (app.css tokens) so the chevron aligns with the heading */
   .node-content-wrapper:has(:global(.header-h1)) {
-    --font-size: 1.5rem;
-    --line-height: 1.3;
-    --icon-vertical-position: calc(0.25rem + (1.5rem * 1.3 / 2));
+    --font-size: var(--heading-1-size);
+    --line-height: var(--heading-1-lh);
+    --icon-vertical-position: calc(0.25rem + (var(--font-size) * var(--line-height) / 2));
   }
 
   .node-content-wrapper:has(:global(.header-h2)) {
-    --font-size: 1.25rem;
-    --line-height: 1.3;
-    --icon-vertical-position: calc(0.25rem + (1.25rem * 1.3 / 2));
+    --font-size: var(--heading-2-size);
+    --line-height: var(--heading-2-lh);
+    --icon-vertical-position: calc(0.25rem + (var(--font-size) * var(--line-height) / 2));
   }
 
   .node-content-wrapper:has(:global(.header-h3)) {
-    --font-size: 1.125rem;
-    --line-height: 1.3;
-    --icon-vertical-position: calc(0.25rem + (1.125rem * 1.3 / 2));
+    --font-size: var(--heading-3-size);
+    --line-height: var(--heading-3-lh);
+    --icon-vertical-position: calc(0.25rem + (var(--font-size) * var(--line-height) / 2));
   }
 
   .node-content-wrapper:has(:global(.header-h4)),
   .node-content-wrapper:has(:global(.header-h5)),
   .node-content-wrapper:has(:global(.header-h6)) {
-    --font-size: 1rem;
-    --line-height: 1.4;
-    --icon-vertical-position: calc(0.25rem + (1rem * 1.4 / 2));
+    --font-size: var(--heading-4-size);
+    --line-height: var(--heading-4-lh);
+    --icon-vertical-position: calc(0.25rem + (var(--font-size) * var(--line-height) / 2));
   }
 </style>
