@@ -10,11 +10,8 @@
  */
 
 import { describe, it, expect, vi } from 'vitest';
-import {
-  createModelLoadRelay,
-  toModelLoadProgressSse,
-  type ModelLoadProgressSseEvent
-} from '../../../../dev-tools/src/model-load-progress';
+import { createModelLoadRelay, toModelLoadProgressSse } from '../../../../dev-tools/src/model-load-progress';
+import type { ModelLoadProgressSseEvent } from '$lib/types/sse-events';
 
 describe('toModelLoadProgressSse', () => {
   it('maps a phase event to the SSE payload', () => {

@@ -100,7 +100,7 @@ export interface RelationshipDeletedEvent extends SseEventBase {
 export interface ModelLoadProgressSseEvent extends SseEventBase {
   type: 'modelLoadProgress';
   modelId: string;
-  /** `downloading` | `verifying` | `loading` | `ready` | `error` | `engine_swapped` */
+  /** `downloading` | `verifying` | `loading` | `ready` | `error` */
   status: string;
   message?: string;
   /** Present on `downloading` events when the daemon reported byte counts. */

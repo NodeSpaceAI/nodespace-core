@@ -325,7 +325,16 @@ export function createNodeSpaceClients(
       () =>
         new Promise<void>((resolve, reject) => {
           const stream = method.call(agentClient, request) as grpc.ClientReadableStream<TEvent>;
-          stream.on('data', (evt: TEvent) => onEvent(evt));
+          stream.on('data', (evt: TEvent) => {
+            // A throw here would escape gRPC-js's event emitter as an uncaught
+            // exception and leave this promise pending; fail the call instead.
+            try {
+              onEvent(evt);
+            } catch (err) {
+              stream.cancel();
+              reject(err);
+            }
+          });
           stream.on('error', (err: grpc.ServiceError) => reject(err));
           stream.on('end', () => resolve());
         })

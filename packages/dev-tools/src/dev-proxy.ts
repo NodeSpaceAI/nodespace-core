@@ -53,7 +53,7 @@ interface SseClient {
 
 const sseClients = new Set<SseClient>();
 
-function broadcast(event: Record<string, unknown>): void {
+function broadcast(event: object): void {
   const data = `data: ${JSON.stringify(event)}\n\n`;
   const encoded = new TextEncoder().encode(data);
   for (const client of sseClients) {

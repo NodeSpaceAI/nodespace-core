@@ -18,6 +18,8 @@
  * whole download/verify/load, and reported an `"error"` event as success.
  */
 
+import type { ModelLoadProgressSseEvent } from '../../desktop-app/src/lib/types/sse-events.ts';
+
 /** `ModelLoadProgressEvent` as gRPC-js decodes it (camelCase, int64 as string). */
 export interface ProtoModelLoadProgressEvent {
   eventType: string;
@@ -27,21 +29,6 @@ export interface ProtoModelLoadProgressEvent {
   bytesTotal?: string | number | null;
   errorMessage?: string | null;
   engineSwapped?: boolean | null;
-}
-
-/**
- * SSE payload broadcast for each progress event. Mirrors the frontend's
- * `ModelLoadProgressSseEvent` (packages/desktop-app/src/lib/types/sse-events.ts).
- */
-export interface ModelLoadProgressSseEvent {
-  type: 'modelLoadProgress';
-  modelId: string;
-  /** `downloading` | `verifying` | `loading` | `ready` | `error` | `engine_swapped` */
-  status: string;
-  message?: string;
-  bytesDownloaded?: number;
-  bytesTotal?: number;
-  [key: string]: unknown;
 }
 
 export interface ModelLoadRelay {
