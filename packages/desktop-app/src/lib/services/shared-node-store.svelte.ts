@@ -623,45 +623,59 @@ export class SimplePersistenceCoordinator {
    */
   async flushAndWaitForNodes(nodeIds: string[], timeoutMs = 5000): Promise<Set<string>> {
     const failed = new Set<string>();
-    const promises: Promise<void>[] = [];
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<'timeout'>((resolve) => {
+      timeoutId = setTimeout(() => resolve('timeout'), timeoutMs);
+    });
 
-    for (const nodeId of nodeIds) {
-      const pending = this.pendingOperations.get(nodeId);
-      if (pending) {
-        // Clear the debounce timeout to prevent it from firing
+    await Promise.all(
+      nodeIds.map(async (nodeId) => {
+        if (!(await this.flushNode(nodeId, timeout))) failed.add(nodeId);
+      })
+    );
+    clearTimeout(timeoutId);
+    return failed;
+  }
+
+  /**
+   * Start `nodeId`'s debounced write if it is still waiting, then wait for the
+   * node's pending entry to settle. Returns false on failure or timeout.
+   *
+   * A queued write replaced during the wait rejects with
+   * `OperationCancelledError` while the node's in-flight write and the write
+   * that replaced it are still running. The entry is looked up again after
+   * every cancellation, so the flush waits on the replacement instead of
+   * resolving early. A cancellation that leaves nothing pending dropped the
+   * write outright (e.g. `clearQueued()` after an OCC conflict), so it counts
+   * as a failure.
+   *
+   * Only a debounced write that has not started is run here. Every other
+   * entry is already running, or is the placeholder for a queued write that
+   * the in-flight write's `finally` block starts itself; running that one
+   * here too would execute it twice. The entry is never deleted here either:
+   * `runOperation`'s `finally` owns that, and a delete from here could remove
+   * the placeholder it registers for the next queued write.
+   */
+  private async flushNode(nodeId: string, timeout: Promise<'timeout'>): Promise<boolean> {
+    for (
+      let pending = this.pendingOperations.get(nodeId);
+      pending;
+      pending = this.pendingOperations.get(nodeId)
+    ) {
+      if (pending.debounced && !this.executingOperations.has(nodeId)) {
         clearTimeout(pending.timeoutId);
-
-        // Only start the operation if it's not already executing
-        // This prevents double-execution when the timeout fires just before clearTimeout
-        if (!this.executingOperations.has(nodeId)) {
-          // Start the operation now
-          pending
-            .operation()
-            .then(
-              () => pending.resolve(),
-              (error) => pending.reject(error instanceof Error ? error : new Error(String(error)))
-            )
-            .finally(() => {
-              this.pendingOperations.delete(nodeId);
-            });
-        }
-
-        // Wait for completion with timeout (whether we started it or it was already running)
-        promises.push(
-          Promise.race([
-            pending.promise,
-            new Promise<void>((_, reject) =>
-              setTimeout(() => reject(new Error('Timeout')), timeoutMs)
-            )
-          ]).catch(() => {
-            failed.add(nodeId);
-          })
-        );
+        pending.debounced = false;
+        void pending.operation();
+      }
+      try {
+        const outcome = await Promise.race([pending.promise.then(() => 'done' as const), timeout]);
+        return outcome === 'done';
+      } catch (error) {
+        if (!(error instanceof OperationCancelledError)) return false;
+        if (!this.pendingOperations.has(nodeId)) return false;
       }
     }
-
-    await Promise.all(promises);
-    return failed;
+    return true;
   }
 
   getMetrics(): { pendingOperations: number } {
