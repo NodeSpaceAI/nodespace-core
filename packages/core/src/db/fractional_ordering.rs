@@ -2,6 +2,11 @@
 pub struct FractionalOrderCalculator;
 
 impl FractionalOrderCalculator {
+    /// Smallest gap between adjacent sibling orders that is still safe to
+    /// bisect. Below it, callers re-spread the siblings before inserting, so
+    /// repeated same-position inserts never converge onto an existing key.
+    pub const MIN_GAP: f64 = 0.0001;
+
     /// Calculate order value for inserting between prev and next.
     ///
     /// Returns a deterministic midpoint or endpoint. Under SQLite's serialized
@@ -22,31 +27,6 @@ impl FractionalOrderCalculator {
             (Some(prev), None) => prev + 1.0,
             (Some(prev), Some(next)) => (prev + next) / 2.0,
         }
-    }
-
-    /// Check if rebalancing is needed (gap too small)
-    pub fn needs_rebalancing(orders: &[f64]) -> bool {
-        if orders.len() < 2 {
-            return false;
-        }
-
-        for i in 1..orders.len() {
-            let gap = orders[i] - orders[i - 1];
-            if gap < 0.0001 {
-                // Precision threshold
-                return true;
-            }
-        }
-        false
-    }
-
-    /// Rebalance orders to have even spacing
-    ///
-    /// # Example
-    /// Input:  [1.0, 1.0001, 1.0002, 1.0003]
-    /// Output: [1.0, 2.0, 3.0, 4.0]
-    pub fn rebalance(count: usize) -> Vec<f64> {
-        (1..=count).map(|i| i as f64).collect()
     }
 }
 
@@ -108,15 +88,5 @@ mod tests {
             );
             last = next;
         }
-    }
-
-    #[test]
-    fn test_needs_rebalancing() {
-        assert!(!FractionalOrderCalculator::needs_rebalancing(&[
-            1.0, 2.0, 3.0
-        ]));
-        assert!(FractionalOrderCalculator::needs_rebalancing(&[
-            1.0, 1.00001, 1.00002
-        ]));
     }
 }
