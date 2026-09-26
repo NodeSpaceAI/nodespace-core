@@ -24,8 +24,7 @@
   const isLoading = $derived(modelStore.isLoading);
   const systemRamGb = $derived(modelStore.systemRamGb);
 
-
-  // The global notice fires when NOTHING fits (the smallest exposed model's
+  // The global notice fires when NOTHING fits (the smallest catalog model's
   // own requirement), not a flat constant -- otherwise a machine that clears
   // one model's floor but not another's (e.g. E4B's 16GB but not 26B-A4B's
   // 32GB) would see every card dimmed by a bar that doesn't apply to all of

@@ -79,14 +79,13 @@ const GEMMA_4_E4B: CatalogEntry = CatalogEntry {
 };
 
 /// Gemma 4 26B-A4B -- Google's MoE tier (25.2B total / 3.8B active experts).
-/// Optional high-RAM tier, not the default: the agent-matrix eval scored it 12.3/16 mean across 3 reps, below Gemma 4 E4B's 13.7/16
-/// -- it under-calls `search_nodes` on query-style follow-ups more often
-/// than E4B. Across all 3 reps and every tool call attempted, argument JSON
-/// was never malformed (no corrupted field names, no truncated nested
-/// structures), unlike the dense Gemma 4 12B it replaced. Q8_0 (not Q4) to keep
-/// quantization precision loss out of that comparison. Exposed as an
-/// additional selectable tier for users with RAM to spare, not a
-/// replacement for the E4B default (`recommended_model_id()` is unchanged).
+/// Optional high-RAM tier, not the default: the agent-matrix eval scored it
+/// 12.3/16 mean across 3 reps, below Gemma 4 E4B's 13.7/16 -- it under-calls
+/// `search_nodes` on query-style follow-ups more often than E4B. Across all 3
+/// reps and every tool call attempted, argument JSON was never malformed (no
+/// corrupted field names, no truncated nested structures), unlike the dense
+/// 12B tier evaluated alongside it. Q8_0 (not Q4) to keep quantization
+/// precision loss out of that comparison.
 const GEMMA_4_26B_A4B: CatalogEntry = CatalogEntry {
     id: "gemma-4-26b-a4b-q8",
     family: ModelFamily::Gemma4,
