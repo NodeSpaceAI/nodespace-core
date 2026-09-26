@@ -486,7 +486,7 @@ impl SqliteStore {
     /// ADR-059 §2 — a content node may hold a `member_of` edge only when it is a
     /// **root** node (no `has_child` parent). Person nodes (grantee
     /// membership, ADR-037 §4) are exempt. A collection needs no exemption: it
-    /// is always a root (see `collection_not_root`). Enforced at the store's
+    /// is always a root (the `collection_is_root_*` triggers). Enforced at the store's
     /// three `member_of` INSERT sites (`add_to_collection`,
     /// `bulk_add_to_collections`, and the generic `create_generic_relationship`
     /// when its `rel_type` is `member_of`), so every write path is covered without
@@ -2550,6 +2550,13 @@ mod tests {
             ROOT_ONLY_ID_CHUNK + 1
         );
         assert!(root_only_membership_chunks(&[]).is_empty());
+    }
+
+    #[test]
+    fn root_only_membership_query_numbers_placeholders_per_chunk() {
+        let (sql, params) = root_only_membership_query(&["a", "b"]);
+        assert!(sql.ends_with("IN (?1, ?2)"));
+        assert_eq!(params.len(), 2);
     }
 
     /// Query-plan regression check for `get_incoming_mention_containers`'s
