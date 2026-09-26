@@ -643,7 +643,7 @@ async fn two_declarers_of_one_relationship_name_are_narrowed_separately() -> Res
     let person = service
         .create_node(Node::new(
             "person".to_string(),
-            "An assignee".to_string(),
+            String::new(),
             serde_json::json!({}),
         ))
         .await?;

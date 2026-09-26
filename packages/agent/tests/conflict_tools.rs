@@ -44,7 +44,7 @@ async fn seed_colliding_people(ns: &NodeService, email_local_part: &str) -> (Str
     let alice = ns
         .create_node(Node::new(
             "person".to_string(),
-            "Alice".to_string(),
+            String::new(),
             json!({ "person": { "email": email } }),
         ))
         .await
@@ -52,7 +52,7 @@ async fn seed_colliding_people(ns: &NodeService, email_local_part: &str) -> (Str
     let bob = ns
         .create_node(Node::new(
             "person".to_string(),
-            "Bob".to_string(),
+            String::new(),
             json!({ "person": { "email": email.to_uppercase() } }),
         ))
         .await
@@ -179,8 +179,8 @@ async fn dismiss_conflict_closes_it_as_dismissed_and_survives_redetection() {
             node_id: bob.clone(),
             version: None,
             node_type: None,
-            content: Some("Bob (touched)".to_string()),
-            properties: None,
+            content: None,
+            properties: Some(json!({ "name": "Bob (touched)" })),
             add_to_collections: Vec::new(),
             add_to_collection_ids: Vec::new(),
             remove_from_collection_ids: Vec::new(),
@@ -188,7 +188,7 @@ async fn dismiss_conflict_closes_it_as_dismissed_and_survives_redetection() {
         },
     )
     .await
-    .expect("touching bob's content must succeed");
+    .expect("touching bob must succeed");
 
     let after = ns.conflicts_for_node(&alice).await.unwrap();
     let still = after.iter().find(|r| r.id == conflict_id).unwrap();

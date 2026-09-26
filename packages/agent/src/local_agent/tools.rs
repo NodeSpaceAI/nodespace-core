@@ -906,13 +906,14 @@ fn def_create_node() -> ToolDefinition {
             duplicates the user's data. Call route_clarify instead, offering that record's id as an \
             option, and say it already exists. Only 'MENTIONED ENTITIES: none found', or a search_nodes \
             lookup that finds no record by that name, means this tool is right — a name merely missing \
-            from a MENTIONED ENTITIES list may still exist. Always pass 'content' as the record's title and \
-            nothing else — facts about it belong in 'field_values', never appended to the title. Always \
-            pass 'field_values' with every particular the user supplied, checked against the type's own \
-            field list — it is the only way those values are stored, and a call without them creates an \
-            empty record that still reports as saved. If the schema has a title_template (shown in \
-            EXISTING SCHEMAS), include those template fields in 'field_values' — the service composes \
-            the displayed title from them automatically. The example's user said: \"open a ticket for \
+            from a MENTIONED ENTITIES list may still exist. Pass 'content' as the record's title and \
+            nothing else — facts about it belong in 'field_values', never appended to the title. The one \
+            exception is a type whose schema has a title_template (shown in EXISTING SCHEMAS): omit \
+            'content' entirely and put the name in the template's fields in 'field_values' — the service \
+            composes the title from them and rejects content for that type. Always pass 'field_values' \
+            with every particular the user supplied, checked against the type's own field list — it is \
+            the only way those values are stored, and a call without them creates an empty record that \
+            still reports as saved. The example's user said: \"open a ticket for \
             dana to rotate the signing keys on deploy in S-24, it's in dev, and it depends on the vault \
             migration\". Note depends_on: the type lists no field for it, so it is carried under a key \
             named after the user's own wording rather than dropped. Example call: {\"node_type\": \
@@ -924,7 +925,7 @@ fn def_create_node() -> ToolDefinition {
             "properties": {
                 "content": {
                     "type": "string",
-                    "description": "The record's title and nothing else: the shortest phrase naming what this record IS. Facts ABOUT it — who owns it, what state it is in, what it depends on — are field_values entries, never appended to the title."
+                    "description": "The record's title and nothing else: the shortest phrase naming what this record IS. Facts ABOUT it — who owns it, what state it is in, what it depends on — are field_values entries, never appended to the title. Omit it for a type with a title_template: that type's name lives in its template fields."
                 },
                 "node_type": {
                     "type": "string",
@@ -952,7 +953,7 @@ fn def_create_node() -> ToolDefinition {
                     "description": "Collection path(s) to file this record under, as a string or an array of them. Use ':' for hierarchy — \"docs:rust\" files it under `rust`, itself inside `docs`. Every missing collection in the path is created for you, so pass the path the user's own words imply; never look one up first, create one first, or ask the user to create one. This is how records are tagged and grouped: prefer it over recording a topic, tag or category as a field_values entry."
                 }
             },
-            "required": ["node_type", "content"]
+            "required": ["node_type"]
         }),
     }
 }
@@ -3243,6 +3244,28 @@ impl GraphToolExecutor {
         // - title_template + properties for schema types that define one
         // - strip_markdown(content) for root nodes (all custom schema instances)
         let content = params.content.unwrap_or_default();
+
+        // `content` is optional only because a templated type rejects it. For
+        // every other type it is the record's title, and omitting it would
+        // create an untitled record that still reports as saved.
+        if content.trim().is_empty() {
+            let templated = ns
+                .get_schema_node(&params.node_type)
+                .await
+                .ok()
+                .flatten()
+                .is_some_and(|s| s.title_template.is_some());
+            if !templated {
+                return Err(ToolError::InvalidArguments {
+                    tool: "create_node".to_string(),
+                    reason: format!(
+                        "'content' is required for a {} record: pass its title. Only a type \
+                         with a title_template omits it.",
+                        params.node_type
+                    ),
+                });
+            }
+        }
 
         let input = node_ops::CreateNodeInput {
             id: None,
@@ -6976,12 +6999,13 @@ mod tests {
     }
 
     #[test]
-    fn create_node_schema_requires_content_and_type() {
+    fn create_node_schema_requires_type_but_not_content() {
         let def = def_create_node();
         let required = def.parameters_schema["required"]
             .as_array()
             .expect("required must be array");
-        assert!(required.contains(&json!("content")));
+        // A type with a title_template rejects content, so it cannot be required.
+        assert!(!required.contains(&json!("content")));
         assert!(required.contains(&json!("node_type")));
     }
 

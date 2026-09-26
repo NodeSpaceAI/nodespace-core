@@ -50,9 +50,11 @@ pub struct CreateArgs {
     /// Node type, e.g. `text`, `task`, `date`.
     #[arg(long = "type")]
     pub node_type: String,
-    /// Content (plain text or markdown).
+    /// Content (plain text or markdown). Omit for a type with a title
+    /// template (e.g. `person`): its name comes from the template's fields,
+    /// set with `--property`, and content is rejected.
     #[arg(long)]
-    pub content: String,
+    pub content: Option<String>,
     /// Parent node ID (omit to create a root node).
     #[arg(long)]
     pub parent: Option<String>,
@@ -240,7 +242,7 @@ async fn create(client: &mut NodeClient, args: CreateArgs, json: bool) -> Result
     let response = client
         .create_node(CreateNodeRequest {
             node_type: args.node_type,
-            content: args.content,
+            content: args.content.unwrap_or_default(),
             parent_id: args.parent,
             properties,
             collections: args.collections,

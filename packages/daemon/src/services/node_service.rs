@@ -3049,7 +3049,7 @@ mod tests {
             .create_node(Request::new(crate::nodespace::CreateNodeRequest {
                 id: None,
                 node_type: "person".to_string(),
-                content: "Alice".to_string(),
+                content: String::new(),
                 parent_id: None,
                 collections: Vec::new(),
                 collection_ids: Vec::new(),
@@ -3121,7 +3121,7 @@ mod tests {
             .create_node(Request::new(crate::nodespace::CreateNodeRequest {
                 id: None,
                 node_type: "person".to_string(),
-                content: "Bob".to_string(),
+                content: String::new(),
                 parent_id: None,
                 collections: Vec::new(),
                 collection_ids: Vec::new(),
@@ -3162,7 +3162,7 @@ mod tests {
             .create_node(Request::new(crate::nodespace::CreateNodeRequest {
                 id: None,
                 node_type: "person".to_string(),
-                content: "Alice".to_string(),
+                content: String::new(),
                 parent_id: None,
                 collections: Vec::new(),
                 collection_ids: Vec::new(),
@@ -3181,7 +3181,7 @@ mod tests {
             .create_node(Request::new(crate::nodespace::CreateNodeRequest {
                 id: None,
                 node_type: "person".to_string(),
-                content: "Bob".to_string(),
+                content: String::new(),
                 parent_id: None,
                 collections: Vec::new(),
                 collection_ids: Vec::new(),
@@ -4046,7 +4046,7 @@ mod tests {
         Request::new(crate::nodespace::CreateNodeRequest {
             id: Some(id.to_string()),
             node_type: "person".to_string(),
-            content: "Ada".to_string(),
+            content: String::new(),
             parent_id: None,
             collections: Vec::new(),
             collection_ids: Vec::new(),

@@ -682,8 +682,8 @@ async fn filterless_search_honours_sorting() {
 /// Sorting changes which backend runs the search, so the keyword must not
 /// change meaning across that boundary. Both paths filter on TITLE, and this
 /// pins that with the fixture where title and content genuinely DIVERGE: a
-/// `title_template` builds the title from properties, so `compute_title` never
-/// falls back to the content. Matching content on the sorted path here returned
+/// `title_template` builds the title from properties, and a templated type
+/// carries no content at all. Matching content on the sorted path here returned
 /// ZERO of two real matches while reporting success — the dropped-`sorting` bug
 /// traded for a dropped-keyword one.
 ///
@@ -693,8 +693,8 @@ async fn filterless_search_honours_sorting() {
 async fn a_keyword_means_the_same_sorted_or_not_under_a_title_template() {
     let (executor, _tmp) = make_executor().await;
 
-    // The title comes from `venue`; the content deliberately shares no word
-    // with it, so a content-matching search finds NONE of these nodes.
+    // The title comes from `venue`; a templated type has no content, so a
+    // content-matching search finds NONE of these nodes.
     let schema = call(
         &executor,
         "create_schema",
@@ -717,7 +717,6 @@ async fn a_keyword_means_the_same_sorted_or_not_under_a_title_template() {
             &executor,
             "create_node",
             json!({
-                "content": "body text sharing no word with the title",
                 "node_type": booking_type,
                 "field_values": {"venue": venue, "head_count": head_count},
             }),
@@ -946,5 +945,32 @@ async fn a_typeless_sorted_search_orders_by_the_property() {
     assert!(
         top.contains("large"),
         "the 21-day node must sort first under `desc`: {found:?}"
+    );
+}
+
+/// `create_node` takes no content for a templated type — its name is its
+/// template fields — but still requires it for every other type, where
+/// omitting it would save an untitled record that reports as saved.
+#[tokio::test(flavor = "multi_thread")]
+async fn create_node_content_is_omitted_only_for_a_templated_type() {
+    let (executor, _tmp) = make_executor().await;
+
+    call(
+        &executor,
+        "create_node",
+        json!({
+            "node_type": "person",
+            "field_values": {"first_name": "Rowan", "last_name": "Price"},
+        }),
+    )
+    .await;
+
+    let err = executor
+        .execute("create_node", json!({"node_type": "task"}))
+        .await
+        .expect_err("a task without content must be refused");
+    assert!(
+        format!("{err:?}").contains("'content' is required for a task record"),
+        "{err:?}"
     );
 }

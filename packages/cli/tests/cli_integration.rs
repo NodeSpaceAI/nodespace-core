@@ -246,6 +246,55 @@ async fn node_client_for(sock: &std::path::Path, id: &str) -> nodespace_cli::Nod
         .expect("connect routed node")
 }
 
+/// A templated type (`person`, `{first_name} {last_name}`) is created from its
+/// fields alone; `--content` on it surfaces the core validation error.
+#[tokio::test]
+async fn create_templated_type_without_content_and_reject_content() {
+    let (sock, shutdown, _tempdir) = spawn_test_daemon().await;
+    let mut client = connect(&sock, DatabaseIdInterceptor::none())
+        .await
+        .expect("connect");
+
+    commands::node::run(
+        &mut client,
+        commands::node::NodeAction::Create(commands::node::CreateArgs {
+            node_type: "person".into(),
+            content: None,
+            parent: None,
+            properties: vec![
+                ("first_name".into(), serde_json::json!("Rowan")),
+                ("last_name".into(), serde_json::json!("Price")),
+            ],
+            collections: vec![],
+            collection_ids: vec![],
+        }),
+        true,
+    )
+    .await
+    .expect("a person is created from its template fields alone");
+
+    let err = commands::node::run(
+        &mut client,
+        commands::node::NodeAction::Create(commands::node::CreateArgs {
+            node_type: "person".into(),
+            content: Some("Rowan".into()),
+            parent: None,
+            properties: vec![],
+            collections: vec![],
+            collection_ids: vec![],
+        }),
+        true,
+    )
+    .await
+    .expect_err("content on a templated type must be rejected");
+    assert!(
+        format!("{err:#}").contains("person takes its name from first_name/last_name"),
+        "error should name the template fields, got: {err:#}"
+    );
+
+    let _ = shutdown.send(());
+}
+
 #[tokio::test]
 async fn create_get_update_children_delete_round_trip() {
     let (sock, shutdown, _tempdir) = spawn_test_daemon().await;
@@ -257,7 +306,7 @@ async fn create_get_update_children_delete_round_trip() {
         &mut client,
         commands::node::NodeAction::Create(commands::node::CreateArgs {
             node_type: "text".into(),
-            content: "root via CLI".into(),
+            content: Some("root via CLI".into()),
             parent: None,
             properties: vec![],
             collections: vec![],
@@ -293,7 +342,7 @@ async fn create_get_update_children_delete_round_trip() {
         &mut client,
         commands::node::NodeAction::Create(commands::node::CreateArgs {
             node_type: "text".into(),
-            content: "child via CLI".into(),
+            content: Some("child via CLI".into()),
             parent: Some(parent_id.clone()),
             properties: vec![],
             collections: vec![],
@@ -1076,7 +1125,7 @@ async fn seed_colliding_people(raw: &mut NodeClient, email_local_part: &str) -> 
     let alice = raw
         .create_node(CreateNodeRequest {
             node_type: "person".into(),
-            content: "Alice".into(),
+            content: String::new(),
             parent_id: None,
             properties: serde_json::json!({"person": {"email": email}}).to_string(),
             collections: Vec::new(),
@@ -1093,7 +1142,7 @@ async fn seed_colliding_people(raw: &mut NodeClient, email_local_part: &str) -> 
     let bob = raw
         .create_node(CreateNodeRequest {
             node_type: "person".into(),
-            content: "Bob".into(),
+            content: String::new(),
             parent_id: None,
             properties: serde_json::json!({"person": {"email": email.to_uppercase()}}).to_string(),
             collections: Vec::new(),
@@ -2246,7 +2295,7 @@ async fn database_routing_isolates_writes() {
         &mut node_second,
         commands::node::NodeAction::Create(commands::node::CreateArgs {
             node_type: "text".into(),
-            content: "isolated-to-second".into(),
+            content: Some("isolated-to-second".into()),
             parent: None,
             properties: vec![],
             collections: vec![],
@@ -2501,7 +2550,7 @@ async fn node_create_collection_paths_are_repeatable_and_auto_create() {
         &mut client,
         commands::node::NodeAction::Create(commands::node::CreateArgs {
             node_type: "text".into(),
-            content: "collected via CLI".into(),
+            content: Some("collected via CLI".into()),
             parent: None,
             properties: vec![],
             // Neither path exists yet: `docs:rust` is nested, so `docs` and
@@ -2779,7 +2828,7 @@ async fn node_create_unresolvable_collection_is_an_error() {
         &mut client,
         commands::node::NodeAction::Create(commands::node::CreateArgs {
             node_type: "text".into(),
-            content: "should fail".into(),
+            content: Some("should fail".into()),
             parent: None,
             properties: vec![],
             // An empty path has no segments to resolve.
@@ -2838,7 +2887,7 @@ async fn node_create_required_field_without_default_needs_property_flag() {
         &mut client,
         commands::node::NodeAction::Create(commands::node::CreateArgs {
             node_type: "customer".into(),
-            content: "Northwind Labs".into(),
+            content: Some("Northwind Labs".into()),
             parent: None,
             properties: vec![],
             collections: vec![],
@@ -2859,7 +2908,7 @@ async fn node_create_required_field_without_default_needs_property_flag() {
         &mut client,
         commands::node::NodeAction::Create(commands::node::CreateArgs {
             node_type: "customer".into(),
-            content: "Northwind Labs".into(),
+            content: Some("Northwind Labs".into()),
             parent: None,
             properties: vec![("company_name".into(), serde_json::json!("Northwind Labs"))],
             collections: vec![],
@@ -2932,7 +2981,7 @@ async fn node_create_multiple_property_flags_set_multiple_fields() {
         &mut client,
         commands::node::NodeAction::Create(commands::node::CreateArgs {
             node_type: "invoice".into(),
-            content: "INV-1001".into(),
+            content: Some("INV-1001".into()),
             parent: None,
             properties: vec![
                 ("invoice_number".into(), serde_json::json!("INV-1001")),

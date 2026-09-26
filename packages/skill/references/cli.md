@@ -575,7 +575,7 @@ Operate on individual nodes (get, create, update, delete, children, query, expor
 **`nodespace node create`** — Create a new node
 
 - `--type <NODE_TYPE>` — Node type, e.g. `text`, `task`, `date` (required)
-- `--content <CONTENT>` — Content (plain text or markdown) (required)
+- `--content <CONTENT>` — Content (plain text or markdown). Omit for a type with a title template (e.g. `person`): its name comes from the template's fields, set with `--property`, and content is rejected
 - `--parent <PARENT>` — Parent node ID (omit to create a root node)
 - `--property <PROPERTIES>` — Set one or more properties: `--property key=value` (repeatable). Values are parsed as JSON when possible (numbers, booleans, `null`, arrays, objects), otherwise treated as a plain string. Required this way for any schema field that is `required` with no default — validation runs at create time, so there is no way to supply it afterward via `update`
 - `--collection <PATH>` — Collection path to file the node under, `:`-delimited for hierarchy (e.g. `docs:rust`) — the same syntax `import` and `search` take. Missing segments are created. Repeatable to join several collections in one call. Mutually exclusive with --collection-id

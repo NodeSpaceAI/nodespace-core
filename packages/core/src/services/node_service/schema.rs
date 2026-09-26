@@ -376,6 +376,9 @@ impl NodeService {
             if let Some(ref new_content) = update.content {
                 merged.content = new_content.clone();
             }
+            if content_changed {
+                self.validate_templated_content(&merged).await?;
+            }
             update.apply_to_properties(&mut merged.properties);
             self.compute_title(&merged, None).await?
         } else {
@@ -1537,7 +1540,13 @@ mod typed_update_tests {
             .create_node_with_parent(CreateNodeParams {
                 id: None,
                 node_type: node_type.to_string(),
-                content: "Name".to_string(),
+                // `person` takes its name from its title template and rejects
+                // content; `project` requires it.
+                content: if node_type == "person" {
+                    String::new()
+                } else {
+                    "Name".to_string()
+                },
                 parent_id: None,
                 position: InsertPositionOwned::End,
                 properties,

@@ -182,9 +182,45 @@ pub fn interpolate_title_template_with_schema(
     normalized.trim().to_string()
 }
 
+/// The field names a title template references, in order: `{first_name}
+/// {last_name}` → `["first_name", "last_name"]`. An unclosed `{` ends the scan.
+pub fn title_template_fields(template: &str) -> Vec<&str> {
+    let mut fields = Vec::new();
+    let mut rest = template;
+    while let Some(start) = rest.find('{') {
+        let after = &rest[start + 1..];
+        let Some(end) = after.find('}') else {
+            break;
+        };
+        if end > 0 {
+            fields.push(&after[..end]);
+        }
+        rest = &after[end + 1..];
+    }
+    fields
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn title_template_fields_lists_tokens_in_order() {
+        assert_eq!(
+            title_template_fields("{first_name} {last_name}"),
+            vec!["first_name", "last_name"]
+        );
+        assert_eq!(
+            title_template_fields("Priority: {priority}"),
+            vec!["priority"]
+        );
+    }
+
+    #[test]
+    fn title_template_fields_skips_empty_and_unclosed_tokens() {
+        assert!(title_template_fields("no tokens").is_empty());
+        assert_eq!(title_template_fields("{} {a} {b"), vec!["a"]);
+    }
 
     #[test]
     fn test_strip_headers() {
