@@ -235,10 +235,10 @@ IMPORTANT SUB-AGENT INSTRUCTIONS:
 
 6. **Merge & Clean Up** — only after the user says to merge:
    ```bash
-   # Step 1: From the PR's worktree, clean and pushed: full gate, then merge
+   # Step 1: Full gate, then merge (from any checkout; everything pushed first)
    bun run merge <PR#>
    ```
-   It rebases onto current main, runs the full pyramid, pushes the rebased branch if it moved, records `nodespace/gate: success` on that exact commit, squash-merges it (`--match-head-commit`, so nothing untested can land), and deletes the remote branch. If main moves while the gate runs, it rebases and tests again. `bun run merge <PR#> --dry-run` runs the gate without pushing, recording or merging. **Never merge with `gh pr merge` or the GitHub button** — `main` requires the `nodespace/gate` status, which only `bun run merge` records. A branch created before this command existed has no `scripts/merge-pr.ts`; rebase it onto main first.
+   It takes the machine's gate lock, then in one persistent gate checkout (`.claude/worktrees/_gate`, kept warm across merges so only changed crates recompile) checks out the PR as pushed, rebases it onto current main, runs the full pyramid, pushes the rebased branch if it moved, records `nodespace/gate: success` on that exact commit, squash-merges it (`--match-head-commit`, so nothing untested can land), and deletes the remote branch. The lock is held until the merge lands, so concurrent merges go one at a time and none is invalidated by another. If main moves anyway (a merge from another machine), it rebases and tests again. Your PR worktree is never touched; unpushed commits are refused, not silently skipped. `bun run merge <PR#> --dry-run` runs the gate without pushing, recording or merging. **Never merge with `gh pr merge` or the GitHub button** — `main` requires the `nodespace/gate` status, which only `bun run merge` records. For a branch that predates this command, run it from the primary checkout.
    ```
    # Step 2: Leave the worktree
    ExitWorktree({action: "remove", discard_changes: true})
@@ -264,7 +264,7 @@ Every plan MUST include:
    > `git status` and `git pull origin main` on primary checkout, `EnterWorktree({name: "issue-<N>-brief-desc"})` (the tool owns the location and branch name — accept them), then inside the worktree: `bun install`, `bun run test` (baseline), `bun run gh:comment <N> "..."`, `bun run gh:assign <N> "@me"`, `bun run gh:status <N> "In Progress"`
 
 2. **Final steps:**
-   > `bun run quality:fix` + commit, `git push origin HEAD:issue-<N>-brief-desc` (the push check runs the tiers the change reaches — don't run `test:all` by hand first), then `gh pr create --head issue-<N>-brief-desc` (not `bun run gh:pr` — it fails on the `worktree-` branch prefix). After the user approves the merge: `bun run merge <PR#>` from the worktree (full pyramid on the rebased PR, then squash-merge), then `ExitWorktree({action: "remove", discard_changes: true})`.
+   > `bun run quality:fix` + commit, `git push origin HEAD:issue-<N>-brief-desc` (the push check runs the tiers the change reaches — don't run `test:all` by hand first), then `gh pr create --head issue-<N>-brief-desc` (not `bun run gh:pr` — it fails on the `worktree-` branch prefix). After the user approves the merge: `bun run merge <PR#>` (full pyramid on the rebased PR in the warm gate checkout, then squash-merge), then `ExitWorktree({action: "remove", discard_changes: true})`.
 
 3. **Inline standards** the implementation agent needs: e.g. "use `createLogger` not `console.log`", "mock Tauri with `vi.mock('@tauri-apps/api/core')`", "use `bun run test` not `bun test`".
 

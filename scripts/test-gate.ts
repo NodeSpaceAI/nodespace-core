@@ -26,7 +26,7 @@ import { $ } from "bun";
 import { reportBranchBehind } from "./check-branch-behind";
 import { classifyFailure, extractFailureOutput, formatAbortNote } from "./classify-test-failure";
 import { reportUpstreamFixes } from "./correlate-upstream-fixes";
-import { acquireGateLock, registerLockRelease } from "./gate-lock";
+import { acquireGateLock, HELD_BY_MERGE_ENV_VAR, registerLockRelease } from "./gate-lock";
 import { describeScope, FULL_SCOPE, gateScope } from "./gate-scope";
 
 export type GateMode = "push" | "merge";
@@ -80,7 +80,9 @@ async function run(label: string, cmd: () => Promise<unknown>) {
 //
 // registerLockRelease() covers Ctrl-C and every early exit, including the
 // process.exit(1) inside run() above.
-const gateLock = await acquireGateLock();
+const gateLock = process.env[HELD_BY_MERGE_ENV_VAR]
+  ? { held: false, release: () => {} }
+  : await acquireGateLock();
 registerLockRelease(gateLock);
 
 // Staleness check, not a fix for the merge race — see check-branch-behind.ts.

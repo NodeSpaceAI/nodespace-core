@@ -76,6 +76,14 @@ export const DEFAULT_POLL_INTERVAL_MS = 2000;
 /** Escape hatch for someone who knowingly wants parallel gates. */
 export const DISABLE_ENV_VAR = "NODESPACE_GATE_NO_LOCK";
 
+/**
+ * Set by `bun run merge` (scripts/merge-pr.ts) for the gate it runs. The
+ * merge command takes the lock itself, before rebasing, and holds it through
+ * the merge — so merges land one at a time and each tests the main it will
+ * actually land on. Its gate must not queue behind its own lock.
+ */
+export const HELD_BY_MERGE_ENV_VAR = "NODESPACE_GATE_LOCK_HELD_BY_MERGE";
+
 export interface LockHolder {
   pid: number;
   /** Epoch ms when the holder acquired the lock. */
