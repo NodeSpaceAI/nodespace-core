@@ -655,6 +655,34 @@ impl SqliteStore {
         Ok(rows.next().await?.is_some())
     }
 
+    /// The schema nodes among `ids`. Filters in SQL so an ordinary content subtree
+    /// reads no rows — the caller only needs the (rare) schemas.
+    async fn schema_nodes_among(&self, ids: &[String]) -> Result<Vec<Node>> {
+        const ID_CHUNK: usize = 900;
+        let mut schemas = Vec::new();
+        for chunk in ids.chunks(ID_CHUNK) {
+            let placeholders: Vec<String> = (1..=chunk.len()).map(|i| format!("?{}", i)).collect();
+            let sql = format!(
+                "SELECT * FROM node WHERE node_type = 'schema' AND id IN ({})",
+                placeholders.join(", ")
+            );
+            let params: Vec<libsql::Value> = chunk
+                .iter()
+                .map(|id| libsql::Value::Text(id.clone()))
+                .collect();
+            let mut rows = self
+                .read()
+                .await?
+                .query(&sql, params)
+                .await
+                .context("Failed to find schemas in subtree")?;
+            while let Some(row) = rows.next().await? {
+                schemas.push(Self::row_to_node(&row)?);
+            }
+        }
+        Ok(schemas)
+    }
+
     pub async fn get_nodes_by_ids(&self, ids: &[String]) -> Result<HashMap<String, Node>> {
         if ids.is_empty() {
             return Ok(HashMap::new());
@@ -1368,10 +1396,12 @@ impl SqliteStore {
             None => return Ok(Ok((false, vec![]))),
         };
 
-        // Only the target can be a schema node (descendants are its description
-        // subtree, which is ordinary content), so the declaration guard runs on
-        // the target alone.
-        self.assert_schema_deletable(&target).await?;
+        // A schema normally sits at the root, but `move_node` can place one under
+        // ordinary content — so every schema in the subtree is guarded, not just
+        // the target, or deleting its container would cascade it away unchecked.
+        for schema in self.schema_nodes_among(subtree_ids).await? {
+            self.assert_schema_deletable(&schema).await?;
+        }
 
         // OCC check on target before entering the transaction.
         if target.version != expected_version {

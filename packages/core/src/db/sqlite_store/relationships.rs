@@ -2458,14 +2458,27 @@ impl SqliteStore {
         Ok(row.get::<i64>(0).unwrap_or(0))
     }
 
-    /// Refuse to delete a schema node that still has relationship declarations
-    /// pointing at or from it. `relationship.in_node`/`out_node` carry
-    /// `ON DELETE CASCADE`, so an unguarded delete would silently destroy the
-    /// declarations (and strand any instance edges written under them). A
-    /// non-schema node passes without a query.
+    /// Refuse to delete a core schema, or a schema node that still has
+    /// relationship declarations pointing at or from it — including an
+    /// `extends` from a live child, which would otherwise silently lose every
+    /// inherited field and relationship (ADR-078). `relationship.in_node`/
+    /// `out_node` carry `ON DELETE CASCADE`, so an unguarded delete would
+    /// silently destroy the declarations (and strand any instance edges written
+    /// under them). A non-schema node passes without a query.
     pub(super) async fn assert_schema_deletable(&self, node: &Node) -> Result<()> {
         if node.node_type != "schema" {
             return Ok(());
+        }
+        let is_core = node
+            .properties
+            .get("isCore")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        if is_core {
+            return Err(anyhow::anyhow!(
+                "schema_is_core: schema '{}' is a core type and cannot be deleted",
+                node.id
+            ));
         }
         let count = self.count_schema_declaration_edges(&node.id).await?;
         if count > 0 {

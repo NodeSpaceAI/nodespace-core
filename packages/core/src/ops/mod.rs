@@ -150,9 +150,6 @@ impl From<NodeServiceError> for OpsError {
                 message,
             },
             NodeServiceError::CollectionNotFound(name) => OpsError::NotFound { id: name },
-            err @ NodeServiceError::SchemaDeleteRefused { .. } => {
-                OpsError::ValidationFailed(err.to_string())
-            }
             NodeServiceError::InvalidUpdate(msg) => OpsError::ValidationFailed(msg),
             NodeServiceError::InvalidCollectionPath(msg) => OpsError::ValidationFailed(msg),
             NodeServiceError::CollectionCycle(msg) => OpsError::ValidationFailed(msg),

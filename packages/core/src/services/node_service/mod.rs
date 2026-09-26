@@ -3903,12 +3903,11 @@ mod tests {
                 .expect("task schema must exist after initial seed");
 
             // Simulate a pre-existing database that predates the agent-guidance
-            // schema: remove it directly at the store level (schema nodes
-            // aren't deletable through the validated NodeService::delete_node
-            // path).
+            // schema: remove it with the unchecked store delete (core schemas
+            // are refused by every guarded delete path).
             service
                 .store
-                .delete_node("agent-guidance", None)
+                .delete_nodes_by_ids_unchecked(&["agent-guidance".to_string()])
                 .await
                 .expect("store-level delete succeeds");
             assert!(
@@ -5883,7 +5882,11 @@ mod tests {
         let child_id = service.create_node(child).await.unwrap();
 
         let result = service
-            .move_node_unchecked(&child_id, Some(&leaf_id), crate::services::InsertPosition::End)
+            .move_node_unchecked(
+                &child_id,
+                Some(&leaf_id),
+                crate::services::InsertPosition::End,
+            )
             .await;
 
         assert!(
