@@ -2596,25 +2596,28 @@ pub fn resolved_entities_from(executions: &[ToolExecutionRecord]) -> Vec<AiChatR
 /// ever cancelled by an eviction that came after it.
 fn prior_writes_from_history(messages: &[AiChatMessage]) -> Vec<PriorWrite> {
     let mut evicted_later = std::collections::HashSet::new();
-    let mut writes: Vec<PriorWrite> = messages
+    let mut writes = Vec::new();
+    for w in messages
         .iter()
         .flat_map(|m| m.completed_writes.iter())
         .rev()
-        .filter(|w| {
-            let evicted = w.tool == "create_relationship"
-                && w.summary
-                    .as_deref()
-                    .is_some_and(|s| evicted_later.contains(&edge_key(s)));
-            evicted_later.extend(w.replaced.iter().map(|e| edge_key(e)));
-            !evicted && is_cross_turn_guarded_tool(&w.tool)
-        })
-        .map(|w| PriorWrite {
-            tool: w.tool.clone(),
-            canonical_args: w.canonical_args.clone(),
-            node_id: w.node_id.clone(),
-            summary: w.summary.clone(),
-        })
-        .collect();
+    {
+        // Checked before this write's own evictions are added: a write never
+        // cancels itself, only an earlier one.
+        let evicted = w.tool == "create_relationship"
+            && w.summary
+                .as_deref()
+                .is_some_and(|s| evicted_later.contains(&edge_key(s)));
+        evicted_later.extend(w.replaced.iter().map(|e| edge_key(e)));
+        if !evicted && is_cross_turn_guarded_tool(&w.tool) {
+            writes.push(PriorWrite {
+                tool: w.tool.clone(),
+                canonical_args: w.canonical_args.clone(),
+                node_id: w.node_id.clone(),
+                summary: w.summary.clone(),
+            });
+        }
+    }
     writes.reverse();
     writes
 }
@@ -5592,6 +5595,39 @@ model = "model-b"
         let prior = prior_writes_from_history(&msgs);
         assert_eq!(prior.len(), 1, "got {prior:?}");
         assert_eq!(prior[0].canonical_args, alice[0].canonical_args);
+    }
+
+    /// Alice, Bob, Alice, Bob — each evicting the last. Only the final write
+    /// describes a live edge; every earlier one was evicted by its successor,
+    /// including the dropped writes' own evictions (the third write really did
+    /// remove Bob's second-turn edge).
+    #[tokio::test]
+    async fn repeated_reassignment_guards_only_the_live_edge() {
+        let rel = |from: &str, evicts: Option<&str>| {
+            let result = match evicts {
+                Some(prev) => serde_json::json!({"replaced": [
+                    {"from_id": format!("nodespace://{prev}"), "to_id": "nodespace://task", "type": "tasks"}
+                ]}),
+                None => serde_json::json!({"created": true}),
+            };
+            completed_writes_from(&[exec(
+                "create_relationship",
+                serde_json::json!({"from_id": from, "to_id": "task", "relationship_type": "tasks"}),
+                result,
+            )])
+            .remove(0)
+        };
+        let last = rel("bob", Some("alice"));
+        let msgs = vec![
+            assistant_turn("Alice.", rel("alice", None)),
+            assistant_turn("Bob.", rel("bob", Some("alice"))),
+            assistant_turn("Alice again.", rel("alice", Some("bob"))),
+            assistant_turn("Bob again.", last.clone()),
+        ];
+
+        let prior = prior_writes_from_history(&msgs);
+        assert_eq!(prior.len(), 1, "got {prior:?}");
+        assert_eq!(prior[0].canonical_args, last.canonical_args);
     }
 
     /// Edge labels carry ids a later turn must copy verbatim, so they are
