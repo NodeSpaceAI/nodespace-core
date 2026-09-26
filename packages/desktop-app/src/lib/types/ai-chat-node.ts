@@ -45,6 +45,11 @@ export interface AiChatCompletedWrite {
   /** Short label for the written node, when available. */
   summary?: string;
   /**
+   * Edges the write evicted, rendered `"from -[type]-> to"`. Only a
+   * cardinality-one `create_relationship` populates it.
+   */
+  replaced?: string[];
+  /**
    * The call's arguments, canonicalised. With `tool`, this is the write's
    * identity for the backend's cross-turn duplicate guard.
    *
