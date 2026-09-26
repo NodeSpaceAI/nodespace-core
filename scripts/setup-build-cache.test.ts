@@ -56,7 +56,11 @@ describe("planCargoConfig", () => {
 
   test("skips when a different wrapper is configured, leaving the user's choice alone", () => {
     const plan = planCargoConfig('[build]\nrustc-wrapper = "/opt/cachepot"\n', SCCACHE);
-    expect(plan).toEqual({ action: "skip", reason: "rustc-wrapper already set (/opt/cachepot)" });
+    expect(plan).toEqual({
+      action: "skip",
+      reason: "rustc-wrapper already set (/opt/cachepot)",
+      wrapper: "/opt/cachepot",
+    });
   });
 
   test("hands off when [build] exists without a wrapper — appending would duplicate the table", () => {

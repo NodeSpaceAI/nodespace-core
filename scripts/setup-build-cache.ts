@@ -46,7 +46,7 @@ export const CACHE_SIZE_BYTES = 40 * 1024 ** 3;
 
 export type CargoConfigPlan =
   | { action: "write"; content: string }
-  | { action: "skip"; reason: string }
+  | { action: "skip"; reason: string; wrapper: string }
   | { action: "manual"; reason: string; lines: string };
 
 export function cargoConfigBlock(sccachePath: string): string {
@@ -78,7 +78,11 @@ export function planCargoConfig(
   // Cargo reads the extensionless legacy file in preference to config.toml,
   // so anything appended to config.toml would be silently ignored.
   if (legacyConfigExists) {
-    return { action: "manual", reason: "~/.cargo/config (legacy, no extension) takes precedence over config.toml", lines: block };
+    return {
+      action: "manual",
+      reason: "~/.cargo/config (legacy, no extension) takes precedence over config.toml — merge into it, or rename it to config.toml first",
+      lines: block,
+    };
   }
   if (existing === null || existing.trim() === "") {
     return { action: "write", content: block };
@@ -93,7 +97,8 @@ export function planCargoConfig(
 
   const build = parsed.build as Record<string, unknown> | undefined;
   if (build?.["rustc-wrapper"] !== undefined) {
-    return { action: "skip", reason: `rustc-wrapper already set (${String(build["rustc-wrapper"])})` };
+    const wrapper = String(build["rustc-wrapper"]);
+    return { action: "skip", reason: `rustc-wrapper already set (${wrapper})`, wrapper };
   }
 
   // Appending a second [build] or [env] table is a TOML error that would
@@ -170,9 +175,14 @@ async function installSccache(release: { asset: string; sha256: string }, target
     // it SIGKILLed for an invalid code signature.
     mkdirSync(dirname(target), { recursive: true });
     const tmp = `${target}.${process.pid}.tmp`;
-    copyFileSync(join(work, release.asset, "sccache"), tmp);
-    chmodSync(tmp, 0o755);
-    renameSync(tmp, target);
+    try {
+      copyFileSync(join(work, release.asset, "sccache"), tmp);
+      chmodSync(tmp, 0o755);
+      renameSync(tmp, target);
+    } catch (err) {
+      rmSync(tmp, { force: true });
+      throw err;
+    }
   } finally {
     rmSync(work, { recursive: true, force: true });
   }
@@ -201,7 +211,8 @@ async function main(): Promise<void> {
   // fast path every later `bun install` takes) or the user's own choice.
   // Either way nothing to enable, so nothing to download.
   if (plan.action === "skip") {
-    if (existingPath !== null && !existsSync(sccacheConfigPath())) {
+    const wrapsWithSccache = plan.wrapper === "sccache" || plan.wrapper === existingPath;
+    if (wrapsWithSccache && existingPath !== null && !existsSync(sccacheConfigPath())) {
       writeAtomically(sccacheConfigPath(), sccacheConfigContent());
     }
     return;
@@ -225,11 +236,13 @@ async function main(): Promise<void> {
       writeAtomically(configPath, plan.content);
       console.log(`✓ Rust builds now use sccache (${configPath})`);
       break;
-    case "manual":
+    case "manual": {
       console.warn(`⚠ sccache is installed but not enabled: ${plan.reason}.`);
-      console.warn(`  Merge these keys into ${configPath} (into its existing tables, not as duplicates):\n\n${plan.lines}`);
+      const target = existsSync(legacyCargoConfigPath()) ? legacyCargoConfigPath() : configPath;
+      console.warn(`  Merge these keys into ${target} (into its existing tables, not as duplicates):\n\n${plan.lines}`);
       console.warn(`  Or set ${SKIP_ENV_VAR}=1 to stop this notice.`);
       break;
+    }
   }
 }
 
