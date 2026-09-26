@@ -97,6 +97,16 @@ async function main(): Promise<void> {
 
   const host = (await $`hostname -s`.quiet().text()).trim();
 
+  // A dry run leaves the branch as it found it. The rebase it tested exists
+  // only locally, and keeping it would leave this checkout ahead of the PR —
+  // which a real merge then refuses, since HEAD must be the PR's head.
+  const restoreForDryRun = async () => {
+    if (dryRun && (await git("rev-parse", "HEAD")) !== info.headRefOid) {
+      await git("reset", "--hard", info.headRefOid);
+      console.log(`  (dry run: restored the branch to the PR head ${info.headRefOid.slice(0, 8)})`);
+    }
+  };
+
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     const mainSha = await git("rev-parse", "origin/main");
     if ((await git("merge-base", "HEAD", "origin/main")) !== mainSha) {
@@ -115,7 +125,13 @@ async function main(): Promise<void> {
       if (!dryRun && tested === info.headRefOid) {
         await setStatus(repo, tested, "failure", statusDescription("failure", host)).catch(() => {});
       }
-      fail(`The merge gate failed on ${tested.slice(0, 8)}. Fix it, push, and re-run.`);
+      await restoreForDryRun();
+      fail(
+        `The merge gate failed on ${tested.slice(0, 8)}` +
+          (tested === info.headRefOid || dryRun
+            ? ". Fix it, push, and re-run."
+            : ", the PR rebased onto main (kept locally so you can reproduce it). Fix it, push with --force-with-lease, and re-run.")
+      );
     }
 
     // Main moved while the gate ran: what passed is no longer what would
@@ -127,7 +143,8 @@ async function main(): Promise<void> {
     }
 
     if (dryRun) {
-      console.log(`\n✓ Dry run: the merge gate passed on ${tested.slice(0, 8)}. Nothing pushed, recorded or merged.\n`);
+      console.log(`\n✓ Dry run: the merge gate passed on ${tested.slice(0, 8)}. Nothing pushed, recorded or merged.`);
+      await restoreForDryRun();
       return;
     }
 

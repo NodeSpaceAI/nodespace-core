@@ -146,7 +146,7 @@ export async function gateScope(): Promise<GateScope> {
 }
 
 export function describeScope(scope: GateScope): string {
-  if (scope.fullReason !== null) return `full pyramid — ${scope.fullReason}`;
+  if (scope.fullReason !== null) return `every tier — ${scope.fullReason}`;
   const on = (Object.keys(ALL) as (keyof typeof ALL)[]).filter((k) => scope[k]);
   const off = (Object.keys(ALL) as (keyof typeof ALL)[]).filter((k) => !scope[k]);
   return `scoped to this push's changes — running: ${on.join(", ") || "lint only"}; skipping: ${off.join(", ") || "nothing"} (${FULL_ENV_VAR}=1 runs everything)`;
