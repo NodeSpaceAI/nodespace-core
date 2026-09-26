@@ -5,7 +5,7 @@
 // DOM-free on purpose: this file runs under `bun test scripts/`, which
 // bypasses the Happy-DOM vitest config (see CLAUDE.md).
 import { describe, expect, test } from "bun:test";
-import { commandOutput, freeGiBFromDf, stageLogName, tail } from "./gate-output";
+import { freeGiBFromDf, stageLogName, tail } from "./gate-output";
 
 describe("freeGiBFromDf", () => {
   test("reads the Available column of macOS df -k output", () => {
@@ -39,17 +39,5 @@ describe("tail", () => {
 
   test("returns everything when there are fewer lines", () => {
     expect(tail("only\n", 40)).toBe("only");
-  });
-});
-
-describe("commandOutput", () => {
-  test("decodes stdout and stderr buffers", () => {
-    const enc = new TextEncoder();
-    expect(commandOutput({ stdout: enc.encode("out"), stderr: enc.encode("err") })).toBe("out\nerr");
-  });
-
-  test("is empty for anything that isn't a command result", () => {
-    expect(commandOutput(undefined)).toBe("");
-    expect(commandOutput("text")).toBe("");
   });
 });

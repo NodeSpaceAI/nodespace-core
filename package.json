@@ -67,7 +67,7 @@
     "review:help": "bun run scripts/review-manager.ts --help",
     "rust:test": "bun run rust:test:workspace && bun run rust:test:app-units",
     "rust:test:build": "cargo nextest run --workspace --exclude nodespace-app --exclude nodespace-app-test-support --lib --bins --tests --no-run && cargo test --lib --bins -p nodespace-app -p nodespace-app-test-support --no-run && cargo build -q -p nodespace-cli --example gen_skill_md",
-    "rust:test:workspace":"cargo nextest run --workspace --exclude nodespace-app --exclude nodespace-app-test-support --lib --bins --tests",
+    "rust:test:workspace": "cargo nextest run --workspace --exclude nodespace-app --exclude nodespace-app-test-support --lib --bins --tests",
     "rust:test:app-units": "bun run scripts/test-app-units.ts",
     "rust:test:lib": "cargo nextest run --lib -p nodespace-core",
     "rust:test:long": "RUN_LONG_TESTS=1 cargo nextest run --lib -p nodespace-core",

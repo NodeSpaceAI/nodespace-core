@@ -32,14 +32,3 @@ export function freeGiBFromDf(dfOutput: string): number | null {
   const availableKiB = Number(row?.trim().split(/\s+/)[3]);
   return Number.isFinite(availableKiB) ? availableKiB / 1024 ** 2 : null;
 }
-
-/** The stdout+stderr of a finished Bun shell command, or "" for anything else. */
-export function commandOutput(result: unknown): string {
-  if (!result || typeof result !== "object") return "";
-  const parts: string[] = [];
-  for (const field of ["stdout", "stderr"] as const) {
-    const value = (result as Record<string, unknown>)[field];
-    if (value instanceof Uint8Array) parts.push(new TextDecoder().decode(value));
-  }
-  return parts.join("\n");
-}
