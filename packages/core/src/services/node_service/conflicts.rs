@@ -266,6 +266,12 @@ impl NodeService {
                 let conflict_id = conflict_id.clone();
                 let service = service_for_tx.clone();
                 Box::pin(async move {
+                    // Read before the merge re-points it: afterwards the loser
+                    // has no parent.
+                    let loser_parent =
+                        crate::db::SqliteStore::get_parent_id_in_tx(ns_tx.store_tx(), &loser_id)
+                            .await
+                            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
                     let (properties_merged, superseded, repointed_edges, edges_dropped) =
                         crate::db::SqliteStore::merge_nodes_in_tx(
                             ns_tx.store_tx(),
@@ -290,19 +296,26 @@ impl NodeService {
                         (repointed_edges.len() as u32).saturating_sub(evicted_for_cardinality);
                     let edges_dropped = edges_dropped + evicted_for_cardinality;
 
-                    // Re-pointing can hand the survivor the loser's parent edge,
-                    // changing whether it is a root — so its title follows.
-                    // Re-pointing only adds edges to the survivor and never
-                    // removes its own parent, so it has no former parent. The
-                    // loser's tree loses the loser, which is a delete, not a
-                    // move, and this refresh does not cover it.
+                    // Re-pointing can hand a root survivor the loser's parent
+                    // edge, changing whether it is a root, so its title
+                    // follows. The loser's parent is passed as the former
+                    // parent: the tree it heads lost the loser's text. When
+                    // the merge dropped the loser's parent edge, that tree is
+                    // queued only through this. When the edge was re-pointed
+                    // instead, both resolve to the same root and it is
+                    // queued once.
                     let survivor_is_root =
                         crate::db::SqliteStore::get_parent_id_in_tx(ns_tx.store_tx(), &survivor_id)
                             .await
                             .map_err(|e| NodeServiceError::query_failed(e.to_string()))?
                             .is_none();
                     service
-                        .refresh_for_rootness_in_tx(ns_tx, &survivor_id, survivor_is_root, None)
+                        .refresh_for_rootness_in_tx(
+                            ns_tx,
+                            &survivor_id,
+                            survivor_is_root,
+                            loser_parent.as_deref(),
+                        )
                         .await?;
 
                     if let Some(conflict_id) = conflict_id {
