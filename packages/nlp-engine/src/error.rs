@@ -21,6 +21,9 @@ pub enum EmbeddingError {
     #[error("Invalid input: {0}")]
     InvalidInput(String),
 
+    #[error("Context overflow: {0}")]
+    ContextOverflow(String),
+
     #[error("IO error: {0}")]
     IoError(#[from] std::io::Error),
 

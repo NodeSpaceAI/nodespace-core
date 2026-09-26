@@ -29,7 +29,7 @@ use crate::db::SqliteStore;
 use crate::models::{EmbeddingConfig, EmbeddingSearchResult, NewEmbedding, Node};
 use crate::services::error::NodeServiceError;
 use crate::services::{NodeAccessor, SearchNodeFilters, SearchScope};
-use nodespace_nlp_engine::EmbeddingService;
+use nodespace_nlp_engine::{EmbeddingError, EmbeddingService};
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -51,6 +51,22 @@ pub const KNOWLEDGE_CORE_TYPES: &[&str] = &[
 
 // Re-export embedding dimension from nlp-engine as single source of truth
 pub use nodespace_nlp_engine::EMBEDDING_DIMENSION;
+
+/// Map a failure to embed a search query to a service error.
+///
+/// A query longer than the embedding context window is the caller's input
+/// problem, so it surfaces as a validation error rather than an internal one.
+fn query_embedding_error(e: EmbeddingError) -> NodeServiceError {
+    match e {
+        EmbeddingError::ContextOverflow(msg) => {
+            NodeServiceError::invalid_update(format!("Search query is too long: {}", msg))
+        }
+        e => NodeServiceError::SerializationError(format!(
+            "Failed to generate query embedding: {}",
+            e
+        )),
+    }
+}
 
 /// Default batch size for processing stale embeddings
 pub const DEFAULT_BATCH_SIZE: usize = 50;
@@ -685,12 +701,10 @@ impl NodeEmbeddingService {
 
         // Generate query embedding (blocking, so do before spawning parallel tasks)
         let embed_start = std::time::Instant::now();
-        let query_vector = self.nlp_engine.generate_embedding(query).map_err(|e| {
-            NodeServiceError::SerializationError(format!(
-                "Failed to generate query embedding: {}",
-                e
-            ))
-        })?;
+        let query_vector = self
+            .nlp_engine
+            .generate_embedding(query)
+            .map_err(query_embedding_error)?;
         let embed_time = embed_start.elapsed();
 
         // Run BM25 and KNN searches in parallel
@@ -989,12 +1003,10 @@ impl NodeEmbeddingService {
             ));
         }
 
-        let query_vector = self.nlp_engine.generate_embedding(query).map_err(|e| {
-            NodeServiceError::SerializationError(format!(
-                "Failed to generate query embedding: {}",
-                e
-            ))
-        })?;
+        let query_vector = self
+            .nlp_engine
+            .generate_embedding(query)
+            .map_err(query_embedding_error)?;
 
         let results = self
             .store
@@ -1034,6 +1046,26 @@ impl NodeEmbeddingService {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn query_embedding_error_reports_overlong_query_as_invalid_input() {
+        let err = query_embedding_error(EmbeddingError::ContextOverflow(
+            "Input uses 9000 tokens but embedding context window is 8192".to_string(),
+        ));
+        assert!(
+            matches!(err, NodeServiceError::InvalidUpdate(ref msg) if msg.contains("too long")),
+            "expected InvalidUpdate, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn query_embedding_error_reports_other_failures_as_internal() {
+        let err = query_embedding_error(EmbeddingError::InferenceError("boom".to_string()));
+        assert!(
+            matches!(err, NodeServiceError::SerializationError(_)),
+            "expected SerializationError, got {err:?}"
+        );
+    }
 
     #[test]
     fn test_chunk_content_single() {

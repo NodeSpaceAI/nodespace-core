@@ -289,6 +289,23 @@ pub fn release_llama_backend() {
     // No-op: no backend to release when llama features are disabled
 }
 
+/// Reject a token count that exceeds the embedding context window.
+///
+/// Mirrors the chat engine's `ContextOverflow` guard. Callers that embed raw
+/// user text (search queries, workspace-context retrieval) have no length cap
+/// of their own, so this is the only bound between them and llama.cpp, which
+/// does not clamp `n_batch`/`n_ubatch` to `n_ctx` for non-causal models.
+#[cfg(feature = "embedding-service")]
+fn check_fits_context(token_count: usize, context_size: u32) -> Result<()> {
+    if token_count > context_size as usize {
+        return Err(EmbeddingError::ContextOverflow(format!(
+            "Input uses {} tokens but embedding context window is {}",
+            token_count, context_size
+        )));
+    }
+    Ok(())
+}
+
 /// Wrapper to hold model and context together with proper lifetimes.
 ///
 /// ## Safety
@@ -642,6 +659,9 @@ impl EmbeddingService {
             .map_err(|e| EmbeddingError::TokenizationError(e.to_string()))?;
         let tokenize_time = tokenize_start.elapsed();
 
+        // Reject input the window cannot hold before it sizes the batch/context.
+        check_fits_context(tokens.len(), state.context_size)?;
+
         // Get or create the persistent context with sufficient batch size
         let ctx_start = std::time::Instant::now();
         let ctx = state.get_or_create_context(tokens.len())?;
@@ -833,6 +853,23 @@ impl EmbeddingService {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "embedding-service")]
+    #[test]
+    fn check_fits_context_accepts_input_up_to_the_window() {
+        assert!(check_fits_context(1, 8192).is_ok());
+        assert!(check_fits_context(8192, 8192).is_ok());
+    }
+
+    #[cfg(feature = "embedding-service")]
+    #[test]
+    fn check_fits_context_rejects_input_beyond_the_window() {
+        let err = check_fits_context(8193, 8192).unwrap_err();
+        assert!(
+            matches!(err, EmbeddingError::ContextOverflow(ref msg) if msg.contains("8193") && msg.contains("8192")),
+            "expected ContextOverflow naming both sizes, got {err:?}"
+        );
+    }
 
     #[test]
     fn test_blob_conversion() {
