@@ -672,6 +672,16 @@ describe('isTreeInvariantViolation Type Guard (gRPC shape)', () => {
     }
   });
 
+  it('rejects a node_id that is neither a string nor null', () => {
+    expect(
+      isTreeInvariantViolation({
+        message: 'err',
+        code: 'TREE_INVARIANT_VIOLATION',
+        conflictData: { rule: 'cycle', node_id: 5, related_ids: [], detail: 'd' }
+      })
+    ).toBe(false);
+  });
+
   it('rejects an unknown rule', () => {
     expect(
       isTreeInvariantViolation({

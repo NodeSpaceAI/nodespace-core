@@ -2658,7 +2658,7 @@ impl SqliteStore {
     /// nodes are exempt.
     ///
     /// Also refuses a `collection`, which is always a root (ADR-059 §2): see
-    /// [`super::collection_not_root`]. The schema's `collection_is_root_*`
+    /// [`super::TreeInvariantViolation::collection_not_root`]. The schema's `collection_is_root_*`
     /// triggers back this up on every write path; checking here gives the
     /// reparent paths a readable error. One chunked query finds both kinds of
     /// offender, keeping the bulk/cold-sweep path a single round trip per chunk.

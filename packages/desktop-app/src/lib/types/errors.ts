@@ -275,6 +275,7 @@ export function isTreeInvariantViolation(
   return (
     typeof cd.rule === 'string' &&
     TREE_INVARIANT_RULES.includes(cd.rule) &&
+    (typeof cd.node_id === 'string' || cd.node_id === null) &&
     Array.isArray(cd.related_ids) &&
     typeof cd.detail === 'string'
   );
