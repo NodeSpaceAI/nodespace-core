@@ -18,6 +18,9 @@
   written to the node's top-level typed fields; every other field lives flat in
   node.properties[field.name] — see schema-field-resolution.ts.
 
+  A field declaring `unique` gets the suggest-don't-block duplicate suggestion
+  on blur (ADR-065, UniqueFieldCheck) — for any type, driven by the schema flag.
+
   Shell chrome (Collapsible, trigger row, Relationships gate, NestedPropertyModal) is owned
   by TypedFormShell — this component supplies only the field grid.
 
@@ -38,6 +41,8 @@
   import TypedFormShell from './typed-form-shell.svelte';
   import SchemaFieldLeaf from './schema-field-leaf.svelte';
   import NestedFieldTrigger from './nested-field-trigger.svelte';
+  import UniqueFieldSuggestion from './unique-field-suggestion.svelte';
+  import { UniqueFieldCheck, isUniqueField } from './unique-field-check.svelte';
   import { isNestedField } from '$lib/utils/nested-property-ops';
 
   let { nodeId, schema, autoOpen = false }: { nodeId: string; schema: SchemaNode; autoOpen?: boolean } = $props();
@@ -52,6 +57,22 @@
   const visibleFields = $derived(schema.fields.filter(isUserVisibleField));
 
   const node = $derived<Node | null>(nodeId ? (sharedNodeStore.getNode(nodeId) ?? null) : null);
+
+  // One duplicate check per `unique` field, rebuilt when the schema changes.
+  const uniqueChecks = $derived(
+    new Map(
+      visibleFields
+        .filter(isUniqueField)
+        .map((field) => [field.name, new UniqueFieldCheck(schema.id, field.name)])
+    )
+  );
+
+  // The instance can be reused across nodes — drop any suggestion computed
+  // for the previous one.
+  $effect(() => {
+    void nodeId;
+    for (const check of uniqueChecks.values()) check.reset();
+  });
 
   const fieldStats = $derived.by(() => {
     let filled = 0;
@@ -127,6 +148,7 @@
       <div class="grid grid-cols-2 gap-4">
         {#each visibleFields as field (field.name)}
           {@const fieldId = `generic-${nodeId}-${field.name}`}
+          {@const uniqueCheck = uniqueChecks.get(field.name)}
           <div class="space-y-2">
             <label for={fieldId} class="text-sm font-medium">
               {labelForField(field)}
@@ -145,9 +167,15 @@
                 {fieldId}
                 value={getFieldValue(field.name)}
                 onChange={(newValue) => updateField(field.name, newValue)}
+                onCommit={uniqueCheck ? (value) => void uniqueCheck.check(nodeId, value) : undefined}
               />
             {/if}
           </div>
+          {#if uniqueCheck}
+            <div class="col-span-2 empty:hidden">
+              <UniqueFieldSuggestion check={uniqueCheck} {field} />
+            </div>
+          {/if}
         {/each}
       </div>
     {/snippet}

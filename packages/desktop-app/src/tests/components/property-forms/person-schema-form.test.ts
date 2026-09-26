@@ -1,7 +1,8 @@
 /**
  * PersonSchemaForm — adopt-existing suggestion (ADR-065).
  *
- * `person.email` carries a store-aware `unique` schema rule. This form is the
+ * `person.email` carries a store-aware `unique` schema rule, enabled by the
+ * loaded person schema's flag (not hardcoded per type). This form is the
  * creation/edit surface where a collision must surface as a dismissible
  * suggestion — never a blocking error, and never a skipped save. These tests
  * drive a real blur through the component and assert:
@@ -74,6 +75,29 @@ function existingMatch(overrides: PersonOverrides = {}): Node {
   } as Node;
 }
 
+/** The person schema as getSchema returns it: email flagged `unique`, case-insensitive. */
+function personSchema(emailFlags: { unique?: boolean; uniqueCaseInsensitive?: boolean } = {
+  unique: true,
+  uniqueCaseInsensitive: true
+}) {
+  return {
+    id: 'person',
+    content: 'person',
+    createdAt: '2026-01-01T00:00:00Z',
+    modifiedAt: '2026-01-01T00:00:00Z',
+    version: 1,
+    isCore: true,
+    schemaVersion: 1,
+    description: '',
+    titleTemplate: '{first_name} {last_name}',
+    fields: [
+      { name: 'first_name', friendlyName: 'First name', type: 'string', protection: 'core' },
+      { name: 'last_name', friendlyName: 'Last name', type: 'string', protection: 'core' },
+      { name: 'email', friendlyName: 'Email', type: 'string', protection: 'core', ...emailFlags }
+    ]
+  };
+}
+
 let updateNodeSpy: ReturnType<typeof vi.fn>;
 let updatePersonNodeSpy: ReturnType<typeof vi.fn>;
 let findDuplicateForSpy: ReturnType<typeof vi.fn>;
@@ -93,6 +117,7 @@ beforeEach(() => {
   vi.spyOn(sharedNodeStore, 'updatePersonNode').mockImplementation(
     updatePersonNodeSpy as unknown as typeof sharedNodeStore.updatePersonNode
   );
+  vi.spyOn(backendAdapter, 'getSchema').mockResolvedValue(personSchema() as never);
   findDuplicateForSpy = vi.fn().mockResolvedValue(null);
   vi.spyOn(backendAdapter, 'findDuplicateFor').mockImplementation(
     findDuplicateForSpy as unknown as typeof backendAdapter.findDuplicateFor
@@ -110,9 +135,31 @@ afterEach(() => {
 });
 
 async function blurEmail(value: string) {
+  await schemaLoaded();
   const input = screen.getByLabelText('Email');
   await fireEvent.blur(input, { target: { value } });
 }
+
+/** The unique rule is armed only once the schema that declares it has loaded. */
+async function schemaLoaded() {
+  await waitFor(() => expect(backendAdapter.getSchema).toHaveBeenCalledWith('person'));
+  await Promise.resolve();
+}
+
+describe('PersonSchemaForm — shared shell', () => {
+  it('renders through TypedFormShell: a collapsible panel with a field-count badge', async () => {
+    vi.mocked(sharedNodeStore.getNode).mockReturnValue(personNode({ email: 'a@example.com' }));
+    render(PersonSchemaForm, { props: { nodeId: 'person-1' } });
+
+    const trigger = screen.getByText('2/3 fields').closest('button') as HTMLElement;
+    // Starts open (the header is read-only for a title_template type).
+    expect(trigger.getAttribute('aria-expanded')).toBe('true');
+    expect(screen.getByLabelText('First name')).toBeTruthy();
+
+    await fireEvent.click(trigger);
+    await waitFor(() => expect(trigger.getAttribute('aria-expanded')).toBe('false'));
+  });
+});
 
 describe('PersonSchemaForm — field placeholders', () => {
   // `email`'s placeholder ("email@example.com") was always a good example. `first_name`
@@ -288,6 +335,7 @@ describe('PersonSchemaForm — adopt-existing suggestion', () => {
       })
     );
     render(PersonSchemaForm, { props: { nodeId: 'person-1' } });
+    await schemaLoaded();
 
     const input = screen.getByLabelText('Email');
     const blurPromise = fireEvent.blur(input, { target: { value: 'bob@example.com' } });
@@ -336,6 +384,7 @@ describe('PersonSchemaForm — adopt-existing suggestion', () => {
       .mockResolvedValueOnce(existingMatch());
 
     render(PersonSchemaForm, { props: { nodeId: 'person-1' } });
+    await schemaLoaded();
     const input = screen.getByLabelText('Email');
 
     await fireEvent.blur(input, { target: { value: 'first@example.com' } });
@@ -350,6 +399,17 @@ describe('PersonSchemaForm — adopt-existing suggestion', () => {
     expect(screen.getByText(/already exists/i)).toBeTruthy();
   });
 
+  it('does not look up a duplicate when the schema does not flag email unique', async () => {
+    // The rule is the schema's, not person's: without the flag there is no lookup.
+    vi.mocked(backendAdapter.getSchema).mockResolvedValue(personSchema({}) as never);
+    render(PersonSchemaForm, { props: { nodeId: 'person-1' } });
+
+    await blurEmail('bob@example.com');
+
+    expect(updatePersonNodeSpy).toHaveBeenCalledTimes(1);
+    expect(findDuplicateForSpy).not.toHaveBeenCalled();
+  });
+
   it('does not look up a duplicate for an empty email', async () => {
     render(PersonSchemaForm, { props: { nodeId: 'person-1' } });
 
@@ -361,13 +421,8 @@ describe('PersonSchemaForm — adopt-existing suggestion', () => {
 });
 
 /**
- * Relationships trigger gating. PersonSchemaForm used to show the
- * Relationships button unconditionally, unlike GenericSchemaForm
- * (which already gated it) — and, once TaskSchemaForm started composing
- * through TypedFormShell, unlike Task too. This closes that remaining
- * inconsistency directly in PersonSchemaForm (which stays hardcoded, not
- * TypedFormShell-composed, by deliberate design), through the same
- * NodeRelationshipsState the shell uses.
+ * Relationships trigger gating — owned by TypedFormShell, which
+ * PersonSchemaForm composes like every other typed form.
  */
 describe('PersonSchemaForm — Relationships trigger gate', () => {
   it('hides the Relationships entry point when the type has no typed relationships', async () => {
