@@ -2782,10 +2782,9 @@ impl SqliteStore {
 
         if let Some(ref parent_id) = new_parent_id {
             if is_same_parent_reorder {
-                let props = serde_json::json!({"order": new_order}).to_string();
                 db.execute(
-                    "UPDATE relationship SET properties = ?1, version = version + 1, modified_at = ?2 WHERE in_node = ?3 AND out_node = ?4 AND relationship_type = 'has_child'",
-                    libsql::params![props, now, parent_id.clone(), node_id.clone()],
+                    "UPDATE relationship SET properties = json_set(properties, '$.order', ?1), version = version + 1, modified_at = ?2 WHERE in_node = ?3 AND out_node = ?4 AND relationship_type = 'has_child'",
+                    libsql::params![new_order, now, parent_id.clone(), node_id.clone()],
                 ).await.context("Failed to update relationship order")?;
             } else {
                 // Cross-parent move: delete the old has_child edge, create the new
