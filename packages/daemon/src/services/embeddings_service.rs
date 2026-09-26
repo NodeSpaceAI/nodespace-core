@@ -27,11 +27,7 @@ use crate::nodespace::{
     SearchSemanticRequest, SearchSemanticResponse, TriggerBatchEmbedRequest,
     TriggerBatchEmbedResponse,
 };
-use crate::services::node_service::{nodes_to_proto, ops_error_to_status};
-
-/// Maximum node ids accepted by one `batch_queue_embeddings` call, matching
-/// the node service's batch RPCs.
-const MAX_BATCH_QUEUE_EMBEDDINGS: usize = 100;
+use crate::services::node_service::{nodes_to_proto, ops_error_to_status, MAX_BATCH_SIZE};
 
 /// Live embedding state once the model has finished loading.
 pub struct EmbeddingReady {
@@ -279,10 +275,10 @@ impl GrpcEmbeddingsService for EmbeddingsServiceImpl {
 
         // Each id costs a node fetch plus a queue write while the state read
         // guard is held, so cap the batch like the node service's batch RPCs.
-        if req.node_ids.len() > MAX_BATCH_QUEUE_EMBEDDINGS {
+        if req.node_ids.len() > MAX_BATCH_SIZE {
             return Err(Status::invalid_argument(format!(
                 "Batch size exceeds maximum of {} (got {})",
-                MAX_BATCH_QUEUE_EMBEDDINGS,
+                MAX_BATCH_SIZE,
                 req.node_ids.len()
             )));
         }
@@ -389,7 +385,7 @@ mod tests {
     async fn batch_queue_embeddings_rejects_oversized_batch() {
         let (svc, _tmp) = test_service(false).await;
         let status = svc
-            .batch_queue_embeddings(batch_request(MAX_BATCH_QUEUE_EMBEDDINGS + 1))
+            .batch_queue_embeddings(batch_request(MAX_BATCH_SIZE + 1))
             .await
             .expect_err("oversized batch must be rejected");
         assert_eq!(status.code(), tonic::Code::InvalidArgument);
@@ -406,7 +402,7 @@ mod tests {
     async fn batch_queue_embeddings_accepts_batch_at_cap() {
         let (svc, _tmp) = test_service(false).await;
         let status = svc
-            .batch_queue_embeddings(batch_request(MAX_BATCH_QUEUE_EMBEDDINGS))
+            .batch_queue_embeddings(batch_request(MAX_BATCH_SIZE))
             .await
             .expect_err("no model is loaded in the test service");
         assert_eq!(status.code(), tonic::Code::Unavailable);

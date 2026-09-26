@@ -90,6 +90,11 @@ use crate::nodespace::{
 /// by a test that reads this file.
 pub const MAX_ROW_LIMIT: usize = 500;
 
+/// Maximum ids or updates accepted by one batch RPC. Each entry costs its own
+/// store round trip, so an unbounded batch would hold a request (and any lock
+/// it takes) for an unbounded time.
+pub(crate) const MAX_BATCH_SIZE: usize = 100;
+
 /// gRPC adapter that owns shared handles to the core services.
 ///
 /// `embedding_state` is `None` while the model is loading or when the NLP
@@ -1650,9 +1655,10 @@ impl GrpcNodeService for NodeServiceImpl {
         if req.node_ids.is_empty() {
             return Err(Status::invalid_argument("node_ids cannot be empty"));
         }
-        if req.node_ids.len() > 100 {
+        if req.node_ids.len() > MAX_BATCH_SIZE {
             return Err(Status::invalid_argument(format!(
-                "Batch size exceeds maximum of 100 (got {})",
+                "Batch size exceeds maximum of {} (got {})",
+                MAX_BATCH_SIZE,
                 req.node_ids.len()
             )));
         }
@@ -1693,9 +1699,10 @@ impl GrpcNodeService for NodeServiceImpl {
         if req.updates.is_empty() {
             return Err(Status::invalid_argument("updates cannot be empty"));
         }
-        if req.updates.len() > 100 {
+        if req.updates.len() > MAX_BATCH_SIZE {
             return Err(Status::invalid_argument(format!(
-                "Batch size exceeds maximum of 100 (got {})",
+                "Batch size exceeds maximum of {} (got {})",
+                MAX_BATCH_SIZE,
                 req.updates.len()
             )));
         }
