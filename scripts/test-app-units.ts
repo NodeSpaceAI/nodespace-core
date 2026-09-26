@@ -10,14 +10,11 @@
  * matching nothing is `GlobPathNotFound`. Both are gitignored, so a fresh
  * checkout satisfies neither.
  *
- * build.rs's own `sync_stale_sidecar` guard rescues only `nodespaced` and
- * `nodespace`, and only when `target/<profile>/<bin>` already exists to copy
- * from — on a fresh worktree it doesn't, so the guard is a no-op and the
- * build fails. The `resources/models` glob survives only because a tracked
- * `.gitkeep` keeps it non-empty. The skill's two bundle entries are the
- * exception: build.rs drops them from a debug build when unstaged, so they
- * don't gate compiling. `build:skill` is still required here, but by a TEST
- * (see `TEST_PREREQUISITES`), not by the build.
+ * build.rs drops every unstaged sidecar and the unstaged skill from a debug
+ * build (see its `drop_unstaged_bundle_entries`), so none of those gate
+ * compiling. What is left is the `resources/models` glob, which survives on a
+ * tracked `.gitkeep`, and the skill package's compiled installer script —
+ * required here by a TEST (see `TEST_PREREQUISITES`), not by the build.
  *
  * Left alone, that surfaces from deep inside a build script naming one
  * missing path, with no hint which command produces it. This checks every
@@ -26,17 +23,15 @@
  *
  * The check and the cargo invocation live together because the answer to
  * "are the prerequisites there?" has three outcomes, not two: ready, missing
- * (build them), and unbuildable-on-this-platform (skip). Linux ships CLI +
- * daemon binaries only, no packaged GUI app — `build:skill` stages no
- * installer there and `build-sidecars.ts` hardcodes an `-apple-darwin`
- * triple, so the sidecars cannot be produced at all and the crate cannot
- * compile. Expressing that three-way result as a shell `&&` chain in
+ * (build them), and not-on-this-platform (skip). Linux ships CLI + daemon
+ * binaries only — there is no desktop app there to build or test.
+ * Expressing that three-way result as a shell `&&` chain in
  * package.json would either fail the suite on Linux or swallow real failures.
  */
 
 import { Glob } from 'bun';
 import { existsSync, readFileSync } from 'node:fs';
-import { arch, platform } from 'node:os';
+import { platform } from 'node:os';
 import { join } from 'node:path';
 
 const TAURI_DIR = join(
@@ -56,8 +51,7 @@ const TAURI_DIR = join(
  * would otherwise invite.
  */
 const PRODUCERS: { prefix: string; command: string }[] = [
-  { prefix: '../../skill/', command: 'bun run build:skill' },
-  { prefix: 'binaries/', command: 'bun run build:sidecars --debug' },
+  { prefix: '../../skill/', command: 'bun run --cwd packages/skill build' },
   // `:bundle`, not the bare script — only `--bundle` targets
   // resources/models; without it the download lands in ~/.nodespace/models
   // and stages nothing here.
@@ -70,15 +64,9 @@ const producerFor = (path: string): string =>
     .find(({ prefix }) => path.startsWith(prefix))?.command ??
   'see tauri.conf.json';
 
-const hostTriple = (): string | null => {
-  if (platform() === 'darwin') {
-    return `${arch() === 'arm64' ? 'aarch64' : 'x86_64'}-apple-darwin`;
-  }
-  if (platform() === 'win32') {
-    return 'x86_64-pc-windows-msvc';
-  }
-  return null;
-};
+/** The desktop app ships on macOS and Windows only. */
+const hasDesktopApp = (): boolean =>
+  platform() === 'darwin' || platform() === 'win32';
 
 interface RequiredPath {
   path: string;
@@ -103,13 +91,11 @@ const resourcePatterns = (resources: unknown): string[] => {
 };
 
 /**
- * Bundle entries build.rs drops from a DEBUG build when unstaged (see its
- * `drop_unstaged_skill`), so they don't gate compiling these tests.
+ * The `resources` entry build.rs drops from a DEBUG build when unstaged (see
+ * its `drop_unstaged_bundle_entries`), so it doesn't gate compiling these
+ * tests. Every `externalBin` sidecar is dropped the same way.
  */
-const DEBUG_OPTIONAL_ENTRIES = new Set([
-  'binaries/nodespace-skill-installer',
-  'resources/skill/**/*',
-]);
+const DEBUG_OPTIONAL_RESOURCE = 'resources/skill/**/*';
 
 /**
  * Paths the tests themselves read, beyond what the build needs:
@@ -121,34 +107,21 @@ const TEST_PREREQUISITES: RequiredPath[] = [
 ];
 
 /**
- * Every path these tests need: what `tauri_build::build()` will insist on in
- * a debug build, read from the config it reads, plus `TEST_PREREQUISITES`.
- * `externalBin` entries gain the host triple and exe suffix and must exist as
- * files; `resources` entries are globs that must match at least one file (an
- * empty match is `GlobPathNotFound`, a hard error just like a missing file).
+ * Every path these tests need: the `resources` globs `tauri_build::build()`
+ * will insist on in a debug build, read from the config it reads, plus
+ * `TEST_PREREQUISITES`. A glob must match at least one file (an empty match
+ * is `GlobPathNotFound`, a hard error just like a missing file).
  */
-const requiredPaths = (triple: string): RequiredPath[] => {
+const requiredPaths = (): RequiredPath[] => {
   const config: unknown = JSON.parse(
     readFileSync(join(TAURI_DIR, 'tauri.conf.json'), 'utf8'),
   );
   const bundle =
-    (config as { bundle?: { externalBin?: unknown; resources?: unknown } })
-      .bundle ?? {};
-  const ext = platform() === 'win32' ? '.exe' : '';
-
-  const externalBin = Array.isArray(bundle.externalBin)
-    ? bundle.externalBin.filter((b): b is string => typeof b === 'string')
-    : [];
+    (config as { bundle?: { resources?: unknown } }).bundle ?? {};
 
   return [
-    ...externalBin
-      .filter((bin) => !DEBUG_OPTIONAL_ENTRIES.has(bin))
-      .map((bin): RequiredPath => ({
-        path: `${bin}-${triple}${ext}`,
-        kind: 'file' as const,
-      })),
     ...resourcePatterns(bundle.resources)
-      .filter((pattern) => !DEBUG_OPTIONAL_ENTRIES.has(pattern))
+      .filter((pattern) => pattern !== DEBUG_OPTIONAL_RESOURCE)
       .map((pattern): RequiredPath => ({
         path: pattern,
         kind: 'glob' as const,
@@ -157,15 +130,14 @@ const requiredPaths = (triple: string): RequiredPath[] => {
   ];
 };
 
-const triple = hostTriple();
-if (!triple) {
+if (!hasDesktopApp()) {
   console.log(
     'Skipping nodespace-app unit tests (no Tauri desktop app on this platform).',
   );
   process.exit(0);
 }
 
-const missing = requiredPaths(triple).filter(({ path, kind }) => {
+const missing = requiredPaths().filter(({ path, kind }) => {
   if (kind === 'file') {
     return !existsSync(join(TAURI_DIR, path));
   }
@@ -197,21 +169,21 @@ if (missing.length > 0) {
   for (const command of commands) {
     console.error(`  ${command}`);
   }
-  console.error(
-    `\nThen re-run. (A cold sidecar build takes several minutes.)\n`,
-  );
+  console.error(`\nThen re-run.\n`);
   process.exit(1);
 }
 
 // `--lib --bins` and deliberately not `--tests`, which is where this differs
-// from `rust:test:workspace`: the `tests/*.rs` targets each spawn a real
+// from the rest of `rust:test`: the `tests/*.rs` targets each spawn a real
 // nodespaced and need `NODESPACED_TEST_BIN` plus `--test-threads=1`, so the
-// pre-push gate runs them as its own step (ADR-048). Splitting them out is
+// merge gate runs them as its own step (ADR-048). Splitting them out is
 // what lets these in-process unit tests run in `test:all` at all.
 //
-// --test-threads=2 matches the rest of `rust:test`. The gate's =1 cap exists
-// for those daemon-spawning targets; these need no such serialization (the
-// ones touching process-global env take their own lock).
+// Plain `cargo test` rather than nextest: these are in-process and link no
+// SQLite of their own, so they have no shared-process hazard to isolate, and
+// the whole suite takes about two seconds. --test-threads=2 because the ones
+// touching process-global env take their own lock. The gate's =1 cap exists
+// for the daemon-spawning targets only.
 const result = Bun.spawnSync(
   [
     'cargo',

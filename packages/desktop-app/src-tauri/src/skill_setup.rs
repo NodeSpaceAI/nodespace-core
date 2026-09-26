@@ -582,6 +582,16 @@ enum Installer {
 /// Resolve which [`Installer`] to use: the compiled standalone binary if
 /// it's available for this platform/build, the plain JS script otherwise.
 fn resolve_installer<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<Installer, String> {
+    // A debug build installs from the live source checkout. A compiled
+    // installer or skill bundle found beside the executable or under the
+    // resources is output of an earlier `build:skill`/`tauri:build` that
+    // nothing refreshes during development (`dev:tauri` builds only
+    // `dist/install.js`), so selecting it would install stale skill content.
+    if cfg!(debug_assertions) {
+        if let Some(path) = source_checkout_installer_path() {
+            return Ok(Installer::Script { path });
+        }
+    }
     if let Some((binary, resource_root)) = resolve_compiled_installer_path(app) {
         // Checked (and self-healed) here, right before the compiled binary is
         // actually selected -- not inside `resolve_compiled_installer_path`
@@ -771,6 +781,23 @@ fn ensure_installer_executable(_path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// The source checkout's built installer script, `packages/skill/dist/install.js`
+/// (produced by the skill package's `tsc` build), whether or not it exists.
+fn source_checkout_installer_candidate() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("skill")
+        .join("dist")
+        .join("install.js")
+}
+
+/// [`source_checkout_installer_candidate`], when it has been built.
+fn source_checkout_installer_path() -> Option<PathBuf> {
+    let path = source_checkout_installer_candidate();
+    path.exists().then_some(path)
+}
+
 /// Resolve the path to the built skill installer (`dist/install.js`) — the
 /// [`Installer::Script`] fallback.
 ///
@@ -793,13 +820,7 @@ fn resolve_installer_path<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<PathB
         }
     }
 
-    let fallback = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("..")
-        .join("skill")
-        .join("dist")
-        .join("install.js");
-    if fallback.exists() {
+    if let Some(fallback) = source_checkout_installer_path() {
         return Ok(fallback);
     }
 
@@ -808,7 +829,7 @@ fn resolve_installer_path<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<PathB
     // useful for whoever built the package, not whoever is running it.
     tracing::debug!(
         "Skill installer not found — checked bundled resource and {}",
-        fallback.display()
+        source_checkout_installer_candidate().display()
     );
     Err("Skill installer is missing from this build (packaging issue).".to_string())
 }
@@ -1142,7 +1163,7 @@ mod tests {
         let handle = app.handle().clone();
 
         let resolved = resolve_installer_path(&handle)
-            .expect("dist/install.js must exist — run `bun run build:skill` first");
+            .expect("dist/install.js must exist — run `bun run --cwd packages/skill build` first");
 
         assert!(
             resolved.ends_with("skill/dist/install.js"),
@@ -1562,7 +1583,7 @@ mod tests {
     fn run_skill_installer_actually_installs_into_an_isolated_home() {
         let app = tauri::test::mock_app();
         let installer_path = resolve_installer_path(&app.handle().clone())
-            .expect("dist/install.js must exist — run `bun run build:skill` first");
+            .expect("dist/install.js must exist — run `bun run --cwd packages/skill build` first");
 
         let fake_home = tempfile::tempdir().expect("create isolated fake $HOME");
         std::fs::create_dir_all(fake_home.path().join(".claude"))
@@ -1616,7 +1637,7 @@ mod tests {
     fn run_skill_installer_reports_agents_skipped_for_a_genuinely_incomplete_package() {
         let app = tauri::test::mock_app();
         let real_resource_root = resolve_installer_path(&app.handle().clone())
-            .expect("dist/install.js must exist — run `bun run build:skill` first")
+            .expect("dist/install.js must exist — run `bun run --cwd packages/skill build` first")
             .parent()
             .and_then(Path::parent)
             .expect("dist/install.js is two levels under the skill package root")
@@ -1752,7 +1773,7 @@ mod tests {
     fn status_subcommand_stops_reporting_an_agent_whose_skill_dir_was_deleted_by_hand() {
         let app = tauri::test::mock_app();
         let installer_path = resolve_installer_path(&app.handle().clone())
-            .expect("dist/install.js must exist — run `bun run build:skill` first");
+            .expect("dist/install.js must exist — run `bun run --cwd packages/skill build` first");
 
         let fake_home = tempfile::tempdir().expect("create isolated fake $HOME");
         std::fs::create_dir_all(fake_home.path().join(".claude"))
@@ -1807,7 +1828,7 @@ mod tests {
     fn detect_subcommand_reports_present_agents_before_anything_is_installed() {
         let app = tauri::test::mock_app();
         let installer_path = resolve_installer_path(&app.handle().clone())
-            .expect("dist/install.js must exist — run `bun run build:skill` first");
+            .expect("dist/install.js must exist — run `bun run --cwd packages/skill build` first");
 
         let fake_home = tempfile::tempdir().expect("create isolated fake $HOME");
         std::fs::create_dir_all(fake_home.path().join(".claude"))
@@ -1874,7 +1895,7 @@ mod tests {
     fn uninstall_subcommand_removes_the_skill_from_every_installed_agent() {
         let app = tauri::test::mock_app();
         let installer_path = resolve_installer_path(&app.handle().clone())
-            .expect("dist/install.js must exist — run `bun run build:skill` first");
+            .expect("dist/install.js must exist — run `bun run --cwd packages/skill build` first");
 
         let fake_home = tempfile::tempdir().expect("create isolated fake $HOME");
         std::fs::create_dir_all(fake_home.path().join(".claude"))

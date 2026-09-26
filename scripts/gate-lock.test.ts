@@ -11,7 +11,7 @@
 // DOM-free on purpose: this file runs under `bun test scripts/`, which
 // bypasses the Happy-DOM vitest config (see CLAUDE.md).
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -24,9 +24,11 @@ import {
   isForeignHost,
   isPidAlive,
   parseHolder,
+  queueDir,
   readHolder,
   registerLockRelease,
   serializeHolder,
+  ticketName,
   type LockHolder,
 } from "./gate-lock";
 
@@ -524,5 +526,109 @@ describe("registerLockRelease", () => {
     const before = process.listenerCount("exit");
     registerLockRelease({ held: false, release: () => {} });
     expect(process.listenerCount("exit")).toBe(before);
+  });
+});
+
+describe("FIFO queue", () => {
+  /** Queues a ticket as if another gate had started waiting at `startedAt`. */
+  function plantTicket(pid: number, startedAt: number): string {
+    mkdirSync(queueDir(lockPath), { recursive: true });
+    const name = ticketName(startedAt, pid);
+    writeFileSync(join(queueDir(lockPath), name), serializeHolder(holderFile({ pid, startedAt })));
+    return name;
+  }
+
+  const queued = () => readdirSync(queueDir(lockPath)).filter((name) => !name.startsWith("."));
+
+  test("ticket names sort in arrival order", () => {
+    expect(ticketName(999, 5) < ticketName(1000, 1)).toBe(true);
+    expect(ticketName(1000, 1) < ticketName(1000, 2)).toBe(true);
+  });
+
+  test("a later arrival does not take a free lock while an earlier live waiter is queued", async () => {
+    plantTicket(999_002, 1);
+    let clock = 10;
+    const { options } = harness({
+      isAlive: () => true,
+      maxWaitMs: 5000,
+      now: () => clock,
+      sleep: async () => {
+        clock += 2000;
+      },
+    });
+
+    const lock = await acquireGateLock(options);
+
+    // It waited its turn out to the cap rather than jumping the queue.
+    expect(lock.held).toBe(false);
+    expect(existsSync(lockPath)).toBe(false);
+    // It left the queue on the way out; the earlier waiter keeps its place.
+    expect(queued()).toEqual([ticketName(1, 999_002)]);
+  });
+
+  test("an earlier waiter whose process is gone is reaped, and the next in line proceeds", async () => {
+    plantTicket(999_003, 1);
+    const { options } = harness({ isAlive: (pid) => pid !== 999_003, now: () => 10 });
+
+    const lock = await acquireGateLock(options);
+
+    expect(lock.held).toBe(true);
+    expect(queued()).toEqual([]);
+    lock.release();
+  });
+
+  test("waiters behind us don't block us, and acquiring leaves the queue", async () => {
+    plantTicket(999_004, 50);
+    const { options } = harness({ isAlive: () => true, now: () => 10 });
+
+    const lock = await acquireGateLock(options);
+
+    expect(lock.held).toBe(true);
+    expect(queued()).toEqual([ticketName(50, 999_004)]);
+    lock.release();
+  });
+
+  test("gates are served in arrival order when the holder releases", async () => {
+    plantLock({ pid: 999_005 });
+    let holderAlive = true;
+    let clock = 0;
+    const order: string[] = [];
+    const common = {
+      isAlive: (pid: number) => (pid === 999_005 ? holderAlive : true),
+      maxWaitMs: 60_000,
+      now: () => clock,
+    };
+    // First arrival: queues at t=0.
+    const first = acquireGateLock(
+      harness({
+        ...common,
+        pid: 111,
+        sleep: async () => {
+          clock += 1000;
+          // The holder finishes once both gates are queued.
+          if (clock >= 3000) holderAlive = false;
+          await Promise.resolve();
+        },
+      }).options
+    ).then((lock) => {
+      order.push("first");
+      return lock;
+    });
+    // Second arrival: queues at t=0 too but with a later pid — and polls more
+    // eagerly, which is exactly what used to let a later gate win the race.
+    const second = acquireGateLock(
+      harness({ ...common, pid: 222, sleep: async () => await Promise.resolve() }).options
+    ).then((lock) => {
+      order.push("second");
+      return lock;
+    });
+
+    const firstLock = await first;
+    expect(order).toEqual(["first"]);
+    firstLock.release();
+    const secondLock = await second;
+    expect(order).toEqual(["first", "second"]);
+    expect(firstLock.held && secondLock.held).toBe(true);
+    secondLock.release();
   });
 });
