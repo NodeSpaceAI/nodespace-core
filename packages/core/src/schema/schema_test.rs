@@ -6552,3 +6552,102 @@ async fn concurrent_friendly_name_update_cannot_revert_a_committed_rename() {
         }
     }
 }
+
+// ============================================================================
+// delete_node schema guard — core schemas, and schemas reached via the subtree
+// ============================================================================
+//
+// The direct-target `extends` / declaration cases live in
+// tests/schema_relationship_declarations_test.rs.
+
+async fn delete_by_id(
+    svc: &Arc<NodeService>,
+    id: &str,
+) -> Result<crate::models::DeleteResult, crate::services::NodeServiceError> {
+    let node = svc
+        .get_node(id)
+        .await
+        .expect("node lookup failed")
+        .expect("node should exist");
+    svc.delete_node(id, node.version).await
+}
+
+/// Create a text node and move each schema under it, so deleting the text node
+/// reaches the schemas through the `has_child` subtree rather than as the target.
+async fn nest_schemas_under_text(svc: &Arc<NodeService>, schema_ids: &[&str]) -> String {
+    use crate::services::{CreateNodeParams, InsertPosition, InsertPositionOwned};
+
+    let holder = svc
+        .create_node_with_parent(CreateNodeParams {
+            id: None,
+            node_type: "text".to_string(),
+            content: "holder".to_string(),
+            parent_id: None,
+            position: InsertPositionOwned::End,
+            properties: json!({}),
+            lifecycle_status: None,
+        })
+        .await
+        .expect("holder creation failed");
+    for id in schema_ids {
+        svc.move_node_unchecked(id, Some(&holder), InsertPosition::End)
+            .await
+            .unwrap_or_else(|e| panic!("moving {id} under the holder failed: {e}"));
+    }
+    holder
+}
+
+#[tokio::test]
+async fn test_delete_core_schema_refused() {
+    let (svc, _tmp) = create_test_service().await;
+
+    let err = delete_by_id(&svc, "task")
+        .await
+        .expect_err("deleting a core schema must be refused");
+    assert!(err.to_string().contains("schema_is_core"), "{err}");
+    assert!(svc.get_node("task").await.unwrap().is_some());
+}
+
+#[tokio::test]
+async fn test_delete_refused_when_subtree_contains_an_extended_schema() {
+    let (svc, _tmp) = create_test_service().await;
+    create_base_schema(&svc, "Ticket", &["status"]).await;
+    handle_create_schema(
+        &svc,
+        json!({ "name": "Bug", "extends": "ticket", "fields": [] }),
+    )
+    .await
+    .expect("bug schema creation failed");
+    let holder = nest_schemas_under_text(&svc, &["ticket"]).await;
+
+    let err = delete_by_id(&svc, &holder)
+        .await
+        .expect_err("a subtree holding an extended schema must not be deletable");
+    assert!(err.to_string().contains("schema_has_declarations"), "{err}");
+    assert!(svc.get_node("ticket").await.unwrap().is_some());
+    assert!(svc.get_node(&holder).await.unwrap().is_some());
+}
+
+#[tokio::test]
+async fn test_delete_refused_when_subtree_contains_a_core_schema() {
+    let (svc, _tmp) = create_test_service().await;
+    let holder = nest_schemas_under_text(&svc, &["task"]).await;
+
+    let err = delete_by_id(&svc, &holder)
+        .await
+        .expect_err("a subtree holding a core schema must not be deletable");
+    assert!(err.to_string().contains("schema_is_core"), "{err}");
+    assert!(svc.get_node("task").await.unwrap().is_some());
+}
+
+#[tokio::test]
+async fn test_delete_allowed_when_subtree_holds_an_unreferenced_schema() {
+    let (svc, _tmp) = create_test_service().await;
+    create_base_schema(&svc, "Ticket", &["status"]).await;
+    let holder = nest_schemas_under_text(&svc, &["ticket"]).await;
+
+    delete_by_id(&svc, &holder)
+        .await
+        .expect("a schema nothing depends on goes with its container");
+    assert!(svc.get_node("ticket").await.unwrap().is_none());
+}
