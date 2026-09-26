@@ -27,14 +27,14 @@ async fn sweep_closes_a_record_whose_participant_was_hard_deleted() -> Result<()
     let alice_id = svc
         .create_node(Node::new(
             "person".to_string(),
-            "Alice".to_string(),
+            String::new(),
             json!({ "person": { "first_name": "Alice", "email": "alice@example.com" } }),
         ))
         .await?;
     let bob_id = svc
         .create_node(Node::new(
             "person".to_string(),
-            "Bob".to_string(),
+            String::new(),
             json!({ "person": { "first_name": "Bob", "email": "alice@example.com" } }),
         ))
         .await?;
@@ -70,14 +70,14 @@ async fn sweep_closes_a_unique_field_collision_that_no_longer_holds() -> Result<
     let alice_id = svc
         .create_node(Node::new(
             "person".to_string(),
-            "Alice".to_string(),
+            String::new(),
             json!({ "person": { "first_name": "Alice", "email": "alice@example.com" } }),
         ))
         .await?;
     let bob_id = svc
         .create_node(Node::new(
             "person".to_string(),
-            "Bob".to_string(),
+            String::new(),
             json!({ "person": { "first_name": "Bob", "email": "alice@example.com" } }),
         ))
         .await?;
@@ -123,14 +123,14 @@ async fn sweep_leaves_a_genuinely_still_colliding_record_open() -> Result<()> {
     let alice_id = svc
         .create_node(Node::new(
             "person".to_string(),
-            "Alice".to_string(),
+            String::new(),
             json!({ "person": { "first_name": "Alice", "email": "alice@example.com" } }),
         ))
         .await?;
     let _bob_id = svc
         .create_node(Node::new(
             "person".to_string(),
-            "Bob".to_string(),
+            String::new(),
             json!({ "person": { "first_name": "Bob", "email": "alice@example.com" } }),
         ))
         .await?;
@@ -154,14 +154,14 @@ async fn sweep_does_not_reopen_a_dismissed_record() -> Result<()> {
     let alice_id = svc
         .create_node(Node::new(
             "person".to_string(),
-            "Alice".to_string(),
+            String::new(),
             json!({ "person": { "first_name": "Alice", "email": "alice@example.com" } }),
         ))
         .await?;
     let _bob_id = svc
         .create_node(Node::new(
             "person".to_string(),
-            "Bob".to_string(),
+            String::new(),
             json!({ "person": { "first_name": "Bob", "email": "alice@example.com" } }),
         ))
         .await?;
@@ -199,14 +199,14 @@ async fn sweep_result_does_not_depend_on_which_participant_id_sorts_first() -> R
         let alice_id = svc
             .create_node(Node::new(
                 "person".to_string(),
-                "Alice".to_string(),
+                String::new(),
                 json!({ "person": { "first_name": "Alice", "email": "alice@example.com" } }),
             ))
             .await?;
         let bob_id = svc
             .create_node(Node::new(
                 "person".to_string(),
-                "Bob".to_string(),
+                String::new(),
                 json!({ "person": { "first_name": "Bob", "email": "alice@example.com" } }),
             ))
             .await?;

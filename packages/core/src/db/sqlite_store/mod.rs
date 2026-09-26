@@ -1473,7 +1473,7 @@ mod tests {
         // Person-node membership is EXEMPT (grantee membership, ADR-037 §4) — even
         // when the person node is interior.
         let interior_person = store
-            .create_child_node_atomic(&root_id, "person", "Ada", json!({}), None)
+            .create_child_node_atomic(&root_id, "person", "", json!({}), None)
             .await?;
         assert!(
             store
@@ -1685,7 +1685,7 @@ mod tests {
         );
 
         // Person-node membership is exempt: an interior person member is allowed.
-        let person = Node::new("person".to_string(), "Ada".to_string(), json!({}));
+        let person = Node::new("person".to_string(), String::new(), json!({}));
         let person_id = person.id.clone();
         store.create_node(person, None, None).await?;
         store

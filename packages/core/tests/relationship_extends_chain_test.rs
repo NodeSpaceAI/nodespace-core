@@ -85,7 +85,7 @@ async fn delete_relationship_protects_last_edge_of_an_inherited_required_relatio
 {
     let (svc, _t) = service_with_extending_schemas().await?;
     make_node(&svc, "gadget-1", "gadget", "Widget").await?;
-    make_node(&svc, "person-1", "person", "Alice").await?;
+    make_node(&svc, "person-1", "person", "").await?;
 
     // `assigned_to` is declared `required: true` on `gizmo`, not redeclared on
     // `gadget`, and the create path already accepts it on a `gadget` instance
@@ -114,7 +114,7 @@ async fn delete_relationship_protects_last_edge_of_an_inherited_required_relatio
 async fn update_relationship_properties_validates_inherited_enum_edge_fields() -> Result<()> {
     let (svc, _t) = service_with_extending_schemas().await?;
     make_node(&svc, "gadget-1", "gadget", "Widget").await?;
-    make_node(&svc, "person-1", "person", "Alice").await?;
+    make_node(&svc, "person-1", "person", "").await?;
 
     svc.create_relationship(
         "gadget-1",

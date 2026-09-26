@@ -1537,7 +1537,13 @@ mod typed_update_tests {
             .create_node_with_parent(CreateNodeParams {
                 id: None,
                 node_type: node_type.to_string(),
-                content: "Name".to_string(),
+                // `person` takes its name from its title template and rejects
+                // content; `project` requires it.
+                content: if node_type == "person" {
+                    String::new()
+                } else {
+                    "Name".to_string()
+                },
                 parent_id: None,
                 position: InsertPositionOwned::End,
                 properties,

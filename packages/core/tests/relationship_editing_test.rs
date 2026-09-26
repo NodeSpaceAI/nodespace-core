@@ -76,7 +76,7 @@ async fn make_node(svc: &NodeService, id: &str, node_type: &str, title: &str) ->
 async fn update_relationship_properties_overwrites_edge_attributes() -> Result<()> {
     let (svc, _t) = service_with_gizmo_schema("many", false).await?;
     make_node(&svc, "gizmo-1", "gizmo", "Ship it").await?;
-    make_node(&svc, "person-1", "person", "Alice").await?;
+    make_node(&svc, "person-1", "person", "").await?;
 
     svc.create_relationship(
         "gizmo-1",
@@ -116,7 +116,7 @@ async fn update_relationship_properties_overwrites_edge_attributes() -> Result<(
 async fn update_relationship_properties_on_missing_edge_errors() -> Result<()> {
     let (svc, _t) = service_with_gizmo_schema("many", false).await?;
     make_node(&svc, "gizmo-1", "gizmo", "Ship it").await?;
-    make_node(&svc, "person-1", "person", "Alice").await?;
+    make_node(&svc, "person-1", "person", "").await?;
 
     // No edge was ever created — updating one must be a surfaced error, not a
     // silent no-op that reports success to the UI.
@@ -136,8 +136,8 @@ async fn update_relationship_properties_on_missing_edge_errors() -> Result<()> {
 async fn required_relationship_blocks_deleting_its_last_edge() -> Result<()> {
     let (svc, _t) = service_with_gizmo_schema("many", true).await?;
     make_node(&svc, "gizmo-1", "gizmo", "Ship it").await?;
-    make_node(&svc, "person-1", "person", "Alice").await?;
-    make_node(&svc, "person-2", "person", "Bob").await?;
+    make_node(&svc, "person-1", "person", "").await?;
+    make_node(&svc, "person-2", "person", "").await?;
 
     svc.create_relationship("gizmo-1", "assigned_to", "person-1", json!({}))
         .await?;
@@ -188,8 +188,8 @@ async fn required_relationship_blocks_deleting_its_last_edge() -> Result<()> {
 async fn required_cardinality_one_relationship_can_still_be_reassigned() -> Result<()> {
     let (svc, _t) = service_with_gizmo_schema("one", true).await?;
     make_node(&svc, "gizmo-1", "gizmo", "Ship it").await?;
-    make_node(&svc, "person-1", "person", "Alice").await?;
-    make_node(&svc, "person-2", "person", "Bob").await?;
+    make_node(&svc, "person-1", "person", "").await?;
+    make_node(&svc, "person-2", "person", "").await?;
 
     svc.create_relationship("gizmo-1", "assigned_to", "person-1", json!({}))
         .await?;
@@ -232,7 +232,7 @@ async fn required_cardinality_one_relationship_can_still_be_reassigned() -> Resu
 async fn non_required_relationship_allows_deleting_its_last_edge() -> Result<()> {
     let (svc, _t) = service_with_gizmo_schema("many", false).await?;
     make_node(&svc, "gizmo-1", "gizmo", "Ship it").await?;
-    make_node(&svc, "person-1", "person", "Alice").await?;
+    make_node(&svc, "person-1", "person", "").await?;
 
     svc.create_relationship("gizmo-1", "assigned_to", "person-1", json!({}))
         .await?;
@@ -254,7 +254,7 @@ async fn delete_required_last_edge_surfaces_a_validation_error_not_internal() ->
     // gRPC INVALID_ARGUMENT — not an opaque Internal/INTERNAL server error.
     let (svc, _t) = service_with_gizmo_schema("many", true).await?;
     make_node(&svc, "gizmo-1", "gizmo", "Ship it").await?;
-    make_node(&svc, "person-1", "person", "Alice").await?;
+    make_node(&svc, "person-1", "person", "").await?;
     svc.create_relationship("gizmo-1", "assigned_to", "person-1", json!({}))
         .await?;
 
@@ -279,7 +279,7 @@ async fn delete_required_last_edge_surfaces_a_validation_error_not_internal() ->
 async fn update_rejects_non_object_properties() -> Result<()> {
     let (svc, _t) = service_with_gizmo_schema("many", false).await?;
     make_node(&svc, "gizmo-1", "gizmo", "Ship it").await?;
-    make_node(&svc, "person-1", "person", "Alice").await?;
+    make_node(&svc, "person-1", "person", "").await?;
     svc.create_relationship(
         "gizmo-1",
         "assigned_to",

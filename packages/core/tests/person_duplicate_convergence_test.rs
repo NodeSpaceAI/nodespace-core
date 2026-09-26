@@ -100,7 +100,7 @@ mod offline_convergence_tests {
             .service
             .create_node(Node::new(
                 "person".to_string(),
-                "Alice".to_string(),
+                String::new(),
                 json!({ "person": { "name": "Alice", "email": "alice@example.com" } }),
             ))
             .await?;
@@ -113,7 +113,7 @@ mod offline_convergence_tests {
             .service
             .create_node(Node::new(
                 "person".to_string(),
-                "Alice B".to_string(),
+                String::new(),
                 json!({ "person": { "name": "Alice B", "email": "ALICE@example.com" } }),
             ))
             .await?;
@@ -160,8 +160,15 @@ mod offline_convergence_tests {
             .get_node(&alice_b_id)
             .await?
             .expect("Device B's synced-in person must now exist in A's store");
-        assert_eq!(a_after.content, "Alice");
-        assert_eq!(b_after.content, "Alice B");
+        let name = |node: &Node| {
+            node.properties
+                .get("person")
+                .and_then(|p| p.get("name"))
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+        };
+        assert_eq!(name(&a_after).as_deref(), Some("Alice"));
+        assert_eq!(name(&b_after).as_deref(), Some("Alice B"));
         assert_eq!(
             a_after
                 .properties
@@ -255,7 +262,7 @@ mod offline_convergence_tests {
             .service
             .create_node(Node::new(
                 "person".to_string(),
-                "Alice".to_string(),
+                String::new(),
                 json!({ "person": { "name": "Alice", "email": "alice@example.com" } }),
             ))
             .await?;
@@ -265,7 +272,7 @@ mod offline_convergence_tests {
             .service
             .create_node(Node::new(
                 "person".to_string(),
-                "Bob".to_string(),
+                String::new(),
                 json!({ "person": { "name": "Bob", "email": "bob@example.com" } }),
             ))
             .await?;
@@ -319,7 +326,7 @@ mod offline_convergence_tests {
                 .service
                 .create_node(Node::new(
                     "person".to_string(),
-                    format!("Alice (device {i})"),
+                    String::new(),
                     json!({ "person": { "name": format!("Alice (device {i})"), "email": email } }),
                 ))
                 .await?;
@@ -376,7 +383,7 @@ mod offline_convergence_tests {
             .service
             .create_node(Node::new(
                 "person".to_string(),
-                "Alice".to_string(),
+                String::new(),
                 json!({ "person": { "name": "Alice", "email": "alice@example.com" } }),
             ))
             .await?;
@@ -387,7 +394,7 @@ mod offline_convergence_tests {
             .service
             .create_node(Node::new(
                 "person".to_string(),
-                "Bob".to_string(),
+                String::new(),
                 json!({ "person": { "name": "Bob", "email": "bob@example.com" } }),
             ))
             .await?;
@@ -466,7 +473,7 @@ mod offline_convergence_tests {
             .service
             .create_node(Node::new(
                 "person".to_string(),
-                "Alice A".to_string(),
+                String::new(),
                 json!({ "person": { "name": "Alice A", "email": "concurrent@example.com" } }),
             ))
             .await?;
@@ -477,7 +484,7 @@ mod offline_convergence_tests {
             .service
             .create_node(Node::new(
                 "person".to_string(),
-                "Alice B".to_string(),
+                String::new(),
                 json!({ "person": { "name": "Alice B", "email": "CONCURRENT@example.com" } }),
             ))
             .await?;
@@ -515,7 +522,7 @@ mod offline_convergence_tests {
             .service
             .create_node(Node::new(
                 "person".to_string(),
-                "Alice".to_string(),
+                String::new(),
                 json!({ "person": { "name": "Alice", "email": "alice@example.com" } }),
             ))
             .await?;
@@ -524,7 +531,7 @@ mod offline_convergence_tests {
             .service
             .create_node(Node::new(
                 "person".to_string(),
-                "Bob".to_string(),
+                String::new(),
                 json!({ "person": { "name": "Bob", "email": "alice@example.com" } }),
             ))
             .await?;
@@ -543,7 +550,7 @@ mod offline_convergence_tests {
             .update_node(
                 &bob_id,
                 bob_current.version,
-                NodeUpdate::new().with_content("Bob (renamed)".to_string()),
+                NodeUpdate::new().with_properties(json!({ "name": "Bob (renamed)" })),
             )
             .await?;
 
@@ -576,7 +583,7 @@ mod offline_convergence_tests {
             .service
             .create_node(Node::new(
                 "person".to_string(),
-                "Alice".to_string(),
+                String::new(),
                 json!({ "person": { "name": "Alice", "email": "alice@example.com" } }),
             ))
             .await?;
@@ -585,7 +592,7 @@ mod offline_convergence_tests {
             .service
             .create_node(Node::new(
                 "person".to_string(),
-                "Bob".to_string(),
+                String::new(),
                 json!({ "person": { "name": "Bob", "email": "alice@example.com" } }),
             ))
             .await?;
@@ -625,7 +632,7 @@ mod offline_convergence_tests {
             .service
             .create_node(Node::new(
                 "person".to_string(),
-                "Alice".to_string(),
+                String::new(),
                 json!({ "person": { "name": "Alice", "email": "alice@example.com" } }),
             ))
             .await?;
@@ -634,7 +641,7 @@ mod offline_convergence_tests {
             .service
             .create_node(Node::new(
                 "person".to_string(),
-                "Bob".to_string(),
+                String::new(),
                 json!({ "person": { "name": "Bob", "email": "alice@example.com" } }),
             ))
             .await?;
@@ -664,7 +671,7 @@ mod offline_convergence_tests {
             .update_node(
                 &bob_id,
                 bob_current.version,
-                NodeUpdate::new().with_content("Bob (still colliding)".to_string()),
+                NodeUpdate::new().with_properties(json!({ "name": "Bob (still colliding)" })),
             )
             .await?;
 

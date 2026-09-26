@@ -2631,6 +2631,7 @@ impl NodeService {
         schema: Option<&crate::models::SchemaNode>,
         chain_fields: Option<&(Vec<crate::models::SchemaField>, Vec<String>)>,
     ) -> Result<Option<String>, NodeServiceError> {
+        Self::reject_content_on_templated_type(node, schema)?;
         if let Some(schema) = schema {
             if let Some(template) = &schema.title_template {
                 let resolved;
@@ -2656,6 +2657,32 @@ impl NodeService {
         } else {
             Ok(None)
         }
+    }
+
+    /// A type with a `titleTemplate` takes its name from the template's fields,
+    /// so its `content` must be empty — content is not the name. Keyed on the
+    /// template rather than on type names, so a user type that declares one is
+    /// held to it exactly as `person` is.
+    ///
+    /// [`Self::derive_title`] runs this, which puts it on every write that
+    /// derives a title (single-node create and update, bulk hierarchy inserts,
+    /// moves); `bulk_create` and `bulk_update`, which persist without deriving
+    /// one, call it directly.
+    pub(crate) fn reject_content_on_templated_type(
+        node: &Node,
+        schema: Option<&crate::models::SchemaNode>,
+    ) -> Result<(), NodeServiceError> {
+        let Some(template) = schema.and_then(|s| s.title_template.as_ref()) else {
+            return Ok(());
+        };
+        if node.content.is_empty() {
+            return Ok(());
+        }
+        Err(NodeServiceError::invalid_update(format!(
+            "{} takes its name from {}; content is not allowed",
+            node.node_type,
+            crate::utils::title_template_fields(template).join("/")
+        )))
     }
 
     /// Merge a node's per-scope property buckets across an `extends` chain

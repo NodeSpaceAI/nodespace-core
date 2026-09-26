@@ -89,7 +89,7 @@ mod person_email_uniqueness_tests {
     async fn create_person(service: &NodeService, name: &str, email: &str) -> Result<String> {
         let node = Node::new(
             "person".to_string(),
-            name.to_string(),
+            String::new(),
             json!({ "person": { "name": name, "email": email } }),
         );
         let id = service.create_node(node).await?;

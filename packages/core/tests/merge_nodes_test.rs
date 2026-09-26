@@ -29,14 +29,14 @@ async fn merge_unions_properties_survivor_wins_ties_and_captures_superseded() ->
     let survivor_id = svc
         .create_node(Node::new(
             "person".to_string(),
-            "Alice".to_string(),
+            String::new(),
             json!({ "person": { "first_name": "Alice", "email": "alice@example.com" } }),
         ))
         .await?;
     let loser_id = svc
         .create_node(Node::new(
             "person".to_string(),
-            "Alice B".to_string(),
+            String::new(),
             json!({ "person": { "first_name": "Alice", "email": "ALICE@example.com", "last_name": "Smith" } }),
         ))
         .await?;
@@ -70,18 +70,10 @@ async fn merge_repoints_has_child_and_preserves_order() -> Result<()> {
     let (svc, _tmp) = service().await?;
 
     let survivor_id = svc
-        .create_node(Node::new(
-            "person".to_string(),
-            "Alice".to_string(),
-            json!({}),
-        ))
+        .create_node(Node::new("person".to_string(), String::new(), json!({})))
         .await?;
     let loser_id = svc
-        .create_node(Node::new(
-            "person".to_string(),
-            "Alice B".to_string(),
-            json!({}),
-        ))
+        .create_node(Node::new("person".to_string(), String::new(), json!({})))
         .await?;
 
     // Two existing children under the survivor, establishing a real
@@ -136,18 +128,10 @@ async fn merge_drops_a_repoint_that_would_collide_with_an_existing_survivor_edge
     let (svc, _tmp) = service().await?;
 
     let survivor_id = svc
-        .create_node(Node::new(
-            "person".to_string(),
-            "Alice".to_string(),
-            json!({}),
-        ))
+        .create_node(Node::new("person".to_string(), String::new(), json!({})))
         .await?;
     let loser_id = svc
-        .create_node(Node::new(
-            "person".to_string(),
-            "Alice B".to_string(),
-            json!({}),
-        ))
+        .create_node(Node::new("person".to_string(), String::new(), json!({})))
         .await?;
     let shared_target = svc
         .create_node(Node::new(
@@ -325,18 +309,10 @@ async fn merge_evicts_a_repointed_edge_that_violates_reverse_cardinality_one() -
         ))
         .await?;
     let person_a = svc
-        .create_node(Node::new(
-            "person".to_string(),
-            "Alice".to_string(),
-            json!({}),
-        ))
+        .create_node(Node::new("person".to_string(), String::new(), json!({})))
         .await?;
     let person_b = svc
-        .create_node(Node::new(
-            "person".to_string(),
-            "Bob".to_string(),
-            json!({}),
-        ))
+        .create_node(Node::new("person".to_string(), String::new(), json!({})))
         .await?;
 
     svc.create_relationship(&person_a, "tasks", &survivor_task, json!({}))
@@ -507,18 +483,10 @@ async fn merge_archives_the_loser_not_hard_deletes_it() -> Result<()> {
     let (svc, _tmp) = service().await?;
 
     let survivor_id = svc
-        .create_node(Node::new(
-            "person".to_string(),
-            "Alice".to_string(),
-            json!({}),
-        ))
+        .create_node(Node::new("person".to_string(), String::new(), json!({})))
         .await?;
     let loser_id = svc
-        .create_node(Node::new(
-            "person".to_string(),
-            "Alice B".to_string(),
-            json!({}),
-        ))
+        .create_node(Node::new("person".to_string(), String::new(), json!({})))
         .await?;
 
     svc.merge_nodes(&survivor_id, &loser_id, None).await?;
@@ -540,14 +508,14 @@ async fn merge_closes_the_conflict_record_with_a_merge_resolution() -> Result<()
     let alice_id = svc
         .create_node(Node::new(
             "person".to_string(),
-            "Alice".to_string(),
+            String::new(),
             json!({ "person": { "first_name": "Alice", "email": "alice@example.com" } }),
         ))
         .await?;
     let bob_id = svc
         .create_node(Node::new(
             "person".to_string(),
-            "Bob".to_string(),
+            String::new(),
             json!({ "person": { "first_name": "Bob", "email": "alice@example.com" } }),
         ))
         .await?;
@@ -589,14 +557,14 @@ async fn get_conflict_returns_the_record_by_its_own_id() -> Result<()> {
     let alice_id = svc
         .create_node(Node::new(
             "person".to_string(),
-            "Alice".to_string(),
+            String::new(),
             json!({ "person": { "first_name": "Alice", "email": "alice@example.com" } }),
         ))
         .await?;
     let _bob_id = svc
         .create_node(Node::new(
             "person".to_string(),
-            "Bob".to_string(),
+            String::new(),
             json!({ "person": { "first_name": "Bob", "email": "alice@example.com" } }),
         ))
         .await?;

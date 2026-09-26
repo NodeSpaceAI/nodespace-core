@@ -40,7 +40,12 @@ async fn make_node(svc: &NodeService, id: &str, node_type: &str) -> Result<()> {
     svc.create_node(Node::new_with_id(
         id.to_string(),
         node_type.to_string(),
-        format!("{id} content"),
+        // A templated type (`person`) is named by its fields, not content.
+        if node_type == "person" {
+            String::new()
+        } else {
+            format!("{id} content")
+        },
         json!({}),
     ))
     .await?;

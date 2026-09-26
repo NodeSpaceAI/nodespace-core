@@ -133,9 +133,22 @@ impl NodeService {
         // base-scoped reader never found it. `apply_defaults: false`
         // preserves bulk_create's existing contract of validating exactly
         // what the caller supplied, not filling in what they didn't.
+        let mut schemas: std::collections::HashMap<String, Option<crate::models::SchemaNode>> =
+            std::collections::HashMap::new();
         for node in &mut nodes {
             // Step 1: Core behavior validation
             self.behaviors.validate_node(node)?;
+
+            // This path persists without deriving titles, so it runs the
+            // templated-type content check `derive_title` would have.
+            if !schemas.contains_key(&node.node_type) {
+                let schema = self.title_schema(&node.node_type).await;
+                schemas.insert(node.node_type.clone(), schema);
+            }
+            Self::reject_content_on_templated_type(
+                node,
+                schemas.get(&node.node_type).and_then(Option::as_ref),
+            )?;
 
             // Step 2: Chain-aware schema validation + re-bucketing
             if node.node_type != "schema" {
@@ -726,6 +739,15 @@ impl NodeService {
                     id, e
                 ))
             })?;
+            if update.content.is_some() || node_type_changed {
+                let schema = self.title_schema(&updated.node_type).await;
+                Self::reject_content_on_templated_type(&updated, schema.as_ref()).map_err(|e| {
+                    NodeServiceError::bulk_operation_failed(format!(
+                        "Failed to validate node {}: {}",
+                        id, e
+                    ))
+                })?;
+            }
             if updated.node_type != "schema" {
                 self.rebucket_and_validate(&mut updated, node_type_changed)
                     .await

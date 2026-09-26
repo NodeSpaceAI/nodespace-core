@@ -2946,7 +2946,13 @@ mod tests {
 
         for node_type in &types {
             let properties = json!({ "person": { "first_name": "Ada", "last_name": "Lovelace" } });
-            let node = Node::new(node_type.clone(), "**Some** name".to_string(), properties);
+            // A templated type rejects content — its name is its template fields.
+            let templated = service
+                .title_schema(node_type)
+                .await
+                .is_some_and(|s| s.title_template.is_some());
+            let content = if templated { "" } else { "**Some** name" };
+            let node = Node::new(node_type.clone(), content.to_string(), properties);
             for is_root in [true, false] {
                 let single = service.compute_title(&node, Some(is_root)).await.unwrap();
                 let parent = (!is_root).then(|| "parent".to_string());
@@ -3752,7 +3758,12 @@ mod tests {
             svc.create_node_with_parent(CreateNodeParams {
                 id: Some(id.clone()),
                 node_type: node_type.into(),
-                content: format!("{node_type} {id}"),
+                // A templated type (`person`) is named by its fields, not content.
+                content: if node_type == "person" {
+                    String::new()
+                } else {
+                    format!("{node_type} {id}")
+                },
                 parent_id: parent,
                 position: InsertPositionOwned::End,
                 properties: props,
@@ -7077,7 +7088,7 @@ mod tests {
         let new_owner_id = service
             .create_node(Node::new(
                 "person".to_string(),
-                "New Owner".to_string(),
+                String::new(),
                 serde_json::json!({}),
             ))
             .await
@@ -7125,7 +7136,7 @@ mod tests {
         let member_id = service
             .create_node(Node::new(
                 "person".to_string(),
-                "Some Member".to_string(),
+                String::new(),
                 serde_json::json!({}),
             ))
             .await
@@ -8967,7 +8978,7 @@ mod tests {
             .create_node_with_parent(CreateNodeParams {
                 id: None,
                 node_type: "task".to_string(),
-                content: "Draft the spec".to_string(),
+                content: String::new(),
                 parent_id: None,
                 position: InsertPositionOwned::End,
                 properties: json!({}),
@@ -8993,11 +9004,11 @@ mod tests {
         );
     }
 
-    /// #2014: a single call that changes both content and a task property must
-    /// compute the templated title from the *post-merge* node — the value used
-    /// must be the new property, not the pre-update one (one write behind).
+    /// A templated task's title is computed from the *post-merge* node — the
+    /// new property value, not the pre-update one (one write behind) — and the
+    /// typed task update path rejects content on it like every other write.
     #[tokio::test]
-    async fn update_task_node_combined_update_uses_post_merge_properties() {
+    async fn update_task_node_templated_title_uses_post_merge_properties_and_rejects_content() {
         use crate::models::{TaskNodeUpdate, TaskPriority};
         use crate::services::{CreateNodeParams, InsertPositionOwned};
 
@@ -9008,7 +9019,7 @@ mod tests {
             .create_node_with_parent(CreateNodeParams {
                 id: None,
                 node_type: "task".to_string(),
-                content: "Draft the spec".to_string(),
+                content: String::new(),
                 parent_id: None,
                 position: InsertPositionOwned::End,
                 properties: json!({}),
@@ -9028,26 +9039,158 @@ mod tests {
             .await
             .unwrap();
 
-        // One call updating BOTH content and priority.
         let seeded = service.get_node(&id).await.unwrap().unwrap();
-        let update = TaskNodeUpdate::new()
-            .with_content("Ship the spec".to_string())
-            .with_priority(Some(TaskPriority::High));
+        let err = service
+            .update_task_node(
+                &id,
+                seeded.version,
+                TaskNodeUpdate::new()
+                    .with_content("Ship the spec".to_string())
+                    .with_priority(Some(TaskPriority::High)),
+            )
+            .await
+            .expect_err("content on a templated task must be rejected");
+        assert!(
+            err.to_string()
+                .contains("task takes its name from priority; content is not allowed"),
+            "{err}"
+        );
+
         service
-            .update_task_node(&id, seeded.version, update)
+            .update_task_node(
+                &id,
+                seeded.version,
+                TaskNodeUpdate::new().with_priority(Some(TaskPriority::High)),
+            )
             .await
             .expect("update_task_node should succeed");
 
         let refetched = service.get_node(&id).await.unwrap().unwrap();
         assert_eq!(
-            refetched.content, "Ship the spec",
-            "content should be updated"
-        );
-        assert_eq!(
             refetched.title.as_deref(),
             Some("Priority: High"),
-            "combined update must compute title from the new (post-merge) priority, not the stale one"
+            "title must come from the new (post-merge) priority, not the stale one"
         );
+    }
+
+    /// A type with a `titleTemplate` takes its name from the template's fields,
+    /// so every write path rejects non-empty content on it — keyed on the
+    /// template, so `person` and a user-defined templated type are held to it
+    /// alike, while a template-less type keeps its content.
+    #[tokio::test]
+    async fn content_is_rejected_on_every_write_path_for_a_templated_type() {
+        use crate::services::{CreateNodeParams, InsertPositionOwned};
+
+        let (service, _temp) = create_test_service().await;
+        let service = Arc::new(service);
+        crate::schema::handle_create_schema(
+            &service,
+            json!({
+                "name": "Venue",
+                "fields": [
+                    { "name": "venue_name", "type": "string", "protection": "user", "indexed": false }
+                ],
+                "title_template": "{venue_name}"
+            }),
+        )
+        .await
+        .expect("venue schema creation failed");
+
+        let cases = [
+            ("person", "person takes its name from first_name/last_name"),
+            ("venue", "venue takes its name from venue_name"),
+        ];
+        for (node_type, message) in cases {
+            let create = |content: &str| CreateNodeParams {
+                id: None,
+                node_type: node_type.to_string(),
+                content: content.to_string(),
+                parent_id: None,
+                position: InsertPositionOwned::End,
+                properties: json!({}),
+                lifecycle_status: None,
+            };
+            let assert_rejected = |err: NodeServiceError, path: &str| {
+                assert!(
+                    err.to_string().contains(message),
+                    "{node_type} via {path}: expected '{message}', got: {err}"
+                );
+            };
+
+            // Create.
+            let err = service
+                .create_node_with_parent(create("Rowan"))
+                .await
+                .expect_err("create with content must be rejected");
+            assert_rejected(err, "create");
+            let id = service
+                .create_node_with_parent(create(""))
+                .await
+                .expect("create without content succeeds");
+
+            // Update.
+            let node = service.get_node(&id).await.unwrap().unwrap();
+            let err = service
+                .update_node(
+                    &id,
+                    node.version,
+                    NodeUpdate::new().with_content("Rowan".to_string()),
+                )
+                .await
+                .expect_err("update with content must be rejected");
+            assert_rejected(err, "update");
+
+            // Retype a content-named node into the templated type.
+            let text_id = service
+                .create_node(Node::new(
+                    "text".to_string(),
+                    "Rowan".to_string(),
+                    json!({}),
+                ))
+                .await
+                .unwrap();
+            let text = service.get_node(&text_id).await.unwrap().unwrap();
+            let err = service
+                .update_node(
+                    &text_id,
+                    text.version,
+                    NodeUpdate::new().with_node_type(node_type.to_string()),
+                )
+                .await
+                .expect_err("retyping a node with content must be rejected");
+            assert_rejected(err, "retype");
+
+            // Bulk create.
+            let err = service
+                .bulk_create(vec![Node::new(
+                    node_type.to_string(),
+                    "Rowan".to_string(),
+                    json!({}),
+                )])
+                .await
+                .expect_err("bulk create with content must be rejected");
+            assert_rejected(err, "bulk_create");
+
+            // Bulk update.
+            let err = service
+                .bulk_update(vec![(
+                    id.clone(),
+                    NodeUpdate::new().with_content("Rowan".to_string()),
+                )])
+                .await
+                .expect_err("bulk update with content must be rejected");
+            assert_rejected(err, "bulk_update");
+        }
+
+        // A template-less type keeps using content as its name.
+        service
+            .create_node(Node::new(
+                "task".to_string(),
+                "Draft the spec".to_string(),
+                json!({}),
+            ))
+            .await
+            .expect("a type without a title_template accepts content");
     }
 
     /// A `titleTemplate` on a subtype schema may reference a field
@@ -9070,7 +9213,7 @@ mod tests {
 
         let node = Node::new(
             "bug".to_string(),
-            "ignored".to_string(),
+            String::new(),
             json!({
                 "ticket": { "state": "open" },
                 "bug": { "severity": "high" },
@@ -9103,7 +9246,7 @@ mod tests {
                 (
                     "bug-1".to_string(),
                     "bug".to_string(),
-                    "ignored".to_string(),
+                    String::new(),
                     None,
                     0.0,
                     json!({ "ticket": { "state": "open" }, "bug": { "severity": "high" } }),
@@ -9111,7 +9254,7 @@ mod tests {
                 (
                     "bug-2".to_string(),
                     "bug".to_string(),
-                    "ignored".to_string(),
+                    String::new(),
                     None,
                     1.0,
                     json!({ "ticket": { "state": "closed" }, "bug": { "severity": "low" } }),
