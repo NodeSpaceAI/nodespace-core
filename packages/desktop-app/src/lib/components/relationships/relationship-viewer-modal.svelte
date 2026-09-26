@@ -22,6 +22,13 @@
   rail are the same disease as empty sections, rotated ninety degrees. Declared
   relationships surface only when the user asks, via `+ Add`.
 
+  ## Single-valued relationships are not here at all
+
+  A relationship whose local end is `one` — a task's assignee or project — is
+  edited as a field on the property form (`isFormPromoted`), and
+  `partitionGroups` keeps it out of both the rail and `+ Add`. The two surfaces
+  partition the node's relationships, so no edge has two controls.
+
   ## `+ Add` marks the ownership boundary
 
   Rail order is: relationships this node OWNS, then `+ Add`, then a divider,

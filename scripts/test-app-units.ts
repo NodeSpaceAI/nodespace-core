@@ -13,11 +13,11 @@
  * build.rs's own `sync_stale_sidecar` guard rescues only `nodespaced` and
  * `nodespace`, and only when `target/<profile>/<bin>` already exists to copy
  * from — on a fresh worktree it doesn't, so the guard is a no-op and the
- * build fails. `nodespace-skill-installer` has no such guard at all, and the
- * `resources` globs have none either: the one under `resources/models`
- * survives only because a tracked `.gitkeep` keeps it non-empty, while the one
- * under `resources/skill` has no tracked file at all and is staged solely by
- * `build:skill`.
+ * build fails. The `resources/models` glob survives only because a tracked
+ * `.gitkeep` keeps it non-empty. The skill's two bundle entries are the
+ * exception: build.rs drops them from a debug build when unstaged, so they
+ * don't gate compiling. `build:skill` is still required here, but by a TEST
+ * (see `TEST_PREREQUISITES`), not by the build.
  *
  * Left alone, that surfaces from deep inside a build script naming one
  * missing path, with no hint which command produces it. This checks every
@@ -48,8 +48,7 @@ const TAURI_DIR = join(
 );
 
 /**
- * Which command produces a given staged path. Matched longest-prefix-first,
- * so the more specific skill-installer entry wins over the `binaries/` one.
+ * Which command produces a given required path. Matched longest-prefix-first.
  * This is the only hand-maintained mapping left — the *set* of required paths
  * is read from tauri.conf.json rather than restated, since a fourth
  * hand-synced copy of that list (after the config itself, build.rs's
@@ -57,8 +56,7 @@ const TAURI_DIR = join(
  * would otherwise invite.
  */
 const PRODUCERS: { prefix: string; command: string }[] = [
-  { prefix: 'binaries/nodespace-skill-installer', command: 'bun run build:skill' },
-  { prefix: 'resources/skill', command: 'bun run build:skill' },
+  { prefix: '../../skill/', command: 'bun run build:skill' },
   { prefix: 'binaries/', command: 'bun run build:sidecars --debug' },
   // `:bundle`, not the bare script — only `--bundle` targets
   // resources/models; without it the download lands in ~/.nodespace/models
@@ -105,11 +103,29 @@ const resourcePatterns = (resources: unknown): string[] => {
 };
 
 /**
- * The staged paths `tauri_build::build()` will insist on, read from the
- * config it reads. `externalBin` entries gain the host triple and exe suffix
- * and must exist as files; `resources` entries are globs that must match at
- * least one file (an empty match is `GlobPathNotFound`, a hard error just
- * like a missing file).
+ * Bundle entries build.rs drops from a DEBUG build when unstaged (see its
+ * `drop_unstaged_skill`), so they don't gate compiling these tests.
+ */
+const DEBUG_OPTIONAL_ENTRIES = new Set([
+  'binaries/nodespace-skill-installer',
+  'resources/skill/**/*',
+]);
+
+/**
+ * Paths the tests themselves read, beyond what the build needs:
+ * `resolve_installer_path_falls_back_to_source_checkout_dist` asserts the
+ * source checkout's built installer exists. Relative to TAURI_DIR.
+ */
+const TEST_PREREQUISITES: RequiredPath[] = [
+  { path: '../../skill/dist/install.js', kind: 'file' },
+];
+
+/**
+ * Every path these tests need: what `tauri_build::build()` will insist on in
+ * a debug build, read from the config it reads, plus `TEST_PREREQUISITES`.
+ * `externalBin` entries gain the host triple and exe suffix and must exist as
+ * files; `resources` entries are globs that must match at least one file (an
+ * empty match is `GlobPathNotFound`, a hard error just like a missing file).
  */
 const requiredPaths = (triple: string): RequiredPath[] => {
   const config: unknown = JSON.parse(
@@ -125,14 +141,19 @@ const requiredPaths = (triple: string): RequiredPath[] => {
     : [];
 
   return [
-    ...externalBin.map((bin): RequiredPath => ({
-      path: `${bin}-${triple}${ext}`,
-      kind: 'file' as const,
-    })),
-    ...resourcePatterns(bundle.resources).map((pattern): RequiredPath => ({
-      path: pattern,
-      kind: 'glob' as const,
-    })),
+    ...externalBin
+      .filter((bin) => !DEBUG_OPTIONAL_ENTRIES.has(bin))
+      .map((bin): RequiredPath => ({
+        path: `${bin}-${triple}${ext}`,
+        kind: 'file' as const,
+      })),
+    ...resourcePatterns(bundle.resources)
+      .filter((pattern) => !DEBUG_OPTIONAL_ENTRIES.has(pattern))
+      .map((pattern): RequiredPath => ({
+        path: pattern,
+        kind: 'glob' as const,
+      })),
+    ...TEST_PREREQUISITES,
   ];
 };
 
@@ -163,15 +184,15 @@ const missing = requiredPaths(triple).filter(({ path, kind }) => {
 if (missing.length > 0) {
   const commands = [...new Set(missing.map(({ path }) => producerFor(path)))];
   console.error(
-    `\nnodespace-app cannot compile — ${missing.length} staged path${
+    `\nnodespace-app unit tests need ${missing.length} path${
       missing.length === 1 ? '' : 's'
-    } missing:\n`,
+    } that ${missing.length === 1 ? 'is' : 'are'} missing:\n`,
   );
   for (const { path } of missing) {
     console.error(`  ✗ ${path}`);
   }
   console.error(
-    `\nThese are gitignored, so every fresh checkout builds them once:\n`,
+    `\nThese are gitignored build output, so a fresh checkout builds them once:\n`,
   );
   for (const command of commands) {
     console.error(`  ${command}`);

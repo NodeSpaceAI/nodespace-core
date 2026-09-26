@@ -4,10 +4,11 @@
   Owns everything that GenericSchemaForm and TaskSchemaForm used to each
   implement on their own:
   - the Collapsible shell + trigger row (X/Y-fields badge, chevron)
-  - the Relationships entry point, gated on the node's type actually having a
-    typed relationship (outbound declared on its schema, or inbound declared
-    by another schema targeting it) — resolved once per nodeId via
-    loadNodeRelationshipsView and reused by whichever form renders
+  - the node's typed relationships (both directions), loaded once per nodeId
+    via NodeRelationshipsState and reused by whichever form renders:
+    single-valued ones (`isFormPromoted`) render as RelationshipFields after
+    the form's own grid, and everything else lives behind the Relationships
+    entry point, shown only when the modal has something to show
   - the shared NestedPropertyModal wiring for object/array fields
 
   A composing form supplies only its own field grid (as the `fields` snippet,
@@ -21,9 +22,11 @@
   - fieldStats: { filled, total } for the trigger's "X/Y fields" badge —
     computed by the caller, since what counts as a "field" differs (task
     counts its 6 hardcoded core fields + user extensions; the generic form
-    counts every visible schema field)
-  - hasFields: whether to render the Collapsible at all (a schema with zero
-    fields shows no collapsible, only the Relationships entry point)
+    counts every visible schema field). The shell adds its promoted
+    relationship fields on top.
+  - hasFields: whether the caller has any fields of its own (a schema with
+    zero fields and no promoted relationships shows no collapsible, only the
+    Relationships entry point)
   - autoOpen: mirrors GenericSchemaForm's existing autoOpen behavior —
     starts open and focuses the first control once, for types whose header is
     read-only (title_template) and need the properties panel front and center
@@ -34,13 +37,11 @@
   import type { Snippet } from 'svelte';
   import { Collapsible } from 'bits-ui';
   import type { SchemaField } from '$lib/types/schema-node';
-  import { createLogger } from '$lib/utils/logger';
   import RelationshipViewerModal from '$lib/components/relationships/relationship-viewer-modal.svelte';
+  import RelationshipField from '$lib/components/relationships/relationship-field.svelte';
   import NestedPropertyModal from './nested-property-modal.svelte';
-  import { loadNodeRelationshipsView } from '$lib/services/relationship-viewer-service';
+  import { NodeRelationshipsState } from '$lib/services/node-relationships-state.svelte';
   import WaypointsIcon from '@lucide/svelte/icons/waypoints';
-
-  const log = createLogger('TypedFormShell');
 
   let {
     nodeId,
@@ -62,30 +63,19 @@
     fields: Snippet<[(_field: SchemaField) => void]>;
   } = $props();
 
-  // Relationships viewer entry point. Gated on whether this
-  // node's type actually has any typed relationship — otherwise it opens
-  // only to say "no typed relationships". The viewer's own load resolves
-  // both sides (outbound declared on this schema + inbound declared by
-  // another schema targeting this type) into one group per relationship, so
-  // it runs once per node and gates on whether any group exists. Default
-  // hidden; fail-open on a query error so a transient failure never hides a
-  // real feature.
+  // The node's typed relationships, loaded once per node and split between
+  // the two surfaces: single-valued groups render as fields at the end of the
+  // grid, and the Relationships modal's entry point shows only when the modal
+  // has something left once those have moved out.
   let showRelationships = $state(false);
-  let hasRelationships = $state(false);
-  let relCheckedFor = '';
-  $effect(() => {
-    const id = nodeId;
-    if (relCheckedFor === id) return;
-    relCheckedFor = id;
-    hasRelationships = false;
-    loadNodeRelationshipsView(id)
-      .then((view) => {
-        if (nodeId === id) hasRelationships = view.groups.length > 0;
-      })
-      .catch((err) => {
-        log.error('Failed to check relationships for the trigger gate', err);
-        if (nodeId === id) hasRelationships = true;
-      });
+  const relationships = new NodeRelationshipsState();
+  $effect(() => relationships.load(nodeId));
+  const promotedGroups = $derived(relationships.partitioned.promoted);
+
+  // Promoted relationship fields count toward the badge like any other field.
+  const stats = $derived({
+    filled: fieldStats.filled + promotedGroups.filter((group) => group.rows.length > 0).length,
+    total: fieldStats.total + promotedGroups.length
   });
 
   // Nested (object/array) field editor. One modal instance is reused; the
@@ -118,7 +108,7 @@
 </script>
 
 <div class="schema-form-wrapper">
-  {#if hasFields}
+  {#if hasFields || promotedGroups.length > 0}
     <Collapsible.Root bind:open={isOpen}>
       <Collapsible.Trigger
         class="flex w-full items-center justify-between py-3 font-medium transition-all hover:opacity-80"
@@ -129,7 +119,7 @@
 
         <div class="flex items-center gap-2">
           <span class="text-sm text-muted-foreground">
-            {fieldStats.filled}/{fieldStats.total} fields
+            {stats.filled}/{stats.total} fields
           </span>
           <svg
             class="h-4 w-4 text-muted-foreground transition-transform duration-200"
@@ -150,15 +140,34 @@
 
       <Collapsible.Content class="pb-4">
         <div bind:this={formEl}>
-          {@render fields(openNestedModal)}
+          {#if hasFields}{@render fields(openNestedModal)}{/if}
+          <!-- Promoted relationships follow the form's own fields as one group:
+               scalar fields and relationships share no declaration order to
+               interleave by. -->
+          {#if promotedGroups.length > 0}
+            <div class="grid grid-cols-2 gap-4" class:mt-4={hasFields}>
+              {#each promotedGroups as group (group.key)}
+                {@const fieldId = `relationship-${group.key}`}
+                <div class="space-y-2">
+                  <label for={fieldId} class="text-sm font-medium">{group.label}</label>
+                  <RelationshipField
+                    {nodeId}
+                    {group}
+                    {fieldId}
+                    onChanged={() => relationships.reload()}
+                  />
+                </div>
+              {/each}
+            </div>
+          {/if}
         </div>
       </Collapsible.Content>
     </Collapsible.Root>
   {/if}
 
-  <!-- Relationships entry point (read-only viewer). Gated on the
-       type actually having typed relationships (outbound declared or inbound). -->
-  {#if hasRelationships}
+  <!-- Relationships entry point, for everything not already a field above.
+       Hidden when the modal would have nothing to show. -->
+  {#if relationships.showModalTrigger}
     <button
       type="button"
       class="flex w-full items-center gap-2 py-3 text-sm font-medium text-muted-foreground transition-all hover:opacity-80"
@@ -170,7 +179,18 @@
   {/if}
 </div>
 
-<RelationshipViewerModal bind:open={showRelationships} {nodeId} />
+<!-- Reload on close: an edit in the modal can empty what it had to show, and
+     the trigger's gate must see that. -->
+<RelationshipViewerModal
+  bind:open={
+    () => showRelationships,
+    (open) => {
+      showRelationships = open;
+      if (!open) void relationships.reload();
+    }
+  }
+  {nodeId}
+/>
 
 {#if nestedModalField}
   {@const nestedField = nestedModalField}

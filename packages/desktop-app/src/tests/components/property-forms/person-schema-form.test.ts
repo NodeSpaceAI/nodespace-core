@@ -35,6 +35,7 @@ vi.mock('$lib/services/relationship-viewer-service', () => ({
 
 import type { PersonNode } from '$lib/types';
 import PersonSchemaForm from '$lib/components/property-forms/person-schema-form.svelte';
+import { buildRelationshipsView } from '$lib/services/relationship-grouping';
 import { sharedNodeStore } from '$lib/services/shared-node-store.svelte';
 import { backendAdapter } from '$lib/services/backend-adapter';
 
@@ -365,8 +366,8 @@ describe('PersonSchemaForm — adopt-existing suggestion', () => {
  * (which already gated it) — and, once TaskSchemaForm started composing
  * through TypedFormShell, unlike Task too. This closes that remaining
  * inconsistency directly in PersonSchemaForm (which stays hardcoded, not
- * TypedFormShell-composed, by deliberate design), using the exact same gate
- * logic, copied verbatim.
+ * TypedFormShell-composed, by deliberate design), through the same
+ * NodeRelationshipsState the shell uses.
  */
 describe('PersonSchemaForm — Relationships trigger gate', () => {
   it('hides the Relationships entry point when the type has no typed relationships', async () => {
@@ -380,10 +381,27 @@ describe('PersonSchemaForm — Relationships trigger gate', () => {
   });
 
   it('shows the Relationships entry point when the type has a typed relationship', async () => {
-    loadNodeRelationshipsView.mockResolvedValue({
-      nodeType: 'person',
-      groups: [{ key: 'assigned_to' }]
-    });
+    loadNodeRelationshipsView.mockResolvedValue(
+      buildRelationshipsView({
+        nodeId: 'person-1',
+        nodeType: 'person',
+        groups: [
+          {
+            relationshipName: 'tasks',
+            direction: 'out',
+            targetType: 'task',
+            reverseName: 'assignee',
+            sourceType: 'person',
+            cardinality: 'many',
+            required: null,
+            edgeFields: null,
+            description: null,
+            related: [],
+            count: 0
+          }
+        ]
+      })
+    );
     render(PersonSchemaForm, { props: { nodeId: 'person-1' } });
 
     await waitFor(() => expect(screen.getByText('Relationships')).toBeTruthy());
@@ -394,6 +412,39 @@ describe('PersonSchemaForm — Relationships trigger gate', () => {
     render(PersonSchemaForm, { props: { nodeId: 'person-1' } });
 
     await waitFor(() => expect(screen.getByText('Relationships')).toBeTruthy());
+  });
+
+  it('renders a single-valued relationship as a field, not behind the trigger', async () => {
+    // e.g. a user schema declaring `employees → person` with a `one` reverse.
+    loadNodeRelationshipsView.mockResolvedValue(
+      buildRelationshipsView({
+        nodeId: 'person-1',
+        nodeType: 'person',
+        groups: [
+          {
+            relationshipName: 'employees',
+            direction: 'in',
+            targetType: 'company',
+            reverseName: 'employer',
+            sourceType: 'company',
+            cardinality: 'one',
+            required: null,
+            edgeFields: null,
+            description: null,
+            related: [
+              { id: 'co-1', nodeType: 'company', title: 'Acme', contentPreview: '', edgeProperties: {} }
+            ],
+            count: 1
+          }
+        ]
+      })
+    );
+    render(PersonSchemaForm, { props: { nodeId: 'person-1' } });
+
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Employer: Acme' })).toBeTruthy()
+    );
+    expect(screen.queryByText('Relationships')).toBeNull();
   });
 });
 

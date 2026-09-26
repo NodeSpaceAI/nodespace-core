@@ -16,6 +16,9 @@ tauri-build = { version = "2", features = [] }
 # nodespace-sync via scripts/refresh-pro-proto.ts).
 tonic-build = "0.12"
 protoc-bin-vendored = "3"
+# Reads tauri.conf.json's bundle lists (build.rs `drop_unstaged_skill`).
+# Already compiled for the build host as a tauri-build dependency.
+serde_json = { workspace = true }
 
 [[bin]]
 name = "nodespace-app"

@@ -1,13 +1,12 @@
 /**
  * GenericSchemaForm — Relationships trigger visibility gate.
  *
- * The Relationships entry point must render only when the node's type actually
- * has a typed relationship (outbound declared on its schema, or inbound declared
- * by another schema targeting it). Both sides are resolved by the viewer's own
- * load, so the gate runs that load once and shows the button iff it yields any
- * group. A schema with no relationships in either direction hides the button;
- * a transient load error fails open (button shown) rather than hiding a real
- * feature.
+ * The Relationships entry point must render only when the modal has something
+ * to show: a populated group, or an outbound one it can offer to add. A schema
+ * with no relationships in either direction hides the button, and so does one
+ * whose only relationships are single-valued — those render as form fields
+ * instead. A transient load error fails open (button shown) rather than hiding
+ * a real feature.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { render, cleanup, waitFor } from '@testing-library/svelte';
@@ -23,6 +22,7 @@ import { mockTauriCore } from '../helpers/mock-tauri-core';
 vi.mock('@tauri-apps/api/core', () => mockTauriCore());
 
 import GenericSchemaForm from '$lib/components/schema/generic-schema-form.svelte';
+import { buildRelationshipsView } from '$lib/services/relationship-grouping';
 import { sharedNodeStore } from '$lib/services/shared-node-store.svelte';
 
 function schema(): SchemaNode {
@@ -38,10 +38,24 @@ function schema(): SchemaNode {
   };
 }
 
-const groupsResult = (n: number) => ({
-  nodeType: 'gadget',
-  groups: Array.from({ length: n }, (_, i) => ({ key: `g${i}` }))
-});
+const groupsResult = (n: number, cardinality: 'one' | 'many' = 'many') =>
+  buildRelationshipsView({
+    nodeId: 'n',
+    nodeType: 'gadget',
+    groups: Array.from({ length: n }, (_, i) => ({
+      relationshipName: `rel_${i}`,
+      direction: 'out' as const,
+      targetType: 'widget',
+      reverseName: `gadgets_${i}`,
+      sourceType: 'gadget',
+      cardinality,
+      required: null,
+      edgeFields: null,
+      description: null,
+      related: [],
+      count: 0
+    }))
+  });
 
 describe('GenericSchemaForm — Relationships trigger gate', () => {
   beforeEach(() => {
@@ -75,6 +89,17 @@ describe('GenericSchemaForm — Relationships trigger gate', () => {
     // Give the resolved gate a chance to settle, then assert it stays hidden.
     await waitFor(() => expect(loadNodeRelationshipsView).toHaveBeenCalledWith('n2'));
     await Promise.resolve();
+    expect(queryByText('Relationships')).toBeNull();
+  });
+
+  it('renders a single-valued relationship as a field, and hides a trigger left with nothing', async () => {
+    loadNodeRelationshipsView.mockResolvedValue(groupsResult(1, 'one'));
+    const { queryByText, getByLabelText } = render(GenericSchemaForm, {
+      props: { nodeId: 'n4', schema: schema(), autoOpen: true }
+    });
+    // A schema with no fields of its own still gets the form, for the field.
+    await waitFor(() => expect(getByLabelText('Rel 0')).toBeTruthy());
+    expect(queryByText('0/1 fields')).toBeTruthy();
     expect(queryByText('Relationships')).toBeNull();
   });
 

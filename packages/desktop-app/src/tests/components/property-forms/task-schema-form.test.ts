@@ -46,6 +46,10 @@ vi.mock('$lib/services/relationship-viewer-service', () => ({
 }));
 
 import TaskSchemaForm from '$lib/components/property-forms/task-schema-form.svelte';
+import {
+  buildRelationshipsView,
+  type RawRelationshipGroup
+} from '$lib/services/relationship-grouping';
 import { sharedNodeStore } from '$lib/services/shared-node-store.svelte';
 import { backendAdapter } from '$lib/services/backend-adapter';
 
@@ -125,6 +129,58 @@ function taskNode(overrides: Record<string, unknown> = {}): Node {
     status: 'open',
     ...overrides
   } as unknown as Node;
+}
+
+/**
+ * A task's relationships view as the daemon shapes it: task's own many-to-many
+ * `blocks`, plus the inbound `one` ends `assignee` and `project` (declared
+ * outbound as `tasks` on person and project).
+ */
+function taskRelationships(opts: { assignee?: string; blocks?: boolean } = {}) {
+  const base = {
+    reverseName: '',
+    sourceType: 'task',
+    required: null,
+    edgeFields: null,
+    description: null,
+    related: [],
+    count: 0
+  };
+  const groups: RawRelationshipGroup[] = [
+    {
+      ...base,
+      relationshipName: 'tasks',
+      direction: 'in',
+      targetType: 'person',
+      sourceType: 'person',
+      reverseName: 'assignee',
+      cardinality: 'one',
+      related: opts.assignee
+        ? [{ id: 'person-1', nodeType: 'person', title: opts.assignee, contentPreview: '', edgeProperties: {} }]
+        : [],
+      count: opts.assignee ? 1 : 0
+    },
+    {
+      ...base,
+      relationshipName: 'tasks',
+      direction: 'in',
+      targetType: 'project',
+      sourceType: 'project',
+      reverseName: 'project',
+      cardinality: 'one'
+    }
+  ];
+  if (opts.blocks !== false) {
+    groups.unshift({
+      ...base,
+      relationshipName: 'blocks',
+      direction: 'out',
+      targetType: 'task',
+      reverseName: 'blocked_by',
+      cardinality: 'many'
+    });
+  }
+  return buildRelationshipsView({ nodeId: 'task-1', nodeType: 'task', groups });
 }
 
 let updateTaskNodeSpy: ReturnType<typeof vi.fn>;
@@ -304,15 +360,46 @@ describe('TaskSchemaForm — Relationships button is now gated (previously uncon
   });
 
   it('shows the Relationships entry point when the type has a typed relationship', async () => {
-    loadNodeRelationshipsView.mockResolvedValue({
-      nodeType: 'task',
-      groups: [{ key: 'assigned_to' }]
-    });
+    loadNodeRelationshipsView.mockResolvedValue(taskRelationships());
     vi.spyOn(sharedNodeStore, 'getNode').mockReturnValue(taskNode());
 
     render(TaskSchemaForm, { props: { nodeId: 'task-1' } });
 
     await waitFor(() => expect(screen.getByText('Relationships')).toBeTruthy());
+  });
+
+  it('hides the Relationships entry point when every relationship is a form field', async () => {
+    loadNodeRelationshipsView.mockResolvedValue(taskRelationships({ blocks: false }));
+    vi.spyOn(sharedNodeStore, 'getNode').mockReturnValue(taskNode());
+
+    render(TaskSchemaForm, { props: { nodeId: 'task-1' } });
+
+    await waitFor(() => expect(screen.getByText('Assignee')).toBeTruthy());
+    expect(screen.queryByText('Relationships')).toBeNull();
+  });
+});
+
+describe('TaskSchemaForm — single-valued relationships as fields', () => {
+  it('renders Assignee and Project as fields, showing the current assignee', async () => {
+    loadNodeRelationshipsView.mockResolvedValue(taskRelationships({ assignee: 'Sam Lee' }));
+    vi.spyOn(sharedNodeStore, 'getNode').mockReturnValue(taskNode());
+
+    render(TaskSchemaForm, { props: { nodeId: 'task-1' } });
+
+    await waitFor(() => expect(screen.getByLabelText('Assignee')).toBeTruthy());
+    expect(screen.getByLabelText('Assignee').textContent).toContain('Sam Lee');
+    // Project has no edge yet: an empty search field.
+    expect((screen.getByLabelText('Project') as HTMLInputElement).value).toBe('');
+  });
+
+  it('counts promoted relationship fields in the badge', async () => {
+    loadNodeRelationshipsView.mockResolvedValue(taskRelationships({ assignee: 'Sam Lee' }));
+    vi.spyOn(sharedNodeStore, 'getNode').mockReturnValue(taskNode());
+
+    render(TaskSchemaForm, { props: { nodeId: 'task-1' } });
+
+    // taskNode() fills status only (1/5 core); +1 filled assignee of 2 promoted.
+    await waitFor(() => expect(screen.getByText('2/7 fields')).toBeTruthy());
   });
 
   it('fails open (shows the trigger) when the relationship check errors', async () => {
