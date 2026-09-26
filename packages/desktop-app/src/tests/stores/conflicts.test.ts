@@ -138,6 +138,40 @@ describe('conflicts store', () => {
       await expect(stale).resolves.toEqual([]);
       expect(conflictsStore.records).toEqual([]);
     });
+
+    it('does not patch a same-id record in the new database with a pre-switch resolution', async () => {
+      let resolveStale!: (v: ConflictRecord) => void;
+      mockInvoke.mockImplementationOnce(
+        () => new Promise<ConflictRecord>((r) => (resolveStale = r))
+      );
+      const stale = conflictsStore.dismiss('c1');
+
+      conflictsStore.invalidateForDatabaseSwitch();
+      conflictsStore.records = [record({ id: 'c1' })];
+      resolveStale(record({ id: 'c1', status: 'dismissed' }));
+      await stale;
+
+      expect(conflictsStore.records[0].status).toBe('open');
+    });
+
+    it('skips the post-merge refresh when a switch landed during the merge', async () => {
+      let resolveMerge!: (v: unknown) => void;
+      mockInvoke.mockImplementationOnce(() => new Promise((r) => (resolveMerge = r)));
+      const merging = conflictsStore.merge('n1', 'n2', 'c1');
+
+      conflictsStore.invalidateForDatabaseSwitch();
+      resolveMerge({
+        survivorId: 'n1',
+        loserId: 'n2',
+        propertiesMerged: 0,
+        edgesRepointed: 0,
+        edgesDropped: 0
+      });
+      await merging;
+
+      expect(mockInvoke).toHaveBeenCalledTimes(1);
+      expect(mockInvoke).not.toHaveBeenCalledWith('conflicts_for_node', expect.anything());
+    });
   });
 
   describe('hasOpenFor()', () => {

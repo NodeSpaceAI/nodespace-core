@@ -68,7 +68,7 @@
   // first-launch wizard — see the `identityOnly` prop on OnboardingWizard.
   let onboardingIdentityOnly = $state(false);
 
-  // Conflict journal (ADR-068): load on every startup, unconditionally —
+  // Conflict journal (ADR-068): load on every startup, whatever the tier —
   // unlike the deleted Recovered Items log, this is NOT Pro-gated; the
   // journal is designed to work on a purely local-only install. The inline
   // per-node indicator and the Conflicts view both read `conflictsStore`

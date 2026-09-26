@@ -137,11 +137,16 @@ class ConflictsStore {
   }
 
   private async resolve(conflictId: string, resolution: Resolution): Promise<void> {
+    // Conflict ids are deterministic (derived from kind + node ids), so the
+    // same id can exist in another database — don't patch the new database's
+    // copy with the previous one's resolved record.
+    const generation = this.#generation;
     try {
       const updated = await invoke<ConflictRecord>('resolve_conflict', {
         conflictId,
         resolution
       });
+      if (generation !== this.#generation) return;
       this.records = this.records.map((r) => (r.id === conflictId ? updated : r));
     } catch (e) {
       log.warn('Failed to resolve conflict', { error: e, conflictId, resolution });
@@ -195,12 +200,15 @@ class ConflictsStore {
     loserId: string,
     conflictId?: string
   ): Promise<MergeOutcome> {
+    // Captured before the merge: a refresh issued after a database switch
+    // would read the survivor's records from the newly-active database.
+    const generation = this.#generation;
     const outcome = await invoke<MergeOutcome>('merge_nodes', {
       survivorId,
       loserId,
       conflictId: conflictId ?? null
     });
-    if (conflictId) {
+    if (conflictId && generation === this.#generation) {
       await this.loadForNode(survivorId);
     }
     return outcome;
