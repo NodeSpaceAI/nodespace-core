@@ -157,6 +157,14 @@ async fn repeated_moves_after_one_anchor_keep_distinct_ordered_keys() {
             .unwrap();
         items.push(id);
     }
+    // A same-parent reorder rewrites only the moved edge's `order`, too.
+    f.conn
+        .execute(
+            "UPDATE relationship SET properties = json_set(properties, '$.label', 'moved') WHERE out_node = ?1",
+            libsql::params![items[0].clone()],
+        )
+        .await
+        .unwrap();
     for id in &items {
         let version = f.service.get_node(id).await.unwrap().unwrap().version;
         f.service
@@ -170,4 +178,15 @@ async fn repeated_moves_after_one_anchor_keep_distinct_ordered_keys() {
             .unwrap();
     }
     assert_order_intact(&f).await;
+
+    let mut rows = f
+        .conn
+        .query(
+            "SELECT json_extract(properties, '$.label') FROM relationship WHERE out_node = ?1",
+            libsql::params![items[0].clone()],
+        )
+        .await
+        .unwrap();
+    let label: String = rows.next().await.unwrap().unwrap().get(0).unwrap();
+    assert_eq!(label, "moved");
 }

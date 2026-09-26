@@ -264,7 +264,7 @@ describe('Atomic Move Node Operations - Fractional Ordering', () => {
       expect(needsRebalancing(orders)).toBe(true); // Should detect this needs rebalancing
 
       // When move_node detects this gap is less than 0.0001, it triggers rebalancing
-      // Simulating: move_node would call rebalance_children_for_parent() here
+      // Simulating: move_node would re-spread the parent's children here
       const rebalanced = rebalance(2);
 
       // After rebalancing, orders should be [1.0, 2.0]

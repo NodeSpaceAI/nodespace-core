@@ -28,21 +28,6 @@ impl FractionalOrderCalculator {
             (Some(prev), Some(next)) => (prev + next) / 2.0,
         }
     }
-
-    /// Check if rebalancing is needed (gap too small)
-    pub fn needs_rebalancing(orders: &[f64]) -> bool {
-        if orders.len() < 2 {
-            return false;
-        }
-
-        for i in 1..orders.len() {
-            let gap = orders[i] - orders[i - 1];
-            if gap < Self::MIN_GAP {
-                return true;
-            }
-        }
-        false
-    }
 }
 
 #[cfg(test)]
@@ -103,15 +88,5 @@ mod tests {
             );
             last = next;
         }
-    }
-
-    #[test]
-    fn test_needs_rebalancing() {
-        assert!(!FractionalOrderCalculator::needs_rebalancing(&[
-            1.0, 2.0, 3.0
-        ]));
-        assert!(FractionalOrderCalculator::needs_rebalancing(&[
-            1.0, 1.00001, 1.00002
-        ]));
     }
 }
