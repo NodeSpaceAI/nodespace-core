@@ -238,14 +238,15 @@ impl SqliteStore {
     /// §5.2), in one transaction:
     ///
     /// 0. **Tree invariants.** Checked before anything is written; a
-    ///    violation refuses the whole merge, the same as `move_node` would.
+    ///    violation refuses the whole merge with a typed
+    ///    [`super::TreeInvariantViolation`], the same as `move_node` would.
     ///    The survivor is left with at most one `has_child` parent: its own if
     ///    it has one, otherwise the loser's (see step 2). If it ends up with a
     ///    parent, the merge is refused when it is a `collection`
-    ///    (`collection_not_root`) or when either side holds `member_of` and
+    ///    (`CollectionNotRoot`) or when either side holds `member_of` and
     ///    the survivor's type may not hold membership under a parent
-    ///    (`member_of_not_root`, ADR-059 §2). It is also refused
-    ///    (`merge_would_cycle`) when the survivor sits deeper than a direct
+    ///    (`MemberOfNotRoot`, ADR-059 §2). It is also refused
+    ///    (`Cycle`) when the survivor sits deeper than a direct
     ///    child in the loser's subtree: the loser's children would re-point
     ///    onto their own descendant. A direct parent/child pair merges fine,
     ///    because the edge between them becomes a self-edge.
@@ -353,11 +354,14 @@ impl SqliteStore {
         // when the survivor sits below one of them.
         if let Some(survivor_parent) = survivor_parent.as_deref() {
             if Self::is_ancestor_in_tx(tx, loser_id, survivor_parent).await? {
-                anyhow::bail!(
-                    "merge_would_cycle: survivor '{}' sits inside the subtree of '{}', so merging would make the survivor its own ancestor. Move the survivor out of that subtree first.",
+                return Err(anyhow::Error::new(super::TreeInvariantViolation::cycle(
                     survivor_id,
-                    loser_id
-                );
+                    loser_id,
+                    format!(
+                        "survivor '{}' sits inside the subtree of '{}', so merging would make the survivor its own ancestor. Move the survivor out of that subtree first.",
+                        survivor_id, loser_id
+                    ),
+                )));
             }
         }
         // The survivor keeps its own position. The loser's parent edge is
@@ -374,19 +378,28 @@ impl SqliteStore {
 
         if has_parent_after {
             if survivor.node_type == "collection" {
-                anyhow::bail!(super::collection_not_root(Some(survivor_id)));
+                return Err(anyhow::Error::new(
+                    super::TreeInvariantViolation::collection_not_root(Some(survivor_id)),
+                ));
             }
             if !super::relationships::member_may_have_parent(&survivor.node_type) {
                 let memberships =
                     Self::member_of_targets_in_tx(tx, &[survivor_id, loser_id]).await?;
                 if !memberships.is_empty() {
-                    anyhow::bail!(
-                        "member_of_not_root: merging '{}' into '{}' would leave survivor '{}' holding collection membership ({}) while it has a parent — only root nodes may hold collection membership (ADR-059 §2). Remove the node from the collection(s) first, or move it to the root.",
+                    let detail = format!(
+                        "merging '{}' into '{}' would leave survivor '{}' holding collection membership ({}) while it has a parent — only root nodes may hold collection membership (ADR-059 §2). Remove the node from the collection(s) first, or move it to the root.",
                         loser_id,
                         survivor_id,
                         survivor_id,
                         memberships.join(", ")
                     );
+                    return Err(anyhow::Error::new(
+                        super::TreeInvariantViolation::member_of_not_root(
+                            survivor_id,
+                            memberships,
+                            detail,
+                        ),
+                    ));
                 }
             }
         }

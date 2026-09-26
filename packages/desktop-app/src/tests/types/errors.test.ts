@@ -17,13 +17,16 @@ import {
   type SubtreeAccessDeniedCommandError,
   type PlayRuleRejectedData,
   type PlayRuleRejectedCommandError,
+  type TreeInvariantViolationData,
+  type TreeInvariantViolationCommandError,
   isCommandError,
   toError,
   DatabaseInitializationError,
   NodeOperationError,
   isVersionConflict,
   isSubtreeAccessDenied,
-  isPlayRuleRejected
+  isPlayRuleRejected,
+  isTreeInvariantViolation
 } from '$lib/types/errors';
 import type { Node } from '$lib/types/node';
 
@@ -630,6 +633,75 @@ describe('isPlayRuleRejected Type Guard (gRPC shape)', () => {
 
   it('rejects Error instances', () => {
     expect(isPlayRuleRejected(new Error('test'))).toBe(false);
+  });
+});
+
+describe('isTreeInvariantViolation Type Guard (gRPC shape)', () => {
+  const makeViolation = (
+    overrides?: Partial<TreeInvariantViolationData>
+  ): TreeInvariantViolationCommandError => ({
+    message: "member_of_not_root: node 'node-1' holds collection membership",
+    code: 'TREE_INVARIANT_VIOLATION',
+    details: 'FailedPrecondition',
+    conflictData: {
+      rule: 'member_of_not_root',
+      node_id: 'node-1',
+      related_ids: ['coll-1'],
+      detail: "node 'node-1' holds collection membership — remove it first",
+      ...overrides
+    }
+  });
+
+  it('identifies a valid TREE_INVARIANT_VIOLATION error for each rule', () => {
+    for (const rule of ['member_of_not_root', 'collection_not_root', 'cycle'] as const) {
+      expect(isTreeInvariantViolation(makeViolation({ rule }))).toBe(true);
+    }
+  });
+
+  it('accepts a null node_id (collection refused before it had an id)', () => {
+    expect(isTreeInvariantViolation(makeViolation({ node_id: null, related_ids: [] }))).toBe(true);
+  });
+
+  it('narrows to expose the rule and the nodes involved', () => {
+    const err: unknown = makeViolation({ rule: 'cycle', related_ids: ['other'] });
+    if (isTreeInvariantViolation(err)) {
+      expect(err.conflictData.rule).toBe('cycle');
+      expect(err.conflictData.related_ids).toEqual(['other']);
+    } else {
+      throw new Error('type guard should have matched');
+    }
+  });
+
+  it('rejects an unknown rule', () => {
+    expect(
+      isTreeInvariantViolation({
+        message: 'err',
+        code: 'TREE_INVARIANT_VIOLATION',
+        conflictData: { rule: 'merge_would_cycle', node_id: 'n', related_ids: [], detail: 'd' }
+      })
+    ).toBe(false);
+  });
+
+  it('rejects a PLAY_RULE_REJECTED error (distinct refusal, same status code)', () => {
+    expect(
+      isTreeInvariantViolation({
+        message: 'err',
+        code: 'PLAY_RULE_REJECTED',
+        conflictData: { node_id: 'n', play_id: 'p', rule_name: 'r', message: 'm' }
+      })
+    ).toBe(false);
+  });
+
+  it('rejects error without conflictData', () => {
+    expect(isTreeInvariantViolation({ message: 'err', code: 'TREE_INVARIANT_VIOLATION' })).toBe(
+      false
+    );
+  });
+
+  it('rejects null, undefined and Error instances', () => {
+    expect(isTreeInvariantViolation(null)).toBe(false);
+    expect(isTreeInvariantViolation(undefined)).toBe(false);
+    expect(isTreeInvariantViolation(new Error('test'))).toBe(false);
   });
 });
 

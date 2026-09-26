@@ -214,3 +214,68 @@ export function isPlayRuleRejected(error: unknown): error is PlayRuleRejectedCom
   const cd = err.conflictData as Record<string, unknown>;
   return typeof cd.message === 'string';
 }
+
+/** The tree invariant a refused write would have broken. */
+export type TreeInvariantRule = 'member_of_not_root' | 'collection_not_root' | 'cycle';
+
+const TREE_INVARIANT_RULES: readonly string[] = [
+  'member_of_not_root',
+  'collection_not_root',
+  'cycle'
+] satisfies readonly TreeInvariantRule[];
+
+/**
+ * Structured payload carried by TREE_INVARIANT_VIOLATION CommandErrors.
+ * Mirrors the JSON in the daemon's binary x-tree-invariant-violation-bin
+ * metadata header, emitted when a move, membership or merge is refused
+ * because it would break a tree invariant.
+ */
+export interface TreeInvariantViolationData {
+  /** Which rule fired */
+  rule: TreeInvariantRule;
+
+  /** The node the write would have left in violation; null only for a
+   *  collection refused before it was given an id */
+  node_id: string | null;
+
+  /** Other nodes involved: for member_of_not_root on a move or merge, the
+   *  collections the node belongs to; for cycle, the node on the other end
+   *  of the edge that would have closed the cycle */
+  related_ids: string[];
+
+  /** Human-readable explanation, including what the user can do about it */
+  detail: string;
+}
+
+/**
+ * A CommandError produced when the daemon refuses a write that would break a
+ * tree invariant — a user-actionable refusal, not a database failure.
+ */
+export interface TreeInvariantViolationCommandError extends CommandError {
+  code: 'TREE_INVARIANT_VIOLATION';
+  conflictData: TreeInvariantViolationData;
+}
+
+/**
+ * Type guard: returns true when the thrown value is a TREE_INVARIANT_VIOLATION
+ * CommandError carrying the daemon's structured refusal payload.
+ *
+ * Matches the gRPC/Tauri shape: { code: "TREE_INVARIANT_VIOLATION", conflictData: { rule, node_id, related_ids, detail } }
+ */
+export function isTreeInvariantViolation(
+  error: unknown
+): error is TreeInvariantViolationCommandError {
+  if (typeof error !== 'object' || error === null) return false;
+
+  const err = error as Record<string, unknown>;
+  if (err.code !== 'TREE_INVARIANT_VIOLATION') return false;
+  if (typeof err.conflictData !== 'object' || err.conflictData === null) return false;
+
+  const cd = err.conflictData as Record<string, unknown>;
+  return (
+    typeof cd.rule === 'string' &&
+    TREE_INVARIANT_RULES.includes(cd.rule) &&
+    Array.isArray(cd.related_ids) &&
+    typeof cd.detail === 'string'
+  );
+}

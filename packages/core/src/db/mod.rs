@@ -12,10 +12,9 @@ pub use events::{
 };
 pub use fractional_ordering::FractionalOrderCalculator;
 pub use index_manager::IndexManager;
-pub(crate) use sqlite_store::collection_not_root;
 pub(crate) use sqlite_store::tx::Tx;
 pub(crate) use sqlite_store::{composite_similarity_score, cosine_similarity};
 pub use sqlite_store::{
     ensure_sqlite_vec_registered, BulkNodeRow, RelationshipRecord, ResolvedEntity, SqliteStore,
-    StoreChange, StoreOperation, VersionConflict,
+    StoreChange, StoreOperation, TreeInvariantRule, TreeInvariantViolation, VersionConflict,
 };

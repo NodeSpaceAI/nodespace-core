@@ -175,7 +175,7 @@ impl NodeService {
                 self.execution_context.clone(),
             )
             .await
-            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+            .map_err(NodeServiceError::from_store)?;
 
         // NOTE: NodeCreated events are now automatically emitted by store notifier
 
@@ -232,7 +232,7 @@ impl NodeService {
             .store
             .bulk_create_hierarchy(self.with_titles(nodes_normalized).await?)
             .await
-            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+            .map_err(NodeServiceError::from_store)?;
 
         // Queue root for embedding regeneration once
         // All nodes share the same root, so we only need one queue operation
@@ -426,7 +426,7 @@ impl NodeService {
             .store
             .bulk_create_hierarchy_in_tx(tx.store_tx(), self.with_titles(nodes_normalized).await?)
             .await
-            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+            .map_err(NodeServiceError::from_store)?;
 
         for (id, node_type) in result.iter().zip(node_types.iter()) {
             self.emit_event(DomainEvent::NodeCreated {
@@ -476,7 +476,7 @@ impl NodeService {
             .store
             .bulk_create_hierarchy_root_notify(self.with_titles(nodes_normalized).await?, vec![])
             .await
-            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+            .map_err(NodeServiceError::from_store)?;
 
         // Queue root for embedding regeneration once
         #[cfg(feature = "nlp")]
@@ -584,7 +584,7 @@ impl NodeService {
             .store
             .bulk_create_hierarchy_root_notify(self.with_titles(nodes_normalized).await?, vec![])
             .await
-            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+            .map_err(NodeServiceError::from_store)?;
 
         // Create stale embedding markers in bulk (single transaction)
         if !root_ids.is_empty() {

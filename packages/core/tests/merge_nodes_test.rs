@@ -6,15 +6,23 @@
 //! closure, all in one transaction.
 
 use anyhow::Result;
-use nodespace_core::db::SqliteStore;
+use nodespace_core::db::{SqliteStore, TreeInvariantRule, TreeInvariantViolation};
 use nodespace_core::models::conflict::{ConflictKind, ConflictStatus};
 use nodespace_core::models::Node;
 use nodespace_core::services::{
-    CreateNodeParams, InsertPosition, InsertPositionOwned, NodeService,
+    CreateNodeParams, InsertPosition, InsertPositionOwned, NodeService, NodeServiceError,
 };
 use serde_json::json;
 use std::sync::Arc;
 use tempfile::TempDir;
+
+/// The typed tree-invariant refusal a merge returned.
+fn tree_violation(err: &NodeServiceError) -> &TreeInvariantViolation {
+    match err {
+        NodeServiceError::TreeInvariantViolation(v) => v,
+        other => panic!("expected a TreeInvariantViolation, got {other:?}"),
+    }
+}
 
 async fn service() -> Result<(NodeService, TempDir)> {
     let temp_dir = TempDir::new()?;
@@ -711,11 +719,10 @@ async fn merge_refuses_to_give_a_filed_survivor_a_parent() -> Result<()> {
         .await
         .expect_err("a filed node must not gain a parent");
 
-    let msg = err.to_string();
-    assert!(
-        msg.contains("member_of_not_root") && msg.contains("ADR-059 §2"),
-        "{msg}"
-    );
+    let violation = tree_violation(&err);
+    assert_eq!(violation.rule, TreeInvariantRule::MemberOfNotRoot);
+    assert_eq!(violation.node_id.as_deref(), Some(survivor.as_str()));
+    assert_eq!(violation.related_ids, vec![coll.clone()]);
     assert_eq!(parent_id(&svc, &survivor).await?, None);
     assert_eq!(parent_id(&svc, &loser).await?, Some(root_a));
     assert_eq!(
@@ -743,7 +750,9 @@ async fn merge_refuses_to_file_a_survivor_that_has_a_parent() -> Result<()> {
         .await
         .expect_err("a child must not gain collection membership");
 
-    assert!(err.to_string().contains("member_of_not_root"), "{err}");
+    let violation = tree_violation(&err);
+    assert_eq!(violation.rule, TreeInvariantRule::MemberOfNotRoot);
+    assert_eq!(violation.related_ids, vec![coll.clone()]);
     assert!(svc
         .store()
         .get_node_memberships(&survivor)
@@ -767,7 +776,10 @@ async fn merge_refuses_a_survivor_below_the_losers_children() -> Result<()> {
         .await
         .expect_err("the survivor would sit below itself");
 
-    assert!(err.to_string().contains("merge_would_cycle"), "{err}");
+    let violation = tree_violation(&err);
+    assert_eq!(violation.rule, TreeInvariantRule::Cycle);
+    assert_eq!(violation.node_id.as_deref(), Some(survivor.as_str()));
+    assert_eq!(violation.related_ids, vec![loser.clone()]);
     assert_eq!(child_ids(&svc, &loser).await?, vec![middle]);
     Ok(())
 }
@@ -805,7 +817,9 @@ async fn merge_refuses_to_give_a_collection_survivor_a_parent() -> Result<()> {
         .await
         .expect_err("a collection must stay a root");
 
-    assert!(err.to_string().contains("collection_not_root"), "{err}");
+    let violation = tree_violation(&err);
+    assert_eq!(violation.rule, TreeInvariantRule::CollectionNotRoot);
+    assert_eq!(violation.node_id.as_deref(), Some(survivor.as_str()));
     assert_eq!(parent_id(&svc, &survivor).await?, None);
     Ok(())
 }

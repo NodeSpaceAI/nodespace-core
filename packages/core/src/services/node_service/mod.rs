@@ -21,7 +21,7 @@
 
 use crate::behaviors::NodeBehaviorRegistry;
 use crate::db::events::DomainEvent;
-use crate::db::{SqliteStore, StoreChange, StoreOperation, Tx};
+use crate::db::{SqliteStore, StoreChange, StoreOperation, TreeInvariantViolation, Tx};
 use crate::models::{FilterOperator, Node, NodeFilter, NodeUpdate, PropertyFilter};
 use crate::playbook::types::namespaced_property_key;
 use crate::services::error::NodeServiceError;
@@ -1440,7 +1440,7 @@ impl NodeService {
                     .store()
                     .get_relationship_record(local_person_id, &settings.id, "has_role")
                     .await
-                    .map_err(|e| NodeServiceError::query_failed(e.to_string()))?
+                    .map_err(NodeServiceError::from_store)?
                     .is_some();
                 if has_owner_edge {
                     return Ok(());
@@ -2284,7 +2284,7 @@ impl NodeService {
                 new_guidance_version,
             )
             .await
-            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+            .map_err(NodeServiceError::from_store)?;
 
         Ok(created)
     }
@@ -2346,7 +2346,7 @@ impl NodeService {
             self.store
                 .set_property_bool(&existing_node.id, "$._seed.config_modified", false)
                 .await
-                .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+                .map_err(NodeServiceError::from_store)?;
             config_reset = true;
         }
 
@@ -2367,7 +2367,7 @@ impl NodeService {
             self.store
                 .set_property_bool(&existing_node.id, "$._seed.guidance_modified", false)
                 .await
-                .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+                .map_err(NodeServiceError::from_store)?;
             guidance_reset = true;
         }
 
@@ -2876,7 +2876,7 @@ impl NodeAccessor for NodeService {
             .store
             .get_nodes_by_ids(&id_strings)
             .await
-            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+            .map_err(NodeServiceError::from_store)?;
         Ok(node_map.into_values().collect())
     }
 
@@ -2887,7 +2887,7 @@ impl NodeAccessor for NodeService {
         self.store
             .access_boundaries_under(root_id)
             .await
-            .map_err(|e| NodeServiceError::query_failed(e.to_string()))
+            .map_err(NodeServiceError::from_store)
     }
 }
 
@@ -3682,8 +3682,13 @@ mod tests {
             .await
             .expect("a collection may have a text child");
 
-        let is_refusal =
-            |e: &dyn std::fmt::Display| format!("{e:#}").contains("collection_not_root");
+        let is_refusal = |e: &NodeServiceError| {
+            matches!(
+                e,
+                NodeServiceError::TreeInvariantViolation(v)
+                    if v.rule == crate::db::TreeInvariantRule::CollectionNotRoot
+            )
+        };
 
         // Created under a parent.
         let err = svc
@@ -5255,10 +5260,14 @@ mod tests {
             )
             .await
             .expect_err("reparenting a collection member via move_node must be rejected");
-        assert!(
-            err.to_string().contains("member_of_not_root") && err.to_string().contains(&coll_id),
-            "rejection must state the reason and name the collection; got: {err}"
-        );
+        match &err {
+            NodeServiceError::TreeInvariantViolation(v) => {
+                assert_eq!(v.rule, crate::db::TreeInvariantRule::MemberOfNotRoot);
+                assert_eq!(v.node_id.as_deref(), Some(root_id.as_str()));
+                assert_eq!(v.related_ids, vec![coll_id.clone()]);
+            }
+            other => panic!("expected a MemberOfNotRoot refusal, got {other:?}"),
+        }
 
         // The rejected move did not drop the membership: a second attempt rejects.
         let root_node = service.get_node(&root_id).await.unwrap().unwrap();
@@ -5718,7 +5727,7 @@ mod tests {
                         &[(child_id.as_str(), version_before)],
                     )
                     .await
-                    .map_err(|e| NodeServiceError::query_failed(e.to_string()))?
+                    .map_err(NodeServiceError::from_store)?
                     .expect("the edge swap runs at the child's current version");
 
                     // A concurrent writer bumped the child after the edge swap.

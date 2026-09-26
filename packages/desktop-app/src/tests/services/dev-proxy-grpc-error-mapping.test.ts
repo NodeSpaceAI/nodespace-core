@@ -179,6 +179,34 @@ describe('dev-proxy grpc-error-mapping: mapGrpcError', () => {
     expect(mapped.conflictData).toBeUndefined();
   });
 
+  it('maps FAILED_PRECONDITION + binary x-tree-invariant-violation-bin metadata to TREE_INVARIANT_VIOLATION', () => {
+    const payload = {
+      rule: 'member_of_not_root',
+      node_id: 'node-1',
+      related_ids: ['coll-1'],
+      detail: "node 'node-1' holds collection membership — remove it first"
+    };
+    const err = makeServiceError(grpc.status.FAILED_PRECONDITION, `member_of_not_root: refused`, {
+      'x-tree-invariant-violation-bin': Buffer.from(JSON.stringify(payload), 'utf8')
+    });
+
+    const mapped = mapGrpcError(err);
+
+    expect(mapped.code).toBe('TREE_INVARIANT_VIOLATION');
+    expect(mapped.conflictData).toEqual(payload);
+  });
+
+  it('ignores an unparseable x-tree-invariant-violation-bin JSON value rather than throwing', () => {
+    const err = makeServiceError(grpc.status.FAILED_PRECONDITION, 'refused', {
+      'x-tree-invariant-violation-bin': Buffer.from('{not valid json', 'utf8')
+    });
+
+    const mapped = mapGrpcError(err);
+
+    expect(mapped.code).not.toBe('TREE_INVARIANT_VIOLATION');
+    expect(mapped.conflictData).toBeUndefined();
+  });
+
   it('ignores an unparseable x-play-rule-rejected-bin JSON value rather than throwing', () => {
     const err = makeServiceError(grpc.status.FAILED_PRECONDITION, 'rejected', {
       'x-play-rule-rejected-bin': Buffer.from('{not valid json', 'utf8')

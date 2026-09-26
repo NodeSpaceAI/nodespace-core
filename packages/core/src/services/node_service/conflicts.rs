@@ -71,7 +71,7 @@ impl NodeService {
         self.store
             .list_conflicts(status, kind, limit)
             .await
-            .map_err(|e| NodeServiceError::query_failed(e.to_string()))
+            .map_err(NodeServiceError::from_store)
     }
 
     /// Every open-or-otherwise conflict record naming `node_id` as a
@@ -85,7 +85,7 @@ impl NodeService {
         self.store
             .conflicts_for_node(node_id)
             .await
-            .map_err(|e| NodeServiceError::query_failed(e.to_string()))
+            .map_err(NodeServiceError::from_store)
     }
 
     /// Read a single conflict record by id, if it exists.
@@ -96,7 +96,7 @@ impl NodeService {
         self.store
             .get_conflict(conflict_id)
             .await
-            .map_err(|e| NodeServiceError::query_failed(e.to_string()))
+            .map_err(NodeServiceError::from_store)
     }
 
     /// Apply a resolution to an existing conflict record.
@@ -108,7 +108,7 @@ impl NodeService {
         self.store
             .resolve_conflict(conflict_id, resolution)
             .await
-            .map_err(|e| NodeServiceError::query_failed(e.to_string()))
+            .map_err(NodeServiceError::from_store)
     }
 
     /// Scan `node_id`'s unique-flagged, string-valued schema fields for a
@@ -193,7 +193,7 @@ impl NodeService {
                     case_insensitive,
                 )
                 .await
-                .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+                .map_err(NodeServiceError::from_store)?;
 
             let Some(conflicting_id) = conflicting_id else {
                 continue;
@@ -222,7 +222,7 @@ impl NodeService {
                     self.client_id.as_deref(),
                 )
                 .await
-                .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+                .map_err(NodeServiceError::from_store)?;
         }
 
         Ok(())
@@ -271,7 +271,7 @@ impl NodeService {
                     let loser_parent =
                         crate::db::SqliteStore::get_parent_id_in_tx(ns_tx.store_tx(), &loser_id)
                             .await
-                            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+                            .map_err(NodeServiceError::from_store)?;
                     let (properties_merged, superseded, repointed_edges, edges_dropped) =
                         crate::db::SqliteStore::merge_nodes_in_tx(
                             ns_tx.store_tx(),
@@ -279,7 +279,7 @@ impl NodeService {
                             &loser_id,
                         )
                         .await
-                        .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+                        .map_err(NodeServiceError::from_store)?;
 
                     // The store-level repoint above is schema-blind (see its
                     // doc comment) — close any cardinality-one violation it
@@ -307,7 +307,7 @@ impl NodeService {
                     let survivor_is_root =
                         crate::db::SqliteStore::get_parent_id_in_tx(ns_tx.store_tx(), &survivor_id)
                             .await
-                            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?
+                            .map_err(NodeServiceError::from_store)?
                             .is_none();
                     service
                         .refresh_for_rootness_in_tx(
@@ -332,7 +332,7 @@ impl NodeService {
                             &resolution,
                         )
                         .await
-                        .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+                        .map_err(NodeServiceError::from_store)?;
                     }
 
                     Ok((properties_merged, edges_repointed, edges_dropped))
@@ -370,7 +370,7 @@ impl NodeService {
             .store
             .list_conflicts(Some(ConflictStatus::Open), None, None)
             .await
-            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+            .map_err(NodeServiceError::from_store)?;
 
         let mut closed = 0u32;
         for record in open {
@@ -431,7 +431,7 @@ impl NodeService {
                 },
             )
             .await
-            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+            .map_err(NodeServiceError::from_store)?;
         Ok(())
     }
 
@@ -505,7 +505,7 @@ impl NodeService {
                     case_insensitive,
                 )
                 .await
-                .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+                .map_err(NodeServiceError::from_store)?;
             if conflicting.is_some() {
                 return Ok(true);
             }
@@ -527,7 +527,7 @@ impl NodeService {
             .store
             .get_collection_by_name(name)
             .await
-            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+            .map_err(NodeServiceError::from_store)?;
         Ok(match existing {
             // A different active collection still holds the name -> still colliding.
             Some(node) => &node.id != subject_id,

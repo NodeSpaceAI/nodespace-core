@@ -2755,6 +2755,32 @@ pub(crate) fn ops_error_to_status(err: OpsError) -> Status {
             }
             status
         }
+        OpsError::TreeInvariantViolation(violation) => {
+            // FAILED_PRECONDITION for the same reason as `PlayRuleRejected`:
+            // a well-formed write refused because of current graph state,
+            // which retrying unchanged will not fix — the caller must first
+            // change that state (remove the membership, move the node out
+            // of the subtree). The `x-tree-invariant-violation-bin` payload
+            // names the rule and the nodes involved, so a client can explain
+            // the refusal without parsing the message. Binary metadata
+            // because `detail` carries non-ASCII punctuation (em dashes, §).
+            let mut status = Status::failed_precondition(violation.to_string());
+            let payload = serde_json::json!({
+                "rule": violation.rule.as_str(),
+                "node_id": violation.node_id,
+                "related_ids": violation.related_ids,
+                "detail": violation.detail,
+            });
+            if let Ok(json) = serde_json::to_string(&payload) {
+                let val = tonic::metadata::MetadataValue::<tonic::metadata::Binary>::from_bytes(
+                    json.as_bytes(),
+                );
+                status
+                    .metadata_mut()
+                    .insert_bin("x-tree-invariant-violation-bin", val);
+            }
+            status
+        }
     }
 }
 
@@ -2907,7 +2933,7 @@ mod tests {
     use crate::services::database_manager::DatabaseManager;
     use crate::services::SharedContext;
     use nodespace_agent::pty::PtySessionManager;
-    use nodespace_core::db::SqliteStore;
+    use nodespace_core::db::{SqliteStore, TreeInvariantViolation};
     use nodespace_core::ops::node_ops;
     use nodespace_core::services::{
         CollectionService, EmbeddingScheduler, NodeService as CoreNodeService,
@@ -3914,6 +3940,60 @@ mod tests {
     }
 
     #[test]
+    fn error_mapping_tree_invariant_violation_carries_rule_and_nodes() {
+        // A tree-invariant refusal must reach the client as structured data —
+        // the rule and the nodes involved in `x-tree-invariant-violation-bin`
+        // — so it can say "remove X from collection C first" without parsing
+        // the message, and tell it apart from every other
+        // FAILED_PRECONDITION this daemon returns.
+        let s = to_status(NodeServiceError::from(
+            TreeInvariantViolation::member_of_not_root(
+                "node-1",
+                vec!["coll-1".to_string()],
+                "node 'node-1' holds collection membership — remove it first",
+            ),
+        ));
+        assert_eq!(s.code(), tonic::Code::FailedPrecondition);
+        assert!(s.message().starts_with("member_of_not_root: "));
+
+        let header = s
+            .metadata()
+            .get_bin("x-tree-invariant-violation-bin")
+            .expect("x-tree-invariant-violation-bin header missing")
+            .to_bytes()
+            .expect("x-tree-invariant-violation-bin header must decode as bytes");
+        let payload: serde_json::Value = serde_json::from_slice(&header)
+            .expect("x-tree-invariant-violation-bin header must be valid JSON");
+        assert_eq!(payload["rule"], "member_of_not_root");
+        assert_eq!(payload["node_id"], "node-1");
+        assert_eq!(payload["related_ids"], serde_json::json!(["coll-1"]));
+        assert_eq!(
+            payload["detail"],
+            "node 'node-1' holds collection membership — remove it first"
+        );
+    }
+
+    #[test]
+    fn error_mapping_tree_invariant_violation_without_node_id() {
+        // A collection refused before it was given an id has no node_id; the
+        // payload carries an explicit null rather than dropping the field.
+        let s = to_status(NodeServiceError::from(
+            TreeInvariantViolation::collection_not_root(None),
+        ));
+        assert_eq!(s.code(), tonic::Code::FailedPrecondition);
+        let header = s
+            .metadata()
+            .get_bin("x-tree-invariant-violation-bin")
+            .expect("x-tree-invariant-violation-bin header missing")
+            .to_bytes()
+            .unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&header).unwrap();
+        assert_eq!(payload["rule"], "collection_not_root");
+        assert!(payload["node_id"].is_null());
+        assert_eq!(payload["related_ids"], serde_json::json!([]));
+    }
+
+    #[test]
     fn error_mapping_node_not_found_returns_not_found() {
         let s = to_status(NodeServiceError::node_not_found("abc"));
         assert_eq!(s.code(), tonic::Code::NotFound);
@@ -4398,27 +4478,26 @@ mod tests {
     }
 
     #[test]
-    fn error_mapping_circular_reference_returns_invalid_argument() {
-        let s = to_status(NodeServiceError::circular_reference("A→B→A"));
-        assert_eq!(s.code(), tonic::Code::InvalidArgument);
-    }
-
-    #[test]
     fn error_mapping_hierarchy_violation_returns_invalid_argument() {
         let s = to_status(NodeServiceError::hierarchy_violation("root immutable"));
         assert_eq!(s.code(), tonic::Code::InvalidArgument);
     }
 
     /// A cycle the *caller proposed* (moving a node under its own descendant)
-    /// stays InvalidArgument: the request is genuinely bad and a different
-    /// request fixes it. Pinned alongside the case below so the two cannot
-    /// silently collapse into one classification.
+    /// is a refusal the caller can act on, never an Internal error: a
+    /// different request fixes it. Pinned alongside the case below so the two
+    /// cannot silently collapse into one classification.
     #[test]
-    fn error_mapping_caller_proposed_cycle_stays_invalid_argument() {
+    fn error_mapping_caller_proposed_cycle_is_a_caller_refusal() {
         assert_eq!(
-            to_status(NodeServiceError::circular_reference("A→B→A")).code(),
-            tonic::Code::InvalidArgument,
-            "write-path cycle rejection is a caller error"
+            to_status(NodeServiceError::from(TreeInvariantViolation::cycle(
+                "A",
+                "B",
+                "A→B→A"
+            )))
+            .code(),
+            tonic::Code::FailedPrecondition,
+            "write-path cycle rejection is a caller refusal"
         );
         assert_eq!(
             to_status(NodeServiceError::hierarchy_violation("root immutable")).code(),

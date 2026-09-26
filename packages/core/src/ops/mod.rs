@@ -64,6 +64,12 @@ pub enum OpsError {
         message: String,
     },
 
+    /// A write refused because it would break a tree invariant. Kept
+    /// structured — not folded into `ValidationFailed` — so the daemon can
+    /// hand the rule and the nodes involved to the client as data.
+    #[error("{0}")]
+    TreeInvariantViolation(crate::db::TreeInvariantViolation),
+
     #[error("Invalid parameters: {0}")]
     InvalidParams(String),
 
@@ -98,8 +104,8 @@ impl From<NodeServiceError> for OpsError {
             NodeServiceError::InvalidRoot { root_node_id } => {
                 OpsError::ValidationFailed(format!("Invalid root: {}", root_node_id))
             }
-            NodeServiceError::CircularReference { context } => {
-                OpsError::ValidationFailed(format!("Circular reference: {}", context))
+            NodeServiceError::TreeInvariantViolation(violation) => {
+                OpsError::TreeInvariantViolation(violation)
             }
             NodeServiceError::HierarchyViolation(msg) => {
                 OpsError::ValidationFailed(format!("Hierarchy violation: {}", msg))

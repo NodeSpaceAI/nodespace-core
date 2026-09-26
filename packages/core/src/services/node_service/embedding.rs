@@ -101,7 +101,7 @@ impl NodeService {
         self.store
             .embedding_root_id(node_id)
             .await
-            .map_err(|e| NodeServiceError::query_failed(e.to_string()))
+            .map_err(NodeServiceError::from_store)
     }
 
     /// Queue the embedding root of the tree `node_id` just left.

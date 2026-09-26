@@ -455,9 +455,9 @@ impl NodeService {
         // Step 3: Validate parent exists and is a container (if provided)
         if let Some(ref parent_id) = params.parent_id {
             if params.node_type == "collection" {
-                return Err(NodeServiceError::hierarchy_violation(
-                    crate::db::collection_not_root(params.id.as_deref()),
-                ));
+                return Err(
+                    TreeInvariantViolation::collection_not_root(params.id.as_deref()).into(),
+                );
             }
             let parent_node = self
                 .get_node(parent_id)
@@ -905,7 +905,7 @@ impl NodeService {
         self.store
             .update_node(id, node_update, self.client_id.clone())
             .await
-            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+            .map_err(NodeServiceError::from_store)?;
 
         // NOTE: NodeUpdated event is now automatically emitted by store notifier
 
@@ -1012,7 +1012,7 @@ impl NodeService {
 
         crate::db::SqliteStore::update_node_in_tx(tx.store_tx(), id, node_update)
             .await
-            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+            .map_err(NodeServiceError::from_store)?;
 
         // Reflects the store's unconditional version bump — see
         // `SqliteStore::update_node_in_tx` (mirrors `update_node`'s own
@@ -1064,7 +1064,7 @@ impl NodeService {
 
         let existing = crate::db::SqliteStore::get_node_in_tx(tx.store_tx(), id)
             .await
-            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?
+            .map_err(NodeServiceError::from_store)?
             .ok_or_else(|| NodeServiceError::node_not_found(id))?;
 
         let mut updated = existing.clone();
@@ -1140,7 +1140,7 @@ impl NodeService {
             },
         )
         .await
-        .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+        .map_err(NodeServiceError::from_store)?;
 
         let node = result.map_err(|actual_version| {
             NodeServiceError::version_conflict(id, existing.version, actual_version)
@@ -1322,7 +1322,7 @@ impl NodeService {
     ) -> Result<VersionCheckedUpdateOutcome, NodeServiceError> {
         let existing = crate::db::SqliteStore::get_node_in_tx(tx.store_tx(), id)
             .await
-            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?
+            .map_err(NodeServiceError::from_store)?
             .ok_or_else(|| NodeServiceError::node_not_found(id))?;
 
         // Build updated node state
@@ -1417,7 +1417,7 @@ impl NodeService {
             node_update,
         )
         .await
-        .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+        .map_err(NodeServiceError::from_store)?;
 
         let updated_node = match result {
             Ok(node) => node,
@@ -1463,7 +1463,7 @@ impl NodeService {
         // genuinely, durably part of what this transaction committed.
         let final_node = crate::db::SqliteStore::get_node_in_tx(tx.store_tx(), id)
             .await
-            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?
+            .map_err(NodeServiceError::from_store)?
             .ok_or_else(|| NodeServiceError::node_not_found(id))?;
 
         Ok(VersionCheckedUpdateOutcome::Updated {
@@ -1656,7 +1656,7 @@ impl NodeService {
                     .store
                     .persisted_version(node_id)
                     .await
-                    .map_err(|e| NodeServiceError::query_failed(e.to_string()))?
+                    .map_err(NodeServiceError::from_store)?
                 {
                     None => Err(NodeServiceError::node_not_found(node_id)),
                     Some(actual) => Err(NodeServiceError::version_conflict(
@@ -1688,7 +1688,7 @@ impl NodeService {
             .store
             .get_parent_id(node_id)
             .await
-            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+            .map_err(NodeServiceError::from_store)?;
 
         // Add new mentions (filter out self-references and root-level self-references)
         for mentioned_id in to_add {
@@ -1933,7 +1933,7 @@ impl NodeService {
                 self.client_id.clone(),
             )
             .await
-            .map_err(|e| NodeServiceError::query_failed(e.to_string()))??;
+            .map_err(NodeServiceError::from_store)??;
 
         if !existed {
             return Ok(crate::models::DeleteResult {
@@ -2000,7 +2000,7 @@ impl NodeService {
                 self.execution_context.clone(),
             )
             .await
-            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+            .map_err(NodeServiceError::from_store)?;
 
         // Check if update succeeded (version matched)
         let updated_node = result.ok_or_else(|| {
@@ -2037,7 +2037,7 @@ impl NodeService {
             NodeUpdate::default(),
         )
         .await
-        .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+        .map_err(NodeServiceError::from_store)?;
 
         let updated_node = result.map_err(|actual_version| {
             NodeServiceError::version_conflict(node_id, expected_version, actual_version)
@@ -2071,7 +2071,7 @@ impl NodeService {
             .store
             .get_schema(node_type)
             .await
-            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?
+            .map_err(NodeServiceError::from_store)?
             .is_some();
         if schema_exists {
             Ok(())
@@ -2781,7 +2781,7 @@ impl NodeService {
                 .store
                 .get_parent_id(&node.id)
                 .await
-                .map_err(|e| NodeServiceError::query_failed(e.to_string()))?
+                .map_err(NodeServiceError::from_store)?
                 .is_none(),
             None => false,
         };
@@ -2903,7 +2903,7 @@ impl NodeService {
         tx.defer_embedding_refresh(node_id, is_root, former_parent);
         let Some(node) = crate::db::SqliteStore::get_node_in_tx(tx.store_tx(), node_id)
             .await
-            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?
+            .map_err(NodeServiceError::from_store)?
         else {
             return Ok(());
         };
@@ -2911,7 +2911,7 @@ impl NodeService {
         if title != node.title {
             crate::db::SqliteStore::set_title_in_tx(tx.store_tx(), node_id, title.as_deref())
                 .await
-                .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+                .map_err(NodeServiceError::from_store)?;
         }
         Ok(())
     }
