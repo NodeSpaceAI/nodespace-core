@@ -81,8 +81,10 @@ const SKILL_RESOURCES: &str = "resources/skill/**/*";
 /// therefore declares only what is staged, and says so.
 ///
 /// Release builds stay strict: a packaged app must never ship without its
-/// sidecars or skill. `dev:tauri` and `tauri:build` stage everything before
-/// building, so both find it staged and are unaffected. The Tauri-seam tests
+/// sidecars or skill, and `tauri:build` stages everything first. `dev:tauri`
+/// stages the sidecars but not the skill bundle: a dev app installs the skill
+/// from the source checkout's `packages/skill/dist/install.js`, which it
+/// builds instead. The Tauri-seam tests
 /// don't depend on the staged daemon either: the gate points them at
 /// `target/debug/nodespaced` via `NODESPACED_TEST_BIN`, and without it they
 /// fail with a message naming the command that stages it.
@@ -149,7 +151,7 @@ fn drop_unstaged_bundle_entries() {
     let names: Vec<String> = missing.iter().map(|p| p.display().to_string()).collect();
     println!(
         "cargo:warning=not staged, left out of this debug build's bundle: {} \
-         (`bun run dev:tauri` stages everything; you only need them to run the app)",
+         (only needed to run the app; `bun run dev:tauri` stages the sidecars)",
         names.join(", ")
     );
 

@@ -14,7 +14,7 @@
     "demo:browser": "bun run dev:check && bunx concurrently --success first --names 'Proxy,UI' --prefix-colors 'yellow,green' 'bun run dev:browser:proxy' 'sleep 2 && bun run dev:browser:frontend'",
     "dev:tauri:frontend": "bunx vite dev --port 1422",
     "dev:tauri:sidecars": "bun run scripts/build-sidecar-binaries.ts",
-    "dev:tauri": "bun run dev:tauri:sidecars && bun run --cwd ../.. build:skill && bunx tauri dev --features devtools -- --bin nodespace-app",
+    "dev:tauri": "bun run dev:tauri:sidecars && bun run --cwd ../skill build && bunx tauri dev --features devtools -- --bin nodespace-app",
     "demo:tauri": "NODESPACED_DB_PATH=$HOME/.nodespace/database/demo.db bunx tauri dev --features devtools -- --bin nodespace-app",
     "dev": "bun run dev:browser",
     "sync": "bunx svelte-kit sync",
