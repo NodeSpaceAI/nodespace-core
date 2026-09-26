@@ -169,7 +169,11 @@ describe('KanbanView — consecutive status moves on a task node (browser mode)'
     // The critical assertion: each write sent the version RETURNED by the
     // previous write, not a stale/repeated one — this is exactly the OCC
     // mismatch the issue describes ("every subsequent status change fails").
-    expect(versionsSent).toEqual([1, 2]);
+    // The store applies each move before sending its write, so wait for the
+    // second write rather than asserting on the render's timing.
+    await waitFor(() => {
+      expect(versionsSent).toEqual([1, 2]);
+    });
     expect(conflictNotifications.notifications).toEqual([]);
   });
 
@@ -228,8 +232,9 @@ describe('KanbanView — consecutive status moves on a task node (browser mode)'
     });
     expect(cardsIn(columnFor(container, 'In Progress'))).toEqual([]);
 
-    // The second move's write goes out after the card re-renders in its new
-    // column, so wait for it instead of asserting on the render's timing.
+    // The store applies the move before sending its write, so the card lands
+    // in its new column first — wait for the second write rather than
+    // asserting on the render's timing.
     await waitFor(() => {
       expect(versionsSent).toEqual([1, 2]);
     });
