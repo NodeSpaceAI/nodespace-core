@@ -2649,8 +2649,9 @@ impl SqliteStore {
     /// `(order, id)` sequence is the one callers must read siblings in for
     /// index `i` to map to key `i + 1`.
     ///
-    /// Returns each rewritten child with its new key, for the caller to hand
-    /// back in [`ChildPlacement::respread`].
+    /// Returns each child whose key changed, with its new key, for the caller
+    /// to hand back in [`ChildPlacement::respread`]. A child already on its
+    /// target key is left untouched and not returned.
     async fn respread_children(
         conn: &libsql::Connection,
         parent_id: &str,
@@ -2661,6 +2662,7 @@ impl SqliteStore {
                  FROM (SELECT id, CAST(ROW_NUMBER() OVER (ORDER BY json_extract(properties, '$.order') ASC, id ASC) AS REAL) AS new_order \
                        FROM relationship WHERE in_node = ?1 AND relationship_type = 'has_child') AS ranked \
                  WHERE relationship.id = ranked.id \
+                   AND json_extract(relationship.properties, '$.order') IS NOT ranked.new_order \
                  RETURNING out_node, json_extract(properties, '$.order')",
                 libsql::params![parent_id.to_string()],
             )

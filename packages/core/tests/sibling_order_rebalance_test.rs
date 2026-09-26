@@ -279,8 +279,8 @@ async fn creates_that_respread_leave_an_event_only_client_in_store_order() {
             ))
             .await
             .unwrap();
+        mirror.assert_matches_store(&f).await;
     }
-    mirror.assert_matches_store(&f).await;
 }
 
 #[tokio::test]
@@ -311,6 +311,6 @@ async fn moves_that_respread_leave_an_event_only_client_in_store_order() {
             )
             .await
             .unwrap();
+        mirror.assert_matches_store(&f).await;
     }
-    mirror.assert_matches_store(&f).await;
 }
