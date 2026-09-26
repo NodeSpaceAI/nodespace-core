@@ -5,7 +5,19 @@
 // DOM-free on purpose: this file runs under `bun test scripts/`, which
 // bypasses the Happy-DOM vitest config (see CLAUDE.md).
 import { describe, expect, test } from "bun:test";
-import { parseArgs, statusDescription } from "./merge-pr";
+import { isPrBranch, parseArgs, statusDescription } from "./merge-pr";
+
+describe("isPrBranch", () => {
+  test("matches the PR branch and its EnterWorktree-prefixed local name", () => {
+    expect(isPrBranch("issue-12-fix", "issue-12-fix")).toBe(true);
+    expect(isPrBranch("worktree-issue-12-fix", "issue-12-fix")).toBe(true);
+  });
+
+  test("does not match an unrelated branch that merely ends the same way", () => {
+    expect(isPrBranch("other-issue-12-fix", "issue-12-fix")).toBe(false);
+    expect(isPrBranch("main", "issue-12-fix")).toBe(false);
+  });
+});
 
 describe("parseArgs", () => {
   test("reads the PR number", () => {

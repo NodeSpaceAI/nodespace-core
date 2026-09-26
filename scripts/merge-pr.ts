@@ -35,15 +35,29 @@
 import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { $ } from "bun";
-import { acquireGateLock, HELD_BY_MERGE_ENV_VAR, registerLockRelease } from "./gate-lock";
+import { acquireGateLock, DISABLE_ENV_VAR, HELD_BY_MERGE_ENV_VAR, registerLockRelease } from "./gate-lock";
 
 export const STATUS_CONTEXT = "nodespace/gate";
 
 /** How many times main may move under us before giving up. */
 export const MAX_ATTEMPTS = 3;
 
+/** Merge attempts, 3s apart, while GitHub catches up with a force-push. */
+const MERGE_TRIES = 5;
+
 /** The persistent gate checkout, relative to the main repository root. */
 export const GATE_CHECKOUT = join(".claude", "worktrees", "_gate");
+
+/**
+ * Ignored, generated paths cleared before every merge gate. target/ and
+ * node_modules/ are deliberately absent — they are the warm state the gate
+ * checkout exists to keep, and cargo and bun track their own staleness.
+ */
+export const STALE_OUTPUT_PATHS = [
+  "packages/skill/dist",
+  "packages/desktop-app/src-tauri/resources/skill",
+  "packages/desktop-app/src-tauri/binaries",
+];
 
 export interface MergeArgs {
   pr: number;
@@ -58,6 +72,11 @@ export function parseArgs(argv: string[]): MergeArgs {
     throw new Error("usage: bun run merge <PR#> [--dry-run]");
   }
   return { pr, dryRun };
+}
+
+/** Whether a local branch is the checkout of the PR's remote branch. */
+export function isPrBranch(localBranch: string, prBranch: string): boolean {
+  return localBranch === prBranch || localBranch === `worktree-${prBranch}`;
 }
 
 /** The description GitHub shows beside the status; its limit is 140 chars. */
@@ -121,18 +140,31 @@ async function main(): Promise<void> {
 
   // Unpushed work in the caller's checkout is not what gets tested. Say so
   // rather than let a green gate imply it covered local commits.
-  const localHead = await git(here, "rev-parse", "HEAD");
+  // EnterWorktree names the local branch `worktree-<name>` for remote <name>.
   const localBranch = await git(here, "rev-parse", "--abbrev-ref", "HEAD");
-  if (localBranch.endsWith(info.headRefName) && localHead !== info.headRefOid) {
-    fail(
-      `This checkout's HEAD (${localHead.slice(0, 8)}) differs from PR #${pr}'s pushed head (${info.headRefOid.slice(0, 8)}).\n` +
-        "  The gate tests the PR as pushed — push your commits first."
-    );
+  if (isPrBranch(localBranch, info.headRefName)) {
+    const localHead = await git(here, "rev-parse", "HEAD");
+    if (localHead !== info.headRefOid) {
+      fail(
+        `This checkout's HEAD (${localHead.slice(0, 8)}) differs from PR #${pr}'s pushed head (${info.headRefOid.slice(0, 8)}).\n` +
+          "  The gate tests the PR as pushed — push your commits first."
+      );
+    }
+    if ((await git(here, "status", "--porcelain")) !== "") {
+      fail("This checkout has uncommitted changes, which the gate would not test. Commit and push them, or discard them.");
+    }
   }
 
   // Held from here until this process exits: through the rebase, the gate,
-  // and the merge itself.
+  // and the merge itself. A push check may run without the lock (it only
+  // slows things down); a merge may not. Two merges share one gate checkout,
+  // so an unserialized one could check its PR out under another's running
+  // tests — and that other merge would record a pass for a tree it never
+  // tested. So the lock's usual degrade-and-continue is refused here, as is
+  // the no-lock opt-out.
+  if (process.env[DISABLE_ENV_VAR]) fail(`${DISABLE_ENV_VAR} is set; a merge always takes the gate lock. Unset it and re-run.`);
   const lock = await acquireGateLock();
+  if (!lock.held) fail("Could not take the gate lock (see above), so the merge would not be serialized. Re-run when the other gate finishes.");
   registerLockRelease(lock);
 
   const repoRoot = resolve(dirname(await git(here, "rev-parse", "--path-format=absolute", "--git-common-dir")));
@@ -152,6 +184,10 @@ async function main(): Promise<void> {
     // warm state this checkout exists to keep.
     await git(gate, "checkout", "--quiet", "--force", "--detach", prHead);
     await git(gate, "clean", "-fdq");
+    // Ignored build output the gate itself produces or reads, which a
+    // previous merge may have left: a file a PR deleted could survive there
+    // and mask a failure. Removed so this merge rebuilds it from its own tree.
+    await git(gate, "clean", "-fdqX", "--", ...STALE_OUTPUT_PATHS);
     if ((await git(gate, "merge-base", "HEAD", mainSha)) !== mainSha) {
       console.log(`\n▶ Rebasing PR #${pr} onto origin/main (${mainSha.slice(0, 8)})`);
       const rebase = await $`git rebase ${mainSha}`.cwd(gate).nothrow();
@@ -208,7 +244,20 @@ async function main(): Promise<void> {
     // longer the commit that passed. The branch is deleted through the API
     // rather than --delete-branch, which also tries to delete the local
     // branch — checked out in the PR's worktree.
-    await $`gh pr merge ${pr} --squash --match-head-commit ${tested}`;
+    // Right after a force-push GitHub can briefly still report the old head,
+    // and --match-head-commit then refuses. Retry for a few seconds rather
+    // than make the caller re-run a gate that already passed.
+    for (let tries = 1; ; tries++) {
+      const merged = await $`gh pr merge ${pr} --squash --match-head-commit ${tested}`.nothrow();
+      if (merged.exitCode === 0) break;
+      if (tries === MERGE_TRIES) {
+        fail(
+          `GitHub refused the merge of ${tested.slice(0, 8)} (see above). The gate passed and ${STATUS_CONTEXT} is recorded on it;\n` +
+            `  once GitHub shows that commit as the PR head, merge with: gh pr merge ${pr} --squash --match-head-commit ${tested}`
+        );
+      }
+      await Bun.sleep(3000);
+    }
     await $`gh api -X DELETE repos/${repo}/git/refs/heads/${info.headRefName}`.quiet().nothrow();
     console.log(
       `\n✓ PR #${pr} merged.\n` +

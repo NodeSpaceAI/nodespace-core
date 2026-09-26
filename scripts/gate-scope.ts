@@ -21,17 +21,15 @@ export interface GateScope {
   fullReason: string | null;
   /** Happy-DOM unit tests and the Chromium browser tier. */
   frontend: boolean;
-  /** Rust tests, the Tauri-seam tests, and the daemon build they need. */
+  /** The Rust workspace's tests (nextest) and nodespace-app's unit tests. */
   rust: boolean;
-  /** The headless daemon round-trip (frontend adapters -> HTTP -> gRPC). */
-  e2e: boolean;
-  /** The skill package's tests and the SKILL.md drift check. */
+  /** The skill package's tests. */
   skill: boolean;
   /** Tests of the tooling under scripts/. */
   scripts: boolean;
 }
 
-const ALL: Omit<GateScope, "fullReason"> = { frontend: true, rust: true, e2e: true, skill: true, scripts: true };
+const ALL: Omit<GateScope, "fullReason"> = { frontend: true, rust: true, skill: true, scripts: true };
 
 /** Every stage, for the merge gate, which never scopes. */
 export const FULL_SCOPE: GateScope = { fullReason: "merge gate", ...ALL };
@@ -52,14 +50,10 @@ const RUST_DIRS = [
 const RUST_ROOT_FILES = ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "rust-toolchain"];
 
 /**
- * Frontend files whose behaviour the e2e suite exercises end to end: the
- * adapters that talk to the daemon, and the e2e harness and dev-proxy.
+ * Tooling fixtures Rust tests read: the eval golden files under scripts/ are
+ * asserted by packages/agent's golden tests, so a change there must run Rust.
  */
-const E2E_FRONTEND_DIRS = [
-  "packages/desktop-app/src/lib/services/",
-  "packages/desktop-app/src/tests/e2e/",
-  "packages/dev-tools/",
-];
+const RUST_READ_SCRIPT_DIRS = ["scripts/eval/"];
 
 /**
  * The gate's own machinery. A change here can alter what any stage does, so
@@ -90,7 +84,7 @@ export function classify(files: string[]): GateScope {
     // empty diff would skip everything; run it all instead.
     return { fullReason: "no changes against origin/main", ...ALL };
   }
-  const scope: GateScope = { fullReason: null, frontend: false, rust: false, e2e: false, skill: false, scripts: false };
+  const scope: GateScope = { fullReason: null, frontend: false, rust: false, skill: false, scripts: false };
   for (const file of files) {
     const gateFile = GATE_FILES.find((g) => (g.endsWith("/") ? file.startsWith(g) : file === g));
     if (gateFile !== undefined) {
@@ -102,34 +96,37 @@ export function classify(files: string[]): GateScope {
       continue;
     }
     if (file.startsWith("packages/skill/")) {
+      // The CLI's SKILL.md generation tests and the agent's skill rules read
+      // these files, so a skill change reaches Rust too.
       scope.skill = true;
+      scope.rust = true;
       continue;
     }
     if (file.startsWith("scripts/")) {
       scope.scripts = true;
+      if (RUST_READ_SCRIPT_DIRS.some((d) => file.startsWith(d))) scope.rust = true;
       continue;
     }
-    if (E2E_FRONTEND_DIRS.some((d) => file.startsWith(d))) {
-      scope.frontend = true;
-      scope.e2e = true;
-      continue;
-    }
-    if (file.startsWith("packages/desktop-app/")) {
+    if (file.startsWith("packages/desktop-app/") || file.startsWith("packages/dev-tools/")) {
       scope.frontend = true;
       continue;
     }
     return { fullReason: `unrecognized path (${file})`, ...ALL };
   }
-  // The daemon is what the e2e suite runs, so any Rust change reaches it.
-  if (scope.rust) scope.e2e = true;
+  // Some scripts tests read Rust-side outputs (the eval golden fixtures are
+  // written by the agent's golden tests). They take seconds, so any Rust
+  // change runs them rather than tracking each coupling by hand.
+  if (scope.rust) scope.scripts = true;
   return scope;
 }
 
 /** Files changed from the merge-base with origin/main to the working tree. */
 async function changedFiles(): Promise<string[]> {
   const base = (await $`git merge-base origin/main HEAD`.quiet().text()).trim();
-  const committed = await $`git diff --name-only ${base} HEAD`.quiet().text();
-  const uncommitted = await $`git diff --name-only HEAD`.quiet().text();
+  // --no-renames: a rename is listed by its destination alone otherwise, and
+  // the path it left can matter as much as the one it arrived at.
+  const committed = await $`git diff --name-only --no-renames ${base} HEAD`.quiet().text();
+  const uncommitted = await $`git diff --name-only --no-renames HEAD`.quiet().text();
   const untracked = await $`git ls-files --others --exclude-standard`.quiet().text();
   const all = `${committed}\n${uncommitted}\n${untracked}`.split("\n").map((f) => f.trim());
   return [...new Set(all.filter((f) => f !== ""))];

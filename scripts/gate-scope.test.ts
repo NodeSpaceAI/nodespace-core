@@ -8,7 +8,7 @@
 import { describe, expect, test } from "bun:test";
 import { classify, describeScope } from "./gate-scope";
 
-const NONE = { frontend: false, rust: false, e2e: false, skill: false, scripts: false };
+const NONE = { frontend: false, rust: false, skill: false, scripts: false };
 
 describe("classify", () => {
   test("a Svelte component change runs only the frontend tiers", () => {
@@ -19,15 +19,13 @@ describe("classify", () => {
     });
   });
 
-  test("a frontend service change also runs e2e, which exercises the adapters", () => {
-    const scope = classify(["packages/desktop-app/src/lib/services/backend-adapter.ts"]);
-    expect(scope.frontend && scope.e2e).toBe(true);
-    expect(scope.rust).toBe(false);
+  test("the dev-proxy counts as frontend", () => {
+    expect(classify(["packages/dev-tools/src/proxy.ts"]).frontend).toBe(true);
   });
 
-  test("a Rust change runs Rust and e2e, but not the frontend tiers", () => {
+  test("a Rust change runs Rust and the (seconds-long) scripts tests, not the frontend tiers", () => {
     const scope = classify(["packages/core/src/services/node_service/mod.rs"]);
-    expect(scope).toEqual({ fullReason: null, ...NONE, rust: true, e2e: true });
+    expect(scope).toEqual({ fullReason: null, ...NONE, rust: true, scripts: true });
   });
 
   test.each([
@@ -40,8 +38,18 @@ describe("classify", () => {
     expect(classify([file]).rust).toBe(true);
   });
 
-  test("a skill change runs the skill tier and its drift check, nothing else", () => {
-    expect(classify(["packages/skill/SKILL.md"])).toEqual({ fullReason: null, ...NONE, skill: true });
+  test("a skill change runs the skill tier and Rust, whose tests read the skill's files", () => {
+    expect(classify(["packages/skill/SKILL.md"])).toEqual({
+      fullReason: null,
+      ...NONE,
+      skill: true,
+      rust: true,
+      scripts: true,
+    });
+  });
+
+  test("the eval golden fixtures under scripts/ also run Rust, whose tests assert them", () => {
+    expect(classify(["scripts/eval/golden/case-1.json"]).rust).toBe(true);
   });
 
   test("a tooling script change runs only the scripts tests", () => {
@@ -57,7 +65,7 @@ describe("classify", () => {
 
   test("mixed changes union their stages", () => {
     const scope = classify(["packages/desktop-app/src/routes/+page.svelte", "packages/cli/src/main.rs"]);
-    expect(scope).toEqual({ fullReason: null, ...NONE, frontend: true, rust: true, e2e: true });
+    expect(scope).toEqual({ fullReason: null, ...NONE, frontend: true, rust: true, scripts: true });
   });
 
   test.each([
@@ -70,7 +78,7 @@ describe("classify", () => {
   ])("a change to the gate's own machinery (%s) runs everything", (file) => {
     const scope = classify([file]);
     expect(scope.fullReason).not.toBeNull();
-    expect(scope.frontend && scope.rust && scope.e2e && scope.skill && scope.scripts).toBe(true);
+    expect(scope.frontend && scope.rust && scope.skill && scope.scripts).toBe(true);
   });
 
   test("an unrecognized path runs everything rather than guessing", () => {
@@ -87,6 +95,6 @@ describe("classify", () => {
 test("describeScope names what runs, what is skipped, and the override", () => {
   const text = describeScope(classify(["packages/desktop-app/src/app.css"]));
   expect(text).toContain("running: frontend");
-  expect(text).toContain("skipping: rust, e2e, skill, scripts");
+  expect(text).toContain("skipping: rust, skill, scripts");
   expect(text).toContain("NODESPACE_GATE_FULL=1");
 });
