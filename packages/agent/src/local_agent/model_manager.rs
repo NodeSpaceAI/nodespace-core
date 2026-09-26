@@ -119,7 +119,7 @@ const MINISTRAL_14B: CatalogEntry = CatalogEntry {
 /// native tool-call handler in llama.cpp.
 const MISTRAL_NEMO_12B: CatalogEntry = CatalogEntry {
     id: "mistral-nemo-12b-q4km",
-    family: ModelFamily::Ministral, // same [TOOL_CALLS] format, same parser
+    family: ModelFamily::Ministral, // same [TOOL_CALLS] format, same llama.cpp handler
     name: "Mistral NeMo 12B Instruct Q4_K_M",
     filename: "Mistral-Nemo-Instruct-2407.Q4_K_M.gguf",
     size_bytes: 7_477_204_928, // ~7.5 GB

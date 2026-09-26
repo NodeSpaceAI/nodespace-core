@@ -39,9 +39,6 @@ pub enum ChatError {
     #[error("Context window exceeded: {0}")]
     ContextOverflow(String),
 
-    #[error("Tool-call parse error: {0}")]
-    ToolCallParseError(String),
-
     #[error("IO error: {0}")]
     IoError(#[from] std::io::Error),
 }
