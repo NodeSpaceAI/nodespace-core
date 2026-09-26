@@ -455,9 +455,10 @@
    * Open the node at the other end of an edge, reusing its tab if it already has
    * one rather than stacking a duplicate.
    *
-   * For an INBOUND row this is also the route to editing: that node's own panel
-   * declares the relationship outbound, which is the only place the edge can be
-   * changed. The modal closes so it doesn't sit over the destination.
+   * For a read-only INBOUND row — one whose relationship declares edge fields —
+   * this is also the route to editing: that node's own panel declares the
+   * relationship outbound, which is the only place such an edge can be changed.
+   * The modal closes so it doesn't sit over the destination.
    */
   function openTarget(row: RelationshipRowView) {
     open = false;
@@ -767,7 +768,7 @@
           {#if selectedGroup}
             {@const group = selectedGroup}
             {@const editable = groupSupportsEdgeEditing(group)}
-            {@const inbound = group.direction === 'in'}
+            {@const authorable = groupAcceptsEdgesHere(group)}
             <!-- No `read-only` badge here: the rail heading above the selection
                  already says it, and the pane offers no controls to edit with. A
                  third signal is noise. -->
@@ -829,7 +830,7 @@
                       <ExternalLinkIcon class="size-3.5" />
                     </button>
 
-                    {#if groupAcceptsEdgesHere(group)}
+                    {#if authorable}
                       <button
                         type="button"
                         class="text-muted-foreground hover:text-destructive focus-visible:bg-accent focus-visible:text-accent-foreground inline-flex size-6 shrink-0 items-center justify-center rounded focus-visible:outline-none disabled:opacity-50"
@@ -920,16 +921,17 @@
                         </div>
                       {/each}
                       <!-- Two different reasons a row is read-only, and they need
-                           different answers: an inbound edge is owned elsewhere,
-                           so the fix is to open that node; an undeclared key has
-                           no type to build an editor from, so the fix is to
-                           declare it on the schema. Saying "open the owning node"
-                           for the second case would send the user somewhere that
-                           cannot help — this node already owns the edge. -->
+                           different answers: an inbound edge with declared fields
+                           is authored at its declaring end, so the fix is to open
+                           that node; an undeclared key has no type to build an
+                           editor from, so the fix is to declare it on the schema.
+                           Saying "open the owning node" for the second case would
+                           send the user somewhere that cannot help — neither end
+                           can edit an undeclared key. -->
                       <p class="text-muted-foreground text-xs">
                         {#if editable}
                           Changes save as you make them.
-                        {:else if inbound}
+                        {:else if !authorable}
                           Edit these from the node that owns this relationship.
                         {:else}
                           These properties aren't declared on the schema, so they're shown as

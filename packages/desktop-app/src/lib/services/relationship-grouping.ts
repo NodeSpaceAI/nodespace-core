@@ -245,8 +245,9 @@ export function resolveEdgeEndpoints(
 
 /**
  * A relationship group's edge properties can only be edited when the schema
- * declares fields to edit. Inbound groups are never editable: the edge is owned
- * by the other node's schema.
+ * declares fields to edit. An inbound group's edge PROPERTIES are never editable
+ * here: they are authored where the relationship is declared (whether a bare
+ * inbound edge can be added or removed here is `groupAcceptsEdgesHere`).
  *
  * A group carrying only AD-HOC edge keys — present on stored edges but never
  * declared in `edgeFields` — is deliberately not editable either. The values
