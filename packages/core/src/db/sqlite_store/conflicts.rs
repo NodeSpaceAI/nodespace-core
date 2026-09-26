@@ -520,8 +520,9 @@ impl SqliteStore {
                 continue;
             }
 
-            // The loser's own parent edge, when the survivor already has a
-            // parent: a second one would break the single-parent tree.
+            // The loser's own parent edge, when the survivor does not take it
+            // (step 0): the survivor already has a parent, or that parent is
+            // inside the survivor's own subtree.
             if edge.relationship_type == "has_child"
                 && edge.out_node == loser_id
                 && !takes_loser_parent
