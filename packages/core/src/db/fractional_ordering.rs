@@ -2,6 +2,12 @@
 pub struct FractionalOrderCalculator;
 
 impl FractionalOrderCalculator {
+    /// Smallest gap between adjacent sibling orders that is still safe to
+    /// bisect. Below it, callers re-spread the siblings with [`Self::rebalance`]
+    /// before inserting, so repeated same-position inserts never converge onto
+    /// an existing key.
+    pub const MIN_GAP: f64 = 0.0001;
+
     /// Calculate order value for inserting between prev and next.
     ///
     /// Returns a deterministic midpoint or endpoint. Under SQLite's serialized
@@ -32,8 +38,7 @@ impl FractionalOrderCalculator {
 
         for i in 1..orders.len() {
             let gap = orders[i] - orders[i - 1];
-            if gap < 0.0001 {
-                // Precision threshold
+            if gap < Self::MIN_GAP {
                 return true;
             }
         }

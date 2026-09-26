@@ -497,28 +497,53 @@ impl SqliteStore {
         insert_after_sibling_id: Option<&str>,
     ) -> Result<f64> {
         let mut rows = tx.conn().query(
-            "SELECT out_node, json_extract(properties, '$.order') as ord FROM relationship WHERE in_node = ?1 AND relationship_type = 'has_child' ORDER BY json_extract(properties, '$.order') ASC",
+            "SELECT id, out_node, json_extract(properties, '$.order') as ord FROM relationship WHERE in_node = ?1 AND relationship_type = 'has_child' ORDER BY json_extract(properties, '$.order') ASC",
             libsql::params![parent_id.to_string()],
         ).await.context("Failed to get sibling relationships")?;
 
-        let mut siblings: Vec<(String, f64)> = Vec::new();
+        // (relationship id, sibling node id, order)
+        let mut siblings: Vec<(String, String, f64)> = Vec::new();
         while let Some(row) = rows.next().await? {
-            let sibling_id: String = row.get(0)?;
-            let ord: Option<f64> = row.get(1)?;
-            siblings.push((sibling_id, ord.unwrap_or(0.0)));
+            let rel_id: String = row.get(0)?;
+            let sibling_id: String = row.get(1)?;
+            let ord: Option<f64> = row.get(2)?;
+            siblings.push((rel_id, sibling_id, ord.unwrap_or(0.0)));
         }
 
         let new_order = if let Some(after_id) = insert_after_sibling_id {
-            if let Some(after_index) = siblings.iter().position(|(id, _)| id == after_id) {
-                let prev_order = siblings[after_index].1;
-                let next_order = siblings.get(after_index + 1).map(|(_, o)| *o);
-                FractionalOrderCalculator::calculate_order(Some(prev_order), next_order)
+            if let Some(after_index) = siblings.iter().position(|(_, id, _)| id == after_id) {
+                let prev_order = siblings[after_index].2;
+                let next_order = siblings.get(after_index + 1).map(|(_, _, o)| *o);
+                match next_order {
+                    Some(next) if next - prev_order < FractionalOrderCalculator::MIN_GAP => {
+                        // Repeated inserts at one anchor halve this gap each time;
+                        // re-spread the siblings before it collapses into a
+                        // duplicate key — `move_node`'s same safeguard, but written
+                        // through `tx` so it commits or rolls back with the insert.
+                        let respread = FractionalOrderCalculator::rebalance(siblings.len());
+                        for ((rel_id, _, _), order) in siblings.iter().zip(&respread) {
+                            let props = serde_json::json!({ "order": order }).to_string();
+                            tx.conn()
+                                .execute(
+                                    "UPDATE relationship SET properties = ?1 WHERE id = ?2",
+                                    libsql::params![props, rel_id.clone()],
+                                )
+                                .await
+                                .context("Failed to rebalance sibling order")?;
+                        }
+                        FractionalOrderCalculator::calculate_order(
+                            Some(respread[after_index]),
+                            Some(respread[after_index + 1]),
+                        )
+                    }
+                    _ => FractionalOrderCalculator::calculate_order(Some(prev_order), next_order),
+                }
             } else {
-                let last = siblings.last().map(|(_, o)| *o);
+                let last = siblings.last().map(|(_, _, o)| *o);
                 FractionalOrderCalculator::calculate_order(last, None)
             }
         } else {
-            let first = siblings.first().map(|(_, o)| *o);
+            let first = siblings.first().map(|(_, _, o)| *o);
             FractionalOrderCalculator::calculate_order(None, first)
         };
 
@@ -2744,7 +2769,7 @@ impl SqliteStore {
                     let next_order = siblings.get(after_index + 1).map(|(_, o)| *o);
 
                     if let Some(next) = next_order {
-                        if (next - prev_order) < 0.0001 {
+                        if (next - prev_order) < FractionalOrderCalculator::MIN_GAP {
                             self.rebalance_children_for_parent(&db, parent_id).await?;
                             // Re-query after rebalancing
                             let mut rows2 = db.query(
