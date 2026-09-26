@@ -142,8 +142,7 @@ async function main(): Promise<void> {
   // and the merge itself. A push check may run without the lock (it only
   // slows things down); a merge may not. Two merges share one gate checkout,
   // so an unserialized one could check its PR out under another's running
-  // tests — and that other merge would record a pass for a tree it never
-  // tested. So the lock's usual degrade-and-continue is refused here, as is
+  // tests — and that other merge would then land a tree it never tested. So the lock's usual degrade-and-continue is refused here, as is
   // the no-lock opt-out.
   if (process.env[DISABLE_ENV_VAR]) fail(`${DISABLE_ENV_VAR} is set; a merge always takes the gate lock. Unset it and re-run.`);
   const lock = await acquireGateLock();
@@ -204,7 +203,7 @@ async function main(): Promise<void> {
     }
 
     if (dryRun) {
-      console.log(`\n✓ Dry run: the merge gate passed on ${tested.slice(0, 8)}. Nothing pushed, recorded or merged.\n`);
+      console.log(`\n✓ Dry run: the merge gate passed on ${tested.slice(0, 8)}. Nothing pushed or merged.\n`);
       return;
     }
 
