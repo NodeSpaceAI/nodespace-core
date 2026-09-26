@@ -556,25 +556,15 @@ export class SimplePersistenceCoordinator {
     await this.flushAndWaitForNodes(Array.from(this.pendingOperations.keys()));
   }
 
+  /**
+   * Wait for the given nodes' pending writes to settle without starting any
+   * debounced write early. See `settleNode` for how a replaced queued write
+   * is followed to its replacement.
+   *
+   * @returns Set of node IDs that failed to persist or timed out
+   */
   async waitForPersistence(nodeIds: string[], timeoutMs = 5000): Promise<Set<string>> {
-    const failed = new Set<string>();
-    const promises = nodeIds.map(async (nodeId) => {
-      const pending = this.pendingOperations.get(nodeId);
-      if (pending) {
-        try {
-          await Promise.race([
-            pending.promise,
-            new Promise<void>((_, reject) =>
-              setTimeout(() => reject(new Error('Timeout')), timeoutMs)
-            )
-          ]);
-        } catch {
-          failed.add(nodeId);
-        }
-      }
-    });
-    await Promise.all(promises);
-    return failed;
+    return this.settleNodes(nodeIds, timeoutMs, false);
   }
 
   /**
@@ -591,6 +581,14 @@ export class SimplePersistenceCoordinator {
    * @returns Set of node IDs that failed to persist
    */
   async flushAndWaitForNodes(nodeIds: string[], timeoutMs = 5000): Promise<Set<string>> {
+    return this.settleNodes(nodeIds, timeoutMs, true);
+  }
+
+  private async settleNodes(
+    nodeIds: string[],
+    timeoutMs: number,
+    startDebounced: boolean
+  ): Promise<Set<string>> {
     const failed = new Set<string>();
     let timeoutId: ReturnType<typeof setTimeout> | undefined;
     const timeout = new Promise<'timeout'>((resolve) => {
@@ -599,7 +597,7 @@ export class SimplePersistenceCoordinator {
 
     await Promise.all(
       nodeIds.map(async (nodeId) => {
-        if (!(await this.flushNode(nodeId, timeout))) failed.add(nodeId);
+        if (!(await this.settleNode(nodeId, timeout, startDebounced))) failed.add(nodeId);
       })
     );
     clearTimeout(timeoutId);
@@ -607,13 +605,14 @@ export class SimplePersistenceCoordinator {
   }
 
   /**
-   * Start `nodeId`'s debounced write if it is still waiting, then wait for the
-   * node's pending entry to settle. Returns false on failure or timeout.
+   * Wait for `nodeId`'s pending entry to settle, first starting its debounced
+   * write if `startDebounced` is set and it is still waiting. Returns false on
+   * failure or timeout.
    *
    * A queued write replaced during the wait rejects with
    * `OperationCancelledError` while the node's in-flight write and the write
    * that replaced it are still running. The entry is looked up again after
-   * every cancellation, so the flush waits on the replacement instead of
+   * every cancellation, so the wait follows the replacement instead of
    * resolving early. A cancellation that leaves nothing pending dropped the
    * write outright (e.g. `clearQueued()` after an OCC conflict), so it counts
    * as a failure.
@@ -625,10 +624,14 @@ export class SimplePersistenceCoordinator {
    * `runOperation`'s `finally` owns that, and a delete from here could remove
    * the placeholder it registers for the next queued write.
    */
-  private async flushNode(nodeId: string, timeout: Promise<'timeout'>): Promise<boolean> {
+  private async settleNode(
+    nodeId: string,
+    timeout: Promise<'timeout'>,
+    startDebounced: boolean
+  ): Promise<boolean> {
     let pending = this.pendingOperations.get(nodeId);
     while (pending) {
-      if (pending.debounced && !this.executingOperations.has(nodeId)) {
+      if (startDebounced && pending.debounced && !this.executingOperations.has(nodeId)) {
         clearTimeout(pending.timeoutId);
         pending.debounced = false;
         void pending.operation();
@@ -646,7 +649,7 @@ export class SimplePersistenceCoordinator {
         pending = next;
       }
     }
-    // Nothing was pending, so there was nothing to flush.
+    // Nothing was pending, so there was nothing to wait for.
     return true;
   }
 
