@@ -545,6 +545,44 @@ describe("FIFO queue", () => {
     expect(ticketName(1000, 1) < ticketName(1000, 2)).toBe(true);
   });
 
+  test("an urgent (merge) ticket sorts ahead of every push ticket, whatever its arrival", () => {
+    expect(ticketName(9_999_999, 5, true) < ticketName(1, 1)).toBe(true);
+    expect(ticketName(10, 5, true) < ticketName(20, 5, true)).toBe(true);
+  });
+
+  test("a merge gate jumps queued push checks, but not the gate holding the lock", async () => {
+    // Two push checks queued before it; the lock itself is free.
+    plantTicket(999_010, 1);
+    plantTicket(999_011, 2);
+    const { options } = harness({ isAlive: () => true, now: () => 10, urgent: true });
+
+    const lock = await acquireGateLock(options);
+
+    expect(lock.held).toBe(true);
+    expect(queued()).toEqual([ticketName(1, 999_010), ticketName(2, 999_011)]);
+    lock.release();
+  });
+
+  test("a push check still waits behind a queued merge gate", async () => {
+    mkdirSync(queueDir(lockPath), { recursive: true });
+    const name = ticketName(50, 999_012, true);
+    writeFileSync(join(queueDir(lockPath), name), serializeHolder(holderFile({ pid: 999_012, startedAt: 50 })));
+    let clock = 10;
+    const { options } = harness({
+      isAlive: () => true,
+      maxWaitMs: 5000,
+      now: () => clock,
+      sleep: async () => {
+        clock += 2000;
+      },
+    });
+
+    const lock = await acquireGateLock(options);
+
+    expect(lock.held).toBe(false);
+    expect(existsSync(lockPath)).toBe(false);
+  });
+
   test("a later arrival does not take a free lock while an earlier live waiter is queued", async () => {
     plantTicket(999_002, 1);
     let clock = 10;
