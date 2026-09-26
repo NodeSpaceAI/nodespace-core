@@ -174,14 +174,16 @@ if (missing.length > 0) {
 }
 
 // `--lib --bins` and deliberately not `--tests`, which is where this differs
-// from `rust:test:workspace`: the `tests/*.rs` targets each spawn a real
+// from the rest of `rust:test`: the `tests/*.rs` targets each spawn a real
 // nodespaced and need `NODESPACED_TEST_BIN` plus `--test-threads=1`, so the
-// pre-push gate runs them as its own step (ADR-048). Splitting them out is
+// merge gate runs them as its own step (ADR-048). Splitting them out is
 // what lets these in-process unit tests run in `test:all` at all.
 //
-// --test-threads=2 matches the rest of `rust:test`. The gate's =1 cap exists
-// for those daemon-spawning targets; these need no such serialization (the
-// ones touching process-global env take their own lock).
+// Plain `cargo test` rather than nextest: these are in-process and link no
+// SQLite of their own, so they have no shared-process hazard to isolate, and
+// the whole suite takes about two seconds. --test-threads=2 because the ones
+// touching process-global env take their own lock. The gate's =1 cap exists
+// for the daemon-spawning targets only.
 const result = Bun.spawnSync(
   [
     'cargo',

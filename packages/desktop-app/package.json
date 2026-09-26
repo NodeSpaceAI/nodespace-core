@@ -34,7 +34,7 @@
     "test:e2e": "bunx vitest run --config vitest.e2e.config.ts",
     "test:e2e:watch": "bunx vitest --config vitest.e2e.config.ts",
     "test:all": "bun run test:coverage && bun run rust:test",
-    "rust:test": "bun run --cwd ../.. rust:test:core",
+    "rust:test": "bun run --cwd ../.. rust:test",
     "quality:design-tokens": "bun run scripts/check-design-tokens.ts",
     "quality:check": "bunx eslint 'src/**/*.{ts,svelte}' && bun run quality:design-tokens && BROWSERSLIST_IGNORE_OLD_DATA=1 bunx svelte-check",
     "quality:fix": "bunx eslint --fix 'src/**/*.{ts,svelte}' && bun run quality:design-tokens && BROWSERSLIST_IGNORE_OLD_DATA=1 bunx svelte-check",

@@ -191,7 +191,7 @@ IMPORTANT SUB-AGENT INSTRUCTIONS:
    bun run test:watch        # TDD watch mode
    bun run test:browser      # Real browser tests (focus/blur, Playwright/Chromium)
    bun run test:browser:watch
-   bun run test:all          # Unit + scripts + skill + Rust — what the pre-push gate runs
+   bun run test:all          # Unit + scripts + skill + Rust (nextest)
    bun run test:all:coverage # Same, with coverage instrumentation (reporting only)
    bun run test:db           # Full SQLite integration (before merging critical changes)
    bun run test:perf         # Full performance validation (large datasets)
@@ -199,7 +199,7 @@ IMPORTANT SUB-AGENT INSTRUCTIONS:
    ```
 
    - **Happy-DOM** (`bun run test`): 99% of tests — logic, services, utilities
-   - **Browser mode** (`bun run test:browser`): only for real focus/blur or browser-specific DOM APIs; requires `bunx playwright install chromium` (the pre-push gate installs it when missing)
+   - **Browser mode** (`bun run test:browser`): only for real focus/blur or browser-specific DOM APIs; requires `bunx playwright install chromium` (the gate installs it when missing)
    - **Performance**: fast mode (default) for daily dev, `bun run test:perf` before perf-critical merges
    - **Database mode**: full integration validation before merging critical changes
 
@@ -211,9 +211,9 @@ IMPORTANT SUB-AGENT INSTRUCTIONS:
    bun run gh:pr <number>    # Creates PR, updates status to "In Review"
    ```
 
-   > Do **not** run `bun run test:all` by hand here — the pre-push gate runs it (and more) on
-   > every push, so a manual run duplicates the entire pyramid. Run the narrower `bun run test`
-   > during development for fast feedback; let the gate be the gate. `quality:fix` stays manual
+   > Do **not** run `bun run test:all` by hand here — the push check runs the tiers your change
+   > reaches, and the merge gate runs everything. Run the narrower `bun run test` during
+   > development for fast feedback; let the gate be the gate. `quality:fix` stays manual
    > because it rewrites files, which you want done before you commit.
 
    > ⚠️ **`bun run gh:pr` infers the head branch from the LOCAL branch name**, which `EnterWorktree` prefixes with `worktree-`. It therefore fails with `Validation Failed: {"field":"head","code":"invalid"}` against a remote branch pushed without that prefix. Create the PR directly instead, then set status:
@@ -225,28 +225,32 @@ IMPORTANT SUB-AGENT INSTRUCTIONS:
    >
    > The Status field accepts exactly six values — `Backlog`, `Todo`, `In Progress`, `In Review`, `Done`, `Blocked` — each mapped to a single-select option ID on the project board. Anything else is rejected; there is no "Ready for Review".
 
-   > ⚠️ **`git push` runs a pre-push gate (`scripts/test-gate.ts`, ADR-047)** that re-runs `test:all`, `test:browser` (Chromium), `cargo build --bin nodespaced`, the SKILL.md drift check, `test:e2e`, and the Tauri-seam tests — every push, not just the first. Expect **~8–10 minutes**; a fresh worktree compiles its own crates cold, while crates.io dependencies come from the machine-wide sccache that `bun install` sets up (`scripts/setup-build-cache.ts`). Sidecar binaries don't need staging or copying in — debug builds leave unstaged ones out. Give the push command a long timeout (10+ minutes) or run it in the background and wait for completion — a command that times out before the hook finishes looks identical to a real failure but isn't one; check the tail of the actual output for a real test failure vs. an incomplete cold build before concluding the push failed. Do not reach for `--no-verify` to work around slowness — it's reserved for WIP Handoff Commits.
+   > ⚠️ **The test gate has two modes (`scripts/test-gate.ts`, ADR-047).**
+   > - **`git push` runs the push check:** lint, plus only the unit tiers your changes reach (frontend, browser, scripts, skill, Rust via nextest). A frontend-only push skips all Rust; a docs-only push runs lint alone. Anything the scoper doesn't recognize, or a change to the gate itself, runs every tier. `NODESPACE_GATE_FULL=1` forces that.
+   > - **`bun run merge <PR#>` runs the full pyramid once**, on the PR rebased onto current main — every unit tier plus the daemon build, SKILL.md drift check, e2e and Tauri-seam tests — then records a `nodespace/gate` commit status and squash-merges. It is the only way to merge (see step 6).
+   >
+   > Gates are serialized machine-wide, first come first served, so a push may queue behind another session's gate. Give pushes and merges a long timeout (10+ minutes) or run them in the background and wait — a command that times out before the gate finishes looks identical to a real failure but isn't one. `bun install` installs cargo-nextest and sets up the machine-wide sccache (`scripts/setup-rust-tooling.ts`); sidecar binaries never need staging or copying in. Do not reach for `--no-verify` to work around slowness — it's reserved for WIP Handoff Commits.
 
 5. **Code Review** — run `/pragmatic-code-review` on every PR before merge. NEVER merge without it. **Always follow it with `/address-review`, unconditionally — even when the review comes back APPROVE with zero findings.** Do not pre-judge from the review text whether anything is "just nits" or "nothing to address" and skip the step on that basis; `/address-review` itself owns that triage and the "is a re-review needed?" decision. Repeat review → address-review until `/address-review` reports no re-review needed. Then STOP — merging is the user's call, not automatic.
 
-6. **Merge & Clean Up** — order matters:
+6. **Merge & Clean Up** — only after the user says to merge:
    ```bash
-   # Step 1: Verify mergeable (from worktree)
-   gh pr view <PR#> --json mergeable,reviewDecision,statusCheckRollup
+   # Step 1: From the PR's worktree, clean and pushed: full gate, then merge
+   bun run merge <PR#>
    ```
+   It rebases onto current main, runs the full pyramid, pushes the rebased branch if it moved, records `nodespace/gate: success` on that exact commit, squash-merges it (`--match-head-commit`, so nothing untested can land), and deletes the remote branch. If main moves while the gate runs, it rebases and tests again. `bun run merge <PR#> --dry-run` runs the gate without pushing, recording or merging. **Never merge with `gh pr merge` or the GitHub button** — `main` requires the `nodespace/gate` status, which only `bun run merge` records. A branch created before this command existed has no `scripts/merge-pr.ts`; rebase it onto main first.
    ```
-   # Step 2: Exit BEFORE merging
+   # Step 2: Leave the worktree
    ExitWorktree({action: "remove", discard_changes: true})
    ```
    ```bash
-   # Step 3: Merge from primary checkout
-   gh pr merge <PR#> --squash --delete-branch
+   # Step 3: From the primary checkout
    git pull origin main
    bun run gh:status <issue#> "Done"
    ```
-   `discard_changes: true` is safe — the squash merge supersedes local branch commits. Always ExitWorktree first: `gh pr merge --delete-branch` fails noisily if you're still inside the worktree.
+   `discard_changes: true` is safe — the squash merge supersedes local branch commits.
 
-**TodoWrite — NEW tasks:** First item must be the full startup sequence as a single step. Last items: "Run quality:fix and commit", "Push (pre-push gate runs the full pyramid)", "Create PR", "ExitWorktree + merge".
+**TodoWrite — NEW tasks:** First item must be the full startup sequence as a single step. Last items: "Run quality:fix and commit", "Push (push check runs the tiers the change reaches)", "Create PR", "bun run merge + ExitWorktree".
 
 **TodoWrite — WIP continuation:** First item: "WIP continuation sequence: git status, pull branch, review WIP commit, resume from Remaining Work". Last items same as above.
 
@@ -260,7 +264,7 @@ Every plan MUST include:
    > `git status` and `git pull origin main` on primary checkout, `EnterWorktree({name: "issue-<N>-brief-desc"})` (the tool owns the location and branch name — accept them), then inside the worktree: `bun install`, `bun run test` (baseline), `bun run gh:comment <N> "..."`, `bun run gh:assign <N> "@me"`, `bun run gh:status <N> "In Progress"`
 
 2. **Final steps:**
-   > `bun run quality:fix` + commit, `git push origin HEAD:issue-<N>-brief-desc` (the pre-push gate runs the full test pyramid — don't run `test:all` by hand first), then `gh pr create --head issue-<N>-brief-desc` (not `bun run gh:pr` — it fails on the `worktree-` branch prefix). After approval: `gh pr view <PR#>`, `ExitWorktree({action: "remove", discard_changes: true})`, `gh pr merge <PR#> --squash --delete-branch`.
+   > `bun run quality:fix` + commit, `git push origin HEAD:issue-<N>-brief-desc` (the push check runs the tiers the change reaches — don't run `test:all` by hand first), then `gh pr create --head issue-<N>-brief-desc` (not `bun run gh:pr` — it fails on the `worktree-` branch prefix). After the user approves the merge: `bun run merge <PR#>` from the worktree (full pyramid on the rebased PR, then squash-merge), then `ExitWorktree({action: "remove", discard_changes: true})`.
 
 3. **Inline standards** the implementation agent needs: e.g. "use `createLogger` not `console.log`", "mock Tauri with `vi.mock('@tauri-apps/api/core')`", "use `bun run test` not `bun test`".
 

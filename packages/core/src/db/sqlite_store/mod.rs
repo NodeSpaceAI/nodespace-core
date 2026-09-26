@@ -176,8 +176,8 @@ pub async fn ensure_sqlite_vec_registered() {
         .await;
 }
 
-/// **Why this crate's tests run at `--test-threads=1`** (`rust:test:core` in
-/// `package.json`, and `rust:test:lib`/`rust:test:long`): the bundled SQLite
+/// **Why the workspace's tests run under nextest, one process per test**
+/// (`rust:test` in `package.json`): the bundled SQLite
 /// fork this crate links (`libsql-ffi`'s vendored `SQLite3MultipleCiphers`
 /// amalgamation) has a real, unsynchronized data race in its WAL-manager
 /// singleton, verified by reading the vendored C source directly:
@@ -234,15 +234,8 @@ pub async fn ensure_sqlite_vec_registered() {
 /// (established from this crate's own prior narrow-fix failure), a clean
 /// run elsewhere is the low-probability-but-nonzero outcome the vendored
 /// bug predicts at these suites' smaller sizes, not evidence those targets
-/// are unexposed. All three crates' `--lib --bins --tests` targets are
-/// therefore now serialized the same way as this crate:
-/// `rust:test:libsql-linked` in `package.json`, excluded from
-/// `rust:test:workspace`'s `--test-threads=2` run exactly as this crate
-/// is. If CI or a local run ever surfaces this failure shape in
-/// `nodespace-cli` specifically (the one crate of the three whose `--lib`
-/// target has no direct `SqliteStore` construction, so its exposure is
-/// narrower than the other two), that is corroborating evidence, not a
-/// surprise — not grounds to narrow the treatment back down.
+/// are unexposed. All three crates therefore get the same treatment as this
+/// one.
 ///
 /// In production there is exactly one `SqliteStore` per daemon lifetime, so
 /// the race needs genuine test-suite concurrency (many independent stores
@@ -255,12 +248,17 @@ pub async fn ensure_sqlite_vec_registered() {
 /// already-open connection nowhere near an open call — evidence the
 /// corruption isn't bounded to the instant of opening, so there is no
 /// principled guarded region narrower than "every operation on every
-/// connection, for the life of the process" — which is `--test-threads=1`
-/// implemented as a hand-rolled lock, with strictly more surface for a
-/// missed call site. Serializing the whole binary is the direct fix, not a
-/// workaround: see `rust:test:core` in `package.json` (and
-/// `rust:test:libsql-linked` for the same treatment applied to
-/// `nodespace-agent`/`nodespace-daemon`/`nodespace-cli`, above).
+/// connection, for the life of the process".
+///
+/// That is exactly the boundary a process draws. The race is between threads
+/// sharing one copy of the vendored globals; cargo-nextest runs every test in
+/// its own process, so no two stores ever share them — the same shape as
+/// production, one store per process — while the suite still runs at full
+/// parallelism. Before nextest, these crates ran at `--test-threads=1`,
+/// which was clean but serialized several thousand tests. Under nextest the
+/// workspace suite ran clean across repeated full-parallelism runs (see
+/// ADR-047's 2026-09-26 amendment). A plain `cargo test` of these crates at
+/// more than one thread reintroduces the race; use `bun run rust:test`.
 /// Outcome of the `node_title_fts` staleness check, so that "a healthy index
 /// was left alone" is observable to a test. See
 /// [`SqliteStore::backfill_title_fts_if_stale`].

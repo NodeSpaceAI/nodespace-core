@@ -1,16 +1,20 @@
 #!/usr/bin/env bun
 
 /**
- * Local pre-push test gate.
+ * The local test gate, in two modes (ADR-047). This repo has no CI runner for
+ * tests; this script is the only gate.
  *
- * Runs the full test pyramid (frontend, skill, Rust, e2e) before code leaves
- * the machine. This repo has no CI runner for tests — this hook is the only
- * gate. See ADR-047.
+ * - `push` (the default, run by the Husky pre-push hook): lint, plus the unit
+ *   tiers this push's changes can reach (see gate-scope.ts). Minutes at most,
+ *   so WIP and review-fix pushes stay cheap.
+ * - `merge` (`--mode=merge`, run by `bun run merge <PR#>`): the full pyramid —
+ *   every unit tier, the daemon build, the SKILL.md drift check, e2e and the
+ *   Tauri-seam tests — unscoped, on the PR rebased onto current main. What
+ *   lands on main is what passed here; scripts/merge-pr.ts records that as a
+ *   commit status GitHub can require.
  *
- * This gate only activates once Husky has wired it in via the `prepare`
- * script (i.e. after `bun install`). It is a local convenience, not a
- * server-side enforcement backstop — a push from a machine that never ran
- * `bun install` is not gated.
+ * The push mode activates once Husky has wired it in via the `prepare`
+ * script (i.e. after `bun install`).
  *
  * Bypass: git push --no-verify. Reserved for WIP Handoff Commits (see
  * CLAUDE.md) — multi-session work, approaching context limits, a natural
@@ -23,6 +27,16 @@ import { reportBranchBehind } from "./check-branch-behind";
 import { classifyFailure, extractFailureOutput, formatAbortNote } from "./classify-test-failure";
 import { reportUpstreamFixes } from "./correlate-upstream-fixes";
 import { acquireGateLock, registerLockRelease } from "./gate-lock";
+import { describeScope, FULL_SCOPE, gateScope } from "./gate-scope";
+
+export type GateMode = "push" | "merge";
+
+/** `--mode=merge` selects the full pre-merge gate; anything else is a push. */
+export function parseMode(argv: string[]): GateMode {
+  return argv.includes("--mode=merge") ? "merge" : "push";
+}
+
+const mode = parseMode(process.argv.slice(2));
 
 async function run(label: string, cmd: () => Promise<unknown>) {
   console.log(`\n▶ ${label}`);
@@ -85,51 +99,84 @@ try {
   console.warn(`  ${err instanceof Error ? err.message : String(err)}\n`);
 }
 
-// Compiles the skill installer script BEFORE `test:all`: a nodespace-app unit
-// test asserts the source checkout's `packages/skill/dist/install.js` exists,
-// and the CLI's MCP integration test skips itself without it. That is just
-// the skill package's `tsc` build — under a second. The rest of
-// `build:skill` (staging the bundle, compiling the standalone installer) is
-// release packaging; no build or test here reads it, and build.rs leaves
-// anything unstaged out of a debug build's bundle.
-await run("bun run --cwd packages/skill build (skill installer script)", () => $`bun run --cwd packages/skill build`);
+// The merge gate never scopes: it is the one full run a change gets before
+// it lands, and it runs on the rebased result, where untouched areas can
+// still break.
+const scope = mode === "merge" ? FULL_SCOPE : await gateScope();
+const merge = mode === "merge";
+console.log(
+  merge
+    ? "\n▶ Merge gate: full pyramid on the rebased PR."
+    : `\n▶ Push check: ${describeScope(scope)}\n  The full pyramid runs once, before merge: bun run merge <PR#>`
+);
+
+/** Runs a stage when this push can affect it, and says so when it can't. */
+async function stage(enabled: boolean, label: string, cmd: () => Promise<unknown>) {
+  if (!enabled) {
+    console.log(`\n⏭ ${label} — skipped (${merge ? "not reached" : "runs in the merge gate, or nothing in this push reaches it"})`);
+    return;
+  }
+  await run(label, cmd);
+}
+
+const daemonBinary = `${process.cwd()}/target/debug/${process.platform === "win32" ? "nodespaced.exe" : "nodespaced"}`;
+
+// Compiles the skill installer script: a nodespace-app unit test asserts the
+// source checkout's `packages/skill/dist/install.js` exists, and the CLI's MCP
+// integration test skips itself without it. That is just the skill package's
+// `tsc` build — under a second. The rest of `build:skill` (staging the bundle,
+// compiling the standalone installer) is release packaging; no build or test
+// here reads it, and build.rs leaves anything unstaged out of a debug build.
+await stage(scope.rust || scope.skill, "bun run --cwd packages/skill build (skill installer script)", () =>
+  $`bun run --cwd packages/skill build`
+);
+// Lint gates cost seconds, so they run on every push regardless of scope.
 await run("bun run quality:scripts:check (scripts/ lint + typecheck)", () => $`bun run quality:scripts:check`);
 // The design-token gate (Stylelint over CSS and Svelte <style> blocks). It is
 // wired into the desktop-app quality scripts, but nothing automated runs those
 // and this repo has no CI, so without this line the gate depends on someone
-// remembering to run it — documentation rather than enforcement. Seconds to
-// run, unlike the Rust steps below.
+// remembering to run it — documentation rather than enforcement.
 await run(
   "bun run quality:design-tokens (design-token drift)",
   () => $`bun run --cwd packages/desktop-app quality:design-tokens`
 );
-await run("bun run test:all (frontend + skill + Rust)", () => $`bun run test:all`);
+// `test:all`, taken apart so each tier runs only when this push reaches it.
+await stage(scope.frontend, "bun run test (frontend, Happy-DOM)", () => $`bun run test`);
+await stage(scope.scripts, "bun run test:scripts (tooling)", () => $`bun run test:scripts`);
+await stage(scope.skill, "bun run test:skill (skill package)", () => $`bun run test:skill`);
+await stage(scope.rust, "bun run rust:test (Rust workspace, nextest)", async () => {
+  // A missing nextest otherwise surfaces as cargo's bare "no such command".
+  const probe = await $`cargo nextest --version`.quiet().nothrow();
+  if (probe.exitCode !== 0) {
+    throw new Error("cargo-nextest is not installed — run `bun install`, which installs it (scripts/setup-rust-tooling.ts).");
+  }
+  await $`bun run rust:test`;
+});
 // The browser tier: real focus/blur, drag-and-drop and layout that Happy-DOM
-// can't model. About five seconds, so there's no reason to leave it to chance.
-// The install is a no-op once Chromium is present and fetches it once on a
-// fresh machine.
-await run("bun run test:browser (Chromium)", async () => {
+// can't model. About five seconds. The install is a no-op once Chromium is
+// present and fetches it once on a fresh machine.
+await stage(scope.frontend, "bun run test:browser (Chromium)", async () => {
   await $`bun run --cwd packages/desktop-app playwright install chromium`.quiet();
   await $`bun run --cwd packages/desktop-app test:browser`;
 });
-await run("cargo build --bin nodespaced (e2e harness daemon)", () => $`cargo build --bin nodespaced`);
+// Everything below needs a built daemon or a full CLI compile, and runs only
+// in the merge gate.
+await stage(merge, "cargo build --bin nodespaced (e2e harness daemon)", () =>
+  $`cargo build --bin nodespaced`
+);
 // SKILL.md drift check (generated sections vs. the CLI definitions). Placed
 // after the daemon build on purpose: its `cargo run --example` shares that
 // dev-profile dependency tree, so it compiles only the CLI crate and the
-// example. Run first, it paid for a cold dev-profile build on its own.
-await run("bun run skill:check (SKILL.md drift)", () => $`bun run skill:check`);
-await run("bun run test:e2e (headless daemon round-trip)", () => {
-  const binaryName = process.platform === "win32" ? "nodespaced.exe" : "nodespaced";
-  const binary = `${process.cwd()}/target/debug/${binaryName}`;
-  return $`bun run test:e2e`.env({ ...process.env, NODESPACED_BINARY: binary });
-});
-await run(`cargo test -p nodespace-app --test "*" (Tauri-seam integration tests, ADR-048)`, () => {
-  const binaryName = process.platform === "win32" ? "nodespaced.exe" : "nodespaced";
-  const binary = `${process.cwd()}/target/debug/${binaryName}`;
+// example.
+await stage(merge, "bun run skill:check (SKILL.md drift)", () => $`bun run skill:check`);
+await stage(merge, "bun run test:e2e (headless daemon round-trip)", () =>
+  $`bun run test:e2e`.env({ ...process.env, NODESPACED_BINARY: daemonBinary })
+);
+await stage(merge, `cargo test -p nodespace-app --test "*" (Tauri-seam integration tests, ADR-048)`, () => {
   // --test "*": the `tests/*.rs` integration targets, and only those. This
   // crate's `src/` unit tests are in-process, need no daemon binary, and run
-  // headless in ~2s at full parallelism, so `rust:test` (above, via test:all)
-  // runs them alongside every other crate's. Narrowing this step is what
+  // headless in ~2s at full parallelism, so `rust:test` (above) runs them
+  // alongside every other crate's. Narrowing this step is what
   // leaves them free to do that — both a bare `cargo test -p nodespace-app`
   // and `--tests` would additionally re-run the lib/bin unittest targets
   // here, needlessly, under the =1 cap only this suite requires. (`--tests`
@@ -158,8 +205,8 @@ await run(`cargo test -p nodespace-app --test "*" (Tauri-seam integration tests,
   // directory, which would hand cargo a list of repo filenames instead.
   return $`cargo test -p nodespace-app --test "*" -- --test-threads=1`.env({
     ...process.env,
-    NODESPACED_TEST_BIN: binary,
+    NODESPACED_TEST_BIN: daemonBinary,
   });
 });
 
-console.log("\n✓ All tests passed — pushing.\n");
+console.log(merge ? "\n✓ Merge gate passed.\n" : "\n✓ Push check passed — pushing.\n");

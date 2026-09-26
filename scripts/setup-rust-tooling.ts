@@ -1,20 +1,24 @@
 #!/usr/bin/env bun
-// Sets up sccache as this machine's shared Rust compiler cache.
+// Installs the Rust tooling every dev machine needs, and sets up sccache as
+// the machine's shared compiler cache.
 //
-// Every worktree has its own target/, so without a shared cache each new
-// worktree compiles every crates.io dependency from scratch — minutes of the
-// pre-push gate (ADR-047) on its first push. sccache sits in front of rustc
-// (and the C/C++ compilers behind libsql and llama.cpp) and serves those
-// compiles from one machine-wide cache, so only the first worktree pays.
-// It does not cache incremental compiles, so the workspace's own crates
-// still build per worktree.
+// - cargo-nextest runs the Rust test suites (`rust:test`). It runs each test
+//   in its own process, which is what lets the libsql-linked crates run at
+//   full parallelism — see the race described in
+//   packages/core/src/db/sqlite_store/mod.rs.
+// - sccache sits in front of rustc (and the C/C++ compilers behind libsql and
+//   llama.cpp). Every worktree has its own target/, so without it each new
+//   worktree compiles every crates.io dependency from scratch; with it, only
+//   the first worktree on the machine pays. It does not cache incremental
+//   compiles, so the workspace's own crates still build per worktree.
 //
 // Runs from the root `prepare` script, i.e. on every `bun install`, because
 // that is the one step every dev machine is guaranteed to run. That makes
 // three rules non-negotiable:
 //   - Near-free when already set up: no network, no writes.
 //   - Never fails the install. Offline, unsupported platform, no cargo — warn
-//     and move on; a missing cache only costs build time.
+//     and move on. (A missing nextest does fail `rust:test`, loudly, naming
+//     `bun install` as the fix.)
 //   - Never clobbers a hand-edited ~/.cargo/config.toml. When a safe append
 //     isn't possible, print the lines to add instead.
 //
@@ -22,24 +26,58 @@
 // rustc and absolute paths match byte-for-byte across machines, and the
 // per-machine win (many worktrees sharing one cache) is most of the benefit.
 //
-// Opt out with NODESPACE_SKIP_BUILD_CACHE=1.
+// Opt out with NODESPACE_SKIP_RUST_TOOLING=1.
 
 import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { $ } from "bun";
 
-export const SKIP_ENV_VAR = "NODESPACE_SKIP_BUILD_CACHE";
+export const SKIP_ENV_VAR = "NODESPACE_SKIP_RUST_TOOLING";
 
-export const SCCACHE_VERSION = "0.18.0";
+/** A pinned release of a tool, per platform. */
+export interface ToolRelease {
+  url: string;
+  /**
+   * Pinned here rather than fetched alongside the archive: a checksum served
+   * from the same place as the binary proves only that the download finished.
+   */
+  sha256: string;
+  /** Path of the binary inside the extracted archive. */
+  binary: string;
+}
 
-// Pinned here rather than fetched alongside the archive: a checksum served
-// from the same place as the binary proves only that the download finished.
-export const SCCACHE_RELEASES: Record<string, { asset: string; sha256: string }> = {
-  "darwin-arm64": {
-    asset: `sccache-v${SCCACHE_VERSION}-aarch64-apple-darwin`,
-    sha256: "308184519b646f5125289e8515b36f6ca65a13a041923994aebe702348674e8e",
+export interface Tool {
+  name: string;
+  version: string;
+  releases: Record<string, ToolRelease>;
+}
+
+const SCCACHE_VERSION = "0.18.0";
+const NEXTEST_VERSION = "0.9.146";
+const NEXTEST_MAC: ToolRelease = {
+  url: `https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-${NEXTEST_VERSION}/cargo-nextest-${NEXTEST_VERSION}-universal-apple-darwin.tar.gz`,
+  sha256: "39785160b3c2f6ed9a765049cf4fa79f3b39aa02eb7598a5a0e2a1a0b9ffb9a8",
+  binary: "cargo-nextest",
+};
+
+export const SCCACHE: Tool = {
+  name: "sccache",
+  version: SCCACHE_VERSION,
+  releases: {
+    "darwin-arm64": {
+      url: `https://github.com/mozilla/sccache/releases/download/v${SCCACHE_VERSION}/sccache-v${SCCACHE_VERSION}-aarch64-apple-darwin.tar.gz`,
+      sha256: "308184519b646f5125289e8515b36f6ca65a13a041923994aebe702348674e8e",
+      binary: `sccache-v${SCCACHE_VERSION}-aarch64-apple-darwin/sccache`,
+    },
   },
+};
+
+// A universal binary, so both Apple Silicon and Intel Macs get it.
+export const NEXTEST: Tool = {
+  name: "cargo-nextest",
+  version: NEXTEST_VERSION,
+  releases: { "darwin-arm64": NEXTEST_MAC, "darwin-x64": NEXTEST_MAC },
 };
 
 export const CACHE_SIZE_BYTES = 40 * 1024 ** 3;
@@ -54,7 +92,7 @@ export function cargoConfigBlock(sccachePath: string): string {
   const wrapper = JSON.stringify(sccachePath);
   return [
     "# Machine-wide compiler cache shared by every checkout and worktree —",
-    "# written by nodespace-core scripts/setup-build-cache.ts.",
+    "# written by nodespace-core scripts/setup-rust-tooling.ts.",
     "[build]",
     `rustc-wrapper = ${wrapper}`,
     "",
@@ -124,16 +162,20 @@ function sccacheConfigPath(): string {
   return process.env.SCCACHE_CONF ?? join(homedir(), "Library", "Application Support", "Mozilla.sccache", "config");
 }
 
+function cargoHome(): string {
+  return process.env.CARGO_HOME ?? join(homedir(), ".cargo");
+}
+
 function cargoConfigPath(): string {
-  return join(process.env.CARGO_HOME ?? join(homedir(), ".cargo"), "config.toml");
+  return join(cargoHome(), "config.toml");
 }
 
 function legacyCargoConfigPath(): string {
-  return join(process.env.CARGO_HOME ?? join(homedir(), ".cargo"), "config");
+  return join(cargoHome(), "config");
 }
 
 function cargoBinDir(): string {
-  return join(process.env.CARGO_HOME ?? join(homedir(), ".cargo"), "bin");
+  return join(cargoHome(), "bin");
 }
 
 function findOnPath(name: string): string | null {
@@ -153,30 +195,35 @@ export function sha256Hex(bytes: Uint8Array): string {
   return new Bun.CryptoHasher("sha256").update(bytes).digest("hex");
 }
 
-async function installSccache(release: { asset: string; sha256: string }, target: string): Promise<void> {
-  const url = `https://github.com/mozilla/sccache/releases/download/v${SCCACHE_VERSION}/${release.asset}.tar.gz`;
-  const response = await fetch(url, { signal: AbortSignal.timeout(60_000) });
+/** This platform's pinned release of `tool`, or undefined when there is none. */
+export function releaseFor(tool: Tool, platform: string = process.platform, arch: string = process.arch): ToolRelease | undefined {
+  return tool.releases[`${platform}-${arch}`];
+}
+
+async function install(tool: Tool, release: ToolRelease, target: string): Promise<void> {
+  console.log(`▶ Installing ${tool.name} ${tool.version} into ${dirname(target)}`);
+  const response = await fetch(release.url, { signal: AbortSignal.timeout(60_000) });
   if (!response.ok) {
-    throw new Error(`download failed: HTTP ${response.status} for ${url}`);
+    throw new Error(`${tool.name} download failed: HTTP ${response.status} for ${release.url}`);
   }
   const archive = new Uint8Array(await response.arrayBuffer());
   const actual = sha256Hex(archive);
   if (actual !== release.sha256) {
-    throw new Error(`checksum mismatch for ${release.asset} (expected ${release.sha256}, got ${actual})`);
+    throw new Error(`checksum mismatch for ${tool.name} (expected ${release.sha256}, got ${actual})`);
   }
 
-  const work = mkdtempSync(join(tmpdir(), "sccache-install-"));
+  const work = mkdtempSync(join(tmpdir(), `${tool.name}-install-`));
   try {
-    const archivePath = join(work, "sccache.tar.gz");
+    const archivePath = join(work, "archive.tar.gz");
     writeFileSync(archivePath, archive);
     await $`tar -xzf ${archivePath} -C ${work}`.quiet();
-    // Copy-then-rename: another worktree's `bun install` may be running this
-    // binary right now, and rewriting a running binary in place on macOS gets
-    // it SIGKILLed for an invalid code signature.
+    // Copy-then-rename: another worktree's `bun install` or gate may be
+    // running this binary right now, and rewriting a running binary in place
+    // on macOS gets it SIGKILLed for an invalid code signature.
     mkdirSync(dirname(target), { recursive: true });
     const tmp = `${target}.${process.pid}.tmp`;
     try {
-      copyFileSync(join(work, release.asset, "sccache"), tmp);
+      copyFileSync(join(work, release.binary), tmp);
       chmodSync(tmp, 0o755);
       renameSync(tmp, target);
     } catch (err) {
@@ -188,20 +235,24 @@ async function installSccache(release: { asset: string; sha256: string }, target
   }
 }
 
-async function main(): Promise<void> {
-  if (process.env[SKIP_ENV_VAR] === "1") return;
-  if (process.platform !== "darwin") return;
-  // No Rust toolchain means nothing to cache — a frontend-only machine.
-  if (findOnPath("cargo") === null) return;
+/** Installs cargo-nextest if it's missing and this platform has a pinned build. */
+async function ensureNextest(): Promise<void> {
+  if (findOnPath(NEXTEST.name) !== null) return;
+  const release = releaseFor(NEXTEST);
+  if (release === undefined) return;
+  await install(NEXTEST, release, join(cargoBinDir(), NEXTEST.name));
+}
+
+async function ensureSccache(): Promise<void> {
   // Someone already routes rustc through a wrapper of their own choosing.
   if (process.env.RUSTC_WRAPPER) return;
 
-  const existingPath = findOnPath("sccache");
-  const release = SCCACHE_RELEASES[`${process.platform}-${process.arch}`];
+  const existingPath = findOnPath(SCCACHE.name);
+  const release = releaseFor(SCCACHE);
   // Not installed, and no pinned build for this Mac (Intel): nothing this
   // script can do, and nothing worth a warning on every install.
   if (existingPath === null && release === undefined) return;
-  const sccachePath = existingPath ?? join(cargoBinDir(), "sccache");
+  const sccachePath = existingPath ?? join(cargoBinDir(), SCCACHE.name);
 
   const configPath = cargoConfigPath();
   const existing = existsSync(configPath) ? readFileSync(configPath, "utf8") : null;
@@ -211,7 +262,7 @@ async function main(): Promise<void> {
   // fast path every later `bun install` takes) or the user's own choice.
   // Either way nothing to enable, so nothing to download.
   if (plan.action === "skip") {
-    const wrapsWithSccache = plan.wrapper === "sccache" || plan.wrapper === existingPath;
+    const wrapsWithSccache = plan.wrapper === SCCACHE.name || plan.wrapper === existingPath;
     if (wrapsWithSccache && existingPath !== null && !existsSync(sccacheConfigPath())) {
       writeAtomically(sccacheConfigPath(), sccacheConfigContent());
     }
@@ -221,8 +272,7 @@ async function main(): Promise<void> {
   // Installed even when the config needs a manual merge, so the printed
   // lines work as-is once merged.
   if (existingPath === null && release !== undefined) {
-    console.log(`▶ Installing sccache ${SCCACHE_VERSION} (shared Rust compiler cache) into ${cargoBinDir()}`);
-    await installSccache(release, sccachePath);
+    await install(SCCACHE, release, sccachePath);
   }
 
   if (!existsSync(sccacheConfigPath())) {
@@ -246,11 +296,26 @@ async function main(): Promise<void> {
   }
 }
 
-if (import.meta.main) {
-  try {
-    await main();
-  } catch (err) {
-    console.warn(`⚠ Skipped shared Rust compiler cache setup: ${err instanceof Error ? err.message : String(err)}`);
-    console.warn(`  Builds still work, just without the cache. Set ${SKIP_ENV_VAR}=1 to silence this.`);
+async function main(): Promise<void> {
+  if (process.env[SKIP_ENV_VAR] === "1") return;
+  if (process.platform !== "darwin") return;
+  // No Rust toolchain means nothing to set up — a frontend-only machine.
+  if (findOnPath("cargo") === null) return;
+
+  // Each independently: one failing (offline, say) mustn't stop the other.
+  for (const [name, step] of [
+    ["cargo-nextest", ensureNextest],
+    ["sccache", ensureSccache],
+  ] as const) {
+    try {
+      await step();
+    } catch (err) {
+      console.warn(`⚠ Skipped ${name} setup: ${err instanceof Error ? err.message : String(err)}`);
+      console.warn(`  Re-run \`bun install\` once it's fixed. Set ${SKIP_ENV_VAR}=1 to silence this.`);
+    }
   }
+}
+
+if (import.meta.main) {
+  await main();
 }

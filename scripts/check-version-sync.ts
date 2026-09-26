@@ -23,7 +23,7 @@
 //
 // Run standalone (prints + exits non-zero on drift):  bun scripts/check-version-sync.ts
 // Enforced automatically by the companion .test.ts under `bun test scripts/`
-// (part of `test:all`, so the pre-push gate catches drift).
+// (part of `test:all`, so the gate catches drift).
 
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";

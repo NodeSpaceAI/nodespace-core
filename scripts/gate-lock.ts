@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-// Machine-wide advisory lock that serializes pre-push gates.
+// Machine-wide advisory lock that serializes test gates (push checks and merge gates).
 //
 // The gate (scripts/test-gate.ts, ADR-047) runs test:all + cargo build +
 // test:e2e, each of which parallelizes across every core it can find. Nothing
@@ -28,8 +28,16 @@
 // The mutual-exclusion primitive is link(2)'s atomic fail-on-EEXIST, NOT
 // open(O_EXCL) — see tryCreateLock for why that distinction is the whole
 // correctness argument rather than an implementation detail.
+//
+// Waiters are served in arrival order. Each files a ticket in a queue
+// directory beside the lock, named for when it started waiting, and only the
+// oldest live ticket may try to create the lock. Without the queue every
+// waiter polled the lockfile and whoever polled first after a release won, so
+// one gate could lose every race for the full wait cap while later arrivals
+// went ahead of it — and then run unserialized anyway, the exact contention
+// the lock exists to prevent.
 
-import { linkSync, readFileSync, readdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { linkSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { hostname, tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
@@ -149,6 +157,15 @@ export function formatWaitingLine(holder: LockHolder, now: number, waitedMs: num
   return `  waiting for another gate (pid ${holder.pid}, running ${heldFor}) — waited ${waited}`;
 }
 
+/** The waiting line for a gate that still has others ahead of it in the queue. */
+export function formatQueuedLine(ahead: number, holder: LockHolder | null, now: number, waitedMs: number): string {
+  const position = `${ahead} gate${ahead === 1 ? "" : "s"} ahead`;
+  const running = holder
+    ? `, current: pid ${holder.pid}, running ${formatDuration(now - holder.startedAt)}`
+    : "";
+  return `  queued (${position}${running}) — waited ${formatDuration(waitedMs)}`;
+}
+
 export function formatTimeoutWarning(holder: LockHolder | null, maxWaitMs: number): string {
   const who = holder ? `pid ${holder.pid}` : "the holder";
   return (
@@ -168,6 +185,8 @@ export interface AcquireOptions {
   log?: (message: string) => void;
   host?: string;
   isAlive?: (pid: number) => boolean;
+  /** Injected for tests, which run several waiters in one process. */
+  pid?: number;
 }
 
 /** Returned by acquireGateLock; call release() exactly once when the gate is done. */
@@ -338,6 +357,83 @@ function removeLockIfHeldBy(lockPath: string, claimantPid: number): void {
   removeLock(lockPath);
 }
 
+/** The FIFO queue of waiting gates, beside the lock. */
+export function queueDir(lockPath: string): string {
+  return `${lockPath}.queue`;
+}
+
+/**
+ * A ticket's file name. Zero-padded so lexical order is arrival order; the
+ * pid breaks ties between waiters that arrived in the same millisecond.
+ */
+export function ticketName(startedWaitingAt: number, pid: number): string {
+  return `${String(startedWaitingAt).padStart(16, "0")}-${pid}`;
+}
+
+/**
+ * Files this waiter's ticket. Written under a staging name and renamed into
+ * place so no reader ever sees a partial ticket; rename is fine here (unlike
+ * for the lock itself) because every ticket name is unique to its waiter.
+ */
+function fileTicket(dir: string, name: string, holder: LockHolder): void {
+  // Not recursive: the queue lives beside the lock, and a lock location that
+  // doesn't exist is an unusable one — the caller degrades, it doesn't build it.
+  try {
+    mkdirSync(dir);
+  } catch (err) {
+    if (errorCode(err) !== "EEXIST") throw err;
+  }
+  const staging = join(dir, `.${name}.${randomUUID()}`);
+  writeFileSync(staging, serializeHolder(holder));
+  renameSync(staging, join(dir, name));
+}
+
+function removeTicket(dir: string, name: string): void {
+  try {
+    unlinkSync(join(dir, name));
+  } catch {
+    // Already gone — reaped as stale by another waiter, or never filed.
+  }
+}
+
+/**
+ * The live tickets queued ahead of `ours`, oldest first. A ticket whose
+ * process is gone is reaped here, the same judgement the lock itself gets:
+ * a killed session must not hold its place in line forever. A foreign-host
+ * ticket can't be judged by pid, so it is dropped once it is older than the
+ * wait cap — no live waiter would still be in line by then.
+ */
+function ticketsAhead(
+  dir: string,
+  ours: string,
+  host: string,
+  isAlive: (pid: number) => boolean,
+  now: number,
+  maxWaitMs: number
+): LockHolder[] {
+  let names: string[];
+  try {
+    names = readdirSync(dir).filter((name) => !name.startsWith(".") && name < ours);
+  } catch {
+    return [];
+  }
+  const ahead: LockHolder[] = [];
+  for (const name of names.sort()) {
+    let holder: LockHolder | null;
+    try {
+      holder = parseHolder(readFileSync(join(dir, name), "utf8"));
+    } catch {
+      continue;
+    }
+    if (holder === null || (isForeignHost(holder, host) ? now - holder.startedAt > maxWaitMs : !isAlive(holder.pid))) {
+      removeTicket(dir, name);
+      continue;
+    }
+    ahead.push(holder);
+  }
+  return ahead;
+}
+
 const realSleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
@@ -365,9 +461,25 @@ export async function acquireGateLock(options: AcquireOptions = {}): Promise<Gat
   }
 
   const startedWaitingAt = now();
-  const holder: LockHolder = { pid: process.pid, startedAt: startedWaitingAt, host, cwd: process.cwd() };
+  const pid = options.pid ?? process.pid;
+  const holder: LockHolder = { pid, startedAt: startedWaitingAt, host, cwd: process.cwd() };
   let announced = false;
   let lastSeen: LockHolder | null = null;
+
+  const queue = queueDir(lockPath);
+  const ticket = ticketName(startedWaitingAt, pid);
+  try {
+    fileTicket(queue, ticket, holder);
+  } catch (err) {
+    console.warn(
+      `\n⚠ Could not join the gate queue (${err instanceof Error ? err.message : String(err)}).` +
+        "\n  Running unserialized — concurrent gates on this machine may contend.\n"
+    );
+    return { held: false, release: () => {} };
+  }
+  // Leaving the queue is part of every way out of this function; a ticket
+  // left behind by a crash is reaped by the next waiter's pid check.
+  const leaveQueue = () => removeTicket(queue, ticket);
 
   // Once per acquisition, not per poll: this is housekeeping for a rare
   // SIGKILL-class death, and a waiter polling every 2s has no reason to
@@ -375,6 +487,26 @@ export async function acquireGateLock(options: AcquireOptions = {}): Promise<Gat
   sweepOrphanedStaging(lockPath, now());
 
   for (;;) {
+    const ahead = ticketsAhead(queue, ticket, host, isAlive, now(), maxWaitMs);
+    if (ahead.length > 0) {
+      const waitedMs = now() - startedWaitingAt;
+      if (waitedMs >= maxWaitMs) {
+        leaveQueue();
+        console.warn(formatTimeoutWarning(lastSeen, maxWaitMs));
+        return { held: false, release: () => {} };
+      }
+      const current = readHolder(lockPath);
+      if (current.state === "held") lastSeen = current.holder;
+      if (!announced) {
+        log("\n⏳ Another test gate is running on this machine — queueing behind it.");
+        log("   (gates are serialized so they don't starve each other of CPU; see ADR-047)");
+        announced = true;
+      }
+      log(formatQueuedLine(ahead.length, current.state === "held" ? current.holder : null, now(), waitedMs));
+      await sleep(pollIntervalMs);
+      continue;
+    }
+
     // startedAt is stamped at acquisition, not at first attempt, so the
     // "running Xm" a waiter prints is how long the holder has held the lock
     // rather than how long it has been trying to.
@@ -387,6 +519,7 @@ export async function acquireGateLock(options: AcquireOptions = {}): Promise<Gat
       // push cannot happen. A read-only or full tmpdir, an unwritable path —
       // degrade to running unserialized rather than blocking the push on
       // infrastructure that has nothing to do with the tests.
+      leaveQueue();
       console.warn(
         `\n⚠ Could not use the gate lock (${err instanceof Error ? err.message : String(err)}).` +
           "\n  Running unserialized — concurrent gates on this machine may contend.\n"
@@ -394,6 +527,7 @@ export async function acquireGateLock(options: AcquireOptions = {}): Promise<Gat
       return { held: false, release: () => {} };
     }
     if (created) {
+      leaveQueue();
       if (announced) log("  lock acquired — starting.\n");
       return { held: true, release: () => removeLockIfHeldBy(lockPath, holder.pid) };
     }
@@ -436,12 +570,13 @@ export async function acquireGateLock(options: AcquireOptions = {}): Promise<Gat
 
     const waitedMs = now() - startedWaitingAt;
     if (waitedMs >= maxWaitMs) {
+      leaveQueue();
       console.warn(formatTimeoutWarning(lastSeen, maxWaitMs));
       return { held: false, release: () => {} };
     }
 
     if (!announced) {
-      log("\n⏳ Another pre-push gate is running on this machine — queueing behind it.");
+      log("\n⏳ Another test gate is running on this machine — queueing behind it.");
       log("   (gates are serialized so they don't starve each other of CPU; see ADR-047)");
       announced = true;
     }
