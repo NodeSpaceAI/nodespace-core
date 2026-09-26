@@ -302,11 +302,59 @@ impl NodeService {
         self.get_children(root_node_id).await
     }
 
+    /// Hierarchy rules every move must satisfy, shared by `move_node` and
+    /// `move_node_unchecked` so the two variants differ only in OCC:
+    /// date containers never move, the new parent must exist and be a
+    /// container type, and the move must not create a cycle.
+    async fn validate_move(
+        &self,
+        node: &Node,
+        new_parent: Option<&str>,
+    ) -> Result<(), NodeServiceError> {
+        // Date nodes are top-level containers and cannot be moved
+        if node.node_type == "date" {
+            return Err(NodeServiceError::hierarchy_violation(format!(
+                "Date node '{}' cannot be moved (it's a top-level container)",
+                node.id
+            )));
+        }
+
+        let Some(parent_id) = new_parent else {
+            return Ok(());
+        };
+
+        let parent_node = self
+            .get_node(parent_id)
+            .await?
+            .ok_or_else(|| NodeServiceError::invalid_parent(parent_id))?;
+
+        // Enforce container rule: reject moves into non-container node types
+        if !self
+            .behavior_for(&parent_node.node_type)
+            .can_have_children()
+        {
+            return Err(NodeServiceError::not_a_container(
+                parent_id,
+                &parent_node.node_type,
+            ));
+        }
+
+        // Check for circular reference - parent_id cannot be a descendant of node_id
+        if self.is_descendant(&node.id, parent_id).await? {
+            return Err(NodeServiceError::circular_reference(format!(
+                "Cannot move node {} under its descendant {}",
+                node.id, parent_id
+            )));
+        }
+
+        Ok(())
+    }
+
     /// Move a node to a new parent without version checking (no OCC).
     ///
     /// **Prefer `move_node()`** which enforces optimistic concurrency control.
-    /// This unchecked variant is for internal operations (imports, type
-    /// conversions) where version conflicts are not a concern.
+    /// This unchecked variant enforces the same hierarchy rules but skips the
+    /// version check, for callers that don't hold the node's version.
     ///
     /// Updates the parent_id and root_id of a node, maintaining hierarchy consistency.
     ///
@@ -319,8 +367,9 @@ impl NodeService {
     ///
     /// Returns error if:
     /// - Node doesn't exist
-    /// - New parent doesn't exist
+    /// - New parent doesn't exist or is not a container type
     /// - Move would create circular reference
+    /// - Node is a date container (cannot be moved)
     ///
     /// # Examples
     ///
@@ -353,29 +402,7 @@ impl NodeService {
             .await?
             .ok_or_else(|| NodeServiceError::node_not_found(node_id))?;
 
-        // Date nodes are top-level containers and cannot be moved
-        if node.node_type == "date" {
-            return Err(NodeServiceError::hierarchy_violation(format!(
-                "Date node '{}' cannot be moved (it's a top-level container)",
-                node_id
-            )));
-        }
-
-        // Verify new parent exists if provided
-        if let Some(parent_id) = new_parent {
-            let parent_exists = self.node_exists(parent_id).await?;
-            if !parent_exists {
-                return Err(NodeServiceError::invalid_parent(parent_id));
-            }
-
-            // Check for circular reference - parent_id cannot be a descendant of node_id
-            if self.is_descendant(node_id, parent_id).await? {
-                return Err(NodeServiceError::circular_reference(format!(
-                    "Cannot move node {} under its descendant {}",
-                    node_id, parent_id
-                )));
-            }
-        }
+        self.validate_move(&node, new_parent).await?;
 
         let former_parent = self.get_parent(node_id).await?.map(|p| p.id);
         let insert_after = self.resolve_insert_position(position, new_parent).await?;
@@ -427,7 +454,7 @@ impl NodeService {
     /// Returns error if:
     /// - Node doesn't exist
     /// - Version doesn't match (concurrent modification detected)
-    /// - New parent doesn't exist
+    /// - New parent doesn't exist or is not a container type
     /// - Move would create circular reference
     /// - Node is a date container (cannot be moved)
     ///
@@ -469,40 +496,7 @@ impl NodeService {
             ));
         }
 
-        // Date nodes are top-level containers and cannot be moved
-        if node.node_type == "date" {
-            return Err(NodeServiceError::hierarchy_violation(format!(
-                "Date node '{}' cannot be moved (it's a top-level container)",
-                node_id
-            )));
-        }
-
-        // Verify new parent exists if provided
-        if let Some(parent_id) = new_parent {
-            let parent_node = self
-                .get_node(parent_id)
-                .await?
-                .ok_or_else(|| NodeServiceError::invalid_parent(parent_id))?;
-
-            // Enforce container rule: reject moves into non-container node types
-            if !self
-                .behavior_for(&parent_node.node_type)
-                .can_have_children()
-            {
-                return Err(NodeServiceError::not_a_container(
-                    parent_id,
-                    &parent_node.node_type,
-                ));
-            }
-
-            // Check for circular reference - parent_id cannot be a descendant of node_id
-            if self.is_descendant(node_id, parent_id).await? {
-                return Err(NodeServiceError::circular_reference(format!(
-                    "Cannot move node {} under its descendant {}",
-                    node_id, parent_id
-                )));
-            }
-        }
+        self.validate_move(&node, new_parent).await?;
 
         // Capture the OLD parent before the move so we can surface its edge removal
         // (sync-epic S3): the store deletes the old has_child

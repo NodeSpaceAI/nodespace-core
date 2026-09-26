@@ -5872,6 +5872,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_move_node_unchecked_rejects_non_container_parent() {
+        let (service, _temp) = create_test_service().await;
+
+        // query nodes cannot have children
+        let leaf = Node::new("query".to_string(), "my query".to_string(), json!({}));
+        let leaf_id = service.create_node(leaf).await.unwrap();
+
+        let child = Node::new("text".to_string(), "child".to_string(), json!({}));
+        let child_id = service.create_node(child).await.unwrap();
+
+        let result = service
+            .move_node_unchecked(&child_id, Some(&leaf_id), crate::services::InsertPosition::End)
+            .await;
+
+        assert!(
+            matches!(result, Err(NodeServiceError::NotAContainer { .. })),
+            "expected NotAContainer error, got {result:?}"
+        );
+        assert!(
+            service.get_parent(&child_id).await.unwrap().is_none(),
+            "a rejected move must leave the child where it was"
+        );
+    }
+
+    #[tokio::test]
     async fn test_move_children_to_parent_preserves_sibling_order() {
         let (service, _temp) = create_test_service().await;
 
