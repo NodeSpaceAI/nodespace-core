@@ -29,24 +29,28 @@
   `partitionGroups` keeps it out of both the rail and `+ Add`. The two surfaces
   partition the node's relationships, so no edge has two controls.
 
-  ## `+ Add` marks the ownership boundary
+  ## `+ Add` marks the authoring boundary
 
-  Rail order is: relationships this node OWNS, then `+ Add`, then a divider,
-  then INCOMING · READ-ONLY. The control's position tells the user what they can
-  create, so nothing has to carry that rule as a badge — and the absent controls
-  in the detail pane are what actually hold it.
+  Rail order is: relationships this node can AUTHOR, then `+ Add`, then a
+  divider, then INCOMING · READ-ONLY. The control's position tells the user what
+  they can create, so nothing has to carry that rule as a badge — and the absent
+  controls in the detail pane are what actually hold it.
 
   ## Incoming relationships are the same edge from the other end
 
   An inbound relationship is not a second relationship. It is the SAME physical
-  row in the `relationship` table, whose source is the other node — which is
-  where it is declared, and therefore where it is owned. It shows here with the
-  SAME values, read-only. Editing means opening the owning node, which the
-  target link does.
+  row in the `relationship` table, whose source is the other node — where it is
+  declared. Direction decides which way round an edge is written, not whether it
+  can be (`groupAcceptsEdgesHere`):
 
-  This is the authority model, not a UI convenience: a `person` viewing
-  `has_access_to → Design Docs` sees `access: Owner` and must not change it,
-  because access is granted from the collection's panel.
+  - A BARE inbound edge carries nothing but the link, so it is the same fact
+    from either end. A task's `Blocked By` is authored here like its `Blocks`
+    twin: add and remove write the declared edge with the endpoints transposed.
+  - An inbound edge WITH edge fields is read-only here: it shows the SAME values,
+    and editing means opening the declaring node, which the target link does.
+    This is the authority model, not a UI convenience: a `person` viewing
+    `has_access_to → Design Docs` sees `access: Owner` and must not change it,
+    because access is granted from the collection's panel.
 
   ## Nothing is "saved"
 
@@ -82,6 +86,7 @@
     filterUnlinkedTargets,
     findGroupByKey,
     findRowByKey,
+    groupAcceptsEdgesHere,
     groupSupportsEdgeEditing,
     partitionGroups,
     type NodeRelationshipsView,
@@ -167,15 +172,19 @@
   let searchTimer: ReturnType<typeof setTimeout> | undefined;
 
   // The rail lists only relationships that actually have edges; `addable` is the
-  // set of empty OUTBOUND relationships, which surface solely as `+ Add` entries.
+  // set of empty relationships this node can author, which surface solely as
+  // `+ Add` entries.
   const partitioned = $derived(partitionGroups(view?.groups ?? []));
   const populatedGroups = $derived(partitioned.populated);
   const addableGroups = $derived(partitioned.addable);
 
-  // Rail order encodes the ownership boundary: owned relationships, then the
-  // `+ Add` control, then incoming ones below the divider.
-  const ownedGroups = $derived(populatedGroups.filter((group) => group.direction === 'out'));
-  const incomingGroups = $derived(populatedGroups.filter((group) => group.direction === 'in'));
+  // Rail order encodes the authoring boundary: relationships editable here
+  // (outbound, and bare inbound ones), then the `+ Add` control, then read-only
+  // incoming ones below the divider.
+  const editableGroups = $derived(populatedGroups.filter(groupAcceptsEdgesHere));
+  const readOnlyGroups = $derived(
+    populatedGroups.filter((group) => !groupAcceptsEdgesHere(group))
+  );
 
   // Resolves against the CURRENT view every render, so the detail pane always
   // reflects the latest reload rather than a pre-mutation snapshot. Whether the
@@ -446,9 +455,10 @@
    * Open the node at the other end of an edge, reusing its tab if it already has
    * one rather than stacking a duplicate.
    *
-   * For an INBOUND row this is also the route to editing: that node's own panel
-   * declares the relationship outbound, which is the only place the edge can be
-   * changed. The modal closes so it doesn't sit over the destination.
+   * For a read-only INBOUND row — one whose relationship declares edge fields —
+   * this is also the route to editing: that node's own panel declares the
+   * relationship outbound, which is the only place such an edge can be changed.
+   * The modal closes so it doesn't sit over the destination.
    */
   function openTarget(row: RelationshipRowView) {
     open = false;
@@ -677,12 +687,12 @@
           class="sm:border-border max-h-[55vh] overflow-y-auto sm:border-r sm:pr-3"
           aria-label="Relationships"
         >
-          {#if ownedGroups.length > 0}
+          {#if editableGroups.length > 0}
             <div class="text-muted-foreground px-1 pb-1 text-xs font-medium uppercase">
               On this node
             </div>
             <ul class="grid gap-0.5">
-              {#each ownedGroups as group (group.key)}
+              {#each editableGroups as group (group.key)}
                 <li>
                   <button
                     type="button"
@@ -729,13 +739,13 @@
             </Popover.Root>
           {/if}
 
-          {#if incomingGroups.length > 0}
+          {#if readOnlyGroups.length > 0}
             <div class="border-border mt-2 border-t border-dashed pt-2">
               <div class="text-muted-foreground px-1 pb-1 text-xs font-medium uppercase">
                 Incoming · read-only
               </div>
               <ul class="grid gap-0.5">
-                {#each incomingGroups as group (group.key)}
+                {#each readOnlyGroups as group (group.key)}
                   <li>
                     <button
                       type="button"
@@ -758,7 +768,7 @@
           {#if selectedGroup}
             {@const group = selectedGroup}
             {@const editable = groupSupportsEdgeEditing(group)}
-            {@const inbound = group.direction === 'in'}
+            {@const authorable = groupAcceptsEdgesHere(group)}
             <!-- No `read-only` badge here: the rail heading above the selection
                  already says it, and the pane offers no controls to edit with. A
                  third signal is noise. -->
@@ -820,7 +830,7 @@
                       <ExternalLinkIcon class="size-3.5" />
                     </button>
 
-                    {#if !inbound}
+                    {#if authorable}
                       <button
                         type="button"
                         class="text-muted-foreground hover:text-destructive focus-visible:bg-accent focus-visible:text-accent-foreground inline-flex size-6 shrink-0 items-center justify-center rounded focus-visible:outline-none disabled:opacity-50"
@@ -911,16 +921,17 @@
                         </div>
                       {/each}
                       <!-- Two different reasons a row is read-only, and they need
-                           different answers: an inbound edge is owned elsewhere,
-                           so the fix is to open that node; an undeclared key has
-                           no type to build an editor from, so the fix is to
-                           declare it on the schema. Saying "open the owning node"
-                           for the second case would send the user somewhere that
-                           cannot help — this node already owns the edge. -->
+                           different answers: an inbound edge with declared fields
+                           is authored at its declaring end, so the fix is to open
+                           that node; an undeclared key has no type to build an
+                           editor from, so the fix is to declare it on the schema.
+                           Saying "open the owning node" for the second case would
+                           send the user somewhere that cannot help — neither end
+                           can edit an undeclared key. -->
                       <p class="text-muted-foreground text-xs">
                         {#if editable}
                           Changes save as you make them.
-                        {:else if inbound}
+                        {:else if !authorable}
                           Edit these from the node that owns this relationship.
                         {:else}
                           These properties aren't declared on the schema, so they're shown as

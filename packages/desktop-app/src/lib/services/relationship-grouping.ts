@@ -16,8 +16,9 @@
  * - Compute the ordered edge-attribute column set for the table layout.
  * - Decide where each group surfaces: a field on the property form, a populated
  *   modal section, an entry in the modal's Add chooser, or nothing at all
- *   (`partitionGroups`), and whether its edges can be edited from this node
- *   (`groupSupportsEdgeEditing`).
+ *   (`partitionGroups`), whether edges can be added to and removed from it on
+ *   this node (`groupAcceptsEdgesHere`), and whether their edge properties can
+ *   be edited here (`groupSupportsEdgeEditing`).
  */
 
 import type { EnumValue } from '$lib/types/schema-node';
@@ -244,8 +245,9 @@ export function resolveEdgeEndpoints(
 
 /**
  * A relationship group's edge properties can only be edited when the schema
- * declares fields to edit. Inbound groups are never editable: the edge is owned
- * by the other node's schema.
+ * declares fields to edit. An inbound group's edge PROPERTIES are never editable
+ * here: they are authored where the relationship is declared (whether a bare
+ * inbound edge can be added or removed here is `groupAcceptsEdgesHere`).
  *
  * A group carrying only AD-HOC edge keys — present on stored edges but never
  * declared in `edgeFields` — is deliberately not editable either. The values
@@ -259,6 +261,25 @@ export function resolveEdgeEndpoints(
  */
 export function groupSupportsEdgeEditing(group: RelationshipGroupView): boolean {
   return group.direction === 'out' && group.edgeFields.length > 0;
+}
+
+/**
+ * Whether edges can be added to and removed from a group on this node.
+ *
+ * Direction decides which way round an edge is WRITTEN (`resolveEdgeEndpoints`
+ * transposes an inbound group's arguments), not whether it can be written. A
+ * bare edge is the same fact from either end — "A blocks B" and "B is blocked
+ * by A" are one row — so an inbound group without edge fields accepts edges
+ * here just as its outbound twin does on the other node.
+ *
+ * An inbound group that declares edge fields stays read-only: its values (an
+ * access level, a role) are authored where the relationship is declared, and
+ * `groupSupportsEdgeEditing` already keeps them from being edited here. Letting
+ * this end create or delete such an edge would grant or revoke what those
+ * values describe from the side that does not own them.
+ */
+export function groupAcceptsEdgesHere(group: RelationshipGroupView): boolean {
+  return group.direction === 'out' || group.edgeFields.length === 0;
 }
 
 /**
@@ -318,8 +339,9 @@ export interface PartitionedGroups {
   /** Modal groups with at least one edge — rendered as full sections, either direction. */
   populated: RelationshipGroupView[];
   /**
-   * Outbound modal groups with no edges yet. They get no section of their own;
-   * they are the entries of the single "Add relationship" chooser.
+   * Modal groups with no edges yet that accept edges on this node (see
+   * `groupAcceptsEdgesHere`), in either direction. They get no section of their
+   * own; they are the entries of the single "Add relationship" chooser.
    */
   addable: RelationshipGroupView[];
 }
@@ -337,18 +359,20 @@ export interface PartitionedGroups {
  * relationship count — a type declaring six relationships with no edges yet is
  * six empty sections' worth of scaffolding carrying zero information. So an
  * empty group never gets a section:
- *  - empty OUTBOUND groups collapse into `addable`, keeping the first edge one
- *    interaction away;
- *  - empty INBOUND groups are dropped entirely. An inbound group is the same
- *    physical edge seen from the other end, owned by the other node's schema, so
- *    it has no Add of its own to justify standing open and empty.
+ *  - an empty group that accepts edges here collapses into `addable`, keeping
+ *    the first edge one interaction away. That includes a bare INBOUND group
+ *    such as a task's `Blocked By`: recording "blocked by B" on A must not
+ *    require opening B;
+ *  - an empty inbound group WITH edge fields is dropped entirely: its edges are
+ *    authored from the declaring end, so it has no Add of its own to justify
+ *    standing open and empty.
  */
 export function partitionGroups(groups: RelationshipGroupView[]): PartitionedGroups {
   const modal = groups.filter((group) => !isFormPromoted(group));
   return {
     promoted: groups.filter(isFormPromoted),
     populated: modal.filter((group) => group.rows.length > 0),
-    addable: modal.filter((group) => group.direction === 'out' && group.rows.length === 0)
+    addable: modal.filter((group) => group.rows.length === 0 && groupAcceptsEdgesHere(group))
   };
 }
 

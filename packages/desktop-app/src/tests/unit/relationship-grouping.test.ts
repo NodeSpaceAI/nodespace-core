@@ -3,6 +3,7 @@ import {
   buildRelationshipsView,
   filterUnlinkedTargets,
   groupDisplayLabel,
+  groupAcceptsEdgesHere,
   groupEdgeColumns,
   findGroupByKey,
   findRowByKey,
@@ -385,12 +386,31 @@ describe('relationship-grouping: partitionGroups', () => {
     expect(addable.map((g) => g.relationshipName)).toEqual(['supersedes', 'depends_on']);
   });
 
-  it('drops empty INBOUND groups entirely — they have no Add to justify a section', () => {
+  it('folds an empty bare INBOUND many group into the add chooser, labeled by reverseName', () => {
+    // A task's `Blocked By` is the same many-to-many edge as another task's
+    // `Blocks`; recording it must not require opening the other task.
     const groups = viewOf([
       makeGroup({
-        relationshipName: 'supersedes',
+        relationshipName: 'blocks',
         direction: 'in',
-        reverseName: 'superseded_by'
+        targetType: 'task',
+        reverseName: 'blocked_by'
+      })
+    ]);
+    const { populated, addable } = partitionGroups(groups);
+    expect(populated).toHaveLength(0);
+    expect(addable.map((g) => [g.direction, g.relationshipName, g.label])).toEqual([
+      ['in', 'blocks', 'Blocked By']
+    ]);
+  });
+
+  it('drops an empty inbound group that declares edge fields — authored from the declaring end', () => {
+    const groups = viewOf([
+      makeGroup({
+        relationshipName: 'has_access_to',
+        direction: 'in',
+        reverseName: 'members',
+        edgeFields: [{ name: 'access', type: 'string' }]
       })
     ]);
     const { populated, addable } = partitionGroups(groups);
@@ -399,8 +419,8 @@ describe('relationship-grouping: partitionGroups', () => {
   });
 
   it('renders the six-declared-relationships-no-edges case as zero sections and one chooser', () => {
-    // The issue's benchmark: an `adr` with four outbound and two inbound
-    // declared relationships and no edges must not produce six empty sections.
+    // An `adr` with four outbound and two inbound declared relationships and no
+    // edges must not produce six empty sections — every one is a chooser entry.
     const groups = viewOf([
       makeGroup({ relationshipName: 'supersedes' }),
       makeGroup({ relationshipName: 'depends_on' }),
@@ -411,7 +431,7 @@ describe('relationship-grouping: partitionGroups', () => {
     ]);
     const { populated, addable } = partitionGroups(groups);
     expect(populated).toHaveLength(0);
-    expect(addable).toHaveLength(4);
+    expect(addable).toHaveLength(6);
   });
 
   it('offers a populated outbound group its own section AND keeps other empty types addable', () => {
@@ -435,13 +455,20 @@ describe('relationship-grouping: single-valued groups are promoted to the form',
   };
 
   // A task's view: `assignee`/`project` are the inbound `one` ends of person's
-  // and project's outbound `tasks`; `blocks` is task's own many-to-many.
+  // and project's outbound `tasks`; `blocks`/`blocked_by` are both ends of
+  // task's own many-to-many.
   function taskView(overrides: { assigned?: boolean } = {}) {
     return buildRelationshipsView({
       nodeId: 'task-1',
       nodeType: 'task',
       groups: [
         makeGroup({ relationshipName: 'blocks', targetType: 'task', reverseName: 'blocked_by' }),
+        makeGroup({
+          relationshipName: 'blocks',
+          direction: 'in',
+          targetType: 'task',
+          reverseName: 'blocked_by'
+        }),
         makeGroup({
           relationshipName: 'tasks',
           direction: 'in',
@@ -480,8 +507,8 @@ describe('relationship-grouping: single-valued groups are promoted to the form',
     const { populated, addable } = partitionGroups(taskView({ assigned: true }));
     // The assigned (populated, inbound) assignee does not become a rail section...
     expect(populated).toHaveLength(0);
-    // ...and only task's own many-to-many remains addable.
-    expect(addable.map((g) => g.relationshipName)).toEqual(['blocks']);
+    // ...and only task's own many-to-many remains addable — from both ends.
+    expect(addable.map((g) => g.label)).toEqual(['Blocks', 'Blocked By']);
   });
 
   it('leaves a `one` group that declares edge fields in the modal, where they can be edited', () => {
@@ -503,17 +530,57 @@ describe('relationship-grouping: single-valued groups are promoted to the form',
   it('gates the modal on what is left for it once promoted groups have moved out', () => {
     expect(hasModalContent(partitionGroups(taskView()))).toBe(true);
 
-    // Only promoted groups and an empty inbound group: the modal would be empty.
+    // Only promoted groups and an empty inbound group this end cannot author:
+    // the modal would be empty.
     const onlyPromoted = taskView().filter((g) => g.relationshipName !== 'blocks');
     const withEmptyInbound = [
       ...onlyPromoted,
       ...buildRelationshipsView({
         nodeId: 'task-1',
         nodeType: 'task',
-        groups: [makeGroup({ direction: 'in', relationshipName: 'watches', reverseName: 'watchers' })]
+        groups: [
+          makeGroup({
+            direction: 'in',
+            relationshipName: 'watches',
+            reverseName: 'watchers',
+            edgeFields: [{ name: 'since', type: 'date' }]
+          })
+        ]
       }).groups
     ];
     expect(hasModalContent(partitionGroups(withEmptyInbound))).toBe(false);
+  });
+});
+
+describe('relationship-grouping: groupAcceptsEdgesHere', () => {
+  function groupView(overrides: Partial<RawRelationshipGroup>) {
+    return buildRelationshipsView({
+      nodeId: 'n-1',
+      nodeType: 'task',
+      groups: [makeGroup(overrides)]
+    }).groups[0];
+  }
+
+  it('is true for an outbound group, with or without edge fields', () => {
+    expect(groupAcceptsEdgesHere(groupView({}))).toBe(true);
+    expect(
+      groupAcceptsEdgesHere(groupView({ edgeFields: [{ name: 'access', type: 'string' }] }))
+    ).toBe(true);
+  });
+
+  it('is true for a bare inbound group — the same edge from the other end', () => {
+    expect(
+      groupAcceptsEdgesHere(groupView({ direction: 'in', reverseName: 'blocked_by' }))
+    ).toBe(true);
+  });
+
+  it('is false for an inbound group that declares edge fields', () => {
+    const group = groupView({
+      direction: 'in',
+      reverseName: 'members',
+      edgeFields: [{ name: 'access', type: 'string' }]
+    });
+    expect(groupAcceptsEdgesHere(group)).toBe(false);
   });
 });
 
