@@ -123,13 +123,13 @@ describe('AiChatModelSelector — PTY agent selection', () => {
     });
 
     // A discovered model's own name routinely contains a colon
-    // ("mistral:7b"), so only the segment before the FIRST one is the config
+    // ("llama3.1:8b"), so only the segment before the FIRST one is the config
     // UUID — the full value stays the model id the daemon advertised.
     onSelect.mockClear();
-    handleChangeValue('openai-compat:abc-123:mistral:7b', onSelect);
+    handleChangeValue('openai-compat:abc-123:llama3.1:8b', onSelect);
     expect(onSelect).toHaveBeenCalledWith({
       provider: 'openai-compat',
-      modelId: 'openai-compat:abc-123:mistral:7b',
+      modelId: 'openai-compat:abc-123:llama3.1:8b',
       configId: 'abc-123',
     });
   });
@@ -138,8 +138,8 @@ describe('AiChatModelSelector — PTY agent selection', () => {
 describe('AiChatModelSelector — PTY agent list derivation', () => {
   const agents: AcpAgentInfo[] = [
     {
-      id: 'local:ministral-3b-q4km',
-      name: 'Ministral 3B Instruct Q4_K_M',
+      id: 'local:gemma-4-e4b-q4km',
+      name: 'Gemma 4 E4B Instruct Q4_K_M',
       binary: 'local',
       args: [],
       auth_method: { method: 'agent_managed' },

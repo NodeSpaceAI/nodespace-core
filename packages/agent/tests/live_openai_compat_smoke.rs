@@ -40,7 +40,7 @@ async fn discovers_models_and_completes_a_tool_calling_turn() {
     // Prefer a model known to support tools; fall back to whatever is served.
     let model = models
         .iter()
-        .find(|m| m.starts_with("mistral"))
+        .find(|m| m.starts_with("gemma4"))
         .cloned()
         .unwrap_or_else(|| models[0].clone());
     println!("using model: {model}");

@@ -4472,7 +4472,7 @@ mod tests {
         async fn model_info(&self) -> Result<Option<ChatModelSpec>, InferenceError> {
             Ok(Some(ChatModelSpec {
                 model_id: "test-model".into(),
-                family: ModelFamily::Ministral,
+                family: ModelFamily::Gemma4,
                 context_window: self.context_window,
                 default_temperature: 0.1,
                 type_k: None,

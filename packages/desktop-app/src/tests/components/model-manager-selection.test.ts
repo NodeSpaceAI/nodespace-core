@@ -40,14 +40,14 @@ function decodeSelection(v: string): ModelSelection | null {
 describe('ModelManager — default model selection encoding', () => {
   it('round-trips a discovered model whose name contains colons', () => {
     // The daemon advertises "openai-compat:<uuid>:<model>", and real model
-    // names carry colons ("mistral:7b") — so the config UUID is the segment up
+    // names carry colons ("llama3.1:8b") — so the config UUID is the segment up
     // to the FIRST colon, not the last and not the whole remainder.
-    const value = 'openai-compat:abc-123:mistral:7b';
+    const value = 'openai-compat:abc-123:llama3.1:8b';
 
     const decoded = decodeSelection(value);
     expect(decoded).toEqual({
       provider: 'openai-compat',
-      modelId: 'openai-compat:abc-123:mistral:7b',
+      modelId: 'openai-compat:abc-123:llama3.1:8b',
       configId: 'abc-123',
     });
     expect(encodeSelection(decoded as ModelSelection)).toBe(value);

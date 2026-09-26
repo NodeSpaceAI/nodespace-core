@@ -14,22 +14,16 @@
     getOpenAiCompatConfigsFromDaemon,
   } from '$lib/services/tauri-commands';
   import type { OpenAiCompatConfig } from '$lib/types/ai-chat-node';
-  import type { ModelFamily } from '$lib/types/agent-types';
   import { createLogger } from '$lib/utils/logger';
 
   const log = createLogger('ModelManager');
 
-  // --- Local model state (Ministral 8B only) ---
+  // --- Local model state (the GGUF catalog) ---
   const models = $derived(modelStore.models);
   const downloadProgress = $derived(modelStore.downloadProgress);
   const isLoading = $derived(modelStore.isLoading);
   const systemRamGb = $derived(modelStore.systemRamGb);
 
-  // Settings shows the curated set already filtered at the Tauri layer
-  // (see EXPOSED_GGUF_MODEL_IDS in chat_models.rs); families listed here must
-  // match whatever that allowlist currently exposes.
-  const LOCAL_FAMILIES: ModelFamily[] = ['gemma4'];
-  const localModels = $derived(models.filter((m) => LOCAL_FAMILIES.includes(m.family)));
 
   // The global notice fires when NOTHING fits (the smallest exposed model's
   // own requirement), not a flat constant -- otherwise a machine that clears
@@ -37,7 +31,7 @@
   // 32GB) would see every card dimmed by a bar that doesn't apply to all of
   // them. Per-card dimming below uses each model's own min_memory_gb.
   const minRequiredGb = $derived(
-    localModels.length > 0 ? Math.min(...localModels.map((m) => m.min_memory_gb)) : 0
+    models.length > 0 ? Math.min(...models.map((m) => m.min_memory_gb)) : 0
   );
   const ramTooLow = $derived(systemRamGb > 0 && systemRamGb < minRequiredGb);
 
@@ -96,7 +90,7 @@
     }
     if (v.startsWith('openai-compat:')) {
       // The config UUID is the segment up to the FIRST colon; a model name may
-      // itself contain colons ("mistral:7b"), so the rest is not part of it.
+      // itself contain colons ("llama3.1:8b"), so the rest is not part of it.
       const configId = v.slice('openai-compat:'.length).split(':')[0];
       return { provider: 'openai-compat', modelId: v, configId };
     }
@@ -133,7 +127,7 @@
   function buildDefaultOptions() {
     const opts: { label: string; value: string }[] = [];
     // Local models
-    for (const m of models.filter((m) => LOCAL_FAMILIES.includes(m.family))) {
+    for (const m of models) {
       if (m.status.status === 'ready' || m.status.status === 'loaded') {
         opts.push({ label: `Local — ${m.name}`, value: encodeSelection({ provider: 'native', modelId: m.id }) });
       }
@@ -279,10 +273,10 @@
       </p>
     {/if}
 
-    {#if localModels.length === 0 && !isLoading}
+    {#if models.length === 0 && !isLoading}
       <p class="mm-empty">No local models found.</p>
     {:else}
-      {#each localModels as m (m.id)}
+      {#each models as m (m.id)}
         {@const progress = downloadProgress[m.id]}
         {@const modelRamTooLow = systemRamGb > 0 && systemRamGb < m.min_memory_gb}
         <div class="model-card" class:model-card--dim={modelRamTooLow}>

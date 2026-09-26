@@ -94,14 +94,14 @@ async fn resolve_backend() -> Option<(Arc<dyn ChatInferenceEngine>, String)> {
     }
 
     let gguf = GgufModelManager::new().ok()?;
-    let model_path = gguf.model_path("ministral-3b-q4km").ok()?;
+    let model_path = gguf.model_path("gemma-4-e4b-q4km").ok()?;
     if !model_path.exists() {
         return None;
     }
 
     let path_str = model_path.to_string_lossy().to_string();
     let engine = tokio::task::spawn_blocking(move || {
-        LlamaChatInferenceEngine::load(&path_str, ModelFamily::Ministral, ChatConfig::default())
+        LlamaChatInferenceEngine::load(&path_str, ModelFamily::Gemma4, ChatConfig::default())
     })
     .await
     .ok()?
@@ -109,7 +109,7 @@ async fn resolve_backend() -> Option<(Arc<dyn ChatInferenceEngine>, String)> {
 
     Some((
         Arc::new(engine) as Arc<dyn ChatInferenceEngine>,
-        "ministral-3b-q4km".to_string(),
+        "gemma-4-e4b-q4km".to_string(),
     ))
 }
 
@@ -561,7 +561,7 @@ async fn bench_search_skills_e2e_latency() {
     let Some((engine, model_name)) = resolve_backend().await else {
         eprintln!(
             "SKIP bench_search_skills_e2e_latency: No inference backend available \
-             (no OpenAI-compatible endpoint reachable, ministral-3b not downloaded)"
+             (no OpenAI-compatible endpoint reachable, gemma-4-e4b not downloaded)"
         );
         return;
     };

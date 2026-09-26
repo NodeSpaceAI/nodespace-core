@@ -222,7 +222,7 @@
     // ("openai-compat:<config>:<model>") — pass the full value through so the
     // daemon resolves the same endpoint and model it advertised. The config
     // UUID is the segment up to the FIRST colon: a UUID never contains one,
-    // whereas a model name routinely does ("mistral:7b").
+    // whereas a model name routinely does ("llama3.1:8b").
     if (value.startsWith('openai-compat:')) {
       const rest = value.slice('openai-compat:'.length);
       const configId = rest.split(':')[0];

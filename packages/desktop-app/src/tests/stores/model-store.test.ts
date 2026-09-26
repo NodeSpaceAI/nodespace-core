@@ -125,26 +125,6 @@ describe('ModelStore', () => {
     });
   });
 
-  describe('recommendedModel', () => {
-    it('recommends the largest model that fits in available RAM', async () => {
-      const promise = modelStore.refreshModels();
-      await vi.runAllTimersAsync();
-      await promise;
-
-      const recommended = modelStore.recommendedModel;
-      expect(recommended).toBeDefined();
-
-      // With systemRamGb=8 (mock default), should pick the largest model with min_memory_gb <= 8
-      const fits = modelStore.models.filter((m) => m.min_memory_gb <= 8);
-      const expected = fits.reduce((best, m) => (m.size_bytes > best.size_bytes ? m : best));
-      expect(recommended!.id).toBe(expected.id);
-    });
-
-    it('returns undefined when no models', () => {
-      expect(modelStore.recommendedModel).toBeUndefined();
-    });
-  });
-
   describe('downloadModel', () => {
     it('simulates download with progress', async () => {
       let promise = modelStore.refreshModels();

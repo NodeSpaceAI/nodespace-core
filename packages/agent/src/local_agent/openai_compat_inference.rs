@@ -45,7 +45,7 @@ pub fn strip_openai_compat_prefix(model_id: &str) -> &str {
 ///   serves.
 ///
 /// The split is on the **first** colon after the prefix: a UUID never contains
-/// one, whereas a model identifier routinely does (`mistral:7b`), so anything
+/// one, whereas a model identifier routinely does (`llama3.1:8b`), so anything
 /// past that first separator belongs to the model.
 pub fn parse_openai_compat_id(model_id: &str) -> (&str, Option<&str>) {
     let rest = strip_openai_compat_prefix(model_id);
@@ -641,7 +641,7 @@ mod tests {
     fn test_is_openai_compat_prefix() {
         assert!(is_openai_compat("openai-compat:abc-123"));
         assert!(!is_openai_compat("ollama:llama3.2:3b"));
-        assert!(!is_openai_compat("ministral-3b-q4km"));
+        assert!(!is_openai_compat("gemma-4-e4b-q4km"));
         assert!(is_openai_compat("openai-compat:"));
     }
 
@@ -651,7 +651,7 @@ mod tests {
             strip_openai_compat_prefix("openai-compat:abc-123"),
             "abc-123"
         );
-        assert_eq!(strip_openai_compat_prefix("ministral"), "ministral");
+        assert_eq!(strip_openai_compat_prefix("gemma"), "gemma");
     }
 
     #[test]
