@@ -47,6 +47,12 @@ pub enum NodeServiceError {
     #[error("Delete refused: subtree contains {inaccessible_count} node(s) not accessible to the current actor")]
     SubtreeAccessDenied { inaccessible_count: u64 },
 
+    /// Deleting this schema would break the type system: it is a core schema,
+    /// or other schemas extend it (ADR-078) and would silently lose every
+    /// inherited field and relationship. `reason` names the blocker.
+    #[error("Cannot delete schema '{schema_id}': {reason}")]
+    SchemaDeleteRefused { schema_id: String, reason: String },
+
     /// Bulk operation failed
     #[error("Bulk operation failed: {context}")]
     BulkOperationFailed { context: String },
@@ -228,6 +234,14 @@ impl NodeServiceError {
     /// Create a subtree-access-denied error (ADR-041 cascade-delete gate refusal)
     pub fn subtree_access_denied(inaccessible_count: u64) -> Self {
         Self::SubtreeAccessDenied { inaccessible_count }
+    }
+
+    /// Create a schema-delete-refused error
+    pub fn schema_delete_refused(schema_id: impl Into<String>, reason: impl Into<String>) -> Self {
+        Self::SchemaDeleteRefused {
+            schema_id: schema_id.into(),
+            reason: reason.into(),
+        }
     }
 
     /// Create a bulk operation failed error
