@@ -9,11 +9,12 @@ use nodespace_proto::nodespace::{
     ImportMarkdownFilesRequest, ImportMarkdownRequest, ImportOptions as ProtoImportOptions,
 };
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Runtime, State};
 use tokio_stream::StreamExt;
 use tonic::Request;
 
 use crate::services::GrpcClient;
+use crate::window_routing::emit_routed;
 
 /// Options for file import (mirrors proto ImportOptions).
 ///
@@ -125,7 +126,13 @@ pub struct BatchImportResult {
     pub results: Vec<FileImportResult>,
 }
 
-/// Progress event forwarded to the frontend during import
+/// Progress event forwarded to the frontend during import.
+///
+/// `database_id` names the database the import writes into — the one its
+/// request was routed to — so the event reaches only the window(s) showing
+/// that database, and a listener can tell concurrent imports into different
+/// databases apart. Omitted when the import targets the daemon's default
+/// database (no routing header), matching `emit_routed`'s "no id" case.
 #[derive(Debug, Clone, Serialize)]
 pub struct ImportProgressEvent {
     pub step: u8,
@@ -133,6 +140,33 @@ pub struct ImportProgressEvent {
     pub message: String,
     pub current: usize,
     pub total: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub database_id: Option<String>,
+}
+
+/// Forward one daemon progress event to the frontend, routed to the window(s)
+/// pinned to `database_id` rather than broadcast to every window. `None` (no
+/// routing header — the daemon default) goes to the focused window, not to
+/// "the default database's window": a window may be pinned to a real id while
+/// the gRPC client still sends no header, and the progress must still arrive.
+fn forward_progress<R: Runtime>(
+    app: &AppHandle<R>,
+    event: &nodespace_proto::nodespace::ImportProgressEvent,
+    database_id: Option<&str>,
+) {
+    emit_routed(
+        app,
+        "import-progress",
+        ImportProgressEvent {
+            step: event.step as u8,
+            step_name: event.step_name.clone(),
+            message: event.message.clone(),
+            current: event.current as usize,
+            total: event.total as usize,
+            database_id: database_id.map(str::to_string),
+        },
+        database_id,
+    );
 }
 
 /// Import a single markdown file via gRPC ImportService
@@ -143,7 +177,7 @@ pub async fn import_markdown_file(
     file_path: String,
     options: Option<ImportOptions>,
 ) -> Result<FileImportResult, String> {
-    let mut client = grpc.import_client().await;
+    let (mut client, database_id) = grpc.import_client().await;
     let req = ImportMarkdownRequest {
         file_path: file_path.clone(),
         options: Some(options.unwrap_or_default().into_proto()),
@@ -160,16 +194,7 @@ pub async fn import_markdown_file(
     while let Some(event) = stream.next().await {
         let event = event.map_err(|e| e.to_string())?;
 
-        let _ = app.emit(
-            "import-progress",
-            ImportProgressEvent {
-                step: event.step as u8,
-                step_name: event.step_name.clone(),
-                message: event.message.clone(),
-                current: event.current as usize,
-                total: event.total as usize,
-            },
-        );
+        forward_progress(&app, &event, database_id.as_deref());
 
         if event.step == 9 {
             if let Some(r) = event.results.into_iter().next() {
@@ -210,7 +235,7 @@ pub async fn import_markdown_files(
     options: Option<ImportOptions>,
 ) -> Result<BatchImportResult, String> {
     let total_files = file_paths.len();
-    let mut client = grpc.import_client().await;
+    let (mut client, database_id) = grpc.import_client().await;
     let req = ImportMarkdownFilesRequest {
         file_paths,
         options: Some(options.unwrap_or_default().into_proto()),
@@ -227,16 +252,7 @@ pub async fn import_markdown_files(
     while let Some(event) = stream.next().await {
         let event = event.map_err(|e| e.to_string())?;
 
-        let _ = app.emit(
-            "import-progress",
-            ImportProgressEvent {
-                step: event.step as u8,
-                step_name: event.step_name.clone(),
-                message: event.message.clone(),
-                current: event.current as usize,
-                total: event.total as usize,
-            },
-        );
+        forward_progress(&app, &event, database_id.as_deref());
 
         if event.step == 9 {
             final_results = event
@@ -628,6 +644,116 @@ mod tests {
     fn filters_compose_with_exclude_patterns() {
         let tmp = fixture();
         assert_eq!(names(&tmp, &["sub".to_string()], ALL_ON), set(&["top.md"]));
+    }
+
+    fn proto_progress(step: u32) -> nodespace_proto::nodespace::ImportProgressEvent {
+        nodespace_proto::nodespace::ImportProgressEvent {
+            step,
+            step_name: "reading".to_string(),
+            message: "Reading: a.md".to_string(),
+            current: 1,
+            total: 3,
+            results: Vec::new(),
+        }
+    }
+
+    /// Two windows pinned to two databases: an import into db-1 must report
+    /// progress only to db-1's window, tagged with db-1's id — the payload
+    /// alone must be enough to tell concurrent imports apart.
+    #[test]
+    fn forward_progress_reaches_only_the_window_showing_the_import_database() {
+        use crate::window_routing::WindowDatabaseRegistry;
+        use std::sync::{Arc, Mutex};
+        use tauri::{Listener, Manager};
+
+        let app = tauri::test::mock_app();
+        app.manage(WindowDatabaseRegistry::default());
+        let handle = app.handle().clone();
+
+        let win_a = tauri::WebviewWindowBuilder::new(&app, "win-a", Default::default())
+            .build()
+            .expect("failed to build mock window a");
+        let win_b = tauri::WebviewWindowBuilder::new(&app, "win-b", Default::default())
+            .build()
+            .expect("failed to build mock window b");
+        let registry = handle.state::<WindowDatabaseRegistry>();
+        registry.pin("win-a", "db-1");
+        registry.pin("win-b", "db-2");
+
+        let received_a: Arc<Mutex<Vec<String>>> = Arc::default();
+        let received_b: Arc<Mutex<Vec<String>>> = Arc::default();
+        let ra = received_a.clone();
+        let rb = received_b.clone();
+        win_a.listen("import-progress", move |e| {
+            ra.lock().unwrap().push(e.payload().to_string())
+        });
+        win_b.listen("import-progress", move |e| {
+            rb.lock().unwrap().push(e.payload().to_string())
+        });
+
+        forward_progress(&handle, &proto_progress(2), Some("db-1"));
+
+        let received_a = received_a.lock().unwrap();
+        assert_eq!(received_a.len(), 1, "db-1's window must receive progress");
+        let payload: serde_json::Value = serde_json::from_str(&received_a[0]).unwrap();
+        assert_eq!(payload["database_id"], "db-1");
+        assert_eq!(payload["step_name"], "reading");
+        assert!(
+            received_b.lock().unwrap().is_empty(),
+            "db-2's window must not see db-1's import progress"
+        );
+    }
+
+    /// The path production takes today: the window is pinned to a real
+    /// database id but the import ran with no routing header (`None`). The
+    /// progress must still reach that window rather than being dropped for
+    /// naming no pinned database.
+    #[test]
+    fn forward_progress_without_database_id_reaches_the_pinned_window() {
+        use crate::window_routing::WindowDatabaseRegistry;
+        use std::sync::{Arc, Mutex};
+        use tauri::{Listener, Manager};
+
+        let app = tauri::test::mock_app();
+        app.manage(WindowDatabaseRegistry::default());
+        let handle = app.handle().clone();
+
+        let win = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build()
+            .expect("failed to build mock window");
+        handle
+            .state::<WindowDatabaseRegistry>()
+            .pin("main", "db-remembered");
+
+        let received: Arc<Mutex<Vec<String>>> = Arc::default();
+        let r = received.clone();
+        win.listen("import-progress", move |e| {
+            r.lock().unwrap().push(e.payload().to_string())
+        });
+
+        forward_progress(&handle, &proto_progress(2), None);
+
+        assert_eq!(
+            received.lock().unwrap().len(),
+            1,
+            "an unrouted import's progress must reach the one pinned window"
+        );
+    }
+
+    /// An import into the daemon's default database (no routing header)
+    /// omits `database_id` rather than sending an empty string or null.
+    #[test]
+    fn progress_event_omits_database_id_for_default_database() {
+        let event = ImportProgressEvent {
+            step: 2,
+            step_name: "reading".to_string(),
+            message: String::new(),
+            current: 0,
+            total: 0,
+            database_id: None,
+        };
+        let json = serde_json::to_value(&event).unwrap();
+        assert!(json.get("database_id").is_none());
     }
 
     #[test]

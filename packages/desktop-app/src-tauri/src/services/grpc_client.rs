@@ -274,9 +274,14 @@ impl GrpcClient {
         self.inner.read().await.node.clone()
     }
 
-    /// Borrow a clone of the routed `ImportService` client.
-    pub async fn import_client(&self) -> ImportClient {
-        self.inner.read().await.import.clone()
+    /// Borrow a clone of the routed `ImportService` client, paired with the
+    /// database id its routing header names (`None` = the daemon's default).
+    /// Both are read under one lock so a concurrent database switch can never
+    /// pair a client with another database's id — the import commands route
+    /// their progress events by this id.
+    pub async fn import_client(&self) -> (ImportClient, Option<String>) {
+        let inner = self.inner.read().await;
+        (inner.import.clone(), inner.active_database_id.clone())
     }
 
     /// Borrow a clone of the `SettingsServiceClient`. Settings are daemon-global
