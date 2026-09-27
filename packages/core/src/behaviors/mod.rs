@@ -1969,6 +1969,14 @@ impl NodeBehavior for SkillNodeBehavior {
             }
         }
 
+        if let Some(exclusion) = get_namespaced_prop(&node.properties, "skill", "exclusion") {
+            if !exclusion.is_string() && !exclusion.is_null() {
+                return Err(NodeValidationError::InvalidProperties(
+                    "exclusion must be a string".to_string(),
+                ));
+            }
+        }
+
         // Validate tool_whitelist is an array of strings if present
         if let Some(whitelist) = get_namespaced_prop(&node.properties, "skill", "tool_whitelist") {
             if let Some(arr) = whitelist.as_array() {

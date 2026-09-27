@@ -30,7 +30,7 @@ use std::sync::Arc;
 use nodespace_agent::local_agent::routing::RETRIEVAL_TOP_K;
 use nodespace_agent::skill_pipeline::seed_skill_nodes;
 use nodespace_core::db::SqliteStore;
-use nodespace_core::markdown::prepare_nodes_from_template;
+use nodespace_core::markdown::{prepare_nodes_from_template, NodeTemplate};
 use nodespace_core::ops::skill_ops::{find_skills, FindSkillsInput};
 use nodespace_core::services::node_service::CreateNodeParams;
 use nodespace_core::services::{
@@ -48,6 +48,14 @@ const REPS: usize = 5;
 /// real model. Returns `None` if the embedding model isn't on disk, so the
 /// test can skip cleanly rather than fail on an unrelated machine.
 async fn seed_and_embed() -> Option<(Arc<NodeEmbeddingService>, Arc<NodeService>, TempDir)> {
+    seed_and_embed_registry(seed_skill_nodes()).await
+}
+
+/// [`seed_and_embed`] over an explicit registry, for tests that compare the
+/// seeded registry against a modified copy of it.
+async fn seed_and_embed_registry(
+    registry: Vec<NodeTemplate>,
+) -> Option<(Arc<NodeEmbeddingService>, Arc<NodeService>, TempDir)> {
     let temp_dir = TempDir::new().expect("tempdir");
     let db_path = temp_dir.path().join("test.db");
     let mut store = Arc::new(SqliteStore::new(db_path).await.expect("store must open"));
@@ -74,7 +82,7 @@ async fn seed_and_embed() -> Option<(Arc<NodeEmbeddingService>, Arc<NodeService>
         node_service.behaviors().clone(),
     ));
 
-    for tmpl in seed_skill_nodes() {
+    for tmpl in registry {
         let prepared = prepare_nodes_from_template(&tmpl).expect("template must parse");
         // Pre-assigned ids from `prepare_nodes_from_template` are reused verbatim
         // (`CreateNodeParams::id`), so parent_id references need no remapping.
@@ -389,6 +397,30 @@ async fn scored_ranking(
         .collect()
 }
 
+/// `skill`'s raw confidence for `query` across the whole registry, or `None`
+/// if it is not returned.
+async fn skill_confidence(
+    embedding_service: &Arc<NodeEmbeddingService>,
+    node_service: &Arc<NodeService>,
+    query: &str,
+    skill: &str,
+) -> Option<f64> {
+    find_skills(
+        embedding_service,
+        node_service,
+        FindSkillsInput {
+            query: query.to_string(),
+            limit: Some(10),
+        },
+    )
+    .await
+    .expect("find_skills must succeed")
+    .skills
+    .iter()
+    .find(|s| s.get("name").and_then(|v| v.as_str()) == Some(skill))
+    .and_then(|s| s.get("confidence").and_then(|v| v.as_f64()))
+}
+
 /// Queries whose top-`RETRIEVAL_TOP_K` ranking misses `skill` on any rep, or —
 /// with `rank_one` — does not put it first. Prints each query's wider ranking
 /// with scores so a miss shows by how much.
@@ -534,9 +566,10 @@ async fn control_deletion_requests_are_not_outranked_by_graph_editing() {
 /// offered only from the top tool-bearing candidate, the deletion was
 /// silently withheld.
 ///
-/// "remove the resolved tickets" is deliberately absent: it ranks Graph
-/// Editing ("mark it resolved") above Node Deletion, a separate attractor
-/// that no wording of the conflict skill moves.
+/// "remove the resolved tickets" failed for a different reason: Graph
+/// Editing's "mark it resolved" out-ranked Node Deletion on it (0.855 vs
+/// 0.841), which no wording of either description could separate from "mark
+/// incident resolved". Graph Editing's `exclusion` is what holds it now.
 #[tokio::test]
 #[ignore = "requires the locked nomic-embed-text-v1.5 GGUF on disk"]
 async fn deletion_requests_mentioning_resolved_route_node_deletion() {
@@ -551,6 +584,7 @@ async fn deletion_requests_mentioning_resolved_route_node_deletion() {
             "get rid of all the resolved bugs",
             "purge resolved alerts from last month",
             "delete the incident, it's resolved",
+            "remove the resolved tickets",
         ],
         "Node Deletion",
         true,
@@ -559,5 +593,116 @@ async fn deletion_requests_mentioning_resolved_route_node_deletion() {
     assert!(
         misses.is_empty(),
         "Node Deletion lost rank 1 for {misses:?}"
+    );
+}
+
+/// "remove" is the weakest deletion verb, and a completion-state word after it
+/// ("the done tasks", "the paid invoices") is exactly what Graph Editing's
+/// description names. Without Graph Editing's `exclusion`, "remove the
+/// resolved tickets" ranked it first and `delete_node` was silently withheld.
+/// Rank 1 on every rep, since `delete_node` is offered only from the winner.
+#[tokio::test]
+#[ignore = "requires the locked nomic-embed-text-v1.5 GGUF on disk"]
+async fn remove_requests_mentioning_a_state_route_node_deletion() {
+    let Some((embedding_service, node_service, _temp_dir)) = seed_and_embed().await else {
+        return;
+    };
+    let misses = routing_misses(
+        &embedding_service,
+        &node_service,
+        &[
+            "remove the resolved tickets",
+            "remove all the resolved incidents",
+            "remove the closed tickets",
+            "remove the done tasks",
+            "remove the completed items",
+            "remove the paid invoices",
+        ],
+        "Node Deletion",
+        true,
+    )
+    .await;
+    assert!(
+        misses.is_empty(),
+        "Node Deletion lost rank 1 for {misses:?}"
+    );
+}
+
+/// The cost side of Graph Editing's deletion-verb `exclusion`: a request that
+/// removes a *field* rather than a record also says "remove", and the
+/// exclusion lowers Graph Editing on it. It must still reach the top 3, or the
+/// turn loses `update_node`.
+#[tokio::test]
+#[ignore = "requires the locked nomic-embed-text-v1.5 GGUF on disk"]
+async fn removing_a_field_still_reaches_graph_editing() {
+    let Some((embedding_service, node_service, _temp_dir)) = seed_and_embed().await else {
+        return;
+    };
+    let misses = routing_misses(
+        &embedding_service,
+        &node_service,
+        &[
+            "remove the due date from the launch task",
+            "clear the assignee on the onboarding ticket",
+        ],
+        "Graph Editing",
+        false,
+    )
+    .await;
+    assert!(
+        misses.is_empty(),
+        "Graph Editing missed the top-{RETRIEVAL_TOP_K} for {misses:?}"
+    );
+}
+
+/// An exclusion must cost a skill nothing on the requests it is meant to
+/// serve. The penalty applies only where a query matches the exclusion better
+/// than the description; this pins that on the real model by scoring the
+/// completion-state requests with and without Graph Editing's exclusion and
+/// requiring identical scores — not merely the same rank.
+#[tokio::test]
+#[ignore = "requires the locked nomic-embed-text-v1.5 GGUF on disk"]
+async fn graph_editing_exclusion_leaves_completion_state_scores_unchanged() {
+    let Some((with, with_ns, _t1)) = seed_and_embed().await else {
+        return;
+    };
+    let stripped: Vec<NodeTemplate> = seed_skill_nodes()
+        .into_iter()
+        .map(|mut t| {
+            if let Some(props) = t.root_properties.as_object_mut() {
+                props.remove("exclusion");
+            }
+            t
+        })
+        .collect();
+    let Some((without, without_ns, _t2)) = seed_and_embed_registry(stripped).await else {
+        return;
+    };
+
+    let mut changed = Vec::new();
+    for query in [
+        "The incident Rowan was on call for — mark it resolved",
+        "mark the incident as resolved",
+        "mark incident resolved",
+        "set the incident's resolved field to true",
+        "mark the invoice as paid",
+        "mark the outage report done",
+        "mark the task as done",
+    ] {
+        // Raw confidences, not `scored_ranking`'s 3-decimal strings, which
+        // would hide a penalty below 0.0005.
+        let a = skill_confidence(&with, &with_ns, query, "Graph Editing").await;
+        let b = skill_confidence(&without, &without_ns, query, "Graph Editing").await;
+        eprintln!("{query:?}: with={a:?} without={b:?}");
+        let (Some(a), Some(b)) = (a, b) else {
+            panic!("Graph Editing must be ranked for {query:?}: with={a:?} without={b:?}");
+        };
+        if a != b {
+            changed.push(query);
+        }
+    }
+    assert!(
+        changed.is_empty(),
+        "Graph Editing's exclusion changed its score on completion-state requests {changed:?}"
     );
 }
