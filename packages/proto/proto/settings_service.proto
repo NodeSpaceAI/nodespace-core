@@ -47,8 +47,8 @@ message UpdateCaptureSettingsRequest {
   // Only updated when present; use optional to distinguish "no change" from
   // explicit false.
   optional bool enabled = 1;
-  // Whether captured properties travel is a per-property localOnly schema
-  // classification, not a user toggle. The raw transcript and agent session id
+  // No sync toggle: whether captured properties travel is a per-property
+  // localOnly schema classification. The raw transcript and agent session id
   // are always local-only; the derived summary always syncs.
   reserved 2;
   reserved "sync";
