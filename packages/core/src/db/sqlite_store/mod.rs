@@ -396,7 +396,6 @@ pub struct SqliteStore {
     /// this one cannot reach around them. See that module's doc comment.
     conns: Connections,
     event_tx: broadcast::Sender<crate::db::events::EventEnvelope>,
-    valid_node_types: HashSet<String>,
     notifier: Option<StoreNotifier>,
 }
 
@@ -412,18 +411,13 @@ impl SqliteStore {
         // Bootstrap runs through the writer guard like any other write. The
         // read pool is still empty at this point and only fills on first use,
         // so no reader connection can exist before the schema is created.
-        let valid_node_types = {
-            let conn = conns.write().await;
-            Self::initialize_schema(&conn).await?;
-            Self::build_schema_caches(&conn).await?
-        };
+        Self::initialize_schema(&*conns.write().await).await?;
 
         let (event_tx, _) = broadcast::channel(DOMAIN_EVENT_CHANNEL_CAPACITY);
 
         Ok(Self {
             conns,
             event_tx,
-            valid_node_types,
             notifier: None,
         })
     }
@@ -575,20 +569,6 @@ impl SqliteStore {
         Ok(())
     }
 
-    async fn build_schema_caches(conn: &libsql::Connection) -> Result<HashSet<String>> {
-        let mut rows = conn
-            .query("SELECT id FROM node WHERE node_type = 'schema'", ())
-            .await
-            .context("Failed to query schema nodes for cache")?;
-
-        let mut types = HashSet::new();
-        while let Some(row) = rows.next().await? {
-            let id: String = row.get(0)?;
-            types.insert(id);
-        }
-        Ok(types)
-    }
-
     pub fn set_notifier(&mut self, notifier: StoreNotifier) {
         self.notifier = Some(notifier);
     }
@@ -603,22 +583,54 @@ impl SqliteStore {
         self.event_tx.subscribe()
     }
 
-    fn validate_node_type(&self, node_type: &str) -> Result<()> {
+    /// Reject a `node_type` that no schema node declares.
+    ///
+    /// Reads the schema row live on `conn` — the connection (or transaction)
+    /// the caller is about to write through — rather than a snapshot taken
+    /// when the store was opened. A type registered by `create_schema` at any
+    /// point in the store's lifetime is therefore accepted, a deleted one is
+    /// rejected, and a schema created earlier in the same transaction is seen.
+    async fn validate_node_type(conn: &libsql::Connection, node_type: &str) -> Result<()> {
         if node_type.is_empty() {
             return Err(anyhow::anyhow!("Node type cannot be empty"));
         }
-        if self.valid_node_types.contains(node_type) {
-            return Ok(());
-        }
-        // Allow schema node type always
+        // `schema` is the type of the schema nodes themselves.
         if node_type == "schema" {
             return Ok(());
         }
+        let mut rows = conn
+            .query(
+                "SELECT 1 FROM node WHERE id = ?1 AND node_type = 'schema'",
+                libsql::params![node_type],
+            )
+            .await
+            .context("Failed to look up the schema for a node type")?;
+        if rows.next().await?.is_some() {
+            return Ok(());
+        }
         Err(anyhow::anyhow!(
-            "Invalid node type '{}'. Valid types: {:?}",
-            node_type,
-            self.valid_node_types
+            "Invalid node type '{}': no schema declares it",
+            node_type
         ))
+    }
+
+    /// [`Self::validate_node_type`] for every distinct type in a batch, so a
+    /// bulk insert pays one lookup per type rather than one per row. Types are
+    /// checked in first-seen order, so a batch with several unknown types
+    /// always reports the same one.
+    async fn validate_node_types<'a>(
+        conn: &libsql::Connection,
+        node_types: impl IntoIterator<Item = &'a str>,
+    ) -> Result<()> {
+        let mut seen = HashSet::new();
+        let distinct: Vec<&str> = node_types
+            .into_iter()
+            .filter(|node_type| seen.insert(*node_type))
+            .collect();
+        for node_type in distinct {
+            Self::validate_node_type(conn, node_type).await?;
+        }
+        Ok(())
     }
 
     /// Reject any `lifecycle_status` outside the supported allow-list before it
@@ -637,10 +649,6 @@ impl SqliteStore {
             status,
             crate::models::LIFECYCLE_STATUSES
         ))
-    }
-
-    pub(crate) fn add_to_schema_cache(&mut self, type_name: String) {
-        self.valid_node_types.insert(type_name);
     }
 
     pub fn close(&self) -> Result<()> {
