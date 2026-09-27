@@ -210,10 +210,11 @@ impl PlaybookEngine {
     ///
     /// A rule registered against a base type evaluates its conditions at that
     /// type's scope, so it sees the field set and enum vocabulary it was
-    /// authored against whatever concrete subtype fired it. Returns
-    /// `Ok(None)` when there is nothing to scope — the node is already the
-    /// registered type, or the trigger is not type-scoped — which is every
-    /// rule until something declares `extends`.
+    /// authored against whatever concrete subtype fired it. A wildcard (`*`)
+    /// trigger reads the node at its own type. Returns `Ok(None)` when there
+    /// is nothing to scope — the node reads at its own type and that type
+    /// extends nothing — which is every rule until something declares
+    /// `extends`.
     ///
     /// Returns `Err` when a resolver call itself fails (a transient DB error,
     /// not a schema-shape problem). This is deliberately distinct from
@@ -232,10 +233,11 @@ impl PlaybookEngine {
             ParsedTrigger::GraphEvent { node_type, .. } => node_type,
             ParsedTrigger::Scheduled { node_type, .. } => node_type,
         };
-
-        if scope_type == "*" {
-            return Ok(None);
-        }
+        let scope_type = if scope_type == "*" {
+            &node.node_type
+        } else {
+            scope_type
+        };
         crate::playbook::cel::CelScope::resolve(node_service, scope_type, node).await
     }
 
@@ -1546,6 +1548,21 @@ mod scope_tests {
             .expect("node should exist")
     }
 
+    async fn make_ticket(svc: &Arc<NodeService>) -> crate::models::Node {
+        let id = svc
+            .create_node(crate::models::Node::new(
+                "ticket".to_string(),
+                "a ticket".to_string(),
+                json!({ "state": "open" }),
+            ))
+            .await
+            .expect("ticket creation failed");
+        svc.get_node(&id)
+            .await
+            .expect("get_node failed")
+            .expect("node should exist")
+    }
+
     #[tokio::test]
     async fn base_scoped_condition_matches_through_maps_to() {
         let (svc, _tmp) = test_service().await;
@@ -1587,6 +1604,62 @@ mod scope_tests {
             eval(&svc, &rule, &node).await,
             "a bug-scoped condition reads the stored value unresolved"
         );
+    }
+
+    /// `ticket.state` is a plain enum `bug` inherits without extending, so a
+    /// bug's `state` stays in the `ticket` bucket — unlike [`seed_chain`],
+    /// where `add_field_values` materializes it onto `bug`'s own.
+    async fn seed_inheriting_chain(svc: &Arc<NodeService>) {
+        handle_create_schema(
+            svc,
+            json!({
+                "name": "Ticket",
+                "fields": [{
+                    "name": "state",
+                    "type": "enum",
+                    "protection": "user",
+                    "indexed": false,
+                    "coreValues": [
+                        { "value": "open", "label": "Open" },
+                        { "value": "done", "label": "Done" }
+                    ]
+                }]
+            }),
+        )
+        .await
+        .expect("ticket schema creation failed");
+
+        handle_create_schema(
+            svc,
+            json!({ "name": "Bug", "extends": "ticket", "fields": [] }),
+        )
+        .await
+        .expect("bug schema creation failed");
+    }
+
+    #[tokio::test]
+    async fn own_scoped_condition_reads_an_inherited_field() {
+        let (svc, _tmp) = test_service().await;
+        seed_inheriting_chain(&svc).await;
+        let done = make_bug(&svc, json!({ "state": "done" })).await;
+        let open = make_bug(&svc, json!({ "state": "open" })).await;
+        assert!(
+            done.properties["ticket"]["state"] == "done",
+            "precondition: the inherited field must live in the ancestor's bucket, got {}",
+            done.properties
+        );
+
+        for trigger_type in ["bug", "*"] {
+            let rule = rule_on(trigger_type, "node.state == 'done'");
+            assert!(
+                eval(&svc, &rule, &done).await,
+                "a `{trigger_type}` Play must read a bug's inherited `state`"
+            );
+            assert!(
+                !eval(&svc, &rule, &open).await,
+                "a `{trigger_type}` Play must not match an open bug"
+            );
+        }
     }
 
     #[tokio::test]
@@ -1638,11 +1711,12 @@ mod scope_tests {
     async fn an_unextended_type_gets_no_scope_at_all() {
         let (svc, _tmp) = test_service().await;
         seed_chain(&svc).await;
-        let node = make_bug(&svc, json!({ "state": "open" })).await;
+        let node = make_ticket(&svc).await;
 
-        // A rule registered against the node's own type needs no projection or
-        // resolution, so the engine short-circuits before touching the store.
-        let rule = rule_on("bug", "node.state == 'open'");
+        // A rule registered against the node's own type, when that type
+        // extends nothing, needs no projection or resolution: its own bucket
+        // is its whole view.
+        let rule = rule_on("ticket", "node.state == 'open'");
         assert!(
             PlaybookEngine::cel_scope_for(&svc, &rule, &node)
                 .await
@@ -1652,14 +1726,14 @@ mod scope_tests {
         );
     }
 
-    /// The other legitimate `Ok(None)` case: a trigger that is not
-    /// type-scoped at all (`node_type: "*"`) needs no projection either,
-    /// same short-circuit as the node's-own-type case above.
+    /// A trigger that is not type-scoped at all (`node_type: "*"`) reads the
+    /// node at its own type, so on an unextended type it needs no scope
+    /// either — same short-circuit as the node's-own-type case above.
     #[tokio::test]
     async fn a_wildcard_trigger_gets_no_scope_at_all() {
         let (svc, _tmp) = test_service().await;
         seed_chain(&svc).await;
-        let node = make_bug(&svc, json!({ "state": "open" })).await;
+        let node = make_ticket(&svc).await;
 
         let rule = rule_on("*", "node.state == 'open'");
         assert!(

@@ -1140,6 +1140,82 @@ async fn reject_action_condition_not_met_allows_normal_creation() -> Result<()> 
     Ok(())
 }
 
+/// A reject rule registered on a subtype reads a field the subtype inherits.
+///
+/// `iv_sub_bug` extends `iv_sub_ticket` without redeclaring `state`, so a
+/// bug's `state` is stored in the ancestor's bucket. A condition at the bug's
+/// own scope must still see it: were it absent, the rule would never match and
+/// the reject would silently allow the write it exists to veto. The open bug
+/// proves the condition is a real gate rather than a blanket rejection.
+#[tokio::test]
+async fn reject_rule_on_a_subtype_reads_an_inherited_field() -> Result<()> {
+    let (service, _tmp) = create_test_service().await?;
+    nodespace_core::schema::handle_create_schema(
+        &service,
+        json!({
+            "name": "iv_sub_ticket",
+            "fields": [{ "name": "state", "type": "string", "protection": "user", "indexed": false }]
+        }),
+    )
+    .await?;
+    nodespace_core::schema::handle_create_schema(
+        &service,
+        json!({ "name": "iv_sub_bug", "extends": "iv_sub_ticket", "fields": [] }),
+    )
+    .await?;
+
+    let engine = PlaybookEngine::new(Arc::clone(&service));
+    service.set_playbook_lifecycle(engine.lifecycle().clone());
+    let play_node = Node::new(
+        "play".to_string(),
+        "reject-inherited-play".to_string(),
+        json!({ "rules": reject_invariant_rule(
+            "iv_sub_bug",
+            "node.state == 'done'",
+            "cannot create a done bug",
+        ) }),
+    );
+    {
+        let lifecycle = engine.lifecycle();
+        let mut lm = lifecycle.write().unwrap();
+        lm.activate_play(&play_node)
+            .expect("play must parse and activate");
+    }
+
+    let open = Node::new(
+        "iv_sub_bug".to_string(),
+        "open bug".to_string(),
+        json!({ "state": "open" }),
+    );
+    let open_id = open.id.clone();
+    service.create_node(open).await?;
+    let stored = service
+        .get_node(&open_id)
+        .await?
+        .expect("an open bug must be created");
+    assert_eq!(
+        user_field(&stored, "iv_sub_ticket", "state"),
+        Some(&json!("open")),
+        "precondition: the inherited field lives in the ancestor's bucket, got {}",
+        stored.properties
+    );
+
+    let done = Node::new(
+        "iv_sub_bug".to_string(),
+        "done bug".to_string(),
+        json!({ "state": "done" }),
+    );
+    let done_id = done.id.clone();
+    let err = service.create_node(done).await.unwrap_err();
+    assert!(
+        matches!(err, NodeServiceError::PlayRuleRejected { .. }),
+        "a done bug must be rejected by the rule, got {err:?}"
+    );
+    assert!(service.get_node(&done_id).await?.is_none());
+
+    Ok(())
+}
+
 /// Adversarial: `reject` as the FIRST action in a rule, with an augmenting
 /// action after it. The augmenting action (updating a separate,
 /// already-existing node) must never run at all — proven via that node's
