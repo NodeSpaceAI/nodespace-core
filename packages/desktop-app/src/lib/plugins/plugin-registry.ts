@@ -3,7 +3,7 @@
  *
  * Consolidates functionality from:
  * - ViewerRegistry (viewer components)
- * - NODE_REFERENCE_COMPONENTS (reference components)
+ * - Per-type node reference components
  * - BasicNodeTypeRegistry (node definitions + slash commands)
  *
  * Breaking change: This replaces all three systems with a single unified approach.

@@ -1066,7 +1066,7 @@ describe('ReactiveNodeService - Visible Nodes', () => {
   });
 });
 
-describe('ReactiveNodeService - Content Processing Methods', () => {
+describe('ReactiveNodeService - Header Level', () => {
   let service: ReactiveNodeService;
   let events: NodeManagerEvents;
   let _sharedNodeStore: SharedNodeStore;
@@ -1101,56 +1101,12 @@ describe('ReactiveNodeService - Content Processing Methods', () => {
     service.destroy();
   });
 
-  it('parseNodeContent returns parsed markdown', () => {
-    const parsed = service.parseNodeContent('content-test');
-    expect(parsed).toBeDefined();
-    // ContentProcessor.parseMarkdown returns a structure
-    expect(parsed).not.toBeNull();
-  });
+  it('updateNodeContent derives inheritHeaderLevel from header syntax', () => {
+    service.updateNodeContent('content-test', '## Section');
+    expect(service.getUIState('content-test')?.inheritHeaderLevel).toBe(2);
 
-  it('parseNodeContent returns null for non-existent node', () => {
-    const parsed = service.parseNodeContent('non-existent');
-    expect(parsed).toBeNull();
-  });
-
-  it('getNodeHeaderLevel detects header level', () => {
-    const level = service.getNodeHeaderLevel('content-test');
-    expect(level).toBe(1);
-  });
-
-  it('getNodeHeaderLevel returns 0 for non-header content', () => {
     service.updateNodeContent('content-test', 'Plain text');
-    const level = service.getNodeHeaderLevel('content-test');
-    expect(level).toBe(0);
-  });
-
-  it('getNodeHeaderLevel returns 0 for non-existent node', () => {
-    const level = service.getNodeHeaderLevel('non-existent');
-    expect(level).toBe(0);
-  });
-
-  it('getNodeDisplayText returns text without markdown formatting', () => {
-    const displayText = service.getNodeDisplayText('content-test');
-    expect(displayText).toBeTruthy();
-    expect(displayText.length).toBeGreaterThan(0);
-  });
-
-  it('getNodeDisplayText returns empty string for non-existent node', () => {
-    const displayText = service.getNodeDisplayText('non-existent');
-    expect(displayText).toBe('');
-  });
-
-  it('updateNodeContentWithProcessing updates content', () => {
-    const result = service.updateNodeContentWithProcessing('content-test', 'New content');
-    expect(result).toBe(true);
-
-    const node = service.findNode('content-test');
-    expect(node?.content).toBe('New content');
-  });
-
-  it('updateNodeContentWithProcessing returns false for non-existent node', () => {
-    const result = service.updateNodeContentWithProcessing('non-existent', 'Test');
-    expect(result).toBe(false);
+    expect(service.getUIState('content-test')?.inheritHeaderLevel).toBe(0);
   });
 });
 
@@ -2243,19 +2199,6 @@ describe('ReactiveNodeService - Content Processing Debouncing', () => {
     // Final content should be the last update
     const node = service.findNode('debounce-test');
     expect(node?.content).toBe('Update 3');
-  });
-
-  it('renderNodeAsHTML returns HTML for node content', async () => {
-    service.updateNodeContent('debounce-test', '**Bold** text');
-
-    const html = await service.renderNodeAsHTML('debounce-test');
-    expect(html).toBeTruthy();
-    expect(typeof html).toBe('string');
-  });
-
-  it('renderNodeAsHTML returns empty string for non-existent node', async () => {
-    const html = await service.renderNodeAsHTML('non-existent');
-    expect(html).toBe('');
   });
 });
 

@@ -11,14 +11,8 @@
 export * from './reactive-node-service.svelte.js';
 
 // ============================================================================
-// Node Decoration System
-// ============================================================================
-export * from './base-node-decoration';
-
-// ============================================================================
 // Content Processing
 // ============================================================================
-export * from './content-processor';
 export * from './markdown-pattern-detector';
 export * from './markdown-utils';
 

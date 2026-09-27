@@ -571,7 +571,7 @@ describe('Core Plugins Integration', () => {
       }
     });
 
-    it('should maintain all functionality from old NODE_REFERENCE_COMPONENTS', () => {
+    it('should register a reference component for each core node type', () => {
       registerCorePlugins(registry);
 
       // Verify currently implemented reference types have references

@@ -2,7 +2,7 @@
  * Unified Plugin Registry Types
  *
  * Consolidates all plugin-related interfaces into a single, comprehensive system.
- * Replaces ViewerRegistry, NODE_REFERENCE_COMPONENTS, and BasicNodeTypeRegistry.
+ * Covers viewers, per-type node reference components, and node definitions.
  */
 
 import type { SvelteComponent, Component } from 'svelte';

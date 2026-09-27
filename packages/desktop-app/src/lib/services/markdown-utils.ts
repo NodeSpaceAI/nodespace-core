@@ -25,6 +25,15 @@ const defaultOptions: MarkdownOptions = {
 };
 
 /**
+ * Header level (1-6) of a line starting with `#` syntax, or 0 when it isn't a header.
+ * Requires the space after the hashes and does not trim, so `"# "` mid-typing counts.
+ */
+export function parseHeaderLevel(content: string): number {
+  const match = content.match(/^(#{1,6})\s/);
+  return match ? match[1].length : 0;
+}
+
+/**
  * Convert markdown text to HTML
  */
 export function parseMarkdown(markdown: string, options: Partial<MarkdownOptions> = {}): string {
@@ -177,46 +186,6 @@ export function getWordCount(markdown: string): number {
   if (!plainText) return 0;
 
   return plainText.split(/\s+/).filter((word) => word.length > 0).length;
-}
-
-/**
- * Validate markdown syntax (basic check)
- */
-export function validateMarkdown(markdown: string): { isValid: boolean; errors: string[] } {
-  const errors: string[] = [];
-
-  // Check for unclosed bold/italic markers
-  const boldCount = (markdown.match(/\*\*/g) || []).length;
-  const italicCount = (markdown.match(/(?<!\*)\*(?!\*)/g) || []).length;
-  const underscoreBoldCount = (markdown.match(/__/g) || []).length;
-  const underscoreItalicCount = (markdown.match(/(?<!_)_(?!_)/g) || []).length;
-
-  if (boldCount % 2 !== 0) {
-    errors.push('Unclosed bold markers (**)');
-  }
-
-  if (italicCount % 2 !== 0) {
-    errors.push('Unclosed italic markers (*)');
-  }
-
-  if (underscoreBoldCount % 2 !== 0) {
-    errors.push('Unclosed bold markers (__)');
-  }
-
-  if (underscoreItalicCount % 2 !== 0) {
-    errors.push('Unclosed italic markers (_)');
-  }
-
-  // Check for unclosed code markers
-  const codeCount = (markdown.match(/`/g) || []).length;
-  if (codeCount % 2 !== 0) {
-    errors.push('Unclosed code markers (`)');
-  }
-
-  return {
-    isValid: errors.length === 0,
-    errors
-  };
 }
 
 /**
