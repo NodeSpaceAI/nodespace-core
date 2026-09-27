@@ -813,9 +813,10 @@ mod tests {
             sorting: None,
             limit: None,
         };
-        assert_eq!(
-            rewrite_view_step_ids(&view, &empty).target_type,
-            view.target_type
-        );
+        let out = rewrite_view_step_ids(&view, &empty);
+        assert_eq!(out.target_type, view.target_type);
+        assert_eq!(out.filters, view.filters);
+        assert_eq!(out.sorting, view.sorting);
+        assert_eq!(out.limit, view.limit);
     }
 }

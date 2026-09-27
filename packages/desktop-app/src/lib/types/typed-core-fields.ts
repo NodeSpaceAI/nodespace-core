@@ -23,8 +23,13 @@ export interface TypedCoreField {
   wire: string;
   /** Dates are normalized to `YYYY-MM-DD` on read. */
   date?: boolean;
-  /** Not a string — an array, number or object, promoted as stored. */
-  structured?: boolean;
+  /**
+   * Not a string: promoted as stored when it has this JSON shape, dropped
+   * otherwise — as the Rust decoder drops a malformed field to its default.
+   */
+  structured?: 'array' | 'number' | 'object';
+  /** System-managed: read on the wire, never sent in a typed update. */
+  readOnly?: boolean;
 }
 
 export const TYPED_CORE_FIELDS: Readonly<Record<string, readonly TypedCoreField[]>> = {
@@ -48,14 +53,14 @@ export const TYPED_CORE_FIELDS: Readonly<Record<string, readonly TypedCoreField[
   ],
   query: [
     { storage: 'target_type', wire: 'targetType' },
-    { storage: 'filters', wire: 'filters', structured: true },
-    { storage: 'sorting', wire: 'sorting', structured: true },
-    { storage: 'limit', wire: 'limit', structured: true },
+    { storage: 'filters', wire: 'filters', structured: 'array' },
+    { storage: 'sorting', wire: 'sorting', structured: 'array' },
+    { storage: 'limit', wire: 'limit', structured: 'number' },
     { storage: 'generated_by', wire: 'generatedBy' },
     { storage: 'generator_context', wire: 'generatorContext' },
-    { storage: 'execution_count', wire: 'executionCount', structured: true },
-    { storage: 'last_executed', wire: 'lastExecuted' },
-    { storage: 'view_config', wire: 'viewConfig', structured: true }
+    { storage: 'execution_count', wire: 'executionCount', structured: 'number', readOnly: true },
+    { storage: 'last_executed', wire: 'lastExecuted', readOnly: true },
+    { storage: 'view_config', wire: 'viewConfig', structured: 'object' }
   ]
 };
 
@@ -87,4 +92,9 @@ export function typedCoreField(nodeType: string, fieldName: string): TypedCoreFi
 /** The typed (top-level) keys of `nodeType`, e.g. `['firstName', 'lastName', 'email']`. */
 export function typedCoreKeys(nodeType: string): string[] {
   return (TYPED_CORE_FIELDS[nodeType] ?? []).map((f) => f.wire);
+}
+
+/** The typed keys a client may write — `typedCoreKeys` minus the read-only ones. */
+export function writableTypedCoreKeys(nodeType: string): string[] {
+  return (TYPED_CORE_FIELDS[nodeType] ?? []).filter((f) => !f.readOnly).map((f) => f.wire);
 }

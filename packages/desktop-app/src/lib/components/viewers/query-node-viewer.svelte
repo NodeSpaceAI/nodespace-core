@@ -423,7 +423,7 @@
       const updated = await backendAdapter.updateQueryNode(queryNode.id, queryNode.version, {
         viewConfig: { ...merged }
       });
-      queryNode = updated;
+      queryNode = nodeToQueryNode(updated);
       sharedNodeStore.setNode(updated, {
         type: 'database',
         reason: 'query-node-viewer view config'
@@ -455,7 +455,7 @@
           sorting: sorting ?? null,
           limit: limit ?? null
         });
-        queryNode = updated;
+        queryNode = nodeToQueryNode(updated);
         sharedNodeStore.setNode(updated, {
           type: 'database',
           reason: 'query-node-viewer save'

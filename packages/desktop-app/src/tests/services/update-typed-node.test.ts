@@ -165,6 +165,19 @@ describe('updateNode routing for typed core types', () => {
     expect((store.getNode('q1') as unknown as QueryNode).viewConfig).toEqual(viewConfig);
   });
 
+  it('never sends a read-only system field of a query to updateQueryNode', async () => {
+    store.setNode(makeNode('q1', 'query', { targetType: 'task', executionCount: 0 }), dbSource);
+    const typedSpy = vi.spyOn(backendAdapter, 'updateQueryNode');
+    const genericSpy = vi.spyOn(backendAdapter, 'updateNode');
+
+    store.updateNode('q1', { executionCount: 7 } as unknown as Partial<Node>, viewerSource);
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(typedSpy).not.toHaveBeenCalled();
+    expect(genericSpy).not.toHaveBeenCalled();
+    expect((store.getNode('q1') as unknown as QueryNode).executionCount).toBe(0);
+  });
+
   it('persists an extension-field write on a task through the generic update', async () => {
     // User-defined fields on a core type live in `properties` and must
     // persist — previously the task updater rejected a `properties` write.

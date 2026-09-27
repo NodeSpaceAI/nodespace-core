@@ -34,7 +34,11 @@ import type {
   QueryNodeUpdate,
   TaskNodeUpdate
 } from '$lib/types';
-import { hasTypedCoreFields, typedCoreKeys } from '$lib/types/typed-core-fields';
+import {
+  hasTypedCoreFields,
+  typedCoreKeys,
+  writableTypedCoreKeys
+} from '$lib/types/typed-core-fields';
 import type { InsertPosition } from '$lib/services/backend-adapter';
 import type {
   NodeUpdate,
@@ -803,12 +807,13 @@ interface Subscription {
 export type TypedNodeType = 'task' | 'person' | 'project' | 'query';
 
 /**
- * The keys `updateTypedNode()` accepts for a type: its typed core fields
- * (`TYPED_CORE_FIELDS`), plus `content` for task, whose typed update also
+ * The keys `updateTypedNode()` accepts for a type: its writable typed core
+ * fields (`TYPED_CORE_FIELDS` minus the read-only system fields, which the
+ * typed update rejects), plus `content` for task, whose typed update also
  * carries content.
  */
 function typedUpdateKeys(nodeType: TypedNodeType): string[] {
-  const keys = typedCoreKeys(nodeType);
+  const keys = writableTypedCoreKeys(nodeType);
   return nodeType === 'task' ? [...keys, 'content'] : keys;
 }
 

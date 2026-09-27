@@ -121,6 +121,12 @@ function normalizeDate(value: string): string {
   return OFFSET_DATETIME.test(value) ? value.slice(0, 10) : value;
 }
 
+function hasJsonShape(value: unknown, shape: 'array' | 'number' | 'object'): boolean {
+  if (shape === 'array') return Array.isArray(value);
+  if (shape === 'number') return typeof value === 'number';
+  return isPlainObject(value);
+}
+
 /**
  * Convert a node's storage-shape `properties` into the API shape the frontend
  * reads: `properties` flattened, typed core fields moved to the top level.
@@ -171,10 +177,10 @@ export function storageNodeToApiFields(
     // prefers it when the key is present at all (even as null) — `.get(wire)
     // .or_else(storage)`. Every other type reads the storage key alone.
     const raw = nodeType === 'task' && wire in properties ? properties[wire] : properties[storage];
-    if (typeof raw === 'string') {
+    if (structured) {
+      if (hasJsonShape(raw, structured)) promoted[wire] = raw;
+    } else if (typeof raw === 'string') {
       promoted[wire] = date ? normalizeDate(raw) : raw;
-    } else if (structured && raw !== null && raw !== undefined) {
-      promoted[wire] = raw;
     }
     delete properties[storage];
     delete properties[wire];

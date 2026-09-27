@@ -61,7 +61,7 @@ export type { ProjectNode, ProjectNodeUpdate, ProjectStatus } from './project-no
 export { isProjectNode, nodeToProjectNode } from './project-node';
 
 export type { QueryNode, QueryNodeUpdate, QueryGeneratedBy } from './query';
-export { isQueryNode, nodeToQueryNode } from './query';
+export { nodeToQueryNode } from './query';
 
 export type { SchemaNode, SchemaField, ProtectionLevel, EnumValue } from './schema-node';
 // Only isSchemaNode remains - type guard for runtime checking

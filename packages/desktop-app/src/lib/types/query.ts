@@ -66,10 +66,6 @@ export interface QueryNodeUpdate {
   viewConfig?: Record<string, unknown> | null;
 }
 
-export function isQueryNode(node: Node | QueryNode): node is QueryNode {
-  return node.nodeType === 'query';
-}
-
 /**
  * Convert a node received over any transport to a `QueryNode`. The backend
  * (`node_to_typed_value`) already promotes the query fields to the top level
