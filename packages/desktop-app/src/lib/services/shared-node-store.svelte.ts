@@ -28,8 +28,17 @@ import { onDaemonReconnect } from './daemon-status';
 import { focusManager } from './focus-manager.svelte';
 import type { Node } from '$lib/types';
 import type { NodeReference } from '$lib/types/node';
-import type { PersonNodeUpdate, ProjectNodeUpdate, TaskNodeUpdate } from '$lib/types';
-import { hasTypedCoreFields, typedCoreKeys } from '$lib/types/typed-core-fields';
+import type {
+  PersonNodeUpdate,
+  ProjectNodeUpdate,
+  QueryNodeUpdate,
+  TaskNodeUpdate
+} from '$lib/types';
+import {
+  hasTypedCoreFields,
+  typedCoreKeys,
+  writableTypedCoreKeys
+} from '$lib/types/typed-core-fields';
 import type { InsertPosition } from '$lib/services/backend-adapter';
 import type {
   NodeUpdate,
@@ -795,15 +804,16 @@ interface Subscription {
 }
 
 /** Core node types with typed fields and a typed backend update. */
-export type TypedNodeType = 'task' | 'person' | 'project';
+export type TypedNodeType = 'task' | 'person' | 'project' | 'query';
 
 /**
- * The keys `updateTypedNode()` accepts for a type: its typed core fields
- * (`TYPED_CORE_FIELDS`), plus `content` for task, whose typed update also
+ * The keys `updateTypedNode()` accepts for a type: its writable typed core
+ * fields (`TYPED_CORE_FIELDS` minus the read-only system fields, which the
+ * typed update rejects), plus `content` for task, whose typed update also
  * carries content.
  */
 function typedUpdateKeys(nodeType: TypedNodeType): string[] {
-  const keys = typedCoreKeys(nodeType);
+  const keys = writableTypedCoreKeys(nodeType);
   return nodeType === 'task' ? [...keys, 'content'] : keys;
 }
 
@@ -834,6 +844,8 @@ function sendTypedUpdate(
       return backendAdapter.updatePersonNode(nodeId, version, payload as PersonNodeUpdate);
     case 'project':
       return backendAdapter.updateProjectNode(nodeId, version, payload as ProjectNodeUpdate);
+    case 'query':
+      return backendAdapter.updateQueryNode(nodeId, version, payload as QueryNodeUpdate);
   }
 }
 
@@ -3457,7 +3469,8 @@ export class SharedNodeStore {
 
   /**
    * Write a core type's typed fields (`TYPED_CORE_FIELDS`) through its typed
-   * backend update (`updateTaskNode`/`updatePersonNode`/`updateProjectNode`).
+   * backend update (`updateTaskNode`/`updatePersonNode`/`updateProjectNode`/
+   * `updateQueryNode`).
    *
    * Core fields have exactly one home on a typed node — the top level — so
    * this is the only write path for them; `properties` carries extension

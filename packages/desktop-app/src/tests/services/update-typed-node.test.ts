@@ -1,6 +1,6 @@
 /**
  * `SharedNodeStore.updateTypedNode()` — the one write path for a core type's
- * typed fields (task, person, project), and `updateNode()`'s routing into it.
+ * typed fields (task, person, project, query), and `updateNode()`'s routing into it.
  *
  * The same-field and different-field clobber guards are covered by the
  * `updatetasknode-*-clobber-regression` suites, which drive this method
@@ -16,7 +16,7 @@ import {
 } from '../../lib/services/shared-node-store.svelte';
 import { backendAdapter } from '../../lib/services/backend-adapter';
 import { conflictNotifications } from '../../lib/stores/conflict-notifications.svelte';
-import type { Node, PersonNode, ProjectNode, TaskNode } from '../../lib/types';
+import type { Node, PersonNode, ProjectNode, QueryNode, TaskNode } from '../../lib/types';
 
 const dbSource = { type: 'database' as const, reason: 'initial-load' };
 const viewerSource = { type: 'viewer' as const, viewerId: 'pane-1' };
@@ -144,6 +144,38 @@ describe('updateNode routing for typed core types', () => {
     await vi.waitFor(() => expect(typedSpy).toHaveBeenCalledWith('pr1', 1, { status: 'active' }));
     expect(genericSpy).not.toHaveBeenCalled();
     expect((store.getNode('pr1') as unknown as ProjectNode).status).toBe('active');
+  });
+
+  it('routes a typed query field (e.g. a view change) to updateQueryNode', async () => {
+    store.setNode(makeNode('q1', 'query', { targetType: 'task', filters: [] }), dbSource);
+    const typedSpy = vi.spyOn(backendAdapter, 'updateQueryNode').mockImplementation(
+      async (id, version, update) =>
+        ({
+          ...makeNode(id, 'query', { targetType: 'task', filters: [], ...update }),
+          version: version + 1
+        }) as unknown as QueryNode
+    );
+    const genericSpy = vi.spyOn(backendAdapter, 'updateNode');
+    const viewConfig = { lastView: 'kanban', kanban: { groupBy: 'status' } };
+
+    store.updateNode('q1', { viewConfig } as unknown as Partial<Node>, viewerSource);
+
+    await vi.waitFor(() => expect(typedSpy).toHaveBeenCalledWith('q1', 1, { viewConfig }));
+    expect(genericSpy).not.toHaveBeenCalled();
+    expect((store.getNode('q1') as unknown as QueryNode).viewConfig).toEqual(viewConfig);
+  });
+
+  it('never sends a read-only system field of a query to updateQueryNode', async () => {
+    store.setNode(makeNode('q1', 'query', { targetType: 'task', executionCount: 0 }), dbSource);
+    const typedSpy = vi.spyOn(backendAdapter, 'updateQueryNode');
+    const genericSpy = vi.spyOn(backendAdapter, 'updateNode');
+
+    store.updateNode('q1', { executionCount: 7 } as unknown as Partial<Node>, viewerSource);
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(typedSpy).not.toHaveBeenCalled();
+    expect(genericSpy).not.toHaveBeenCalled();
+    expect((store.getNode('q1') as unknown as QueryNode).executionCount).toBe(0);
   });
 
   it('persists an extension-field write on a task through the generic update', async () => {

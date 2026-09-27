@@ -1211,6 +1211,29 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                     unique: None,
                     unique_case_insensitive: None,
                 },
+                SchemaField {
+                    name: "view_config".to_string(),
+                    friendly_name: "View configuration".to_string(),
+                    field_type: "object".to_string(),
+                    local_only: false,
+                    protection: SchemaProtectionLevel::Core,
+                    core_values: None,
+                    user_values: None,
+                    indexed: false,
+                    required: Some(false),
+                    extensible: None,
+                    default: None,
+                    description: Some(
+                        "How the query renders: lastView (list, table or kanban) and \
+                         kanban.groupBy"
+                            .to_string(),
+                    ),
+                    item_type: None,
+                    fields: None,
+                    item_fields: None,
+                    unique: None,
+                    unique_case_insensitive: None,
+                },
             ],
             relationships: vec![],
             title_template: None,
@@ -1867,7 +1890,7 @@ mod tests {
         let schemas = get_core_schemas();
         let query = schemas.iter().find(|s| s.id == "query").unwrap();
 
-        assert_eq!(query.fields.len(), 8);
+        assert_eq!(query.fields.len(), 9);
         assert!(query.get_field("target_type").is_some());
         assert!(query.get_field("filters").is_some());
         assert!(query.get_field("sorting").is_some());
@@ -1876,6 +1899,7 @@ mod tests {
         assert!(query.get_field("generator_context").is_some());
         assert!(query.get_field("execution_count").is_some());
         assert!(query.get_field("last_executed").is_some());
+        assert!(query.get_field("view_config").is_some());
     }
 
     #[test]
@@ -2126,7 +2150,7 @@ mod tests {
     #[test]
     fn promoted_fields_match_each_typed_core_schema() {
         let schemas = get_core_schemas();
-        for node_type in ["task", "person", "project"] {
+        for node_type in ["task", "person", "project", "query"] {
             let schema = schemas
                 .iter()
                 .find(|s| s.id == node_type)

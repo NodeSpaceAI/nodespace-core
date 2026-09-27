@@ -67,11 +67,12 @@ service NodeService {
 
   // Type-specific updates
   rpc UpdateTaskNode(UpdateTaskNodeRequest) returns (NodeResponse);
-  // Typed core-field updates for person and project (same tri-state
-  // encoding as UpdateTaskNode). The daemon writes them through the generic
-  // update pipeline; the response carries the stored node.
+  // Typed core-field updates for person, project and query (the same
+  // tri-state semantics as UpdateTaskNode). The daemon writes them through the
+  // generic update pipeline; the response carries the stored node.
   rpc UpdatePersonNode(UpdatePersonNodeRequest) returns (NodeResponse);
   rpc UpdateProjectNode(UpdateProjectNodeRequest) returns (NodeResponse);
+  rpc UpdateQueryNode(UpdateQueryNodeRequest) returns (NodeResponse);
 
   // Local identity (ADR-037): the seeded local-user PersonNode.
   // GetLocalPerson resolves it via the has_role owner edge to the
@@ -924,7 +925,7 @@ message UpdateTaskNodeRequest {
 }
 
 // ---------------------------------------------------------------------------
-// UpdatePersonNode / UpdateProjectNode
+// UpdatePersonNode / UpdateProjectNode / UpdateQueryNode
 // ---------------------------------------------------------------------------
 
 // Unset = no change; OptionalStringClear.clear = clear the field.
@@ -944,6 +945,17 @@ message UpdateProjectNodeRequest {
   optional OptionalStringClear priority = 4;
   optional OptionalTimestampClear start_date = 5;
   optional OptionalTimestampClear end_date = 6;
+}
+
+// A saved query's fields are mostly structured JSON (filters, sorting,
+// view_config), so the update travels as the JSON-encoded QueryNodeUpdate
+// (camelCase keys) rather than as per-field wrappers: an absent key is no
+// change, `null` clears, a value sets. The daemon decodes it with serde, the
+// same decoder the Tauri command and the service use.
+message UpdateQueryNodeRequest {
+  string node_id = 1;
+  int64 version = 2;
+  string update_json = 3;
 }
 
 // All fields are written together (whole-value replace, not a patch); pass

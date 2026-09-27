@@ -47,10 +47,21 @@ use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 use std::sync::Arc;
 
-/// Structured query definition matching QueryNode fields
+// The filter and sort vocabulary is shared with the stored query
+// (`nodespace_types::QueryFields`), so a saved query's filters decode straight
+// into the types executed here.
+pub use nodespace_types::{
+    FilterOperator, FilterType, QueryFilter, RelationshipType, ResolvedRelationship, SortConfig,
+    SortDirection,
+};
+
+/// Structured query definition: what a query selects, for execution
 ///
-/// This struct matches the TypeScript QueryNode interface from
-/// `packages/desktop-app/src/lib/types/query.ts`.
+/// The execution shape, not the stored one. A saved query's fields are
+/// decoded by [`nodespace_types::QueryFields`] and mapped here by
+/// [`QueryDefinition::from_fields`] — never by deserializing a stored
+/// `properties` blob into this struct. Matches the TypeScript
+/// `QueryDefinition` in `packages/desktop-app/src/lib/types/query.ts`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct QueryDefinition {
@@ -65,6 +76,16 @@ pub struct QueryDefinition {
 }
 
 impl QueryDefinition {
+    /// The definition a saved query executes.
+    pub fn from_fields(fields: &nodespace_types::QueryFields) -> Self {
+        Self {
+            target_type: fields.target_type.clone(),
+            filters: fields.filters.clone(),
+            sorting: fields.sorting.clone(),
+            limit: fields.limit,
+        }
+    }
+
     /// Check every identifier this definition would place into SQL text
     ///
     /// The target type, each property filter's property and each sort field
@@ -85,7 +106,7 @@ impl QueryDefinition {
             validate_identifier(&self.target_type, "target_type")?;
         }
         for filter in &self.filters {
-            filter.validate_identifiers(0)?;
+            validate_filter_identifiers(filter, 0)?;
         }
         for sort in self.sorting.iter().flatten() {
             validate_identifier(&sort.field, "sort field")?;
@@ -94,54 +115,52 @@ impl QueryDefinition {
     }
 }
 
-impl QueryFilter {
-    /// Maximum nesting depth a [`FilterType::Related`] filter's own `filter`
-    /// may reach: 0 means the outermost `Related` filter's nested condition
-    /// must not itself be `Related`. Every named use case so far (tasks by
-    /// project status, sprints by task severity) is one hop; unbounded depth
-    /// is unvalidated scope with no consuming case yet, and the recursive
-    /// shape makes raising this a validator change, not a shape change.
-    const MAX_RELATED_DEPTH: usize = 0;
+/// Maximum nesting depth a [`FilterType::Related`] filter's own `filter`
+/// may reach: 0 means the outermost `Related` filter's nested condition
+/// must not itself be `Related`. Every named use case so far (tasks by
+/// project status, sprints by task severity) is one hop; unbounded depth
+/// is unvalidated scope with no consuming case yet, and the recursive
+/// shape makes raising this a validator change, not a shape change.
+const MAX_RELATED_DEPTH: usize = 0;
 
-    /// Check this filter's own identifiers, and recurse into a nested
-    /// [`FilterType::Related`] filter — both its `relationship_name` (which
-    /// becomes a bound value, not formatted into SQL text, but is still worth
-    /// rejecting early as a caller error) and its own `filter`, which is
-    /// walked the same way [`QueryDefinition::validate_identifiers`] walks a
-    /// top-level filter list.
-    ///
-    /// `depth` counts `Related` nesting already consumed by the time this
-    /// filter is reached: 0 for a top-level filter, 1 for the nested `filter`
-    /// of a top-level `Related` filter, and so on. A `Related` filter at
-    /// `depth > Self::MAX_RELATED_DEPTH` is rejected outright — see
-    /// [`Self::MAX_RELATED_DEPTH`] for why the cap is enforced here rather
-    /// than left to the executor to silently truncate or misexecute.
-    fn validate_identifiers(&self, depth: usize) -> Result<()> {
-        if let Some(property) = &self.property {
-            validate_identifier(property, "filter property")?;
-        }
-        if self.filter_type == FilterType::Related {
-            if depth > Self::MAX_RELATED_DEPTH {
-                anyhow::bail!(
-                    "Related filter nesting depth {} exceeds the maximum of {} — \
-                     a Related filter's own nested filter must not itself be Related",
-                    depth + 1,
-                    Self::MAX_RELATED_DEPTH + 1
-                );
-            }
-            let relationship_name = self
-                .relationship_name
-                .as_ref()
-                .ok_or_else(|| anyhow::anyhow!("Related filter missing 'relationshipName'"))?;
-            validate_identifier(relationship_name, "filter relationshipName")?;
-            let nested = self
-                .filter
-                .as_ref()
-                .ok_or_else(|| anyhow::anyhow!("Related filter missing 'filter'"))?;
-            nested.validate_identifiers(depth + 1)?;
-        }
-        Ok(())
+/// Check a filter's own identifiers, and recurse into a nested
+/// [`FilterType::Related`] filter — both its `relationship_name` (which
+/// becomes a bound value, not formatted into SQL text, but is still worth
+/// rejecting early as a caller error) and its own `filter`, which is
+/// walked the same way [`QueryDefinition::validate_identifiers`] walks a
+/// top-level filter list.
+///
+/// `depth` counts `Related` nesting already consumed by the time this
+/// filter is reached: 0 for a top-level filter, 1 for the nested `filter`
+/// of a top-level `Related` filter, and so on. A `Related` filter at
+/// `depth > MAX_RELATED_DEPTH` is rejected outright — see
+/// [`MAX_RELATED_DEPTH`] for why the cap is enforced here rather
+/// than left to the executor to silently truncate or misexecute.
+fn validate_filter_identifiers(filter: &QueryFilter, depth: usize) -> Result<()> {
+    if let Some(property) = &filter.property {
+        validate_identifier(property, "filter property")?;
     }
+    if filter.filter_type == FilterType::Related {
+        if depth > MAX_RELATED_DEPTH {
+            anyhow::bail!(
+                "Related filter nesting depth {} exceeds the maximum of {} — \
+                 a Related filter's own nested filter must not itself be Related",
+                depth + 1,
+                MAX_RELATED_DEPTH + 1
+            );
+        }
+        let relationship_name = filter
+            .relationship_name
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Related filter missing 'relationshipName'"))?;
+        validate_identifier(relationship_name, "filter relationshipName")?;
+        let nested = filter
+            .filter
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Related filter missing 'filter'"))?;
+        validate_filter_identifiers(nested, depth + 1)?;
+    }
+    Ok(())
 }
 
 /// Reject an identifier that is unsafe to format into SQL text
@@ -163,150 +182,6 @@ fn validate_identifier(value: &str, label: &str) -> Result<()> {
         );
     }
     Ok(())
-}
-
-/// Filter type category
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum FilterType {
-    #[default]
-    Property,
-    Content,
-    Relationship,
-    Metadata,
-    /// Filter by a *related* node's own properties — "tasks belonging to a
-    /// project with status active" — rather than bare membership in a fixed
-    /// relationship shape. See [`QueryFilter::relationship_name`] and
-    /// [`QueryFilter::filter`].
-    Related,
-}
-
-/// Comparison operator for filters
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum FilterOperator {
-    #[default]
-    Equals,
-    Contains,
-    #[serde(rename = "gt")]
-    GreaterThan,
-    #[serde(rename = "lt")]
-    LessThan,
-    #[serde(rename = "gte")]
-    GreaterThanOrEqual,
-    #[serde(rename = "lte")]
-    LessThanOrEqual,
-    In,
-    Exists,
-}
-
-/// Relationship type for graph traversal
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum RelationshipType {
-    Parent,
-    Children,
-    Mentions,
-    #[serde(rename = "mentioned_by")]
-    MentionedBy,
-}
-
-/// Sort direction
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum SortDirection {
-    #[serde(rename = "asc")]
-    Ascending,
-    #[serde(rename = "desc")]
-    Descending,
-}
-
-/// Individual filter condition
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct QueryFilter {
-    /// Filter category
-    #[serde(rename = "type")]
-    pub filter_type: FilterType,
-    /// Comparison operator
-    pub operator: FilterOperator,
-    /// Property key for property filters
-    pub property: Option<String>,
-    /// Expected value
-    pub value: Option<serde_json::Value>,
-    /// Case sensitivity for text comparisons
-    pub case_sensitive: Option<bool>,
-    /// Relationship type for relationship filters
-    pub relationship_type: Option<RelationshipType>,
-    /// Target node ID for relationship filters
-    pub node_id: Option<String>,
-    /// Relationship name for a [`FilterType::Related`] filter, exactly as the
-    /// caller supplied it — a schema-declared name (forward or reverse) or a
-    /// built-in structural name. This is the caller-facing identity of the
-    /// relationship; [`Self::resolved_relationship`] carries what it resolves
-    /// to and is what SQL compilation actually reads.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub relationship_name: Option<String>,
-    /// The nested filter a [`FilterType::Related`] filter evaluates against
-    /// the related node(s) reached by [`Self::relationship_name`]. Recursive
-    /// by construction, but validated to at most one level of `Related`
-    /// nesting for this issue — see [`QueryDefinition::validate_identifiers`].
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub filter: Option<Box<QueryFilter>>,
-    /// How [`Self::relationship_name`] resolved against the query's
-    /// `target_type` — the stored `relationship_type`, which side of the edge
-    /// the target type sits on, and (for a reverse match) the declaring
-    /// type to narrow by. Resolving a name is an async schema lookup
-    /// (`resolve_relationship_name_for_type`), so it happens once, ahead of
-    /// SQL compilation, in [`crate::ops::query_ops::to_query_definition`] —
-    /// not a caller-facing field (never serialized on the wire; the agent
-    /// only ever supplies [`Self::relationship_name`]), but public so a
-    /// caller constructing a `QueryDefinition` directly (as
-    /// `query_service_test.rs` does) can populate it without a `NodeService`
-    /// in hand.
-    #[serde(skip)]
-    pub resolved_relationship: Option<ResolvedRelationship>,
-}
-
-/// Compiled form of a [`FilterType::Related`] filter's relationship name —
-/// what [`QueryService`]'s SQL builder needs to compile the join, with no
-/// schema lookup of its own.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ResolvedRelationship {
-    /// The `relationship_type` value actually stored in the `relationship`
-    /// table — the forward name, whichever end declared it.
-    pub stored_type: String,
-    /// Which column of the `relationship` row the OUTER (filtered) node
-    /// occupies: `true` when the outer node is `in_node` (a forward
-    /// traversal, or an inbound-forward walked backwards from the target's
-    /// end) and the related node is therefore `out_node`; `false` when the
-    /// outer node is `out_node` (a reverse-name traversal) and the related
-    /// node is `in_node`.
-    pub outer_is_in_node: bool,
-    /// For a reverse match, the type that declared the forward relationship —
-    /// narrows the related-node set to that type's `extends` descendants,
-    /// the same narrowing [`crate::ops::rel_ops::get_related_nodes`] applies.
-    /// `None` for a built-in reverse (no declaring schema) or a forward/
-    /// inbound-forward match (already unambiguous by construction).
-    pub source_type: Option<String>,
-    /// The node type the nested filter's own property paths resolve
-    /// against — the related node's declared type, when the schema names
-    /// one. `None` when the related side has no single declared type (a
-    /// built-in, or an untyped declaration), in which case the nested
-    /// filter's property access falls back to the same per-row
-    /// `'$.' || node_type || '.<field>'` path a wildcard top-level query
-    /// uses, since the joined rows may span more than one type.
-    pub related_type: Option<String>,
-}
-
-/// Sorting configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SortConfig {
-    /// Property or field to sort by
-    pub field: String,
-    /// Sort direction
-    pub direction: SortDirection,
 }
 
 /// A SQL string and the values bound to its placeholders

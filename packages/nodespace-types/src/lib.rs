@@ -18,6 +18,7 @@ mod helpers;
 mod node;
 mod person;
 mod project;
+mod query;
 mod schema;
 mod skill;
 mod task;
@@ -33,6 +34,11 @@ pub use node::{
 };
 pub use person::{PersonNode, PersonNodeUpdate};
 pub use project::{ProjectNode, ProjectNodeUpdate, DEFAULT_PROJECT_STATUS};
+pub use query::{
+    FilterOperator, FilterType, QueryFields, QueryFilter, QueryGeneratedBy, QueryNode,
+    QueryNodeUpdate, RelationshipType, ResolvedRelationship, SortConfig, SortDirection,
+    ALL_TYPES_TARGET, QUERY_NODE_TYPE,
+};
 pub use schema::{
     derive_friendly_name, EdgeField, EnumValue, RelationshipCardinality, RelationshipDirection,
     SchemaField, SchemaNode, SchemaProtectionLevel, SchemaRelationship,

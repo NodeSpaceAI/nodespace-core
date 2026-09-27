@@ -5,8 +5,8 @@
  * handed:
  *   - a **schema** node  → the *default* type view: all nodes of the type, no
  *     filters, nothing persisted until the user diverges.
- *   - a **query** node   → a *saved* query: a stored QueryDefinition + view
- *     config, executed with its filters.
+ *   - a **query** node   → a *saved* query: a `QueryNode`, whose typed
+ *     definition fields and view config are executed and restored.
  *
  * These functions own the branch decision, the definition/view-config parsing,
  * and the materialize payload shape. Executing a query is the backend's job —
@@ -21,7 +21,7 @@
  */
 
 import type { Node } from '$lib/types';
-import type { QueryDefinition, QueryFilter, SortConfig } from '$lib/types/query';
+import type { QueryDefinition, QueryFilter, QueryNode } from '$lib/types/query';
 
 /** Header title shown for the (unpersisted) default type view. */
 export const DEFAULT_QUERY_TITLE = 'Default';
@@ -33,10 +33,10 @@ export const MATERIALIZED_QUERY_TITLE = 'Untitled Query';
 export type QueryViewKind = 'list' | 'table' | 'kanban';
 
 /**
- * The minimal per-query view configuration persisted on a query node's
- * `properties.viewConfig`. Replaces the localStorage QueryPreferencesService for
- * this path so a board (and its group-by) travels with the query rather than
- * being stranded per-device.
+ * The minimal per-query view configuration persisted as a query node's
+ * `viewConfig` (stored as the schema field `view_config`), so a board and its
+ * group-by travel with the query rather than being stranded per-device. Its
+ * keys are the viewer's own vocabulary, not schema field names.
  */
 export interface QueryViewConfigState {
   lastView: QueryViewKind;
@@ -56,23 +56,24 @@ export function resolveViewerMode(node: Node | null | undefined): ViewerMode {
   return node?.nodeType === 'query' ? 'saved' : 'default';
 }
 
-/** Read the stored QueryDefinition off a query node's properties. */
-export function parseQueryDefinition(node: Node): QueryDefinition {
-  const props = (node.properties ?? {}) as Record<string, unknown>;
+/**
+ * The definition a saved query executes — the one mapping from a `QueryNode`
+ * to the execution shape.
+ */
+export function parseQueryDefinition(node: QueryNode): QueryDefinition {
   return {
-    targetType: typeof props.targetType === 'string' ? props.targetType : '',
-    filters: Array.isArray(props.filters) ? (props.filters as QueryFilter[]) : [],
-    sorting: Array.isArray(props.sorting) ? (props.sorting as SortConfig[]) : undefined,
-    limit: typeof props.limit === 'number' ? props.limit : undefined,
+    targetType: node.targetType,
+    filters: node.filters,
+    sorting: node.sorting,
+    limit: node.limit,
   };
 }
 
-/** Read the stored view config off a query node's properties, with defaults. */
-export function parseViewConfig(node: Node | null | undefined): QueryViewConfigState {
-  const raw = (node?.properties as Record<string, unknown> | undefined)?.viewConfig;
-  if (!raw || typeof raw !== 'object') return { ...DEFAULT_VIEW_CONFIG };
+/** Read a query node's view config, with defaults. */
+export function parseViewConfig(node: QueryNode | null | undefined): QueryViewConfigState {
+  const obj = node?.viewConfig;
+  if (!obj || typeof obj !== 'object') return { ...DEFAULT_VIEW_CONFIG };
 
-  const obj = raw as Record<string, unknown>;
   const lastView: QueryViewKind =
     obj.lastView === 'list' || obj.lastView === 'table' || obj.lastView === 'kanban'
       ? obj.lastView
@@ -102,23 +103,26 @@ export function mergeViewConfig(
 }
 
 /**
- * Build the `properties` for a freshly materialized user query node. The
- * `targetType` is always the one supplied (inherited from the schema — never
- * asked for) regardless of what the definition carries, and `generatedBy` is
- * fixed to `'user'`.
+ * Build the create `properties` for a freshly materialized user query node,
+ * under the query schema's snake_case storage keys — what `createNode`
+ * receives for every core type. The target is always the one supplied
+ * (inherited from the schema — never asked for) regardless of what the
+ * definition carries, and `generated_by` is fixed to `'user'`. Unset optional
+ * fields are left out rather than written empty.
  */
 export function buildMaterializedProperties(input: {
   targetType: string;
   definition: QueryDefinition;
   viewConfig: QueryViewConfigState;
 }): Record<string, unknown> {
+  const { sorting, limit, filters } = input.definition;
   return {
-    targetType: input.targetType,
-    filters: input.definition.filters,
-    sorting: input.definition.sorting,
-    limit: input.definition.limit,
-    generatedBy: 'user',
-    viewConfig: input.viewConfig,
+    target_type: input.targetType,
+    filters,
+    ...(sorting !== undefined ? { sorting } : {}),
+    ...(limit !== undefined ? { limit } : {}),
+    generated_by: 'user',
+    view_config: input.viewConfig,
   };
 }
 

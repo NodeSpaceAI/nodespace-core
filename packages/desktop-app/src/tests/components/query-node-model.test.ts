@@ -15,7 +15,13 @@
 
 import { describe, it, expect } from 'vitest';
 import type { Node } from '$lib/types';
-import type { QueryDefinition, QueryFilter } from '$lib/types/query';
+import {
+  nodeToQueryNode,
+  type QueryDefinition,
+  type QueryFilter,
+  type QueryNode,
+} from '$lib/types/query';
+import { storageNodeToApiFields } from '$lib/services/node-normalize';
 import {
   DEFAULT_QUERY_TITLE,
   MATERIALIZED_QUERY_TITLE,
@@ -28,6 +34,7 @@ import {
   isResultTruncated,
   matchesFilter,
   shouldShowCreatedNode,
+  type QueryViewConfigState,
 } from '$lib/components/query/query-node-model';
 
 function node(id: string, overrides: Partial<Node> & Record<string, unknown> = {}): Node {
@@ -58,20 +65,21 @@ describe('resolveViewerMode', () => {
   });
 });
 
+function queryNode(overrides: Partial<QueryNode> = {}): QueryNode {
+  return nodeToQueryNode(node('q', { nodeType: 'query', ...overrides } as Partial<Node>));
+}
+
 describe('parseQueryDefinition', () => {
-  it('reads the definition off node properties', () => {
+  it('reads the definition off the typed fields', () => {
     const filters: QueryFilter[] = [
       { type: 'property', operator: 'equals', property: 'status', value: 'open' },
     ];
     const def = parseQueryDefinition(
-      node('q', {
-        nodeType: 'query',
-        properties: {
-          targetType: 'task',
-          filters,
-          sorting: [{ field: 'dueDate', direction: 'asc' }],
-          limit: 25,
-        },
+      queryNode({
+        targetType: 'task',
+        filters,
+        sorting: [{ field: 'dueDate', direction: 'asc' }],
+        limit: 25,
       })
     );
     expect(def).toEqual({
@@ -82,42 +90,39 @@ describe('parseQueryDefinition', () => {
     });
   });
 
-  it('falls back to empty definition when properties are absent or malformed', () => {
-    const def = parseQueryDefinition(node('q', { nodeType: 'query', properties: {} }));
-    expect(def).toEqual({ targetType: '', filters: [], sorting: undefined, limit: undefined });
+  it('takes the schema defaults for a query that names nothing', () => {
+    expect(parseQueryDefinition(queryNode())).toEqual({
+      targetType: '*',
+      filters: [],
+      sorting: undefined,
+      limit: undefined,
+    });
   });
 
-  it('ignores non-array filters/sorting and non-number limit', () => {
+  it('never reads a query field out of properties', () => {
     const def = parseQueryDefinition(
-      node('q', {
-        nodeType: 'query',
-        properties: { targetType: 'task', filters: 'nope', sorting: 5, limit: 'ten' },
-      })
+      queryNode({ properties: { targetType: 'stale', filters: [{ type: 'content' }] } })
     );
-    expect(def).toEqual({ targetType: 'task', filters: [], sorting: undefined, limit: undefined });
+    expect(def.targetType).toBe('*');
+    expect(def.filters).toEqual([]);
   });
 });
 
 describe('parseViewConfig', () => {
   it('returns the default view config when none stored', () => {
-    expect(parseViewConfig(node('invoice', { nodeType: 'schema' }))).toEqual(DEFAULT_VIEW_CONFIG);
+    expect(parseViewConfig(queryNode())).toEqual(DEFAULT_VIEW_CONFIG);
     expect(parseViewConfig(null)).toEqual(DEFAULT_VIEW_CONFIG);
   });
 
   it('reads lastView and kanban groupBy', () => {
     const vc = parseViewConfig(
-      node('q', {
-        nodeType: 'query',
-        properties: { viewConfig: { lastView: 'kanban', kanban: { groupBy: 'status' } } },
-      })
+      queryNode({ viewConfig: { lastView: 'kanban', kanban: { groupBy: 'status' } } })
     );
     expect(vc).toEqual({ lastView: 'kanban', kanban: { groupBy: 'status' } });
   });
 
   it('falls back to table for an unrecognized lastView', () => {
-    const vc = parseViewConfig(
-      node('q', { nodeType: 'query', properties: { viewConfig: { lastView: 'grid' } } })
-    );
+    const vc = parseViewConfig(queryNode({ viewConfig: { lastView: 'grid' } }));
     expect(vc.lastView).toBe('table');
   });
 });
@@ -137,22 +142,49 @@ describe('mergeViewConfig', () => {
 });
 
 describe('buildMaterializedProperties', () => {
-  it('forces the inherited targetType and generatedBy: user', () => {
-    const definition: QueryDefinition = {
-      targetType: 'task', // should be overridden by the inherited type
-      filters: [{ type: 'property', operator: 'equals', property: 'status', value: 'open' }],
-      limit: 50,
-    };
+  const definition: QueryDefinition = {
+    targetType: 'task', // overridden by the inherited type
+    filters: [{ type: 'property', operator: 'equals', property: 'status', value: 'open' }],
+    sorting: [{ field: 'due_date', direction: 'desc' }],
+    limit: 50,
+  };
+  const viewConfig: QueryViewConfigState = { lastView: 'kanban', kanban: { groupBy: 'status' } };
+
+  it('writes only the schema\'s snake_case storage keys, with one target holding the inherited type', () => {
+    const props = buildMaterializedProperties({ targetType: 'invoice', definition, viewConfig });
+    expect(Object.keys(props).sort()).toEqual([
+      'filters',
+      'generated_by',
+      'limit',
+      'sorting',
+      'target_type',
+      'view_config',
+    ]);
+    expect(props.target_type).toBe('invoice');
+    expect(props.generated_by).toBe('user');
+    expect(props.view_config).toEqual(viewConfig);
+  });
+
+  it('leaves unset optional fields out rather than writing them empty', () => {
     const props = buildMaterializedProperties({
       targetType: 'invoice',
-      definition,
-      viewConfig: { lastView: 'kanban', kanban: { groupBy: 'status' } },
+      definition: { targetType: 'invoice', filters: [] },
+      viewConfig: { lastView: 'table' },
     });
-    expect(props.targetType).toBe('invoice');
-    expect(props.generatedBy).toBe('user');
-    expect(props.filters).toEqual(definition.filters);
-    expect(props.limit).toBe(50);
-    expect(props.viewConfig).toEqual({ lastView: 'kanban', kanban: { groupBy: 'status' } });
+    expect('sorting' in props).toBe(false);
+    expect('limit' in props).toBe(false);
+  });
+
+  // The stored bucket travels back through the same storage → wire promotion
+  // the backend applies, so the reopened query must match what was saved.
+  it('reopens with the same filters, sorting, view and Kanban groupBy', () => {
+    const props = buildMaterializedProperties({ targetType: 'invoice', definition, viewConfig });
+    const wire = storageNodeToApiFields('query', { query: props });
+    const reopened = nodeToQueryNode({ ...node('q', { nodeType: 'query' }), ...wire } as Node);
+
+    expect(reopened.properties).toEqual({});
+    expect(parseQueryDefinition(reopened)).toEqual({ ...definition, targetType: 'invoice' });
+    expect(parseViewConfig(reopened)).toEqual(viewConfig);
   });
 });
 

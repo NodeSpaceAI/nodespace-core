@@ -153,6 +153,24 @@ describe('promoteTypedFields', () => {
 });
 
 describe('storageNodeToApiFields', () => {
+  it('promotes a query\'s structured fields and drops one of the wrong shape, as the Rust decoder does', () => {
+    const fields = storageNodeToApiFields('query', {
+      query: {
+        target_type: 'task',
+        filters: 'oops',
+        limit: 25,
+        view_config: { lastView: 'kanban' },
+        execution_count: 3
+      }
+    });
+    expect(fields.targetType).toBe('task');
+    expect(fields.filters).toEqual([]);
+    expect(fields.limit).toBe(25);
+    expect(fields.viewConfig).toEqual({ lastView: 'kanban' });
+    expect(fields.executionCount).toBe(3);
+    expect(fields.properties).toEqual({});
+  });
+
   // The browser/dev-proxy HTTP transport (packages/dev-tools/src/dev-proxy.ts)
   // receives a node's `properties` exactly as stored — namespaced under the
   // node's own type. The Tauri IPC layer's `node_to_typed_value`

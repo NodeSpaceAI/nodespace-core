@@ -191,6 +191,40 @@ describe('Adapter contract: live round-trip (HttpAdapter → dev-proxy → daemo
     expect(updated.properties).toEqual({});
   });
 
+  it('create → typed query update → read back carries typed fields', async () => {
+    const id = crypto.randomUUID();
+    await h.adapter.createNode({
+      id,
+      nodeType: 'query',
+      content: 'Open tasks',
+      properties: {
+        target_type: 'task',
+        filters: [],
+        generated_by: 'user',
+        view_config: { lastView: 'table' },
+      },
+    });
+    const created = await h.adapter.getNode(id);
+    expect((created as unknown as { targetType?: string }).targetType).toBe('task');
+
+    const updated = await h.adapter.updateQueryNode(id, created!.version, {
+      filters: [{ type: 'property', operator: 'equals', property: 'status', value: 'open' }],
+      viewConfig: { lastView: 'kanban', kanban: { groupBy: 'status' } },
+    });
+    expect(updated.targetType).toBe('task');
+    expect(updated.filters[0].property).toBe('status');
+    expect(updated.viewConfig).toEqual({ lastView: 'kanban', kanban: { groupBy: 'status' } });
+    expect(updated.properties).toEqual({});
+
+    // null clears.
+    const cleared = await h.adapter.updateQueryNode(id, updated.version, { viewConfig: null });
+    expect(cleared.viewConfig).toBeUndefined();
+
+    // A fresh read agrees — the write is durable.
+    const reread = (await h.adapter.getNode(id)) as unknown as { filters?: unknown[] };
+    expect(reread.filters).toHaveLength(1);
+  });
+
   it('createNode honors an explicit InsertPosition the same way move/reorder do', async () => {
     const parentId = crypto.randomUUID();
     const firstId = crypto.randomUUID();

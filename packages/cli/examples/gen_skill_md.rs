@@ -472,7 +472,7 @@ fn render_linear_playbook_block() -> String {
     let _ = writeln!(
         out,
         "A saved view is a node of type `query`. Its properties carry both the query \
-         (`targetType`, `filters`, `sorting`) and how it renders (`viewConfig`), so the \
+         (`target_type`, `filters`, `sorting`) and how it renders (`view_config`), so the \
          board opens as authored with no per-user setup.\n"
     );
     for view in &playbook.views {

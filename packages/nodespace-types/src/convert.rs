@@ -5,6 +5,7 @@ use crate::ai_chat::{AiChatMessage, AiChatNode};
 use crate::node::Node;
 use crate::person::PersonNode;
 use crate::project::{ProjectNode, DEFAULT_PROJECT_STATUS};
+use crate::query::{QueryFields, QueryNode};
 use crate::schema::SchemaNode;
 use crate::task::{TaskNode, TaskPriority, TaskStatus};
 
@@ -23,7 +24,7 @@ fn normalize_date_field(s: &str) -> String {
 
 /// Convert a `Node` to its strongly-typed JSON representation for the frontend.
 ///
-/// For typed nodes (`task`, `person`, `project`, `ai-chat`, `schema`), promotes type-specific
+/// For typed nodes (`task`, `person`, `project`, `query`, `ai-chat`, `schema`), promotes type-specific
 /// properties to top-level fields. For all other types, returns the generic
 /// node shape. Adds a `nodespace://` URI field for rich client rendering.
 ///
@@ -43,6 +44,7 @@ pub fn node_to_typed_value(node: Node) -> Result<serde_json::Value, String> {
         "ai-chat" => ai_chat_node_to_value(node),
         "person" => person_node_to_value(node),
         "project" => project_node_to_value(node),
+        "query" => query_node_to_value(node),
         "schema" => SchemaNode::from_node(node).and_then(|s| {
             serde_json::to_value(s).map_err(|e| format!("Failed to serialize schema: {}", e))
         }),
@@ -192,6 +194,17 @@ pub fn promoted_fields(node_type: &str) -> &'static [(&'static str, &'static str
             ("priority", "priority"),
             ("start_date", "startDate"),
             ("end_date", "endDate"),
+        ],
+        "query" => &[
+            ("target_type", "targetType"),
+            ("filters", "filters"),
+            ("sorting", "sorting"),
+            ("limit", "limit"),
+            ("generated_by", "generatedBy"),
+            ("generator_context", "generatorContext"),
+            ("execution_count", "executionCount"),
+            ("last_executed", "lastExecuted"),
+            ("view_config", "viewConfig"),
         ],
         _ => &[],
     }
@@ -346,6 +359,34 @@ fn project_node_to_value(node: Node) -> Result<serde_json::Value, String> {
     };
 
     serde_json::to_value(&project).map_err(|e| format!("Failed to serialize project node: {}", e))
+}
+
+/// A stored query whose fields do not decode keeps its node in the batch with
+/// the schema defaults rather than failing every other node alongside it —
+/// the same batch-safety rule as a malformed schema node. Writes are checked
+/// by `QueryNodeBehavior::validate`, so this only meets a row written around
+/// the service layer.
+fn query_node_to_value(node: Node) -> Result<serde_json::Value, String> {
+    let fields = QueryFields::from_properties(&node.properties).unwrap_or_else(|e| {
+        eprintln!("query node '{}' has unreadable fields: {e}", node.id);
+        QueryFields::from_properties(&serde_json::json!({}))
+            .expect("empty properties always decode")
+    });
+
+    let query = QueryNode {
+        id: node.id,
+        node_type: node.node_type,
+        content: node.content,
+        title: node.title,
+        version: node.version,
+        created_at: node.created_at,
+        modified_at: node.modified_at,
+        properties: without_promoted(node.properties, "query"),
+        lifecycle_status: node.lifecycle_status,
+        fields,
+    };
+
+    serde_json::to_value(&query).map_err(|e| format!("Failed to serialize query node: {}", e))
 }
 
 fn ai_chat_node_to_value(node: Node) -> Result<serde_json::Value, String> {
@@ -580,6 +621,66 @@ mod wire_contract {
         assert_eq!(out["status"], "planning");
         assert!(out.get("priority").is_none());
         assert!(out.get("startDate").is_none());
+    }
+
+    #[test]
+    fn query_promotes_fields_top_level_and_empties_properties() {
+        let node = Node::new(
+            "query".to_string(),
+            "Issues by Status".to_string(),
+            serde_json::json!({
+                "query": {
+                    "target_type": "issue",
+                    "filters": [
+                        { "type": "property", "operator": "equals", "property": "status", "value": "open" }
+                    ],
+                    "sorting": [{ "field": "start_date", "direction": "desc" }],
+                    "limit": 50,
+                    "generated_by": "user",
+                    "execution_count": 0,
+                    "view_config": { "lastView": "kanban", "kanban": { "groupBy": "status" } },
+                    "custom:pinned": true
+                }
+            }),
+        );
+        let out = node_to_typed_value(node).unwrap();
+
+        assert_eq!(out["nodeType"], "query");
+        assert_eq!(out["targetType"], "issue");
+        assert_eq!(out["filters"][0]["property"], "status");
+        assert_eq!(out["sorting"][0]["direction"], "desc");
+        assert_eq!(out["limit"], 50);
+        assert_eq!(out["generatedBy"], "user");
+        assert_eq!(out["executionCount"], 0);
+        assert_eq!(out["viewConfig"]["kanban"]["groupBy"], "status");
+        assert!(out.get("generatorContext").is_none());
+        assert!(out.get("lastExecuted").is_none());
+        assert_eq!(
+            out["properties"],
+            serde_json::json!({ "custom:pinned": true }),
+            "properties carries only extension fields"
+        );
+    }
+
+    #[test]
+    fn query_with_malformed_filters_does_not_fail_an_unrelated_batch_read() {
+        let bad_query = Node::new(
+            "query".to_string(),
+            "Broken".to_string(),
+            serde_json::json!({ "query": { "target_type": "task", "filters": "oops" } }),
+        );
+        let good_task = Node::new(
+            "task".to_string(),
+            "Buy milk".to_string(),
+            serde_json::json!({ "task": { "status": "open" } }),
+        );
+
+        let out = nodes_to_typed_values(vec![bad_query, good_task])
+            .expect("one malformed query must not fail the whole batch");
+
+        assert_eq!(out[0]["targetType"], "*");
+        assert_eq!(out[0]["filters"], serde_json::json!([]));
+        assert_eq!(out[1]["status"], "open");
     }
 
     #[test]
