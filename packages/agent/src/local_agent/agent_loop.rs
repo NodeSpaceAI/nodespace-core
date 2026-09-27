@@ -12759,7 +12759,10 @@ mod tests {
             ],
         )
         .await;
-        assert!(first.tool_calls_made.iter().any(|r| r.name == "search_nodes"));
+        assert!(first
+            .tool_calls_made
+            .iter()
+            .any(|r| r.name == "search_nodes"));
         assert_eq!(
             session.prior_turns.last().map(|t| t.outcome),
             Some(AiChatTurnOutcome::Replied)
@@ -12990,11 +12993,21 @@ mod tests {
                 text_round("Hello!"),
                 tool_round("tc_1", "search_nodes", r#"{"query":"x"}"#),
                 text_round("Found it."),
+                tool_round(
+                    "tc_2",
+                    "create_node",
+                    r#"{"node_type":"text","content":"y"}"#,
+                ),
+                text_round("Created it."),
             ])),
-            Arc::new(MockToolExecutor::new()),
+            Arc::new(MockToolExecutor::new().with_tool(
+                "create_node",
+                json!({"type": "object"}),
+                json!({"id": "nodespace://y"}),
+            )),
         );
         let mut session = new_session();
-        for message in ["hi", "find x"] {
+        for message in ["hi", "find x", "add y"] {
             loop_
                 .run_turn(
                     &mut session,
@@ -13013,9 +13026,14 @@ mod tests {
                     outcome: AiChatTurnOutcome::Replied,
                     response: "Hello!".to_string(),
                 },
+                // Only read: it stays inside the intent.
+                PriorTurn {
+                    outcome: AiChatTurnOutcome::Replied,
+                    response: "Found it.".to_string(),
+                },
                 PriorTurn {
                     outcome: AiChatTurnOutcome::Acted,
-                    response: "Found it.".to_string(),
+                    response: "Created it.".to_string(),
                 },
             ]
         );
