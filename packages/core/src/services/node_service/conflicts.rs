@@ -368,7 +368,9 @@ impl NodeService {
     /// survivor's parent afterward, or the `TreeInvariantViolation` the merge
     /// would be refused with. Lets the Conflicts view say where the merged
     /// node will live, and why a merge cannot happen, before the user
-    /// confirms. Writes nothing.
+    /// confirms. Writes nothing, but runs under the write guard on purpose:
+    /// parents, ancestry and memberships are read from one snapshot, exactly
+    /// as the merge reads them.
     pub async fn preview_merge(
         &self,
         survivor_id: &str,

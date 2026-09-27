@@ -29,15 +29,18 @@ export function describeMergeRefusal(
   loserId: string,
   labelOf: LabelOf
 ): string {
-  const survivor = quoted(labelOf(violation.node_id ?? survivorId));
+  const survivor = quoted(labelOf(survivorId));
   const loser = quoted(labelOf(loserId));
   switch (violation.rule) {
     case 'member_of_not_root': {
+      // `node_id` is whichever side holds the membership, not necessarily
+      // the survivor.
+      const holder = quoted(labelOf(violation.node_id ?? survivorId));
       const collections = joinLabels(violation.related_ids.map(labelOf));
       const where = collections || 'its collections';
       return (
-        `Can't merge: ${survivor} would end up under a parent while it belongs to ${where}, ` +
-        `and only top-level pages can belong to a collection. Remove it from ${where} first, then merge.`
+        `Can't merge: the merged node would sit under a parent while ${holder} belongs to ${where}, ` +
+        `and only top-level pages can belong to a collection. Remove ${holder} from ${where} first, then merge.`
       );
     }
     case 'cycle': {
@@ -48,9 +51,11 @@ export function describeMergeRefusal(
       );
     }
     case 'collection_not_root':
+      // Keeping the loser instead would fold a collection into a plain node,
+      // so the only advice is to lift the loser out of its parent.
       return (
         `Can't merge: ${survivor} is a collection, and collections can't sit under a parent. ` +
-        `Move ${loser} to the top level first, or keep ${loser} instead.`
+        `Move ${loser} to the top level first, then merge.`
       );
   }
 }

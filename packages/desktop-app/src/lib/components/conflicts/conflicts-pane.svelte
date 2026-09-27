@@ -110,7 +110,7 @@
 
   /** Turn a failed preview/merge into the inline message for its row. */
   async function reportMergeFailure(
-    record: ConflictRecord,
+    conflictId: string,
     survivorId: string,
     loserId: string,
     error: unknown
@@ -123,14 +123,14 @@
         loserId,
         ...violation.related_ids
       ]);
-      setMergeError(record.id, describeMergeRefusal(violation, survivorId, loserId, labelOf));
+      setMergeError(conflictId, describeMergeRefusal(violation, survivorId, loserId, labelOf));
       return;
     }
     log.error('Failed to merge nodes', error);
     const detail =
       typeof error === 'object' && error !== null && 'message' in error ? error.message : null;
     setMergeError(
-      record.id,
+      conflictId,
       typeof detail === 'string' && detail ? `Merge failed: ${detail}` : 'Merge failed.'
     );
   }
@@ -151,7 +151,7 @@
       try {
         preview = await conflictsStore.previewMerge(survivorId, loserId);
       } catch (e) {
-        await reportMergeFailure(record, survivorId, loserId, e);
+        await reportMergeFailure(record.id, survivorId, loserId, e);
         return;
       }
 
@@ -177,7 +177,7 @@
         await conflictsStore.merge(survivorId, loserId, record.id);
       } catch (e) {
         // The tree can change between the preview and the merge.
-        await reportMergeFailure(record, survivorId, loserId, e);
+        await reportMergeFailure(record.id, survivorId, loserId, e);
       }
     } finally {
       mergingConflictId = null;
@@ -346,7 +346,7 @@
                     </div>
                   {/if}
                 {/if}
-                {#if mergeErrors.has(record.id)}
+                {#if record.status === 'open' && mergeErrors.has(record.id)}
                   <p class="conflict-error" role="alert">{mergeErrors.get(record.id)}</p>
                 {/if}
               </li>

@@ -9,7 +9,7 @@ use std::str::FromStr;
 /// Where a merge leaves the survivor in the tree, decided before anything is
 /// written. Both parents ignore an edge between the two nodes themselves.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MergePlan {
+pub(crate) struct MergePlan {
     /// The survivor's `has_child` parent before the merge.
     pub survivor_parent: Option<String>,
     /// The loser's `has_child` parent before the merge.
@@ -647,19 +647,31 @@ impl SqliteStore {
                 ));
             }
             if !super::relationships::member_may_have_parent(&survivor.node_type) {
-                let memberships =
-                    Self::member_of_targets_in_tx(tx, &[survivor_id, loser_id]).await?;
+                // Name the node that holds the membership, so the refusal
+                // points at the membership the user has to remove. When both
+                // do, the survivor is named first; a retry names the loser.
+                let survivor_memberships =
+                    Self::member_of_targets_in_tx(tx, &[survivor_id]).await?;
+                let (holder, memberships) = if survivor_memberships.is_empty() {
+                    (
+                        loser_id,
+                        Self::member_of_targets_in_tx(tx, &[loser_id]).await?,
+                    )
+                } else {
+                    (survivor_id, survivor_memberships)
+                };
                 if !memberships.is_empty() {
                     let detail = format!(
-                        "merging '{}' into '{}' would leave survivor '{}' holding collection membership ({}) while it has a parent — only root nodes may hold collection membership (ADR-059 §2). Remove the node from the collection(s) first, or move it to the root.",
+                        "merging '{}' into '{}' would leave the merged node holding collection membership ({}) of '{}' while it has a parent — only root nodes may hold collection membership (ADR-059 §2). Remove '{}' from the collection(s) first, or move the merged node to the root.",
                         loser_id,
                         survivor_id,
-                        survivor_id,
-                        memberships.join(", ")
+                        memberships.join(", "),
+                        holder,
+                        holder
                     );
                     return Err(anyhow::Error::new(
                         super::TreeInvariantViolation::member_of_not_root(
-                            survivor_id,
+                            holder,
                             memberships,
                             detail,
                         ),

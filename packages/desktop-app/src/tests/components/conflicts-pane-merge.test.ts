@@ -126,7 +126,7 @@ describe('ConflictsPane merge', () => {
     const view = await clickKeepAlice();
 
     const alert = await view.findByRole('alert');
-    expect(alert.textContent).toContain('Remove it from "Work" first, then merge.');
+    expect(alert.textContent).toContain('Remove "Alice" from "Work" first, then merge.');
     expect(confirmSpy).not.toHaveBeenCalled();
     expect(mockInvoke).not.toHaveBeenCalledWith('merge_nodes', expect.anything());
   });

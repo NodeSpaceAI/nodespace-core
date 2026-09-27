@@ -27,8 +27,18 @@ describe('describeMergeRefusal', () => {
       'l',
       labelOf
     );
-    expect(text).toContain('"Survivor" would end up under a parent while it belongs to "Work" and "Home"');
-    expect(text).toContain('Remove it from "Work" and "Home" first, then merge.');
+    expect(text).toContain('while "Survivor" belongs to "Work" and "Home"');
+    expect(text).toContain('Remove "Survivor" from "Work" and "Home" first, then merge.');
+  });
+
+  it('names the loser when it is the one holding the membership', () => {
+    const text = describeMergeRefusal(
+      { rule: 'member_of_not_root', node_id: 'l', related_ids: ['c1'], detail: '' },
+      's',
+      'l',
+      labelOf
+    );
+    expect(text).toContain('Remove "Loser" from "Work" first, then merge.');
   });
 
   it('points at the subtree to leave for a cycle', () => {
@@ -41,7 +51,7 @@ describe('describeMergeRefusal', () => {
     expect(text).toContain('Move "Survivor" out of "Loser"\'s subtree first, or keep "Loser" instead.');
   });
 
-  it('offers the other side for collection_not_root', () => {
+  it('tells the user to lift the loser out for collection_not_root', () => {
     const text = describeMergeRefusal(
       { rule: 'collection_not_root', node_id: 's', related_ids: [], detail: '' },
       's',
@@ -49,7 +59,8 @@ describe('describeMergeRefusal', () => {
       labelOf
     );
     expect(text).toContain('"Survivor" is a collection');
-    expect(text).toContain('Move "Loser" to the top level first, or keep "Loser" instead.');
+    expect(text).toContain('Move "Loser" to the top level first, then merge.');
+    expect(text).not.toContain('keep');
   });
 });
 

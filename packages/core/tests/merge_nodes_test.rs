@@ -752,6 +752,11 @@ async fn merge_refuses_to_file_a_survivor_that_has_a_parent() -> Result<()> {
 
     let violation = tree_violation(&err);
     assert_eq!(violation.rule, TreeInvariantRule::MemberOfNotRoot);
+    assert_eq!(
+        violation.node_id.as_deref(),
+        Some(loser.as_str()),
+        "the refusal names the node holding the membership"
+    );
     assert_eq!(violation.related_ids, vec![coll.clone()]);
     assert!(svc
         .store()
