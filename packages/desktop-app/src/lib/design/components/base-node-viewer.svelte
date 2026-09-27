@@ -708,7 +708,8 @@
       }
 
       // NodeManager.outdentNode() persists the outdented node and any transferred
-      // siblings via updateNode(). The focused textarea keeps its caret (keyed on id).
+      // siblings via updateNode(). The focused textarea is keyed on node id, so it
+      // is not remounted and keeps its caret.
       await nodeManager.outdentNode(nodeId);
     } catch (error) {
       log.error('Error during node outdentation:', error);
