@@ -187,16 +187,33 @@ async function main(): Promise<void> {
       await git(gate, "checkout", "--quiet", "--detach", prHead);
     } else {
       console.log(`\n▶ Rebasing PR #${pr} onto origin/main (${mainSha.slice(0, 8)})`);
-      // Linear, like rebase: merge commits are dropped and their changes
-      // arrive through the commits around them; picks that became empty
-      // against main (already landed there) are dropped too.
-      const commits = (await git(gate, "rev-list", "--reverse", "--no-merges", `${base}..${prHead}`))
+      // The commit set rebase would replay: linear (merge commits dropped,
+      // their changes arriving through the commits around them), in graph
+      // order, and skipping any commit whose patch main already has.
+      const commits = (
+        await git(
+          gate,
+          "rev-list",
+          "--reverse",
+          "--topo-order",
+          "--no-merges",
+          "--cherry-pick",
+          "--right-only",
+          `${mainSha}...${prHead}`
+        )
+      )
         .split("\n")
         .filter((c) => c !== "");
       if (commits.length === 0) fail(`PR #${pr} has no commits of its own beyond main.`);
-      const pick = await $`git cherry-pick --empty=drop ${commits}`.cwd(gate).quiet().nothrow();
+      // Also like rebase: a commit that becomes empty against main is
+      // dropped, and one that was empty to begin with is kept (without
+      // --allow-empty, cherry-pick fails on it and it would read as a conflict).
+      const pick = await $`git cherry-pick --empty=drop --allow-empty ${commits}`.cwd(gate).quiet().nothrow();
       if (pick.exitCode !== 0) {
         await $`git cherry-pick --abort`.cwd(gate).quiet().nothrow();
+        // Clear any sequencer state an abort left behind, or every later
+        // merge would fail with "cherry-pick already in progress".
+        await $`git cherry-pick --quit`.cwd(gate).quiet().nothrow();
         fail("The rebase onto main conflicts. Resolve it in your worktree (git rebase origin/main), push, and re-run.");
       }
     }
