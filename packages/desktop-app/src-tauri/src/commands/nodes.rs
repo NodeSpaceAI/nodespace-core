@@ -604,6 +604,7 @@ pub async fn delete_node(
         .delete_node(Request::new(DeleteNodeRequest {
             node_id: id,
             version: Some(version),
+            ..Default::default()
         }))
         .await
         .map_err(status_to_command_error)?;

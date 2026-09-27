@@ -454,7 +454,15 @@ pub async fn run(cli: Cli) -> Result<()> {
     let selection = cli.database.as_deref();
 
     match cli.command {
-        Command::Node { action } => {
+        Command::Node { mut action } => {
+            if let commands::node::NodeAction::Delete(args) = &mut action {
+                let flags = [("--socket", &cli.socket), ("--database", &cli.database)];
+                args.routing = flags
+                    .into_iter()
+                    .filter_map(|(flag, value)| Some([flag.to_string(), value.clone()?]))
+                    .flatten()
+                    .collect();
+            }
             let (interceptor, _) = resolve_routing(&sock, selection).await?;
             let mut client = connect(&sock, interceptor).await?;
             commands::node::run(&mut client, action, json).await

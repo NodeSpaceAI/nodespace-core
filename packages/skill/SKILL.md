@@ -243,7 +243,7 @@ Prefer a collection for any durable grouping: don't add a `tags`/`categories`/`t
 
 ### Delete a node, or a whole node type
 
-Deletion is permanent and takes the node's children with it. Resolve the node first and confirm with the user before deleting anything you did not just create — a wrong id here is not recoverable.
+Deletion is permanent and takes the node's children with it; a wrong id is not recoverable. `node delete` only previews; after the user's yes, run the command it prints.
 
 ```bash
 nodespace node query --title-contains "draft spec"     # resolve the id first

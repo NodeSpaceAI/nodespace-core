@@ -9,7 +9,7 @@ use nodespace_daemon::nodespace::{
     ConflictRecord as ConflictRecordProto, DeleteNodeResponse, MergeNodesResponse, NodeListResponse,
 };
 use nodespace_daemon::NodeData;
-use serde_json::json;
+use serde_json::{json, Value};
 
 pub fn print_node(node: &NodeData, json: bool) -> Result<()> {
     if json {
@@ -26,14 +26,102 @@ pub fn print_delete(response: &DeleteNodeResponse, json: bool) -> Result<()> {
         let value = json!({
             "node_id": response.node_id,
             "existed": response.existed,
+            "deleted_count": response.deleted_count,
         });
         println!("{}", serde_json::to_string_pretty(&value)?);
-    } else if response.existed {
+    } else if !response.existed {
+        println!("Node {} did not exist (no-op)", response.node_id);
+    } else if response.title.is_empty() {
         println!("Deleted node {}", response.node_id);
     } else {
-        println!("Node {} did not exist (no-op)", response.node_id);
+        println!(
+            "Deleted \"{}\" ({}){}",
+            response.title,
+            response.node_id,
+            nested_clause(response.deleted_count.saturating_sub(1))
+        );
     }
     Ok(())
+}
+
+/// The first step of a node delete: what it would remove, and the one
+/// command that removes exactly that.
+///
+/// `routing` is the global `--socket`/`--database` flags the preview ran
+/// with, repeated so the printed command reaches the same database.
+pub fn print_delete_preview(
+    response: &DeleteNodeResponse,
+    routing: &[String],
+    json: bool,
+) -> Result<()> {
+    if !response.existed {
+        return print_delete(response, json);
+    }
+    let confirm_command = delete_confirm_command(response, routing);
+    if json {
+        let value = delete_preview_json(response, &confirm_command);
+        println!("{}", serde_json::to_string_pretty(&value)?);
+    } else {
+        println!(
+            "Would delete \"{}\" ({}, {} v{}){}.",
+            response.title,
+            response.node_id,
+            response.node_type,
+            response.version,
+            nested_clause(response.descendant_count)
+        );
+        println!("Nothing deleted. To delete exactly this:");
+        println!("  {confirm_command}");
+    }
+    Ok(())
+}
+
+/// The command that deletes exactly the state a preview showed.
+pub fn delete_confirm_command(response: &DeleteNodeResponse, routing: &[String]) -> String {
+    let mut words = vec!["nodespace".to_string()];
+    words.extend(routing.iter().map(|w| shell_quote(w)));
+    words.push(format!(
+        "node delete {} --version {} --descendants {}",
+        shell_quote(&response.node_id),
+        response.version,
+        response.descendant_count
+    ));
+    words.join(" ")
+}
+
+/// The `--json` shape of a delete preview — what an agent parses.
+pub fn delete_preview_json(response: &DeleteNodeResponse, confirm_command: &str) -> Value {
+    json!({
+        "node_id": response.node_id,
+        "existed": true,
+        "deleted": false,
+        "title": response.title,
+        "node_type": response.node_type,
+        "version": response.version,
+        "descendant_count": response.descendant_count,
+        "confirm_command": confirm_command,
+    })
+}
+
+/// Quote a word for a POSIX shell line, leaving plain words bare.
+fn shell_quote(word: &str) -> String {
+    let plain = !word.is_empty()
+        && word
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "-_./:@".contains(c));
+    if plain {
+        word.to_string()
+    } else {
+        format!("'{}'", word.replace('\'', r"'\''"))
+    }
+}
+
+fn nested_clause(count: u64) -> String {
+    match count {
+        0 => String::new(),
+        1 => " and 1 nested node".to_string(),
+        n => format!(" and {n} nested nodes"),
+    }
 }
 
 pub fn print_node_list(response: &NodeListResponse, json: bool) -> Result<()> {
@@ -756,5 +844,50 @@ mod tests {
             ..sample_node()
         });
         assert_eq!(flat, serde_json::json!({}));
+    }
+
+    fn previewed() -> DeleteNodeResponse {
+        DeleteNodeResponse {
+            node_id: "abc123".into(),
+            existed: true,
+            deleted_count: 0,
+            title: "Q3 planning".into(),
+            node_type: "text".into(),
+            version: 7,
+            descendant_count: 4,
+        }
+    }
+
+    #[test]
+    fn delete_preview_json_is_the_shape_agents_parse() {
+        let command = delete_confirm_command(&previewed(), &[]);
+        assert_eq!(
+            delete_preview_json(&previewed(), &command),
+            serde_json::json!({
+                "node_id": "abc123",
+                "existed": true,
+                "deleted": false,
+                "title": "Q3 planning",
+                "node_type": "text",
+                "version": 7,
+                "descendant_count": 4,
+                "confirm_command": "nodespace node delete abc123 --version 7 --descendants 4",
+            })
+        );
+    }
+
+    #[test]
+    fn delete_confirm_command_keeps_the_database_it_previewed() {
+        let routing = [
+            "--socket".to_string(),
+            "/tmp/my dir/ns.sock".to_string(),
+            "--database".to_string(),
+            "work".to_string(),
+        ];
+        assert_eq!(
+            delete_confirm_command(&previewed(), &routing),
+            "nodespace --socket '/tmp/my dir/ns.sock' --database work \
+             node delete abc123 --version 7 --descendants 4"
+        );
     }
 }

@@ -325,7 +325,25 @@ pub struct ConfirmedDeletion {
     pub already_gone: Vec<AiChatPendingDeletion>,
     /// Why the delete stopped short, when it did. Targets not listed in
     /// `deleted` or `already_gone` were left in place.
-    pub stopped: Option<String>,
+    pub stopped: Option<DeletionStop>,
+}
+
+/// Why a confirmed delete stopped short.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DeletionStop {
+    /// A target no longer matches what was shown — asking again shows the
+    /// current state.
+    Changed(String),
+    /// The delete could not run; asking again would not help.
+    Failed(String),
+}
+
+impl std::fmt::Display for DeletionStop {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Changed(reason) | Self::Failed(reason) => f.write_str(reason),
+        }
+    }
 }
 
 /// Delete exactly the confirmed targets.
@@ -350,19 +368,25 @@ pub async fn execute_confirmed(
         match preview_deletion(node_service, &target.node_id).await {
             Ok(None) => outcome.already_gone.push(target.clone()),
             Ok(Some(now)) if now.version != target.version => {
-                outcome.stopped = Some(format!("{} changed after you were asked", named(target)));
+                outcome.stopped = Some(DeletionStop::Changed(format!(
+                    "{} changed after you were asked",
+                    named(target)
+                )));
                 return outcome;
             }
             Ok(Some(now)) if now.descendant_count != target.descendant_count => {
-                outcome.stopped = Some(format!(
+                outcome.stopped = Some(DeletionStop::Changed(format!(
                     "what is nested under {} changed after you were asked",
                     named(target)
-                ));
+                )));
                 return outcome;
             }
             Ok(Some(_)) => present.push(target),
             Err(e) => {
-                outcome.stopped = Some(format!("{} could not be checked: {e}", named(target)));
+                outcome.stopped = Some(DeletionStop::Failed(format!(
+                    "{} could not be checked: {e}",
+                    named(target)
+                )));
                 return outcome;
             }
         }
@@ -377,8 +401,19 @@ pub async fn execute_confirmed(
             // Removed by an earlier target's cascade — one target nested
             // under another.
             Ok(_) => outcome.already_gone.push(target.clone()),
+            // A version conflict here is a change that raced the check.
+            Err(e @ NodeServiceError::VersionConflict { .. }) => {
+                outcome.stopped = Some(DeletionStop::Changed(format!(
+                    "{} changed after you were asked ({e})",
+                    named(target)
+                )));
+                return outcome;
+            }
             Err(e) => {
-                outcome.stopped = Some(format!("deleting {} failed: {e}", named(target)));
+                outcome.stopped = Some(DeletionStop::Failed(format!(
+                    "deleting {} failed: {e}",
+                    named(target)
+                )));
                 return outcome;
             }
         }
@@ -580,7 +615,7 @@ mod tests {
         let outcome = execute_confirmed(&ns, &targets).await;
 
         assert!(outcome.deleted.is_empty());
-        assert!(outcome.stopped.is_some());
+        assert!(matches!(outcome.stopped, Some(DeletionStop::Changed(_))));
         assert!(exists(&ns, &plan).await);
         assert!(
             exists(&ns, &note).await,
@@ -697,7 +732,9 @@ mod tests {
         let text = confirmed_deletion_text(&ConfirmedDeletion {
             deleted: Vec::new(),
             already_gone: Vec::new(),
-            stopped: Some("\"A\" (task) changed after you were asked".into()),
+            stopped: Some(DeletionStop::Changed(
+                "\"A\" (task) changed after you were asked".into(),
+            )),
         });
         assert!(text.starts_with("Nothing was deleted"), "{text}");
     }

@@ -356,6 +356,7 @@ async fn delete_node_marks_existed() {
         .delete_node(DeleteNodeRequest {
             node_id: created.node_id.clone(),
             version: None,
+            ..Default::default()
         })
         .await
         .expect("delete_node failed")
@@ -747,6 +748,7 @@ async fn watch_nodes_receives_create_update_delete_events() {
         .delete_node(DeleteNodeRequest {
             node_id: node_id.clone(),
             version: None,
+            ..Default::default()
         })
         .await
         .expect("delete_node failed");

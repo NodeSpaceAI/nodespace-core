@@ -144,12 +144,15 @@ async fn get(client: &mut NodeClient, args: SchemaGetArgs, json: bool) -> Result
 /// A schema *is* a node — its ID is the node type identifier — so deletion
 /// goes through `DeleteNode` rather than a schema-specific RPC, and the
 /// daemon's own guard supplies the declaration prerequisite (see the variant
-/// doc above) without this needing to pre-check it.
+/// doc above) without this needing to pre-check it. The daemon refuses any
+/// id that is not a schema, so this one-step delete cannot stand in for the
+/// two-step `node delete` (ADR-080).
 async fn delete(client: &mut NodeClient, args: SchemaDeleteArgs, json: bool) -> Result<()> {
     let response = client
         .delete_node(DeleteNodeRequest {
             node_id: args.id,
-            version: None,
+            expected_node_type: Some("schema".to_string()),
+            ..Default::default()
         })
         .await
         .context("DeleteNode RPC failed")?
