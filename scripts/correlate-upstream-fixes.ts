@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
-// Correlates a pre-push gate failure with commits on origin/main that the
-// current branch does not contain.
+// Correlates a test:changed failure with commits on origin/main that the
+// current branch does not contain. (The merge gate tests on current main, so
+// it never finds any.)
 //
 // `check-branch-behind.ts` already warns when the branch is behind, but a
 // bare "N commits behind origin/main" reads as routine mid-feature and says
@@ -12,13 +13,14 @@
 //
 // This is NOT the semantic-conflict race check-branch-behind.ts documents
 // (two branches each green, breaking main on merge). That one is unknowable
-// at push time. This one is strictly easier: the failure is already visible
-// and the fix already exists upstream — only the correlation is missing.
+// before the merge gate. This one is strictly easier: the failure is already
+// visible and the fix already exists upstream — only the correlation is
+// missing.
 //
 // Deliberately non-blocking and advisory, matching check-branch-behind.ts:
-// the branch being behind is normal for a WIP push, and a path overlap is a
+// the branch being behind is normal mid-feature, and a path overlap is a
 // strong hint, not proof. It never changes an exit code; the failure it
-// annotates already blocks the push on its own.
+// annotates already fails the run on its own.
 
 import { $ } from "bun";
 import { readdirSync } from "node:fs";

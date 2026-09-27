@@ -1,7 +1,7 @@
-// Covers the pre-push gate's change scoping (scripts/gate-scope.ts). The
-// property that matters is one-directional: a skipped stage must be one no
-// changed file can reach. Every uncertain case has to fall back to the full
-// pyramid, so most of these tests pin that fallback.
+// Covers test:changed's change scoping (scripts/gate-scope.ts). The property
+// that matters is one-directional: a skipped tier must be one no changed file
+// can reach. Every uncertain case has to fall back to every tier, so most of
+// these tests pin that fallback.
 //
 // DOM-free on purpose: this file runs under `bun test scripts/`, which
 // bypasses the Happy-DOM vitest config (see CLAUDE.md).
@@ -72,6 +72,8 @@ describe("classify", () => {
     "scripts/test-gate.ts",
     "scripts/gate-scope.ts",
     "scripts/gate-lock.ts",
+    "scripts/gate-stage.ts",
+    "scripts/test-changed.ts",
     "package.json",
     "bun.lock",
     ".husky/pre-push",
@@ -87,8 +89,8 @@ describe("classify", () => {
     expect(scope.rust && scope.frontend).toBe(true);
   });
 
-  test("an empty diff runs everything rather than skipping it all", () => {
-    expect(classify([]).fullReason).not.toBeNull();
+  test("an empty diff reaches no tier: main already passed the merge gate", () => {
+    expect(classify([])).toEqual({ fullReason: null, ...NONE });
   });
 });
 
@@ -96,5 +98,5 @@ test("describeScope names what runs, what is skipped, and the override", () => {
   const text = describeScope(classify(["packages/desktop-app/src/app.css"]));
   expect(text).toContain("running: frontend");
   expect(text).toContain("skipping: rust, skill, scripts");
-  expect(text).toContain("NODESPACE_GATE_FULL=1");
+  expect(text).toContain("NODESPACE_TEST_ALL=1");
 });

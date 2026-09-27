@@ -16,9 +16,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   acquireGateLock,
-  COMPILE_LOCK_PATH,
   DISABLE_ENV_VAR,
-  LOCK_PATH,
+  MACHINE_LOCK_PATH,
   MERGE_LOCK_PATH,
   errorCode,
   formatDuration,
@@ -33,6 +32,7 @@ import {
   registerLockRelease,
   serializeHolder,
   ticketName,
+  type AcquireOptions,
   type LockHolder,
 } from "./gate-lock";
 
@@ -84,7 +84,7 @@ function plantLock(overrides: Partial<LockHolder> = {}): LockHolder {
 }
 
 /** Test harness: fixed host, alive-by-default pid check, captured log. */
-function harness(extra: Parameters<typeof acquireGateLock>[0] = {}) {
+function harness(extra: Partial<AcquireOptions> = {}) {
   const logged: string[] = [];
   return {
     logged,
@@ -190,10 +190,10 @@ describe("formatDuration", () => {
 });
 
 describe("waiting output", () => {
-  test("names the holder's pid, how long it has held, and how long we have waited", () => {
+  test("names the holder's pid and worktree, how long it has held, and how long we have waited", () => {
     const line = formatWaitingLine(holderFile({ pid: 4242, startedAt: 1_000_000 }), 1_252_000, 30_000);
-    expect(line).toContain("pid 4242");
-    expect(line).toContain("running 4m12s");
+    expect(line).toContain("pid 4242 in other-worktree");
+    expect(line).toContain("holding 4m12s");
     expect(line).toContain("waited 30s");
   });
 
@@ -250,7 +250,7 @@ describe("acquireGateLock", () => {
     expect(logged.join("\n")).toContain("lock acquired");
     // The waiting line is printed once while nothing changes — not per poll,
     // which could fill an unread terminal's pipe and freeze the waiter.
-    expect(logged.filter((l) => l.includes("waiting for another gate")).length).toBe(1);
+    expect(logged.filter((l) => l.includes("  waiting (")).length).toBe(1);
 
     second.release();
   });
@@ -550,13 +550,13 @@ describe("FIFO queue", () => {
     expect(ticketName(1000, 1) < ticketName(1000, 2)).toBe(true);
   });
 
-  test("an urgent (merge) ticket sorts ahead of every push ticket, whatever its arrival", () => {
+  test("an urgent (merge) ticket sorts ahead of every other ticket, whatever its arrival", () => {
     expect(ticketName(9_999_999, 5, true) < ticketName(1, 1)).toBe(true);
     expect(ticketName(10, 5, true) < ticketName(20, 5, true)).toBe(true);
   });
 
-  test("a merge gate jumps queued push checks, but not the gate holding the lock", async () => {
-    // Two push checks queued before it; the lock itself is free.
+  test("a merge gate jumps queued test:changed runs, but not the run holding the lock", async () => {
+    // Two test:changed runs queued before it; the lock itself is free.
     plantTicket(999_010, 1);
     plantTicket(999_011, 2);
     const { options } = harness({ isAlive: () => true, now: () => 10, urgent: true });
@@ -568,7 +568,7 @@ describe("FIFO queue", () => {
     lock.release();
   });
 
-  test("a push check still waits behind a queued merge gate", async () => {
+  test("a test:changed run still waits behind a queued merge gate", async () => {
     mkdirSync(queueDir(lockPath), { recursive: true });
     const name = ticketName(50, 999_012, true);
     writeFileSync(join(queueDir(lockPath), name), serializeHolder(holderFile({ pid: 999_012, startedAt: 50 })));
@@ -706,26 +706,25 @@ describe("statusLogger", () => {
     const status = statusLogger((m) => (bytes += m.length + 1), () => t);
     // Two hours of 2s polls, same position throughout.
     for (let i = 0; i < 3600; i++) {
-      status("queued:3:1234", "  queued (3 gates ahead, current: pid 1234, running 10m00s) — waited 1h00m00s");
+      status("queued:3:1234", "  queued (3 gates ahead, current: pid 1234 in issue-1234-some-work, holding 10m00s) — waited 1h00m00s");
       t += 2000;
     }
     expect(bytes).toBeLessThan(16 * 1024);
   });
 });
 
-describe("the merge, compile and test locks", () => {
-  test("are three separate locks", () => {
-    expect(new Set([LOCK_PATH, MERGE_LOCK_PATH, COMPILE_LOCK_PATH]).size).toBe(3);
+describe("the merge lock and the machine slot", () => {
+  test("are separate locks", () => {
+    expect(MERGE_LOCK_PATH).not.toBe(MACHINE_LOCK_PATH);
   });
 
-  test("holding the compile slot and the merge lock never blocks taking the test lock", async () => {
-    // The order a merge gate takes them in: merge, then compile, then test.
+  test("holding the merge lock never blocks taking the machine slot", async () => {
+    // The order a merge takes them in: merge, then machine.
     const merge = await acquireGateLock(harness({ lockPath: join(dir, "merge.lock") }).options);
-    const compile = await acquireGateLock(harness({ lockPath: join(dir, "compile.lock") }).options);
     let clock = 0;
-    const test = await acquireGateLock(
+    const machine = await acquireGateLock(
       harness({
-        lockPath: join(dir, "test.lock"),
+        lockPath: join(dir, "machine.lock"),
         maxWaitMs: 1,
         now: () => clock,
         sleep: async () => {
@@ -734,18 +733,8 @@ describe("the merge, compile and test locks", () => {
       }).options
     );
 
-    expect([merge.held, compile.held, test.held]).toEqual([true, true, true]);
-    for (const lock of [test, compile, merge]) lock.release();
-  });
-
-  test("the gate releases the compile slot before it requests the test lock", () => {
-    // The no-deadlock argument depends on this order in scripts/test-gate.ts:
-    // a gate must never hold the compile slot while waiting for the test lock.
-    const gate = readFileSync(join(import.meta.dir, "test-gate.ts"), "utf8");
-    const releaseAt = gate.indexOf("compileSlot.release()");
-    const testLockAt = gate.indexOf("acquireGateLock({ urgent: merge })");
-    expect(releaseAt).toBeGreaterThan(-1);
-    expect(testLockAt).toBeGreaterThan(releaseAt);
+    expect([merge.held, machine.held]).toEqual([true, true]);
+    for (const lock of [machine, merge]) lock.release();
   });
 
   test("releasing twice never removes a lock taken since — even by this same process", async () => {

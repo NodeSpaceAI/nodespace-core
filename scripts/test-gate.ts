@@ -1,52 +1,48 @@
 #!/usr/bin/env bun
 
 /**
- * The local test gate, in two modes (ADR-047). This repo has no CI runner for
+ * The local gate, in two modes (ADR-047). This repo has no CI runner for
  * tests; this script is the only gate.
  *
- * - `push` (the default, run by the Husky pre-push hook): lint, plus the unit
- *   tiers this push's changes can reach (see gate-scope.ts). Minutes at most,
- *   so WIP and review-fix pushes stay cheap.
- * - `merge` (`--mode=merge`, run by `bun run merge <PR#>`): the full pyramid —
- *   every unit tier, the daemon build, the SKILL.md drift check, e2e and the
- *   Tauri-seam tests — unscoped, on the PR rebased onto current main.
+ * - `push` (the default, run by the Husky pre-push hook): lint only. Seconds,
+ *   and it takes no lock. A push only publishes a branch; the merge is what
+ *   changes main, and the merge gate tests it. Test the tiers a change
+ *   reaches while developing, with `bun run test:changed`.
+ * - `merge` (`--mode=merge`, run by `bun run merge <PR#>`): lint, then the
+ *   full pyramid — every unit tier, the daemon build, the SKILL.md drift
+ *   check, e2e and the Tauri-seam tests — unscoped, on the PR rebased onto
+ *   current main. The only automated test run a change gets.
  *
- * Two phases. Everything that isn't timing-sensitive — lint, the staleness
- * check, and all compilation — runs first, without the machine-wide test
- * lock and at low CPU priority. Only then does the gate queue for the lock,
- * and it holds it just while tests execute. The lock exists because
- * concurrent test runs starve each other into timeouts on correct code; a
- * compile only gets slower. Holding the lock through a cold Rust build made
- * every other session on the machine wait through it.
+ * The merge gate holds the machine slot (gate-lock.ts) from its first compile
+ * until it exits. Tests starve into timeouts on correct code when another
+ * compile or test run shares the machine, and a Rust build beside a merge's
+ * tests roughly doubled the gate's runtime even under `nice`.
+ *
+ * Every stage has a timeout (gate-stage.ts). A stage that exceeds it is
+ * killed with its process tree and fails the gate, which releases its locks.
  *
  * Output: each stage's full output goes to a log file, and the gate prints
  * one line per stage (plus the log's tail when a stage fails). The gate runs
- * under `git push` in whatever session pushed, and that session may not be
- * reading its output — an unwatched terminal. Streaming tens of thousands of
- * test lines into an unread pipe fills it and blocks the gate mid-test while
- * it holds the lock, so every queued gate waits until someone looks at that
+ * in whatever session started it, and that session may not be reading its
+ * output — an unwatched terminal. Streaming tens of thousands of test lines
+ * into an unread pipe fills it and blocks the gate mid-test while it holds
+ * the machine slot, so every queued run waits until someone looks at that
  * session. A few lines can't fill a pipe.
  *
  * The push mode activates once Husky has wired it in via the `prepare`
  * script (i.e. after `bun install`).
  *
- * Bypass: git push --no-verify. Reserved for WIP Handoff Commits (see
- * CLAUDE.md) — multi-session work, approaching context limits, a natural
- * breakpoint, or before a risky change. Not a general-purpose escape hatch
- * for "the suite is slow right now."
+ * Bypass: git push --no-verify. Reserved for WIP Handoff Commits and
+ * non-executable diffs (see CLAUDE.md).
  */
 
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, realpathSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { basename, join, resolve } from "node:path";
+import { existsSync, realpathSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { $ } from "bun";
-import { reportBranchBehind } from "./check-branch-behind";
-import { classifyFailure, formatAbortNote } from "./classify-test-failure";
-import { reportUpstreamFixes } from "./correlate-upstream-fixes";
-import { acquireGateLock, COMPILE_LOCK_PATH, registerLockRelease } from "./gate-lock";
-import { describeScope, FULL_SCOPE, gateScope } from "./gate-scope";
+import { acquireGateLock, MACHINE_LOCK_PATH, registerLockRelease } from "./gate-lock";
+import { createLogDir, runStage, TIERS, type StageSpec } from "./gate-stage";
 import { TOOLS_DIR } from "./setup-rust-tooling";
-import { exitStatusLine, freeGiBFromDf, stageLogName, tail } from "./gate-output";
+import { freeGiBFromDf } from "./gate-output";
 
 export type GateMode = "push" | "merge";
 
@@ -58,7 +54,9 @@ export function parseMode(argv: string[]): GateMode {
 const mode = parseMode(process.argv.slice(2));
 const merge = mode === "merge";
 
-/** Below this much free disk a gate that compiles refuses to start. */
+const MINUTE = 60_000;
+
+/** Below this much free disk the merge gate refuses to start. */
 const MIN_FREE_GIB = 20;
 
 /** The gate's compiler cache: its size cap, and the port of its own server. */
@@ -77,10 +75,10 @@ function realpathOrSelf(path: string): string {
 // No incremental compilation in gate builds. The incremental cache is most
 // of a worktree's target/ (~15 GB), it is private to each worktree, and
 // sccache can't cache incremental compiles — so without it sccache covers
-// workspace crates too. The cost is recompiling a changed crate whole on a
-// repeat push, rather than incrementally. Cargo counts the setting in its
-// build fingerprint, so alternating a gate with an incremental `cargo test`
-// or `tauri:dev` in the same worktree rebuilds workspace crates each switch.
+// workspace crates too. The cost is recompiling a changed crate whole,
+// rather than incrementally. Cargo counts the setting in its build
+// fingerprint, so alternating a gate with an incremental `cargo test` or
+// `tauri:dev` in the same checkout rebuilds workspace crates each switch.
 process.env.CARGO_INCREMENTAL = "0";
 
 // Gate builds go through the repository's own sccache (scripts/setup-rust-
@@ -99,199 +97,102 @@ if (existsSync(sccache)) {
   process.env.SCCACHE_SERVER_PORT = SCCACHE_SERVER_PORT;
 }
 
-const logDir = join(
-  tmpdir(),
-  "nodespace-gate-logs",
-  `${basename(process.cwd())}-${new Date().toISOString().replace(/[:.]/g, "-")}`
-);
-mkdirSync(logDir, { recursive: true });
+const logDir = createLogDir(mode);
 
-/**
- * Runs one stage as a shell command. stdout and stderr share one handle on
- * the stage's log file, so the log fills as the stage runs (`tail -f` it to
- * watch a slow one) and the two streams stay in the order they were written.
- * Nothing reaches this process's own output except the summary lines.
- */
-async function run(label: string, command: string, env: Record<string, string> = {}) {
-  const logPath = join(logDir, stageLogName(label));
-  const started = Date.now();
-  console.log(`▶ ${label}`);
-  const fd = openSync(logPath, "w");
-  let exitCode: number;
-  let signalCode: string | null;
-  try {
-    const proc = Bun.spawn(["sh", "-c", command], {
-      stdout: fd,
-      stderr: fd,
-      stdin: "ignore",
-      env: { ...process.env, ...env },
-    });
-    exitCode = await proc.exited;
-    signalCode = proc.signalCode;
-  } finally {
-    closeSync(fd);
-  }
-  if (exitCode === 0) {
-    console.log(`  ✓ ${((Date.now() - started) / 1000).toFixed(0)}s`);
-    return;
-  }
-
-  const failureOutput = `${readFileSync(logPath, "utf8")}\n${exitStatusLine(exitCode, signalCode)}`;
-  console.error(`\n${tail(failureOutput, 40)}\n`);
-  console.error(`  full output: ${logPath}`);
-  // A load-induced process abort (e.g. a SIGSEGV under parallel-test
-  // resource contention) and a genuine regression both surface here
-  // identically otherwise — see classify-test-failure.ts. This does not
-  // change the outcome (the push is still blocked either way); it only
-  // tells the person which kind of failure they're looking at, so they
-  // don't burn a multi-minute rerun to find out, or reach for
-  // --no-verify out of frustration with a flake that looked real.
-  if (classifyFailure(failureOutput) === "abort") {
-    console.error(formatAbortNote(label));
-  }
-  // Same intent one step further: if a commit on origin/main already
-  // touches the code that just failed, this failure may be stale code
-  // rather than a live regression, and no amount of local debugging can
-  // fix it. Advisory only — it never changes whether the push is blocked.
-  // Its own errors are swallowed: the staleness check is the last thing
-  // that should be able to obscure a real test failure.
-  try {
-    await reportUpstreamFixes(failureOutput);
-  } catch {
-    // Intentionally silent — reporting must not mask the failure below.
-  }
+/** Runs a stage, and stops the gate if it fails. */
+async function run(stage: StageSpec) {
+  if (await runStage(stage, logDir)) return;
   if (merge) {
-    console.error(`\n✗ ${label} failed — merge blocked.`);
+    console.error(`\n✗ ${stage.label} failed — merge blocked.`);
     console.error("  Fix the failure, push, and re-run: bun run merge <PR#>\n");
   } else {
-    console.error(`\n✗ ${label} failed — push blocked.`);
-    console.error("  Fix the failure, or if this is a WIP Handoff Commit (see CLAUDE.md),");
-    console.error("  bypass with: git push --no-verify\n");
+    console.error(`\n✗ ${stage.label} failed — push blocked.`);
+    console.error("  Fix it (bun run quality:fix fixes most lint), or if this is a WIP Handoff Commit");
+    console.error("  (see CLAUDE.md), bypass with: git push --no-verify\n");
   }
   process.exit(1);
 }
 
-// Staleness check, not a fix for the merge race — see check-branch-behind.ts.
-// Never blocks: checkBranchBehind() already swallows every documented failure
-// mode (fetch/rev-list) into a "skipped" result without throwing. This
-// try/catch is defensive-only — a future edit that adds a throwing statement
-// there must not be able to crash the push it's supposed to only warn about.
-try {
-  await reportBranchBehind();
-} catch (err) {
-  console.warn("\n⚠ origin/main staleness check crashed unexpectedly — skipping it.");
-  console.warn(`  ${err instanceof Error ? err.message : String(err)}\n`);
-}
-
-// The merge gate never scopes: it is the one full run a change gets before
-// it lands, and it runs on the rebased result, where untouched areas can
-// still break.
-const scope = merge ? FULL_SCOPE : await gateScope();
 console.log(
   merge
     ? "\n▶ Merge gate: full pyramid on the rebased PR."
-    : `\n▶ Push check: ${describeScope(scope)}\n  The full pyramid runs once, before merge: bun run merge <PR#>`
+    : "\n▶ Push check: lint only. Tests run once, before merge: bun run merge <PR#>"
 );
 console.log(`  stage logs: ${logDir}\n`);
 
-// Every worktree compiles into its own target/, and a compiling gate can
-// need several gigabytes more. Running out halfway surfaces as a confusing
-// I/O failure in whichever stage hit it — and fails every other queued gate
-// the same way. Checked up front instead, with the cause named. A gate that
-// compiles nothing (docs, lint-only) doesn't need the headroom.
-if (merge || scope.rust) {
-  const free = freeGiBFromDf(await $`df -Pk .`.quiet().nothrow().text());
-  if (free !== null && free < MIN_FREE_GIB) {
-    console.error(
-      `\n✗ Only ${free.toFixed(1)} GiB free on this disk; a gate that compiles needs at least ${MIN_FREE_GIB}.\n` +
-        "  Each worktree's target/ holds its own build output. Free space by removing finished\n" +
-        "  worktrees, or with `cargo clean` in worktrees that aren't building, then push again.\n"
-    );
-    process.exit(1);
-  }
-  // A missing nextest otherwise surfaces as a bare "command not found".
-  if (!existsSync(join(TOOLS_DIR, "bin", "cargo-nextest"))) {
-    console.error(`\n✗ ${TOOLS_DIR}/bin/cargo-nextest is missing — run \`bun install\`, which installs it (scripts/setup-rust-tooling.ts).\n`);
-    process.exit(1);
-  }
-}
-
-/** Runs a stage when this push can affect it, and says so when it can't. */
-async function stage(enabled: boolean, label: string, command: string, env: Record<string, string> = {}) {
-  if (!enabled) {
-    console.log(`⏭ ${label} — skipped (${merge ? "not reached" : "runs in the merge gate, or nothing in this push reaches it"})`);
-    return;
-  }
-  await run(label, command, env);
-}
-
-const daemonBinary = `${process.cwd()}/target/debug/${process.platform === "win32" ? "nodespaced.exe" : "nodespaced"}`;
-
-// ── Phase 1: no lock, low priority ─────────────────────────────────────────
-// Lint and compilation. `nice` keeps a compile here from slowing whichever
-// gate is running tests under the lock right now.
-
-// Compiles the skill installer script: a nodespace-app unit test asserts the
-// source checkout's `packages/skill/dist/install.js` exists, and the CLI's MCP
-// integration test skips itself without it. That is just the skill package's
-// `tsc` build — under a second. The rest of `build:skill` (staging the bundle,
-// compiling the standalone installer) is release packaging; no build or test
-// here reads it, and build.rs leaves anything unstaged out of a debug build.
-await stage(scope.rust || scope.skill, "skill installer script (tsc)", "nice -n 10 bun run --cwd packages/skill build");
-await run("quality:scripts:check (scripts/ lint + typecheck)", "nice -n 10 bun run quality:scripts:check");
+// ── Lint (both modes) ──────────────────────────────────────────────────────
+await run({
+  label: "quality:scripts:check (scripts/ lint + typecheck)",
+  command: "bun run quality:scripts:check",
+  timeoutMs: 10 * MINUTE,
+});
 // The design-token gate (Stylelint over CSS and Svelte <style> blocks). It is
 // wired into the desktop-app quality scripts, but nothing automated runs those
 // and this repo has no CI, so without this line the gate depends on someone
 // remembering to run it — documentation rather than enforcement.
-await run(
-  "quality:design-tokens (design-token drift)",
-  "nice -n 10 bun run --cwd packages/desktop-app quality:design-tokens"
-);
-// The compile slot: one gate compiles at a time (merges first). `nice` alone
-// only yields to the tests under the test lock; it doesn't stop several gates
-// compiling at once, which pushed the load past 40 on 10 cores — enough to
-// time out correct tests under the lock — while each built the same
-// dependencies before sccache had them. One at a time, a later gate finds
-// them cached. The slot is released before this gate queues for the test
-// lock, so no gate ever holds one lock while waiting on another.
-if (scope.rust || merge) {
-  const compileSlot = await acquireGateLock({ lockPath: COMPILE_LOCK_PATH, what: "compiling gate", urgent: merge });
-  registerLockRelease(compileSlot);
-  await stage(scope.rust, "compile Rust test binaries", "nice -n 10 bun run rust:test:build");
-  // "*" is quoted so the shell hands cargo the pattern, not a list of filenames.
-  await stage(
-    merge,
-    "compile nodespaced and the Tauri-seam test binaries",
-    `nice -n 10 cargo build --bin nodespaced && nice -n 10 cargo test -p nodespace-app --test "*" --no-run`
-  );
-  // SKILL.md drift check (generated sections vs. the CLI definitions). A
-  // compile and a text comparison, nothing timing-sensitive. After the daemon
-  // build so its `cargo run --example` reuses that dev-profile dependency tree.
-  await stage(merge, "skill:check (SKILL.md drift)", "nice -n 10 bun run skill:check");
-  compileSlot.release();
+await run({
+  label: "quality:design-tokens (design-token drift)",
+  command: "bun run --cwd packages/desktop-app quality:design-tokens",
+  timeoutMs: 5 * MINUTE,
+});
+
+if (!merge) {
+  console.log("\n✓ Push check passed — pushing.\n");
+  process.exit(0);
 }
 
-// ── Phase 2: under the test lock ───────────────────────────────────────────
-// Serialize against other gates on this machine only now, for the stages
-// whose timing is what concurrent gates break. registerLockRelease() covers
-// Ctrl-C and every early exit, including the process.exit(1) inside run().
-// A merge gate's tests queue ahead of push checks' (see ticketName).
-const testLock = await acquireGateLock({ urgent: merge });
-registerLockRelease(testLock);
+// ── Merge gate ─────────────────────────────────────────────────────────────
 
-await stage(scope.frontend, "test (frontend, Happy-DOM)", "bun run test");
-await stage(scope.scripts, "test:scripts (tooling)", "bun run test:scripts");
-await stage(scope.skill, "test:skill (skill package)", "bun run test:skill");
-await stage(scope.rust, "rust:test (Rust workspace, nextest)", "bun run rust:test");
-// The browser tier: real focus/blur, drag-and-drop and layout that Happy-DOM
-// can't model. About five seconds. The install is a no-op once Chromium is
-// present and fetches it once on a fresh machine.
-await stage(
-  scope.frontend,
-  "test:browser (Chromium)",
-  "bun run --cwd packages/desktop-app playwright install chromium && bun run --cwd packages/desktop-app test:browser"
-);
-await stage(merge, "test:e2e (headless daemon round-trip)", "bun run test:e2e", { NODESPACED_BINARY: daemonBinary });
+// Every worktree compiles into its own target/, and the gate can need several
+// gigabytes more. Running out halfway surfaces as a confusing I/O failure in
+// whichever stage hit it. Checked up front instead, with the cause named.
+const free = freeGiBFromDf(await $`df -Pk .`.quiet().nothrow().text());
+if (free !== null && free < MIN_FREE_GIB) {
+  console.error(
+    `\n✗ Only ${free.toFixed(1)} GiB free on this disk; the merge gate needs at least ${MIN_FREE_GIB}.\n` +
+      "  Each worktree's target/ holds its own build output. Free space by removing finished\n" +
+      "  worktrees, or with `cargo clean` in worktrees that aren't building, then re-run.\n"
+  );
+  process.exit(1);
+}
+// A missing nextest otherwise surfaces as a bare "command not found".
+if (!existsSync(join(TOOLS_DIR, "bin", "cargo-nextest"))) {
+  console.error(`\n✗ ${TOOLS_DIR}/bin/cargo-nextest is missing — run \`bun install\`, which installs it (scripts/setup-rust-tooling.ts).\n`);
+  process.exit(1);
+}
+
+// Held until this process exits: registerLockRelease() covers Ctrl-C and every
+// early exit, including the process.exit(1) inside run(). A merge's ticket
+// queues ahead of every test:changed run's.
+const machineSlot = await acquireGateLock({ lockPath: MACHINE_LOCK_PATH, what: "heavy run (merge gate or test:changed Rust tier)", urgent: true });
+registerLockRelease(machineSlot);
+
+const daemonBinary = `${process.cwd()}/target/debug/${process.platform === "win32" ? "nodespaced.exe" : "nodespaced"}`;
+
+await run(TIERS.skillInstaller);
+await run({ label: "compile Rust test binaries", command: "bun run rust:test:build", timeoutMs: 60 * MINUTE });
+// "*" is quoted so the shell hands cargo the pattern, not a list of filenames.
+await run({
+  label: "compile nodespaced and the Tauri-seam test binaries",
+  command: `cargo build --bin nodespaced && cargo test -p nodespace-app --test "*" --no-run`,
+  timeoutMs: 45 * MINUTE,
+});
+// SKILL.md drift check (generated sections vs. the CLI definitions). After the
+// daemon build so its `cargo run --example` reuses that dev-profile
+// dependency tree.
+await run({ label: "skill:check (SKILL.md drift)", command: "bun run skill:check", timeoutMs: 20 * MINUTE });
+
+await run(TIERS.frontend);
+await run(TIERS.scripts);
+await run(TIERS.skill);
+await run(TIERS.rust);
+await run(TIERS.browser);
+await run({
+  label: "test:e2e (headless daemon round-trip)",
+  command: "bun run test:e2e",
+  timeoutMs: 10 * MINUTE,
+  env: { NODESPACED_BINARY: daemonBinary },
+});
 // --test "*": the `tests/*.rs` integration targets, and only those. This
 // crate's `src/` unit tests are in-process, need no daemon binary, and run
 // headless in ~2s at full parallelism, so `rust:test` (above) runs them
@@ -318,11 +219,11 @@ await stage(merge, "test:e2e (headless daemon round-trip)", "bun run test:e2e", 
 // wall-clock is dominated by the one real-inference test (~25-40s), and the
 // rest are sub-second each — so =1 trades no meaningful time for real
 // reliability.
-await stage(
-  merge,
-  "Tauri-seam integration tests (ADR-048)",
-  `cargo test -p nodespace-app --test "*" -- --test-threads=1`,
-  { NODESPACED_TEST_BIN: daemonBinary }
-);
+await run({
+  label: "Tauri-seam integration tests (ADR-048)",
+  command: `cargo test -p nodespace-app --test "*" -- --test-threads=1`,
+  timeoutMs: 15 * MINUTE,
+  env: { NODESPACED_TEST_BIN: daemonBinary },
+});
 
-console.log(merge ? "\n✓ Merge gate passed.\n" : "\n✓ Push check passed — pushing.\n");
+console.log("\n✓ Merge gate passed.\n");

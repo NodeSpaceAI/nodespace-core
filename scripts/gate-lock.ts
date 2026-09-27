@@ -1,29 +1,30 @@
 #!/usr/bin/env bun
-// Machine-wide advisory lock that serializes test gates (push checks and merge gates).
+// Machine-wide advisory locks that serialize the heavy work on this machine:
+// merges (MERGE_LOCK_PATH) and the CPU-heavy runs themselves
+// (MACHINE_LOCK_PATH) — a merge gate for its whole run, or `bun run
+// test:changed` while it builds and runs the Rust tier.
 //
-// The gate (scripts/test-gate.ts, ADR-047) runs test:all + cargo build +
-// test:e2e, each of which parallelizes across every core it can find. Nothing
-// coordinated between worktrees, so N concurrent sessions each assumed they
-// had the whole machine to themselves. On a 14-core box, five simultaneous
-// gates oversubscribe it several times over, and the failures that produces
+// The merge gate (scripts/test-gate.ts, ADR-047) compiles the workspace and
+// runs the full test pyramid, each step parallelizing across every core it
+// can find. Nothing coordinated between worktrees, so N concurrent sessions
+// each assumed they had the whole machine to themselves. On a 14-core box
+// that oversubscribes it several times over, and the failures that produces
 // are not assertion failures — they are worker timeouts and daemon-health
 // timeouts on code that is perfectly correct. Retrying on a quiet machine
 // "fixes" them, which is exactly what makes them expensive: the signal is
 // indistinguishable from a real regression until several minutes have been
 // spent on it.
 //
-// So the gates queue instead of competing. The alternative — capping each
-// gate's parallelism (--maxWorkers, CARGO_BUILD_JOBS) — was rejected: it
-// slows the common case (one gate, idle machine) permanently in order to fix
-// the contended case, and N throttled gates still exceed the core count
-// anyway.
+// So heavy runs queue instead of competing. The alternative — capping each
+// run's parallelism (--maxWorkers, CARGO_BUILD_JOBS) — was rejected: it slows
+// the common case (one run, idle machine) permanently in order to fix the
+// contended case, and N throttled runs still exceed the core count anyway.
 //
 // Why a lockfile and not flock(2): the lock has to say who holds it and for
-// how long, so a queued push can print something honest instead of sitting
-// silent for four minutes (indistinguishable, to the person watching, from
-// the multi-minute cold `cargo build` the gate already does). A file whose
-// contents are the holder's identity gives us that for free; an flock on an
-// empty file does not.
+// how long, so a queued run can print something honest instead of sitting
+// silent (indistinguishable, to the person watching, from a hang). A file
+// whose contents are the holder's identity gives us that for free; an flock
+// on an empty file does not.
 //
 // The mutual-exclusion primitive is link(2)'s atomic fail-on-EEXIST, NOT
 // open(O_EXCL) — see tryCreateLock for why that distinction is the whole
@@ -56,17 +57,6 @@ export function errorCode(err: unknown): string {
   return "";
 }
 
-/**
- * Where the lock lives. Machine-wide on purpose: worktrees of the same repo
- * are the thing being coordinated, but so are separate clones — the resource
- * under contention is the CPU, which is per-machine, not per-repo.
- *
- * On macOS `tmpdir()` is per-user (/var/folders/...), which is the right
- * scope in practice: gates are run by a developer, and one developer's gates
- * are what collide.
- */
-export const LOCK_PATH = join(tmpdir(), "nodespace-test-gate.lock");
-
 /** Give up waiting after this long and run anyway, with a warning. */
 export const DEFAULT_MAX_WAIT_MS = 30 * 60 * 1000;
 
@@ -76,26 +66,31 @@ export const DEFAULT_POLL_INTERVAL_MS = 2000;
 /** Escape hatch for someone who knowingly wants parallel gates. */
 export const DISABLE_ENV_VAR = "NODESPACE_GATE_NO_LOCK";
 
+// Where the locks live. Machine-wide on purpose: worktrees of the same repo
+// are the thing being coordinated, but so are separate clones — the resource
+// under contention is the CPU, which is per-machine, not per-repo. On macOS
+// `tmpdir()` is per-user (/var/folders/...), which is the right scope in
+// practice: one developer's runs are what collide.
+
 /**
- * A second, independent lock for `bun run merge` (scripts/merge-pr.ts). It
- * serializes merges and guards the one shared gate checkout they test in,
- * and is held from before the rebase until the merge lands. It is separate
- * from the test lock above because it protects different things: a merge's
- * rebase and compile must not make every push check on the machine wait,
- * but its test run still queues for the test lock like anyone else's.
+ * The merge lock, for `bun run merge` (scripts/merge-pr.ts). It serializes
+ * merges and guards the one shared gate checkout they test in, and is held
+ * from before the rebase until the merge lands.
  */
 export const MERGE_LOCK_PATH = join(tmpdir(), "nodespace-merge.lock");
 
 /**
- * The compile slot: a third lock, held by a gate only around its compile
- * stages (scripts/test-gate.ts). It keeps compiles to one at a time without
- * making anyone's tests wait on them: a gate releases it before queueing for
- * the test lock, and nothing holds the test lock while waiting for it. Locks
- * are only ever taken in the order merge → compile → test, and the compile
- * slot is released before the test lock is requested, so the three can't
- * deadlock.
+ * The machine slot: one CPU-heavy run at a time. A merge gate takes it before
+ * its first compile and holds it until it exits, so no other Rust build or
+ * Rust test run overlaps its tests — a compile beside a timed test run slows
+ * it several-fold even under `nice`. `bun run test:changed` takes it only
+ * around its Rust tier. Locks are only ever taken in the order merge →
+ * machine, so the two can't deadlock.
+ *
+ * The file keeps the name of the compile slot it replaced, so gates still
+ * running from branches cut before the change queue on the same file.
  */
-export const COMPILE_LOCK_PATH = join(tmpdir(), "nodespace-compile.lock");
+export const MACHINE_LOCK_PATH = join(tmpdir(), "nodespace-compile.lock");
 
 export interface LockHolder {
   pid: number;
@@ -117,7 +112,7 @@ export function serializeHolder(holder: LockHolder): string {
  * Returns null for anything uninterpretable — hand-edited junk, a truncated
  * file, or a record missing the fields that make it actionable. Such a lock
  * is reaped rather than waited on: a lockfile nobody can interpret must never
- * be able to wedge every future push on the machine.
+ * be able to wedge every future run on the machine.
  *
  * Note that this module cannot itself produce a half-written lock —
  * tryCreateLock publishes whole files — so a null here means genuine external
@@ -172,32 +167,33 @@ export function formatDuration(ms: number): string {
   return minutes > 0 ? `${minutes}m${String(seconds).padStart(2, "0")}s` : `${seconds}s`;
 }
 
+/** Who holds the lock and for how long, e.g. "pid 123 in issue-45-foo, holding 3m05s". */
+function describeHolder(holder: LockHolder, now: number): string {
+  return `pid ${holder.pid} in ${basename(holder.cwd)}, holding ${formatDuration(now - holder.startedAt)}`;
+}
+
 export function formatWaitingLine(holder: LockHolder, now: number, waitedMs: number): string {
-  const heldFor = formatDuration(now - holder.startedAt);
-  const waited = formatDuration(waitedMs);
-  return `  waiting for another gate (pid ${holder.pid}, running ${heldFor}) — waited ${waited}`;
+  return `  waiting (${describeHolder(holder, now)}) — waited ${formatDuration(waitedMs)}`;
 }
 
 /** The waiting line for a gate that still has others ahead of it in the queue. */
 export function formatQueuedLine(ahead: number, holder: LockHolder | null, now: number, waitedMs: number): string {
   const position = `${ahead} gate${ahead === 1 ? "" : "s"} ahead`;
-  const running = holder
-    ? `, current: pid ${holder.pid}, running ${formatDuration(now - holder.startedAt)}`
-    : "";
+  const running = holder ? `, current: ${describeHolder(holder, now)}` : "";
   return `  queued (${position}${running}) — waited ${formatDuration(waitedMs)}`;
 }
 
 export function formatTimeoutWarning(holder: LockHolder | null, maxWaitMs: number): string {
   const who = holder ? `pid ${holder.pid}` : "the holder";
   return (
-    `\n⚠ Still waiting on another gate (${who}) after ${formatDuration(maxWaitMs)} — running anyway.\n` +
-    "  Both gates now share the machine, so timeouts and perf assertions in this\n" +
+    `\n⚠ Still waiting on another run (${who}) after ${formatDuration(maxWaitMs)} — running anyway.\n` +
+    "  Both runs now share the machine, so timeouts and perf assertions in this\n" +
     "  run are less trustworthy than usual. If it fails oddly, re-run it alone.\n"
   );
 }
 
 export interface AcquireOptions {
-  lockPath?: string;
+  lockPath: string;
   maxWaitMs?: number;
   pollIntervalMs?: number;
   /** Injected for tests; defaults to real wall-clock and real sleeping. */
@@ -389,9 +385,9 @@ export function queueDir(lockPath: string): string {
 
 /**
  * A ticket's file name. The leading class puts every merge gate's ticket
- * ahead of every push check's: a merge is finished work waiting to land, a
- * push is usually mid-iteration, so a merge waits only for the gate already
- * holding the lock, never for a line of queued pushes. Within a class the
+ * ahead of every other waiter's: a merge is finished work waiting to land,
+ * a test:changed run is mid-iteration, so a merge waits only for the run
+ * already holding the lock, never for a line of queued ones. Within a class the
  * zero-padded start time makes lexical order arrival order; the pid breaks
  * ties between waiters that arrived in the same millisecond.
  */
@@ -463,20 +459,23 @@ function ticketsAhead(
   return ahead;
 }
 
-/** How often an unchanged waiting status is repeated, so a wait never looks hung. */
-export const STATUS_HEARTBEAT_MS = 5 * 60 * 1000;
+/**
+ * How often an unchanged waiting status is repeated, so a wait never looks
+ * hung. A longer interval left agents inspecting pids and log times to tell a
+ * queue from a hang.
+ */
+export const STATUS_HEARTBEAT_MS = 60 * 1000;
 
 /**
  * A logger for the waiting status that prints only when what it reports
  * changes (keyed by `key`), or once per heartbeat.
  *
  * A waiting gate used to print a line every poll — every 2s — into the
- * terminal of whichever session pushed. When that terminal isn't being read,
+ * terminal of whichever session started it. When that terminal isn't being read,
  * the pipe fills within minutes and the waiter blocks mid-print. It is still
  * alive, so its ticket is never reaped; when its turn comes it can't take the
  * lock, and with first-come-first-served ordering every gate behind it waits
- * until someone looks at that session. A handful of lines per wait can't
- * fill a pipe.
+ * until someone looks at that session. A line a minute can't fill a pipe.
  */
 export function statusLogger(
   log: (message: string) => void,
@@ -497,16 +496,16 @@ export function statusLogger(
 const realSleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
- * Acquires the machine-wide gate lock, waiting for any current holder.
+ * Acquires a machine-wide lock, waiting for any current holder.
  *
  * Always returns — it never throws and never blocks forever. If the wait
  * exceeds `maxWaitMs` it gives up and returns `held: false`, letting the gate
  * run unserialized with a warning, because a gate that refuses to run is
  * worse than a gate that runs slowly: the failure mode of blocking forever is
- * that nobody can push at all.
+ * that nothing can merge at all.
  */
-export async function acquireGateLock(options: AcquireOptions = {}): Promise<GateLock> {
-  const lockPath = options.lockPath ?? LOCK_PATH;
+export async function acquireGateLock(options: AcquireOptions): Promise<GateLock> {
+  const lockPath = options.lockPath;
   const maxWaitMs = options.maxWaitMs ?? DEFAULT_MAX_WAIT_MS;
   const pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
   const now = options.now ?? Date.now;
@@ -514,11 +513,11 @@ export async function acquireGateLock(options: AcquireOptions = {}): Promise<Gat
   const log = options.log ?? ((message: string) => console.log(message));
   const host = options.host ?? hostname();
   const isAlive = options.isAlive ?? ((pid: number) => isPidAlive(pid));
-  const what = options.what ?? "test gate";
+  const what = options.what ?? "heavy run";
   const status = statusLogger(log, now);
 
   if (process.env[DISABLE_ENV_VAR]) {
-    log(`\n⚠ ${DISABLE_ENV_VAR} set — running without the gate lock (gates may run concurrently).\n`);
+    log(`\n⚠ ${DISABLE_ENV_VAR} set — running without the lock (heavy runs may overlap).\n`);
     return { held: false, release: () => {} };
   }
 
@@ -579,8 +578,8 @@ export async function acquireGateLock(options: AcquireOptions = {}): Promise<Gat
       created = tryCreateLock(lockPath, holder);
     } catch (err) {
       // The lock is an advisory optimization; it must never be the reason a
-      // push cannot happen. A read-only or full tmpdir, an unwritable path —
-      // degrade to running unserialized rather than blocking the push on
+      // run cannot happen. A read-only or full tmpdir, an unwritable path —
+      // degrade to running unserialized rather than blocking the run on
       // infrastructure that has nothing to do with the tests.
       leaveQueue();
       console.warn(
@@ -592,8 +591,8 @@ export async function acquireGateLock(options: AcquireOptions = {}): Promise<Gat
     if (created) {
       leaveQueue();
       if (announced) log("  lock acquired — starting.\n");
-      // Idempotent: a gate may release early (the compile slot) and again
-      // from its exit handler. A second release could otherwise read the lock
+      // Idempotent: a run may release early (test:changed's machine slot)
+      // and again from its exit handler. A second release could otherwise read the lock
       // just as another gate takes it and remove theirs.
       let released = false;
       return {
@@ -615,7 +614,7 @@ export async function acquireGateLock(options: AcquireOptions = {}): Promise<Gat
 
     // Genuine garbage: a hand-edited file, or one truncated by something
     // outside this module. Nobody can own it, so it must not be allowed to
-    // wedge every future push on the machine.
+    // wedge every future run on the machine.
     if (current.state === "unreadable") {
       log("  reclaiming an unreadable gate lock.");
       removeLock(lockPath);
@@ -626,7 +625,7 @@ export async function acquireGateLock(options: AcquireOptions = {}): Promise<Gat
     lastSeen = holderNow;
 
     // Reap a lock whose owning process is gone — a killed session must not
-    // wedge future pushes. A foreign-host lock is never reaped (its pid means
+    // wedge future runs. A foreign-host lock is never reaped (its pid means
     // nothing here) but is still bounded by maxWaitMs below, so it cannot
     // wedge us either.
     if (!isForeignHost(holderNow, host) && !isAlive(holderNow.pid)) {
@@ -663,8 +662,8 @@ export async function acquireGateLock(options: AcquireOptions = {}): Promise<Gat
  * Wires release() to process exit and to the signals a terminal actually
  * sends, so the lock survives none of: a failing step's process.exit(1),
  * Ctrl-C, or a terminal closing. Without this an aborted gate would leave a
- * lock that the next push has to wait out (until its pid check reaps it —
- * which works, but only after that push has already printed a confusing wait).
+ * lock that the next run has to wait out (until its pid check reaps it —
+ * which works, but only after that run has already printed a confusing wait).
  *
  * "exit" cannot do async work, and unlinkSync is sync, which is why the whole
  * module uses the sync fs API rather than fs/promises.
@@ -684,7 +683,7 @@ export function registerLockRelease(lock: GateLock): void {
       release();
       // Re-raise so the exit status reflects the signal rather than this
       // handler swallowing it into a clean exit — git needs a non-zero status
-      // to abort the push. Remove only our own listener: if nothing else is
+      // to fail the run. Remove only our own listener: if nothing else is
       // subscribed, node restores the default (terminate) behaviour, and if
       // something is, that handler is not ours to cancel.
       process.removeListener(signal, onSignal);

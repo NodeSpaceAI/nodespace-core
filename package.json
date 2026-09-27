@@ -20,6 +20,8 @@
     "test:db": "bun run --cwd packages/desktop-app test:db",
     "test:db:watch": "bun run --cwd packages/desktop-app test:db:watch",
     "test:coverage": "bun run --cwd packages/desktop-app test:coverage",
+    "test:changed": "bun run scripts/test-changed.ts",
+    "test:perf": "bun run --cwd packages/desktop-app test:perf",
     "test:scripts": "bun test scripts/",
     "test:skill": "bun run --cwd packages/skill test",
     "test:e2e": "bun run --cwd packages/desktop-app test:e2e",

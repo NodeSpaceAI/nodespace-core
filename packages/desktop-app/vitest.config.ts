@@ -166,11 +166,15 @@ export default defineConfig({
     include: ['src/tests/**/*.{test,spec}.{js,ts}'],
     exclude: [
       'src/tests/browser/**', // Browser tests run separately with test:browser
-      // Wall-clock performance benchmarks assert hard timing thresholds
-      // (e.g. <25ms), which vary run-to-run on shared CI runners — unsuitable
-      // for a required PR gate. They still run locally via `bun run test` and
-      // deliberately via `bun run test:perf`; the ADR-047 CI gate skips them.
-      ...(process.env.CI ? ['src/tests/performance/**'] : [])
+      // Wall-clock performance benchmarks assert hard timing thresholds. Under
+      // machine contention (another worktree compiling) their timings are
+      // unbounded, so they never run in the push check or merge gate, nor in a
+      // plain `bun run test`. They run only via `bun run test:perf`, which
+      // `scripts/release.ts` invokes on a quiet machine before a release.
+      // `test:perf` sets TEST_FULL_PERFORMANCE=1, and that is the only thing
+      // that lifts this exclusion: an exclude also blocks an explicit path
+      // filter, so an unconditional one would stop `test:perf` too.
+      ...(process.env.TEST_FULL_PERFORMANCE === '1' ? [] : ['src/tests/performance/**'])
     ],
     environment: 'happy-dom', // Fast, modern DOM for Bun compatibility
     globals: true,

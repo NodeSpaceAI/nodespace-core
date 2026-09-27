@@ -84,8 +84,8 @@ describe('TextNode + ContentProcessor Integration', () => {
     });
   });
 
-  describe('Performance Integration', () => {
-    it('should handle typical TextNode content efficiently', () => {
+  describe('Typical Content Integration', () => {
+    it('should process typical TextNode content', () => {
       const typicalContents = [
         '# Document Title',
         'A paragraph of normal text content that might exist in a typical document.',
@@ -95,8 +95,6 @@ describe('TextNode + ContentProcessor Integration', () => {
         '### Subsection',
         'Final paragraph with mixed content and [[Another Link|Display Text]].'
       ];
-
-      const startTime = Date.now();
 
       for (const content of typicalContents) {
         // Simulate TextNode operations
@@ -111,37 +109,6 @@ describe('TextNode + ContentProcessor Integration', () => {
         expect(typeof sanitized).toBe('string');
         expect(typeof validation.isValid).toBe('boolean');
       }
-
-      const processingTime = Date.now() - startTime;
-      expect(processingTime).toBeLessThan(10); // Should be very fast for typical content
-    });
-
-    it('should handle rapid content changes as in real editing', () => {
-      const baseContent = 'Editing content';
-      const variations = [
-        baseContent,
-        '# ' + baseContent,
-        '## ' + baseContent,
-        baseContent + ' with more text',
-        '**' + baseContent + '**',
-        '*' + baseContent + '*',
-        '[[' + baseContent + ']]',
-        '`' + baseContent + '`'
-      ];
-
-      const startTime = Date.now();
-
-      // Simulate rapid content changes
-      for (let i = 0; i < 100; i++) {
-        const content = variations[i % variations.length];
-
-        contentProcessor.parseHeaderLevel(content);
-        contentProcessor.stripHeaderSyntax(content);
-        contentProcessor.sanitizeContent(content);
-      }
-
-      const processingTime = Date.now() - startTime;
-      expect(processingTime).toBeLessThan(50); // Should handle 100 operations quickly
     });
   });
 

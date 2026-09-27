@@ -85,15 +85,18 @@ describe('SharedNodeStore - Coverage Completion', () => {
 
   describe('Persistence Dependencies', () => {
     it('should wait for function dependencies before execution', async () => {
+      // The dependency takes a macrotask to finish, so a write that did not
+      // wait for it would observe it unfinished.
       let depExecuted = false;
       const dependency = async () => {
         await new Promise(resolve => setTimeout(resolve, 10));
         depExecuted = true;
       };
 
-      vi.spyOn(backendAdapter, 'updateNode').mockResolvedValue({
-        ...mockNode,
-        version: 2
+      let depFinishedAtWrite: boolean | undefined;
+      const updateSpy = vi.spyOn(backendAdapter, 'updateNode').mockImplementation(async () => {
+        depFinishedAtWrite = depExecuted;
+        return { ...mockNode, version: 2 };
       });
 
       store.setNode(mockNode, databaseSource);
@@ -106,8 +109,13 @@ describe('SharedNodeStore - Coverage Completion', () => {
         { persistenceDependencies: [dependency] }
       );
 
-      await new Promise((resolve) => setTimeout(resolve, DEBOUNCED_WRITE_WAIT_MS));
-      expect(depExecuted).toBe(true);
+      // Await the write itself rather than sleeping past the debounce: a fixed
+      // sleep of debounce + margin raced the debounce timer and the
+      // dependency's own timer, and lost under machine load.
+      const failed = await store.flushAllPendingSaves();
+      expect(failed.size).toBe(0);
+      expect(updateSpy).toHaveBeenCalledTimes(1);
+      expect(depFinishedAtWrite).toBe(true);
     });
 
     it('should wait for node ID dependencies', async () => {

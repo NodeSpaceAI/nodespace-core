@@ -1,19 +1,19 @@
 #!/usr/bin/env bun
 // Distinguishes a process abort under resource contention (a signal crash —
 // SIGSEGV, SIGABRT, ...) from a genuine test/assertion failure, for the
-// pre-push gate's reporting (scripts/test-gate.ts, ADR-047).
+// stage reporting of the merge gate and test:changed (scripts/gate-stage.ts,
+// ADR-047).
 //
 // This does NOT root-cause the underlying SIGSEGV (observed intermittently in
 // nodespace-core's lib tests under parallel load, likely libsql/SQLite FFI
 // under concurrency, or a post-merge cold-build/test-load overlap) — that
 // needs real Rust/FFI investigation, out of scope for a reporting change.
 // What this DOES fix: today, a load-induced abort and a real regression look
-// identical in the gate's output ("script exited with code 101, push
-// blocked"), which wastes time re-running a multi-minute suite to tell them
-// apart, and trains people toward `git push --no-verify`. Scanning the
-// captured output for known abort signatures and saying so plainly removes
-// that ambiguity — it does not change whether the push is blocked (a load
-// abort still blocks the push, same as any other failure; retrying is on the
+// identical in the gate's output ("script exited with code 101"), which
+// wastes time re-running a multi-minute suite to tell them apart. Scanning
+// the captured output for known abort signatures and saying so plainly
+// removes that ambiguity — it does not change the outcome (a load abort
+// still fails the run, same as any other failure; retrying is on the
 // person, not automated here).
 
 export type FailureKind = "abort" | "failure";

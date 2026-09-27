@@ -1,19 +1,17 @@
 #!/usr/bin/env bun
 // Warns when the current branch is behind origin/main.
 //
-// `scripts/test-gate.ts` (ADR-047) runs the full test pyramid against the
-// working tree as it stands — it has no awareness of origin/main. A green
-// gate proves the branch passes on its OWN base, not on the merge result.
-// Two branches can each go green independently, both report mergeable, and
-// still break `main` on merge when the conflict is semantic (one PR adds a
-// validation rule, another adds data violating it — neither branch ever
-// contains both) rather than textual.
+// `bun run test:changed` (scripts/test-changed.ts, ADR-047) runs tests
+// against the working tree as it stands — on the branch's OWN base, not on
+// current main. A failure there may be stale code that main has already
+// fixed, and a pass says nothing about a semantic conflict with work merged
+// since (one PR adds a validation rule, another adds data violating it).
+// The merge gate settles both by testing the PR rebased onto main.
 //
-// This is a staleness WARNING, not a fix for that race: up-to-date at push
-// time says nothing about a merge thirty seconds later. It is deliberately
-// non-blocking (a branch being behind is normal for a WIP push, and only
-// matters at merge time) and deliberately does not auto-rebase (rewriting
-// history the user didn't ask for is worse than the problem it solves).
+// This is a staleness WARNING, not a fix: it is deliberately non-blocking (a
+// branch being behind is normal mid-feature) and deliberately does not
+// auto-rebase (rewriting history the user didn't ask for is worse than the
+// problem it solves).
 
 import { $ } from "bun";
 
@@ -84,7 +82,7 @@ export interface CheckBranchBehindDeps {
  *
  * Never throws: a fetch or rev-list failure (no network, unknown remote, a
  * detached HEAD with no upstream, etc.) degrades to a "skipped" result so
- * this check can never itself block a push — only the tests it runs
+ * this check can never itself fail a run — only the tests it runs
  * alongside can do that.
  */
 export async function checkBranchBehind(deps: CheckBranchBehindDeps = {}): Promise<BehindCheckResult> {

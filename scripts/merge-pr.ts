@@ -6,8 +6,8 @@
 // review-fix pushes, and running the full pyramid on each paid for it several
 // times per PR. It also tested the wrong thing — the branch on its own base,
 // not what lands. Two branches can each pass alone and still break main
-// together. So a push runs a scoped check, and the full pyramid runs once,
-// here, on the rebased result.
+// together. So a push only lints, and the full pyramid runs once, here, on
+// the rebased result.
 //
 // Two things keep a merge cheap and correct:
 //
@@ -20,10 +20,9 @@
 // - The merge lock is held from before the rebase until after the merge.
 //   Merges therefore land strictly one at a time, and each one rebases onto
 //   the main the previous one produced — so none is invalidated by another
-//   landing while its gate runs. It is a separate lock from the test lock
-//   (gate-lock.ts): a merge's rebase and compile don't make push checks
-//   wait, and the gate queues for the test lock — ahead of push checks —
-//   only while its tests run.
+//   landing while its gate runs. The gate then takes the machine slot
+//   (gate-lock.ts) — ahead of any queued test:changed Rust run — so no other
+//   heavy run shares the machine with its compiles and tests.
 //
 // It tests the PR as pushed: commit and push first.
 //

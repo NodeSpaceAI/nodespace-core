@@ -3,9 +3,11 @@
  *
  * Validates that the architecture meets these performance targets:
  *
- * PERFORMANCE TEST MODES:
- * - Fast mode (default): Smaller datasets (100-500 nodes) for quick feedback during development
- * - Full mode (TEST_FULL_PERFORMANCE=1): Large datasets (1000-2000 nodes) for comprehensive validation
+ * These are wall-clock benchmarks. They run only via `bun run test:perf`, as a
+ * pre-release step on a quiet machine (`scripts/release.ts`), never in the
+ * push check or merge gate: under machine contention their timings are
+ * unbounded. `vitest.config.ts` excludes this directory unless
+ * TEST_FULL_PERFORMANCE=1 is set, which `test:perf` does.
  *
  * ARCHITECTURE PERFORMANCE TARGETS:
  * - <10ms for structural operations (indent/outdent)
@@ -14,8 +16,7 @@
  * - 45% memory reduction vs legacy cache
  *
  * Usage:
- *   bun run test                              # Fast mode (default)
- *   TEST_FULL_PERFORMANCE=1 bun run test:perf # Full performance validation
+ *   bun run test:perf
  */
 
 // CRITICAL: Import setup BEFORE anything else to ensure Svelte mocks are applied
@@ -38,14 +39,10 @@ import {
   DEFAULT_PANE_ID
 } from '../../lib/stores/navigation.svelte';
 
-// Performance test scaling based on environment variable
-const FULL_PERFORMANCE = process.env.TEST_FULL_PERFORMANCE === '1';
-
 // V8 coverage instrumentation adds per-call overhead to every function these
 // benchmarks exercise, so the same work measures materially slower under
-// `test:coverage` than under `test`. The pre-push gate runs the coverage
-// variant, which is how a 25ms budget came to be missed at 25.2-26.3ms on an
-// otherwise idle machine — a mis-specified assertion, not a flaky one.
+// `--coverage` than in a plain run (a 25ms budget was once missed at 25.2-26.3ms on an otherwise
+// idle machine for exactly this reason).
 //
 // Scale the budget rather than inflate it: an uninstrumented run keeps the
 // tight bound that makes this test worth having, and an instrumented run is
@@ -81,41 +78,20 @@ const ARCHITECTURE_TARGETS = {
   syncLatency: 100
 };
 
-// Log test mode for visibility
-console.log(`\n🔧 Performance Test Mode: ${FULL_PERFORMANCE ? 'FULL' : 'FAST'}`);
-console.log(
-  `   Running ${FULL_PERFORMANCE ? 'comprehensive validation' : 'quick development tests'} with ${FULL_PERFORMANCE ? 'large' : 'reduced'} datasets\n`
-);
-
-// Dataset sizes: Fast mode for development, Full mode for comprehensive validation
+// Dataset sizes
 const PERF_SCALE = {
-  structural: FULL_PERFORMANCE ? 1000 : 100, // Structural operations test
-  render: FULL_PERFORMANCE ? 1000 : 100, // Initial render test
-  multiClient: FULL_PERFORMANCE ? 500 : 50, // Multi-client sync test
-  memory: FULL_PERFORMANCE ? 1000 : 100, // Memory usage test
-  lookup: FULL_PERFORMANCE ? 1500 : 150 // Lookup performance test
+  structural: 1000, // Structural operations test
+  render: 1000, // Initial render test
+  multiClient: 500, // Multi-client sync test
+  memory: 1000, // Memory usage test
+  lookup: 1500 // Lookup performance test
 };
 
 // Performance thresholds: Adaptive based on dataset size and architecture targets
 const PERF_THRESHOLDS = {
   structuralOp: budget(10), // <10ms per structural operation (architecture target)
-  // 100 indent/outdent ops measured ~25ms uninstrumented. Under coverage the
-  // original 2x factor (50ms) still failed at 63ms on a normally-loaded (not
-  // idle) machine: the 2x was calibrated to coverage instrumentation
-  // overhead alone and left no room for ordinary background load on top of
-  // it. Bump the fast-mode base to 40ms so the coverage-mode budget (80ms)
-  // keeps real margin (~27%) over that observed failure rather than just
-  // clearing it, without moving the goalpost so far it stops catching a real
-  // regression (still <3.5x the uninstrumented baseline). Full mode (100ms
-  // base) is unaffected — it already has generous headroom.
-  //
-  // Raised again to 75ms (3x the ~25ms baseline): 40ms failed at 49ms in the
-  // merge gate on a machine still busy from the gate's own compile. The gate
-  // runs this on every merge, so a budget that load alone can break blocks
-  // correct changes; 75ms still fails loudly on a real regression (e.g. a
-  // quadratic walk, which lands far past it at 100 nodes).
-  bulkStructural: budget(FULL_PERFORMANCE ? 100 : 75),
-  initialRender: budget(FULL_PERFORMANCE ? 500 : 100), // <500ms for 1000 nodes (architecture target)
+  bulkStructural: budget(100), // 100 indent/outdent ops on a 1000-node document
+  initialRender: budget(500), // <500ms for 1000 nodes (architecture target)
   syncLatency: budget(100), // <100ms multi-client sync latency (architecture target)
   lookup: budget(1) // <1ms per lookup operation
 };
@@ -254,22 +230,14 @@ describe('Architecture Performance Benchmarks', () => {
         `Initial render of ${PERF_SCALE.render} nodes: ${duration.toFixed(2)}ms (target: <${PERF_THRESHOLDS.initialRender}ms for 1000 nodes)`
       );
 
-      // For full performance mode testing 1000 nodes
-      if (FULL_PERFORMANCE) {
-        expect(duration).toBeLessThan(PERF_THRESHOLDS.initialRender);
-      } else {
-        // For fast mode, scale the threshold proportionally
-        const scaledThreshold = (PERF_THRESHOLDS.initialRender * PERF_SCALE.render) / 1000;
-        expect(duration).toBeLessThan(scaledThreshold);
-      }
+      expect(duration).toBeLessThan(PERF_THRESHOLDS.initialRender);
     });
 
     test(`render performance scales linearly with node count`, () => {
       // Sizes large enough that the whole measurement clears the noise floor
-      // even under GC pressure. The previous fast-mode pair (50/100 nodes)
-      // measured 1-2ms total, so a single GC pause during coverage
-      // instrumentation could and did dominate the result.
-      const testSizes = FULL_PERFORMANCE ? [100, 500, 1000] : [200, 400, 800];
+      // even under GC pressure: a 50/100-node pair measured 1-2ms total, so a
+      // single GC pause could and did dominate the result.
+      const testSizes = [100, 500, 1000];
 
       const measureOnce = (size: number): number => {
         const nodes = generateTestNodes(size);
@@ -562,11 +530,10 @@ describe('Architecture Performance Benchmarks', () => {
  * singletons across their own tests without resetting them.
  */
 describe('Multi-Tab Memory Eviction - Real Measurement (process.memoryUsage)', () => {
-  // Fast mode keeps this quick for everyday `bun run test`; full mode
-  // (TEST_FULL_PERFORMANCE=1, i.e. `bun run test:perf`) matches the scale
-  // the issue's own headless probe used (10 tabs x 300 nodes = 3000 nodes).
-  const TAB_COUNT = FULL_PERFORMANCE ? 10 : 6;
-  const NODES_PER_DOCUMENT = FULL_PERFORMANCE ? 300 : 120;
+  // Matches the scale of the original headless probe (10 tabs x 300 nodes =
+  // 3000 nodes).
+  const TAB_COUNT = 10;
+  const NODES_PER_DOCUMENT = 300;
   // Real (not fake) timer wait, short enough to keep the test fast.
   const EVICTION_TEST_MS = 40;
 

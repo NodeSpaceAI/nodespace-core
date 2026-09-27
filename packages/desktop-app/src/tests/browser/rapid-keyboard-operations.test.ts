@@ -342,14 +342,10 @@ describe('Stress Test - High Frequency Events', () => {
     textarea.focus();
 
     let eventCount = 0;
-    const timestamps: number[] = [];
 
     textarea.addEventListener('keydown', () => {
       eventCount++;
-      timestamps.push(performance.now());
     });
-
-    const startTime = performance.now();
 
     // Dispatch 500 events as fast as possible
     for (let i = 0; i < 500; i++) {
@@ -361,13 +357,8 @@ describe('Stress Test - High Frequency Events', () => {
       );
     }
 
-    const endTime = performance.now();
-
     // All events should be received
     expect(eventCount).toBe(500);
-
-    // Events should be processed quickly (< 100ms for 500 events)
-    expect(endTime - startTime).toBeLessThan(100);
   });
 
   it('should handle mixed event types in rapid sequence', () => {
