@@ -13,8 +13,10 @@
 -->
 
 <script lang="ts" module>
+  import type { AiChatProvider } from '$lib/types/ai-chat-node';
+
   export interface ModelSelection {
-    provider: 'native' | 'openai-compat' | 'pty';
+    provider: AiChatProvider;
     modelId: string;
     configId?: string; // for openai-compat
   }

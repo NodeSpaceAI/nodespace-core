@@ -21,7 +21,11 @@ export type AiChatTurnStatus = 'idle' | 'processing';
  */
 export type AiChatSessionStatus = 'active' | 'archived';
 
-export type AiChatProvider = 'native' | 'openai' | 'openai-compat' | 'pty';
+/**
+ * Mirrors `AI_CHAT_PROVIDERS` in `packages/core/src/models/ai_chat_node.rs`,
+ * which is what the backend schema enum and validation accept.
+ */
+export type AiChatProvider ='native' | 'openai-compat' | 'pty';
 
 export interface OpenAiCompatConfig {
   id: string;       // uuid, generated client-side

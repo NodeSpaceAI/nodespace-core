@@ -540,13 +540,13 @@ describe('AiChatNodeViewer Logic', () => {
 
     it('reads provider and model when present', () => {
       const nodeProperties: Record<string, unknown> = {
-        provider: 'openai',
+        provider: 'openai-compat',
         model: 'gpt-4',
       };
       const provider = (nodeProperties.provider as string) ?? 'native';
       const model = (nodeProperties.model as string) ?? '';
 
-      expect(provider).toBe('openai');
+      expect(provider).toBe('openai-compat');
       expect(model).toBe('gpt-4');
     });
   });

@@ -68,7 +68,7 @@
   const log = createLogger('AiChatNodeViewer');
 
   /** Provider modes that render the message UI. */
-  const MESSAGE_PROVIDERS = ['native', 'openai', 'openai-compat'] as const;
+  const MESSAGE_PROVIDERS = ['native', 'openai-compat'] as const;
 
   let {
     nodeId,

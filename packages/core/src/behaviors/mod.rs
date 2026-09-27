@@ -10,7 +10,9 @@
 //! and consistent validation across all node operations.
 
 use crate::models::schema::SchemaField;
-use crate::models::{Node, SchemaNode, TaskNode, ValidationError as NodeValidationError};
+use crate::models::{
+    Node, SchemaNode, TaskNode, ValidationError as NodeValidationError, AI_CHAT_PROVIDERS,
+};
 use crate::services::NodeAccessor;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -1781,18 +1783,19 @@ impl NodeBehavior for AiChatNodeBehavior {
         // Validate provider if present
         if let Some(provider) = node.properties.get("provider") {
             if let Some(provider_str) = provider.as_str() {
-                // ADR-034: AIChat is one node type with several provider modes.
-                // "openai-compat" covers every remotely-served model, Ollama
-                // included — it is reached through its OpenAI-compatible /v1
-                // endpoint rather than a bespoke provider mode.
-                match provider_str {
-                    "native" | "openai" | "openai-compat" | "pty" => {}
-                    _ => {
-                        return Err(NodeValidationError::InvalidProperties(format!(
-                            "Invalid provider '{}': must be one of native, openai, openai-compat, pty",
-                            provider_str
-                        )));
-                    }
+                // `AI_CHAT_PROVIDERS` also feeds the schema enum, so the two
+                // cannot disagree.
+                if !AI_CHAT_PROVIDERS
+                    .iter()
+                    .any(|(value, _)| *value == provider_str)
+                {
+                    let allowed: Vec<&str> =
+                        AI_CHAT_PROVIDERS.iter().map(|(value, _)| *value).collect();
+                    return Err(NodeValidationError::InvalidProperties(format!(
+                        "Invalid provider '{}': must be one of {}",
+                        provider_str,
+                        allowed.join(", ")
+                    )));
                 }
             }
         }
@@ -4933,7 +4936,7 @@ mod tests {
     #[test]
     fn test_ai_chat_node_valid_providers() {
         let behavior = AiChatNodeBehavior;
-        for provider in &["native", "openai", "openai-compat", "pty"] {
+        for provider in &["native", "openai-compat", "pty"] {
             let node = Node::new(
                 "ai-chat".to_string(),
                 "Chat".to_string(),
@@ -4942,6 +4945,60 @@ mod tests {
             assert!(
                 behavior.validate(&node).is_ok(),
                 "Provider '{}' should be valid",
+                provider
+            );
+        }
+    }
+
+    /// The `provider` schema enum must advertise exactly the values
+    /// validation accepts — no more (a value the schema offers but
+    /// `validate` rejects) and no fewer (a value the app writes that the
+    /// schema omits).
+    #[test]
+    fn test_ai_chat_provider_schema_enum_matches_validation() {
+        use crate::models::core_schemas::get_core_schemas;
+        let schemas = get_core_schemas();
+        let ai_chat = schemas.iter().find(|s| s.id == "ai-chat").unwrap();
+        let field = ai_chat.get_field("provider").unwrap();
+
+        let schema_values: HashSet<&str> = field
+            .core_values
+            .as_ref()
+            .unwrap()
+            .iter()
+            .map(|v| v.value.as_str())
+            .collect();
+        let accepted: HashSet<&str> = ["native", "openai-compat", "pty"].into_iter().collect();
+        assert_eq!(schema_values, accepted);
+
+        // A closed set: nothing may be added that validation would reject.
+        assert_eq!(field.extensible, Some(false));
+        assert!(field.user_values.as_ref().is_none_or(|v| v.is_empty()));
+
+        let behavior = AiChatNodeBehavior;
+        for provider in &schema_values {
+            let node = Node::new(
+                "ai-chat".to_string(),
+                "Chat".to_string(),
+                json!({"provider": provider}),
+            );
+            assert!(
+                behavior.validate(&node).is_ok(),
+                "Schema advertises provider '{}' but validation rejects it",
+                provider
+            );
+        }
+
+        // Former schema-only values and the dead `openai` mode are rejected.
+        for provider in &["anthropic", "gemini", "openai"] {
+            let node = Node::new(
+                "ai-chat".to_string(),
+                "Chat".to_string(),
+                json!({"provider": provider}),
+            );
+            assert!(
+                behavior.validate(&node).is_err(),
+                "Provider '{}' should be rejected",
                 provider
             );
         }

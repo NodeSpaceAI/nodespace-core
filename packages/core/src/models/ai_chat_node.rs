@@ -37,6 +37,22 @@ pub const AI_CHAT_NODE_TYPE: &str = "ai-chat";
 /// The properties namespace key under which ai-chat data is stored.
 const AI_CHAT_NAMESPACE: &str = "ai-chat";
 
+/// Every provider mode an ai-chat node may carry, as `(value, display label)`.
+///
+/// The single source for both the `provider` schema enum (`core_schemas.rs`)
+/// and `AiChatNodeBehavior::validate`, so the values the schema advertises are
+/// exactly the values validation accepts.
+///
+/// ADR-034: AIChat is one node type with several provider modes.
+/// `openai-compat` covers every remotely-served model, Ollama included — it is
+/// reached through its OpenAI-compatible `/v1` endpoint rather than a bespoke
+/// provider mode.
+pub const AI_CHAT_PROVIDERS: &[(&str, &str)] = &[
+    ("native", "Native (Local)"),
+    ("openai-compat", "OpenAI-compatible"),
+    ("pty", "PTY Agent"),
+];
+
 fn default_version() -> i64 {
     1
 }

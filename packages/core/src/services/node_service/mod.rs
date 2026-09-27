@@ -10915,6 +10915,43 @@ mod tests {
         );
     }
 
+    /// A write is checked against the `provider` schema enum as well as the
+    /// behavior, so the two must agree end to end: every provider the app
+    /// writes goes through, and a value only the schema once advertised does
+    /// not.
+    #[tokio::test]
+    async fn ai_chat_provider_enum_enforced_on_write() {
+        let (service, _temp) = create_test_service().await;
+
+        for provider in ["native", "openai-compat", "pty"] {
+            let node = Node::new(
+                "ai-chat".to_string(),
+                "Chat".to_string(),
+                json!({ "ai-chat": { "provider": provider, "messages": [] } }),
+            );
+            service
+                .create_node(node)
+                .await
+                .unwrap_or_else(|e| panic!("provider '{provider}' must be accepted: {e}"));
+        }
+
+        for provider in ["anthropic", "gemini", "openai"] {
+            let node = Node::new(
+                "ai-chat".to_string(),
+                "Chat".to_string(),
+                json!({ "ai-chat": { "provider": provider, "messages": [] } }),
+            );
+            let err = service
+                .create_node(node)
+                .await
+                .expect_err("an unknown provider must be rejected");
+            assert!(
+                err.to_string().contains(provider),
+                "expected an invalid-provider error, got: {err}"
+            );
+        }
+    }
+
     /// An ai-chat node's title requirement holds on update, not just on
     /// create.
     ///
