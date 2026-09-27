@@ -5,7 +5,7 @@
 // DOM-free on purpose: this file runs under `bun test scripts/`, which
 // bypasses the Happy-DOM vitest config (see CLAUDE.md).
 import { describe, expect, test } from "bun:test";
-import { NEXTEST, primaryRootFromCommonDir, releaseFor, SCCACHE, sha256Hex } from "./setup-rust-tooling";
+import { needsInstall, NEXTEST, primaryRootFromCommonDir, releaseFor, SCCACHE, sha256Hex } from "./setup-rust-tooling";
 
 describe("release pins", () => {
   test("every pinned release has a full SHA-256 and a versioned URL", () => {
@@ -39,5 +39,24 @@ describe("primaryRootFromCommonDir", () => {
 
   test("a trailing slash doesn't change the answer", () => {
     expect(primaryRootFromCommonDir("/Users/dev/nodespace-core/.git/")).toBe("/Users/dev/nodespace-core");
+  });
+});
+
+describe("needsInstall", () => {
+  test("installs a missing tool", () => {
+    expect(needsInstall(false, null, "0.9.146")).toBe(true);
+  });
+
+  test("reinstalls when the pinned version moved past the stamped one", () => {
+    expect(needsInstall(true, "0.9.145", "0.9.146")).toBe(true);
+  });
+
+  test("reinstalls a binary with no stamp (installed before stamps existed)", () => {
+    expect(needsInstall(true, null, "0.9.146")).toBe(true);
+  });
+
+  test("leaves an up-to-date tool alone, trailing newline or not", () => {
+    expect(needsInstall(true, "0.9.146", "0.9.146")).toBe(false);
+    expect(needsInstall(true, "0.9.146\n", "0.9.146")).toBe(false);
   });
 });

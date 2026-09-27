@@ -24,8 +24,8 @@
 //
 // Opt out with NODESPACE_SKIP_RUST_TOOLING=1.
 
-import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { $ } from "bun";
 
@@ -88,6 +88,20 @@ export function releaseFor(tool: Tool, platform: string = process.platform, arch
   return tool.releases[`${platform}-${arch}`];
 }
 
+/**
+ * Whether a tool needs (re)installing: it is missing, or the version stamped
+ * beside it isn't the pinned one. The stamp is what makes a version bump in
+ * this file reach machines that already have an older binary.
+ */
+export function needsInstall(binaryExists: boolean, stampedVersion: string | null, pinnedVersion: string): boolean {
+  return !binaryExists || stampedVersion?.trim() !== pinnedVersion;
+}
+
+/** The stamp file recording which version of a tool is installed. */
+function stampPath(target: string): string {
+  return `${target}.version`;
+}
+
 /** The primary checkout's root, from `git rev-parse --git-common-dir` (its `.git`). */
 export function primaryRootFromCommonDir(commonDir: string): string {
   return dirname(resolve(commonDir));
@@ -105,7 +119,9 @@ async function install(tool: Tool, release: ToolRelease, target: string): Promis
     throw new Error(`checksum mismatch for ${tool.name} (expected ${release.sha256}, got ${actual})`);
   }
 
-  const work = mkdtempSync(join(tmpdir(), `${tool.name}-install-`));
+  // Staged inside .tools itself (gitignored), so even the download never
+  // lands outside the repository.
+  const work = mkdtempSync(join(dirname(dirname(target)), `.install-${tool.name}-`));
   try {
     const archivePath = join(work, "archive.tar.gz");
     writeFileSync(archivePath, archive);
@@ -119,6 +135,7 @@ async function install(tool: Tool, release: ToolRelease, target: string): Promis
       copyFileSync(join(work, release.binary), tmp);
       chmodSync(tmp, 0o755);
       renameSync(tmp, target);
+      writeFileSync(stampPath(target), tool.version);
     } catch (err) {
       rmSync(tmp, { force: true });
       throw err;
@@ -134,17 +151,26 @@ async function install(tool: Tool, release: ToolRelease, target: string): Promis
  */
 function linkTools(checkoutRoot: string, primaryTools: string): void {
   const link = join(checkoutRoot, TOOLS_DIR);
+  let present = false;
   try {
     lstatSync(link);
-    return; // Already there — a link from an earlier install, or the primary's own directory.
+    present = true;
   } catch {
-    symlinkSync(primaryTools, link);
+    // Nothing there yet.
   }
+  // A link whose target is gone (the primary's .tools was cleaned) is
+  // replaced; anything that resolves is left as it is.
+  if (present && existsSync(link)) return;
+  if (present) unlinkSync(link);
+  symlinkSync(primaryTools, link);
 }
 
 async function main(): Promise<void> {
   if (process.env[SKIP_ENV_VAR] === "1") return;
   if (process.platform !== "darwin") return;
+  // No Rust toolchain means nothing to use these tools with — a frontend-only
+  // machine. (Looking for cargo is a read, not a write.)
+  if (!Bun.which("cargo") && !existsSync(join(homedir(), ".cargo", "bin", "cargo"))) return;
 
   const checkoutRoot = (await $`git rev-parse --show-toplevel`.quiet().text()).trim();
   const commonDir = (await $`git rev-parse --path-format=absolute --git-common-dir`.quiet().text()).trim();
@@ -156,7 +182,9 @@ async function main(): Promise<void> {
   for (const tool of [NEXTEST, SCCACHE]) {
     const target = join(primaryTools, "bin", tool.name);
     const release = releaseFor(tool);
-    if (existsSync(target) || release === undefined) continue;
+    if (release === undefined) continue;
+    const stamped = existsSync(stampPath(target)) ? readFileSync(stampPath(target), "utf8") : null;
+    if (!needsInstall(existsSync(target), stamped, tool.version)) continue;
     try {
       await install(tool, release, target);
     } catch (err) {
