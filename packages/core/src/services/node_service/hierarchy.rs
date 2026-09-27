@@ -361,7 +361,8 @@ impl NodeService {
     /// This unchecked variant enforces the same hierarchy rules but skips the
     /// version check, for callers that don't hold the node's version.
     ///
-    /// Updates the parent_id and root_id of a node, maintaining hierarchy consistency.
+    /// Replaces the node's `has_child` parent edge (or removes it, making the
+    /// node a root) and positions it among its new siblings.
     ///
     /// # Arguments
     ///
