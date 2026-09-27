@@ -1254,12 +1254,12 @@ fn def_get_related_nodes() -> ToolDefinition {
                 },
                 "relationship_type": {
                     "type": "string",
-                    "description": "Relationship name to traverse (default: 'mentions'). Accepts a schema relationship's forward name, or its declared reverseName to traverse the inverse edge (e.g. 'decisions' from a person, where adr declares decided_by -> person with reverseName 'decisions'). A name declared in neither direction is rejected with an error naming the ones that work."
+                    "description": "Relationship name to traverse (default: 'mentions'). Accepts a schema relationship's forward name, or its declared reverseName to traverse the inverse edge (e.g. 'decisions' from a person, where adr declares decided_by -> person with reverseName 'decisions'). A name declared in neither direction is rejected with an error naming the ones that work. A reverseName already fixes the direction, so 'direction' is then ignored."
                 },
                 "direction": {
                     "type": "string",
                     "enum": ["in", "out", "both"],
-                    "description": "Direction of relationships (default: both)"
+                    "description": "Which end to read from, relative to relationship_type (default: both). Only matters for a forward name: 'in' returns nodes whose edge points at this node, 'out' nodes this node's edge points to. Ignored when relationship_type is a reverseName or built-in inverse (e.g. 'decisions', 'child_of') — that name already fixes the direction, and each related node is returned once."
                 }
             },
             "required": ["id"]
