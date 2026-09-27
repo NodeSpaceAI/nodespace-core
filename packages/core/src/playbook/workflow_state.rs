@@ -420,11 +420,18 @@ pub async fn get_workflow_state(
         {
             Ok(scope) => scope,
             Err(e) => {
-                degraded.push(format!(
-                    "Failed to resolve the evaluation scope for rule '{}': {e}; its conditions \
+                let msg = format!(
+                    "Failed to resolve the evaluation scope for rule '{}' ({e}); its conditions \
                      were evaluated against the node's own bucket only",
                     rule_ref.rule.name
-                ));
+                );
+                record_degradation(
+                    &mut degraded,
+                    &node.node_type,
+                    &e,
+                    "get_workflow_state",
+                    msg,
+                );
                 None
             }
         };

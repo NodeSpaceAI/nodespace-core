@@ -1216,6 +1216,86 @@ async fn reject_rule_on_a_subtype_reads_an_inherited_field() -> Result<()> {
     Ok(())
 }
 
+/// A reject rule registered on a BASE type, fired by a subtype, reads the
+/// subtype at the base's scope (ADR-078): an extended value is translated
+/// through `maps_to` before the condition sees it.
+///
+/// `iv_base_bug` adds `backlog`, mapping to `open`, to the `state` it inherits
+/// from `iv_base_ticket`. A ticket-scoped rule rejecting `open` must reject a
+/// `backlog` bug, and must still allow a `done` one.
+#[tokio::test]
+async fn reject_rule_on_a_base_type_reads_a_subtype_through_maps_to() -> Result<()> {
+    let (service, _tmp) = create_test_service().await?;
+    nodespace_core::schema::handle_create_schema(
+        &service,
+        json!({
+            "name": "iv_base_ticket",
+            "fields": [{
+                "name": "state",
+                "type": "enum",
+                "protection": "user",
+                "indexed": false,
+                "extensible": true,
+                "coreValues": [
+                    { "value": "open", "label": "Open" },
+                    { "value": "done", "label": "Done" }
+                ]
+            }]
+        }),
+    )
+    .await?;
+    nodespace_core::schema::handle_create_schema(
+        &service,
+        json!({ "name": "iv_base_bug", "extends": "iv_base_ticket", "fields": [] }),
+    )
+    .await?;
+    nodespace_core::schema::handle_update_schema(
+        &service,
+        json!({
+            "schema_id": "iv_base_bug",
+            "add_field_values": [{
+                "field": "state",
+                "values": [{ "value": "backlog", "label": "Backlog", "mapsTo": "open" }]
+            }]
+        }),
+    )
+    .await?;
+    create_play(
+        &service,
+        "reject-base-play",
+        reject_invariant_rule("iv_base_ticket", "node.state == 'open'", "no open tickets"),
+    )
+    .await?;
+    // The engine's start-up load activates the play and builds the ancestry
+    // a base-type trigger needs to match a subtype.
+    let (_engine, shutdown_tx, task) = spawn_engine(&service).await;
+
+    let done = Node::new(
+        "iv_base_bug".to_string(),
+        "done bug".to_string(),
+        json!({ "state": "done" }),
+    );
+    let done_id = done.id.clone();
+    service.create_node(done).await?;
+    assert!(service.get_node(&done_id).await?.is_some());
+
+    let backlog = Node::new(
+        "iv_base_bug".to_string(),
+        "backlog bug".to_string(),
+        json!({ "state": "backlog" }),
+    );
+    let backlog_id = backlog.id.clone();
+    let err = service.create_node(backlog).await.unwrap_err();
+    assert!(
+        matches!(err, NodeServiceError::PlayRuleRejected { .. }),
+        "a backlog bug reads as `open` at ticket scope and must be rejected, got {err:?}"
+    );
+    assert!(service.get_node(&backlog_id).await?.is_none());
+
+    shutdown_engine(shutdown_tx, task).await;
+    Ok(())
+}
+
 /// Adversarial: `reject` as the FIRST action in a rule, with an augmenting
 /// action after it. The augmenting action (updating a separate,
 /// already-existing node) must never run at all — proven via that node's

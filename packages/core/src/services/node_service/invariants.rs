@@ -239,7 +239,14 @@ impl NodeService {
                 &rule_ref.rule,
                 node,
             )
-            .await?;
+            .await
+            .map_err(|e| {
+                NodeServiceError::invariant_rule_failed(
+                    rule_ref.play_id.clone(),
+                    rule_ref.rule.name.clone(),
+                    format!("resolving the rule's evaluation scope failed: {e}"),
+                )
+            })?;
             let mut resolver = crate::playbook::graph_resolver::GraphResolver::new(scoped.clone())
                 .with_scope(cel_scope.clone());
             let condition_result = crate::playbook::cel::evaluate_conditions_at_scope(

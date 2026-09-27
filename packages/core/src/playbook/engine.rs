@@ -1913,6 +1913,104 @@ mod scope_tests {
         );
     }
 
+    /// Evaluate `rule` against `node` with a graph resolver, as dispatch does.
+    async fn eval_resolved(
+        svc: &Arc<NodeService>,
+        rule: &ParsedRule,
+        node: &crate::models::Node,
+    ) -> bool {
+        let scope = PlaybookEngine::cel_scope_for(svc, rule, node)
+            .await
+            .expect("scope resolution should not fail against a healthy store");
+        let mut resolver = crate::playbook::graph_resolver::GraphResolver::new(Arc::clone(svc))
+            .with_scope(scope.clone());
+        let event = DomainEvent::NodeCreated {
+            node_id: node.id.clone(),
+            node_type: node.node_type.clone(),
+        };
+        matches!(
+            evaluate_conditions_at_scope(
+                &rule.conditions,
+                node,
+                &event,
+                Some(&mut resolver),
+                scope.as_ref(),
+            )
+            .await,
+            ConditionResult::Pass
+        )
+    }
+
+    async fn make_text(svc: &Arc<NodeService>) -> crate::models::Node {
+        let id = svc
+            .create_node(crate::models::Node::new(
+                "text".to_string(),
+                "a note".to_string(),
+                json!({}),
+            ))
+            .await
+            .expect("text creation failed");
+        svc.get_node(&id)
+            .await
+            .expect("get_node failed")
+            .expect("node should exist")
+    }
+
+    /// A related subtype node reached from a Play on an unrelated type is read
+    /// at its own type — with its inherited fields, which live in its
+    /// ancestor's bucket — not narrowed to its own bucket alone.
+    #[tokio::test]
+    async fn a_related_subtype_collection_reads_inherited_fields() {
+        let (svc, _tmp) = test_service().await;
+        seed_inheriting_chain(&svc).await;
+
+        let parent = make_text(&svc).await;
+        let first = make_bug(&svc, json!({ "state": "done" })).await;
+        svc.create_relationship(&parent.id, "has_child", &first.id, json!({}))
+            .await
+            .expect("relationship creation failed");
+
+        let rule = rule_on("text", "node.has_child.all(c, c.state == 'done')");
+        assert!(
+            eval_resolved(&svc, &rule, &parent).await,
+            "a done bug child must read as done"
+        );
+
+        let second = make_bug(&svc, json!({ "state": "open" })).await;
+        svc.create_relationship(&parent.id, "has_child", &second.id, json!({}))
+            .await
+            .expect("relationship creation failed");
+        assert!(
+            !eval_resolved(&svc, &rule, &parent).await,
+            "an open bug child must fail the `.all`"
+        );
+    }
+
+    /// The scalar half: a dot-path walked to a related subtype node reads an
+    /// inherited field of it.
+    #[tokio::test]
+    async fn a_related_subtype_scalar_path_reads_an_inherited_field() {
+        let (svc, _tmp) = test_service().await;
+        seed_inheriting_chain(&svc).await;
+
+        let done = make_bug(&svc, json!({ "state": "done" })).await;
+        let open = make_bug(&svc, json!({ "state": "open" })).await;
+        let rule = rule_on("text", "node.child_of.state == 'done'");
+
+        for (parent, expected) in [(&done, true), (&open, false)] {
+            let child = make_text(&svc).await;
+            svc.create_relationship(&parent.id, "has_child", &child.id, json!({}))
+                .await
+                .expect("relationship creation failed");
+            assert_eq!(
+                eval_resolved(&svc, &rule, &child).await,
+                expected,
+                "parent properties were {}",
+                parent.properties
+            );
+        }
+    }
+
     /// The narrower half: a related node whose stored value belongs to a
     /// vocabulary the reading scope has never heard of must be translated
     /// through `maps_to`, not compared raw.

@@ -257,13 +257,6 @@ impl CelScope {
         node_type != self.scope_type
     }
 
-    /// Whether this is the node's own scope rather than an ancestor's — a
-    /// subtype read at its own type, carrying its chain only so inherited
-    /// fields resolve.
-    fn is_own(&self) -> bool {
-        self.node_chain.first() == Some(&self.scope_type)
-    }
-
     /// Whether the reading scope declares this field — i.e. whether a
     /// condition authored at this scope is entitled to see it.
     fn declares(&self, name: &str) -> bool {
@@ -310,13 +303,6 @@ pub(crate) fn scoped_node_value(node: &Node, scope: Option<&CelScope>) -> Value 
     if !scope.resolves(&node.node_type) {
         let chain: Vec<&str> = scope.chain.iter().map(String::as_str).collect();
         return node_to_cel_value_at_scope(node, &chain);
-    }
-
-    // An own scope names no base type to project a node of another type to —
-    // a related node reached from it reads at its own type, exactly as it
-    // would with no scope at all.
-    if scope.is_own() {
-        return node_to_cel_value(node);
     }
 
     // Build from the NODE's own full view, then keep only what the reading
