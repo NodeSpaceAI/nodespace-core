@@ -9,7 +9,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { BASELINES, countReferences } from "./check-code-references";
+import { BASELINES, SCAN_ROOTS, countReferences } from "./check-code-references";
 
 let fixtureDir: string;
 
@@ -68,6 +68,41 @@ describe("countReferences — issue-number patterns", () => {
     writeFixture("scripts/a.ts", "// unchanged pre-issue-1689 behavior\n");
     const result = countReferences(["scripts"], fixtureDir);
     expect(result.issueNumberReferences).toBe(1);
+  });
+
+  test("matches a bare #NNNN in prose", () => {
+    writeFixture(
+      "scripts/a.ts",
+      [
+        "// Metal embeddings require Sonoma+, see #990).",
+        "// the defect the #2242 audit found",
+        "//! load-bearing on this stack: #1931's guidance",
+        "// #2182: a repaired call must not read as clean",
+        "// hydration (event-driven, #1564/#1566)",
+      ].join("\n") + "\n",
+    );
+    const result = countReferences(["scripts"], fixtureDir);
+    expect(result.issueNumberReferences).toBe(5);
+  });
+
+  test("does not match #N shapes that are data, not issue references", () => {
+    writeFixture(
+      "scripts/a.ts",
+      [
+        "// promoted into execution (call #2 above)",
+        "// same UAX #9 implicit mark",
+        "const title = 'Invoice #001';",
+        "create_invoice(&executor, \"Invoice #1\");",
+        "const fg = isDark ? '#e5e5e5' : '#262626';",
+        "{ color: '#333' }",
+        "  color: #888;",
+        "/* matches #252523 */",
+        "let s = r#\"raw\"#;",
+        ".replace(/'/g, '&#39;');",
+      ].join("\n") + "\n",
+    );
+    const result = countReferences(["scripts"], fixtureDir);
+    expect(result.issueNumberReferences).toBe(0);
   });
 
   test("counts one match per line, not per file", () => {
@@ -155,7 +190,7 @@ describe("real-repo ratchet", () => {
     const counts = countReferences();
     if (counts.issueNumberReferences > BASELINES.issueNumberReferences) {
       throw new Error(
-        `${counts.issueNumberReferences} issue-number references in code (core#NNNN, (#NNNN), Issue #NNNN), ` +
+        `${counts.issueNumberReferences} issue-number references in code (#NNNN, core#NNNN, Issue #NNNN), ` +
           `up from the ${BASELINES.issueNumberReferences}-reference baseline in scripts/check-code-references.ts. ` +
           "Describe the behavior/constraint directly and cite an ADR instead, per CLAUDE.md.",
       );
@@ -170,8 +205,7 @@ describe("real-repo ratchet", () => {
   });
 
   test("scan roots include packages/agent and packages/nlp-engine", () => {
-    const counts = countReferences();
-    expect(counts.issueNumberReferences).toBe(0);
-    expect(counts.docPathReferences).toBe(0);
+    expect(SCAN_ROOTS).toContain("packages/agent");
+    expect(SCAN_ROOTS).toContain("packages/nlp-engine");
   });
 });

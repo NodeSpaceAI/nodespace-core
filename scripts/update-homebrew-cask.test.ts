@@ -113,7 +113,7 @@ describe("renderCask", () => {
   end
 
   # release.yml builds with MACOSX_DEPLOYMENT_TARGET=14.0 (Metal GPU
-  # embeddings require Sonoma+ -- see #990).
+  # embeddings require Sonoma+).
   depends_on macos: :sonoma
   # arm64-only by design -- see the platform-support note above the \`url\` line.
   depends_on arch:  :arm64

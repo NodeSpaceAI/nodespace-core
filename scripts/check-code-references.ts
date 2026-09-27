@@ -3,19 +3,17 @@
 // numbers or nodespace-docs/ paths in code comments ("describe the
 // behavior/constraint directly, and reference decisions by ADR").
 //
-// The full-repo retroactive triage this check used to merely ratchet against
-// is now complete: every issue-number and doc-path reference across the
-// whole repo (SCAN_ROOTS below, now including packages/agent and
-// packages/nlp-engine, previously excluded as out of scope) was triaged —
-// constraint-bearing comments had their constraint inlined before the
-// reference was dropped, provenance-only citations were deleted outright,
-// and doc-path references either had their essential fact inlined or were
-// replaced with an ADR citation. Both baselines are now 0.
+// Doc-path references are fully paid down (baseline 0). Issue-number
+// references are not: the patterns once missed the most common shape, a
+// bare `#NNNN` in prose ("see #990", "the #2242 audit"), so the backlog of
+// those went uncounted while the baseline read 0. The issue-number baseline
+// is the real remaining count; paying it down means inlining each
+// constraint-bearing comment's constraint before dropping the reference, and
+// deleting provenance-only citations outright.
 //
-// Lower BASELINES whenever a change pays down part of the backlog (should
-// stay at 0 now). Never raise a baseline to accommodate a new reference —
-// inline the constraint or cite an ADR instead, per the rule this check
-// exists to hold the line on.
+// Lower BASELINES whenever a change pays down part of the backlog. Never
+// raise a baseline to accommodate a new reference — inline the constraint or
+// cite an ADR instead, per the rule this check exists to hold the line on.
 
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -26,7 +24,7 @@ const REPO = join(dirname(new URL(import.meta.url).pathname), "..");
 // `packages/*`) so a newly added package fails closed — it stays unscanned
 // until someone notices and adds it here, rather than silently entering the
 // ratchet with whatever count it happens to start with.
-const SCAN_ROOTS = [
+export const SCAN_ROOTS = [
   "scripts",
   "packages/desktop-app",
   "packages/core",
@@ -77,12 +75,18 @@ const ISSUE_NUMBER_PATTERNS: RegExp[] = [
   /\bPR#\d+\b/,
   /\b(?:pre|post)-#\d+\b/,
   /\b(?:pre|post)-issue-\d+\b/,
+  // A bare #NNNN in prose. Three to five digits, because every 1–2 digit
+  // `#N` in this repo is data ("call #2", "UAX #9", "Finding #1") and a
+  // 6-digit one is a hex color. The lookarounds drop the other non-issue
+  // shapes: `core#N`/`r#` (word char before), `&#39;` entities, `'#333'`
+  // quoted colors, `Invoice #001` fixture titles, and `color: #888;` CSS.
+  /(?<![\w&#'"]|Invoice )#\d{3,5}\b(?!;)/,
 ];
 const DOC_PATH_PATTERN = /nodespace-docs\//;
 
 // Ratchet baselines. See the file-level comment: lower on paydown, never raise.
 export const BASELINES = {
-  issueNumberReferences: 0,
+  issueNumberReferences: 142,
   docPathReferences: 0,
 };
 
@@ -160,7 +164,7 @@ if (import.meta.main) {
 
   if (counts.issueNumberReferences > BASELINES.issueNumberReferences) {
     console.error(
-      `❌ ${counts.issueNumberReferences} issue-number references in code (core#NNNN, (#NNNN), Issue #NNNN), ` +
+      `❌ ${counts.issueNumberReferences} issue-number references in code (#NNNN, core#NNNN, Issue #NNNN), ` +
         `up from the ${BASELINES.issueNumberReferences}-reference baseline in scripts/check-code-references.ts. ` +
         "Describe the behavior/constraint directly and cite an ADR instead, per CLAUDE.md.",
     );
