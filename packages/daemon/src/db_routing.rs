@@ -30,8 +30,8 @@ use crate::services::DatabaseServices;
 pub use nodespace_proto::DATABASE_ID_HEADER;
 
 /// Resolve the database a routed request targets (ADR-053). This is the single
-/// routing contract shared by every per-database service's `route` adapter
-/// (node, embeddings, import, agent-session).
+/// routing contract shared by every per-database service's `route` adapter;
+/// most reach it through [`route_or_self`].
 ///
 /// When the routing middleware ([`DbManagerLayer`]) injected a
 /// [`DatabaseManager`], the `x-ns-database-id` header selects a registered
@@ -72,6 +72,22 @@ pub(crate) async fn routed_database_services<T>(
         .await
         .map_err(|e| Status::internal(e.to_string()))?;
     Ok(Some(services))
+}
+
+/// The common `route` adapter: resolve the target database via
+/// [`routed_database_services`] and return `pick`'s service from it, or a
+/// clone of `this` when no routing is in play. Services whose routed handle
+/// can be absent (embeddings) must not use this — falling back to `this`
+/// there would silently serve another database.
+pub(crate) async fn route_or_self<S: Clone, T>(
+    this: &S,
+    request: &tonic::Request<T>,
+    pick: impl FnOnce(&DatabaseServices) -> &S,
+) -> Result<S, Status> {
+    Ok(match routed_database_services(request).await? {
+        Some(services) => pick(&services).clone(),
+        None => this.clone(),
+    })
 }
 
 /// `tower::Layer` that inserts the shared [`Arc<DatabaseManager>`] into each
