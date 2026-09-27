@@ -3154,11 +3154,11 @@ async fn build_workspace_context(
         let existing_ids: std::collections::HashSet<String> = context
             .relevant_schemas
             .iter()
-            .map(|s| s.id.clone())
+            .map(|s| s.type_id.clone())
             .collect();
         let remaining_slots = MAX_SCHEMAS.saturating_sub(context.semantic_schema_count);
         let mut injected = 0;
-        for schema in all_schemas {
+        for schema in &all_schemas {
             if injected >= remaining_slots {
                 break;
             }
@@ -3173,7 +3173,12 @@ async fn build_workspace_context(
                     schema_id = %schema.id,
                     "workspace_context: injecting recently-created schema (debounce bypass)"
                 );
-                context.relevant_schemas.push(schema);
+                context.relevant_schemas.push(
+                    nodespace_core::ops::entity_types_block::EntityTypeDescriptor::from_corpus(
+                        schema,
+                        &all_schemas,
+                    ),
+                );
                 injected += 1;
             }
         }

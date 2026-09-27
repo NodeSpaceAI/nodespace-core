@@ -617,7 +617,8 @@ pub async fn find_skills(
             // from, so this JSON cannot describe a schema differently than
             // the model is told about it.
             let mut entry =
-                super::entity_types_block::EntityTypeDescriptor::from_schema(schema).to_json();
+                super::entity_types_block::EntityTypeDescriptor::from_corpus(schema, &all_schemas)
+                    .to_json();
 
             let schema_description = match schema_description_cache.get(&schema.id) {
                 Some(cached) => cached.clone(),
@@ -663,7 +664,8 @@ pub async fn find_skills(
     // result would show for the identical schema.
     for (schema, confidence) in &schema_candidates {
         let mut entry =
-            super::entity_types_block::EntityTypeDescriptor::from_schema(schema).to_json();
+            super::entity_types_block::EntityTypeDescriptor::from_corpus(schema, &all_schemas)
+                .to_json();
 
         let schema_description = match schema_description_cache.get(&schema.id) {
             Some(cached) => cached.clone(),

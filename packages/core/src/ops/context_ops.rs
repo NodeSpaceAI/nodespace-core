@@ -29,6 +29,7 @@ use crate::models::{Node, SchemaNode};
 use crate::services::{CollectionService, NodeEmbeddingService, NodeService};
 use std::sync::Arc;
 
+use super::entity_types_block::EntityTypeDescriptor;
 use super::OpsError;
 
 // ---------------------------------------------------------------------------
@@ -40,8 +41,13 @@ use super::OpsError;
 pub struct WorkspaceContext {
     pub collections: Vec<String>,
     pub active_playbooks: Vec<PlaybookInfo>,
-    /// Schemas semantically relevant to the current query (may be empty).
-    pub relevant_schemas: Vec<SchemaNode>,
+    /// Schemas semantically relevant to the current query (may be empty),
+    /// already described across their `extends` chains. Held as descriptors
+    /// rather than `SchemaNode`s because a `SchemaNode` carries only its own
+    /// declarations: rendering one would tell the model a subtype lacks every
+    /// field it inherits. Build entries with
+    /// [`EntityTypeDescriptor::from_corpus`] or [`EntityTypeDescriptor::resolve`].
+    pub relevant_schemas: Vec<EntityTypeDescriptor>,
     /// Schemas one relationship hop from `relevant_schemas`, never matched by
     /// the query itself (may be empty). Rendered name-only — see
     /// `related_one_hop_schemas` for the traversal. Only ever populated when
@@ -765,12 +771,25 @@ pub async fn build_workspace_context(
                 .filter_map(|hit| schemas.iter().find(|s| s.id == hit.id).cloned())
                 .collect();
             let related = related_one_hop_schemas(&relevant, schemas);
-            (relevant, related)
+            let described = relevant
+                .iter()
+                .map(|s| EntityTypeDescriptor::from_corpus(s, schemas))
+                .collect();
+            (described, related)
         }
         // Corpus unavailable: fall back to the unhydrated retrieval hits rather
         // than dropping them, and omit related schemas. Same behaviour as
-        // before, now expressed once instead of in a second error arm.
-        (None, false) => (retrieved_hits, vec![]),
+        // before, now expressed once instead of in a second error arm. Their
+        // `extends` rows were never hydrated and there is no corpus to walk,
+        // so each is described from its own declarations only — the one
+        // degraded path, taken only when the schema read just failed.
+        (None, false) => (
+            retrieved_hits
+                .iter()
+                .map(|s| EntityTypeDescriptor::from_chain(s, []))
+                .collect(),
+            vec![],
+        ),
     };
 
     Ok(WorkspaceContext {
@@ -900,17 +919,13 @@ impl WorkspaceContext {
             let header = format!("\n{EXISTING_SCHEMAS_HEADER}\n");
             if out.len() + header.len() <= max_chars {
                 out.push_str(&header);
-                for schema in &self.relevant_schemas {
+                for descriptor in &self.relevant_schemas {
                     // Rendered through the shared descriptor so this block and
                     // the skill-routing one cannot drift: a field added to
                     // `SchemaField` reaches the prompt only via that choke
                     // point. The renderer carries the reasoning for what each
                     // part of the line is for.
-                    let line = format!(
-                        "{}\n",
-                        super::entity_types_block::EntityTypeDescriptor::from_schema(schema)
-                            .render_line()
-                    );
+                    let line = format!("{}\n", descriptor.render_line());
                     if out.len() + line.len() > max_chars {
                         break;
                     }
@@ -979,6 +994,11 @@ mod tests {
         }
     }
 
+    /// A standalone schema's descriptor — no `extends` chain to merge.
+    fn described(schema: crate::models::SchemaNode) -> EntityTypeDescriptor {
+        EntityTypeDescriptor::from_chain(&schema, [])
+    }
+
     fn sample_schema(id: &str, display_name: &str, fields: &[&str]) -> crate::models::SchemaNode {
         sample_schema_with_relationships(id, display_name, fields, vec![])
     }
@@ -1033,11 +1053,11 @@ mod tests {
         let ctx = WorkspaceContext {
             collections: vec![],
             active_playbooks: vec![],
-            relevant_schemas: vec![sample_schema(
+            relevant_schemas: vec![described(sample_schema(
                 "incident_report",
                 "incident_report",
                 &["on_call", "resolved"],
-            )],
+            ))],
             related_schemas: vec![],
             semantic_schema_count: 0,
             resolved_entities: EntityResolution::NotRun,
@@ -1301,7 +1321,11 @@ mod tests {
     #[test]
     fn format_for_prompt_includes_relevant_schemas() {
         let mut ctx = sample_context();
-        ctx.relevant_schemas = vec![sample_schema("customer", "Customer", &["name", "email"])];
+        ctx.relevant_schemas = vec![described(sample_schema(
+            "customer",
+            "Customer",
+            &["name", "email"],
+        ))];
         let output = ctx.format_for_prompt(4000);
 
         assert!(output.contains(EXISTING_SCHEMAS_HEADER));
@@ -1337,7 +1361,7 @@ mod tests {
         });
 
         let mut ctx = sample_context();
-        ctx.relevant_schemas = vec![schema];
+        ctx.relevant_schemas = vec![described(schema)];
         let output = ctx.format_for_prompt(4000);
 
         // Required-ness is rendered; the guidance conditions inclusion on it.
@@ -1376,7 +1400,7 @@ mod tests {
         });
 
         let mut ctx = sample_context();
-        ctx.relevant_schemas = vec![schema];
+        ctx.relevant_schemas = vec![described(schema)];
         let output = ctx.format_for_prompt(4000);
 
         // Core and user values both listed, so the model picks a legal one
@@ -1393,7 +1417,7 @@ mod tests {
         schema.title_template = Some("{reference}".to_string());
 
         let mut ctx = sample_context();
-        ctx.relevant_schemas = vec![schema];
+        ctx.relevant_schemas = vec![described(schema)];
         let output = ctx.format_for_prompt(4000);
 
         // create_node's description promises the template is shown here.
@@ -1408,7 +1432,7 @@ mod tests {
         let ctx = WorkspaceContext {
             collections: vec![],
             active_playbooks: vec![],
-            relevant_schemas: vec![sample_schema("invoice", "Invoice", &[])],
+            relevant_schemas: vec![described(sample_schema("invoice", "Invoice", &[]))],
             related_schemas: vec![],
             semantic_schema_count: 0,
             resolved_entities: EntityResolution::NotRun,
@@ -1656,7 +1680,7 @@ mod tests {
     #[test]
     fn format_for_prompt_renders_related_section_name_only() {
         let mut ctx = sample_context();
-        ctx.relevant_schemas = vec![sample_schema("invoice", "Invoice", &["amount"])];
+        ctx.relevant_schemas = vec![described(sample_schema("invoice", "Invoice", &["amount"]))];
         ctx.related_schemas = vec![sample_schema("customer", "Customer", &["name", "email"])];
 
         let output = ctx.format_for_prompt(4000);
@@ -1921,7 +1945,7 @@ mod tests {
             "abc123",
             -2.5,
         )]));
-        ctx.relevant_schemas = vec![sample_schema("customer", "Customer", &["name"])];
+        ctx.relevant_schemas = vec![described(sample_schema("customer", "Customer", &["name"]))];
         let out = ctx.format_for_prompt(4000);
 
         let entity_at = out.find(RESOLVED_ENTITIES_HEADER).expect("entity header");

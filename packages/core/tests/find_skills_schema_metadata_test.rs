@@ -285,3 +285,91 @@ async fn find_skills_skips_a_malformed_skill_and_keeps_the_rest() -> Result<()> 
     assert!(!after.contains(&malformed.id), "{after:?}");
     Ok(())
 }
+
+/// A subtype's `schema_metadata` entry — on both a skill scoped to it and its
+/// own `kind: "schema"` result — carries what it inherits across its ADR-078
+/// `extends` chain, not only what it declares itself.
+#[tokio::test]
+async fn find_skills_schema_metadata_includes_a_subtypes_inherited_declarations() -> Result<()> {
+    let (node_service, embedding_service, _store, _temp_dir) = create_test_env().await?;
+
+    create_fixture_schemas(&node_service).await?;
+    handle_create_schema(
+        &node_service,
+        json!({
+            "name": "retainer_invoice",
+            "extends": "invoice",
+            "fields": [{ "name": "retainer_months", "type": "number" }]
+        }),
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("subtype schema: {e}"))?;
+
+    let mut skill = SkillNode::new(
+        "Retainer Billing",
+        "Bill a customer on a monthly retainer — create a retainer invoice record.",
+        &["create_node"],
+        2,
+    )
+    .with_node_types(&["retainer_invoice"])
+    .into_node();
+    skill.title = Some("Retainer Billing".to_string());
+    node_service.create_node(skill.clone()).await?;
+    embedding_service.embed_root_node(&skill.id).await?;
+
+    // Names the subtype outright, so its `kind: "schema"` result arrives via
+    // the lexical backstop without waiting on a schema embedding.
+    let output = find_skills(
+        &Arc::new(embedding_service),
+        &node_service,
+        FindSkillsInput {
+            query: "bill this customer a retainer invoice".to_string(),
+            limit: Some(5),
+        },
+    )
+    .await
+    .expect("find_skills should succeed");
+
+    let assert_inherited = |entry: &serde_json::Value, via: &str| {
+        let names = |key: &str| -> Vec<String> {
+            entry[key]
+                .as_array()
+                .unwrap_or_else(|| panic!("{via}: `{key}` should be an array: {entry}"))
+                .iter()
+                .filter_map(|v| v["name"].as_str().map(str::to_string))
+                .collect()
+        };
+        let fields = names("fields");
+        assert!(
+            fields.contains(&"retainer_months".to_string()),
+            "{via}: {fields:?}"
+        );
+        assert!(
+            fields.contains(&"amount_due".to_string()),
+            "{via}: {fields:?}"
+        );
+        assert_eq!(names("relationships"), ["billed_to"], "{via}: {entry}");
+    };
+
+    let skill_result = output
+        .skills
+        .iter()
+        .find(|s| s["id"] == json!(skill.id))
+        .expect("the seeded skill should be present in results");
+    let scoped = skill_result["schema_metadata"]
+        .as_array()
+        .expect("schema_metadata should be an array")
+        .iter()
+        .find(|e| e["type_id"] == json!("retainer_invoice"))
+        .expect("the skill's schema_metadata should include the subtype");
+    assert_inherited(scoped, "skill result");
+
+    let schema_result = output
+        .skills
+        .iter()
+        .find(|s| s["kind"] == json!("schema") && s["id"] == json!("retainer_invoice"))
+        .expect("the named subtype should come back as a schema result");
+    assert_inherited(&schema_result["schema_metadata"][0], "schema result");
+
+    Ok(())
+}
