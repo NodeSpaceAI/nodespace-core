@@ -36,15 +36,16 @@
  * for "the suite is slow right now."
  */
 
-import { closeSync, mkdirSync, openSync, readFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { $ } from "bun";
 import { reportBranchBehind } from "./check-branch-behind";
 import { classifyFailure, formatAbortNote } from "./classify-test-failure";
 import { reportUpstreamFixes } from "./correlate-upstream-fixes";
 import { acquireGateLock, registerLockRelease } from "./gate-lock";
 import { describeScope, FULL_SCOPE, gateScope } from "./gate-scope";
+import { TOOLS_DIR } from "./setup-rust-tooling";
 import { exitStatusLine, freeGiBFromDf, stageLogName, tail } from "./gate-output";
 
 export type GateMode = "push" | "merge";
@@ -60,6 +61,19 @@ const merge = mode === "merge";
 /** Below this much free disk a gate that compiles refuses to start. */
 const MIN_FREE_GIB = 20;
 
+/** The gate's compiler cache: its size cap, and the port of its own server. */
+const SCCACHE_CACHE_SIZE = "20G";
+const SCCACHE_SERVER_PORT = "4227";
+
+/** `path` with symlinks resolved — a worktree's `.tools` links to the primary's. */
+function realpathOrSelf(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return resolve(path);
+  }
+}
+
 // No incremental compilation in gate builds. The incremental cache is most
 // of a worktree's target/ (~15 GB), it is private to each worktree, and
 // sccache can't cache incremental compiles — so without it sccache covers
@@ -68,6 +82,22 @@ const MIN_FREE_GIB = 20;
 // build fingerprint, so alternating a gate with an incremental `cargo test`
 // or `tauri:dev` in the same worktree rebuilds workspace crates each switch.
 process.env.CARGO_INCREMENTAL = "0";
+
+// Gate builds go through the repository's own sccache (scripts/setup-rust-
+// tooling.ts), configured here rather than in any cargo or sccache config
+// file: only gate builds use it, and nothing outside the repository is
+// touched. Its cache sits beside it in the shared `.tools/`, so every
+// worktree reuses the dependency builds of the ones before it. Its own
+// server port keeps it apart from any sccache a developer runs themselves.
+const sccache = join(realpathOrSelf(TOOLS_DIR), "bin", "sccache");
+if (existsSync(sccache)) {
+  process.env.RUSTC_WRAPPER = sccache;
+  process.env.CMAKE_C_COMPILER_LAUNCHER = sccache;
+  process.env.CMAKE_CXX_COMPILER_LAUNCHER = sccache;
+  process.env.SCCACHE_DIR = join(realpathOrSelf(TOOLS_DIR), "sccache-cache");
+  process.env.SCCACHE_CACHE_SIZE = SCCACHE_CACHE_SIZE;
+  process.env.SCCACHE_SERVER_PORT = SCCACHE_SERVER_PORT;
+}
 
 const logDir = join(
   tmpdir(),
@@ -179,9 +209,9 @@ if (merge || scope.rust) {
     );
     process.exit(1);
   }
-  // A missing nextest otherwise surfaces as cargo's bare "no such command".
-  if ((await $`cargo nextest --version`.quiet().nothrow()).exitCode !== 0) {
-    console.error("\n✗ cargo-nextest is not installed — run `bun install`, which installs it (scripts/setup-rust-tooling.ts).\n");
+  // A missing nextest otherwise surfaces as a bare "command not found".
+  if (!existsSync(join(TOOLS_DIR, "bin", "cargo-nextest"))) {
+    console.error(`\n✗ ${TOOLS_DIR}/bin/cargo-nextest is missing — run \`bun install\`, which installs it (scripts/setup-rust-tooling.ts).\n`);
     process.exit(1);
   }
 }
