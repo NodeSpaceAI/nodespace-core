@@ -6071,47 +6071,48 @@ model = "model-b"
     }
 
     /// Writing through an `in` declaration's name stores the forward edge, and
-    /// a later eviction names it that way. Alice takes the task through the
-    /// person-side `tasks` name, stored as `task -[assignee]-> alice`; Bob's
-    /// reassignment evicts that edge; so putting it back on Alice is not a
-    /// repeat. The label must come from the stored edge for the two to match.
+    /// a later eviction names it that way. An ADR declares `supersedes` (out)
+    /// and `superseded_by` (in), so `old -[superseded_by]-> new1` is stored as
+    /// `new1 -[supersedes]-> old`; superseding `old` by `new2` instead evicts
+    /// that edge; so restoring `new1` is not a repeat. The label must come from
+    /// the stored edge for the two to match.
     #[tokio::test]
     async fn an_edge_written_through_an_in_name_is_released_by_its_eviction() {
-        let rel = |from: &str, result: serde_json::Value| {
+        let rel = |by: &str, result: serde_json::Value| {
             completed_writes_from(&[exec(
                 "create_relationship",
-                serde_json::json!({"from_id": from, "to_id": "task", "relationship_type": "tasks"}),
+                serde_json::json!({"from_id": "old", "to_id": by, "relationship_type": "superseded_by"}),
                 result,
             )])
             .remove(0)
         };
-        let alice = rel("alice", rel_result(("task", "assignee", "alice"), &[]));
+        let first = rel("new1", rel_result(("new1", "supersedes", "old"), &[]));
         assert_eq!(
-            alice.summary.as_deref(),
-            Some("nodespace://task -[assignee]-> nodespace://alice"),
+            first.summary.as_deref(),
+            Some("nodespace://new1 -[supersedes]-> nodespace://old"),
             "the label is the stored forward edge, not the call's inbound spelling"
         );
-        let bob = rel(
-            "bob",
+        let second = rel(
+            "new2",
             rel_result(
-                ("task", "assignee", "bob"),
-                &[("task", "assignee", "alice")],
+                ("new2", "supersedes", "old"),
+                &[("new1", "supersedes", "old")],
             ),
         );
         let msgs = vec![
-            assistant_turn("Assigned to Alice.", alice.clone()),
-            assistant_turn("Reassigned to Bob.", bob.clone()),
+            assistant_turn("Superseded by new1.", first.clone()),
+            assistant_turn("Superseded by new2 instead.", second.clone()),
         ];
 
         let prior = prior_writes_from_history(&msgs);
         assert_eq!(prior.len(), 1, "got {prior:?}");
-        assert_eq!(prior[0].canonical_args, bob.canonical_args);
+        assert_eq!(prior[0].canonical_args, second.canonical_args);
 
-        // Recreating Alice's assignment is the same call as her first write,
-        // so its identity matches — which is why her evicted write must be
-        // gone from `prior`, or the guard would refuse it.
-        let again = rel("alice", rel_result(("task", "assignee", "alice"), &[]));
-        assert_eq!(again.canonical_args, alice.canonical_args);
+        // Restoring `new1` is the same call as the first write, so its
+        // identity matches — which is why the evicted write must be gone from
+        // `prior`, or the guard would refuse it.
+        let again = rel("new1", rel_result(("new1", "supersedes", "old"), &[]));
+        assert_eq!(again.canonical_args, first.canonical_args);
         assert!(prior
             .iter()
             .all(|p| p.canonical_args != again.canonical_args));
