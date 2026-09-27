@@ -17,83 +17,6 @@ export interface PositionResult {
 }
 
 /**
- * Find the character index closest to the clicked coordinates
- * @param mockElement - The hidden mock element with character spans
- * @param clickX - Click X coordinate relative to the page
- * @param clickY - Click Y coordinate relative to the page
- * @param editableRect - Bounding rectangle of the target editable element
- * @returns Character index and distance information
- */
-export function findCharacterFromClick(
-  mockElement: HTMLDivElement,
-  clickX: number,
-  clickY: number,
-  editableRect: { left: number; top: number; width: number; height: number }
-): PositionResult {
-  // Convert click coordinates to be relative to the mock element's container
-  const relativeX = clickX - editableRect.left;
-  const relativeY = clickY - editableRect.top;
-
-  let bestMatch: PositionResult = { index: 0, distance: Infinity, accuracy: 'approximate' };
-  let bestMatchSpan: HTMLElement | null = null;
-
-  // Get all character spans from the mock element
-  const allSpans = mockElement.querySelectorAll('[data-position]');
-
-  if (allSpans.length === 0) {
-    log.warn('No character spans found in mock element');
-    return { index: 0, distance: 0, accuracy: 'approximate' };
-  }
-
-  // Get the mock element's position for relative calculations
-  const mockRect = mockElement.getBoundingClientRect();
-
-  for (let i = 0; i < allSpans.length; i++) {
-    const span = allSpans[i] as HTMLElement;
-    const rect = span.getBoundingClientRect();
-
-    // Calculate position relative to the mock element
-    const spanX = rect.left - mockRect.left;
-    const spanY = rect.top - mockRect.top;
-
-    // For better accuracy, use the center of each character
-    const spanCenterX = spanX + rect.width / 2;
-    const spanCenterY = spanY + rect.height / 2;
-
-    // Calculate distance using Euclidean distance
-    const distance = Math.sqrt(
-      Math.pow(spanCenterX - relativeX, 2) + Math.pow(spanCenterY - relativeY, 2)
-    );
-
-    if (distance < bestMatch.distance) {
-      const position = parseInt(span.dataset.position || '0');
-      bestMatch = {
-        index: position,
-        distance,
-        accuracy: distance < 5 ? 'exact' : 'approximate' // Within 5px is considered exact
-      };
-      bestMatchSpan = span;
-    }
-  }
-
-  // Determine if cursor should go before or after the matched character
-  // based on whether click is to the left or right of the character's center
-  if (bestMatchSpan) {
-    const bestRect = bestMatchSpan.getBoundingClientRect();
-    const bestCenterX = bestRect.left - mockRect.left + bestRect.width / 2;
-    const maxIndex = mockElement.textContent?.length ?? 0;
-
-    // If click is to the right of the character's center, position cursor after it
-    // but ensure we don't exceed content bounds
-    if (relativeX > bestCenterX && bestMatch.index < maxIndex) {
-      bestMatch.index += 1;
-    }
-  }
-
-  return bestMatch;
-}
-
-/**
  * Performance-optimized position finding with early exit conditions
  * @param mockElement - The hidden mock element with character spans
  * @param clickX - Click X coordinate relative to the page
@@ -101,7 +24,7 @@ export function findCharacterFromClick(
  * @param editableRect - Bounding rectangle of the target editable element
  * @returns Character index optimized for < 50ms performance
  */
-export function findCharacterFromClickFast(
+export function findCharacterFromClick(
   mockElement: HTMLDivElement,
   clickX: number,
   clickY: number,
@@ -340,7 +263,7 @@ export function createMockElementForView(
   mockElement.style.cssText = cssText;
 
   // Wrap each character in span with data-position attribute
-  // This allows findCharacterFromClickFast to map coordinates → position
+  // This allows findCharacterFromClick to map coordinates → position
   content.split('').forEach((char, index) => {
     if (char === '\n') {
       // Handle newlines: add span + <br> (matches view rendering)
