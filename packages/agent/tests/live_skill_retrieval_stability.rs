@@ -31,6 +31,8 @@ use nodespace_agent::local_agent::routing::RETRIEVAL_TOP_K;
 use nodespace_agent::skill_pipeline::seed_skill_nodes;
 use nodespace_core::db::SqliteStore;
 use nodespace_core::markdown::{prepare_nodes_from_template, NodeTemplate};
+use nodespace_core::methodology::linear;
+use nodespace_core::methodology::skills::playbook_skill;
 use nodespace_core::models::SkillNode;
 use nodespace_core::ops::skill_ops::{find_skills, FindSkillsInput};
 use nodespace_core::services::node_service::CreateNodeParams;
@@ -709,4 +711,159 @@ async fn graph_editing_exclusion_leaves_completion_state_scores_unchanged() {
         changed.is_empty(),
         "Graph Editing's exclusion changed its score on completion-state requests {changed:?}"
     );
+}
+
+/// The registry of a workspace with the Linear-style Playbook installed: the
+/// built-ins plus every skill the install seeds, overview included. Only each
+/// root's title and description are embedded, so the overview's
+/// install-time "Installed in this workspace" section is irrelevant here.
+fn linear_workspace_registry() -> Vec<NodeTemplate> {
+    let playbook = linear::playbook();
+    let mut registry = seed_skill_nodes();
+    registry.extend(playbook.skills);
+    registry.push(playbook_skill(playbook.overview));
+    registry
+}
+
+/// A Playbook skill competes with the built-ins on the words a request
+/// arrives in, not on what its guidance covers. Each seeded Linear skill must
+/// rank FIRST for its own intent — phrased the way a user says it ("file a
+/// bug", "start the sprint", "why can't I close this"), none of which names
+/// the skill's own vocabulary.
+#[tokio::test]
+#[ignore = "requires the locked nomic-embed-text-v1.5 GGUF on disk"]
+async fn linear_playbook_skills_win_their_own_intents() {
+    let Some((embedding_service, node_service, _temp_dir)) =
+        seed_and_embed_registry(linear_workspace_registry()).await
+    else {
+        return;
+    };
+
+    let cases: [(&str, &[&'static str]); 3] = [
+        (
+            "Creating an Issue",
+            &[
+                "file a bug for the login timeout",
+                "report a bug: checkout crashes on Safari",
+                "open a ticket for the flaky CI job",
+                "raise an issue about the broken CSV export",
+                "log a bug against the sync engine",
+                "create an issue for the onboarding redesign",
+            ],
+        ),
+        (
+            "Sprints and Cycles",
+            &[
+                "start the sprint",
+                "start a new two-week cycle on Monday",
+                "add this issue to the current sprint",
+                "move the unfinished work into the next sprint",
+                "plan the next cycle",
+                "how many points are in this sprint?",
+            ],
+        ),
+        (
+            "Issue Validation Rules",
+            &[
+                "why can't I close this?",
+                "it won't let me mark this done",
+                "why was my status change rejected?",
+                "I can't start this issue, it says it's blocked",
+                "why won't it let me move this to in progress?",
+            ],
+        ),
+    ];
+
+    let mut misses = Vec::new();
+    for (skill, queries) in cases {
+        for query in routing_misses(&embedding_service, &node_service, queries, skill, true).await {
+            misses.push(format!("{skill} <- {query:?}"));
+        }
+    }
+    assert!(misses.is_empty(), "lost rank 1: {misses:#?}");
+}
+
+/// The cost side of the case above: a Playbook skill written in a user's
+/// verbs must not take a general request away from the built-in that serves
+/// it. "Take away" is measured against the same query on the built-ins alone,
+/// in the two senses retrieval acts on: an owner that ranked first must still
+/// rank first (destructive tools come only from the winner), and an owner
+/// inside the top-`RETRIEVAL_TOP_K` must stay inside it (Stage 2 sees only
+/// those). A Playbook skill ranking above an owner that was already third is
+/// no regression; pushing that owner out of the window is.
+///
+/// Two general requests sat closer to a Playbook skill than any description
+/// wording could fix, and the skills' `exclusion`s are what hold them: "add a
+/// reminder to renew my passport" (Node Creation, third at 0.753) for Sprints
+/// and Cycles and Creating an Issue, and "point rebuild task at the decision
+/// it has to respect" (Relationship Management, second at 0.837) for Issue
+/// Validation Rules. "Add a new task to follow up with the vendor next week"
+/// was held by retitling "Working with Cycles", whose title alone outranked
+/// Node Creation on it.
+#[tokio::test]
+#[ignore = "requires the locked nomic-embed-text-v1.5 GGUF on disk"]
+async fn linear_playbook_skills_do_not_displace_built_ins() {
+    let Some((built_ins, built_ins_ns, _t1)) = seed_and_embed().await else {
+        return;
+    };
+    let Some((linear, linear_ns, _t2)) = seed_and_embed_registry(linear_workspace_registry()).await
+    else {
+        return;
+    };
+
+    let mut misses = Vec::new();
+    for (query, owner) in [
+        ("create a note about today's standup", "Node Creation"),
+        (
+            "Create a new task called 'Review Q3 report'",
+            "Node Creation",
+        ),
+        (
+            "Add a new task to follow up with the vendor next week",
+            "Node Creation",
+        ),
+        ("add a reminder to renew my passport", "Node Creation"),
+        ("mark the task as done", "Graph Editing"),
+        ("change the due date on the launch task", "Graph Editing"),
+        ("set the onboarding task to in progress", "Graph Editing"),
+        ("remove the done tasks", "Node Deletion"),
+        ("delete the closed tickets", "Node Deletion"),
+        (
+            "why hasn't my automation fired for this node?",
+            "Play Workflow State",
+        ),
+        (
+            "point rebuild task at the decision it has to respect",
+            "Relationship Management",
+        ),
+        (
+            "Add this note to my reading list collection",
+            "Organization",
+        ),
+        ("Create an invoice tracking database", "Schema Creation"),
+        (
+            "Search my notes for anything about embeddings",
+            "Research & Search",
+        ),
+    ] {
+        let before = scored_ranking(&built_ins, &built_ins_ns, query, 20).await;
+        let after = scored_ranking(&linear, &linear_ns, query, 20).await;
+        eprintln!("{query:?}: {:?}", &after[..after.len().min(6)]);
+        let rank = |ranked: &[String]| {
+            ranked
+                .iter()
+                .position(|r| r.starts_with(&format!("{owner}=")))
+                .unwrap_or(usize::MAX)
+        };
+        let (was, now) = (rank(&before), rank(&after));
+        let lost_first = was == 0 && now != 0;
+        let left_window = was < RETRIEVAL_TOP_K && now >= RETRIEVAL_TOP_K;
+        if lost_first || left_window {
+            misses.push(format!(
+                "{query:?}: {owner} rank {was} -> {now}; now {:?}",
+                &after[..after.len().min(4)]
+            ));
+        }
+    }
+    assert!(misses.is_empty(), "displaced a built-in: {misses:#?}");
 }

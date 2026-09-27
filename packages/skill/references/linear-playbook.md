@@ -89,11 +89,11 @@ nodespace node create --type play --content 'Block starting an issue with an ope
 
 Skill nodes carrying usage guidance, discovered through the ordinary skill-search mechanism. Each is a `skill` root node whose markdown body becomes ordinary child nodes. Deliberately several narrow skills rather than one broad one: retrieval scores a precise match far better than a skill diluted across every intent.
 
-**Creating an Issue** — How to create an issue in a Linear-style workspace: when to use issue rather than task, the extended status and priority vocabularies, and point estimates.
+**Creating an Issue** — Report a bug, defect, crash or something broken, open a ticket, or raise an issue. Use when the user wants to file or log a bug, open a ticket, report a problem, or request a feature.
 
-**Working with Cycles** — How cycles work in a Linear-style workspace: assigning work via the tasks relationship, the derived active/past state, and what the automatic cycle-creation and rollover Plays do.
+**Sprints and Cycles** — Start, plan or close out a sprint or cycle, put issues in the current sprint, roll unfinished issues into the next sprint, and total a sprint's points. Use when the user says start the sprint, what's in this cycle, or how many points are in the sprint.
 
-**Issue Validation Rules** — Why a status change on an issue was rejected: the sub-issue completion gate and the blocker gate, what each checks, and how to proceed when one fires.
+**Issue Validation Rules** — Why an issue won't close or won't start: its status change was rejected because sub-issues are still open or a blocker isn't done. Use when the user says it won't let me mark this done, it won't let me move this to in progress, why can't I close this, or why is this blocked.
 
 Create each with `nodespace node create --type skill`, then add its guidance as markdown children. The bodies are long-form prose; read them from `packages/core/src/methodology/skills/linear/` rather than reproducing them here.
 

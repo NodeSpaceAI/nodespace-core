@@ -1,8 +1,9 @@
 ---
-title: "Working with Cycles"
-description: "How cycles work in a Linear-style workspace: assigning work via the tasks relationship, the derived active/past state, and what the automatic cycle-creation and rollover Plays do."
+title: "Sprints and Cycles"
+description: "Start, plan or close out a sprint or cycle, put issues in the current sprint, roll unfinished issues into the next sprint, and total a sprint's points. Use when the user says start the sprint, what's in this cycle, or how many points are in the sprint."
+exclusion: "Add a task or a reminder."
 ---
-# Working with Cycles
+# Sprints and Cycles
 
 A `cycle` is a time-boxed iteration — Linear's sprint equivalent.
 
