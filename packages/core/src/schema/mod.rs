@@ -1673,6 +1673,16 @@ fn describe_missing_reverse_fields(relationships: &Value) -> Result<(), Markdown
     Ok(())
 }
 
+/// Whether `s` is one of the two date shapes a `date` field accepts: a bare
+/// ISO-8601 calendar date (`2026-03-01`) or an RFC 3339 date-time
+/// (`2026-03-01T09:30:00Z`). These are exactly the shapes the CEL date
+/// functions (`days_since`, `days_until`, `add_days`) parse, so a value that
+/// passes validation is one every downstream date consumer can read.
+pub(crate) fn is_iso_date_or_datetime(s: &str) -> bool {
+    chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").is_ok()
+        || chrono::DateTime::parse_from_rfc3339(s).is_ok()
+}
+
 /// Name of a JSON value's type, for error messages.
 pub(crate) fn json_type_name(v: &Value) -> &'static str {
     match v {
