@@ -15,6 +15,7 @@ pub use index_manager::IndexManager;
 pub(crate) use sqlite_store::tx::Tx;
 pub(crate) use sqlite_store::{composite_similarity_score, cosine_similarity};
 pub use sqlite_store::{
-    ensure_sqlite_vec_registered, BulkNodeRow, RelationshipRecord, ResolvedEntity, SqliteStore,
-    StoreChange, StoreOperation, TreeInvariantRule, TreeInvariantViolation, VersionConflict,
+    ensure_sqlite_vec_registered, BulkNodeRow, ChildPlacement, RelationshipRecord, ResolvedEntity,
+    SqliteStore, StoreChange, StoreOperation, TreeInvariantRule, TreeInvariantViolation,
+    VersionConflict,
 };

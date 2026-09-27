@@ -4,13 +4,20 @@
 //! `has_child` edges share one order — the sibling order becomes undefined.
 //! Both write paths that insert between siblings — `create_node_with_parent`
 //! and `move_node` — must re-spread the siblings before that happens.
+//!
+//! A re-spread rewrites every sibling's key, so both paths must also announce
+//! those rewrites: a client that keeps sibling order from events alone would
+//! otherwise slot the new edge's key among stale ones.
 
+use nodespace_core::db::events::DomainEvent;
 use nodespace_core::db::SqliteStore;
 use nodespace_core::services::{
     CreateNodeParams, InsertPosition, InsertPositionOwned, NodeService,
 };
+use std::collections::HashMap;
 use std::sync::Arc;
 use tempfile::TempDir;
+use tokio::sync::broadcast;
 
 /// Far more than the ~50 halvings it takes an f64 gap of 1.0 to collapse.
 const INSERTS: usize = 60;
@@ -125,6 +132,74 @@ async fn assert_order_intact(f: &Fixture) {
     assert_eq!(contents, expected);
 }
 
+/// A client that learns the parent's child order from events alone, the way the
+/// frontend's `hierarchy-sync` does: seeded from the store, then updated from
+/// each `has_child` event's `order`.
+struct EventMirror {
+    rx: broadcast::Receiver<nodespace_core::db::events::EventEnvelope>,
+    orders: HashMap<String, f64>,
+}
+
+impl EventMirror {
+    async fn new(f: &Fixture) -> Self {
+        let rx = f.service.subscribe_to_events();
+        let mut rows = f
+            .conn
+            .query(
+                "SELECT out_node, json_extract(properties, '$.order') FROM relationship WHERE in_node = ?1 AND relationship_type = 'has_child'",
+                libsql::params![f.parent.clone()],
+            )
+            .await
+            .unwrap();
+        let mut orders = HashMap::new();
+        while let Some(row) = rows.next().await.unwrap() {
+            orders.insert(row.get::<String>(0).unwrap(), row.get::<f64>(1).unwrap());
+        }
+        Self { rx, orders }
+    }
+
+    /// Apply every event emitted so far, then assert the mirrored order
+    /// matches the store's.
+    async fn assert_matches_store(&mut self, f: &Fixture) {
+        let parent = format!("node:{}", f.parent);
+        loop {
+            let envelope = match self.rx.try_recv() {
+                Ok(envelope) => envelope,
+                Err(broadcast::error::TryRecvError::Empty) => break,
+                Err(e) => panic!("event stream broke: {e}"),
+            };
+            let rel = match envelope.event {
+                DomainEvent::RelationshipCreated { relationship }
+                | DomainEvent::RelationshipUpdated { relationship } => relationship,
+                _ => continue,
+            };
+            if rel.relationship_type != "has_child" || rel.from_id != parent {
+                continue;
+            }
+            let child = rel.to_id.strip_prefix("node:").unwrap().to_string();
+            self.orders
+                .insert(child, rel.properties["order"].as_f64().unwrap());
+        }
+
+        let mut mirrored: Vec<(&String, &f64)> = self.orders.iter().collect();
+        mirrored.sort_by(|a, b| a.1.total_cmp(b.1));
+        let mirrored: Vec<&String> = mirrored.into_iter().map(|(id, _)| id).collect();
+        let stored: Vec<String> = f
+            .service
+            .get_children(&f.parent)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|n| n.id)
+            .collect();
+        assert_eq!(
+            mirrored,
+            stored.iter().collect::<Vec<_>>(),
+            "event-only client order diverged from the store"
+        );
+    }
+}
+
 #[tokio::test]
 async fn repeated_creates_after_one_anchor_keep_distinct_ordered_keys() {
     let f = fixture().await;
@@ -189,4 +264,53 @@ async fn repeated_moves_after_one_anchor_keep_distinct_ordered_keys() {
         .unwrap();
     let label: String = rows.next().await.unwrap().unwrap().get(0).unwrap();
     assert_eq!(label, "moved");
+}
+
+#[tokio::test]
+async fn creates_that_respread_leave_an_event_only_client_in_store_order() {
+    let f = fixture().await;
+    let mut mirror = EventMirror::new(&f).await;
+    for i in 0..INSERTS {
+        f.service
+            .create_node_with_parent(params(
+                &format!("item-{i}"),
+                Some(&f.parent),
+                InsertPositionOwned::After(f.anchor.clone()),
+            ))
+            .await
+            .unwrap();
+        mirror.assert_matches_store(&f).await;
+    }
+}
+
+#[tokio::test]
+async fn moves_that_respread_leave_an_event_only_client_in_store_order() {
+    let f = fixture().await;
+    let mut items = Vec::new();
+    for i in 0..INSERTS {
+        let id = f
+            .service
+            .create_node_with_parent(params(
+                &format!("item-{i}"),
+                Some(&f.parent),
+                InsertPositionOwned::End,
+            ))
+            .await
+            .unwrap();
+        items.push(id);
+    }
+    let mut mirror = EventMirror::new(&f).await;
+    for id in &items {
+        let version = f.service.get_node(id).await.unwrap().unwrap().version;
+        f.service
+            .move_node(
+                id,
+                version,
+                Some(&f.parent),
+                InsertPosition::After(&f.anchor),
+            )
+            .await
+            .unwrap();
+        mirror.assert_matches_store(&f).await;
+    }
 }

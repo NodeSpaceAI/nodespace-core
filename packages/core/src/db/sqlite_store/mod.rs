@@ -732,7 +732,7 @@ mod embedding_roots;
 mod embeddings;
 pub(crate) use embeddings::{composite_similarity_score, cosine_similarity};
 mod nodes;
-pub use nodes::{BulkNodeRow, ResolvedEntity};
+pub use nodes::{BulkNodeRow, ChildPlacement, ResolvedEntity};
 mod relationships;
 mod search;
 pub(crate) mod tx;

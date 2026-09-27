@@ -185,6 +185,20 @@ pub struct ResolvedEntity {
     pub score: f64,
 }
 
+/// Where a `has_child` write placed its edge.
+///
+/// `respread` lists every *other* child of the same parent whose order key a
+/// re-spread rewrote along the way (see `respread_children`), with its new key.
+/// It is empty unless the parent's order gap collapsed. A caller that
+/// announces the edge write must announce these too: a client that tracks
+/// sibling order from events would otherwise compare the edge's new key
+/// against the siblings' stale ones.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChildPlacement {
+    pub order: f64,
+    pub respread: Vec<(String, f64)>,
+}
+
 impl SqliteStore {
     pub async fn create_node(
         &self,
@@ -500,7 +514,7 @@ impl SqliteStore {
         parent_id: &str,
         child_id: &str,
         insert_after_sibling_id: Option<&str>,
-    ) -> Result<f64> {
+    ) -> Result<ChildPlacement> {
         let mut rows = tx.conn().query(
             "SELECT out_node, json_extract(properties, '$.order') as ord FROM relationship WHERE in_node = ?1 AND relationship_type = 'has_child' ORDER BY json_extract(properties, '$.order') ASC, id ASC",
             libsql::params![parent_id.to_string()],
@@ -515,6 +529,7 @@ impl SqliteStore {
             siblings.push((sibling_id, ord.unwrap_or(0.0)));
         }
 
+        let mut respread = Vec::new();
         let new_order = if let Some(after_id) = insert_after_sibling_id {
             if let Some(after_index) = siblings.iter().position(|(id, _)| id == after_id) {
                 let prev_order = siblings[after_index].1;
@@ -526,7 +541,7 @@ impl SqliteStore {
                         // duplicate key — `move_node`'s same safeguard, run on
                         // `tx` so it commits or rolls back with the insert. The
                         // anchor at index `i` now holds key `i + 1`.
-                        Self::respread_children(tx.conn(), parent_id).await?;
+                        respread = Self::respread_children(tx.conn(), parent_id).await?;
                         let anchor_order = (after_index + 1) as f64;
                         FractionalOrderCalculator::calculate_order(
                             Some(anchor_order),
@@ -555,7 +570,10 @@ impl SqliteStore {
             .await
             .context("Failed to insert parent-child relationship")?;
 
-        Ok(new_order)
+        Ok(ChildPlacement {
+            order: new_order,
+            respread,
+        })
     }
 
     /// `_in_tx` twin of [`Self::get_node`] (ADR-069 §1a). Reads via `tx.conn()`
@@ -2630,17 +2648,31 @@ impl SqliteStore {
     /// way the caller's re-read or index arithmetic sees these new keys. The
     /// `(order, id)` sequence is the one callers must read siblings in for
     /// index `i` to map to key `i + 1`.
-    async fn respread_children(conn: &libsql::Connection, parent_id: &str) -> Result<()> {
-        conn.execute(
-            "UPDATE relationship SET properties = json_set(properties, '$.order', ranked.new_order) \
-             FROM (SELECT id, CAST(ROW_NUMBER() OVER (ORDER BY json_extract(properties, '$.order') ASC, id ASC) AS REAL) AS new_order \
-                   FROM relationship WHERE in_node = ?1 AND relationship_type = 'has_child') AS ranked \
-             WHERE relationship.id = ranked.id",
-            libsql::params![parent_id.to_string()],
-        )
-        .await
-        .context("Failed to rebalance sibling order")?;
-        Ok(())
+    ///
+    /// Returns each child whose key changed, with its new key, for the caller
+    /// to hand back in [`ChildPlacement::respread`]. A child already on its
+    /// target key is left untouched and not returned.
+    async fn respread_children(
+        conn: &libsql::Connection,
+        parent_id: &str,
+    ) -> Result<Vec<(String, f64)>> {
+        let mut rows = conn
+            .query(
+                "UPDATE relationship SET properties = json_set(properties, '$.order', ranked.new_order) \
+                 FROM (SELECT id, CAST(ROW_NUMBER() OVER (ORDER BY json_extract(properties, '$.order') ASC, id ASC) AS REAL) AS new_order \
+                       FROM relationship WHERE in_node = ?1 AND relationship_type = 'has_child') AS ranked \
+                 WHERE relationship.id = ranked.id \
+                   AND json_extract(relationship.properties, '$.order') IS NOT ranked.new_order \
+                 RETURNING out_node, json_extract(properties, '$.order')",
+                libsql::params![parent_id.to_string()],
+            )
+            .await
+            .context("Failed to rebalance sibling order")?;
+        let mut respread = Vec::new();
+        while let Some(row) = rows.next().await? {
+            respread.push((row.get::<String>(0)?, row.get::<f64>(1)?));
+        }
+        Ok(respread)
     }
 
     /// ADR-059 §2 (reparent side of the root-only content-membership rule): a node
@@ -2732,7 +2764,7 @@ impl SqliteStore {
         node_id: &str,
         new_parent_id: Option<&str>,
         insert_after_sibling_id: Option<&str>,
-    ) -> Result<f64> {
+    ) -> Result<ChildPlacement> {
         let node_id = node_id.to_string();
         let new_parent_id = new_parent_id.map(|s| s.to_string());
         let insert_after_sibling_id = insert_after_sibling_id.map(|s| s.to_string());
@@ -2763,6 +2795,7 @@ impl SqliteStore {
         // keys from the same stale snapshot, corrupting the final sibling order.
         let db = self.write().await;
 
+        let mut respread = Vec::new();
         let new_order = if let Some(ref parent_id) = new_parent_id {
             // Get ordered siblings excluding the moving node
             let mut rows = db.query(
@@ -2784,7 +2817,13 @@ impl SqliteStore {
 
                     if let Some(next) = next_order {
                         if (next - prev_order) < FractionalOrderCalculator::MIN_GAP {
-                            Self::respread_children(&db, parent_id).await?;
+                            // The moving node's own key is overwritten below, so
+                            // only its siblings' rewritten keys are reported.
+                            respread = Self::respread_children(&db, parent_id)
+                                .await?
+                                .into_iter()
+                                .filter(|(id, _)| id != &node_id)
+                                .collect();
                             // Re-query after rebalancing
                             let mut rows2 = db.query(
                                 "SELECT out_node, json_extract(properties, '$.order') as ord FROM relationship WHERE in_node = ?1 AND relationship_type = 'has_child' AND out_node != ?2 ORDER BY json_extract(properties, '$.order') ASC",
@@ -2867,7 +2906,10 @@ impl SqliteStore {
             .context("Failed to delete parent relationship")?;
         }
 
-        Ok(new_order)
+        Ok(ChildPlacement {
+            order: new_order,
+            respread,
+        })
     }
 
     /// Re-parent an ordered set of existing children to `new_parent_id` inside

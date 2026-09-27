@@ -413,7 +413,7 @@ impl NodeService {
         let insert_after = self.resolve_insert_position(position, new_parent).await?;
 
         // Hierarchy is now managed via relationships - use store's move_node
-        let actual_order = self
+        let placement = self
             .store
             .move_node(node_id, new_parent, insert_after.as_deref())
             .await
@@ -427,13 +427,14 @@ impl NodeService {
 
         // Emit RelationshipUpdated event (unified relationship events)
         if let Some(parent_id) = new_parent {
+            self.emit_respread_events(parent_id, &placement.respread);
             self.emit_event(DomainEvent::RelationshipUpdated {
                 relationship: crate::db::events::RelationshipEvent::new(
                     format!("relationship:{}:{}", parent_id, node_id),
                     parent_id,
                     node_id,
                     "has_child",
-                    serde_json::json!({"order": actual_order}),
+                    serde_json::json!({"order": placement.order}),
                 ),
             });
         }
@@ -515,7 +516,7 @@ impl NodeService {
         let insert_after = self.resolve_insert_position(position, new_parent).await?;
 
         // Perform the move
-        let actual_order = self
+        let placement = self
             .store
             .move_node(node_id, new_parent, insert_after.as_deref())
             .await
@@ -549,13 +550,14 @@ impl NodeService {
         // Emit the NEW-parent edge first so a consumer that inserts-then-deletes
         // never sees the node parentless mid-move.
         if let Some(parent_id) = new_parent {
+            self.emit_respread_events(parent_id, &placement.respread);
             self.emit_event(DomainEvent::RelationshipUpdated {
                 relationship: crate::db::events::RelationshipEvent::new(
                     format!("relationship:{}:{}", parent_id, node_id),
                     parent_id,
                     node_id,
                     "has_child",
-                    serde_json::json!({"order": actual_order}),
+                    serde_json::json!({"order": placement.order}),
                 ),
             });
         }
@@ -643,7 +645,7 @@ impl NodeService {
         // but the event is deferred until after the version bump below — see
         // `reorder_child_write`'s doc comment for why, mirroring the
         // `move_node` fix.
-        let (parent_id, actual_order) = self.reorder_child_write(node_id, position).await?;
+        let (parent_id, placement) = self.reorder_child_write(node_id, position).await?;
 
         // Bump the node's version to support OCC
         // Even though we're only modifying edge ordering, we bump the node version
@@ -653,7 +655,7 @@ impl NodeService {
             .update_node_with_version_bump(node_id, expected_version)
             .await?;
 
-        self.emit_reorder_event(node_id, parent_id.as_deref(), actual_order);
+        self.emit_reorder_event(node_id, parent_id.as_deref(), &placement);
 
         Ok(())
     }
@@ -890,7 +892,7 @@ impl NodeService {
 
         // SQLite is synchronous/ACID: move_node commits before returning; the result
         // is immediately visible on the next read. Trust the single call result.
-        let actual_order = self
+        let placement = self
             .store
             .move_node(child_id, Some(parent_id), insert_after_id)
             .await
@@ -904,13 +906,14 @@ impl NodeService {
         .await;
 
         // Emit RelationshipCreated event (unified relationship events)
+        self.emit_respread_events(parent_id, &placement.respread);
         self.emit_event(DomainEvent::RelationshipCreated {
             relationship: crate::db::events::RelationshipEvent::new(
                 format!("relationship:{}:{}", parent_id, child_id),
                 parent_id,
                 child_id,
                 "has_child",
-                serde_json::json!({"order": actual_order}),
+                serde_json::json!({"order": placement.order}),
             ),
         });
 
@@ -940,7 +943,7 @@ impl NodeService {
             .await?;
         let insert_after_id: Option<&str> = resolved.as_deref();
 
-        let actual_order = crate::db::SqliteStore::create_has_child_edge_in_tx(
+        let placement = crate::db::SqliteStore::create_has_child_edge_in_tx(
             tx.store_tx(),
             parent_id,
             child_id,
@@ -949,13 +952,14 @@ impl NodeService {
         .await
         .map_err(NodeServiceError::from_store)?;
 
+        self.emit_respread_events(parent_id, &placement.respread);
         self.emit_event(DomainEvent::RelationshipCreated {
             relationship: crate::db::events::RelationshipEvent::new(
                 format!("relationship:{}:{}", parent_id, child_id),
                 parent_id,
                 child_id,
                 "has_child",
-                serde_json::json!({"order": actual_order}),
+                serde_json::json!({"order": placement.order}),
             ),
         });
 
@@ -1037,8 +1041,8 @@ impl NodeService {
         node_id: &str,
         position: crate::services::InsertPosition<'_>,
     ) -> Result<(), NodeServiceError> {
-        let (parent_id, actual_order) = self.reorder_child_write(node_id, position).await?;
-        self.emit_reorder_event(node_id, parent_id.as_deref(), actual_order);
+        let (parent_id, placement) = self.reorder_child_write(node_id, position).await?;
+        self.emit_reorder_event(node_id, parent_id.as_deref(), &placement);
         Ok(())
     }
 
@@ -1053,7 +1057,7 @@ impl NodeService {
         &self,
         node_id: &str,
         position: crate::services::InsertPosition<'_>,
-    ) -> Result<(Option<String>, f64), NodeServiceError> {
+    ) -> Result<(Option<String>, crate::db::ChildPlacement), NodeServiceError> {
         // Verify node exists
         let _node = self
             .get_node(node_id)
@@ -1080,26 +1084,52 @@ impl NodeService {
             .await?;
 
         // Use move_node to handle edge ordering
-        let actual_order = self
+        let placement = self
             .store
             .move_node(node_id, parent_id.as_deref(), insert_after.as_deref())
             .await
             .map_err(NodeServiceError::from_store)?;
 
-        Ok((parent_id, actual_order))
+        Ok((parent_id, placement))
     }
 
     /// Emit the `RelationshipUpdated` event for a completed reorder.
     /// Reordering updates the hierarchy edge's order field.
-    fn emit_reorder_event(&self, node_id: &str, parent_id: Option<&str>, actual_order: f64) {
+    fn emit_reorder_event(
+        &self,
+        node_id: &str,
+        parent_id: Option<&str>,
+        placement: &crate::db::ChildPlacement,
+    ) {
         if let Some(parent_id) = parent_id {
+            self.emit_respread_events(parent_id, &placement.respread);
             self.emit_event(DomainEvent::RelationshipUpdated {
                 relationship: crate::db::events::RelationshipEvent::new(
                     format!("relationship:{}:{}", parent_id, node_id),
                     parent_id,
                     node_id,
                     "has_child",
-                    serde_json::json!({"order": actual_order}),
+                    serde_json::json!({"order": placement.order}),
+                ),
+            });
+        }
+    }
+
+    /// Emit a `RelationshipUpdated` for each sibling whose order key a
+    /// re-spread rewrote (see [`crate::db::ChildPlacement::respread`]).
+    ///
+    /// Callers emit these BEFORE the written edge's own event, so a client
+    /// applying events in order has every sibling on the re-spread keys by
+    /// the time the new key arrives.
+    fn emit_respread_events(&self, parent_id: &str, respread: &[(String, f64)]) {
+        for (child_id, order) in respread {
+            self.emit_event(DomainEvent::RelationshipUpdated {
+                relationship: crate::db::events::RelationshipEvent::new(
+                    format!("relationship:{}:{}", parent_id, child_id),
+                    parent_id,
+                    child_id,
+                    "has_child",
+                    serde_json::json!({"order": order}),
                 ),
             });
         }
