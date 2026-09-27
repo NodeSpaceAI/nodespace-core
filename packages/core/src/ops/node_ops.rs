@@ -128,12 +128,28 @@ pub struct QueryNodesOutput {
 // Helpers
 // ============================================================================
 
-fn node_to_typed_value(node: Node) -> Result<Value, OpsError> {
-    crate::models::node_to_typed_value(node).map_err(OpsError::Internal)
+/// Convert nodes to the flattened wire shape, with each extending node's
+/// inherited property buckets folded into its own first (ADR-078).
+///
+/// The flattener reads a single bucket, so without the collapse an extending
+/// node comes back missing every inherited value — an `issue` extending
+/// `task` loses its `status`. Every read and write result in this module goes
+/// through here so none can skip it; the daemon applies the same collapse at
+/// its own boundary for the same reason.
+async fn nodes_to_typed_values(
+    node_service: &NodeService,
+    nodes: Vec<Node>,
+) -> Result<Vec<Value>, OpsError> {
+    let collapsed = node_service.collapse_chain_for_wire(nodes).await?;
+    crate::models::nodes_to_typed_values(collapsed).map_err(OpsError::Internal)
 }
 
-fn nodes_to_typed_values(nodes: Vec<Node>) -> Result<Vec<Value>, OpsError> {
-    crate::models::nodes_to_typed_values(nodes).map_err(OpsError::Internal)
+/// Single-node form of [`nodes_to_typed_values`].
+async fn node_to_typed_value(node_service: &NodeService, node: Node) -> Result<Value, OpsError> {
+    let mut values = nodes_to_typed_values(node_service, vec![node]).await?;
+    values
+        .pop()
+        .ok_or_else(|| OpsError::Internal("node conversion returned no value".to_string()))
 }
 
 fn parse_filter_operator(op: &str) -> Result<FilterOperator, OpsError> {
@@ -218,7 +234,7 @@ pub async fn create_node(
         .map_err(|e| OpsError::Internal(format!("Failed to fetch created node: {}", e)))?
         .ok_or_else(|| OpsError::Internal("Created node not found".to_string()))?;
 
-    let node_data = node_to_typed_value(created_node)?;
+    let node_data = node_to_typed_value(node_service, created_node).await?;
 
     Ok(CreateNodeOutput {
         node_id,
@@ -243,7 +259,7 @@ pub async fn get_node(
             id: input.node_id.clone(),
         })?;
 
-    node_to_typed_value(node)
+    node_to_typed_value(node_service, node).await
 }
 
 /// Update a node with auto-fetch of version when not provided.
@@ -310,12 +326,18 @@ pub async fn update_node(
                 // the client hydrates this payload directly into its store —
                 // so an ai-chat conflict would strand the viewer with
                 // `status`/`messages` undefined at the top level.
-                let current_node = node_service
-                    .get_node(&node_id)
-                    .await
-                    .ok()
-                    .flatten()
-                    .and_then(|n| node_to_typed_value(n).ok());
+                let current_node = match node_service.get_node(&node_id).await {
+                    // Best-effort: failing to render the payload must not
+                    // mask the conflict itself.
+                    Ok(Some(n)) => match node_to_typed_value(node_service, n).await {
+                        Ok(value) => Some(value),
+                        Err(e) => {
+                            tracing::warn!(%node_id, error = %e, "version conflict: could not render the current node for the client merge");
+                            None
+                        }
+                    },
+                    _ => None,
+                };
                 return Err(OpsError::VersionConflict {
                     node_id,
                     expected: expected_version,
@@ -365,7 +387,7 @@ pub async fn update_node(
         current_node
     };
 
-    let node_data = node_to_typed_value(final_node)?;
+    let node_data = node_to_typed_value(node_service, final_node).await?;
     let version = node_data
         .get("version")
         .and_then(|v| v.as_i64())
@@ -545,7 +567,7 @@ pub async fn query_nodes(
     };
 
     let count = filtered_nodes.len();
-    let typed_nodes = nodes_to_typed_values(filtered_nodes)?;
+    let typed_nodes = nodes_to_typed_values(node_service, filtered_nodes).await?;
 
     Ok(QueryNodesOutput {
         nodes: typed_nodes,

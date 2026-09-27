@@ -247,13 +247,29 @@ impl SchemaNode {
     /// `nodespace_types::SchemaNode::from_node`, which reads
     /// `properties.relationships` — the wire contract intentionally carries the
     /// fully-assembled view so no client needs to know how declarations are
-    /// stored. Never persist the result: that would write the JSON copy back
-    /// into storage.
+    /// stored. A parent is carried as a top-level `extends` key — the shape
+    /// create/update accept — never as an `extends` entry in `relationships`.
+    /// Never persist the result: that would write the JSON copy back into
+    /// storage.
     pub fn into_wire_node(self) -> Node {
+        // A parent is written as a top-level `extends` key, never as a
+        // `relationships` entry (create/update reject that shape), so it is
+        // read back the same way. Listing the stored `extends` row among the
+        // relationships would teach a reader the rejected shape, and present
+        // a schema-graph statement as an edge an instance can traverse.
+        let parent = crate::schema::extends_chain::declared_parent(&self);
+        let declared: Vec<&crate::models::schema::SchemaRelationship> = self
+            .relationships
+            .iter()
+            .filter(|r| !crate::models::schema::is_type_system_relationship(&r.name))
+            .collect();
         let relationships =
-            serde_json::to_value(&self.relationships).unwrap_or_else(|_| serde_json::json!([]));
+            serde_json::to_value(&declared).unwrap_or_else(|_| serde_json::json!([]));
         let mut node = self.into_node();
         node.properties["relationships"] = relationships;
+        if let Some(parent) = parent {
+            node.properties["extends"] = serde_json::json!(parent);
+        }
         node
     }
 
@@ -446,6 +462,26 @@ mod tests {
         let wire = schema.into_wire_node();
         assert_eq!(wire.properties["relationships"][0]["name"], "widgets");
         assert_eq!(wire.properties["relationships"][0]["targetType"], "widget");
+        assert!(wire.properties.get("extends").is_none());
+    }
+
+    /// The wire shape reads a parent back the way it is written: a top-level
+    /// `extends` key, with no `extends` entry among the relationships.
+    #[test]
+    fn test_into_wire_node_lifts_extends_out_of_relationships() {
+        let mut schema = SchemaNode::from_node(Node::new(
+            "schema".to_string(),
+            "Issue".to_string(),
+            json!({ "isCore": false, "fields": [] }),
+        ))
+        .unwrap();
+        schema.id = "issue".to_string();
+        schema.relationships = vec![crate::schema::extends_chain::extends_declaration("task")];
+
+        let wire = schema.into_wire_node();
+
+        assert_eq!(wire.properties["extends"], "task");
+        assert_eq!(wire.properties["relationships"], json!([]));
     }
 
     #[test]

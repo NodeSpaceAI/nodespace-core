@@ -2671,10 +2671,13 @@ impl GraphToolExecutor {
         if summaries.is_empty() {
             if let Some(node_type) = queried_type.filter(|t| !t.is_empty()) {
                 let ns = self.node_service()?;
-                if let Ok(Some(schema)) = ns.get_schema_node(&node_type).await {
+                // The effective field set across the type's `extends` chain:
+                // a subtype filters on the fields it inherits too. An unknown
+                // type resolves to no fields and adds no key.
+                if let Ok((schema_fields, _, _)) = ns.resolve_field_owners(&node_type).await {
                     let fields: Vec<Value> =
                         nodespace_core::ops::entity_types_block::build_available_properties(
-                            &schema,
+                            &schema_fields,
                             &json!({}),
                         )
                         .into_iter()
@@ -3146,7 +3149,12 @@ impl GraphToolExecutor {
                     // anything.
                     if let Some(node_type) = node_data.get("nodeType").and_then(|v| v.as_str()) {
                         let node_type = node_type.to_string();
-                        if let Ok(Some(schema)) = ns.get_schema_node(&node_type).await {
+                        // Effective fields across the `extends` chain, so a
+                        // subtype lists what it inherits; `node_ops` has
+                        // already folded the inherited values in, so `set`
+                        // reads them too.
+                        if let Ok((schema_fields, _, _)) = ns.resolve_field_owners(&node_type).await
+                        {
                             // Flat, storage-keyed view: a core type's
                             // fields are top-level on the typed node, but the
                             // schema names them by storage key (`due_date`).
@@ -3154,7 +3162,7 @@ impl GraphToolExecutor {
                                 nodespace_core::models::flat_properties_view(&node_data);
                             let available =
                                 nodespace_core::ops::entity_types_block::build_available_properties(
-                                    &schema,
+                                    &schema_fields,
                                     &properties,
                                 );
                             if !available.is_empty() {
