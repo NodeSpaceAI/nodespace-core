@@ -869,7 +869,7 @@ mod tests {
             assert!(matches!(err, OpsError::InvalidParams(_)));
         }
 
-        // -- FilterType::Related (#3137) --
+        // -- FilterType::Related (cross-relationship filtering) --
 
         async fn create_schema(svc: &Arc<NodeService>, definition: serde_json::Value) {
             crate::schema::handle_create_schema(svc, definition)
