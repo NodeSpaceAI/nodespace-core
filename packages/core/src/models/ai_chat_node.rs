@@ -52,7 +52,9 @@ fn default_version() -> i64 {
 /// Carries the tool name, the affected node, a short label, and the canonical
 /// arguments the call was made with. Tool *results* are not persisted: the
 /// purpose is to establish *that* the write happened and to recognise a later
-/// call as the same write, not to replay its output.
+/// call as the same write, not to replay its output. The one exception is the
+/// edges a relationship write evicted (`replaced`) — a side effect the call's
+/// arguments do not describe, and which a later turn needs to undo it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AiChatCompletedWrite {
@@ -66,6 +68,15 @@ pub struct AiChatCompletedWrite {
     /// Short human-readable label for the written node, when available.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
+
+    /// Edges the write evicted as a side effect, each rendered the way
+    /// `summary` renders a relationship (`"from -[type]-> to"`). Only
+    /// `create_relationship` populates it: a cardinality-one end is honored by
+    /// replacing the prior edge, and this is the only place a later turn can
+    /// still find the previous holder once the reply prose is gone from
+    /// history. Empty for every other write.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub replaced: Vec<String>,
 
     /// The call's arguments, canonicalised (JSON key order normalised, parameter
     /// aliases resolved). Together with `tool` this is the write's identity for

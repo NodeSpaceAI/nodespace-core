@@ -14,6 +14,10 @@ pub struct AiChatCompletedWrite {
     pub node_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
+    /// Edges the write evicted, rendered `"from -[type]-> to"`. Only a
+    /// cardinality-one `create_relationship` populates it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub replaced: Vec<String>,
     /// The write's identity for the cross-turn duplicate guard: canonical JSON
     /// verbatim, or `sha256:<hex>` of it when too large to store. Always
     /// present — this is the struct that serialises to the frontend, so making

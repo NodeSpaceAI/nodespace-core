@@ -2255,15 +2255,19 @@ fn write_summary_arg(tool: &str) -> Option<&'static [&'static str]> {
 /// Clip an evidence label, marking it when clipped so a truncated summary is
 /// not mistaken for a complete one.
 fn clip_summary(s: &str) -> String {
-    // Newlines would let user-supplied content shape the evidence block's
-    // line structure; the label is a single line by construction.
-    let flat = s.replace(['\n', '\r'], " ");
+    let flat = flatten_label(s);
     if flat.chars().count() > SUMMARY_MAX_CHARS {
         let head: String = flat.chars().take(SUMMARY_MAX_CHARS).collect();
         format!("{head}…")
     } else {
         flat
     }
+}
+
+/// Newlines would let user-supplied content shape the evidence block's line
+/// structure; a label is a single line by construction.
+fn flatten_label(s: &str) -> String {
+    s.replace(['\n', '\r'], " ")
 }
 
 /// Pull the successful graph writes out of a turn's tool executions.
@@ -2315,22 +2319,21 @@ pub fn completed_writes_from(executions: &[ToolExecutionRecord]) -> Vec<AiChatCo
                 // A relationship has no single describing argument; render the
                 // edge itself, which is what identifies it.
                 None if r.name == "create_relationship" => {
-                    let field = |k: &str| {
-                        r.args
-                            .get(k)
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("?")
-                            .to_string()
-                    };
-                    Some(clip_summary(&format!(
-                        "{} -[{}]-> {}",
-                        field("from_id"),
-                        field("relationship_type"),
-                        field("to_id")
-                    )))
+                    Some(edge_label(&r.args, "relationship_type"))
                 }
                 None => None,
             };
+
+            // A cardinality-one end is honored by evicting the prior edge. The
+            // call's arguments do not describe that side effect, and the reply
+            // that named it is replaced by terse facts in later-turn history,
+            // so the result's `replaced` list is recorded here or lost.
+            let replaced = r
+                .result
+                .get("replaced")
+                .and_then(|v| v.as_array())
+                .map(|edges| edges.iter().map(|e| edge_label(e, "type")).collect())
+                .unwrap_or_default();
 
             // Identity for the cross-turn duplicate guard. Canonicalised through
             // the same function the per-turn detector uses, so the two agree on
@@ -2344,10 +2347,28 @@ pub fn completed_writes_from(executions: &[ToolExecutionRecord]) -> Vec<AiChatCo
                 tool: r.name.clone(),
                 node_id,
                 summary,
+                replaced,
                 canonical_args,
             }
         })
         .collect()
+}
+
+/// Render an edge as `"from -[type]-> to"`, reading `from_id`/`to_id` and the
+/// relationship name under `type_key` — `relationship_type` in a
+/// `create_relationship` call's arguments, `type` in its `replaced` entries.
+///
+/// Never clipped: the endpoints are ids a later turn copies to restore or
+/// refer to the edge, and a clipped id is a wrong id. Two `nodespace://` UUIDs
+/// alone take most of `SUMMARY_MAX_CHARS`.
+fn edge_label(edge: &serde_json::Value, type_key: &str) -> String {
+    let field = |k: &str| edge.get(k).and_then(|v| v.as_str()).unwrap_or("?");
+    flatten_label(&format!(
+        "{} -[{}]-> {}",
+        field("from_id"),
+        field(type_key),
+        field("to_id")
+    ))
 }
 
 /// When a turn creates two or more schemas and at least one of them ends up
@@ -2566,20 +2587,47 @@ pub fn resolved_entities_from(executions: &[ToolExecutionRecord]) -> Vec<AiChatR
 /// Rebuild the duplicate-guard's view of earlier turns from persisted messages.
 ///
 /// Filtering to the guarded tools here keeps the set small, since the
-/// execution-path check applies the same restriction anyway. Every recorded
-/// write carries an identity, so none are dropped.
+/// execution-path check applies the same restriction anyway.
+///
+/// A `create_relationship` whose edge a later write evicted is dropped: the
+/// edge no longer exists, so recreating it — "assign it to Alice", "actually
+/// Bob", "put it back on Alice" — is not a repeat, and refusing it would claim
+/// a write still stands that does not. Walked newest-first so a write is only
+/// ever cancelled by an eviction that came after it.
 fn prior_writes_from_history(messages: &[AiChatMessage]) -> Vec<PriorWrite> {
-    messages
+    let mut evicted_later = std::collections::HashSet::new();
+    let mut writes = Vec::new();
+    for w in messages
         .iter()
         .flat_map(|m| m.completed_writes.iter())
-        .filter(|w| is_cross_turn_guarded_tool(&w.tool))
-        .map(|w| PriorWrite {
-            tool: w.tool.clone(),
-            canonical_args: w.canonical_args.clone(),
-            node_id: w.node_id.clone(),
-            summary: w.summary.clone(),
-        })
-        .collect()
+        .rev()
+    {
+        // Checked before this write's own evictions are added: a write never
+        // cancels itself, only an earlier one.
+        let evicted = w.tool == "create_relationship"
+            && w.summary
+                .as_deref()
+                .is_some_and(|s| evicted_later.contains(&edge_key(s)));
+        evicted_later.extend(w.replaced.iter().map(|e| edge_key(e)));
+        if !evicted && is_cross_turn_guarded_tool(&w.tool) {
+            writes.push(PriorWrite {
+                tool: w.tool.clone(),
+                canonical_args: w.canonical_args.clone(),
+                node_id: w.node_id.clone(),
+                summary: w.summary.clone(),
+            });
+        }
+    }
+    writes.reverse();
+    writes
+}
+
+/// An edge label with its ids' `nodespace://` scheme dropped. A call's own
+/// label spells ids as the model passed them, with or without the scheme,
+/// while a `replaced` entry always carries it; this is what lets the two
+/// compare as the same edge.
+fn edge_key(label: &str) -> String {
+    label.replace("nodespace://", "")
 }
 
 /// Render persisted writes as a system-role note for the rebuilt history.
@@ -2611,6 +2659,9 @@ fn completed_writes_message(writes: &[AiChatCompletedWrite]) -> Option<ChatMessa
         }
         if let Some(ref id) = w.node_id {
             lines.push_str(&format!(" -> {id}"));
+        }
+        if let Some(r) = replaced_clause(&w.replaced) {
+            lines.push_str(&format!(" ({r})"));
         }
         lines.push('\n');
     }
@@ -2805,6 +2856,10 @@ fn terse_write_fact(w: &AiChatCompletedWrite) -> Option<String> {
             let id = w.node_id.as_deref()?;
             Some(format!("Fact: node {id} was deleted."))
         }
+        // `create_relationship` is rendered by the fallback in
+        // `terse_assistant_facts`, which is also where its `replaced` edges
+        // are named. A dedicated arm here must render them too, or a later
+        // turn loses the evicted holder again.
         _ => None,
     }
 }
@@ -2822,6 +2877,21 @@ fn terse_value(v: &serde_json::Value) -> String {
     }
 }
 
+/// `replaced "a -[t]-> b", "c -[t]-> d"` for a write that evicted edges, so a
+/// later turn can name — and restore — the previous holder. `None` when the
+/// write evicted nothing.
+fn replaced_clause(replaced: &[String]) -> Option<String> {
+    if replaced.is_empty() {
+        return None;
+    }
+    let edges = replaced
+        .iter()
+        .map(|e| format!("\"{e}\""))
+        .collect::<Vec<_>>()
+        .join(", ");
+    Some(format!("replaced {edges}"))
+}
+
 /// Render an assistant turn's completed writes as terse factual statements,
 /// one line per write, falling back to the tool name and summary for any
 /// write `terse_write_fact` does not have a phrasing for.
@@ -2836,9 +2906,19 @@ fn terse_assistant_facts(writes: &[AiChatCompletedWrite]) -> Option<String> {
     let lines: Vec<String> = writes
         .iter()
         .map(|w| {
-            terse_write_fact(w).unwrap_or_else(|| match w.summary.as_deref() {
-                Some(s) => format!("Fact: {} completed (\"{s}\").", w.tool),
-                None => format!("Fact: {} completed.", w.tool),
+            terse_write_fact(w).unwrap_or_else(|| {
+                let detail = w
+                    .summary
+                    .as_deref()
+                    .map(|s| format!("\"{s}\""))
+                    .into_iter()
+                    .chain(replaced_clause(&w.replaced))
+                    .collect::<Vec<_>>();
+                if detail.is_empty() {
+                    format!("Fact: {} completed.", w.tool)
+                } else {
+                    format!("Fact: {} completed ({}).", w.tool, detail.join("; "))
+                }
             })
         })
         .collect();
@@ -3168,6 +3248,7 @@ mod tests {
             tool: "create_schema".to_string(),
             node_id: Some(schema_id.to_string()),
             summary: None,
+            replaced: Vec::new(),
             canonical_args: "{}".to_string(),
         }
     }
@@ -5023,6 +5104,61 @@ mod tests {
         assert_eq!(updated[0].summary.as_deref(), Some("album_to_listen"));
     }
 
+    /// A cardinality-one reassignment evicts the prior edge. The eviction is a
+    /// side effect the call's arguments do not describe, and the reply that
+    /// named it is replaced by terse facts in later-turn history — so the
+    /// record must carry it, and both renderings must name the evicted edge,
+    /// or "undo that" has no previous holder to restore.
+    #[tokio::test]
+    async fn relationship_eviction_survives_into_later_turn_history() {
+        let args = serde_json::json!({
+            "from_id": "nodespace://bob",
+            "to_id": "nodespace://task",
+            "relationship_type": "tasks"
+        });
+        let writes = completed_writes_from(&[exec(
+            "create_relationship",
+            args.clone(),
+            serde_json::json!({
+                "from_id": "nodespace://bob", "to_id": "nodespace://task",
+                "type": "tasks", "created": true,
+                "replaced": [{"from_id": "nodespace://alice", "to_id": "nodespace://task", "type": "tasks"}],
+                "note": "..."
+            }),
+        )]);
+        assert_eq!(
+            writes[0].replaced,
+            vec!["nodespace://alice -[tasks]-> nodespace://task".to_string()]
+        );
+        assert_eq!(
+            terse_assistant_facts(&writes).as_deref(),
+            Some(
+                "Fact: create_relationship completed \
+                 (\"nodespace://bob -[tasks]-> nodespace://task\"; \
+                 replaced \"nodespace://alice -[tasks]-> nodespace://task\")."
+            )
+        );
+        let record = completed_writes_message(&writes).expect("record").content;
+        assert!(
+            record.contains("(replaced \"nodespace://alice -[tasks]-> nodespace://task\")"),
+            "got {record:?}"
+        );
+
+        // The duplicate guard keys on the call, not its outcome: the same call
+        // with no eviction has the same identity.
+        let plain = completed_writes_from(&[exec(
+            "create_relationship",
+            args,
+            serde_json::json!({"created": true}),
+        )]);
+        assert!(plain[0].replaced.is_empty());
+        assert_eq!(plain[0].canonical_args, writes[0].canonical_args);
+        assert_eq!(
+            terse_assistant_facts(&plain).as_deref(),
+            Some("Fact: create_relationship completed (\"nodespace://bob -[tasks]-> nodespace://task\").")
+        );
+    }
+
     /// The node id is stored as the `nodespace://` URI the tools actually
     /// return, matching the form the model uses to refer to nodes elsewhere.
     #[tokio::test]
@@ -5374,12 +5510,14 @@ model = "model-b"
                     tool: "create_node".to_string(),
                     node_id: Some("nodespace://n1".to_string()),
                     summary: Some("Buy milk".to_string()),
+                    replaced: Vec::new(),
                     canonical_args: r#"{"content":"Buy milk"}"#.to_string(),
                 },
                 AiChatCompletedWrite {
                     tool: "create_nodes_from_markdown".to_string(),
                     node_id: Some("nodespace://n2".to_string()),
                     summary: Some("big import".to_string()),
+                    replaced: Vec::new(),
                     canonical_args: "sha256:abc123".to_string(),
                 },
             ],
@@ -5394,6 +5532,125 @@ model = "model-b"
         assert_eq!(
             prior[1].canonical_args, "sha256:abc123",
             "a digested identity must be carried through unchanged"
+        );
+    }
+
+    /// "Assign it to Alice", "actually Bob", "put it back on Alice": Bob's
+    /// write evicted Alice's edge, so recreating it is not a repeat. Alice's
+    /// earlier write must leave the guard; Bob's stays. The ids are spelled
+    /// bare in the call and with the scheme in `replaced`, as the model and
+    /// the tool result respectively produce them.
+    #[tokio::test]
+    async fn a_relationship_evicted_later_is_not_guarded_against_recreation() {
+        let rel = |from: &str, to: &str, result: serde_json::Value| {
+            completed_writes_from(&[exec(
+                "create_relationship",
+                serde_json::json!({"from_id": from, "to_id": to, "relationship_type": "tasks"}),
+                result,
+            )])
+        };
+        let alice = rel("alice", "task", serde_json::json!({"created": true}));
+        let bob = rel(
+            "bob",
+            "task",
+            serde_json::json!({
+                "created": true,
+                "replaced": [{"from_id": "nodespace://alice", "to_id": "nodespace://task", "type": "tasks"}]
+            }),
+        );
+        let msgs = vec![
+            assistant_turn("Assigned to Alice.", alice[0].clone()),
+            assistant_turn("Reassigned to Bob.", bob[0].clone()),
+        ];
+
+        let prior = prior_writes_from_history(&msgs);
+        assert_eq!(prior.len(), 1, "got {prior:?}");
+        assert_eq!(prior[0].canonical_args, bob[0].canonical_args);
+    }
+
+    /// An eviction only cancels writes before it. Re-assigning Alice after the
+    /// eviction records a live edge that the guard must still protect.
+    #[tokio::test]
+    async fn a_relationship_recreated_after_its_eviction_stays_guarded() {
+        let rel = |from: &str, result: serde_json::Value| {
+            completed_writes_from(&[exec(
+                "create_relationship",
+                serde_json::json!({"from_id": from, "to_id": "task", "relationship_type": "tasks"}),
+                result,
+            )])
+        };
+        let bob = rel(
+            "bob",
+            serde_json::json!({"replaced": [{"from_id": "nodespace://alice", "to_id": "nodespace://task", "type": "tasks"}]}),
+        );
+        let alice = rel(
+            "alice",
+            serde_json::json!({"replaced": [{"from_id": "nodespace://bob", "to_id": "nodespace://task", "type": "tasks"}]}),
+        );
+        let msgs = vec![
+            assistant_turn("Reassigned to Bob.", bob[0].clone()),
+            assistant_turn("Back to Alice.", alice[0].clone()),
+        ];
+
+        let prior = prior_writes_from_history(&msgs);
+        assert_eq!(prior.len(), 1, "got {prior:?}");
+        assert_eq!(prior[0].canonical_args, alice[0].canonical_args);
+    }
+
+    /// Alice, Bob, Alice, Bob — each evicting the last. Only the final write
+    /// describes a live edge; every earlier one was evicted by its successor,
+    /// including the dropped writes' own evictions (the third write really did
+    /// remove Bob's second-turn edge).
+    #[tokio::test]
+    async fn repeated_reassignment_guards_only_the_live_edge() {
+        let rel = |from: &str, evicts: Option<&str>| {
+            let result = match evicts {
+                Some(prev) => serde_json::json!({"replaced": [
+                    {"from_id": format!("nodespace://{prev}"), "to_id": "nodespace://task", "type": "tasks"}
+                ]}),
+                None => serde_json::json!({"created": true}),
+            };
+            completed_writes_from(&[exec(
+                "create_relationship",
+                serde_json::json!({"from_id": from, "to_id": "task", "relationship_type": "tasks"}),
+                result,
+            )])
+            .remove(0)
+        };
+        let last = rel("bob", Some("alice"));
+        let msgs = vec![
+            assistant_turn("Alice.", rel("alice", None)),
+            assistant_turn("Bob.", rel("bob", Some("alice"))),
+            assistant_turn("Alice again.", rel("alice", Some("bob"))),
+            assistant_turn("Bob again.", last.clone()),
+        ];
+
+        let prior = prior_writes_from_history(&msgs);
+        assert_eq!(prior.len(), 1, "got {prior:?}");
+        assert_eq!(prior[0].canonical_args, last.canonical_args);
+    }
+
+    /// Edge labels carry ids a later turn must copy verbatim, so they are
+    /// never clipped — even with UUID ids and a long relationship name, which
+    /// together exceed `SUMMARY_MAX_CHARS`.
+    #[tokio::test]
+    async fn edge_labels_with_uuid_ids_are_not_clipped() {
+        let from = "nodespace://6f1c2a9e-3b4d-4e8f-9a1b-2c3d4e5f6a7b";
+        let old = "nodespace://0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d";
+        let to = "nodespace://9e8d7c6b-5a4f-4e3d-8c2b-1a0f9e8d7c6b";
+        let writes = completed_writes_from(&[exec(
+            "create_relationship",
+            serde_json::json!({"from_id": from, "to_id": to, "relationship_type": "primary_reviewer_of_record"}),
+            serde_json::json!({
+                "replaced": [{"from_id": old, "to_id": to, "type": "primary_reviewer_of_record"}]
+            }),
+        )]);
+        let expected = format!("{from} -[primary_reviewer_of_record]-> {to}");
+        assert!(expected.chars().count() > SUMMARY_MAX_CHARS);
+        assert_eq!(writes[0].summary.as_deref(), Some(expected.as_str()));
+        assert_eq!(
+            writes[0].replaced,
+            vec![format!("{old} -[primary_reviewer_of_record]-> {to}")]
         );
     }
 
@@ -5418,6 +5675,7 @@ model = "model-b"
                 tool: "update_node".to_string(),
                 node_id: Some("nodespace://n1".to_string()),
                 summary: None,
+                replaced: Vec::new(),
                 canonical_args: r#"{"id":"nodespace://n1","field_values":{"status":"paid"}}"#
                     .to_string(),
             }],
@@ -5453,6 +5711,7 @@ model = "model-b"
                 tool: "create_node".to_string(),
                 node_id: Some("nodespace://t1".to_string()),
                 summary: Some("Tailspin Toys".to_string()),
+                replaced: Vec::new(),
                 canonical_args: r#"{"content":"Tailspin Toys"}"#.to_string(),
             },
         );
@@ -5532,6 +5791,7 @@ model = "model-b"
                     tool: "create_node".to_string(),
                     node_id: Some("nodespace://dec1".to_string()),
                     summary: Some("the reports page uses server-side rendering".to_string()),
+                    replaced: Vec::new(),
                     canonical_args:
                         r#"{"content":"server-side rendering","node_type":"text"}"#.to_string(),
                 },
@@ -5543,6 +5803,7 @@ model = "model-b"
                     tool: "create_node".to_string(),
                     node_id: Some("nodespace://task1".to_string()),
                     summary: Some("rebuild the reports page".to_string()),
+                    replaced: Vec::new(),
                     canonical_args:
                         r#"{"content":"rebuild the reports page","node_type":"task"}"#.to_string(),
                 },
@@ -5558,6 +5819,7 @@ model = "model-b"
                     summary: Some(
                         "nodespace://task1 -[mentions]-> nodespace://dec1".to_string(),
                     ),
+                    replaced: Vec::new(),
                     canonical_args: r#"{"from_id":"nodespace://task1","relationship_type":"mentions","to_id":"nodespace://dec1"}"#.to_string(),
                 },
             ),
@@ -5625,6 +5887,7 @@ model = "model-b"
                     tool: "create_node".to_string(),
                     node_id: Some("nodespace://fw1".to_string()),
                     summary: Some("offline sync".to_string()),
+                    replaced: Vec::new(),
                     canonical_args: r#"{"node_type":"feature_writeup","field_values":{"signed_off":false,"estimated_days":5},"content":"offline sync"}"#.to_string(),
                 },
             ),
@@ -5682,6 +5945,7 @@ model = "model-b"
                     tool: "create_node".to_string(),
                     node_id: Some("nodespace://fw10".to_string()),
                     summary: Some("checkout rewrite".to_string()),
+                    replaced: Vec::new(),
                     canonical_args:
                         r#"{"node_type":"feature_writeup","field_values":{"estimated_days":9},"content":"checkout rewrite"}"#
                             .to_string(),
@@ -5694,6 +5958,7 @@ model = "model-b"
                     tool: "create_node".to_string(),
                     node_id: Some("nodespace://fw11".to_string()),
                     summary: Some("search indexer".to_string()),
+                    replaced: Vec::new(),
                     canonical_args:
                         r#"{"node_type":"feature_writeup","field_values":{"estimated_days":21},"content":"search indexer"}"#
                             .to_string(),
@@ -5706,6 +5971,7 @@ model = "model-b"
                     tool: "create_node".to_string(),
                     node_id: Some("nodespace://fw12".to_string()),
                     summary: Some("audit log export".to_string()),
+                    replaced: Vec::new(),
                     canonical_args:
                         r#"{"node_type":"feature_writeup","field_values":{"estimated_days":4},"content":"audit log export"}"#
                             .to_string(),
@@ -5913,6 +6179,7 @@ model = "model-b"
                     tool: "update_node".to_string(),
                     node_id: Some("nodespace://inc2".to_string()),
                     summary: Some("search index corruption".to_string()),
+                    replaced: Vec::new(),
                     canonical_args: r#"{"id":"nodespace://inc2","field_values":{"resolved":true}}"#
                         .to_string(),
                 },
@@ -5999,6 +6266,7 @@ model = "model-b"
                     tool: "create_node".to_string(),
                     node_id: Some("nodespace://p1".to_string()),
                     summary: Some("Redwood Summit".to_string()),
+                    replaced: Vec::new(),
                     canonical_args: r#"{"content":"Redwood Summit"}"#.to_string(),
                 }],
                 resolved_entities: Vec::new(),
@@ -6055,18 +6323,21 @@ model = "model-b"
                     tool: "update_task_status".to_string(),
                     node_id: Some("nodespace://t1".to_string()),
                     summary: Some("t1".to_string()),
+                    replaced: Vec::new(),
                     canonical_args: r#"{"status":"done"}"#.to_string(),
                 },
                 AiChatCompletedWrite {
                     tool: "update_node".to_string(),
                     node_id: Some("nodespace://t2".to_string()),
                     summary: Some("t2".to_string()),
+                    replaced: Vec::new(),
                     canonical_args: r#"{"content":"x"}"#.to_string(),
                 },
                 AiChatCompletedWrite {
                     tool: "update_schema".to_string(),
                     node_id: None,
                     summary: Some("s1".to_string()),
+                    replaced: Vec::new(),
                     canonical_args: r#"{"schema_id":"s1"}"#.to_string(),
                 },
             ],
