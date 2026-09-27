@@ -206,20 +206,6 @@ impl GgufModelManager {
         GEMMA_4_E4B.id
     }
 
-    /// Get a [`ChatModelSpec`] for the recommended model.
-    pub fn recommended_model_spec() -> ChatModelSpec {
-        let id = Self::recommended_model_id();
-        let entry = find_catalog_entry(id).expect("recommended model must exist in catalog");
-        ChatModelSpec {
-            model_id: entry.id.to_string(),
-            family: entry.family,
-            context_window: entry.context_window,
-            default_temperature: entry.default_temperature,
-            type_k: entry.type_k,
-            type_v: entry.type_v,
-        }
-    }
-
     /// Look up the [`ModelFamily`] for a given model id.
     pub fn family_for(&self, model_id: &str) -> Result<ModelFamily, ModelError> {
         let entry = find_catalog_entry(model_id)?;
@@ -1346,15 +1332,6 @@ mod tests {
             "unexpected recommendation: {}",
             rec
         );
-    }
-
-    #[test]
-    fn recommended_spec_has_valid_fields() {
-        let spec = GgufModelManager::recommended_model_spec();
-        assert_eq!(spec.model_id, "gemma-4-e4b-q4km");
-        assert_eq!(spec.family, ModelFamily::Gemma4);
-        assert!(spec.context_window > 0);
-        assert!(spec.default_temperature > 0.0);
     }
 
     #[tokio::test]
