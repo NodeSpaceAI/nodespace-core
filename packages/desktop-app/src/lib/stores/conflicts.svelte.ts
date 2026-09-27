@@ -184,6 +184,16 @@ class ConflictsStore {
   }
 
   /**
+   * Where merging `loserId` into `survivorId` would leave the survivor in
+   * the tree, without merging. Read-only. Rejects with the same
+   * TREE_INVARIANT_VIOLATION (`isTreeInvariantViolation`) the merge itself
+   * would, so the view can explain a refusal before the user confirms.
+   */
+  async previewMerge(survivorId: string, loserId: string): Promise<MergePreview> {
+    return invoke<MergePreview>('preview_merge', { survivorId, loserId });
+  }
+
+  /**
    * Merge `loserId` into `survivorId` (ADR-068 §5.2) — property union, edge
    * re-pointing, the loser archived. **User-initiated only**: call this
    * exclusively from an explicit user action in the Conflicts view, never
@@ -221,6 +231,17 @@ export interface MergeOutcome {
   propertiesMerged: number;
   edgesRepointed: number;
   edgesDropped: number;
+}
+
+/** Where a merge leaves the survivor — see `previewMerge`. Parents ignore an
+ * edge between the two nodes themselves; `null` means a top-level node. */
+export interface MergePreview {
+  survivorParentId: string | null;
+  /** When this differs from `resultingParentId`, the loser's place in the
+   * outline is dropped by the merge. */
+  loserParentId: string | null;
+  /** The survivor's parent after the merge. */
+  resultingParentId: string | null;
 }
 
 export const conflictsStore = new ConflictsStore();

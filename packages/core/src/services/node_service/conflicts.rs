@@ -18,6 +18,21 @@ pub struct MergeOutcome {
     pub edges_dropped: u32,
 }
 
+/// Where a [`NodeService::merge_nodes`] call would leave the survivor in the
+/// tree — see [`NodeService::preview_merge`]. Parents ignore an edge between
+/// the two nodes themselves; `None` means a root.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MergePreview {
+    /// The survivor's parent before the merge.
+    pub survivor_parent_id: Option<String>,
+    /// The loser's parent before the merge. When it differs from
+    /// `resulting_parent_id`, the loser's place in the outline is dropped.
+    pub loser_parent_id: Option<String>,
+    /// The survivor's parent after the merge.
+    pub resulting_parent_id: Option<String>,
+}
+
 /// Stable namespace for deterministic conflict ids (UUIDv5). A fixed,
 /// arbitrary UUID — do NOT change it: existing open/resolved/dismissed
 /// records are keyed by ids derived from it, and changing it would silently
@@ -346,6 +361,39 @@ impl NodeService {
             properties_merged,
             edges_repointed,
             edges_dropped,
+        })
+    }
+
+    /// What [`Self::merge_nodes`] would do to the tree, without doing it: the
+    /// survivor's parent afterward, or the `TreeInvariantViolation` the merge
+    /// would be refused with. Lets the Conflicts view say where the merged
+    /// node will live, and why a merge cannot happen, before the user
+    /// confirms. Writes nothing.
+    pub async fn preview_merge(
+        &self,
+        survivor_id: &str,
+        loser_id: &str,
+    ) -> Result<MergePreview, NodeServiceError> {
+        let survivor_id = survivor_id.to_string();
+        let loser_id = loser_id.to_string();
+        let plan = self
+            .with_transaction(move |ns_tx| {
+                Box::pin(async move {
+                    crate::db::SqliteStore::preview_merge_in_tx(
+                        ns_tx.store_tx(),
+                        &survivor_id,
+                        &loser_id,
+                    )
+                    .await
+                    .map_err(NodeServiceError::from_store)
+                })
+            })
+            .await?;
+
+        Ok(MergePreview {
+            resulting_parent_id: plan.resulting_parent().map(str::to_string),
+            survivor_parent_id: plan.survivor_parent,
+            loser_parent_id: plan.loser_parent,
         })
     }
 

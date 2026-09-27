@@ -252,6 +252,37 @@ describe('conflicts store', () => {
     });
   });
 
+  describe('previewMerge()', () => {
+    it('calls preview_merge and returns where the survivor ends up', async () => {
+      const preview = { survivorParentId: null, loserParentId: 'p', resultingParentId: 'p' };
+      mockInvoke.mockResolvedValueOnce(preview);
+
+      const result = await conflictsStore.previewMerge('survivor', 'loser');
+
+      expect(mockInvoke).toHaveBeenCalledWith('preview_merge', {
+        survivorId: 'survivor',
+        loserId: 'loser'
+      });
+      expect(result).toEqual(preview);
+    });
+
+    it('rejects with the typed tree-invariant refusal, unchanged', async () => {
+      const refusal = {
+        code: 'TREE_INVARIANT_VIOLATION',
+        message: 'member_of_not_root: refused',
+        conflictData: {
+          rule: 'member_of_not_root',
+          node_id: 'survivor',
+          related_ids: ['col'],
+          detail: 'refused'
+        }
+      };
+      mockInvoke.mockRejectedValueOnce(refusal);
+
+      await expect(conflictsStore.previewMerge('survivor', 'loser')).rejects.toBe(refusal);
+    });
+  });
+
   describe('merge()', () => {
     it('calls merge_nodes with the survivor/loser/conflictId and refreshes the record', async () => {
       conflictsStore.records = [record({ id: 'c1', status: 'open', nodeIds: ['survivor', 'loser'] })];
