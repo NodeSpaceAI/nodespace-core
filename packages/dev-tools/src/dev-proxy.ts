@@ -627,6 +627,24 @@ async function handleRequest(req: Request): Promise<Response> {
     }
   }
 
+  // POST /api/nodes/:id/move-children  (atomic child transfer)
+  const moveChildrenMatch = pathname.match(HTTP_ROUTE_PATTERNS.moveChildrenToParent);
+  if (method === 'POST' && moveChildrenMatch) {
+    const newParentId = decodeURIComponent(moveChildrenMatch[1]);
+    try {
+      const body = await req.json() as { children?: Array<{ nodeId: string; version: number }> };
+      const request = { newParentId, children: body.children ?? [] };
+      const res = await call<
+        typeof request,
+        { children: ProtoNodeData[]; orders: Array<{ nodeId: string; order: number }> }
+      >((nodeClient as unknown as Record<string, Function>).moveChildrenToParent, request);
+      // The frontend's MovedChildren shape: { nodes, orders }.
+      return json({ nodes: (res.children ?? []).map(nodeDataToApiNode), orders: res.orders ?? [] });
+    } catch (err) {
+      return grpcError(err as grpc.ServiceError);
+    }
+  }
+
   // GET /api/nodes/:id/children
   const childrenMatch = pathname.match(HTTP_ROUTE_PATTERNS.getChildren);
   if (method === 'GET' && childrenMatch) {
