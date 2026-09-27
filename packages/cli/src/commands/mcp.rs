@@ -17,8 +17,8 @@
 //! 1. Splits `args` the way a POSIX shell would ([`shell_words::split`]), so
 //!    quoting behaves the same as every other CLI invocation.
 //! 2. Prepends the resolved `--socket`/`--database` this `mcp` process was
-//!    started with, and appends `--json` (unless already present), so the
-//!    tool result is always structured.
+//!    started with (unless `args` sets them), and appends `--json` (unless
+//!    already present), so the tool result is always structured.
 //! 3. Shells out to this same compiled `nodespace` binary with that argv.
 //!
 //! Step 3 is deliberately a subprocess, not an in-process call to the
@@ -30,13 +30,12 @@
 //! its output cleanly, so this stays a transport adapter rather than a
 //! second client or a reimplementation of the subcommands.
 //!
-//! No consent gate is added here: the CLI has none today (`node delete`
-//! deletes immediately, no confirmation prompt), and every call dispatches
-//! through the same unmodified handlers. The resolve-then-confirm discipline
-//! the skill documents for destructive verbs is enforced by the calling
-//! model reading that guidance before it decides to invoke the tool — the
-//! same as it is for every other shell-capable surface — not by anything in
-//! this transport.
+//! No consent gate is added here: every call dispatches through the same
+//! unmodified handlers, so the one the CLI has — `node delete` previews
+//! unless given the version and nested-node count its preview printed
+//! (ADR-080) — applies here unchanged. Relaying that preview to the user
+//! and waiting for a yes is the calling model's job, as it is for every
+//! other shell-capable surface, not this transport's.
 //!
 //! # Trust boundary (ADR-038)
 //!
@@ -760,20 +759,35 @@ fn extract_tool_call(params: &Value) -> Result<String, String> {
 /// result is always structured.
 ///
 /// Pure and synchronous so quoting/splitting behavior is unit-testable
-/// without spawning a process. If the caller's `args` explicitly repeats
-/// `--socket`/`--database`, its value wins over the prefix (clap keeps the
-/// last occurrence of a non-repeatable flag), so an explicit override in the
-/// tool call is still honored.
+/// without spawning a process. If the caller's `args` sets
+/// `--socket`/`--database` itself, that flag is not prefixed, so an explicit
+/// override in the tool call is honored.
 fn build_child_args(
     args_str: &str,
     sock: &Path,
     database: Option<&str>,
 ) -> Result<Vec<String>, String> {
-    let tail = shell_words::split(args_str)
+    let mut tail = shell_words::split(args_str)
         .map_err(|e| format!("could not parse \"args\" as shell-style arguments: {e}"))?;
+    // A command the CLI printed for replay (a delete preview's
+    // `confirm_command`) starts with the binary name; the tool takes what
+    // follows it, so a replayed line works unedited.
+    if tail.first().map(String::as_str) == Some("nodespace") {
+        tail.remove(0);
+    }
 
-    let mut argv = vec!["--socket".to_string(), sock.display().to_string()];
-    if let Some(db) = database {
+    // clap rejects a repeated global flag, so the prefix only fills in what
+    // the call did not set itself.
+    let names = |flag: &str| {
+        let with_value = format!("{flag}=");
+        tail.iter().any(|a| a == flag || a.starts_with(&with_value))
+    };
+    let mut argv = Vec::new();
+    if !names("--socket") {
+        argv.push("--socket".to_string());
+        argv.push(sock.display().to_string());
+    }
+    if let (Some(db), false) = (database, names("--database")) {
         argv.push("--database".to_string());
         argv.push(db.to_string());
     }
@@ -919,6 +933,51 @@ mod tests {
         );
     }
 
+    /// A delete preview's `confirm_command` is replayed unchanged through
+    /// this tool, so it must dispatch as the delete it names.
+    #[test]
+    fn build_child_args_replays_a_printed_delete_command() {
+        use clap::Parser;
+        let preview = nodespace_daemon::nodespace::DeleteNodeResponse {
+            node_id: "abc".into(),
+            existed: true,
+            version: 7,
+            descendant_count: 2,
+            ..Default::default()
+        };
+        // The preview itself ran through this tool, so it was given both
+        // routing flags and repeats them.
+        let routing = [
+            "--socket".to_string(),
+            "/s".to_string(),
+            "--database".to_string(),
+            "work".to_string(),
+        ];
+        let command = crate::output::delete_confirm_command(&preview, &routing);
+
+        let argv =
+            build_child_args(&command, Path::new("/s"), Some("work")).expect("valid shell syntax");
+        assert_eq!(
+            argv,
+            vec![
+                "--socket",
+                "/s",
+                "--database",
+                "work",
+                "node",
+                "delete",
+                "abc",
+                "--version",
+                "7",
+                "--descendants",
+                "2",
+                "--json",
+            ]
+        );
+        crate::Cli::try_parse_from(std::iter::once("nodespace".to_string()).chain(argv))
+            .expect("the replayed command must parse");
+    }
+
     #[test]
     fn build_child_args_does_not_duplicate_an_explicit_json_flag() {
         let argv = build_child_args("node get abc-123 --json", Path::new("/s"), None)
@@ -945,10 +1004,9 @@ mod tests {
 
     #[test]
     fn build_child_args_lets_an_explicit_socket_override_win() {
-        // shell_words splits "--socket" and its value as ordinary tokens; they
-        // land after our own --socket/value pair, and clap keeps the last
-        // occurrence of a non-repeatable flag, so the caller's explicit
-        // override is what the dispatched binary actually uses.
+        // clap rejects a repeated global flag, so the caller's explicit
+        // --socket replaces ours rather than following it.
+        use clap::Parser;
         let argv = build_child_args(
             "--socket /explicit/other.sock node get abc",
             Path::new("/default.sock"),
@@ -959,8 +1017,6 @@ mod tests {
             argv,
             vec![
                 "--socket",
-                "/default.sock",
-                "--socket",
                 "/explicit/other.sock",
                 "node",
                 "get",
@@ -968,6 +1024,8 @@ mod tests {
                 "--json",
             ]
         );
+        crate::Cli::try_parse_from(std::iter::once("nodespace".to_string()).chain(argv))
+            .expect("the dispatched argv must parse");
     }
 
     #[test]

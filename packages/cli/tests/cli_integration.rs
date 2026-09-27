@@ -414,15 +414,48 @@ async fn create_get_update_children_delete_round_trip() {
     assert_eq!(children.nodes.len(), 1, "nodes len must match count");
     assert_eq!(children.nodes[0].content, "child via CLI");
 
-    commands::node::run(
-        &mut client,
+    let delete = |version, descendants| {
         commands::node::NodeAction::Delete(commands::node::DeleteArgs {
             id: parent_id.clone(),
-        }),
-        false,
-    )
-    .await
-    .expect("delete parent");
+            version,
+            descendants,
+            routing: Vec::new(),
+        })
+    };
+
+    // The bare form only previews: the parent and its child survive it.
+    commands::node::run(&mut client, delete(None, None), false)
+        .await
+        .expect("preview delete");
+    let current = raw_client
+        .get_node(GetNodeRequest {
+            node_id: parent_id.clone(),
+        })
+        .await
+        .expect("a preview must not delete")
+        .into_inner()
+        .node_data
+        .expect("node_data");
+
+    // A confirmation that no longer matches — here, a nested count the
+    // parent does not have — deletes nothing.
+    let err = commands::node::run(&mut client, delete(Some(current.version), Some(0)), false)
+        .await
+        .expect_err("a stale confirmation must be refused");
+    assert!(
+        format!("{err:#}").contains("Nothing deleted"),
+        "refusal must say nothing was deleted: {err:#}"
+    );
+    raw_client
+        .get_node(GetNodeRequest {
+            node_id: parent_id.clone(),
+        })
+        .await
+        .expect("a refused delete must leave the node in place");
+
+    commands::node::run(&mut client, delete(Some(current.version), Some(1)), false)
+        .await
+        .expect("confirmed delete");
 
     let err = raw_client
         .get_node(GetNodeRequest { node_id: parent_id })
@@ -1107,6 +1140,75 @@ async fn schema_delete_requires_relationship_declarations_removed_first() {
     .expect_err("the deleted schema must no longer resolve");
 
     let _ = shutdown.send(());
+}
+
+/// `schema delete` is one step, so it must not reach an ordinary node — that
+/// would be a way around `node delete`'s preview (ADR-080).
+#[tokio::test]
+async fn schema_delete_refuses_a_node_that_is_not_a_schema() {
+    let (sock, shutdown, _tempdir) = spawn_test_daemon().await;
+    let mut client = connect(&sock, DatabaseIdInterceptor::none())
+        .await
+        .expect("connect");
+    let node_id = client
+        .create_node(nodespace_daemon::nodespace::CreateNodeRequest {
+            node_type: "text".into(),
+            content: "not a schema".into(),
+            parent_id: None,
+            properties: String::new(),
+            collections: Vec::new(),
+            collection_ids: Vec::new(),
+            lifecycle_status: None,
+            id: None,
+            position: None,
+        })
+        .await
+        .expect("seed node")
+        .into_inner()
+        .node_id;
+
+    let err = commands::schema::run(
+        &mut client,
+        commands::schema::SchemaAction::Delete(commands::schema::SchemaDeleteArgs {
+            id: node_id.clone(),
+        }),
+        true,
+    )
+    .await
+    .expect_err("schema delete must refuse a text node");
+    assert!(
+        format!("{err:#}").contains("not a schema"),
+        "refusal should say why: {err:#}"
+    );
+    client
+        .get_node(GetNodeRequest { node_id })
+        .await
+        .expect("the refused node must still exist");
+
+    let _ = shutdown.send(());
+}
+
+/// The two delete flags only make sense together: either alone is a parse
+/// error, not a half-confirmed delete.
+#[test]
+fn node_delete_confirmation_flags_are_required_together() {
+    use clap::Parser;
+    let parse = |args: &[&str]| nodespace_cli::Cli::try_parse_from(args);
+
+    assert!(parse(&["nodespace", "node", "delete", "abc"]).is_ok());
+    assert!(parse(&[
+        "nodespace",
+        "node",
+        "delete",
+        "abc",
+        "--version",
+        "3",
+        "--descendants",
+        "0"
+    ])
+    .is_ok());
+    assert!(parse(&["nodespace", "node", "delete", "abc", "--version", "3"]).is_err());
+    assert!(parse(&["nodespace", "node", "delete", "abc", "--descendants", "0"]).is_err());
 }
 
 /// Seed two `person` nodes sharing the same (case-insensitively) unique

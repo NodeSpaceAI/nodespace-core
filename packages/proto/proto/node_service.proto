@@ -409,12 +409,29 @@ message DeleteNodeRequest {
   // version unset = auto-fetch (matches ops-layer behaviour).
   // optional int64 maps to Option<i64> in prost.
   optional int64 version = 2;
+  // Report what the delete would remove (title, version, nested count)
+  // without removing anything. The CLI's first step (ADR-080).
+  bool dry_run = 3;
+  // The nested-node count the caller was shown. When set, `version` must be
+  // set too, and the delete runs only if both still match — the CLI's
+  // confirmed second step (ADR-080).
+  optional uint64 expected_descendant_count = 4;
+  // Refuse the delete unless the node is of this type. `schema delete`
+  // sets it to `schema`, so it cannot be used to remove an ordinary node
+  // (and its subtree) without the two-step preview.
+  optional string expected_node_type = 5;
 }
 
 message DeleteNodeResponse {
   string node_id = 1;
   bool existed = 2;
   uint64 deleted_count = 3;
+  // Filled by a dry run or a confirmed delete of a node that existed: what
+  // the delete would remove, or did.
+  string title = 4;
+  string node_type = 5;
+  int64 version = 6;
+  uint64 descendant_count = 7;
 }
 
 // ---------------------------------------------------------------------------

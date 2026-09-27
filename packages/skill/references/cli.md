@@ -129,12 +129,15 @@ Dedicated verb for task status transitions. Status must be one of: `open`, `in_p
 ### Delete a node
 
 ```bash
-nodespace node delete <node-id>
+nodespace node delete <node-id>                                  # step 1: preview, deletes nothing
+nodespace node delete <node-id> --version <v> --descendants <n>  # step 2: delete exactly what was previewed
 ```
 
-**Find then delete:** locate the node via `nodespace node query --title-contains` (or `nodespace search` for notes and documents) if you don't have its ID, and confirm the title matches what the user described before deleting. Delete one node per call; confirm each deletion before moving to the next. Don't search again afterward to verify the deletion — the delete response confirms it.
+**Two steps, always:** the bare form only previews — it names the node (title, type, version) and how many nested nodes go with it, and prints the step-2 command as `confirm_command`. Show the user the preview, and run `confirm_command` unchanged only after they say yes. Step 2 is refused, deleting nothing, if the node was edited or anything was added or removed beneath it since the preview; preview again and re-confirm rather than adjusting the numbers yourself.
 
-**Output:** Confirmation JSON
+**Find then delete:** locate the node via `nodespace node query --title-contains` (or `nodespace search` for notes and documents) if you don't have its ID. Delete one node per call; confirm each deletion before moving to the next. Don't search again afterward to verify the deletion — the delete response confirms it.
+
+**Output:** Step 1 — `{"node_id", "existed", "deleted": false, "title", "node_type", "version", "descendant_count", "confirm_command"}`. Step 2 — `{"node_id", "existed", "deleted_count"}`, where `deleted_count` includes the node itself.
 
 ### List children
 
@@ -621,9 +624,11 @@ Operate on individual nodes (get, create, update, delete, children, query, expor
 - `<ID>` — Task node ID (required)
 - `<STATUS>` — New status. Must be one of the values the `task` schema's `status` field declares — the four built-ins (open, in_progress, done, cancelled) plus any added since. An invalid value is rejected with the current list (required)
 
-**`nodespace node delete`** — Delete a node
+**`nodespace node delete`** — Delete a node and everything nested under it, in two steps: without `--version`/`--descendants` it only previews what would be removed and prints the exact command that deletes it
 
 - `<ID>` — Node ID to delete (required)
+- `--version <VERSION>` — The node version its preview showed. Deletes only if it still matches
+- `--descendants <DESCENDANTS>` — The nested-node count its preview showed. Deletes only if it still matches
 
 **`nodespace node children`** — List the direct children of a node
 

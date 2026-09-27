@@ -267,8 +267,16 @@ fn render_arg_list(cmd: &ClapCommand, globals_only: bool) -> String {
         if arg.is_hide_set() {
             continue;
         }
-        // `--help`/`--version` are clap's own, not part of the NodeSpace surface.
-        if matches!(arg.get_id().as_str(), "help" | "version") {
+        // `--help`/`--version` are clap's own, not part of the NodeSpace
+        // surface. Matched by action, not id: a command's own `--version`
+        // flag (`node delete`) is part of it.
+        if matches!(
+            arg.get_action(),
+            clap::ArgAction::Help
+                | clap::ArgAction::HelpShort
+                | clap::ArgAction::HelpLong
+                | clap::ArgAction::Version
+        ) {
             continue;
         }
         if arg.is_global_set() != globals_only {

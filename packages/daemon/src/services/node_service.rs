@@ -13,10 +13,11 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
+use nodespace_agent::local_agent::deletion_confirmation::{self, DeletionStop};
 use nodespace_core::db::events::DomainEvent;
 use nodespace_core::models::{
-    Node, NodeQuery, NodeUpdate, OrderBy, PersonNodeUpdate, ProjectNodeUpdate, QueryNodeUpdate,
-    TaskNodeUpdate, TaskPriority, TaskStatus,
+    AiChatPendingDeletion, Node, NodeQuery, NodeUpdate, OrderBy, PersonNodeUpdate,
+    ProjectNodeUpdate, QueryNodeUpdate, TaskNodeUpdate, TaskPriority, TaskStatus,
 };
 use nodespace_core::ops::{
     collection_ops::{
@@ -544,6 +545,26 @@ impl GrpcNodeService for NodeServiceImpl {
         let this = self.route(&request).await?;
         let req = request.into_inner();
 
+        if let Some(expected) = &req.expected_node_type {
+            let node = this
+                .node_service
+                .get_node(&req.node_id)
+                .await
+                .map_err(|e| Status::internal(format!("Failed to get node: {e}")))?;
+            if let Some(node) = node.filter(|n| &n.node_type != expected) {
+                return Err(Status::failed_precondition(format!(
+                    "{} is a {} node, not a {expected}; nothing deleted",
+                    node.id, node.node_type
+                )));
+            }
+        }
+
+        if req.dry_run || req.expected_descendant_count.is_some() {
+            return confirmed_delete(&this.node_service, req)
+                .await
+                .map(Response::new);
+        }
+
         let input = node_ops::DeleteNodeInput {
             node_id: req.node_id,
             version: req.version,
@@ -556,7 +577,7 @@ impl GrpcNodeService for NodeServiceImpl {
                 return Ok(Response::new(DeleteNodeResponse {
                     node_id: id,
                     existed: false,
-                    deleted_count: 0,
+                    ..Default::default()
                 }));
             }
             Err(e) => return Err(ops_error_to_status(e)),
@@ -566,6 +587,7 @@ impl GrpcNodeService for NodeServiceImpl {
             node_id: output.node_id,
             existed: output.existed,
             deleted_count: output.deleted_count,
+            ..Default::default()
         }))
     }
 
@@ -2676,6 +2698,80 @@ fn find_unique_seed_template(
     Ok(first)
 }
 
+/// The two steps of a delete that names what it removes (ADR-080).
+///
+/// A dry run reports the node's title, version and nested-node count and
+/// deletes nothing. A confirmed delete carries the version and count the
+/// caller was shown and runs through the local agent's held-delete execution,
+/// so a node that changed since — edited, or with nodes added or removed
+/// beneath it — is refused rather than deleted.
+async fn confirmed_delete(
+    node_service: &CoreNodeService,
+    req: DeleteNodeRequest,
+) -> Result<DeleteNodeResponse, Status> {
+    let missing = |node_id: String| DeleteNodeResponse {
+        node_id,
+        existed: false,
+        ..Default::default()
+    };
+    let preview = deletion_confirmation::preview_deletion(node_service, &req.node_id)
+        .await
+        .map_err(|e| Status::internal(format!("Failed to preview delete: {e}")))?;
+    let Some(preview) = preview else {
+        return Ok(missing(req.node_id));
+    };
+
+    if req.dry_run {
+        return Ok(DeleteNodeResponse {
+            node_id: preview.node_id,
+            existed: true,
+            deleted_count: 0,
+            title: preview.title,
+            node_type: preview.node_type,
+            version: preview.version,
+            descendant_count: preview.descendant_count,
+        });
+    }
+
+    // Not a dry run, so the caller sent a nested-node count; the version
+    // is the half that can be missing.
+    let Some(version) = req.version else {
+        return Err(Status::invalid_argument(
+            "a confirmed delete needs the version its preview showed",
+        ));
+    };
+    let target = AiChatPendingDeletion {
+        version,
+        descendant_count: req.expected_descendant_count.unwrap_or_default(),
+        ..preview
+    };
+    let outcome =
+        deletion_confirmation::execute_confirmed(node_service, std::slice::from_ref(&target)).await;
+    match outcome.stopped {
+        Some(DeletionStop::Changed(reason)) => {
+            return Err(Status::aborted(format!(
+                "Nothing deleted: {reason}. Preview the delete again."
+            )));
+        }
+        Some(DeletionStop::Failed(reason)) => {
+            return Err(Status::internal(format!("Nothing deleted: {reason}")));
+        }
+        None => {}
+    }
+    match outcome.deleted.into_iter().next() {
+        Some((target, deleted_count)) => Ok(DeleteNodeResponse {
+            node_id: target.node_id,
+            existed: true,
+            deleted_count,
+            title: target.title,
+            node_type: target.node_type,
+            version: target.version,
+            descendant_count: target.descendant_count,
+        }),
+        None => Ok(missing(target.node_id)),
+    }
+}
+
 pub(crate) fn ops_error_to_status(err: OpsError) -> Status {
     match err {
         OpsError::NotFound { id } => Status::not_found(format!("Not found: {}", id)),
@@ -3940,6 +4036,180 @@ mod tests {
         );
     }
 
+    /// A confirmed delete runs only against the node its dry run described:
+    /// an edit between the two refuses it and leaves the node in place, and
+    /// confirming the fresh preview deletes it.
+    #[tokio::test]
+    async fn delete_node_rpc_confirmed_delete_aborts_on_version_drift() {
+        let (svc, _tmp) = make_service().await;
+        let created = svc
+            .create_node(Request::new(crate::nodespace::CreateNodeRequest {
+                id: None,
+                node_type: "text".to_string(),
+                content: "Quarterly plan".to_string(),
+                parent_id: None,
+                collections: Vec::new(),
+                collection_ids: Vec::new(),
+                lifecycle_status: None,
+                properties: "{}".to_string(),
+                position: None,
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        let node_id = created.node_id;
+
+        async fn preview(svc: &NodeServiceImpl, node_id: &str) -> DeleteNodeResponse {
+            let req = Request::new(crate::nodespace::DeleteNodeRequest {
+                node_id: node_id.to_string(),
+                dry_run: true,
+                ..Default::default()
+            });
+            svc.delete_node(req).await.unwrap().into_inner()
+        }
+        let confirm = |node_id: &str, shown: &DeleteNodeResponse| {
+            Request::new(crate::nodespace::DeleteNodeRequest {
+                node_id: node_id.to_string(),
+                version: Some(shown.version),
+                expected_descendant_count: Some(shown.descendant_count),
+                ..Default::default()
+            })
+        };
+
+        let shown = preview(&svc, &node_id).await;
+        assert!(shown.existed);
+        assert_eq!(shown.title, "Quarterly plan");
+        assert_eq!(shown.descendant_count, 0);
+        assert_eq!(shown.deleted_count, 0, "a dry run deletes nothing");
+
+        svc.update_node(Request::new(crate::nodespace::UpdateNodeRequest {
+            node_id: node_id.clone(),
+            content: Some("Quarterly plan (edited)".to_string()),
+            node_type: None,
+            properties: None,
+            version: None,
+            add_to_collections: Vec::new(),
+            add_to_collection_ids: Vec::new(),
+            remove_from_collection_ids: Vec::new(),
+            lifecycle_status: None,
+        }))
+        .await
+        .unwrap();
+
+        let err = svc
+            .delete_node(confirm(&node_id, &shown))
+            .await
+            .expect_err("an edit after the preview must refuse the delete");
+        assert_eq!(err.code(), tonic::Code::Aborted);
+        assert!(svc.node_service.get_node(&node_id).await.unwrap().is_some());
+
+        let fresh = preview(&svc, &node_id).await;
+        let deleted = svc
+            .delete_node(confirm(&node_id, &fresh))
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(deleted.existed);
+        assert_eq!(deleted.deleted_count, 1);
+        assert!(svc.node_service.get_node(&node_id).await.unwrap().is_none());
+    }
+
+    /// A dry run counts what is nested under the node, and confirming that
+    /// count removes all of it; a confirmed delete of a node already gone
+    /// reports it missing rather than failing.
+    #[tokio::test]
+    async fn delete_node_rpc_dry_run_counts_the_subtree_it_removes() {
+        let (svc, _tmp) = make_service().await;
+        let create = |content: &str, parent_id: Option<String>| {
+            Request::new(crate::nodespace::CreateNodeRequest {
+                id: None,
+                node_type: "text".to_string(),
+                content: content.to_string(),
+                parent_id,
+                collections: Vec::new(),
+                collection_ids: Vec::new(),
+                lifecycle_status: None,
+                properties: "{}".to_string(),
+                position: None,
+            })
+        };
+        let root = svc
+            .create_node(create("Project", None))
+            .await
+            .unwrap()
+            .into_inner()
+            .node_id;
+        let child = svc
+            .create_node(create("Phase", Some(root.clone())))
+            .await
+            .unwrap()
+            .into_inner()
+            .node_id;
+        svc.create_node(create("Step", Some(child))).await.unwrap();
+
+        let shown = svc
+            .delete_node(Request::new(crate::nodespace::DeleteNodeRequest {
+                node_id: root.clone(),
+                dry_run: true,
+                ..Default::default()
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(shown.descendant_count, 2);
+
+        let confirm = || {
+            Request::new(crate::nodespace::DeleteNodeRequest {
+                node_id: root.clone(),
+                version: Some(shown.version),
+                expected_descendant_count: Some(shown.descendant_count),
+                ..Default::default()
+            })
+        };
+        let deleted = svc.delete_node(confirm()).await.unwrap().into_inner();
+        assert_eq!(deleted.deleted_count, 3, "the root and both nested nodes");
+
+        let again = svc.delete_node(confirm()).await.unwrap().into_inner();
+        assert!(!again.existed, "a node already gone is reported missing");
+    }
+
+    /// A confirmed delete must carry the version as well as the count.
+    #[tokio::test]
+    async fn delete_node_rpc_confirmed_delete_requires_version() {
+        let (svc, _tmp) = make_service().await;
+        let created = svc
+            .create_node(Request::new(crate::nodespace::CreateNodeRequest {
+                id: None,
+                node_type: "text".to_string(),
+                content: "keep me".to_string(),
+                parent_id: None,
+                collections: Vec::new(),
+                collection_ids: Vec::new(),
+                lifecycle_status: None,
+                properties: "{}".to_string(),
+                position: None,
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+
+        let err = svc
+            .delete_node(Request::new(crate::nodespace::DeleteNodeRequest {
+                node_id: created.node_id.clone(),
+                expected_descendant_count: Some(0),
+                ..Default::default()
+            }))
+            .await
+            .expect_err("a count without a version must be refused");
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+        assert!(svc
+            .node_service
+            .get_node(&created.node_id)
+            .await
+            .unwrap()
+            .is_some());
+    }
+
     /// Deleting a missing node via RPC returns existed=false (idempotent).
     #[tokio::test]
     async fn delete_node_rpc_missing_node_returns_existed_false() {
@@ -3948,6 +4218,7 @@ mod tests {
         let req = Request::new(crate::nodespace::DeleteNodeRequest {
             node_id: "nonexistent-node-id".to_string(),
             version: None,
+            ..Default::default()
         });
         let resp = svc.delete_node(req).await.unwrap().into_inner();
         assert!(!resp.existed);

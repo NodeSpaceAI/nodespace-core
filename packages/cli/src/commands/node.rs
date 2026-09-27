@@ -23,7 +23,9 @@ pub enum NodeAction {
     /// Set a task node's status (dedicated verb — do not use `update` for this).
     #[command(name = "set-status")]
     SetStatus(SetStatusArgs),
-    /// Delete a node.
+    /// Delete a node and everything nested under it, in two steps: without
+    /// `--version`/`--descendants` it only previews what would be removed and
+    /// prints the exact command that deletes it.
     Delete(DeleteArgs),
     /// List the direct children of a node.
     Children(ChildrenArgs),
@@ -142,6 +144,18 @@ pub struct SetStatusArgs {
 pub struct DeleteArgs {
     /// Node ID to delete.
     pub id: String,
+    /// The node version its preview showed. Deletes only if it still matches.
+    #[arg(long, requires = "descendants")]
+    pub version: Option<i64>,
+    /// The nested-node count its preview showed. Deletes only if it still
+    /// matches.
+    #[arg(long, requires = "version")]
+    pub descendants: Option<u64>,
+    /// The global `--socket`/`--database` flags this run was given, repeated
+    /// in the preview's delete command so it reaches the same database. Set
+    /// by dispatch, not parsed.
+    #[arg(skip)]
+    pub routing: Vec<String>,
 }
 
 #[derive(Args, Debug)]
@@ -330,17 +344,28 @@ async fn set_status(client: &mut NodeClient, args: SetStatusArgs, json: bool) ->
     output::print_node(&node, json)
 }
 
+/// A delete names what it removes before it removes it (ADR-080): the bare
+/// form previews, and only the form carrying the preview's version and
+/// nested-node count deletes — refused if either has changed since.
 async fn delete(client: &mut NodeClient, args: DeleteArgs, json: bool) -> Result<()> {
+    let dry_run = args.descendants.is_none();
     let response = client
         .delete_node(DeleteNodeRequest {
             node_id: args.id,
-            version: None,
+            version: args.version,
+            dry_run,
+            expected_descendant_count: args.descendants,
+            expected_node_type: None,
         })
         .await
         .context("DeleteNode RPC failed")?
         .into_inner();
 
-    output::print_delete(&response, json)
+    if dry_run {
+        output::print_delete_preview(&response, &args.routing, json)
+    } else {
+        output::print_delete(&response, json)
+    }
 }
 
 async fn children(client: &mut NodeClient, args: ChildrenArgs, json: bool) -> Result<()> {
