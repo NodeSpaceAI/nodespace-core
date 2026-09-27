@@ -223,6 +223,15 @@ async fn date_field_rejects_non_iso_values() -> Result<()> {
         "the string '08/06/2026'",
     )
     .await;
+    // An unpadded date would sort wrongly against padded ones.
+    assert_create_rejected(
+        &svc,
+        json!({ "target": "2026-3-1" }),
+        "target",
+        "date",
+        "the string '2026-3-1'",
+    )
+    .await;
     // A calendar-invalid date is not a date.
     assert_create_rejected(
         &svc,
@@ -377,6 +386,30 @@ async fn core_schema_scalar_fields_are_enforced() -> Result<()> {
     .expect_err("a string must not satisfy collection.restrictedToMembers (boolean)");
     assert!(
         err.to_string().contains("Field 'restrictedToMembers'"),
+        "error must name the field, got: {err}"
+    );
+    Ok(())
+}
+
+/// The bulk import path validates each node the same way single creation does.
+#[tokio::test]
+async fn bulk_import_rejects_a_wrongly_typed_scalar() -> Result<()> {
+    let (svc, _tmp) = create_test_service().await?;
+    seed_ticket_schema(&svc).await?;
+
+    let err = svc
+        .bulk_create_hierarchy(vec![(
+            "imported-ticket".to_string(),
+            "ticket".to_string(),
+            "Imported".to_string(),
+            None,
+            1.0,
+            json!({ "points": "large" }),
+        )])
+        .await
+        .expect_err("bulk import must reject a string in a number field");
+    assert!(
+        err.to_string().contains("Field 'points'"),
         "error must name the field, got: {err}"
     );
     Ok(())

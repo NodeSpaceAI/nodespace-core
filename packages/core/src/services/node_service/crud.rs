@@ -2709,35 +2709,33 @@ impl NodeService {
 
             // Validate scalar fields: `number` holds a JSON number, `boolean`
             // a JSON bool, `date` an ISO-8601 date or RFC 3339 date-time
-            // string, and `datetime` an RFC 3339 date-time string. Sorting, `gt`/`lt` query filters and the CEL date
-            // functions all trust the declared type, so a value that doesn't
-            // match it is rejected here rather than misread later. Null
-            // clears a field, as it does for `object`.
+            // string, and `datetime` an RFC 3339 date-time string. Sorting,
+            // `gt`/`lt` query filters and the CEL date functions all trust
+            // the declared type, so a value that doesn't match it is rejected
+            // here rather than misread later. Null clears a field, as it does
+            // for `object`.
             if let Some(value) = field_value.filter(|v| !v.is_null()) {
-                let matches = match field.field_type.as_str() {
-                    "number" => Some(value.is_number()),
-                    "boolean" => Some(value.is_boolean()),
-                    "date" => Some(
+                let check = match field.field_type.as_str() {
+                    "number" => Some((value.is_number(), "")),
+                    "boolean" => Some((value.is_boolean(), "")),
+                    "date" => Some((
                         value
                             .as_str()
                             .is_some_and(crate::schema::is_iso_date_or_datetime),
-                    ),
-                    "datetime" => Some(
+                        " (a YYYY-MM-DD date or RFC 3339 date-time string)",
+                    )),
+                    "datetime" => Some((
                         value
                             .as_str()
-                            .is_some_and(|s| chrono::DateTime::parse_from_rfc3339(s).is_ok()),
-                    ),
+                            .is_some_and(crate::schema::is_rfc3339_datetime),
+                        " (an RFC 3339 date-time string)",
+                    )),
                     _ => None,
                 };
-                if matches == Some(false) {
+                if let Some((false, expected)) = check {
                     let received = match value.as_str() {
                         Some(s) => format!("the string '{}'", s),
                         None => crate::schema::json_type_name(value).to_string(),
-                    };
-                    let expected = match field.field_type.as_str() {
-                        "date" => " (a YYYY-MM-DD date or RFC 3339 date-time string)",
-                        "datetime" => " (an RFC 3339 date-time string)",
-                        _ => "",
                     };
                     return Err(NodeServiceError::invalid_update(format!(
                         "Field '{}' is declared as type '{}'{} but received {}",
