@@ -1,6 +1,7 @@
 ---
 title: "Sprint Validation Rules"
-description: "Why a change to a sprint was rejected in a Jira-style workspace: illegal status moves, starting without dates, and the lock on a closed sprint's dates, completed date and issues."
+description: "Why a sprint change was rejected: a sprint won't start, won't reopen, or a closed sprint won't take edits or new work. Use when the user says it won't let me start the sprint, why can't I reopen this sprint, or why can't I add this to the sprint."
+exclusion: "Link a task to a decision."
 ---
 # Sprint Validation Rules
 

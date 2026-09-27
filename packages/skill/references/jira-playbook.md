@@ -89,25 +89,25 @@ Skill nodes carrying usage guidance, discovered through the ordinary skill-searc
 
 Create each as below, then add its guidance as markdown children. The properties carry the whole retrieval surface — `description`, and an `exclusion` where the skill has one, which keeps general requests from ranking it above a built-in — so set them verbatim. The bodies are long-form prose; read them from `packages/core/src/methodology/skills/jira/` rather than reproducing them here.
 
-**Creating Epics, Stories, and Bugs** — How to create work in a Jira-style workspace: choosing between task, story, bug and epic, story points, bug severity and environment, linking work to an epic, and sub-tasks.
+**Creating Epics, Stories, and Bugs** — Create a story, file a bug, open an epic, or group work under an epic; set story points or bug severity. Use when the user says file a bug, write a user story, create an epic, add this to the epic, or how many points is this.
 
 ```bash
 nodespace node create --type skill --content 'Creating Epics, Stories, and Bugs' \
-  --properties '{"description":"How to create work in a Jira-style workspace: choosing between task, story, bug and epic, story points, bug severity and environment, linking work to an epic, and sub-tasks.","max_iterations":3,"tool_whitelist":["create_node","create_relationship","search_nodes","get_node"]}'
+  --properties '{"description":"Create a story, file a bug, open an epic, or group work under an epic; set story points or bug severity. Use when the user says file a bug, write a user story, create an epic, add this to the epic, or how many points is this.","exclusion":"Add a task or a reminder.","max_iterations":3,"tool_whitelist":["create_node","create_relationship","search_nodes","get_node"]}'
 ```
 
-**Working with Sprints** — How sprints work in a Jira-style workspace: planning work into a sprint, starting and closing it, the future, active and closed lifecycle, and what can still change after a sprint closes.
+**Working with Sprints** — Start, plan or close a sprint, add work to the sprint, carry unfinished work into the next sprint, or set a sprint goal. Use when the user says start the sprint, close the sprint, what's in this sprint, or move this to the next sprint.
 
 ```bash
 nodespace node create --type skill --content 'Working with Sprints' \
-  --properties '{"description":"How sprints work in a Jira-style workspace: planning work into a sprint, starting and closing it, the future, active and closed lifecycle, and what can still change after a sprint closes.","max_iterations":3,"tool_whitelist":["create_node","update_node","create_relationship","search_nodes","get_node"]}'
+  --properties '{"description":"Start, plan or close a sprint, add work to the sprint, carry unfinished work into the next sprint, or set a sprint goal. Use when the user says start the sprint, close the sprint, what'\''s in this sprint, or move this to the next sprint.","exclusion":"Add a task or a reminder.","max_iterations":3,"tool_whitelist":["create_node","update_node","create_relationship","search_nodes","get_node"]}'
 ```
 
-**Sprint Validation Rules** — Why a change to a sprint was rejected in a Jira-style workspace: illegal status moves, starting without dates, and the lock on a closed sprint's dates, completed date and issues.
+**Sprint Validation Rules** — Why a sprint change was rejected: a sprint won't start, won't reopen, or a closed sprint won't take edits or new work. Use when the user says it won't let me start the sprint, why can't I reopen this sprint, or why can't I add this to the sprint.
 
 ```bash
 nodespace node create --type skill --content 'Sprint Validation Rules' \
-  --properties '{"description":"Why a change to a sprint was rejected in a Jira-style workspace: illegal status moves, starting without dates, and the lock on a closed sprint'\''s dates, completed date and issues.","max_iterations":3,"tool_whitelist":["create_node","update_node","search_nodes","get_node"]}'
+  --properties '{"description":"Why a sprint change was rejected: a sprint won'\''t start, won'\''t reopen, or a closed sprint won'\''t take edits or new work. Use when the user says it won'\''t let me start the sprint, why can'\''t I reopen this sprint, or why can'\''t I add this to the sprint.","exclusion":"Link a task to a decision.","max_iterations":3,"tool_whitelist":["create_node","update_node","search_nodes","get_node"]}'
 ```
 
 ### 5. Saved views

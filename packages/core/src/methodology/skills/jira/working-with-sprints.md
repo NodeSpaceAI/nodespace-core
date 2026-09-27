@@ -1,6 +1,7 @@
 ---
 title: "Working with Sprints"
-description: "How sprints work in a Jira-style workspace: planning work into a sprint, starting and closing it, the future, active and closed lifecycle, and what can still change after a sprint closes."
+description: "Start, plan or close a sprint, add work to the sprint, carry unfinished work into the next sprint, or set a sprint goal. Use when the user says start the sprint, close the sprint, what's in this sprint, or move this to the next sprint."
+exclusion: "Add a task or a reminder."
 tools: "create_node, update_node, create_relationship, search_nodes, get_node"
 ---
 # Working with Sprints
