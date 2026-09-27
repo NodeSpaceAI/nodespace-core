@@ -627,9 +627,15 @@ pub fn descriptors_from_json(meta: &Value) -> Vec<EntityTypeDescriptor> {
 /// `{"task":{...}}` namespace for reads, and `NodeService` re-namespaces flat
 /// keys on writes, so a name taken from this list can be passed straight back
 /// to `update_node`.
-pub fn build_available_properties(schema: &SchemaNode, properties: &Value) -> Vec<Value> {
-    schema
-        .fields
+///
+/// `fields` is the type's *effective* set across its `extends` chain
+/// (`NodeService::resolve_field_owners`), not one schema's own declarations:
+/// an `issue` extending `task` must list `status`, which `task` declares.
+pub fn build_available_properties(
+    fields: &[crate::models::schema::SchemaField],
+    properties: &Value,
+) -> Vec<Value> {
+    fields
         .iter()
         .map(|f| {
             let descriptor = EntityFieldDescriptor::from_schema_field(f);
@@ -1133,7 +1139,7 @@ mod tests {
         let schema = sample_schema();
         let props = json!({ "reference": "INV-1" });
 
-        let available = build_available_properties(&schema, &props);
+        let available = build_available_properties(&schema.fields, &props);
         let by_name = |n: &str| {
             available
                 .iter()
@@ -1154,7 +1160,8 @@ mod tests {
     /// would leave the model with no reason to write to it.
     #[test]
     fn available_properties_treats_null_as_unset() {
-        let available = build_available_properties(&sample_schema(), &json!({ "amount": null }));
+        let available =
+            build_available_properties(&sample_schema().fields, &json!({ "amount": null }));
         let amount = available.iter().find(|f| f["name"] == "amount").unwrap();
 
         assert_eq!(amount["set"], json!(false));
@@ -1165,7 +1172,7 @@ mod tests {
     /// user to confirm the enum value, not just the field name).
     #[test]
     fn available_properties_exposes_allowed_values() {
-        let available = build_available_properties(&sample_schema(), &json!({}));
+        let available = build_available_properties(&sample_schema().fields, &json!({}));
         let status = available.iter().find(|f| f["name"] == "status").unwrap();
 
         assert_eq!(status["allowed_values"], json!(["draft", "sent"]));
@@ -1186,7 +1193,7 @@ mod tests {
         // bare key of the kind ADR-063 prohibits on a core type.
         let props = json!({ "reference": "INV-1", "weight": "40kg", "custom:color": "red" });
 
-        let available = build_available_properties(&schema, &props);
+        let available = build_available_properties(&schema.fields, &props);
         let names: Vec<&str> = available
             .iter()
             .filter_map(|f| f["name"].as_str())
@@ -1195,23 +1202,5 @@ mod tests {
         assert_eq!(names, vec!["reference", "amount", "status"]);
         assert!(!names.contains(&"weight"));
         assert!(!names.contains(&"custom:color"));
-    }
-
-    /// A core schema is handled identically — the whole point of the fix is
-    /// that core types are no longer the blind spot.
-    #[test]
-    fn available_properties_covers_core_schemas() {
-        let mut schema = sample_schema();
-        schema.id = "task".to_string();
-        schema.is_core = true;
-        let mut due = field("due_date", "date");
-        due.required = Some(false);
-        schema.fields = vec![due];
-
-        let available = build_available_properties(&schema, &json!({ "status": "in_progress" }));
-
-        assert_eq!(available.len(), 1);
-        assert_eq!(available[0]["name"], json!("due_date"));
-        assert_eq!(available[0]["set"], json!(false));
     }
 }

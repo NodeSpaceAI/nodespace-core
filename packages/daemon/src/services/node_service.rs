@@ -1926,6 +1926,19 @@ impl GrpcNodeService for NodeServiceImpl {
                     .await
                     .map_err(service_error_to_status)?
                     .0;
+                // Relationships likewise: an inherited relationship is as
+                // traversable from an instance as an own one. The merged set
+                // excludes the `extends` row, so the schema's own is kept —
+                // it is how a reader of this definition learns the parent.
+                let (inherited, _) = this
+                    .node_service
+                    .resolve_relationships(&req.schema_id)
+                    .await
+                    .map_err(service_error_to_status)?;
+                let own_type_system = schema.relationships.into_iter().filter(|r| {
+                    nodespace_core::models::schema::is_type_system_relationship(&r.name)
+                });
+                schema.relationships = inherited.into_iter().chain(own_type_system).collect();
                 schema
             }
             None => {
@@ -5304,6 +5317,71 @@ mod tests {
             "an inherited field must survive get_node, got {props:?}"
         );
         assert_eq!(props["bug"]["severity"], "high");
+    }
+
+    /// `get_schema_definition` on an extending schema reports inherited
+    /// relationships alongside inherited fields, and keeps the schema's own
+    /// `extends` row so a reader still learns its parent.
+    #[tokio::test]
+    async fn get_schema_definition_reports_inherited_relationships() {
+        use nodespace_core::schema::handle_create_schema;
+
+        let (svc, _tmp) = make_service().await;
+        let core = svc.node_service.clone();
+
+        for params in [
+            serde_json::json!({ "name": "Owner", "fields": [] }),
+            serde_json::json!({
+                "name": "Ticket",
+                "fields": [{ "name": "status", "type": "string" }],
+                "relationships": [{
+                    "name": "owned_by",
+                    "targetType": "owner",
+                    "direction": "out",
+                    "cardinality": "one",
+                    "reverseName": "tickets",
+                    "reverseCardinality": "many"
+                }]
+            }),
+            serde_json::json!({
+                "name": "Bug",
+                "extends": "ticket",
+                "fields": [{ "name": "severity", "type": "string" }]
+            }),
+        ] {
+            handle_create_schema(&core, params)
+                .await
+                .expect("schema creation failed");
+        }
+
+        let response = svc
+            .get_schema_definition(Request::new(GetSchemaDefinitionRequest {
+                schema_id: "bug".to_string(),
+            }))
+            .await
+            .expect("get_schema_definition should succeed")
+            .into_inner();
+        let data = response.node_data.expect("node_data should be present");
+        let props: serde_json::Value =
+            serde_json::from_str(&data.properties).expect("properties should parse");
+
+        let names = |key: &str| -> Vec<String> {
+            props[key]
+                .as_array()
+                .unwrap_or_else(|| panic!("`{key}` should be an array: {props}"))
+                .iter()
+                .filter_map(|r| r["name"].as_str().map(str::to_string))
+                .collect()
+        };
+        assert_eq!(names("fields"), ["severity", "status"], "{props}");
+        assert_eq!(
+            names("relationships"),
+            [
+                "owned_by",
+                nodespace_core::models::schema::EXTENDS_RELATIONSHIP
+            ],
+            "{props}"
+        );
     }
 
     fn seed_template(node_type: &str, title: &str) -> nodespace_core::markdown::NodeTemplate {
