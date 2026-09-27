@@ -28,6 +28,10 @@ export interface ViewerRegistration {
   priority?: number;
 }
 
+/**
+ * Per-type inline reference component. Reserved as the extension point for
+ * per-type link decoration (ADR-005); no renderer reads it yet.
+ */
 export interface ReferenceRegistration {
   component: NodeReferenceComponent;
   priority?: number;

@@ -5,8 +5,6 @@
  * in development environments. Makes debugging component issues much easier.
  */
 
-// ComponentDecoration import removed - not used
-// componentHydrationSystem import removed - not used
 import { performanceTracker } from './performance-tracker';
 import { createLogger } from '$lib/utils/logger';
 

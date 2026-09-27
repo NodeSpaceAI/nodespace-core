@@ -1087,7 +1087,7 @@ describe('ReactiveNodeService - Header Level', () => {
     const node: Node = {
       id: 'content-test',
       nodeType: 'text',
-      content: '# Header\n\nSome **bold** text',
+      content: 'Plain text',
       version: 1,
       properties: {},
       createdAt: new Date().toISOString(),

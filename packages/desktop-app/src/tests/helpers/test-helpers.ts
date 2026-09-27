@@ -334,7 +334,7 @@ export function createMockEventHandlers<T extends Record<string, unknown>>(): {
  * @example
  * ```typescript
  * const events = createMockNodeManagerEvents();
- * const service = createMockReactiveNodeService(events);
+ * const service = createReactiveNodeService(events);
  *
  * // ... operations ...
  *
