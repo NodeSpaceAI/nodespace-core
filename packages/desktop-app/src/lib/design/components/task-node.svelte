@@ -17,6 +17,7 @@
   import { createEventDispatcher, getContext } from 'svelte';
   import BaseNode from './base-node.svelte';
   import type { NodeState } from '$lib/design/icons/registry';
+  import { deriveTaskState } from './task-state-syntax';
   import { getNavigationService } from '$lib/services/navigation-service';
   import { DEFAULT_PANE_ID } from '$lib/stores/navigation.svelte';
 
@@ -64,51 +65,15 @@
     }
   }
 
-  // Task-specific state management using $derived.by() for reactive computation
-  // Priority: 1) metadata.taskState (pre-computed by extractNodeMetadata), 2) Content syntax, 3) Default
-  let taskState = $derived.by(() => {
-    // metadata.taskState is set by extractNodeMetadata in base-node-viewer (from schema status property)
-    if (metadata.taskState) {
-      return metadata.taskState as NodeState;
-    }
-
-    // Fall back to content-based task syntax
-    const hasTaskSyntax = /^\s*-?\s*\[(x|X|~|o|\s)\]/i.test(content.trim());
-    return hasTaskSyntax ? parseTaskState(content) : 'pending';
-  });
+  // Task-specific state management: metadata.taskState (pre-computed by extractNodeMetadata),
+  // then content task syntax, then 'pending'
+  let taskState = $derived(deriveTaskState(metadata, content));
 
   // TaskNodes use default single-line editing
   const editableConfig = {};
 
   // Create reactive metadata object
   let taskMetadata = $derived({ taskState });
-
-  /**
-   * Parse task state from content
-   * - Looks for markdown task syntax: [ ], [x], [~]
-   * - Returns appropriate NodeState
-   */
-  function parseTaskState(content: string): NodeState {
-    const trimmed = content.trim();
-
-    // Check for completed task: [x] or [X]
-    if (/^\s*-?\s*\[x\]/i.test(trimmed)) {
-      return 'completed';
-    }
-
-    // Check for in-progress task: [~] or [o]
-    if (/^\s*-?\s*\[~|o\]/i.test(trimmed)) {
-      return 'inProgress';
-    }
-
-    // Check for pending task: [ ] or empty
-    if (/^\s*-?\s*\[\s*\]/i.test(trimmed) || trimmed === '') {
-      return 'pending';
-    }
-
-    // Default to pending for task nodes
-    return 'pending';
-  }
 
   /**
    * Clean content by removing task syntax shortcut markers
@@ -128,7 +93,7 @@
    * 3. Clean content when converting from other node types
    *
    * The function doesn't SET taskState directly anymore - instead it updates the underlying
-   * content/metadata, and taskState automatically recomputes via $derived.by()
+   * content/metadata, and taskState automatically recomputes via $derived
    */
   function updateTaskState(newState: NodeState) {
     // Note: taskState is now $derived, so it will update automatically
