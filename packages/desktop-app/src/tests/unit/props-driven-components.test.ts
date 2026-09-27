@@ -11,6 +11,7 @@
 
 import { describe, it, expect } from 'vitest';
 import type { NodeReference } from '$lib/types/node';
+import { deriveTaskState, stripTaskMarker } from '$lib/design/components/task-state-syntax';
 
 // ============================================================================
 // BacklinksPanel — Props Interface
@@ -118,20 +119,7 @@ describe('TaskNode props contract', () => {
     expect(props.nodeType).toBe('task');
   });
 
-  it('derives taskState from metadata.taskState (pre-computed by extractNodeMetadata)', () => {
-    function deriveTaskState(metadata: Record<string, unknown>, content: string): string {
-      if (metadata.taskState) return metadata.taskState as string;
-      const hasTaskSyntax = /^\s*-?\s*\[(x|X|~|o|\s)\]/i.test(content.trim());
-      return hasTaskSyntax ? parseTaskStateFromContent(content) : 'pending';
-    }
-
-    function parseTaskStateFromContent(content: string): string {
-      const trimmed = content.trim();
-      if (/^\s*-?\s*\[x\]/i.test(trimmed)) return 'completed';
-      if (/^\s*-?\s*\[~|o\]/i.test(trimmed)) return 'inProgress';
-      return 'pending';
-    }
-
+  it('derives taskState from metadata.taskState, falling back to content task syntax', () => {
     // metadata.taskState from extractNodeMetadata takes priority
     expect(deriveTaskState({ taskState: 'completed' }, 'Some content')).toBe('completed');
     expect(deriveTaskState({ taskState: 'inProgress' }, 'Some content')).toBe('inProgress');
@@ -139,8 +127,23 @@ describe('TaskNode props contract', () => {
 
     // Falls back to content-based detection when metadata has no taskState
     expect(deriveTaskState({}, '- [x] Completed task')).toBe('completed');
+    expect(deriveTaskState({}, '[X] Completed task')).toBe('completed');
+    expect(deriveTaskState({}, '- [~] Started task')).toBe('inProgress');
+    expect(deriveTaskState({}, '[o] Started task')).toBe('inProgress');
     expect(deriveTaskState({}, '- [ ] Open task')).toBe('pending');
     expect(deriveTaskState({}, 'Regular text without task syntax')).toBe('pending');
+  });
+
+  it('only reads the in-progress marker from the leading brackets', () => {
+    expect(deriveTaskState({}, '[ ] Finish memo]')).toBe('pending');
+    expect(deriveTaskState({}, 'Write the memo] draft')).toBe('pending');
+    expect(deriveTaskState({}, '[ ] Mark [o] later')).toBe('pending');
+  });
+
+  it('strips a leading task marker from content', () => {
+    expect(stripTaskMarker('- [x] Done')).toBe('Done');
+    expect(stripTaskMarker('[ ] Open')).toBe('Open');
+    expect(stripTaskMarker('Plain [o] text')).toBe('Plain [o] text');
   });
 
   it('extractMetadata maps cancelled status to completed taskState', () => {
