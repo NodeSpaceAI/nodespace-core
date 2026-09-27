@@ -85,6 +85,44 @@ interface PullRequest {
   baseRefName: string;
 }
 
+/** How replaying a PR's commits onto main went. */
+export type ReplayResult =
+  | { kind: "ok" }
+  | { kind: "conflict"; paths: string[] }
+  | { kind: "error"; message: string };
+
+/**
+ * Cherry-pick `commits` onto the checkout in `cwd`. On any failure no
+ * cherry-pick is left in progress, and a conflict restores HEAD; a change
+ * that was already in the checkout before the pick is not this function's to
+ * discard (the gate resets its checkout at the start of every attempt).
+ *
+ * `--keep-redundant-commits` rather than `--empty=drop`: the latter needs Git
+ * 2.45, and on older git the whole command is a usage error. A commit that
+ * becomes empty against main is kept as an empty commit instead of dropped —
+ * harmless, since the merge squashes. A commit already on main by patch never
+ * reaches here: the caller's `rev-list --cherry-pick` filters it out.
+ *
+ * A failure is only a conflict when the pick stopped on unmerged paths.
+ * Anything else — an unknown option, a missing commit — is reported with
+ * git's own message, so an environment problem never reads as a conflict.
+ */
+export async function replayCommits(cwd: string, commits: string[]): Promise<ReplayResult> {
+  const pick = await $`git cherry-pick --keep-redundant-commits ${commits}`.cwd(cwd).quiet().nothrow();
+  if (pick.exitCode === 0) return { kind: "ok" };
+
+  const unmerged = (await $`git diff --name-only --diff-filter=U`.cwd(cwd).quiet().nothrow().text())
+    .split("\n")
+    .filter((p) => p !== "");
+  await $`git cherry-pick --abort`.cwd(cwd).quiet().nothrow();
+  // Clear any sequencer state an abort left behind, or every later merge
+  // would fail with "cherry-pick already in progress".
+  await $`git cherry-pick --quit`.cwd(cwd).quiet().nothrow();
+  if (unmerged.length > 0) return { kind: "conflict", paths: unmerged };
+  const message = `${pick.stderr.toString()}${pick.stdout.toString()}`.trim();
+  return { kind: "error", message: message || `git cherry-pick exited with code ${pick.exitCode}` };
+}
+
 /** Runs git in `cwd` and returns its trimmed stdout. */
 async function git(cwd: string, ...args: string[]): Promise<string> {
   return (await $`git ${args}`.cwd(cwd).quiet().text()).trim();
@@ -249,16 +287,21 @@ async function main(): Promise<void> {
         .split("\n")
         .filter((c) => c !== "");
       if (commits.length === 0) fail(`PR #${pr} has no commits of its own beyond main.`);
-      // Also like rebase: a commit that becomes empty against main is
-      // dropped, and one that was empty to begin with is kept (without
-      // --allow-empty, cherry-pick fails on it and it would read as a conflict).
-      const pick = await $`git cherry-pick --empty=drop --allow-empty ${commits}`.cwd(gate).quiet().nothrow();
-      if (pick.exitCode !== 0) {
-        await $`git cherry-pick --abort`.cwd(gate).quiet().nothrow();
-        // Clear any sequencer state an abort left behind, or every later
-        // merge would fail with "cherry-pick already in progress".
-        await $`git cherry-pick --quit`.cwd(gate).quiet().nothrow();
-        fail("The rebase onto main conflicts. Resolve it in your worktree (git rebase origin/main), push, and re-run.");
+      const replay = await replayCommits(gate, commits);
+      if (replay.kind === "conflict") {
+        fail(
+          `The rebase onto main conflicts in: ${replay.paths.join(", ")}.\n` +
+            "  Resolve it in your worktree (git rebase origin/main), push, and re-run."
+        );
+      }
+      if (replay.kind === "error") {
+        fail(`Replaying PR #${pr} onto main failed, and not on a conflict:\n${replay.message}`);
+      }
+      // Commits that became empty are kept, so a PR main already fully
+      // contains replays "successfully" onto main's own tree. Stop here
+      // rather than spend a full gate run and squash-merge an empty diff.
+      if ((await git(gate, "rev-parse", "HEAD^{tree}")) === (await git(gate, "rev-parse", `${mainSha}^{tree}`))) {
+        fail(`PR #${pr} has no changes beyond main: main already contains everything it does.`);
       }
     }
     const tested = await git(gate, "rev-parse", "HEAD");
