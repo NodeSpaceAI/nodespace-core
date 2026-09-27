@@ -2273,7 +2273,13 @@ async fn execute_add_relationship_in_tx(
     let edge_data = params.get("edge_data").cloned().unwrap_or(json!({}));
 
     txc.node_service
-        .create_relationship_in_tx(txc.tx, source_id, relationship_type, target_id, edge_data)
+        .create_relationship_in_tx_no_invariant_dispatch(
+            txc.tx,
+            source_id,
+            relationship_type,
+            target_id,
+            edge_data,
+        )
         .await
         .map_err(|e| ActionError::ServiceError {
             message: e.to_string(),
@@ -2317,7 +2323,12 @@ async fn execute_remove_relationship_in_tx(
             })?;
 
     txc.node_service
-        .remove_relationship_in_tx(txc.tx, source_id, relationship_type, target_id)
+        .remove_relationship_in_tx_no_invariant_dispatch(
+            txc.tx,
+            source_id,
+            relationship_type,
+            target_id,
+        )
         .await
         .map_err(|e| ActionError::ServiceError {
             message: e.to_string(),

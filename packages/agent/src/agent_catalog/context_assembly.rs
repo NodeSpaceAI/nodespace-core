@@ -70,6 +70,11 @@ const SKILL_LINEAR_PLAYBOOK: &str = include_str!("../../../skill/references/line
 const SKILL_SPEC_DRIVEN_PLAYBOOK: &str =
     include_str!("../../../skill/references/spec-driven-playbook.md");
 
+/// `packages/skill/references/jira-playbook.md`, embedded for the same reason
+/// as [`SKILL_LINEAR_PLAYBOOK`], generated from
+/// `nodespace_core::methodology::jira`.
+const SKILL_JIRA_PLAYBOOK: &str = include_str!("../../../skill/references/jira-playbook.md");
+
 /// Default token budget when none is specified by the caller.
 const DEFAULT_TOKEN_BUDGET: u32 = 50_000;
 
@@ -421,6 +426,7 @@ async fn write_skill_md(session_dir: &Path) -> Result<(), ContextError> {
         SKILL_SPEC_DRIVEN_PLAYBOOK,
     )
     .await?;
+    tokio::fs::write(references.join("jira-playbook.md"), SKILL_JIRA_PLAYBOOK).await?;
     tokio::fs::write(
         references.join("graph-authored-guidance.md"),
         SKILL_GRAPH_AUTHORED_GUIDANCE,

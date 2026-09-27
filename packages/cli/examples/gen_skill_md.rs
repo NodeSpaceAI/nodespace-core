@@ -113,6 +113,14 @@ fn regions() -> Vec<GeneratedRegion> {
                           packages/cli/examples/gen_skill_md.rs",
             render: || render_playbook_block("spec-driven", "spec_driven"),
         },
+        GeneratedRegion {
+            id: "jira-playbook",
+            file: "references/jira-playbook.md",
+            source_note: "packages/core/src/methodology/jira.rs, \
+                          packages/core/src/methodology/skills/jira/, \
+                          packages/cli/examples/gen_skill_md.rs",
+            render: || render_playbook_block("jira", "jira"),
+        },
     ]
 }
 
@@ -432,6 +440,12 @@ fn render_playbook_block(id: &str, skills_dir: &str) -> String {
     }
 
     let _ = writeln!(out, "### 2. Schema extensions\n");
+    if playbook.field_value_extensions.is_empty() {
+        let _ = writeln!(
+            out,
+            "None — this playbook adds no fields or values to an existing schema.\n"
+        );
+    }
     if playbook
         .field_value_extensions
         .iter()

@@ -104,15 +104,12 @@ pub enum PlayValidationError {
         trigger: String,
         location: String,
     },
-    /// An invariant rule's trigger is not a `node_created` or
-    /// `property_changed` graph event. Synchronous pre-commit dispatch
-    /// (ADR-060 §1) is wired into the node-creation and update write paths —
-    /// there is no equivalent open transaction to join for a
-    /// `relationship_added`/`relationship_removed` mutation, or for a
-    /// scheduled scan. Declaring a rule `invariant` against one of those
-    /// triggers would silently never execute rather than deliver the
-    /// fail-closed guarantee its class name promises, so it is rejected here
-    /// instead.
+    /// An invariant rule's trigger is a scheduled scan. Synchronous pre-commit
+    /// dispatch (ADR-060 §1) is wired into the node-creation, update and
+    /// declared-relationship write paths — a scheduled scan has no write, and
+    /// so no open transaction to join. Declaring a rule `invariant` against
+    /// one would silently never execute rather than deliver the fail-closed
+    /// guarantee its class name promises, so it is rejected here instead.
     InvariantUnsupportedTrigger { trigger: String, location: String },
     /// An invariant `add_relationship` action targets `member_of` or
     /// `has_child` without an explicit `order` in `edge_data`. Both types
@@ -308,9 +305,8 @@ impl std::fmt::Display for PlayValidationError {
             Self::InvariantUnsupportedTrigger { trigger, location } => write!(
                 f,
                 "invariant rule at {} has trigger '{}', which synchronous pre-commit dispatch \
-                 does not support (only node_created and property_changed graph-event triggers \
-                 run inside a transaction today) — declare this rule reactive, or change its \
-                 trigger to node_created or property_changed",
+                 does not support (only graph-event triggers run inside a transaction) — \
+                 declare this rule reactive, or change its trigger to a graph event",
                 location, trigger
             ),
             Self::InvariantRelationshipNeedsExplicitOrder {
@@ -1621,16 +1617,10 @@ fn validate_invariant_eligibility(
     errors: &mut Vec<PlayValidationError>,
 ) {
     // Supported trigger — synchronous pre-commit dispatch is wired into the
-    // node-creation and update write paths (see `InvariantUnsupportedTrigger`'s
-    // doc). `relationship_added`/`relationship_removed` and scheduled triggers
-    // have no equivalent synchronous dispatch point and remain unsupported.
-    let trigger_supported = matches!(
-        &rule.trigger,
-        ParsedTrigger::GraphEvent {
-            on: GraphEventType::NodeCreated | GraphEventType::PropertyChanged,
-            ..
-        }
-    );
+    // node-creation, update and declared-relationship write paths (see
+    // `InvariantUnsupportedTrigger`'s doc). A scheduled trigger has no write
+    // to join and remains unsupported.
+    let trigger_supported = matches!(&rule.trigger, ParsedTrigger::GraphEvent { .. });
     if !trigger_supported {
         let trigger_desc = match &rule.trigger {
             ParsedTrigger::GraphEvent { on, .. } => graph_event_name(on).to_string(),
@@ -5059,24 +5049,29 @@ mod tests {
         }
 
         #[test]
-        fn invariant_relationship_added_trigger_rejected() {
-            let rule = invariant_rule(
+        fn invariant_relationship_triggers_accepted() {
+            // Declared-relationship writes dispatch invariant rules inside
+            // their transaction, so both relationship triggers are eligible.
+            for on in [
                 GraphEventType::RelationshipAdded,
-                "task",
-                None,
-                vec![],
-                vec![],
-            );
-            let errors = eligibility_errors(&rule);
-            assert!(
-                errors.iter().any(|e| matches!(
-                    e,
-                    PlayValidationError::InvariantUnsupportedTrigger { trigger, .. }
-                        if trigger == "relationship_added"
-                )),
-                "relationship_added must be rejected as an invariant trigger, got {:?}",
-                errors
-            );
+                GraphEventType::RelationshipRemoved,
+            ] {
+                let rule = invariant_rule(
+                    on.clone(),
+                    "task",
+                    None,
+                    vec!["node.status == 'done'"],
+                    vec![],
+                );
+                let errors = eligibility_errors(&rule);
+                assert!(
+                    !errors.iter().any(|e| matches!(
+                        e,
+                        PlayValidationError::InvariantUnsupportedTrigger { .. }
+                    )),
+                    "{on:?} must be an accepted invariant trigger, got {errors:?}"
+                );
+            }
         }
 
         #[test]

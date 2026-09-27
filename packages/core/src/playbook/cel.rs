@@ -505,6 +505,8 @@ pub fn key(s: &str) -> cel_interpreter::objects::Key {
 /// - `node`: The trigger node (wire-format, flat properties)
 /// - `trigger.property.old_value`: Previous value (PropertyChanged only)
 /// - `trigger.property.new_value`: New value (PropertyChanged only)
+/// - `trigger.relationship.{name,source_id,target_id}`: The edge added or
+///   removed (relationship events only); `node` is its source
 ///
 /// Functions:
 /// - `days_since(date_string)`: Days elapsed since ISO 8601 date, computed against the UTC date
@@ -599,6 +601,12 @@ fn build_condition_context_with_resolved<'a>(
         trigger_map.insert(key("properties"), Value::List(props_list.into()));
     }
 
+    // For relationship events, add trigger.relationship: the edge that was
+    // added or removed. `node` is its forward source.
+    if let Some(relationship) = relationship_bindings(event) {
+        trigger_map.insert(key("relationship"), relationship);
+    }
+
     ctx.add_variable_from_value(
         "trigger",
         Value::Map(cel_interpreter::objects::Map {
@@ -608,6 +616,34 @@ fn build_condition_context_with_resolved<'a>(
 
     register_functions(&mut ctx);
     ctx
+}
+
+/// `trigger.relationship` for a relationship event: its forward `name`, and
+/// `source_id`/`target_id` as bare node ids — the form `node.id` takes — rather
+/// than the event's prefixed `node:<id>` form.
+fn relationship_bindings(event: &DomainEvent) -> Option<Value> {
+    let (name, from_id, to_id) = match event {
+        DomainEvent::RelationshipCreated { relationship } => (
+            &relationship.relationship_type,
+            &relationship.from_id,
+            &relationship.to_id,
+        ),
+        DomainEvent::RelationshipDeleted {
+            relationship_type,
+            from_id,
+            to_id,
+            ..
+        } => (relationship_type, from_id, to_id),
+        _ => return None,
+    };
+    let bare = |id: &str| id.strip_prefix("node:").unwrap_or(id).to_string();
+    let mut map: HashMap<cel_interpreter::objects::Key, Value> = HashMap::new();
+    map.insert(key("name"), Value::String(Arc::new(name.clone())));
+    map.insert(key("source_id"), Value::String(Arc::new(bare(from_id))));
+    map.insert(key("target_id"), Value::String(Arc::new(bare(to_id))));
+    Some(Value::Map(cel_interpreter::objects::Map {
+        map: Arc::new(map),
+    }))
 }
 
 /// Register the custom functions every CEL surface shares — rule conditions
@@ -1321,6 +1357,43 @@ mod tests {
         )
         .await;
         assert_eq!(result, ConditionResult::Pass);
+    }
+
+    /// A relationship event exposes its edge with bare ids — the form `node.id`
+    /// takes — so a condition can compare the two directly.
+    #[tokio::test]
+    async fn relationship_trigger_context() {
+        let node = test_node("sprint", json!({}));
+        let created = DomainEvent::RelationshipCreated {
+            relationship: crate::db::events::RelationshipEvent::new(
+                "relationship:r1".to_string(),
+                &node.id,
+                "task-1",
+                "issues",
+                json!({}),
+            ),
+        };
+        let deleted = DomainEvent::RelationshipDeleted {
+            id: "relationship:r1".to_string(),
+            from_id: format!("node:{}", node.id),
+            to_id: "node:task-1".to_string(),
+            relationship_type: "issues".to_string(),
+        };
+
+        for event in [created, deleted] {
+            let result = evaluate_conditions(
+                &conds(&[
+                    "trigger.relationship.name == 'issues'",
+                    "trigger.relationship.source_id == node.id",
+                    "trigger.relationship.target_id == 'task-1'",
+                ]),
+                &node,
+                &event,
+                None,
+            )
+            .await;
+            assert_eq!(result, ConditionResult::Pass, "{event:?}");
+        }
     }
 
     // -- Custom function tests --

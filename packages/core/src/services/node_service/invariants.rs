@@ -36,7 +36,7 @@
 //! rule can usefully condition on for a node created with a parent.
 
 use super::*;
-use crate::playbook::types::{NodeEventType, RuleClass, TriggerKey};
+use crate::playbook::types::{NodeEventType, RelEventType, RuleClass, TriggerKey};
 
 impl NodeService {
     /// Dispatch invariant rules matching `node`'s creation, inside `tx`.
@@ -142,6 +142,60 @@ impl NodeService {
         }
 
         self.execute_matched_invariant_rules_in_tx(tx, node, &event, matched)
+            .await
+    }
+
+    /// Dispatch invariant rules matching a declared relationship's creation or
+    /// removal, inside `tx`. The relationship twin of
+    /// [`Self::dispatch_invariant_rules_in_tx`] — same three no-op cases, same
+    /// execution core.
+    ///
+    /// `source` is the edge's forward source: a write made through an `in`
+    /// declaration's name is stored, and dispatched, as the forward edge it
+    /// mirrors, so a rule on the declaring type sees every change to its
+    /// relationship whichever end declared it. `event` must be a
+    /// `RelationshipCreated` or `RelationshipDeleted` — it selects which
+    /// trigger matches, and supplies `trigger.relationship` to conditions.
+    ///
+    /// Called only for declared relationships. Built-ins (`has_child`,
+    /// `member_of`, `mentions`) have write paths that never open a
+    /// transaction — `move_node`, `append_child_edge`, `add_to_collection` —
+    /// so dispatching from the one tx path they share with declared
+    /// relationships would fire a rule for some of their writes and not
+    /// others.
+    pub(crate) async fn dispatch_invariant_rules_for_relationship_in_tx(
+        &self,
+        tx: &NodeServiceTx<'_>,
+        source: &Node,
+        event: DomainEvent,
+    ) -> Result<(), NodeServiceError> {
+        if self.client_id.as_deref() == Some(crate::db::events::SYNC_SERVICE_CLIENT_ID) {
+            return Ok(());
+        }
+
+        let Some(lifecycle) = self.playbook_lifecycle() else {
+            return Ok(());
+        };
+
+        let rel_event = match &event {
+            DomainEvent::RelationshipCreated { .. } => RelEventType::RelationshipAdded,
+            DomainEvent::RelationshipDeleted { .. } => RelEventType::RelationshipRemoved,
+            _ => return Ok(()),
+        };
+        let key = TriggerKey::RelationshipEvent {
+            event: rel_event,
+            source_node_type: source.node_type.clone(),
+        };
+
+        let matched = {
+            let lm = lifecycle.read().unwrap_or_else(|e| e.into_inner());
+            lm.lookup_rules(std::slice::from_ref(&key))
+        };
+        if matched.is_empty() {
+            return Ok(());
+        }
+
+        self.execute_matched_invariant_rules_in_tx(tx, source, &event, matched)
             .await
     }
 
