@@ -47,16 +47,19 @@ message UpdateCaptureSettingsRequest {
   // Only updated when present; use optional to distinguish "no change" from
   // explicit false.
   optional bool enabled = 1;
-  // Field 2 (sync) removed: whether captured properties travel is now a
-  // per-property localOnly schema classification, not a user toggle. The raw
-  // transcript and agent session id are always local-only; the derived summary
-  // always syncs.
+  // No sync toggle: whether captured properties travel is a per-property
+  // localOnly schema classification. The raw transcript and agent session id
+  // are always local-only; the derived summary always syncs.
+  reserved 2;
+  reserved "sync";
   // Content level for captured nodes. Only updated when present.
   optional CaptureContentLevel content = 3;
 }
 
 message CaptureSettingsResponse {
   bool enabled = 1;
+  reserved 2;
+  reserved "sync";
   CaptureContentLevel content = 3;
 }
 
