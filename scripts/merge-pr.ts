@@ -38,8 +38,8 @@ import { acquireGateLock, DISABLE_ENV_VAR, MERGE_LOCK_PATH, registerLockRelease 
 /** How many times main may move under us before giving up. */
 export const MAX_ATTEMPTS = 3;
 
-/** Merge attempts, 3s apart, while GitHub catches up with a force-push. */
-const MERGE_TRIES = 5;
+/** Merge attempts, 3s apart, while GitHub catches up with a push. */
+const MERGE_TRIES = 10;
 
 /** How long a merge waits for earlier merges on this machine. */
 const MERGE_WAIT_CAP_MS = 2 * 60 * 60 * 1000;
@@ -90,6 +90,19 @@ async function git(cwd: string, ...args: string[]): Promise<string> {
   return (await $`git ${args}`.cwd(cwd).quiet().text()).trim();
 }
 
+/**
+ * The PR branch's head as the remote has it right now. GitHub's API can lag a
+ * fresh push by a few seconds, so reading the head from it — once, at startup
+ * — let a push followed at once by `bun run merge` capture the old commit,
+ * wait out the whole merge queue, then refuse on finding the new one.
+ */
+async function remoteHead(cwd: string, branch: string): Promise<string> {
+  const line = await git(cwd, "ls-remote", "origin", `refs/heads/${branch}`);
+  const sha = line.split(/\s+/)[0] ?? "";
+  if (!/^[0-9a-f]{40}$/.test(sha)) fail(`Could not read the head of ${branch} from origin.`);
+  return sha;
+}
+
 function fail(message: string): never {
   console.error(`\n✗ ${message}\n`);
   process.exit(1);
@@ -133,9 +146,10 @@ async function main(): Promise<void> {
   const localBranch = await git(here, "rev-parse", "--abbrev-ref", "HEAD");
   if (isPrBranch(localBranch, info.headRefName)) {
     const localHead = await git(here, "rev-parse", "HEAD");
-    if (localHead !== info.headRefOid) {
+    const pushedHead = await remoteHead(here, info.headRefName);
+    if (localHead !== pushedHead) {
       fail(
-        `This checkout's HEAD (${localHead.slice(0, 8)}) differs from PR #${pr}'s pushed head (${info.headRefOid.slice(0, 8)}).\n` +
+        `This checkout's HEAD (${localHead.slice(0, 8)}) differs from PR #${pr}'s pushed head (${pushedHead.slice(0, 8)}).\n` +
           "  The gate tests the PR as pushed — push your commits first."
       );
     }
@@ -157,6 +171,11 @@ async function main(): Promise<void> {
 
   const repoRoot = resolve(dirname(await git(here, "rev-parse", "--path-format=absolute", "--git-common-dir")));
   const gate = await prepareGateCheckout(repoRoot);
+
+  // Read the head now that this merge's turn has come, not at startup: the
+  // queue wait can be long, and a push just before it may not have been
+  // visible yet. This is the commit the gate tests and the merge must match.
+  info.headRefOid = await remoteHead(gate, info.headRefName);
 
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     await git(gate, "fetch", "--quiet", "origin", "main", info.headRefName);
@@ -258,10 +277,12 @@ async function main(): Promise<void> {
     // Right after a force-push GitHub can briefly still report the old head,
     // and --match-head-commit then refuses. Retry for a few seconds rather
     // than make the caller re-run a gate that already passed.
+    // Attempts that are retried stay quiet; only a final refusal is shown.
     for (let tries = 1; ; tries++) {
-      const merged = await $`gh pr merge ${pr} --squash --match-head-commit ${tested}`.nothrow();
+      const merged = await $`gh pr merge ${pr} --squash --match-head-commit ${tested}`.quiet().nothrow();
       if (merged.exitCode === 0) break;
       if (tries === MERGE_TRIES) {
+        console.error(`${merged.stdout.toString()}${merged.stderr.toString()}`.trim());
         fail(
           `GitHub refused the merge of ${tested.slice(0, 8)} (see above), though the gate passed on it;\n` +
             `  once GitHub shows that commit as the PR head, merge with: gh pr merge ${pr} --squash --match-head-commit ${tested}`
