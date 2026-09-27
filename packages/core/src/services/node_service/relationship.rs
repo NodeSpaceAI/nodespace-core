@@ -1052,9 +1052,8 @@ impl NodeService {
             // surface converges — false for the one surface that runs in a
             // transaction.
             if relationship_name == "has_child" {
-                let target = crate::db::SqliteStore::get_node_in_tx(tx.store_tx(), target_id)
-                    .await
-                    .map_err(NodeServiceError::from_store)?
+                let target = Self::get_node_in_tx_or_virtual_date(tx, target_id)
+                    .await?
                     .ok_or_else(|| NodeServiceError::node_not_found(target_id))?;
                 Self::refuse_parent_for_root_only_type(&target)?;
                 if let Some(existing) =
