@@ -653,7 +653,12 @@ describe('isTreeInvariantViolation Type Guard (gRPC shape)', () => {
   });
 
   it('identifies a valid TREE_INVARIANT_VIOLATION error for each rule', () => {
-    for (const rule of ['member_of_not_root', 'collection_not_root', 'cycle'] as const) {
+    for (const rule of [
+      'member_of_not_root',
+      'collection_not_root',
+      'schema_not_root',
+      'cycle'
+    ] as const) {
       expect(isTreeInvariantViolation(makeViolation({ rule }))).toBe(true);
     }
   });

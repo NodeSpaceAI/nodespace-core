@@ -17,6 +17,20 @@ pub struct ReplacedEdge {
 }
 
 impl NodeService {
+    /// Refuse a `has_child` edge onto a node whose type is always a root: a
+    /// collection (ADR-059 §2) or a schema. Shared by the relationship-create
+    /// path and its `_in_tx` twin so both return the typed refusal; the
+    /// `*_is_root_edge` triggers back it up on every write path.
+    fn refuse_parent_for_root_only_type(target: &Node) -> Result<(), NodeServiceError> {
+        match target.node_type.as_str() {
+            "collection" => {
+                Err(TreeInvariantViolation::collection_not_root(Some(&target.id)).into())
+            }
+            "schema" => Err(TreeInvariantViolation::schema_not_root(&target.id).into()),
+            _ => Ok(()),
+        }
+    }
+
     /// Create a mention relationship between two existing nodes
     ///
     /// Adds an entry to the relationship table (relationship_type = 'mentions') to track that one node mentions another.
@@ -789,9 +803,7 @@ impl NodeService {
                 .get_node(target_id)
                 .await?
                 .ok_or_else(|| NodeServiceError::node_not_found(target_id))?;
-            if target.node_type == "collection" {
-                return Err(TreeInvariantViolation::collection_not_root(Some(target_id)).into());
-            }
+            Self::refuse_parent_for_root_only_type(&target)?;
         }
 
         // The outline is single-parent, and every read path assumes it:
@@ -1040,6 +1052,10 @@ impl NodeService {
             // surface converges — false for the one surface that runs in a
             // transaction.
             if relationship_name == "has_child" {
+                let target = Self::get_node_in_tx_or_virtual_date(tx, target_id)
+                    .await?
+                    .ok_or_else(|| NodeServiceError::node_not_found(target_id))?;
+                Self::refuse_parent_for_root_only_type(&target)?;
                 if let Some(existing) =
                     crate::db::SqliteStore::get_parent_id_in_tx(tx.store_tx(), target_id)
                         .await

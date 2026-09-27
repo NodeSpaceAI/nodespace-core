@@ -369,6 +369,16 @@ impl SqliteStore {
                 super::TreeInvariantViolation::collection_not_root(None),
             ));
         }
+        if node_type == "schema" {
+            // A schema's id derives from its content (see `normalize_schema_id`);
+            // this path mints a UUID, so it could never create a valid schema
+            // anyway — and schemas are always roots.
+            return Err(anyhow::Error::new(
+                super::TreeInvariantViolation::schema_not_root(
+                    &crate::services::node_service::normalize_schema_id(content),
+                ),
+            ));
+        }
 
         let node_id = uuid::Uuid::new_v4().to_string();
 
@@ -1419,9 +1429,10 @@ impl SqliteStore {
             None => return Ok(Ok((false, vec![]))),
         };
 
-        // A schema normally sits at the root, but `move_node` can place one under
-        // ordinary content — so every schema in the subtree is guarded, not just
-        // the target, or deleting its container would cascade it away unchecked.
+        // A schema is always a root (the `schema_is_root_*` triggers refuse any
+        // `has_child` edge onto one), so only the target can be a schema. The
+        // scan over the whole subtree is defensive: should one ever be nested,
+        // deleting its container must not cascade it away unchecked.
         for schema in self.schema_nodes_among(subtree_ids).await? {
             self.assert_schema_deletable(&schema).await?;
         }
@@ -1542,7 +1553,9 @@ impl SqliteStore {
     ///
     /// Bypasses `assert_schema_deletable`: the ids reached here are `has_child`
     /// descendants (ordinary content, e.g. a schema's description subtree) —
-    /// never schema nodes themselves. Do not route schema-node ids through this.
+    /// never schema nodes themselves, since a schema is always a root (the
+    /// `schema_is_root_*` triggers refuse any `has_child` edge onto one). Do
+    /// not route schema-node ids through this.
     pub async fn delete_children_subtree_unchecked(&self, parent_id: &str) -> Result<()> {
         self.write()
             .await
@@ -1568,6 +1581,8 @@ impl SqliteStore {
     /// delete and the recreate that follows into one transaction, so a
     /// failure recreating the subtree rolls back the delete instead of
     /// leaving the schema's description gone with nothing replacing it.
+    /// Bypasses `assert_schema_deletable` for the same reason: a `has_child`
+    /// descendant is never a schema.
     pub(crate) async fn delete_children_subtree_unchecked_in_tx(
         tx: &Tx<'_>,
         parent_id: &str,
@@ -2690,10 +2705,13 @@ impl SqliteStore {
     /// nodes are exempt.
     ///
     /// Also refuses a `collection`, which is always a root (ADR-059 §2): see
-    /// [`super::TreeInvariantViolation::collection_not_root`]. The schema's `collection_is_root_*`
-    /// triggers back this up on every write path; checking here gives the
-    /// reparent paths a readable error. One chunked query finds both kinds of
-    /// offender, keeping the bulk/cold-sweep path a single round trip per chunk.
+    /// [`super::TreeInvariantViolation::collection_not_root`], and a `schema`
+    /// node, likewise always a root: see
+    /// [`super::TreeInvariantViolation::schema_not_root`]. The DB schema's
+    /// `collection_is_root_*` / `schema_is_root_*` triggers back this up on
+    /// every write path; checking here gives the reparent paths a readable error.
+    /// One chunked query finds every kind of offender, keeping the
+    /// bulk/cold-sweep path a single round trip per chunk.
     pub(crate) async fn assert_may_gain_parent(&self, node_ids: &[&str]) -> Result<()> {
         if node_ids.is_empty() {
             return Ok(());
@@ -2706,12 +2724,12 @@ impl SqliteStore {
         const ID_CHUNK: usize = 900;
         for chunk in unique.chunks(ID_CHUNK) {
             let placeholders: Vec<String> = (1..=chunk.len()).map(|i| format!("?{}", i)).collect();
-            // Offenders: collections, and non-exempt nodes that already hold a
-            // `member_of` edge.
+            // Offenders: collections, schemas, and non-exempt nodes that already
+            // hold a `member_of` edge.
             let sql = format!(
                 "SELECT n.id, n.node_type FROM node n \
                  WHERE n.id IN ({}) \
-                   AND (n.node_type = 'collection' \
+                   AND (n.node_type IN ('collection', 'schema') \
                         OR (n.node_type != 'person' \
                             AND EXISTS(SELECT 1 FROM relationship r \
                                        WHERE r.in_node = n.id AND r.relationship_type = 'member_of')))",
@@ -2739,6 +2757,11 @@ impl SqliteStore {
                 if node_type == "collection" {
                     return Err(anyhow::Error::new(
                         super::TreeInvariantViolation::collection_not_root(Some(&offender)),
+                    ));
+                }
+                if node_type == "schema" {
+                    return Err(anyhow::Error::new(
+                        super::TreeInvariantViolation::schema_not_root(&offender),
                     ));
                 }
                 let memberships = self.get_node_memberships(&offender).await?;
