@@ -107,8 +107,34 @@ fn clip_title(title: &str) -> String {
     }
 }
 
+/// The ids of the nodes `node_id` sits under, nearest first.
+///
+/// Lets a turn that holds both a node and something nested under it confirm
+/// only the outer one: its cascade removes the inner one, and counting both
+/// would overstate what goes.
+pub async fn ancestor_ids(
+    node_service: &NodeService,
+    node_id: &str,
+) -> Result<Vec<String>, NodeServiceError> {
+    let mut ancestors = Vec::new();
+    let mut current = node_id.to_string();
+    // Bounded like the subtree walk, so a malformed hierarchy cannot loop.
+    while ancestors.len() < MAX_ANCESTOR_DEPTH {
+        let Some(parent) = node_service.get_parent(&current).await? else {
+            break;
+        };
+        current = parent.id.clone();
+        ancestors.push(parent.id);
+    }
+    Ok(ancestors)
+}
+
+/// How far up [`ancestor_ids`] walks — the same depth cap as the store's
+/// subtree traversal.
+const MAX_ANCESTOR_DEPTH: usize = 100;
+
 /// The tool result a held `delete_node` returns to the model.
-pub fn held_result(pending: &AiChatPendingDeletion) -> Value {
+pub fn held_result(pending: &AiChatPendingDeletion, ancestors: &[String]) -> Value {
     json!({
         HELD_KEY: true,
         "id": super::tools::node_uri(&pending.node_id),
@@ -116,39 +142,55 @@ pub fn held_result(pending: &AiChatPendingDeletion) -> Value {
         "node_type": pending.node_type,
         "version": pending.version,
         "descendant_count": pending.descendant_count,
+        "ancestor_ids": ancestors,
         "message": "Not deleted yet. The user will be shown this record and asked to confirm; \
                     it is deleted only if they say yes. If the request covers other records, \
                     call delete_node for each of them too; otherwise stop.",
     })
 }
 
-fn pending_from_result(result: &Value) -> Option<AiChatPendingDeletion> {
+fn pending_from_result(result: &Value) -> Option<(AiChatPendingDeletion, Vec<String>)> {
     if !is_held_deletion(result) {
         return None;
     }
     let id = result.get("id")?.as_str()?;
-    Some(AiChatPendingDeletion {
+    let pending = AiChatPendingDeletion {
         node_id: id.strip_prefix("nodespace://").unwrap_or(id).to_string(),
         title: result.get("title")?.as_str()?.to_string(),
         node_type: result.get("node_type")?.as_str()?.to_string(),
         version: result.get("version")?.as_i64()?,
         descendant_count: result.get("descendant_count")?.as_u64()?,
-    })
+    };
+    let ancestors = result
+        .get("ancestor_ids")?
+        .as_array()?
+        .iter()
+        .filter_map(|v| v.as_str().map(str::to_string))
+        .collect();
+    Some((pending, ancestors))
 }
 
 /// Every delete this turn held, in call order, once per node.
+///
+/// A target nested under another held target is left out: the outer target's
+/// cascade removes it, and its own subtree is already inside the outer
+/// target's descendant count.
 pub fn held_deletions(executions: &[ToolExecutionRecord]) -> Vec<AiChatPendingDeletion> {
-    let mut out: Vec<AiChatPendingDeletion> = Vec::new();
-    for pending in executions
+    let mut held: Vec<(AiChatPendingDeletion, Vec<String>)> = Vec::new();
+    for (pending, ancestors) in executions
         .iter()
         .filter(|r| !r.is_error)
         .filter_map(|r| pending_from_result(&r.result))
     {
-        if !out.iter().any(|p| p.node_id == pending.node_id) {
-            out.push(pending);
+        if !held.iter().any(|(p, _)| p.node_id == pending.node_id) {
+            held.push((pending, ancestors));
         }
     }
-    out
+    let ids: Vec<String> = held.iter().map(|(p, _)| p.node_id.clone()).collect();
+    held.into_iter()
+        .filter(|(_, ancestors)| !ancestors.iter().any(|a| ids.contains(a)))
+        .map(|(pending, _)| pending)
+        .collect()
 }
 
 fn named(p: &AiChatPendingDeletion) -> String {
@@ -412,14 +454,30 @@ mod tests {
     }
 
     fn held(id: &str, title: &str) -> ToolExecutionRecord {
+        held_under(id, title, &[])
+    }
+
+    fn held_under(id: &str, title: &str, ancestors: &[&str]) -> ToolExecutionRecord {
+        let ancestors: Vec<String> = ancestors.iter().map(|a| a.to_string()).collect();
         ToolExecutionRecord {
             tool_call_id: "c".into(),
             name: "delete_node".into(),
             args: json!({ "id": id }),
-            result: held_result(&target(id, title, 0)),
+            result: held_result(&target(id, title, 0), &ancestors),
             is_error: false,
             duration_ms: 0,
         }
+    }
+
+    #[test]
+    fn a_target_nested_under_another_held_target_is_left_out() {
+        let got = held_deletions(&[
+            held_under("step", "Step", &["plan"]),
+            held("plan", "Plan"),
+            held_under("other", "Other", &["unrelated"]),
+        ]);
+        let ids: Vec<_> = got.iter().map(|p| p.node_id.as_str()).collect();
+        assert_eq!(ids, vec!["plan", "other"]);
     }
 
     use nodespace_core::db::SqliteStore;
@@ -472,6 +530,20 @@ mod tests {
         assert_eq!(pending.descendant_count, 2);
         assert!(exists(&ns, &plan).await);
         assert!(preview_deletion(&ns, "missing").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn ancestor_ids_walk_up_to_the_root_nearest_first() {
+        let (ns, _tmp) = service().await;
+        let (plan, _) = fixture(&ns).await;
+        let step = ns.get_children(&plan).await.unwrap().remove(0).id;
+        let detail = ns.get_children(&step).await.unwrap().remove(0).id;
+
+        assert_eq!(
+            ancestor_ids(&ns, &detail).await.unwrap(),
+            vec![step, plan.clone()]
+        );
+        assert!(ancestor_ids(&ns, &plan).await.unwrap().is_empty());
     }
 
     #[tokio::test]

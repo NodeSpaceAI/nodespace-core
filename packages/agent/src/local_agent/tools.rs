@@ -4020,11 +4020,14 @@ impl GraphToolExecutor {
                     "delete_node",
                 )
             })?;
+        let ancestors = super::deletion_confirmation::ancestor_ids(&ns, node_id)
+            .await
+            .map_err(|e| ops_error_to_tool(OpsError::from(e), "delete_node"))?;
 
         Ok(ok_result(
             tool_call_id,
             "delete_node",
-            super::deletion_confirmation::held_result(&pending),
+            super::deletion_confirmation::held_result(&pending, &ancestors),
         ))
     }
 

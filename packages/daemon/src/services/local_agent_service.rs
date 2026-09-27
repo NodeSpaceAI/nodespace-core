@@ -1029,10 +1029,10 @@ impl LocalAgentServiceImpl {
         &self,
         node_id: &str,
         targets: &[AiChatPendingDeletion],
-        answer: ConfirmationReply,
+        answer: DeletionAnswer,
     ) {
         let (text, writes) = match answer {
-            ConfirmationReply::Confirm => {
+            DeletionAnswer::Confirmed => {
                 let outcome =
                     deletion_confirmation::execute_confirmed(&self.inner.node_service, targets)
                         .await;
@@ -1048,7 +1048,7 @@ impl LocalAgentServiceImpl {
                     confirmed_deletion_writes(&outcome),
                 )
             }
-            ConfirmationReply::Decline | ConfirmationReply::Other => {
+            DeletionAnswer::Declined => {
                 (deletion_confirmation::DECLINED_TEXT.to_string(), Vec::new())
             }
         };
@@ -2417,6 +2417,13 @@ pub fn completed_writes_from(executions: &[ToolExecutionRecord]) -> Vec<AiChatCo
         .collect()
 }
 
+/// How the user answered a delete confirmation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DeletionAnswer {
+    Confirmed,
+    Declined,
+}
+
 /// The held deletes the user's latest message answers, and how.
 ///
 /// `None` unless that message directly follows a delete confirmation and is an
@@ -2425,17 +2432,19 @@ pub fn completed_writes_from(executions: &[ToolExecutionRecord]) -> Vec<AiChatCo
 /// can never reach them.
 fn pending_deletion_answer(
     messages: &[AiChatMessage],
-) -> Option<(Vec<AiChatPendingDeletion>, ConfirmationReply)> {
+) -> Option<(Vec<AiChatPendingDeletion>, DeletionAnswer)> {
     let [.., asked, reply] = messages else {
         return None;
     };
     if reply.role != "user" || asked.role != "assistant" || asked.pending_deletions.is_empty() {
         return None;
     }
-    match deletion_confirmation::classify_reply(&reply.content) {
-        ConfirmationReply::Other => None,
-        answer => Some((asked.pending_deletions.clone(), answer)),
-    }
+    let answer = match deletion_confirmation::classify_reply(&reply.content) {
+        ConfirmationReply::Confirm => DeletionAnswer::Confirmed,
+        ConfirmationReply::Decline => DeletionAnswer::Declined,
+        ConfirmationReply::Other => return None,
+    };
+    Some((asked.pending_deletions.clone(), answer))
 }
 
 /// Record a confirmed delete the way a completed tool write is recorded, so
@@ -3692,6 +3701,63 @@ mod tests {
         }
     }
 
+    /// An engine that deletes `target` whenever `delete_node` is on offer and
+    /// has not been called yet, then claims it did — the model a held delete
+    /// exists to protect against.
+    struct DeletingEngine {
+        target: String,
+    }
+
+    #[async_trait]
+    impl ChatInferenceEngine for DeletingEngine {
+        async fn generate(
+            &self,
+            request: nodespace_agent::agent_types::InferenceRequest,
+            on_chunk: Box<dyn Fn(StreamingChunk) + Send>,
+        ) -> Result<InferenceUsage, InferenceError> {
+            let offered = request
+                .tools
+                .iter()
+                .flatten()
+                .any(|t| t.name == "delete_node");
+            let called = request
+                .messages
+                .iter()
+                .any(|m| m.role == Role::Tool && m.name.as_deref() == Some("delete_node"));
+            if offered && !called {
+                on_chunk(StreamingChunk::ToolCallStart {
+                    id: "tc_delete".to_string(),
+                    name: "delete_node".to_string(),
+                    provider_extra: None,
+                });
+                on_chunk(StreamingChunk::ToolCallArgs {
+                    id: "tc_delete".to_string(),
+                    args_json: serde_json::json!({ "id": self.target }).to_string(),
+                });
+            } else {
+                on_chunk(StreamingChunk::Token {
+                    text: "I deleted it.".to_string(),
+                });
+            }
+            let usage = InferenceUsage {
+                prompt_tokens: 10,
+                completion_tokens: 5,
+            };
+            on_chunk(StreamingChunk::Done { usage });
+            Ok(usage)
+        }
+
+        async fn model_info(
+            &self,
+        ) -> Result<Option<nodespace_agent::agent_types::ChatModelSpec>, InferenceError> {
+            Ok(None)
+        }
+
+        async fn token_count(&self, text: &str) -> Result<u32, InferenceError> {
+            Ok((text.len() as f32 / 4.0).ceil() as u32)
+        }
+    }
+
     /// An engine whose `generate` blocks until the test releases it, so a
     /// turn can be cancelled mid-flight deterministically.
     struct BlockingEngine {
@@ -4376,6 +4442,65 @@ mod tests {
         );
     }
 
+    /// The whole seam: a real turn holds the model's delete and persists the
+    /// confirmation, and only the user's yes on the next turn deletes.
+    #[tokio::test]
+    async fn a_model_delete_waits_for_the_users_yes_across_turns() {
+        let (svc, node_service, _tempdir) = test_service().await;
+        let target_id = node_service
+            .create_node(Node::new(
+                "text".to_string(),
+                "Old plan".to_string(),
+                serde_json::json!({}),
+            ))
+            .await
+            .expect("create target");
+        svc.replace_engine(Arc::new(DeletingEngine {
+            target: format!("nodespace://{target_id}"),
+        }))
+        .await;
+
+        let chat_id =
+            create_processing_node_with_user_message(&node_service, "delete the old plan").await;
+        svc.maybe_handle_ai_chat_node(&chat_id).await;
+
+        assert!(
+            node_exists(&node_service, &target_id).await,
+            "the model's delete must be held, not run"
+        );
+        let asked = get_ai_chat(&node_service, &chat_id)
+            .await
+            .messages
+            .pop()
+            .expect("confirmation appended");
+        assert_eq!(
+            asked.question.as_deref(),
+            Some("Delete \"Old plan\" (text)? This can't be undone.")
+        );
+        assert_eq!(asked.pending_deletions.len(), 1);
+        assert!(
+            asked.completed_writes.is_empty(),
+            "a held delete is not a completed write"
+        );
+
+        let node = node_service.get_node(&chat_id).await.unwrap().unwrap();
+        let version = node.version;
+        let mut ai_chat = AiChatNode::from_node(node).unwrap();
+        ai_chat.turn_status = "processing".to_string();
+        ai_chat
+            .messages
+            .push(chat_message("user", deletion_confirmation::CONFIRM_OPTION));
+        let mut props = serde_json::json!({});
+        props["ai-chat"] = ai_chat.to_properties_value();
+        node_service
+            .update_node(&chat_id, version, NodeUpdate::new().with_properties(props))
+            .await
+            .expect("send yes");
+        svc.maybe_handle_ai_chat_node(&chat_id).await;
+
+        assert!(!node_exists(&node_service, &target_id).await);
+    }
+
     #[tokio::test]
     async fn a_no_to_a_delete_confirmation_deletes_nothing() {
         let (svc, node_service, _tempdir) = test_service().await;
@@ -4430,7 +4555,7 @@ mod tests {
         let direct = [asked.clone(), chat_message("user", "yes")];
         assert!(matches!(
             pending_deletion_answer(&direct),
-            Some((_, ConfirmationReply::Confirm))
+            Some((_, DeletionAnswer::Confirmed))
         ));
 
         let later = [

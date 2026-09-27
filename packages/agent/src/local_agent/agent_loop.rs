@@ -810,27 +810,7 @@ fn duplicate_entity_backstop(session: &mut AgentSession, result: &mut AgentTurnR
         return;
     }
 
-    // The reply being replaced may have been the only report of other writes
-    // this turn did complete, so they are named in the question itself. The
-    // first paragraph is what the chat UI renders above the option chips;
-    // anything after it would reach the model but not the user.
-    let done: Vec<String> = result
-        .tool_calls_made
-        .iter()
-        .filter(|r| super::deletion_confirmation::landed_write(r))
-        .map(|r| {
-            let label = humanize_tool_name(&r.name);
-            ["content", "title", "name"]
-                .iter()
-                .find_map(|k| r.args.get(*k).and_then(|v| v.as_str()))
-                .map_or_else(|| label.to_string(), |name| format!("{label} \"{name}\""))
-        })
-        .collect();
-    let done_note = if done.is_empty() {
-        String::new()
-    } else {
-        format!(" Done this turn: {}.", done.join(", "))
-    };
+    let done_note = done_this_turn_note(&result.tool_calls_made);
     let question = format!(
         "\"{title}\" already exists as a {node_type} ({id}). Did you mean that record, or \
          do you want a second, separate one?{done_note}"
@@ -855,6 +835,31 @@ fn duplicate_entity_backstop(session: &mut AgentSession, result: &mut AgentTurnR
     });
 }
 
+/// Name the writes a turn completed, for a question that replaces its reply.
+///
+/// The replaced reply may have been the only report of those writes, so they
+/// are named in the question itself. The first paragraph is what the chat UI
+/// renders above the option chips; anything after it would reach the model
+/// but not the user. Empty when the turn completed no write.
+fn done_this_turn_note(executions: &[ToolExecutionRecord]) -> String {
+    let done: Vec<String> = executions
+        .iter()
+        .filter(|r| super::deletion_confirmation::landed_write(r))
+        .map(|r| {
+            let label = humanize_tool_name(&r.name);
+            ["content", "title", "name"]
+                .iter()
+                .find_map(|k| r.args.get(*k).and_then(|v| v.as_str()))
+                .map_or_else(|| label.to_string(), |name| format!("{label} \"{name}\""))
+        })
+        .collect();
+    if done.is_empty() {
+        String::new()
+    } else {
+        format!(" Done this turn: {}.", done.join(", "))
+    }
+}
+
 /// End a turn that held deletes by asking the user to confirm them.
 ///
 /// `delete_node` never deletes (see `deletion_confirmation`); whatever the
@@ -873,7 +878,11 @@ fn confirm_held_deletions(session: &mut AgentSession, result: &mut AgentTurnResu
     if targets.is_empty() {
         return false;
     }
-    let question = dc::confirmation_question(&targets);
+    let question = format!(
+        "{}{}",
+        dc::confirmation_question(&targets),
+        done_this_turn_note(&result.tool_calls_made)
+    );
     let text = dc::confirmation_text(&question);
     replace_turn_reply(session, &text);
     result.response = text;
@@ -10239,7 +10248,7 @@ mod tests {
         MockToolExecutor::new().with_tool(
             "delete_node",
             json!({"type": "object", "properties": {"id": {"type": "string"}}}),
-            crate::local_agent::deletion_confirmation::held_result(pending),
+            crate::local_agent::deletion_confirmation::held_result(pending, &[]),
         )
     }
 
@@ -10293,6 +10302,71 @@ mod tests {
             Some(result.response.as_str()),
             "the history must carry the question, not the false claim"
         );
+    }
+
+    /// The confirmation replaces the model's reply, so a write the same turn
+    /// did complete is named in it rather than going unreported.
+    #[tokio::test]
+    async fn a_confirmation_names_the_writes_its_turn_completed() {
+        let call = |id: &str, name: &str, args: &str| {
+            vec![
+                StreamingChunk::ToolCallStart {
+                    id: id.to_string(),
+                    name: name.to_string(),
+                    provider_extra: None,
+                },
+                StreamingChunk::ToolCallArgs {
+                    id: id.to_string(),
+                    args_json: args.to_string(),
+                },
+                StreamingChunk::Done {
+                    usage: InferenceUsage {
+                        prompt_tokens: 1,
+                        completion_tokens: 1,
+                    },
+                },
+            ]
+        };
+        let engine = Arc::new(MockEngine::new(vec![
+            call(
+                "tc_1",
+                "create_node",
+                r#"{"node_type":"task","content":"Fix signup"}"#,
+            ),
+            call("tc_2", "delete_node", r#"{"id":"n1"}"#),
+        ]));
+        let executor = held_delete_executor(&pending_login_task(0)).with_tool(
+            "create_node",
+            json!({"type": "object"}),
+            json!({"id": "nodespace://n2"}),
+        );
+        let agent_loop = LocalAgentLoop::new(engine, Arc::new(executor));
+
+        let mut session = new_session();
+        let result = agent_loop
+            .run_turn(
+                &mut session,
+                "add a signup task and delete the login one",
+                |_| {},
+                |_| {},
+                CancellationToken::new(),
+            )
+            .await
+            .expect("turn should succeed");
+
+        let clarify = result.clarify.expect("the confirmation is a question");
+        assert!(
+            clarify.question.starts_with("Delete \"Fix login\" (task)?"),
+            "{}",
+            clarify.question
+        );
+        assert!(
+            clarify.question.contains("Done this turn:")
+                && clarify.question.contains("\"Fix signup\""),
+            "{}",
+            clarify.question
+        );
+        assert!(!result.response.split("\n\n").next().unwrap().is_empty());
     }
 
     /// A turn the model ended with its own clarifying question keeps it; the
