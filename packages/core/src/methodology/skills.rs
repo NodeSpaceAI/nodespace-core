@@ -18,10 +18,12 @@
 //! the closing `---` line is seeded verbatim as the guidance body. Files are
 //! compiled into the binary, so nothing is read from disk at runtime.
 //!
-//! The frontmatter is a strict subset of YAML: exactly the two keys `title`
-//! and `description`, one per line, each value double-quoted with no escapes
-//! and no embedded `"`. Anything else fails every test that builds the Playbook,
-//! so a malformed file cannot ship.
+//! The frontmatter is a strict subset of YAML: the two required keys `title`
+//! and `description`, plus an optional `tools` — a comma-separated tool
+//! whitelist for a skill that needs more than [`DEFAULT_TOOLS`], such as one
+//! that links nodes or changes a task's status. One key per line, each value
+//! double-quoted with no escapes and no embedded `"`. Anything else fails every
+//! test that builds the Playbook, so a malformed file cannot ship.
 //!
 //! # Why files live here and not in `packages/skill/`
 //!
@@ -66,6 +68,18 @@
 use crate::markdown::{NodeTemplate, SeedTier};
 use crate::models::SkillNode;
 
+/// The tool whitelist of a skill whose frontmatter names no `tools`.
+const DEFAULT_TOOLS: &[&str] = &["create_node", "update_node", "search_nodes", "get_node"];
+
+/// A parsed skill source.
+#[derive(Debug, PartialEq)]
+struct Parsed<'a> {
+    title: &'a str,
+    description: &'a str,
+    tools: Vec<&'a str>,
+    body: &'a str,
+}
+
 /// Build a seed template from a Playbook skill's markdown source
 /// (frontmatter + body, see the module docs).
 ///
@@ -74,19 +88,14 @@ use crate::models::SkillNode;
 /// If the frontmatter is malformed. Sources are `include_str!` constants, so
 /// this is a build-content error that the Playbook's own tests surface.
 pub fn playbook_skill(source: &str) -> NodeTemplate {
-    let (title, description, body) = parse(source).unwrap_or_else(|e| {
+    let parsed = parse(source).unwrap_or_else(|e| {
         panic!("malformed Playbook skill frontmatter: {e}");
     });
     NodeTemplate {
         tier: SeedTier::Starter,
         ..NodeTemplate::skill(
-            SkillNode::new(
-                title,
-                description,
-                &["create_node", "update_node", "search_nodes", "get_node"],
-                3,
-            ),
-            body,
+            SkillNode::new(parsed.title, parsed.description, &parsed.tools, 3),
+            parsed.body,
         )
     }
 }
@@ -175,8 +184,8 @@ fn push_list(out: &mut String, label: &str, items: impl Iterator<Item = String>)
     }
 }
 
-/// Split `source` into `(title, description, body)`.
-fn parse(source: &str) -> Result<(&str, &str, &str), String> {
+/// Split `source` into its frontmatter values and body.
+fn parse(source: &str) -> Result<Parsed<'_>, String> {
     let rest = source
         .strip_prefix("---\n")
         .ok_or("source must start with a `---` line")?;
@@ -187,6 +196,7 @@ fn parse(source: &str) -> Result<(&str, &str, &str), String> {
 
     let mut title = None;
     let mut description = None;
+    let mut tools = None;
     for line in front.lines() {
         let (key, raw) = line
             .split_once(": ")
@@ -201,6 +211,7 @@ fn parse(source: &str) -> Result<(&str, &str, &str), String> {
         let slot = match key {
             "title" => &mut title,
             "description" => &mut description,
+            "tools" => &mut tools,
             other => return Err(format!("unknown frontmatter key {other:?}")),
         };
         if slot.replace(value).is_some() {
@@ -208,8 +219,26 @@ fn parse(source: &str) -> Result<(&str, &str, &str), String> {
         }
     }
 
+    let tools = match tools {
+        None => DEFAULT_TOOLS.to_vec(),
+        Some(list) => {
+            let names: Vec<&str> = list.split(',').map(str::trim).collect();
+            if names.iter().any(|n| n.is_empty()) {
+                return Err(format!("tools: empty entry in {list:?}"));
+            }
+            names
+        }
+    };
+
     match (title, description) {
-        (Some(t), Some(d)) if !t.is_empty() && !d.is_empty() => Ok((t, d, body)),
+        (Some(title), Some(description)) if !title.is_empty() && !description.is_empty() => {
+            Ok(Parsed {
+                title,
+                description,
+                tools,
+                body,
+            })
+        }
         _ => Err("both `title` and `description` are required and non-empty".to_string()),
     }
 }
@@ -221,7 +250,24 @@ mod tests {
     #[test]
     fn splits_frontmatter_from_body_verbatim() {
         let src = "---\ntitle: \"T\"\ndescription: \"a: b\"\n---\n# T\n\n---\nbody\n";
-        assert_eq!(parse(src), Ok(("T", "a: b", "# T\n\n---\nbody\n")));
+        assert_eq!(
+            parse(src),
+            Ok(Parsed {
+                title: "T",
+                description: "a: b",
+                tools: DEFAULT_TOOLS.to_vec(),
+                body: "# T\n\n---\nbody\n",
+            })
+        );
+    }
+
+    #[test]
+    fn an_explicit_tools_list_replaces_the_default() {
+        let src = "---\ntitle: \"T\"\ndescription: \"D\"\ntools: \"get_node, create_relationship\"\n---\nb";
+        assert_eq!(
+            parse(src).map(|p| p.tools),
+            Ok(vec!["get_node", "create_relationship"])
+        );
     }
 
     #[test]
@@ -269,6 +315,7 @@ mod tests {
             "---\ntitle: \"T\"\ndescription: \"D\"\nextra: \"x\"\n---\n",
             "---\ntitle: \"T\"\ntitle: \"U\"\ndescription: \"D\"\n---\n",
             "---\ntitle: \"T\"\ndescription: \"say \\\"hi\\\"\"\n---\n",
+            "---\ntitle: \"T\"\ndescription: \"D\"\ntools: \"get_node,,x\"\n---\n",
         ] {
             assert!(parse(src).is_err(), "{src:?} should be rejected");
         }

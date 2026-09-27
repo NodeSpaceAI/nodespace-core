@@ -842,6 +842,23 @@ fn get_node_property_at_scope(
                 }
             }
         }
+
+        // A prefixed field inside a bucket in scope, nearest first —
+        // `update_node` stores `custom:x` on a core type under that type's
+        // namespace, not at the top level.
+        for scope in scope_chain {
+            let Some(type_obj) = obj.get(*scope).and_then(|v| v.as_object()) else {
+                continue;
+            };
+            for (k, v) in type_obj {
+                if k.starts_with('_') {
+                    continue;
+                }
+                if k.find(':').map(|i| &k[i + 1..]) == Some(key) {
+                    return Some(v.clone());
+                }
+            }
+        }
     }
     None
 }
@@ -868,7 +885,15 @@ pub fn inject_resolved_paths(
     // Path like ["node", "story", "epic", "status"] with resolved value "active":
     // We need to set node.story.epic.status = "active" and node.story.epic = Map{...}
     // and node.story = Map{...}
-    for (path, value) in resolved {
+    // Shortest paths first. A terminal write replaces whatever is at its key,
+    // so injecting `node.plan` after `node.plan.spec` would drop the `spec`
+    // just nested under it — and `resolved` is a HashMap, so which came first
+    // varied run to run. Deeper paths then merge into the maps shorter ones
+    // left behind; a deeper path under a scalar or list replaces it with a
+    // map, since no condition can walk a further hop through either.
+    let mut ordered: Vec<_> = resolved.iter().collect();
+    ordered.sort_by_key(|(path, _)| path.len());
+    for (path, value) in ordered {
         if path.len() < 2 || path[0] != "node" {
             continue;
         }
@@ -1050,6 +1075,31 @@ mod tests {
         assert!(get_map_field(&result, "property").is_none());
     }
 
+    /// A relationship and a path through it resolved together: the shorter
+    /// terminal write must not clobber the deeper one's nested value.
+    ///
+    /// `resolved` is a HashMap with a fresh random seed each construction, so
+    /// the unfixed code dropped the nested key on roughly half of iterations.
+    #[test]
+    fn inject_keeps_a_deeper_path_under_a_shorter_one() {
+        for _ in 0..64 {
+            let base = make_cel_map(vec![]);
+            let plan = make_cel_map(vec![("plan_status", Value::String(Arc::new("x".into())))]);
+            let spec = make_cel_map(vec![("spec_status", Value::String(Arc::new("y".into())))]);
+            let mut resolved = HashMap::new();
+            resolved.insert(vec!["node".to_string(), "plan".to_string()], plan);
+            resolved.insert(
+                vec!["node".to_string(), "plan".to_string(), "spec".to_string()],
+                spec.clone(),
+            );
+
+            let result = inject_resolved_paths(&base, &resolved);
+            let plan = get_map_field(&result, "plan").expect("plan injected");
+            assert!(get_map_field(&plan, "plan_status").is_some());
+            assert_eq!(get_map_field(&plan, "spec"), Some(spec));
+        }
+    }
+
     #[test]
     fn inject_list_value() {
         let base = make_cel_map(vec![]);
@@ -1130,6 +1180,62 @@ mod tests {
         // "task" itself should NOT be returned as a property (it's the namespace wrapper)
         assert_eq!(get_node_property(&node, "task"), None);
         assert_eq!(get_node_property(&node, "missing"), None);
+    }
+
+    /// Parity with `cel::node_to_cel_value`: a prefixed field stored inside
+    /// the type bucket resolves by its bare name, and an unprefixed field of
+    /// the same bare name wins.
+    #[test]
+    fn get_property_strips_prefix_inside_the_type_namespace() {
+        let node = crate::models::Node {
+            id: "n1".to_string(),
+            node_type: "task".to_string(),
+            content: "".to_string(),
+            version: 1,
+            created_at: chrono::Utc::now(),
+            modified_at: chrono::Utc::now(),
+            properties: json!({"task": {
+                "status": "open",
+                "custom:status": "shadow",
+                "custom:verification_method": "ran the tests",
+            }}),
+            mentions: vec![],
+            mentioned_in: vec![],
+            title: None,
+            lifecycle_status: "active".to_string(),
+        };
+        assert_eq!(
+            get_node_property(&node, "verification_method"),
+            Some(json!("ran the tests"))
+        );
+        assert_eq!(get_node_property(&node, "status"), Some(json!("open")));
+    }
+
+    /// Parity with `cel::node_to_cel_value_at_scope` across an `extends`
+    /// chain: an ancestor bucket's unprefixed key beats a nearer bucket's
+    /// prefixed one.
+    #[test]
+    fn get_property_prefers_unprefixed_keys_across_the_whole_scope_chain() {
+        let node = crate::models::Node {
+            id: "n1".to_string(),
+            node_type: "issue".to_string(),
+            content: "".to_string(),
+            version: 1,
+            created_at: chrono::Utc::now(),
+            modified_at: chrono::Utc::now(),
+            properties: json!({
+                "issue": {"custom:status": "shadow"},
+                "task": {"status": "open"},
+            }),
+            mentions: vec![],
+            mentioned_in: vec![],
+            title: None,
+            lifecycle_status: "active".to_string(),
+        };
+        assert_eq!(
+            get_node_property_at_scope(&node, "status", &["issue", "task"]),
+            Some(json!("open"))
+        );
     }
 
     #[test]

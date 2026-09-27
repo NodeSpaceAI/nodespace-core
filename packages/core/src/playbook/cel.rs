@@ -433,14 +433,27 @@ pub fn node_to_cel_value_at_scope(node: &Node, scope_chain: &[&str]) -> Value {
         // Walk the scope chain first, nearest scope wins. Done ahead of the
         // loop below so a bucket in the chain is never also seen by the
         // flat-property branch.
-        for scope in scope_chain {
-            let Some(bucket) = obj.get(*scope).and_then(|v| v.as_object()) else {
-                continue;
-            };
-            for (ik, iv) in bucket {
-                // Skip internal fields like _schema_version
-                if !ik.starts_with('_') {
-                    map.entry(key(ik)).or_insert_with(|| json_to_cel(iv));
+        //
+        // A prefixed field lands in a bucket too — `update_node` stores
+        // `custom:x` on a core type under that type's namespace — and must be
+        // stripped the same way as a flat one, or it is unreachable as
+        // `node.x`. Unprefixed keys are taken across the WHOLE chain before
+        // any prefixed one, so a core `status` in an ancestor bucket wins
+        // over a `custom:status` in a nearer one — the same precedence as
+        // `graph_resolver::get_node_property_at_scope`.
+        let buckets: Vec<_> = scope_chain
+            .iter()
+            .filter_map(|scope| obj.get(*scope).and_then(|v| v.as_object()))
+            .collect();
+        for want_prefixed in [false, true] {
+            for bucket in &buckets {
+                for (ik, iv) in bucket.iter() {
+                    // Skip internal fields like _schema_version
+                    if ik.starts_with('_') || ik.contains(':') != want_prefixed {
+                        continue;
+                    }
+                    let bare_key = ik.find(':').map(|i| &ik[i + 1..]).unwrap_or(ik);
+                    map.entry(key(bare_key)).or_insert_with(|| json_to_cel(iv));
                 }
             }
         }
@@ -1103,6 +1116,62 @@ mod tests {
             .unwrap()
             .execute(&ctx);
         assert_eq!(result, Ok(Value::Bool(true)));
+    }
+
+    /// A prefixed field on a core type is stored inside the type bucket, not
+    /// at the top level, and must be stripped there too. An unprefixed field
+    /// of the same bare name still wins.
+    #[test]
+    fn node_to_cel_strips_namespace_prefix_inside_the_type_bucket() {
+        let node = test_node(
+            "task",
+            json!({"task": {
+                "status": "open",
+                "custom:status": "shadow",
+                "custom:verification_method": "ran the tests",
+            }}),
+        );
+        let ctx = eval_context_with_node(&node);
+
+        for (expr, why) in [
+            (
+                "node.verification_method == 'ran the tests'",
+                "a bucketed prefixed field must be reachable by its bare name",
+            ),
+            (
+                "node.status == 'open'",
+                "the unprefixed field must win over a prefixed one of the same name",
+            ),
+        ] {
+            let result = Program::compile(expr).unwrap().execute(&ctx);
+            assert_eq!(result, Ok(Value::Bool(true)), "{why}");
+        }
+    }
+
+    /// Across an `extends` chain, an unprefixed key in the ancestor bucket
+    /// still wins over a prefixed one in the nearer bucket — matching
+    /// `graph_resolver::get_node_property_at_scope`.
+    #[test]
+    fn node_to_cel_prefers_unprefixed_keys_across_the_whole_scope_chain() {
+        let node = test_node(
+            "issue",
+            json!({
+                "issue": {"custom:status": "shadow", "estimate": "3"},
+                "task": {"status": "open"},
+            }),
+        );
+        let map = match node_to_cel_value_at_scope(&node, &["issue", "task"]) {
+            Value::Map(m) => m,
+            other => panic!("expected Map, got {:?}", other),
+        };
+        assert_eq!(
+            map.map.get(&key("status")),
+            Some(&Value::String(Arc::new("open".to_string())))
+        );
+        assert_eq!(
+            map.map.get(&key("estimate")),
+            Some(&Value::String(Arc::new("3".to_string())))
+        );
     }
 
     #[test]

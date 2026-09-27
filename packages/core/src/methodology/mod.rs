@@ -26,6 +26,7 @@
 pub mod install;
 pub mod linear;
 pub mod skills;
+pub mod spec_driven;
 
 pub use install::install_playbook;
 
@@ -49,7 +50,7 @@ pub struct MethodologyPlaybook {
     /// a type with no schema, so a mis-ordered playbook fails at install time
     /// rather than silently half-installing.
     pub schemas: Vec<SchemaStep>,
-    /// Vocabulary extensions applied after the schemas exist.
+    /// Vocabulary extensions and added fields, applied after the schemas exist.
     pub field_value_extensions: Vec<FieldValueExtension>,
     /// Plays to install, as seeded (resettable) play nodes.
     pub plays: Vec<PlayStep>,
@@ -85,7 +86,8 @@ pub struct SchemaStep {
     pub params: serde_json::Value,
 }
 
-/// One `add_field_values` call against an existing field's vocabulary.
+/// One `update_schema` call extending an existing schema: `add_field_values`
+/// against a field's vocabulary, or `add_fields` adding a field outright.
 pub struct FieldValueExtension {
     /// Schema whose field is extended. For an inherited field this is the
     /// *extending* schema (`issue`), not the declaring one (`task`) — the
@@ -95,8 +97,15 @@ pub struct FieldValueExtension {
     /// Field being extended, for progress reporting.
     pub field: &'static str,
     /// An [`crate::schema::UpdateSchemaParams`] payload carrying
-    /// `add_field_values`.
+    /// `add_field_values` or `add_fields`.
     pub params: serde_json::Value,
+}
+
+impl FieldValueExtension {
+    /// Whether this step adds a field rather than extending a vocabulary.
+    pub fn adds_field(&self) -> bool {
+        self.params.get("add_fields").is_some()
+    }
 }
 
 /// One Play, installed as a seeded `play` node.
@@ -227,10 +236,11 @@ impl InstallReport {
 
 /// Every playbook this build ships.
 ///
-/// The GUI picker and the reference-doc generator both iterate this, so a
-/// playbook added here is offered and documented with no further wiring.
+/// The GUI picker iterates this, so a playbook added here is offered with no
+/// further wiring. Its CLI reference doc is not automatic: it needs a region in
+/// `packages/cli/examples/gen_skill_md.rs` and a `references/` file to hold it.
 pub fn all_playbooks() -> Vec<MethodologyPlaybook> {
-    vec![linear::playbook()]
+    vec![linear::playbook(), spec_driven::playbook()]
 }
 
 /// Look up a playbook by its [`MethodologyPlaybook::id`].
@@ -255,6 +265,7 @@ mod tests {
     #[test]
     fn playbook_by_id_finds_a_shipped_playbook() {
         assert!(playbook_by_id("linear").is_some());
+        assert!(playbook_by_id("spec-driven").is_some());
         assert!(playbook_by_id("nonexistent").is_none());
     }
 

@@ -44,9 +44,9 @@ Create `cycle`:
 nodespace schema create --params '{"description":"A time-boxed iteration. Its upcoming/active/past state is derived by comparing start_date and end_date to today — deliberately not stored, so there is no second copy of the truth to keep in sync.","fields":[{"description":"First day of the cycle.","friendlyName":"Start date","indexed":true,"name":"start_date","protection":"user","required":true,"type":"date"},{"description":"Last day of the cycle. A cycle whose end_date has passed is over; on that day the rollover Play moves its tasks into the successor.","friendlyName":"End date","indexed":true,"name":"end_date","protection":"user","required":true,"type":"date"},{"default":14,"description":"How many days the NEXT cycle should span. Read by the cycle-creation Play when it computes the successor'\''s end_date, so changing cadence is a field edit rather than a Play rewrite.","friendlyName":"Duration (days)","indexed":false,"name":"duration_days","protection":"user","required":false,"type":"number"}],"name":"Cycle","relationships":[{"cardinality":"many","description":"Work assigned to this cycle. Targets `task`, not `issue`: subtype-aware querying already reaches issues through it, and targeting the base type keeps a plain task assignable to a cycle.","direction":"out","name":"tasks","reverseCardinality":"one","reverseName":"cycle","targetType":"task"}]}'
 ```
 
-### 2. Vocabulary extensions
+### 2. Schema extensions
 
-These append values to fields `issue` **inherits** from `task`, so every new value carries `mapsTo` naming the base value it collapses to when something reading at `task` scope looks at it. Without that a base-scoped Play or query would meet a value it has never heard of.
+A vocabulary extension appends values to a field. When the field is **inherited** from a base type, every new value carries `mapsTo` naming the base value it collapses to when something reading at the base scope looks at it. Without that a base-scoped Play or query would meet a value it has never heard of.
 
 Extend `issue.status`:
 

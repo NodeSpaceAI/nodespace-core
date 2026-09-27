@@ -567,7 +567,7 @@ fn every_schema_rule_reaches_the_skill() {
     );
 }
 
-/// Every `bash` block in the generated playbook doc must survive POSIX word
+/// Every `bash` block in each generated playbook doc must survive POSIX word
 /// splitting.
 ///
 /// The doc exists to be copy-pasted by an external agent, and its Play blocks
@@ -581,9 +581,19 @@ fn every_schema_rule_reaches_the_skill() {
 /// broken doc stay happily in sync. This is what notices that they are both
 /// wrong.
 #[test]
-fn generated_playbook_doc_emits_parseable_shell() {
-    let path =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../skill/references/linear-playbook.md");
+fn generated_playbook_docs_emit_parseable_shell() {
+    // Derived from the shipped playbooks rather than listed, so a playbook
+    // added without its CLI reference doc fails here instead of shipping
+    // undocumented for external agents.
+    for playbook in nodespace_core::methodology::all_playbooks() {
+        assert_playbook_doc_emits_parseable_shell(&format!("{}-playbook.md", playbook.id));
+    }
+}
+
+fn assert_playbook_doc_emits_parseable_shell(file: &str) {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../skill/references")
+        .join(file);
     let doc = std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
 
@@ -601,7 +611,7 @@ fn generated_playbook_doc_emits_parseable_shell() {
         let joined = block.replace("\\\n", " ");
         let words = shell_words::split(&joined).unwrap_or_else(|e| {
             panic!(
-                "generated bash block {blocks} does not parse as a shell command \
+                "{file}: generated bash block {blocks} does not parse as a shell command \
                  ({e}). A CEL string literal's quote is almost certainly \
                  terminating the surrounding --params argument; see \
                  `compact_json` in gen_skill_md.rs.\n\n{block}"
