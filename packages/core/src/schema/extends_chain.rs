@@ -16,7 +16,7 @@
 //!   instead of a schema's own directly-declared `fields`.
 //! - [`detect_cycle`] rejects `A extends B extends A` before a write lands.
 //!   No existing relationship in NodeSpace requires acyclicity, so this is new
-//!   logic rather than a reuse of `validate_relationship_targets_exist`'s flat
+//!   logic rather than a reuse of `validate_relationship_targets`'s flat
 //!   existence check.
 //!
 //! **Edge direction is load-bearing.** `set_schema_declarations` stores a
