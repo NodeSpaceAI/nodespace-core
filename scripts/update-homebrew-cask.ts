@@ -62,7 +62,7 @@ export const TAP_REPO = "NodeSpaceAI/homebrew-nodespace";
 const CASK_BINARY_PATH = "Contents/MacOS/nodespace";
 
 // release.yml builds with MACOSX_DEPLOYMENT_TARGET=14.0 (Metal GPU
-// embeddings require Sonoma+, see #990).
+// embeddings require Sonoma+).
 const MIN_MACOS = "sonoma";
 
 export interface ReleaseAsset {
@@ -221,7 +221,7 @@ ${NAME_BLOCK}
 ${LIVECHECK_BLOCK}
 
   # release.yml builds with MACOSX_DEPLOYMENT_TARGET=14.0 (Metal GPU
-  # embeddings require Sonoma+ -- see #990).
+  # embeddings require Sonoma+).
   depends_on macos: :${MIN_MACOS}
   # arm64-only by design -- see the platform-support note above the \`url\` line.
   depends_on arch:  :arm64

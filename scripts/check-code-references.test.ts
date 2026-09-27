@@ -9,7 +9,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { BASELINES, countReferences } from "./check-code-references";
+import { SCAN_ROOTS, baselineFailures, countReferences } from "./check-code-references";
 
 let fixtureDir: string;
 
@@ -70,6 +70,44 @@ describe("countReferences — issue-number patterns", () => {
     expect(result.issueNumberReferences).toBe(1);
   });
 
+  test("matches a bare #NNNN in prose", () => {
+    writeFixture(
+      "scripts/a.ts",
+      [
+        "// Metal embeddings require Sonoma+, see #990).",
+        "// the defect the #2242 audit found",
+        "//! load-bearing on this stack: #1931's guidance",
+        "// #2182: a repaired call must not read as clean",
+        "// hydration (event-driven, #1564/#1566)",
+        "it('#2088: does not discard a queued write', () => {});",
+        'expect(x, "should not be in properties after #1351");',
+      ].join("\n") + "\n",
+    );
+    const result = countReferences(["scripts"], fixtureDir);
+    expect(result.issueNumberReferences).toBe(7);
+  });
+
+  test("does not match #N shapes that are data, not issue references", () => {
+    writeFixture(
+      "scripts/a.ts",
+      [
+        "// promoted into execution (call #2 above)",
+        "// same UAX #9 implicit mark",
+        "const title = 'Invoice #001';",
+        "create_invoice(&executor, \"Invoice #1\");",
+        "const fg = isDark ? '#e5e5e5' : '#262626';",
+        "{ color: '#333' }",
+        'const c = "#999";',
+        "  color: #888;",
+        "/* matches #252523 */",
+        "let s = r#\"raw\"#;",
+        ".replace(/'/g, '&#39;');",
+      ].join("\n") + "\n",
+    );
+    const result = countReferences(["scripts"], fixtureDir);
+    expect(result.issueNumberReferences).toBe(0);
+  });
+
   test("counts one match per line, not per file", () => {
     writeFixture("scripts/a.ts", "// core#1\n// core#2\n// core#3\n");
     const result = countReferences(["scripts"], fixtureDir);
@@ -122,7 +160,7 @@ describe("countReferences — file discovery", () => {
     writeFixture("packages/agent/b.ts", "core#2\n");
     const result = countReferences(["scripts"], fixtureDir);
     expect(result.issueNumberReferences).toBe(1);
-    expect(result.issueNumberFiles.some((f) => f.includes("packages/agent"))).toBe(false);
+    expect(result.issueNumberHits.some((h) => h.includes("packages/agent"))).toBe(false);
   });
 
   test("tolerates a root that doesn't exist", () => {
@@ -132,12 +170,25 @@ describe("countReferences — file discovery", () => {
   });
 });
 
-describe("countReferences — file lists", () => {
-  test("issueNumberFiles/docPathFiles list each matching file once, even with multiple hits", () => {
-    writeFixture("scripts/a.ts", "core#1\ncore#2\n");
+describe("countReferences — hit lists", () => {
+  test("list each matching line as a repo-relative path:line: text entry", () => {
+    writeFixture("scripts/a.ts", "// clean\n// see core#1\n// @see nodespace-docs/x.md\n");
     const result = countReferences(["scripts"], fixtureDir);
-    expect(result.issueNumberReferences).toBe(2);
-    expect(result.issueNumberFiles.length).toBe(1);
+    expect(result.issueNumberHits).toEqual(["scripts/a.ts:2: // see core#1"]);
+    expect(result.docPathHits).toEqual(["scripts/a.ts:3: // @see nodespace-docs/x.md"]);
+  });
+});
+
+describe("baselineFailures", () => {
+  test("names every matching line when a count exceeds its baseline", () => {
+    const failures = baselineFailures({
+      issueNumberReferences: 10_000,
+      docPathReferences: 0,
+      issueNumberHits: ["scripts/a.ts:2: // see #1234"],
+      docPathHits: [],
+    });
+    expect(failures.length).toBe(1);
+    expect(failures[0]).toContain("scripts/a.ts:2: // see #1234");
   });
 });
 
@@ -152,26 +203,12 @@ describe("real-repo ratchet", () => {
     // "Expected: <= N, Received: N+1" and no indication of what that means
     // or how to fix it, so this throws the same actionable message the CLI
     // entry point prints instead of asserting silently.
-    const counts = countReferences();
-    if (counts.issueNumberReferences > BASELINES.issueNumberReferences) {
-      throw new Error(
-        `${counts.issueNumberReferences} issue-number references in code (core#NNNN, (#NNNN), Issue #NNNN), ` +
-          `up from the ${BASELINES.issueNumberReferences}-reference baseline in scripts/check-code-references.ts. ` +
-          "Describe the behavior/constraint directly and cite an ADR instead, per CLAUDE.md.",
-      );
-    }
-    if (counts.docPathReferences > BASELINES.docPathReferences) {
-      throw new Error(
-        `${counts.docPathReferences} nodespace-docs/ path references in code, up from the ` +
-          `${BASELINES.docPathReferences}-reference baseline in scripts/check-code-references.ts. ` +
-          "Inline the essential fact, or cite an ADR, instead of a path into a separate repo.",
-      );
-    }
+    const failures = baselineFailures(countReferences());
+    if (failures.length > 0) throw new Error(failures.join("\n\n"));
   });
 
   test("scan roots include packages/agent and packages/nlp-engine", () => {
-    const counts = countReferences();
-    expect(counts.issueNumberReferences).toBe(0);
-    expect(counts.docPathReferences).toBe(0);
+    expect(SCAN_ROOTS).toContain("packages/agent");
+    expect(SCAN_ROOTS).toContain("packages/nlp-engine");
   });
 });

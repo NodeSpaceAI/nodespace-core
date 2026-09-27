@@ -3,22 +3,20 @@
 // numbers or nodespace-docs/ paths in code comments ("describe the
 // behavior/constraint directly, and reference decisions by ADR").
 //
-// The full-repo retroactive triage this check used to merely ratchet against
-// is now complete: every issue-number and doc-path reference across the
-// whole repo (SCAN_ROOTS below, now including packages/agent and
-// packages/nlp-engine, previously excluded as out of scope) was triaged —
-// constraint-bearing comments had their constraint inlined before the
-// reference was dropped, provenance-only citations were deleted outright,
-// and doc-path references either had their essential fact inlined or were
-// replaced with an ADR citation. Both baselines are now 0.
+// Doc-path references are fully paid down (baseline 0). Issue-number
+// references are not: the patterns once missed the most common shape, a
+// bare `#NNNN` in prose ("see #990", "the #2242 audit"), so the backlog of
+// those went uncounted while the baseline read 0. The issue-number baseline
+// is the real remaining count; paying it down means inlining each
+// constraint-bearing comment's constraint before dropping the reference, and
+// deleting provenance-only citations outright.
 //
-// Lower BASELINES whenever a change pays down part of the backlog (should
-// stay at 0 now). Never raise a baseline to accommodate a new reference —
-// inline the constraint or cite an ADR instead, per the rule this check
-// exists to hold the line on.
+// Lower BASELINES whenever a change pays down part of the backlog. Never
+// raise a baseline to accommodate a new reference — inline the constraint or
+// cite an ADR instead, per the rule this check exists to hold the line on.
 
 import { readdirSync, readFileSync, statSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, relative } from "node:path";
 
 const REPO = join(dirname(new URL(import.meta.url).pathname), "..");
 
@@ -26,7 +24,7 @@ const REPO = join(dirname(new URL(import.meta.url).pathname), "..");
 // `packages/*`) so a newly added package fails closed — it stays unscanned
 // until someone notices and adds it here, rather than silently entering the
 // ratchet with whatever count it happens to start with.
-const SCAN_ROOTS = [
+export const SCAN_ROOTS = [
   "scripts",
   "packages/desktop-app",
   "packages/core",
@@ -77,12 +75,20 @@ const ISSUE_NUMBER_PATTERNS: RegExp[] = [
   /\bPR#\d+\b/,
   /\b(?:pre|post)-#\d+\b/,
   /\b(?:pre|post)-issue-\d+\b/,
+  // A bare #NNNN in prose. Three to five digits, because every 1–2 digit
+  // `#N` in this repo is data ("call #2", "UAX #9", "Finding #1") and a
+  // 6-digit one is a hex color. The lookarounds drop the other non-issue
+  // shapes: `core#N`/`r#` (word char before), `&#39;` entities, `'#333'`
+  // colors quoted on both sides (a reference opening a string, as in a test
+  // title `'#1234: …'`, still counts), `Invoice #001` fixture titles, and
+  // `color: #888;` CSS.
+  /(?<![\w&#]|Invoice |['"](?=#\d{3,5}['"]))#\d{3,5}\b(?!;)/,
 ];
 const DOC_PATH_PATTERN = /nodespace-docs\//;
 
 // Ratchet baselines. See the file-level comment: lower on paydown, never raise.
 export const BASELINES = {
-  issueNumberReferences: 0,
+  issueNumberReferences: 143,
   docPathReferences: 0,
 };
 
@@ -111,8 +117,9 @@ function walk(dir: string, out: string[]): void {
 export interface ReferenceCounts {
   issueNumberReferences: number;
   docPathReferences: number;
-  issueNumberFiles: string[];
-  docPathFiles: string[];
+  /** One `path:line: text` entry per matching line, repo-relative. */
+  issueNumberHits: string[];
+  docPathHits: string[];
 }
 
 /**
@@ -127,56 +134,57 @@ export function countReferences(roots: string[] = SCAN_ROOTS, repoRoot: string =
     walk(join(repoRoot, root), files);
   }
 
-  let issueNumberReferences = 0;
-  let docPathReferences = 0;
-  const issueNumberFiles = new Set<string>();
-  const docPathFiles = new Set<string>();
+  const issueNumberHits: string[] = [];
+  const docPathHits: string[] = [];
 
   for (const file of files) {
-    const content = readFileSync(file, "utf8");
-    for (const line of content.split("\n")) {
-      if (ISSUE_NUMBER_PATTERNS.some((re) => re.test(line))) {
-        issueNumberReferences++;
-        issueNumberFiles.add(file);
-      }
-      if (DOC_PATH_PATTERN.test(line)) {
-        docPathReferences++;
-        docPathFiles.add(file);
-      }
-    }
+    const lines = readFileSync(file, "utf8").split("\n");
+    lines.forEach((line, i) => {
+      const hit = `${relative(repoRoot, file)}:${i + 1}: ${line.trim()}`;
+      if (ISSUE_NUMBER_PATTERNS.some((re) => re.test(line))) issueNumberHits.push(hit);
+      if (DOC_PATH_PATTERN.test(line)) docPathHits.push(hit);
+    });
   }
 
   return {
-    issueNumberReferences,
-    docPathReferences,
-    issueNumberFiles: [...issueNumberFiles],
-    docPathFiles: [...docPathFiles],
+    issueNumberReferences: issueNumberHits.length,
+    docPathReferences: docPathHits.length,
+    issueNumberHits,
+    docPathHits,
   };
+}
+
+/**
+ * One actionable message per baseline the counts exceed, each listing every
+ * matching line so the new reference can be found among the backlog. Empty
+ * when both counts are within their baselines.
+ */
+export function baselineFailures(counts: ReferenceCounts): string[] {
+  const failures: string[] = [];
+  if (counts.issueNumberReferences > BASELINES.issueNumberReferences) {
+    failures.push(
+      `${counts.issueNumberReferences} issue-number references in code (#NNNN, core#NNNN, Issue #NNNN), ` +
+        `up from the ${BASELINES.issueNumberReferences}-reference baseline in scripts/check-code-references.ts. ` +
+        "Describe the behavior/constraint directly and cite an ADR instead, per CLAUDE.md. Matching lines:\n" +
+        counts.issueNumberHits.join("\n"),
+    );
+  }
+  if (counts.docPathReferences > BASELINES.docPathReferences) {
+    failures.push(
+      `${counts.docPathReferences} nodespace-docs/ path references in code, up from the ` +
+        `${BASELINES.docPathReferences}-reference baseline in scripts/check-code-references.ts. ` +
+        "Inline the essential fact, or cite an ADR, instead of a path into a separate repo. Matching lines:\n" +
+        counts.docPathHits.join("\n"),
+    );
+  }
+  return failures;
 }
 
 if (import.meta.main) {
   const counts = countReferences();
-  let failed = false;
-
-  if (counts.issueNumberReferences > BASELINES.issueNumberReferences) {
-    console.error(
-      `❌ ${counts.issueNumberReferences} issue-number references in code (core#NNNN, (#NNNN), Issue #NNNN), ` +
-        `up from the ${BASELINES.issueNumberReferences}-reference baseline in scripts/check-code-references.ts. ` +
-        "Describe the behavior/constraint directly and cite an ADR instead, per CLAUDE.md.",
-    );
-    failed = true;
-  }
-
-  if (counts.docPathReferences > BASELINES.docPathReferences) {
-    console.error(
-      `❌ ${counts.docPathReferences} nodespace-docs/ path references in code, up from the ` +
-        `${BASELINES.docPathReferences}-reference baseline in scripts/check-code-references.ts. ` +
-        "Inline the essential fact, or cite an ADR, instead of a path into a separate repo.",
-    );
-    failed = true;
-  }
-
-  if (failed) process.exit(1);
+  const failures = baselineFailures(counts);
+  for (const failure of failures) console.error(`❌ ${failure}`);
+  if (failures.length > 0) process.exit(1);
 
   console.log(
     `✅ Issue-number references: ${counts.issueNumberReferences} (baseline ${BASELINES.issueNumberReferences}). ` +
