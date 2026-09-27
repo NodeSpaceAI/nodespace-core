@@ -43,7 +43,7 @@ import { $ } from "bun";
 import { reportBranchBehind } from "./check-branch-behind";
 import { classifyFailure, formatAbortNote } from "./classify-test-failure";
 import { reportUpstreamFixes } from "./correlate-upstream-fixes";
-import { acquireGateLock, registerLockRelease } from "./gate-lock";
+import { acquireGateLock, COMPILE_LOCK_PATH, registerLockRelease } from "./gate-lock";
 import { describeScope, FULL_SCOPE, gateScope } from "./gate-scope";
 import { TOOLS_DIR } from "./setup-rust-tooling";
 import { exitStatusLine, freeGiBFromDf, stageLogName, tail } from "./gate-output";
@@ -247,17 +247,29 @@ await run(
   "quality:design-tokens (design-token drift)",
   "nice -n 10 bun run --cwd packages/desktop-app quality:design-tokens"
 );
-await stage(scope.rust, "compile Rust test binaries", "nice -n 10 bun run rust:test:build");
-// "*" is quoted so the shell hands cargo the pattern, not a list of filenames.
-await stage(
-  merge,
-  "compile nodespaced and the Tauri-seam test binaries",
-  `nice -n 10 cargo build --bin nodespaced && nice -n 10 cargo test -p nodespace-app --test "*" --no-run`
-);
-// SKILL.md drift check (generated sections vs. the CLI definitions). A compile
-// and a text comparison, nothing timing-sensitive. After the daemon build so
-// its `cargo run --example` reuses that dev-profile dependency tree.
-await stage(merge, "skill:check (SKILL.md drift)", "nice -n 10 bun run skill:check");
+// The compile slot: one gate compiles at a time (merges first). `nice` alone
+// only yields to the tests under the test lock; it doesn't stop several gates
+// compiling at once, which pushed the load past 40 on 10 cores — enough to
+// time out correct tests under the lock — while each built the same
+// dependencies before sccache had them. One at a time, a later gate finds
+// them cached. The slot is released before this gate queues for the test
+// lock, so no gate ever holds one lock while waiting on another.
+if (scope.rust || merge) {
+  const compileSlot = await acquireGateLock({ lockPath: COMPILE_LOCK_PATH, what: "compiling gate", urgent: merge });
+  registerLockRelease(compileSlot);
+  await stage(scope.rust, "compile Rust test binaries", "nice -n 10 bun run rust:test:build");
+  // "*" is quoted so the shell hands cargo the pattern, not a list of filenames.
+  await stage(
+    merge,
+    "compile nodespaced and the Tauri-seam test binaries",
+    `nice -n 10 cargo build --bin nodespaced && nice -n 10 cargo test -p nodespace-app --test "*" --no-run`
+  );
+  // SKILL.md drift check (generated sections vs. the CLI definitions). A
+  // compile and a text comparison, nothing timing-sensitive. After the daemon
+  // build so its `cargo run --example` reuses that dev-profile dependency tree.
+  await stage(merge, "skill:check (SKILL.md drift)", "nice -n 10 bun run skill:check");
+  compileSlot.release();
+}
 
 // ── Phase 2: under the test lock ───────────────────────────────────────────
 // Serialize against other gates on this machine only now, for the stages

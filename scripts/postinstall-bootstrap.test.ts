@@ -15,10 +15,16 @@
 // unguarded/non-resilient bootstrap call fails this test under
 // `bun test scripts/` (part of `test:all`, enforced by the pre-push gate)
 // — without needing a real macOS install or root privileges.
-import { describe, expect, test } from "bun:test";
+import { describe, expect, setDefaultTimeout, test } from "bun:test";
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+
+// These tests write a fake executable and spawn it through bash: correctness
+// checks, not performance ones. The 5s default measured how busy the machine
+// was — they timed out at a load average of ~43 while passing in about a
+// second each on a quiet one.
+setDefaultTimeout(30_000);
 
 const REPO = join(dirname(new URL(import.meta.url).pathname), "..");
 const POSTINSTALL = join(REPO, "scripts", "pkg-resources", "postinstall");

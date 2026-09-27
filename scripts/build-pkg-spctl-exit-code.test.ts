@@ -15,10 +15,16 @@
 // controlled code -- so a future edit that reintroduces the "any non-zero =
 // rejected" bug regresses this test under `bun test scripts/` (part of
 // `test:all`, enforced by the pre-push gate).
-import { describe, expect, test } from "bun:test";
+import { describe, expect, setDefaultTimeout, test } from "bun:test";
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+
+// These tests write a fake executable and spawn it through bash: correctness
+// checks, not performance ones. The 5s default measured how busy the machine
+// was — they timed out at a load average of ~43 while passing in about a
+// second each on a quiet one.
+setDefaultTimeout(30_000);
 
 const REPO = join(dirname(new URL(import.meta.url).pathname), "..");
 const BUILD_PKG_SH = join(REPO, "scripts", "build-pkg.sh");

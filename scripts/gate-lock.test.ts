@@ -16,7 +16,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   acquireGateLock,
+  COMPILE_LOCK_PATH,
   DISABLE_ENV_VAR,
+  LOCK_PATH,
+  MERGE_LOCK_PATH,
   errorCode,
   formatDuration,
   formatTimeoutWarning,
@@ -707,5 +710,51 @@ describe("statusLogger", () => {
       t += 2000;
     }
     expect(bytes).toBeLessThan(16 * 1024);
+  });
+});
+
+describe("the merge, compile and test locks", () => {
+  test("are three separate locks", () => {
+    expect(new Set([LOCK_PATH, MERGE_LOCK_PATH, COMPILE_LOCK_PATH]).size).toBe(3);
+  });
+
+  test("holding the compile slot and the merge lock never blocks taking the test lock", async () => {
+    // The order a merge gate takes them in: merge, then compile, then test.
+    const merge = await acquireGateLock(harness({ lockPath: join(dir, "merge.lock") }).options);
+    const compile = await acquireGateLock(harness({ lockPath: join(dir, "compile.lock") }).options);
+    let clock = 0;
+    const test = await acquireGateLock(
+      harness({
+        lockPath: join(dir, "test.lock"),
+        maxWaitMs: 1,
+        now: () => clock,
+        sleep: async () => {
+          clock += 10;
+        },
+      }).options
+    );
+
+    expect([merge.held, compile.held, test.held]).toEqual([true, true, true]);
+    for (const lock of [test, compile, merge]) lock.release();
+  });
+
+  test("the gate releases the compile slot before it requests the test lock", () => {
+    // The no-deadlock argument depends on this order in scripts/test-gate.ts:
+    // a gate must never hold the compile slot while waiting for the test lock.
+    const gate = readFileSync(join(import.meta.dir, "test-gate.ts"), "utf8");
+    const releaseAt = gate.indexOf("compileSlot.release()");
+    const testLockAt = gate.indexOf("acquireGateLock({ urgent: merge })");
+    expect(releaseAt).toBeGreaterThan(-1);
+    expect(testLockAt).toBeGreaterThan(releaseAt);
+  });
+
+  test("releasing twice never removes a lock taken since — even by this same process", async () => {
+    const first = await acquireGateLock(harness().options);
+    first.release();
+    // The same pid holds the path again (a later acquisition by this gate):
+    // a pid check alone can't tell the two apart, only the released flag can.
+    plantLock({ pid: process.pid });
+    first.release();
+    expect(parseHolder(readFileSync(lockPath, "utf8"))?.pid).toBe(process.pid);
   });
 });
