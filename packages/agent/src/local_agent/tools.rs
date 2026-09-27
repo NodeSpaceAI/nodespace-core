@@ -4459,9 +4459,14 @@ impl AgentToolExecutor for GraphToolExecutor {
             return Vec::new();
         };
         match ns.query_nodes_by_type("skill", None).await {
-            Ok(nodes) => {
-                super::agent_loop::stage1_skill_names(nodes.into_iter().map(|n| n.content))
-            }
+            // Decoded like `find_skills` decodes them: a malformed skill it
+            // would skip is not named either.
+            Ok(nodes) => super::agent_loop::stage1_skill_names(
+                nodes
+                    .iter()
+                    .filter_map(|n| nodespace_core::models::SkillNode::from_node(n).ok())
+                    .map(|s| s.name),
+            ),
             Err(e) => {
                 tracing::warn!(error = %e, "Could not read skill names for Stage 1; routing without them");
                 Vec::new()
