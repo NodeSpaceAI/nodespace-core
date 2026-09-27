@@ -4,7 +4,7 @@
 //!
 //! - `Node` - Universal node model for all content types
 //! - `Embedding` - Vector embeddings for semantic search (root-aggregate model)
-//! - Type-safe wrappers (TaskNode, TextNode, DateNode, CodeBlockNode, QuoteBlockNode, OrderedListNode, CollectionNode) for ergonomic access
+//! - Type-safe wrappers (TaskNode, SkillNode, TextNode, DateNode, CodeBlockNode, QuoteBlockNode, OrderedListNode, CollectionNode) for ergonomic access
 //! - Core schema definitions for built-in node types
 //!
 //! All entities use the Pure JSON schema approach with data stored in the
@@ -76,6 +76,7 @@ pub use time::{SystemTimeProvider, TimeProvider};
 pub use collection_node::CollectionNode;
 pub use date_node::DateNode;
 pub use embedding::{ChunkInfo, Embedding, EmbeddingConfig, EmbeddingSearchResult, NewEmbedding};
+pub use nodespace_types::{SkillNode, DEFAULT_SKILL_MAX_ITERATIONS, SKILL_NODE_TYPE};
 pub use schema_node::SchemaNode;
 pub use task_node::{TaskNode, TaskNodeUpdate, TaskPriority, TaskStatus};
 pub use text_node::TextNode;

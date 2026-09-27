@@ -14,7 +14,7 @@
 use anyhow::Result;
 use nodespace_core::{
     db::SqliteStore,
-    models::Node,
+    models::{Node, SkillNode},
     ops::skill_ops::{find_skills, FindSkillsInput},
     schema::handle_create_schema,
     services::{embedding_service::NodeEmbeddingService, NodeAccessor, NodeService},
@@ -107,16 +107,14 @@ async fn create_fixture_schemas(svc: &Arc<NodeService>) -> Result<()> {
 /// deterministically includes exactly the fixture schema regardless of the
 /// unscoped-fallback / query-naming heuristics `find_skills` also has.
 async fn seed_invoice_skill(service: &NodeService) -> Result<Node> {
-    let mut node = Node::new(
-        "skill".to_string(),
-        "Invoice Billing".to_string(),
-        json!({
-            "description": SKILL_DESCRIPTION,
-            "tool_whitelist": ["create_node", "update_node"],
-            "node_types": ["invoice"],
-            "max_iterations": 2,
-        }),
-    );
+    let mut node = SkillNode::new(
+        "Invoice Billing",
+        SKILL_DESCRIPTION,
+        &["create_node", "update_node"],
+        2,
+    )
+    .with_node_types(&["invoice"])
+    .into_node();
     node.title = Some("Invoice Billing".to_string());
     service.create_node(node.clone()).await?;
     Ok(service

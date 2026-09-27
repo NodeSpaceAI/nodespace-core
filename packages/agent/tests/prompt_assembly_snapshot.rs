@@ -119,7 +119,7 @@ use nodespace_agent::skill_pipeline::seed_skill_nodes;
 use nodespace_core::db::ResolvedEntity;
 use nodespace_core::markdown::{prepare_nodes_from_template, NodeTemplate, PreparedNode};
 use nodespace_core::models::schema::EnumValue;
-use nodespace_core::models::{Node, SchemaField, SchemaProtectionLevel};
+use nodespace_core::models::{Node, SchemaField, SchemaProtectionLevel, SkillNode};
 use nodespace_core::ops::context_ops::{EntityResolution, PlaybookInfo, WorkspaceContext};
 use nodespace_core::ops::entity_types_block::EntityTypeDescriptor;
 use nodespace_core::services::flatten_subtree_content;
@@ -421,24 +421,16 @@ fn render_seed_instructions(tmpl: &NodeTemplate) -> String {
     flatten_subtree_content(&root_id, &node_map, &adjacency).join("\n\n")
 }
 
+fn seed_skill(tmpl: &NodeTemplate) -> SkillNode {
+    SkillNode::from_properties(&tmpl.title, &tmpl.root_properties).expect("seed decodes as a skill")
+}
+
 fn skill_whitelist(tmpl: &NodeTemplate) -> Vec<String> {
-    tmpl.root_properties
-        .get("tool_whitelist")
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.as_str().map(str::to_string))
-                .collect()
-        })
-        .unwrap_or_default()
+    seed_skill(tmpl).tool_whitelist
 }
 
 fn skill_description(tmpl: &NodeTemplate) -> String {
-    tmpl.root_properties
-        .get("description")
-        .and_then(|v| v.as_str())
-        .unwrap_or_default()
-        .to_string()
+    seed_skill(tmpl).description
 }
 
 /// Two real seeded skills standing in for what retrieval would hand Stage 2

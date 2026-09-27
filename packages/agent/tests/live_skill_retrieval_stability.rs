@@ -31,6 +31,7 @@ use nodespace_agent::local_agent::routing::RETRIEVAL_TOP_K;
 use nodespace_agent::skill_pipeline::seed_skill_nodes;
 use nodespace_core::db::SqliteStore;
 use nodespace_core::markdown::{prepare_nodes_from_template, NodeTemplate};
+use nodespace_core::models::SkillNode;
 use nodespace_core::ops::skill_ops::{find_skills, FindSkillsInput};
 use nodespace_core::services::node_service::CreateNodeParams;
 use nodespace_core::services::{
@@ -668,11 +669,14 @@ async fn graph_editing_exclusion_leaves_completion_state_scores_unchanged() {
     };
     let stripped: Vec<NodeTemplate> = seed_skill_nodes()
         .into_iter()
-        .map(|mut t| {
-            if let Some(props) = t.root_properties.as_object_mut() {
-                props.remove("exclusion");
+        .map(|t| {
+            let mut skill = SkillNode::from_properties(&t.title, &t.root_properties)
+                .expect("seed decodes as a skill");
+            skill.exclusion = None;
+            NodeTemplate {
+                root_properties: skill.properties(),
+                ..t
             }
-            t
         })
         .collect();
     let Some((without, without_ns, _t2)) = seed_and_embed_registry(stripped).await else {

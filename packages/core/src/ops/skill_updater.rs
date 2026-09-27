@@ -17,7 +17,7 @@
 //!    the `NodeUpdated` event the update emits).
 
 use crate::db::events::{DomainEvent, EventEnvelope};
-use crate::models::{NodeQuery, NodeUpdate};
+use crate::models::{NodeQuery, NodeUpdate, SkillNode};
 use crate::services::NodeService;
 use std::sync::Arc;
 use tokio::sync::broadcast;
@@ -161,26 +161,25 @@ impl SkillUpdater {
         };
 
         // 4. Check if update is needed (avoid unnecessary writes).
-        let current_desc = skill_node
-            .properties
-            .get("description")
-            .or_else(|| {
-                skill_node
-                    .properties
-                    .get("skill")
-                    .and_then(|s| s.get("description"))
-            })
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
+        let mut skill = match SkillNode::from_node(&skill_node) {
+            Ok(skill) => skill,
+            Err(e) => {
+                warn!(
+                    "SkillUpdater: 'Node Creation' skill node is malformed, skipping update: {e}"
+                );
+                return Ok(());
+            }
+        };
 
-        if current_desc == new_description {
+        if skill.description == new_description {
             debug!("SkillUpdater: description unchanged, skipping write");
             return Ok(());
         }
 
         // 5. Update the skill node's description property.
+        skill.description = new_description;
         let update = NodeUpdate {
-            properties: Some(serde_json::json!({ "description": new_description })),
+            properties: Some(skill.properties()),
             ..Default::default()
         };
 

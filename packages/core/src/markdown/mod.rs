@@ -1298,19 +1298,15 @@ pub async fn handle_create_nodes_from_markdown(
 /// // Skill node: title used as content, guidance body becomes ordinary
 /// // markdown children (header/text, inferred from the markdown structure —
 /// // no child_node_type override).
-/// let tmpl = NodeTemplate {
-///     title: "Research & Search".to_string(),
-///     content: None, // title is used as the node content
-///     markdown_content: "When answering questions:\n\nSEARCH FIRST: …".to_string(),
-///     root_node_type: "skill".to_string(),
-///     root_properties: serde_json::json!({
-///         "description": "Search and explore the knowledge graph…",
-///         "tool_whitelist": ["search_semantic", "search_nodes", "get_node"],
-///         "max_iterations": 4,
-///     }),
-///     child_node_type: None,
-///     child_properties: None,
-/// };
+/// let tmpl = NodeTemplate::skill(
+///     SkillNode::new(
+///         "Research & Search",
+///         "Search and explore the knowledge graph…",
+///         &["search_semantic", "search_nodes", "get_node"],
+///         4,
+///     ),
+///     "When answering questions:\n\nSEARCH FIRST: …",
+/// );
 /// let nodes = prepare_nodes_from_template(&tmpl)?;
 /// // nodes[0] is the skill root; nodes[1..] are its markdown-typed children
 /// ```
@@ -1370,6 +1366,23 @@ pub struct NodeTemplate {
     /// Reconciliation tier. Defaults to `System` — every existing seed source
     /// (skills, prompts, tools) is an engineering artifact, not user content.
     pub tier: SeedTier,
+}
+
+impl NodeTemplate {
+    /// A `System`-tier seed for `skill`, with `guidance` as its markdown
+    /// children. The skill's name is the template title and node content.
+    pub fn skill(skill: crate::models::SkillNode, guidance: impl Into<String>) -> Self {
+        Self {
+            root_properties: skill.properties(),
+            title: skill.name,
+            content: None,
+            markdown_content: guidance.into(),
+            root_node_type: crate::models::SKILL_NODE_TYPE.to_string(),
+            child_node_type: None,
+            child_properties: None,
+            tier: SeedTier::System,
+        }
+    }
 }
 
 /// Parse a [`NodeTemplate`] into a flat list of [`PreparedNode`]s.

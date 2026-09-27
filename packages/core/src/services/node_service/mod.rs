@@ -2895,6 +2895,7 @@ impl NodeAccessor for NodeService {
 mod tests {
     use super::*;
     use crate::db::SqliteStore;
+    use crate::models::SkillNode;
     use crate::InsertPosition;
     use serde_json::json;
     use tempfile::TempDir;
@@ -8363,7 +8364,8 @@ mod tests {
 
         let root_after = service.get_node(&root.id).await.unwrap().unwrap();
         assert_eq!(
-            root_after.properties["skill"]["description"], "Search v2",
+            SkillNode::from_node(&root_after).unwrap().description,
+            "Search v2",
             "sanity: config must have actually replaced"
         );
         assert_eq!(
@@ -8561,7 +8563,10 @@ mod tests {
             1,
             "replace must not leave the stale skill node behind"
         );
-        assert_eq!(nodes[0].properties["skill"]["description"], "Search v2");
+        assert_eq!(
+            SkillNode::from_node(&nodes[0]).unwrap().description,
+            "Search v2"
+        );
     }
 
     /// A user editing only a seeded skill's guidance children must not block
@@ -8637,7 +8642,8 @@ mod tests {
         let nodes = service.query_nodes_by_type("skill", None).await.unwrap();
         assert_eq!(nodes.len(), 1, "reconciliation must not duplicate the node");
         assert_eq!(
-            nodes[0].properties["skill"]["description"], "Search v2",
+            SkillNode::from_node(&nodes[0]).unwrap().description,
+            "Search v2",
             "unmodified config must still replace even though guidance is protected"
         );
         let children = service.get_children(&nodes[0].id).await.unwrap();
@@ -8717,7 +8723,8 @@ mod tests {
         let nodes = service.query_nodes_by_type("skill", None).await.unwrap();
         assert_eq!(nodes.len(), 1, "reconciliation must not duplicate the node");
         assert_eq!(
-            nodes[0].properties["skill"]["description"], "User's own description",
+            SkillNode::from_node(&nodes[0]).unwrap().description,
+            "User's own description",
             "user-modified config must survive reseed despite the template changing"
         );
         let children = service.get_children(&nodes[0].id).await.unwrap();
@@ -8848,7 +8855,8 @@ mod tests {
 
         let nodes = service.query_nodes_by_type("skill", None).await.unwrap();
         assert_eq!(
-            nodes[0].properties["skill"]["description"], "Search v1",
+            SkillNode::from_node(&nodes[0]).unwrap().description,
+            "Search v1",
             "--all reset must restore config to the template"
         );
         let children = service.get_children(&nodes[0].id).await.unwrap();
@@ -8997,7 +9005,8 @@ mod tests {
             "unchanged skill template must not be duplicated by the prompt's replace"
         );
         assert_eq!(
-            skills[0].properties["skill"]["description"], "Skill v1",
+            SkillNode::from_node(&skills[0]).unwrap().description,
+            "Skill v1",
             "unchanged skill content must be untouched"
         );
     }

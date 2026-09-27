@@ -26,6 +26,7 @@ use crate::skill_rules::{
     TITLE_TEMPLATE_PLACEHOLDERS, UNIQUE_FIELD_FLAGS,
 };
 use nodespace_core::markdown::{NodeTemplate, SeedTier};
+use nodespace_core::models::SkillNode;
 
 /// Builds the Schema Creation skill's markdown_content.
 ///
@@ -389,19 +390,14 @@ SUCCESS: Once the call returns, confirm to the user that the node has been organ
 /// just uses the description/name returned by `search_skills`.
 pub fn seed_skill_nodes() -> Vec<NodeTemplate> {
     vec![
-        NodeTemplate {
-            title: "Research & Search".to_string(),
-            content: None,
-            root_node_type: "skill".to_string(),
-            root_properties: serde_json::json!({
-                "description": "Search and explore the knowledge graph to find relevant information, discover connections, and answer questions about stored knowledge.",
-                "tool_whitelist": ["search_semantic", "search_nodes", "get_node"],
-                "max_iterations": 4,
-            }),
-            child_node_type: None,
-            child_properties: None,
-            tier: SeedTier::System,
-            markdown_content: r#"# Research & Search Guidance
+        NodeTemplate::skill(
+            SkillNode::new(
+                "Research & Search",
+                "Search and explore the knowledge graph to find relevant information, discover connections, and answer questions about stored knowledge.",
+                &["search_semantic", "search_nodes", "get_node"],
+                4,
+            ),
+            r#"# Research & Search Guidance
 
 When answering questions about stored knowledge:
 
@@ -440,14 +436,12 @@ STRUCTURED PROPERTY QUERIES: To filter by property values (status, due_date, etc
 - "which tickets are still in dev?" → `search_nodes(node_type="ticket", filters=[{"type":"property","operator":"equals","property":"status","value":"in_dev"}])`
 - "tasks due tomorrow" → `search_nodes(node_type="task", filters=[{"type":"property","operator":"equals","property":"due_date","value":"<tomorrow's date in YYYY-MM-DD>"}], sorting=[{"field":"due_date","direction":"asc"}])`
 - "tasks due this week" → `search_nodes(node_type="task", filters=[{"type":"property","operator":"gte","property":"due_date","value":"<today's date in YYYY-MM-DD>"},{"type":"property","operator":"lte","property":"due_date","value":"<end of week in YYYY-MM-DD>"}])`
-- Date format: always YYYY-MM-DD. Operators: equals, contains, gt, lt, gte, lte, in, exists."#.to_string(),
-        },
-        NodeTemplate {
-            title: "Node Creation".to_string(),
-            content: None,
-            root_node_type: "skill".to_string(),
-            root_properties: serde_json::json!({
-                "description": "Create new nodes, records, entries, or instances of any type — tasks, text notes, or custom types like Spec, ADR, Ticket. Use when user wants to add, create, or insert a new item, record, entry, or example of an existing type.",
+- Date format: always YYYY-MM-DD. Operators: equals, contains, gt, lt, gte, lte, in, exists."#,
+        ),
+        NodeTemplate::skill(
+            SkillNode::new(
+                "Node Creation",
+                "Create new nodes, records, entries, or instances of any type — tasks, text notes, or custom types like Spec, ADR, Ticket. Use when user wants to add, create, or insert a new item, record, entry, or example of an existing type.",
                 // `update_node` is whitelisted here as well as on Graph
                 // Editing — deliberately, to remove a single point of failure
                 // rather than because this skill is about editing.
@@ -487,33 +481,23 @@ STRUCTURED PROPERTY QUERIES: To filter by property values (status, due_date, etc
                 // Trading to the companies we sell to", with Northwind already
                 // in the graph and rendered in MENTIONED ENTITIES, produced
                 // `create_node` and a silent duplicate on 3 of 3 reps.
-                "tool_whitelist": ["create_node", "update_node", "update_task_status", "search_semantic", "search_nodes", "get_node", "route_clarify"],
-                "max_iterations": 3,
-            }),
-            child_node_type: None,
-            child_properties: None,
-            tier: SeedTier::System,
-            markdown_content: node_creation_guidance(),
-        },
-        NodeTemplate {
-            title: "Schema Creation".to_string(),
-            content: None,
-            root_node_type: "skill".to_string(),
-            root_properties: serde_json::json!({
-                "description": "Set up a structured way to keep track of, log, or maintain records for a kind of thing the user hasn't stored before — specs, sprints, releases, tickets, or any recurring category of item with its own details to fill in. Also covers defining a new entity type or schema with custom fields, enums, and relationships, or modifying an existing schema. Use when the user wants a place to record or organize instances of something new, or says 'new type', 'node type', 'define fields', 'create schema', 'update schema', 'add a field', 'rename a field', or wants to design or change a kind of entity like Spec, Ticket, or ADR.",
-                "tool_whitelist": ["create_schema", "update_schema", "get_node"],
-                "max_iterations": 3,
-            }),
-            child_node_type: None,
-            child_properties: None,
-            tier: SeedTier::System,
-            markdown_content: schema_creation_guidance(),
-        },
-        NodeTemplate {
-            title: "Graph Editing".to_string(),
-            content: None,
-            root_node_type: "skill".to_string(),
-            root_properties: serde_json::json!({
+                &["create_node", "update_node", "update_task_status", "search_semantic", "search_nodes", "get_node", "route_clarify"],
+                3,
+            ),
+            node_creation_guidance(),
+        ),
+        NodeTemplate::skill(
+            SkillNode::new(
+                "Schema Creation",
+                "Set up a structured way to keep track of, log, or maintain records for a kind of thing the user hasn't stored before — specs, sprints, releases, tickets, or any recurring category of item with its own details to fill in. Also covers defining a new entity type or schema with custom fields, enums, and relationships, or modifying an existing schema. Use when the user wants a place to record or organize instances of something new, or says 'new type', 'node type', 'define fields', 'create schema', 'update schema', 'add a field', 'rename a field', or wants to design or change a kind of entity like Spec, Ticket, or ADR.",
+                &["create_schema", "update_schema", "get_node"],
+                3,
+            ),
+            schema_creation_guidance(),
+        ),
+        NodeTemplate::skill(
+            SkillNode::new(
+                "Graph Editing",
                 // Names the completion states users actually say ("mark it
                 // resolved", "mark it paid"). The prior wording ("Modify
                 // existing nodes... update content, properties, titles, and
@@ -532,53 +516,48 @@ STRUCTURED PROPERTY QUERIES: To filter by property values (status, due_date, etc
                 // `completion_state_updates_route_graph_editing`,
                 // `control_conflict_requests_still_route_conflict_journal`,
                 // and `control_deletion_requests_are_not_outranked_by_graph_editing`.
-                "description": "Update a record that already exists and keep it: mark it resolved, done, or paid, or set or change one of its fields, status, title, or content. Use when the user wants an existing item to stay but move to a new state. For tasks, use update_task_status to change status.",
-                // "remove the resolved tickets" still out-ranked Node Deletion
-                // (0.855 vs 0.841) on "mark it resolved": the two requests
-                // differ only in the verb, which the embedding barely weights.
-                // No description wording separates them — every variant that
-                // lowered this skill on the deletion request lowered it by
-                // the same amount on "mark incident resolved", leaving that
-                // completion-state guard 0.003 from falling out of the top 3.
-                //
-                // An exclusion is scored against the query separately and
-                // costs this skill only on requests closer to it than to the
-                // description (`skill_ops::exclusion_penalized_score`). This
-                // one puts Node Deletion first on "remove the resolved
-                // tickets" by +0.047 and leaves every completion-state score
-                // unchanged. Its one measured cost: "remove the due date from
-                // the launch task" (a field, not a record) loses 0.009 and
-                // stays in the top 3.
-                //
-                // Wording is measured, not intuitive. Two longer drafts ("…or
-                // get rid of records so they no longer exist", "Delete or
-                // remove records.") also lowered "mark the outage report done"
-                // or "record that we decided to use Postgres" by 0.02–0.035;
-                // bare verbs aimed at "them" lowered nothing but deletions.
-                // Guarded in `tests/live_skill_retrieval_stability.rs` by
-                // `remove_requests_mentioning_a_state_route_node_deletion`,
-                // `removing_a_field_still_reaches_graph_editing`, and
-                // `graph_editing_exclusion_leaves_completion_state_scores_unchanged`.
-                "exclusion": "Remove them, delete them, get rid of them, purge them.",
+                "Update a record that already exists and keep it: mark it resolved, done, or paid, or set or change one of its fields, status, title, or content. Use when the user wants an existing item to stay but move to a new state. For tasks, use update_task_status to change status.",
                 // `create_node` is whitelisted here as the mirror of
                 // `update_node` on Node Creation: "record this" and "change
                 // that" are the same user intent inflected two ways, and either
                 // skill can win retrieval on either phrasing. Pairing them means
                 // whichever one places, the turn can still write. See
                 // `no_write_tool_is_reachable_from_only_one_skill`.
-                "tool_whitelist": ["update_node", "update_task_status", "create_node", "get_node", "search_nodes", "search_semantic", "resolve_query", "route_clarify"],
-                "max_iterations": 3,
-            }),
-            child_node_type: None,
-            child_properties: None,
-            tier: SeedTier::System,
-            markdown_content: graph_editing_guidance(),
-        },
-        NodeTemplate {
-            title: "Relationship Management".to_string(),
-            content: None,
-            root_node_type: "skill".to_string(),
-            root_properties: serde_json::json!({
+                &["update_node", "update_task_status", "create_node", "get_node", "search_nodes", "search_semantic", "resolve_query", "route_clarify"],
+                3,
+            )
+            // "remove the resolved tickets" still out-ranked Node Deletion
+            // (0.855 vs 0.841) on "mark it resolved": the two requests
+            // differ only in the verb, which the embedding barely weights.
+            // No description wording separates them — every variant that
+            // lowered this skill on the deletion request lowered it by
+            // the same amount on "mark incident resolved", leaving that
+            // completion-state guard 0.003 from falling out of the top 3.
+            //
+            // An exclusion is scored against the query separately and
+            // costs this skill only on requests closer to it than to the
+            // description (`skill_ops::exclusion_penalized_score`). This
+            // one puts Node Deletion first on "remove the resolved
+            // tickets" by +0.047 and leaves every completion-state score
+            // unchanged. Its one measured cost: "remove the due date from
+            // the launch task" (a field, not a record) loses 0.009 and
+            // stays in the top 3.
+            //
+            // Wording is measured, not intuitive. Two longer drafts ("…or
+            // get rid of records so they no longer exist", "Delete or
+            // remove records.") also lowered "mark the outage report done"
+            // or "record that we decided to use Postgres" by 0.02–0.035;
+            // bare verbs aimed at "them" lowered nothing but deletions.
+            // Guarded in `tests/live_skill_retrieval_stability.rs` by
+            // `remove_requests_mentioning_a_state_route_node_deletion`,
+            // `removing_a_field_still_reaches_graph_editing`, and
+            // `graph_editing_exclusion_leaves_completion_state_scores_unchanged`.
+            .with_exclusion("Remove them, delete them, get rid of them, purge them."),
+            graph_editing_guidance(),
+        ),
+        NodeTemplate::skill(
+            SkillNode::new(
+                "Relationship Management",
                 // The prior wording ("Create connections between nodes,
                 // explore relationships, and traverse the knowledge graph")
                 // never used the verbs a user actually says for linking two
@@ -604,20 +583,15 @@ STRUCTURED PROPERTY QUERIES: To filter by property values (status, due_date, etc
                 // failing query (Relationship Management: unranked 6th at
                 // ~0.803 -> 2nd at ~0.837) without displacing Organization's
                 // own top-3 on its control prompt.
-                "description": "Record an edge between two nodes: a task or note that depends on, must respect, or points at another record. Explore or traverse existing relationships between nodes in the knowledge graph.",
-                "tool_whitelist": ["create_relationship", "get_related_nodes", "get_node", "search_semantic", "search_nodes"],
-                "max_iterations": 3,
-            }),
-            child_node_type: None,
-            child_properties: None,
-            tier: SeedTier::System,
-            markdown_content: relationship_management_guidance(),
-        },
-        NodeTemplate {
-            title: "Node Deletion".to_string(),
-            content: None,
-            root_node_type: "skill".to_string(),
-            root_properties: serde_json::json!({
+                "Record an edge between two nodes: a task or note that depends on, must respect, or points at another record. Explore or traverse existing relationships between nodes in the knowledge graph.",
+                &["create_relationship", "get_related_nodes", "get_node", "search_semantic", "search_nodes"],
+                3,
+            ),
+            relationship_management_guidance(),
+        ),
+        NodeTemplate::skill(
+            SkillNode::new(
+                "Node Deletion",
                 // Destructive verbs ONLY. Two rules, both learned from
                 // measurement, and both about what an embedding encodes.
                 //
@@ -647,20 +621,15 @@ STRUCTURED PROPERTY QUERIES: To filter by property values (status, due_date, etc
                 // words for what the skill DOES. Scoping ("use this only when…")
                 // belongs in the instruction subtree, which the model reads as
                 // text — not in the description, which is what gets embedded.
-                "description": "Delete, remove, erase, purge, discard, trash, drop, or get rid of stored content. Take something out of the knowledge graph permanently.",
-                "tool_whitelist": ["delete_node", "get_node", "search_semantic", "search_nodes"],
-                "max_iterations": 3,
-            }),
-            child_node_type: None,
-            child_properties: None,
-            tier: SeedTier::System,
-            markdown_content: node_deletion_guidance(),
-        },
-        NodeTemplate {
-            title: "Conflict Journal".to_string(),
-            content: None,
-            root_node_type: "skill".to_string(),
-            root_properties: serde_json::json!({
+                "Delete, remove, erase, purge, discard, trash, drop, or get rid of stored content. Take something out of the knowledge graph permanently.",
+                &["delete_node", "get_node", "search_semantic", "search_nodes"],
+                3,
+            ),
+            node_deletion_guidance(),
+        ),
+        NodeTemplate::skill(
+            SkillNode::new(
+                "Conflict Journal",
                 // No form of "resolve" in the title or description. Those two
                 // are what gets embedded (the guidance markdown is not), and
                 // the shared word made this skill the rank-1
@@ -674,77 +643,54 @@ STRUCTURED PROPERTY QUERIES: To filter by property values (status, due_date, etc
                 // `tests/live_skill_retrieval_stability.rs` by
                 // `deletion_requests_mentioning_resolved_route_node_deletion`
                 // and `control_conflict_requests_still_route_conflict_journal`.
-                "description": "List, inspect, or dismiss conflicts between colliding nodes recorded in the conflict journal: two records that claim the same identity, duplicates, or sync collisions.",
-                "tool_whitelist": ["list_conflicts", "get_conflict", "dismiss_conflict", "adopt_existing_conflict", "search_nodes"],
-                "max_iterations": 3,
-            }),
-            child_node_type: None,
-            child_properties: None,
-            tier: SeedTier::System,
-            markdown_content: conflict_journal_guidance(),
-        },
-        NodeTemplate {
-            title: "Node Merge".to_string(),
-            content: None,
-            root_node_type: "skill".to_string(),
-            root_properties: serde_json::json!({
+                "List, inspect, or dismiss conflicts between colliding nodes recorded in the conflict journal: two records that claim the same identity, duplicates, or sync collisions.",
+                &["list_conflicts", "get_conflict", "dismiss_conflict", "adopt_existing_conflict", "search_nodes"],
+                3,
+            ),
+            conflict_journal_guidance(),
+        ),
+        NodeTemplate::skill(
+            SkillNode::new(
+                "Node Merge",
                 // `merge_conflict` is destructive (archives the loser node,
                 // re-points its edges) the same way delete_node is, so this
                 // skill is single-owner by the same ADR-038 reasoning
                 // (`SINGLE_OWNER_BY_DESIGN` in this module's tests) rather
                 // than being folded into Conflict Journal's lower-stakes
                 // whitelist.
-                "description": "Merge two nodes that both represent the same real thing into one, combining their data and archiving the loser. Use when the user wants two duplicate or colliding records combined into a single record.",
-                "tool_whitelist": ["merge_conflict", "dismiss_conflict", "adopt_existing_conflict", "get_conflict", "get_node", "search_nodes"],
-                "max_iterations": 3,
-            }),
-            child_node_type: None,
-            child_properties: None,
-            tier: SeedTier::System,
-            markdown_content: node_merge_guidance(),
-        },
-        NodeTemplate {
-            title: "Play Workflow State".to_string(),
-            content: None,
-            root_node_type: "skill".to_string(),
-            root_properties: serde_json::json!({
-                "description": "Check why a Play automation rule hasn't fired for a node, or what conditions are still unmet, by evaluating that node against every active Play rule that could apply to it. Use when the user asks why an automation, rule, or workflow hasn't triggered, or wants to know what's missing before it will.",
-                "tool_whitelist": ["get_workflow_state", "search_semantic", "search_nodes"],
-                "max_iterations": 3,
-            }),
-            child_node_type: None,
-            child_properties: None,
-            tier: SeedTier::System,
-            markdown_content: play_workflow_state_guidance(),
-        },
-        NodeTemplate {
-            title: "Bulk Import".to_string(),
-            content: None,
-            root_node_type: "skill".to_string(),
-            root_properties: serde_json::json!({
-                "description": "Import documents and create node hierarchies from markdown. Use when user wants to import, bulk create, or create nodes from a markdown document.",
-                "tool_whitelist": ["create_nodes_from_markdown"],
-                "max_iterations": 2,
-            }),
-            child_node_type: None,
-            child_properties: None,
-            tier: SeedTier::System,
-            markdown_content: bulk_import_guidance(),
-        },
-        NodeTemplate {
-            title: "Organization".to_string(),
-            content: None,
-            root_node_type: "skill".to_string(),
-            root_properties: serde_json::json!({
-                "description": "Organize nodes into collections and categories. Use when user wants to add to a collection, categorize, or group nodes.",
-                "tool_whitelist": ["create_relationship", "get_node", "search_semantic", "search_nodes"],
-                "max_iterations": 3,
-            }),
-            child_node_type: None,
-            child_properties: None,
-            tier: SeedTier::System,
-            markdown_content: organization_guidance(),
-        },
+                "Merge two nodes that both represent the same real thing into one, combining their data and archiving the loser. Use when the user wants two duplicate or colliding records combined into a single record.",
+                &["merge_conflict", "dismiss_conflict", "adopt_existing_conflict", "get_conflict", "get_node", "search_nodes"],
+                3,
+            ),
+            node_merge_guidance(),
+        ),
+        NodeTemplate::skill(
+            SkillNode::new(
+                "Play Workflow State",
+                "Check why a Play automation rule hasn't fired for a node, or what conditions are still unmet, by evaluating that node against every active Play rule that could apply to it. Use when the user asks why an automation, rule, or workflow hasn't triggered, or wants to know what's missing before it will.",
+                &["get_workflow_state", "search_semantic", "search_nodes"],
+                3,
+            ),
+            play_workflow_state_guidance(),
+        ),
+        NodeTemplate::skill(
+            SkillNode::new(
+                "Bulk Import",
+                "Import documents and create node hierarchies from markdown. Use when user wants to import, bulk create, or create nodes from a markdown document.",
+                &["create_nodes_from_markdown"],
+                2,
+            ),
+            bulk_import_guidance(),
+        ),
+        NodeTemplate::skill(
+            SkillNode::new(
+                "Organization",
+                "Organize nodes into collections and categories. Use when user wants to add to a collection, categorize, or group nodes.",
+                &["create_relationship", "get_node", "search_semantic", "search_nodes"],
+                3,
+            ),
+            organization_guidance(),
+        ),
     ]
 }
 
@@ -789,23 +735,13 @@ mod tests {
 
     use super::*;
 
-    fn tmpl_tool_whitelist(tmpl: &NodeTemplate) -> Vec<String> {
-        tmpl.root_properties
-            .get("tool_whitelist")
-            .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str().map(String::from))
-                    .collect()
-            })
-            .unwrap_or_default()
+    fn tmpl_skill(tmpl: &NodeTemplate) -> SkillNode {
+        SkillNode::from_properties(&tmpl.title, &tmpl.root_properties)
+            .unwrap_or_else(|e| panic!("seed '{}' must decode as a skill: {e}", tmpl.title))
     }
 
-    fn tmpl_max_iterations(tmpl: &NodeTemplate) -> usize {
-        tmpl.root_properties
-            .get("max_iterations")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0) as usize
+    fn tmpl_tool_whitelist(tmpl: &NodeTemplate) -> Vec<String> {
+        tmpl_skill(tmpl).tool_whitelist
     }
 
     /// Every `SCHEMA_RULES` entry must either reach the in-app agent prompt
@@ -874,23 +810,16 @@ mod tests {
 
         for seed in &seeds {
             assert!(!seed.title.is_empty());
+            // Decoding also rejects a non-positive max_iterations.
+            let skill = tmpl_skill(seed);
             assert!(
-                seed.root_properties
-                    .get("description")
-                    .and_then(|v| v.as_str())
-                    .map(|s| !s.is_empty())
-                    .unwrap_or(false),
+                !skill.description.is_empty(),
                 "Skill '{}' must have a non-empty description",
                 seed.title
             );
             assert!(
-                !tmpl_tool_whitelist(seed).is_empty(),
+                !skill.tool_whitelist.is_empty(),
                 "Skill '{}' must have tools",
-                seed.title
-            );
-            assert!(
-                tmpl_max_iterations(seed) > 0,
-                "Skill '{}' must have max_iterations > 0",
                 seed.title
             );
             assert!(
@@ -1325,12 +1254,7 @@ mod tests {
         ];
 
         for tmpl in seed_skill_nodes() {
-            let desc = tmpl
-                .root_properties
-                .get("description")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_lowercase();
+            let desc = tmpl_skill(&tmpl).description.to_lowercase();
 
             for neg in negations {
                 let Some(at) = desc.find(neg) else { continue };
@@ -1362,7 +1286,7 @@ mod tests {
     fn only_measured_skills_carry_an_exclusion() {
         let with_exclusion: Vec<String> = seed_skill_nodes()
             .into_iter()
-            .filter(|t| t.root_properties.get("exclusion").is_some())
+            .filter(|t| tmpl_skill(t).exclusion.is_some())
             .map(|t| t.title)
             .collect();
         assert_eq!(with_exclusion, vec!["Graph Editing".to_string()]);
@@ -1377,11 +1301,8 @@ mod tests {
         let desc = seed_skill_nodes()
             .into_iter()
             .find(|t| t.title == "Node Deletion")
+            .map(|t| tmpl_skill(&t).description)
             .expect("Node Deletion must be seeded")
-            .root_properties
-            .get("description")
-            .and_then(|v| v.as_str())
-            .unwrap_or_default()
             .to_lowercase();
 
         for verb in [
@@ -1420,11 +1341,8 @@ mod tests {
         let desc = seed_skill_nodes()
             .into_iter()
             .find(|t| t.title == "Relationship Management")
+            .map(|t| tmpl_skill(&t).description)
             .expect("Relationship Management must be seeded")
-            .root_properties
-            .get("description")
-            .and_then(|v| v.as_str())
-            .unwrap_or_default()
             .to_lowercase();
 
         for phrase in ["point", "depends on", "must respect", "edge"] {
@@ -1613,12 +1531,7 @@ mod tests {
             // Mirrors `find_skills`' predicate: an absent key and an empty
             // array both fall through to the unscoped branch, so only a
             // non-empty list actually scopes a candidate's schema_metadata.
-            .filter(|seed| {
-                seed.root_properties
-                    .get("node_types")
-                    .and_then(|v| v.as_array())
-                    .is_some_and(|a| !a.is_empty())
-            })
+            .filter(|seed| !tmpl_skill(seed).node_types.is_empty())
             .map(|seed| seed.title)
             .collect();
 
@@ -1999,11 +1912,7 @@ mod tests {
             .iter()
             .find(|s| s.title == "Schema Creation")
             .expect("Schema Creation skill must exist");
-        let description = schema_skill
-            .root_properties
-            .get("description")
-            .and_then(|v| v.as_str())
-            .expect("Schema Creation must have a description");
+        let description = tmpl_skill(schema_skill).description;
 
         let natural_phrases = ["keep track of", "log", "maintain records for"];
         assert!(

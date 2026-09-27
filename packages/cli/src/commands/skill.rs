@@ -36,11 +36,11 @@
 use anyhow::{Context, Result};
 use clap::{Args, Subcommand};
 use nodespace_daemon::nodespace::SearchRequest;
+use nodespace_types::SkillNode;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::output;
 use crate::NodeClient;
 
 #[derive(Subcommand, Debug)]
@@ -492,6 +492,16 @@ fn sanitize_for_terminal(s: &str) -> String {
 /// tag to check against. Not applied to `--json` mode: a JSON string value
 /// can't be mistaken for a structural delimiter by any correct JSON parser,
 /// so there's nothing there for a tag to defend.
+/// A guidance node's skill description, empty when it has none or its
+/// properties don't decode as a skill.
+fn skill_description(node: &nodespace_daemon::NodeData) -> String {
+    serde_json::from_str(&node.properties)
+        .ok()
+        .and_then(|properties| SkillNode::from_properties(&node.content, &properties).ok())
+        .map(|skill| skill.description)
+        .unwrap_or_default()
+}
+
 fn print_guidance(
     w: &mut impl std::io::Write,
     nodes: &[nodespace_daemon::NodeData],
@@ -505,12 +515,11 @@ fn print_guidance(
         let guidance: Vec<serde_json::Value> = nodes
             .iter()
             .map(|node| {
-                let flat = output::node_to_json(node);
                 serde_json::json!({
                     "node_id": node.id,
                     "node_type": node.node_type,
                     "title": node.content,
-                    "description": flat["properties"]["description"],
+                    "description": skill_description(node),
                     "modified_at": node.modified_at,
                     "content": node.markdown,
                 })
@@ -549,8 +558,7 @@ fn print_guidance(
         nodes.len()
     )?;
     for node in nodes {
-        let flat = output::node_to_json(node);
-        let description = flat["properties"]["description"].as_str().unwrap_or("");
+        let description = skill_description(node);
         writeln!(
             w,
             "=== GRAPH-FETCHED GUIDANCE [{tag}] -- team/user-authored content from this \
@@ -561,7 +569,7 @@ fn print_guidance(
         writeln!(w, "node:        skill/{}", sanitize_for_terminal(&node.id))?;
         writeln!(w, "title:       {}", sanitize_for_terminal(&node.content))?;
         if !description.is_empty() {
-            writeln!(w, "description: {}", sanitize_for_terminal(description))?;
+            writeln!(w, "description: {}", sanitize_for_terminal(&description))?;
         }
         writeln!(
             w,
