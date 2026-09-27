@@ -35,24 +35,22 @@ use nodespace_core::services::{
 };
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::RwLock;
-use tokio_stream::wrappers::ReceiverStream;
 
 use crate::services::embeddings_service::EmbeddingReady;
 use tonic::{Request, Response, Status};
 
 use crate::nodespace::{
     node_event::Event as NodeEventKind, node_service_server::NodeService as GrpcNodeService,
-    AddNodeToCollectionByPathRequest, AddNodeToCollectionRequest, BatchUpdateFailure, ChatRequest,
-    ChatResponse, CollectionIdResponse, CollectionIdsResponse, CollectionInfo,
-    CollectionListResponse, CollectionMembersRequest, ConflictListResponse,
-    ConflictRecord as ConflictRecordProto, ConflictResponse, ConflictsForNodeRequest,
-    CountNodesResponse, CreateCollectionRequest, CreateMentionRequest, CreateNodeRequest,
-    CreateRelationshipRequest, CreateRelationshipResponse, DeleteCollectionRequest,
-    DeleteMentionRequest, DeleteNodeRequest, DeleteNodeResponse, DeleteRelationshipRequest,
-    DeleteRelationshipResponse, Empty, ExecuteQueryRequest, ExportMarkdownRequest,
-    ExportMarkdownResponse, FindCollectionByPathRequest, FindDuplicateRequest,
-    GetAllCollectionsRequest, GetAllSchemasRequest, GetChildrenRequest, GetChildrenTreeRequest,
-    GetCollectionByNameRequest, GetConflictRequest, GetDaemonMemoryRequest,
+    AddNodeToCollectionByPathRequest, AddNodeToCollectionRequest, BatchUpdateFailure,
+    CollectionIdResponse, CollectionIdsResponse, CollectionInfo, CollectionListResponse,
+    CollectionMembersRequest, ConflictListResponse, ConflictRecord as ConflictRecordProto,
+    ConflictResponse, ConflictsForNodeRequest, CountNodesResponse, CreateCollectionRequest,
+    CreateMentionRequest, CreateNodeRequest, CreateRelationshipRequest, CreateRelationshipResponse,
+    DeleteCollectionRequest, DeleteMentionRequest, DeleteNodeRequest, DeleteNodeResponse,
+    DeleteRelationshipRequest, DeleteRelationshipResponse, Empty, ExecuteQueryRequest,
+    ExportMarkdownRequest, ExportMarkdownResponse, FindCollectionByPathRequest,
+    FindDuplicateRequest, GetAllCollectionsRequest, GetAllSchemasRequest, GetChildrenRequest,
+    GetChildrenTreeRequest, GetCollectionByNameRequest, GetConflictRequest, GetDaemonMemoryRequest,
     GetDaemonMemoryResponse, GetDaemonVersionRequest, GetDaemonVersionResponse,
     GetNodeRelationshipsRequest, GetNodeRelationshipsResponse, GetNodeRequest,
     GetNodesBatchRequest, GetNodesBatchResponse, GetRelatedNodesRequest, GetRelatedNodesResponse,
@@ -2262,7 +2260,7 @@ impl GrpcNodeService for NodeServiceImpl {
         Ok(Response::new(Empty {}))
     }
 
-    // -- Streaming (unimplemented; tracked separately) -----------------------
+    // -- Streaming -------------------------------------------------------
 
     type WatchNodesStream =
         Pin<Box<dyn tokio_stream::Stream<Item = Result<NodeEvent, Status>> + Send + 'static>>;
@@ -2385,17 +2383,6 @@ impl GrpcNodeService for NodeServiceImpl {
         };
 
         Ok(Response::new(Box::pin(stream)))
-    }
-
-    type ChatStream = ReceiverStream<Result<ChatResponse, Status>>;
-
-    async fn chat(
-        &self,
-        _request: Request<tonic::Streaming<ChatRequest>>,
-    ) -> Result<Response<Self::ChatStream>, Status> {
-        Err(Status::unimplemented(
-            "Chat streaming is not yet implemented — tracked separately",
-        ))
     }
 }
 
