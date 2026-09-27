@@ -327,7 +327,15 @@ pub async fn update_node(
                 // so an ai-chat conflict would strand the viewer with
                 // `status`/`messages` undefined at the top level.
                 let current_node = match node_service.get_node(&node_id).await {
-                    Ok(Some(n)) => node_to_typed_value(node_service, n).await.ok(),
+                    // Best-effort: failing to render the payload must not
+                    // mask the conflict itself.
+                    Ok(Some(n)) => match node_to_typed_value(node_service, n).await {
+                        Ok(value) => Some(value),
+                        Err(e) => {
+                            tracing::warn!(%node_id, error = %e, "version conflict: could not render the current node for the client merge");
+                            None
+                        }
+                    },
                     _ => None,
                 };
                 return Err(OpsError::VersionConflict {

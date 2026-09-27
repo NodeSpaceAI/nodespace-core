@@ -8,7 +8,10 @@ use anyhow::Result;
 use nodespace_core::{
     db::SqliteStore,
     models::Node,
-    ops::node_ops::{get_node, query_nodes, GetNodeInput, QueryNodesInput},
+    ops::node_ops::{
+        get_node, query_nodes, update_node, GetNodeInput, QueryNodesInput, UpdateNodeInput,
+    },
+    ops::OpsError,
     schema::handle_create_schema,
     services::NodeService,
 };
@@ -89,5 +92,53 @@ async fn query_nodes_returns_an_extending_nodes_inherited_values() -> Result<()>
         "{:?}",
         out.nodes
     );
+    Ok(())
+}
+
+fn update_reason(version: Option<i64>) -> UpdateNodeInput {
+    UpdateNodeInput {
+        node_id: "refund-1".to_string(),
+        version,
+        node_type: None,
+        content: None,
+        properties: Some(json!({ "reason": "chargeback" })),
+        add_to_collections: vec![],
+        add_to_collection_ids: vec![],
+        remove_from_collection_ids: vec![],
+        lifecycle_status: None,
+    }
+}
+
+#[tokio::test]
+async fn update_node_result_carries_an_extending_nodes_inherited_values() -> Result<()> {
+    let (svc, _t) = service_with_refund_node().await?;
+
+    let out = update_node(&svc, update_reason(None)).await?;
+
+    assert_eq!(out.node_data["properties"]["reason"], json!("chargeback"));
+    assert_eq!(
+        out.node_data["properties"]["amount"],
+        json!(42),
+        "{}",
+        out.node_data
+    );
+    Ok(())
+}
+
+/// The conflict payload is hydrated straight into the client's store for a
+/// merge, so an inherited value missing from it reads as that value deleted.
+#[tokio::test]
+async fn version_conflict_payload_carries_an_extending_nodes_inherited_values() -> Result<()> {
+    let (svc, _t) = service_with_refund_node().await?;
+
+    let err = update_node(&svc, update_reason(Some(999)))
+        .await
+        .expect_err("a stale version must conflict");
+
+    let OpsError::VersionConflict { current_node, .. } = err else {
+        panic!("expected a version conflict, got {err:?}");
+    };
+    let current = current_node.expect("the conflict must embed the current node");
+    assert_eq!(current["properties"]["amount"], json!(42), "{current}");
     Ok(())
 }

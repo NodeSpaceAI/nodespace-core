@@ -1928,8 +1928,9 @@ impl GrpcNodeService for NodeServiceImpl {
                     .0;
                 // Relationships likewise: an inherited relationship is as
                 // traversable from an instance as an own one. The merged set
-                // excludes the `extends` row, so the schema's own is kept —
-                // it is how a reader of this definition learns the parent.
+                // excludes the `extends` row, so the schema's own is carried
+                // through: `into_wire_node` lifts it into the top-level
+                // `extends` key, which is how a reader learns the parent.
                 let (inherited, _) = this
                     .node_service
                     .resolve_relationships(&req.schema_id)
@@ -5320,8 +5321,8 @@ mod tests {
     }
 
     /// `get_schema_definition` on an extending schema reports inherited
-    /// relationships alongside inherited fields, and keeps the schema's own
-    /// `extends` row so a reader still learns its parent.
+    /// relationships alongside inherited fields, and names its parent as the
+    /// top-level `extends` key rather than as a relationship.
     #[tokio::test]
     async fn get_schema_definition_reports_inherited_relationships() {
         use nodespace_core::schema::handle_create_schema;
@@ -5374,14 +5375,8 @@ mod tests {
                 .collect()
         };
         assert_eq!(names("fields"), ["severity", "status"], "{props}");
-        assert_eq!(
-            names("relationships"),
-            [
-                "owned_by",
-                nodespace_core::models::schema::EXTENDS_RELATIONSHIP
-            ],
-            "{props}"
-        );
+        assert_eq!(names("relationships"), ["owned_by"], "{props}");
+        assert_eq!(props["extends"], "ticket", "{props}");
     }
 
     fn seed_template(node_type: &str, title: &str) -> nodespace_core::markdown::NodeTemplate {
