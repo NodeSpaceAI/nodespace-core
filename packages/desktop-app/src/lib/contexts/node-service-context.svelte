@@ -14,13 +14,10 @@
 
   // Import proper types for the services
   import type { ReactiveNodeService } from '$lib/services/reactive-node-service.svelte';
-  import type { ContentProcessor as ContentProcessorType, NodeReferenceService as NodeReferenceServiceType } from '$lib/services/content-processor';
 
   // Service interface definition with proper types
   export interface NodeServices {
-    nodeReferenceService: NodeReferenceServiceType | null;
     nodeManager: ReactiveNodeService;
-    contentProcessor: ContentProcessorType;
   }
 
   // Context accessor functions
@@ -40,7 +37,6 @@
 
   // Service imports
   import { createReactiveNodeService } from '$lib/services/reactive-node-service.svelte';
-  import { ContentProcessor } from '$lib/services/content-processor';
   import { focusManager } from '$lib/services/focus-manager.svelte';
   import { DEFAULT_PANE_ID } from '$lib/stores/navigation.svelte';
   import { createLogger } from '$lib/utils/logger';
@@ -100,14 +96,10 @@
 
       // No more demo data initialization - we'll load from real database
 
-      const contentProcessor = ContentProcessor.getInstance();
-
       // Create service bundle and update reactive state
       // (context was already set at component init with the container reference)
       servicesContainer.services = {
-        nodeReferenceService: null,
-        nodeManager,
-        contentProcessor
+        nodeManager
       };
 
       servicesInitialized = true;

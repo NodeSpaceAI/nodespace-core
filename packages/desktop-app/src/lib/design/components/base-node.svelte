@@ -31,7 +31,8 @@
     createTextareaController,
     type TextareaControllerEvents,
     type TextareaControllerConfig,
-    type TextareaControllerState
+    type TextareaControllerState,
+    type TriggerContext
   } from './textarea-controller.svelte.js';
   import { NodeAutocomplete, type NodeResult } from '$lib/components/ui/node-autocomplete';
   import { SlashCommandDropdown } from '$lib/components/ui/slash-command-dropdown';
@@ -45,7 +46,6 @@
     type SlashCommand,
     type SlashCommandContext
   } from '$lib/services/slash-command-service';
-  import type { TriggerContext } from '$lib/services/content-processor';
   import { getIconConfig, resolveNodeState, type NodeType } from '$lib/design/icons/registry';
   import { backendAdapter } from '$lib/services/backend-adapter';
   import { getNodeServices } from '$lib/contexts/node-service-context.svelte';

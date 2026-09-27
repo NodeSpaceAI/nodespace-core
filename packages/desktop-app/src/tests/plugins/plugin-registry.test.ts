@@ -2,7 +2,7 @@
  * Unified Plugin Registry Tests
  *
  * Comprehensive test suite for the unified plugin system that consolidates
- * ViewerRegistry, NODE_REFERENCE_COMPONENTS, and BasicNodeTypeRegistry.
+ * viewers, per-type node reference components, and node definitions.
  *
  * Tests follow the official NodeSpace testing guide patterns.
  */

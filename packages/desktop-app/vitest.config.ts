@@ -228,8 +228,6 @@ export default defineConfig({
         'src/lib/types/node-viewers.ts',
         'src/lib/types/query.ts',
         'src/lib/types/event-types.ts',
-        'src/lib/types/content-decoration.ts',
-        'src/lib/types/component-decoration.ts',
         'src/lib/patterns/types.ts',
         'src/lib/plugins/types.ts'
       ],

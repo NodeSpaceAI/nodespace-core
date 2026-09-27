@@ -52,7 +52,7 @@
 
   // Header level - derived from markdown syntax (#, ##, ###, etc.)
   // Replaced $effect with $derived for pure reactive computation
-  let headerLevel = $derived(parseHeaderLevel(content));
+  let headerLevel = $derived(displayHeaderLevel(content));
 
   // Headers use default single-line editing
   const editableConfig = {};
@@ -67,10 +67,12 @@
   let displayContent = $derived(content.replace(/^#{1,6}\s+/, ''));
 
   /**
-   * Parse header level from markdown syntax
-   * Returns 1-6 for valid headers, counting hashtags even without space
+   * Header level to render for this node's content.
+   * Unlike markdown-utils' parseHeaderLevel (which answers "is this a header?"),
+   * this is lenient: it counts hashtags even without the trailing space and
+   * defaults to h1, because a header node always renders as some header level.
    */
-  function parseHeaderLevel(content: string): number {
+  function displayHeaderLevel(content: string): number {
     const trimmed = content.trim();
     // First try to match with space (complete pattern)
     const matchWithSpace = trimmed.match(/^(#{1,6})\s/);

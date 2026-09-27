@@ -180,7 +180,7 @@ export interface Node {
 
   /**
    * Extracted mentions from content (e.g., @node-id)
-   * Computed by ContentProcessor.extractMentions(node.content)
+   * Derived from content by ReactiveNodeService.updateNodeMentions
    * NOT stored in database
    */
   mentions?: string[];

@@ -5,7 +5,7 @@
  * - parseMarkdown with all formatting options
  * - stripMarkdown for plain text extraction
  * - getWordCount for counting words
- * - validateMarkdown for syntax validation
+ * - parseHeaderLevel for header detection
  * - previewMarkdown for truncated previews
  * - Edge cases and error handling
  */
@@ -14,7 +14,7 @@ import {
 	parseMarkdown,
 	stripMarkdown,
 	getWordCount,
-	validateMarkdown,
+	parseHeaderLevel,
 	previewMarkdown,
 	type MarkdownOptions
 } from '$lib/services/markdown-utils';
@@ -501,85 +501,30 @@ describe('markdown-utils service', () => {
 		});
 	});
 
-	describe('validateMarkdown', () => {
-		it('should validate correct markdown', () => {
-			const result = validateMarkdown('**bold** and *italic*');
-			expect(result.isValid).toBe(true);
-			expect(result.errors).toHaveLength(0);
+	describe('parseHeaderLevel', () => {
+		it('should return the number of leading hashes for headers', () => {
+			expect(parseHeaderLevel('# Title')).toBe(1);
+			expect(parseHeaderLevel('### Title')).toBe(3);
+			expect(parseHeaderLevel('###### Title')).toBe(6);
 		});
 
-		it('should detect unclosed bold markers (asterisks)', () => {
-			const result = validateMarkdown('**bold text');
-			expect(result.isValid).toBe(false);
-			expect(result.errors).toContain('Unclosed bold markers (**)');
+		it('should detect a header while typing, before any text follows the space', () => {
+			expect(parseHeaderLevel('## ')).toBe(2);
 		});
 
-		it('should detect unclosed bold markers (underscores)', () => {
-			const result = validateMarkdown('__bold text');
-			expect(result.isValid).toBe(false);
-			expect(result.errors).toContain('Unclosed bold markers (__)');
+		it('should return 0 when the hashes are not followed by a space', () => {
+			expect(parseHeaderLevel('#')).toBe(0);
+			expect(parseHeaderLevel('#hashtag')).toBe(0);
 		});
 
-		it('should detect unclosed italic markers (asterisks)', () => {
-			const result = validateMarkdown('*italic text');
-			expect(result.isValid).toBe(false);
-			expect(result.errors).toContain('Unclosed italic markers (*)');
+		it('should return 0 for more than six hashes', () => {
+			expect(parseHeaderLevel('####### Title')).toBe(0);
 		});
 
-		it('should detect unclosed italic markers (underscores)', () => {
-			const result = validateMarkdown('_italic text');
-			expect(result.isValid).toBe(false);
-			expect(result.errors).toContain('Unclosed italic markers (_)');
-		});
-
-		it('should detect unclosed code markers', () => {
-			const result = validateMarkdown('`code text');
-			expect(result.isValid).toBe(false);
-			expect(result.errors).toContain('Unclosed code markers (`)');
-		});
-
-		it('should detect multiple errors', () => {
-			const result = validateMarkdown('**bold *italic `code');
-			expect(result.isValid).toBe(false);
-			expect(result.errors.length).toBeGreaterThan(1);
-		});
-
-		it('should handle empty string as valid', () => {
-			const result = validateMarkdown('');
-			expect(result.isValid).toBe(true);
-			expect(result.errors).toHaveLength(0);
-		});
-
-		it('should handle plain text as valid', () => {
-			const result = validateMarkdown('Plain text without markdown');
-			expect(result.isValid).toBe(true);
-			expect(result.errors).toHaveLength(0);
-		});
-
-		it('should validate correctly matched pairs', () => {
-			const result = validateMarkdown('**bold1** **bold2** *italic1* *italic2* `code1` `code2`');
-			expect(result.isValid).toBe(true);
-			expect(result.errors).toHaveLength(0);
-		});
-
-		it('should handle mixed matched and unmatched markers', () => {
-			const result = validateMarkdown('**bold** *italic');
-			expect(result.isValid).toBe(false);
-			expect(result.errors).toContain('Unclosed italic markers (*)');
-		});
-
-		it('should not confuse bold with italic (triple asterisks)', () => {
-			const result = validateMarkdown('***bold italic***');
-			expect(result.isValid).toBe(true);
-			expect(result.errors).toHaveLength(0);
-		});
-
-		it('should handle escaped markers', () => {
-			// Note: The validator counts all markers, including those in code blocks
-			// This is a simple validator that doesn't parse context
-			const result = validateMarkdown('Use `**` for bold');
-			expect(result.isValid).toBe(false); // The ** is still counted
-			expect(result.errors).toContain('Unclosed bold markers (**)');
+		it('should return 0 for non-header content', () => {
+			expect(parseHeaderLevel('')).toBe(0);
+			expect(parseHeaderLevel('Plain text')).toBe(0);
+			expect(parseHeaderLevel(' # Indented')).toBe(0);
 		});
 	});
 
@@ -760,16 +705,6 @@ This is a very long document with lots of content. `.repeat(10);
 			// of repeated text may appear after stripping leading markers
 		});
 
-		it('should validate user input before parsing', () => {
-			const userInput = '**Bold text but forgot to close';
-			const validation = validateMarkdown(userInput);
-
-			if (!validation.isValid) {
-				// In real app, show error to user
-				expect(validation.errors.length).toBeGreaterThan(0);
-			}
-		});
-
 		it('should count words for reading time estimation', () => {
 			const article = `# Article Title
 
@@ -787,14 +722,6 @@ This is a long article with many paragraphs and lots of content.`.repeat(50);
 			expect(() => {
 				for (let i = 0; i < 100; i++) {
 					parseMarkdown(`# Heading ${i}\n\n**Bold** content ${i}`);
-				}
-			}).not.toThrow();
-		});
-
-		it('should handle rapid successive validation calls', () => {
-			expect(() => {
-				for (let i = 0; i < 100; i++) {
-					validateMarkdown(`**bold ${i}** *italic ${i}*`);
 				}
 			}).not.toThrow();
 		});

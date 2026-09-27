@@ -3,7 +3,7 @@
  *
  * Unified plugin system that consolidates:
  * - ViewerRegistry (viewer components)
- * - NODE_REFERENCE_COMPONENTS (reference components)
+ * - Per-type node reference components
  * - BasicNodeTypeRegistry (node definitions + slash commands)
  *
  * Incorporates the excellent slash command work from the recent BasicNodeTypeRegistry.

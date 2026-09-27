@@ -24,7 +24,6 @@
  * - Internal state uses $state for Svelte 5 reactivity
  */
 
-import type { TriggerContext } from '$lib/services/content-processor';
 import type { SlashCommandContext } from '$lib/services/slash-command-service';
 import { KeyboardCommandRegistry } from '$lib/services/keyboard-command-registry';
 import { CreateNodeCommand } from '$lib/commands/keyboard/create-node.command';
@@ -59,6 +58,18 @@ const KEYBOARD_COMMANDS = {
   formatBold: new FormatTextCommand('bold'),
   formatItalic: new FormatTextCommand('italic')
 };
+
+/**
+ * Trigger context for autocomplete/commands
+ */
+export interface TriggerContext {
+  trigger: '@' | '/' | '[[';
+  query: string;
+  startPosition: number;
+  endPosition: number;
+  element?: HTMLElement;
+  isValid?: boolean;
+}
 
 export interface TextareaControllerEvents {
   contentChanged: (content: string, cursorPosition: number) => void;

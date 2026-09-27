@@ -18,7 +18,7 @@
  */
 
 import { v4 as uuidv4 } from 'uuid';
-import { ContentProcessor } from './content-processor';
+import { parseHeaderLevel } from './markdown-utils';
 import { SharedNodeStore } from './shared-node-store.svelte';
 import { focusManager } from './focus-manager.svelte';
 import { pluginRegistry } from '$lib/plugins/plugin-registry';
@@ -66,8 +66,6 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
   const _uiState = $state<Record<string, NodeUIState>>({});
   let _rootNodeIds = $state<string[]>([]);
   const _activeNodeId = $state<string | undefined>(undefined);
-
-  const contentProcessor = ContentProcessor.getInstance();
 
   // Compute a node's depth by walking its parent chain via backend hierarchy queries.
   function computeDepth(nodeId: string, visited = new Set<string>()): number {
@@ -456,7 +454,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     const node = sharedNodeStore.getNode(nodeId);
     if (!node) return;
 
-    const headerLevel = contentProcessor.parseHeaderLevel(content);
+    const headerLevel = parseHeaderLevel(content);
     const isPlaceholder = content.trim() === '';
 
     // Always include nodeType to preserve slash command conversions
@@ -1583,43 +1581,6 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     toggleExpanded,
     setExpanded,
     batchSetExpanded,
-
-    // Content processing methods for integration tests
-    parseNodeContent(nodeId: string) {
-      const node = sharedNodeStore.getNode(nodeId);
-      if (!node) return null;
-      return contentProcessor.parseMarkdown(node.content);
-    },
-
-    async renderNodeAsHTML(nodeId: string): Promise<string> {
-      const node = sharedNodeStore.getNode(nodeId);
-      if (!node) return '';
-      const result = await contentProcessor.markdownToDisplay(node.content);
-      return result || '';
-    },
-
-    getNodeHeaderLevel(nodeId: string): number {
-      const node = sharedNodeStore.getNode(nodeId);
-      if (!node) return 0;
-      const headerMatch = node.content.match(/^(#{1,6})\s+/);
-      return headerMatch ? headerMatch[1].length : 0;
-    },
-
-    getNodeDisplayText(nodeId: string): string {
-      const node = sharedNodeStore.getNode(nodeId);
-      if (!node) return '';
-      return contentProcessor
-        .displayToMarkdown(node.content)
-        .replace(/[#*`[\]()]/g, '')
-        .trim();
-    },
-
-    updateNodeContentWithProcessing(nodeId: string, content: string): boolean {
-      const node = sharedNodeStore.getNode(nodeId);
-      if (!node) return false;
-      updateNodeContent(nodeId, content);
-      return true;
-    },
 
     // Initialize service with nodes (used for loading from database)
     initializeNodes(
