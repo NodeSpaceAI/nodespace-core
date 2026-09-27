@@ -356,13 +356,11 @@ pub struct SchemaNode {
 /// crate-level doc comment), so the diagnostic is plain text for the caller
 /// to print via `eprintln!` — the closest thing to "a log line" available
 /// without pulling in `tracing`/`log`, and one that fires the same way no
-/// matter which binary (Tauri app, daemon, CLI) embeds this crate. Note this
-/// is not airtight on every platform: on Windows, the daemon process is
-/// spawned with its stderr piped to `/dev/null`-equivalent, and a release
-/// desktop-app build has no console at all, so this specific diagnostic is
-/// currently invisible there (both platforms' stdout/stderr routing is a
-/// pre-existing daemon/app-launch concern, out of scope for this fix — see
-/// the follow-up issue tracking it).
+/// matter which binary (Tauri app, daemon, CLI) embeds this crate. On no
+/// platform does this ever reach the application UI — it only ever lands
+/// in a log file (the Windows daemon and release desktop-app builds route
+/// their stdio to `nodespace-app.log`/`nodespace-app-error.log`), which an
+/// ordinary end user never checks.
 fn parse_fields(
     properties: &serde_json::Value,
     node_id: &str,
