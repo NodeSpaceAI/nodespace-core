@@ -1135,11 +1135,18 @@ mod tests {
             deterministic_collection_id("Architecture")
         );
 
+        // 4, not 3: every fresh install also seeds one "AI Chats" personal
+        // collection (ADR-061 §1), alongside Architecture/Decisions/Alternatives.
         let names = svc.get_all_collection_names().await.unwrap();
         assert_eq!(
             names.len(),
-            3,
-            "exactly Architecture/Decisions/Alternatives, no duplicates: {names:?}"
+            4,
+            "Architecture/Decisions/Alternatives plus the seeded AI Chats \
+             collection, no duplicates: {names:?}"
+        );
+        assert!(
+            names.contains(&"AI Chats".to_string()),
+            "the seeded personal AI-chat collection must be present: {names:?}"
         );
     }
 
