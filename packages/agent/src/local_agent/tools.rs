@@ -3517,7 +3517,16 @@ impl GraphToolExecutor {
             .await
             .map_err(|e| ops_error_to_tool(e, "create_relationship"))?;
 
-        let mut result = json!({ "from_id": params.from_id, "to_id": params.to_id, "type": params.relationship_type, "created": true });
+        // The edge as stored, in the same form as its `replaced` entries: a
+        // write through an `in` declaration's name comes back on the forward
+        // name with its endpoints swapped. Echoing the arguments instead would
+        // spell one edge two ways, and a later eviction of it would not match.
+        let mut result = json!({
+            "from_id": node_uri(&output.source_id),
+            "to_id": node_uri(&output.target_id),
+            "type": output.relationship_name,
+            "created": true,
+        });
         // A cardinality-one end replaces rather than rejects: "assign this task
         // to Bob" unassigns Alice as a side effect. Name the evicted edges so
         // the model can tell the user instead of reporting a plain create.
@@ -7445,6 +7454,89 @@ mod tests {
             second.result
         );
         assert!(second.result["note"].is_string());
+    }
+
+    /// A write through an `in` declaration's name is stored as the forward
+    /// edge. The result must report it that way — byte-for-byte what a later
+    /// write's `replaced` names it as — or the chat record cannot tell that the
+    /// later write evicted it.
+    #[tokio::test]
+    async fn create_relationship_through_in_name_reports_the_stored_edge() {
+        use nodespace_core::db::SqliteStore;
+        use nodespace_core::models::Node;
+        use tempfile::TempDir;
+
+        let tmp = TempDir::new().unwrap();
+        let mut store: Arc<SqliteStore> =
+            Arc::new(SqliteStore::new(tmp.path().join("test.db")).await.unwrap());
+        let ns = Arc::new(NodeService::new(&mut store).await.unwrap());
+        handle_create_schema(
+            &ns,
+            json!({
+                "name": "seam_adr",
+                "fields": [],
+                "relationships": [
+                    {
+                        "name": "supersedes",
+                        "targetType": "seam_adr",
+                        "direction": "out",
+                        "cardinality": "one",
+                        "reverseName": "superseded_by",
+                        "reverseCardinality": "one"
+                    },
+                    {
+                        "name": "superseded_by",
+                        "targetType": "seam_adr",
+                        "direction": "in",
+                        "cardinality": "one",
+                        "reverseName": "supersedes",
+                        "reverseCardinality": "one"
+                    }
+                ]
+            }),
+        )
+        .await
+        .unwrap();
+        for id in ["old", "new1", "new2"] {
+            ns.create_node(Node::new_with_id(
+                id.to_string(),
+                "seam_adr".to_string(),
+                format!("{id} content"),
+                json!({}),
+            ))
+            .await
+            .unwrap();
+        }
+        let executor = GraphToolExecutor {
+            node_service: Some(ns),
+            embedding_service: Arc::new(RwLock::new(None)),
+            inference_engine: None,
+            playbook_lifecycle: None,
+        };
+        let supersede = |by: &'static str| {
+            executor.execute(
+                "create_relationship",
+                json!({ "from_id": "old", "to_id": by, "relationship_type": "superseded_by" }),
+            )
+        };
+
+        let first = supersede("new1").await.unwrap();
+        let stored = json!({
+            "from_id": node_uri("new1"),
+            "to_id": node_uri("old"),
+            "type": "supersedes",
+        });
+        for key in ["from_id", "to_id", "type"] {
+            assert_eq!(first.result[key], stored[key], "{}", first.result);
+        }
+
+        let second = supersede("new2").await.unwrap();
+        assert_eq!(
+            second.result["replaced"],
+            json!([stored]),
+            "the eviction names the first write's edge exactly as its result did: {}",
+            second.result
+        );
     }
 
     #[tokio::test]

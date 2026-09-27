@@ -15,7 +15,7 @@ use nodespace_core::{
     models::Node,
     ops::rel_ops::{self, GetRelatedInput},
     schema::{handle_create_schema, handle_update_schema},
-    services::NodeService,
+    services::{NodeService, StoredEdge},
 };
 use serde_json::json;
 use std::sync::Arc;
@@ -132,6 +132,59 @@ async fn write_through_in_name_stores_the_forward_edge() -> Result<()> {
     svc.create_relationship("new", "supersedes", "old", json!({}))
         .await?;
     assert_eq!(stored_edges(&svc, &["old", "new"]).await?.len(), 1);
+    Ok(())
+}
+
+/// A write through the `in` name reports the edge as stored, not as given —
+/// the same orientation a later write's `replaced` entries use for it, so a
+/// caller can tell when that later write evicted it.
+#[tokio::test]
+async fn write_through_in_name_reports_the_stored_edge() -> Result<()> {
+    let (svc, _t) = create_test_service().await?;
+    create_adr_schema(&svc).await?;
+    for id in ["old", "new1", "new2"] {
+        make_adr(&svc, id).await?;
+    }
+
+    let first = rel_ops::create_relationship(
+        &svc,
+        rel_ops::CreateRelInput {
+            source_id: "old".into(),
+            relationship_name: "superseded_by".into(),
+            target_id: "new1".into(),
+            edge_data: None,
+        },
+    )
+    .await?;
+    assert_eq!(
+        (
+            first.source_id.as_str(),
+            first.relationship_name.as_str(),
+            first.target_id.as_str()
+        ),
+        ("new1", "supersedes", "old")
+    );
+
+    let second = svc
+        .create_relationship("old", "superseded_by", "new2", json!({}))
+        .await?;
+    assert_eq!(
+        second.edge,
+        StoredEdge {
+            source_id: "new2".into(),
+            relationship_name: "supersedes".into(),
+            target_id: "old".into(),
+        }
+    );
+    assert_eq!(
+        second.replaced,
+        vec![StoredEdge {
+            source_id: first.source_id,
+            relationship_name: first.relationship_name,
+            target_id: first.target_id,
+        }],
+        "the eviction names the first write's edge exactly as that write reported it"
+    );
     Ok(())
 }
 

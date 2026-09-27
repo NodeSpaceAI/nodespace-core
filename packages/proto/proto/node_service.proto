@@ -720,6 +720,9 @@ message CreateRelationshipRequest {
   optional string edge_data_json = 4;
 }
 
+// The edge as stored, not as requested: a create through an `in`
+// declaration's name comes back on the forward name with its endpoints
+// swapped — the same orientation `replaced` uses.
 message CreateRelationshipResponse {
   string source_id = 1;
   string relationship_name = 2;

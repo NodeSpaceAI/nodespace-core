@@ -2288,8 +2288,8 @@ const SUMMARY_MAX_CHARS: usize = 120;
 /// imports a whole subtree, so a repeat duplicates all of it.
 ///
 /// Returning `None` here means "this tool changes graph state but is not
-/// described by a single argument"; `create_relationship` is rendered from its
-/// own fields instead (see `completed_writes_from`).
+/// described by a single argument"; `create_relationship` is rendered from the
+/// edge its result reports instead (see `completed_writes_from`).
 fn write_summary_arg(tool: &str) -> Option<&'static [&'static str]> {
     match tool {
         "create_node" | "update_node" | "update_task_status" | "delete_node" => {
@@ -2307,7 +2307,7 @@ fn write_summary_arg(tool: &str) -> Option<&'static [&'static str]> {
         // same merge attempt.
         "merge_conflict" => Some(&["loser_id", "survivor_id"]),
         // `create_relationship` has no single describing argument; the call site
-        // renders the edge from its own fields instead.
+        // renders the edge its result reports instead.
         _ => None,
     }
 }
@@ -2377,10 +2377,12 @@ pub fn completed_writes_from(executions: &[ToolExecutionRecord]) -> Vec<AiChatCo
                     .and_then(|v| v.as_str())
                     .map(clip_summary),
                 // A relationship has no single describing argument; render the
-                // edge itself, which is what identifies it.
-                None if r.name == "create_relationship" => {
-                    Some(edge_label(&r.args, "relationship_type"))
-                }
+                // edge itself, which is what identifies it. Rendered from the
+                // result, not the arguments: the result reports the edge as
+                // stored — a write through an `in` declaration's name comes
+                // back on the forward name, endpoints swapped — which is how a
+                // later write's `replaced` names it when evicting it.
+                None if r.name == "create_relationship" => Some(edge_label(&r.result)),
                 None => None,
             };
 
@@ -2392,7 +2394,7 @@ pub fn completed_writes_from(executions: &[ToolExecutionRecord]) -> Vec<AiChatCo
                 .result
                 .get("replaced")
                 .and_then(|v| v.as_array())
-                .map(|edges| edges.iter().map(|e| edge_label(e, "type")).collect())
+                .map(|edges| edges.iter().map(edge_label).collect())
                 .unwrap_or_default();
 
             // Identity for the cross-turn duplicate guard. Canonicalised through
@@ -2466,19 +2468,19 @@ fn confirmed_deletion_writes(
         .collect()
 }
 
-/// Render an edge as `"from -[type]-> to"`, reading `from_id`/`to_id` and the
-/// relationship name under `type_key` — `relationship_type` in a
-/// `create_relationship` call's arguments, `type` in its `replaced` entries.
+/// Render an edge as `"from -[type]-> to"` from a `create_relationship`
+/// result or one of its `replaced` entries. Both report the edge as stored,
+/// with `nodespace://` ids, so one edge always renders as one label.
 ///
 /// Never clipped: the endpoints are ids a later turn copies to restore or
 /// refer to the edge, and a clipped id is a wrong id. Two `nodespace://` UUIDs
 /// alone take most of `SUMMARY_MAX_CHARS`.
-fn edge_label(edge: &serde_json::Value, type_key: &str) -> String {
+fn edge_label(edge: &serde_json::Value) -> String {
     let field = |k: &str| edge.get(k).and_then(|v| v.as_str()).unwrap_or("?");
     flatten_label(&format!(
         "{} -[{}]-> {}",
         field("from_id"),
-        field(type_key),
+        field("type"),
         field("to_id")
     ))
 }
@@ -2718,9 +2720,9 @@ fn prior_writes_from_history(messages: &[AiChatMessage]) -> Vec<PriorWrite> {
         // cancels itself, only an earlier one.
         let evicted = w.tool == "create_relationship"
             && w.summary
-                .as_deref()
-                .is_some_and(|s| evicted_later.contains(&edge_key(s)));
-        evicted_later.extend(w.replaced.iter().map(|e| edge_key(e)));
+                .as_ref()
+                .is_some_and(|s| evicted_later.contains(s));
+        evicted_later.extend(w.replaced.iter().cloned());
         if !evicted && is_cross_turn_guarded_tool(&w.tool) {
             writes.push(PriorWrite {
                 tool: w.tool.clone(),
@@ -2732,14 +2734,6 @@ fn prior_writes_from_history(messages: &[AiChatMessage]) -> Vec<PriorWrite> {
     }
     writes.reverse();
     writes
-}
-
-/// An edge label with its ids' `nodespace://` scheme dropped. A call's own
-/// label spells ids as the model passed them, with or without the scheme,
-/// while a `replaced` entry always carries it; this is what lets the two
-/// compare as the same edge.
-fn edge_key(label: &str) -> String {
-    label.replace("nodespace://", "")
 }
 
 /// Render persisted writes as a system-role note for the rebuilt history.
@@ -5489,7 +5483,7 @@ mod tests {
                 "to_id": "nodespace://b",
                 "relationship_type": "mentions"
             }),
-            serde_json::json!({"from_id": "nodespace://a", "to_id": "nodespace://b", "created": true}),
+            rel_result(("a", "mentions", "b"), &[]),
         )]);
         assert_eq!(rel.len(), 1);
         assert_eq!(rel[0].node_id, None);
@@ -5580,7 +5574,7 @@ mod tests {
         let plain = completed_writes_from(&[exec(
             "create_relationship",
             args,
-            serde_json::json!({"created": true}),
+            rel_result(("bob", "tasks", "task"), &[]),
         )]);
         assert!(plain[0].replaced.is_empty());
         assert_eq!(plain[0].canonical_args, writes[0].canonical_args);
@@ -5967,11 +5961,29 @@ model = "model-b"
         );
     }
 
+    /// A `create_relationship` tool result: the edge as stored and the edges
+    /// it evicted, each `(from, type, to)` with bare ids, rendered as
+    /// `exec_create_relationship` renders them.
+    fn rel_result(edge: (&str, &str, &str), replaced: &[(&str, &str, &str)]) -> serde_json::Value {
+        let render = |(from, ty, to): (&str, &str, &str)| {
+            serde_json::json!({
+                "from_id": format!("nodespace://{from}"),
+                "to_id": format!("nodespace://{to}"),
+                "type": ty,
+            })
+        };
+        let mut result = render(edge);
+        result["created"] = serde_json::json!(true);
+        if !replaced.is_empty() {
+            result["replaced"] = replaced.iter().copied().map(render).collect();
+        }
+        result
+    }
+
     /// "Assign it to Alice", "actually Bob", "put it back on Alice": Bob's
     /// write evicted Alice's edge, so recreating it is not a repeat. Alice's
-    /// earlier write must leave the guard; Bob's stays. The ids are spelled
-    /// bare in the call and with the scheme in `replaced`, as the model and
-    /// the tool result respectively produce them.
+    /// earlier write must leave the guard; Bob's stays. The call spells ids
+    /// bare; the label is built from the result, which carries the scheme.
     #[tokio::test]
     async fn a_relationship_evicted_later_is_not_guarded_against_recreation() {
         let rel = |from: &str, to: &str, result: serde_json::Value| {
@@ -5981,14 +5993,11 @@ model = "model-b"
                 result,
             )])
         };
-        let alice = rel("alice", "task", serde_json::json!({"created": true}));
+        let alice = rel("alice", "task", rel_result(("alice", "tasks", "task"), &[]));
         let bob = rel(
             "bob",
             "task",
-            serde_json::json!({
-                "created": true,
-                "replaced": [{"from_id": "nodespace://alice", "to_id": "nodespace://task", "type": "tasks"}]
-            }),
+            rel_result(("bob", "tasks", "task"), &[("alice", "tasks", "task")]),
         );
         let msgs = vec![
             assistant_turn("Assigned to Alice.", alice[0].clone()),
@@ -6013,11 +6022,11 @@ model = "model-b"
         };
         let bob = rel(
             "bob",
-            serde_json::json!({"replaced": [{"from_id": "nodespace://alice", "to_id": "nodespace://task", "type": "tasks"}]}),
+            rel_result(("bob", "tasks", "task"), &[("alice", "tasks", "task")]),
         );
         let alice = rel(
             "alice",
-            serde_json::json!({"replaced": [{"from_id": "nodespace://bob", "to_id": "nodespace://task", "type": "tasks"}]}),
+            rel_result(("alice", "tasks", "task"), &[("bob", "tasks", "task")]),
         );
         let msgs = vec![
             assistant_turn("Reassigned to Bob.", bob[0].clone()),
@@ -6036,12 +6045,11 @@ model = "model-b"
     #[tokio::test]
     async fn repeated_reassignment_guards_only_the_live_edge() {
         let rel = |from: &str, evicts: Option<&str>| {
-            let result = match evicts {
-                Some(prev) => serde_json::json!({"replaced": [
-                    {"from_id": format!("nodespace://{prev}"), "to_id": "nodespace://task", "type": "tasks"}
-                ]}),
-                None => serde_json::json!({"created": true}),
-            };
+            let replaced: Vec<_> = evicts
+                .map(|prev| (prev, "tasks", "task"))
+                .into_iter()
+                .collect();
+            let result = rel_result((from, "tasks", "task"), &replaced);
             completed_writes_from(&[exec(
                 "create_relationship",
                 serde_json::json!({"from_id": from, "to_id": "task", "relationship_type": "tasks"}),
@@ -6062,6 +6070,54 @@ model = "model-b"
         assert_eq!(prior[0].canonical_args, last.canonical_args);
     }
 
+    /// Writing through an `in` declaration's name stores the forward edge, and
+    /// a later eviction names it that way. An ADR declares `supersedes` (out)
+    /// and `superseded_by` (in), so `old -[superseded_by]-> new1` is stored as
+    /// `new1 -[supersedes]-> old`; superseding `old` by `new2` instead evicts
+    /// that edge; so restoring `new1` is not a repeat. The label must come from
+    /// the stored edge for the two to match.
+    #[tokio::test]
+    async fn an_edge_written_through_an_in_name_is_released_by_its_eviction() {
+        let rel = |by: &str, result: serde_json::Value| {
+            completed_writes_from(&[exec(
+                "create_relationship",
+                serde_json::json!({"from_id": "old", "to_id": by, "relationship_type": "superseded_by"}),
+                result,
+            )])
+            .remove(0)
+        };
+        let first = rel("new1", rel_result(("new1", "supersedes", "old"), &[]));
+        assert_eq!(
+            first.summary.as_deref(),
+            Some("nodespace://new1 -[supersedes]-> nodespace://old"),
+            "the label is the stored forward edge, not the call's inbound spelling"
+        );
+        let second = rel(
+            "new2",
+            rel_result(
+                ("new2", "supersedes", "old"),
+                &[("new1", "supersedes", "old")],
+            ),
+        );
+        let msgs = vec![
+            assistant_turn("Superseded by new1.", first.clone()),
+            assistant_turn("Superseded by new2 instead.", second.clone()),
+        ];
+
+        let prior = prior_writes_from_history(&msgs);
+        assert_eq!(prior.len(), 1, "got {prior:?}");
+        assert_eq!(prior[0].canonical_args, second.canonical_args);
+
+        // Restoring `new1` is the same call as the first write, so its
+        // identity matches — which is why the evicted write must be gone from
+        // `prior`, or the guard would refuse it.
+        let again = rel("new1", rel_result(("new1", "supersedes", "old"), &[]));
+        assert_eq!(again.canonical_args, first.canonical_args);
+        assert!(prior
+            .iter()
+            .all(|p| p.canonical_args != again.canonical_args));
+    }
+
     /// Edge labels carry ids a later turn must copy verbatim, so they are
     /// never clipped — even with UUID ids and a long relationship name, which
     /// together exceed `SUMMARY_MAX_CHARS`.
@@ -6074,6 +6130,7 @@ model = "model-b"
             "create_relationship",
             serde_json::json!({"from_id": from, "to_id": to, "relationship_type": "primary_reviewer_of_record"}),
             serde_json::json!({
+                "from_id": from, "to_id": to, "type": "primary_reviewer_of_record", "created": true,
                 "replaced": [{"from_id": old, "to_id": to, "type": "primary_reviewer_of_record"}]
             }),
         )]);

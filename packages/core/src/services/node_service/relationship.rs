@@ -2,18 +2,47 @@
 
 use super::*;
 
-/// An edge a `create_relationship` call evicted to honor a declared
-/// `cardinality: One` / `reverse_cardinality: One` end. Replace, not reject,
-/// is the enforcement — so this is the only signal a caller gets that the
-/// write superseded an existing assignment.
-///
-/// Endpoints are in STORED (forward) orientation under the forward name, even
-/// when the create was written through an `in` declaration's name.
+/// An edge as the store holds it: in STORED (forward) orientation under the
+/// forward name, even when the write that touched it was made through an `in`
+/// declaration's name.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ReplacedEdge {
+pub struct StoredEdge {
     pub source_id: String,
     pub relationship_name: String,
     pub target_id: String,
+}
+
+impl StoredEdge {
+    fn new(source_id: &str, relationship_name: &str, target_id: &str) -> Self {
+        Self {
+            source_id: source_id.to_string(),
+            relationship_name: relationship_name.to_string(),
+            target_id: target_id.to_string(),
+        }
+    }
+}
+
+/// What a `create_relationship` call wrote.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CreatedRelationship {
+    /// The edge as stored. A write through an `in` declaration's name comes
+    /// back swapped onto the forward name, so it compares equal to the same
+    /// edge reported anywhere else — including in a later write's `replaced`.
+    pub edge: StoredEdge,
+    /// Edges evicted to honor a declared `cardinality: One` /
+    /// `reverse_cardinality: One` end. Replace, not reject, is the enforcement
+    /// — so this is the only signal a caller gets that the write superseded an
+    /// existing assignment. Empty for a plain create.
+    pub replaced: Vec<StoredEdge>,
+}
+
+impl CreatedRelationship {
+    fn plain(source_id: &str, relationship_name: &str, target_id: &str) -> Self {
+        Self {
+            edge: StoredEdge::new(source_id, relationship_name, target_id),
+            replaced: Vec::new(),
+        }
+    }
 }
 
 impl NodeService {
@@ -671,7 +700,7 @@ impl NodeService {
         relationship_name: &str,
         target_id: &str,
         edge_data: serde_json::Value,
-    ) -> Result<Vec<ReplacedEdge>, NodeServiceError> {
+    ) -> Result<CreatedRelationship, NodeServiceError> {
         // Unified relationship creation - ALL relationships use the `relationship` table
         // The relationship_type field distinguishes between different relationship types
 
@@ -824,7 +853,11 @@ impl NodeService {
                         ),
                     });
                 }
-                return Ok(Vec::new());
+                return Ok(CreatedRelationship::plain(
+                    source_id,
+                    relationship_name,
+                    target_id,
+                ));
             }
         }
 
@@ -841,7 +874,11 @@ impl NodeService {
             })?;
         if already_exists {
             // Relationship already exists, idempotent success
-            return Ok(Vec::new());
+            return Ok(CreatedRelationship::plain(
+                source_id,
+                relationship_name,
+                target_id,
+            ));
         }
 
         // Auto-ordered `has_child` with no caller-supplied order: the next
@@ -871,7 +908,11 @@ impl NodeService {
                 ),
             });
 
-            return Ok(Vec::new());
+            return Ok(CreatedRelationship::plain(
+                source_id,
+                relationship_name,
+                target_id,
+            ));
         }
 
         // Remaining relationships carry the caller's edge_data as-is: the two
@@ -911,7 +952,11 @@ impl NodeService {
             ),
         });
 
-        Ok(Vec::new())
+        Ok(CreatedRelationship::plain(
+            source_id,
+            relationship_name,
+            target_id,
+        ))
     }
 
     /// Tx-scoped twin of [`Self::create_relationship`], for invariant-rule
@@ -940,7 +985,7 @@ impl NodeService {
         relationship_name: &str,
         target_id: &str,
         edge_data: serde_json::Value,
-    ) -> Result<Vec<ReplacedEdge>, NodeServiceError> {
+    ) -> Result<CreatedRelationship, NodeServiceError> {
         let is_builtin = crate::models::schema::is_builtin_relationship(relationship_name);
 
         // A write through an `in` declaration's name is stored as the forward
@@ -1233,7 +1278,11 @@ impl NodeService {
             NodeServiceError::query_failed(format!("Failed to check existing relationship: {}", e))
         })?;
         if already_exists {
-            return Ok(Vec::new());
+            return Ok(CreatedRelationship::plain(
+                source_id,
+                relationship_name,
+                target_id,
+            ));
         }
 
         let final_edge_data = if is_builtin {
@@ -1282,11 +1331,11 @@ impl NodeService {
                     &existing_target_id,
                 )
                 .await?;
-                replaced.push(ReplacedEdge {
-                    source_id: source_id.to_string(),
-                    relationship_name: relationship_name.to_string(),
-                    target_id: existing_target_id,
-                });
+                replaced.push(StoredEdge::new(
+                    source_id,
+                    relationship_name,
+                    &existing_target_id,
+                ));
             }
             for existing_source_id in reverse_sources_to_evict {
                 self.remove_relationship_in_tx(
@@ -1296,15 +1345,18 @@ impl NodeService {
                     target_id,
                 )
                 .await?;
-                replaced.push(ReplacedEdge {
-                    source_id: existing_source_id,
-                    relationship_name: relationship_name.to_string(),
-                    target_id: target_id.to_string(),
-                });
+                replaced.push(StoredEdge::new(
+                    &existing_source_id,
+                    relationship_name,
+                    target_id,
+                ));
             }
         }
 
-        Ok(replaced)
+        Ok(CreatedRelationship {
+            edge: StoredEdge::new(source_id, relationship_name, target_id),
+            replaced,
+        })
     }
 
     /// Closes the gap `SqliteStore::merge_nodes_in_tx` cannot close on its

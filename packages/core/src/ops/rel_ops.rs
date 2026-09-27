@@ -7,7 +7,7 @@ use crate::models::schema::{
     BUILTIN_RELATIONSHIP_NAMES,
 };
 use crate::ops::OpsError;
-use crate::services::{NodeService, ReplacedEdge};
+use crate::services::{NodeService, StoredEdge};
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -25,6 +25,9 @@ pub struct CreateRelInput {
     pub edge_data: Option<Value>,
 }
 
+/// The edge as STORED, not as given: a write through an `in` declaration's
+/// name comes back swapped onto the forward name — the same orientation its
+/// `replaced` entries, and every later write's, are reported in.
 #[derive(Debug)]
 pub struct CreateRelOutput {
     pub source_id: String,
@@ -32,7 +35,7 @@ pub struct CreateRelOutput {
     pub target_id: String,
     /// Edges evicted to honor a cardinality-one end — see
     /// `NodeService::create_relationship`. Empty for a plain create.
-    pub replaced: Vec<ReplacedEdge>,
+    pub replaced: Vec<StoredEdge>,
 }
 
 #[derive(Debug)]
@@ -83,7 +86,7 @@ pub async fn create_relationship(
 ) -> Result<CreateRelOutput, OpsError> {
     let edge_data = input.edge_data.unwrap_or(json!({}));
 
-    let replaced = node_service
+    let created = node_service
         .create_relationship(
             &input.source_id,
             &input.relationship_name,
@@ -94,10 +97,10 @@ pub async fn create_relationship(
         .map_err(OpsError::from)?;
 
     Ok(CreateRelOutput {
-        source_id: input.source_id,
-        relationship_name: input.relationship_name,
-        target_id: input.target_id,
-        replaced,
+        source_id: created.edge.source_id,
+        relationship_name: created.edge.relationship_name,
+        target_id: created.edge.target_id,
+        replaced: created.replaced,
     })
 }
 
