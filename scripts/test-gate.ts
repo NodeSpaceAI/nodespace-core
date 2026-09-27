@@ -4,7 +4,8 @@
  * The local gate, in two modes (ADR-047). This repo has no CI runner for
  * tests; this script is the only gate.
  *
- * - `push` (the default, run by the Husky pre-push hook): lint only. Seconds,
+ * - `push` (the default, run by the Husky pre-push hook): lint and the
+ *   app-version drift check only. Seconds,
  *   and it takes no lock. A push only publishes a branch; the merge is what
  *   changes main, and the merge gate tests it. Test the tiers a change
  *   reaches while developing, with `bun run test:changed`.
@@ -39,7 +40,7 @@
 import { existsSync, realpathSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { $ } from "bun";
-import { acquireGateLock, MACHINE_LOCK_PATH, registerLockRelease } from "./gate-lock";
+import { acquireGateLock, DISABLE_ENV_VAR, MACHINE_LOCK_PATH, MACHINE_SLOT_WHAT, registerLockRelease } from "./gate-lock";
 import { createLogDir, runStage, TIERS, type StageSpec } from "./gate-stage";
 import { TOOLS_DIR } from "./setup-rust-tooling";
 import { freeGiBFromDf } from "./gate-output";
@@ -55,6 +56,9 @@ const mode = parseMode(process.argv.slice(2));
 const merge = mode === "merge";
 
 const MINUTE = 60_000;
+
+/** How long the merge gate waits for the machine slot before failing. */
+const MACHINE_SLOT_WAIT_CAP_MS = 2 * 60 * MINUTE;
 
 /** Below this much free disk the merge gate refuses to start. */
 const MIN_FREE_GIB = 20;
@@ -121,10 +125,12 @@ console.log(
 console.log(`  stage logs: ${logDir}\n`);
 
 // ── Lint (both modes) ──────────────────────────────────────────────────────
+// A push's lint runs at low priority so it yields to a merge gate's tests.
 await run({
   label: "quality:scripts:check (scripts/ lint + typecheck)",
   command: "bun run quality:scripts:check",
   timeoutMs: 10 * MINUTE,
+  nice: !merge,
 });
 // The design-token gate (Stylelint over CSS and Svelte <style> blocks). It is
 // wired into the desktop-app quality scripts, but nothing automated runs those
@@ -134,6 +140,16 @@ await run({
   label: "quality:design-tokens (design-token drift)",
   command: "bun run --cwd packages/desktop-app quality:design-tokens",
   timeoutMs: 5 * MINUTE,
+  nice: !merge,
+});
+// App-version drift between tauri.conf.json and its siblings. A push is the
+// only check `bun run release`'s version-bump commit gets on its way to main,
+// so this runs at push time, not only in the merge gate.
+await run({
+  label: "check-version-sync (app version drift)",
+  command: "bun run scripts/check-version-sync.ts",
+  timeoutMs: 5 * MINUTE,
+  nice: !merge,
 });
 
 if (!merge) {
@@ -163,8 +179,24 @@ if (!existsSync(join(TOOLS_DIR, "bin", "cargo-nextest"))) {
 
 // Held until this process exits: registerLockRelease() covers Ctrl-C and every
 // early exit, including the process.exit(1) inside run(). A merge's ticket
-// queues ahead of every test:changed run's.
-const machineSlot = await acquireGateLock({ lockPath: MACHINE_LOCK_PATH, what: "heavy run (merge gate or test:changed Rust tier)", urgent: true });
+// queues ahead of every test:changed run's. The lock's usual degrade-and-run
+// is refused here, as is the no-lock opt-out: a merge gate sharing the machine
+// is exactly what the slot exists to prevent. The cap sits above the longest
+// legitimate hold ahead of it (a test:changed Rust tier's 60-minute timeout).
+if (process.env[DISABLE_ENV_VAR]) {
+  console.error(`\n✗ ${DISABLE_ENV_VAR} is set; the merge gate always takes the machine slot. Unset it and re-run.\n`);
+  process.exit(1);
+}
+const machineSlot = await acquireGateLock({
+  lockPath: MACHINE_LOCK_PATH,
+  what: MACHINE_SLOT_WHAT,
+  urgent: true,
+  maxWaitMs: MACHINE_SLOT_WAIT_CAP_MS,
+});
+if (!machineSlot.held) {
+  console.error("\n✗ Could not take the machine slot (see above), so this gate would share the machine. Re-run when it is free.\n");
+  process.exit(1);
+}
 registerLockRelease(machineSlot);
 
 const daemonBinary = `${process.cwd()}/target/debug/${process.platform === "win32" ? "nodespaced.exe" : "nodespaced"}`;

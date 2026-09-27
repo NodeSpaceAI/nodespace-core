@@ -311,7 +311,7 @@ export default [
       'no-console': 'off', // Allow console in tests
       // Bare wall-clock sleeps longer than the 500ms persistence debounce are
       // how this suite accumulated ~64s of deliberate sleeping, paid on every
-      // push (the pre-push gate is the sole CI here). A number above that
+      // gate run (the local merge gate is the sole CI here). A number above that
       // threshold is almost always a guess padded around a real constant.
       //
       // The 500 below is the same value as PERSISTENCE_DEBOUNCE_MS in

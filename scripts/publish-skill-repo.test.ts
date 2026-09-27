@@ -1,7 +1,7 @@
 // Covers the offline, deterministic parts of scripts/publish-skill-repo.ts:
 // version normalization and file rendering. pushSkillUpdate (the
 // GitHub-talking function) is intentionally not exercised here -- this suite
-// runs as part of `bun run test:scripts` / `test:all` (the pre-push gate),
+// runs as part of `bun run test:scripts` / `test:all` (the merge gate),
 // which must stay fast and deterministic, not depend on network or a real
 // SKILL_REPO_TOKEN.
 import { describe, expect, test } from "bun:test";

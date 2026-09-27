@@ -13,7 +13,7 @@
 // postinstall (between sentinel comments) and executes it under bash
 // against a mocked `launchctl`, so a future edit that reintroduces an
 // unguarded/non-resilient bootstrap call fails this test under
-// `bun test scripts/` (part of `test:all`, enforced by the pre-push gate)
+// `bun test scripts/` (part of `test:all`, enforced by the merge gate)
 // — without needing a real macOS install or root privileges.
 import { describe, expect, setDefaultTimeout, test } from "bun:test";
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";

@@ -5660,7 +5660,7 @@ mod tests {
     /// place a real model exercises this path today is
     /// `scripts/eval/fixtures/agent-matrix.ts` scenario 6, driven through the
     /// full `LocalAgentLoop` — but that's a single phrasing, run through the
-    /// eval harness rather than `cargo test`/the pre-push gate. Closing this
+    /// eval harness rather than `cargo test`/the merge gate. Closing this
     /// gap in-crate would mean standing up a real-model test fixture (model
     /// download/load, machine-load-sensitive timing) matching
     /// `ai_chat_send_to_idle_test.rs`'s pattern — deliberately not done here;

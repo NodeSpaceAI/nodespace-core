@@ -289,8 +289,8 @@ async function main(): Promise<void> {
     }
 
     if (tested !== info.headRefOid) {
-      // The gate just ran the full pyramid on exactly this commit, so the
-      // pre-push hook's scoped check would only repeat a subset of it.
+      // The gate just ran the full pyramid on exactly this commit, lint
+      // included, so the pre-push hook would only repeat part of it.
       console.log(`\n▶ Pushing the rebased branch (${tested.slice(0, 8)})`);
       await $`git push --quiet --no-verify --force-with-lease=${info.headRefName}:${info.headRefOid} origin HEAD:${info.headRefName}`.cwd(gate);
     }

@@ -87,7 +87,7 @@ const PERF_SCALE = {
   lookup: 1500 // Lookup performance test
 };
 
-// Performance thresholds: Adaptive based on dataset size and architecture targets
+// Performance thresholds: architecture targets at full dataset scale
 const PERF_THRESHOLDS = {
   structuralOp: budget(10), // <10ms per structural operation (architecture target)
   bulkStructural: budget(100), // 100 indent/outdent ops on a 1000-node document
@@ -299,7 +299,7 @@ describe('Architecture Performance Benchmarks', () => {
       // across every sample cancels out of timeRatio/nodeRatio, so budget()
       // would push MAX to 3.0 — looser than the 2.0 quadratic asymptote
       // itself, meaning a textbook quadratic regression would pass under
-      // exactly the coverage mode the pre-push gate runs. Coverage's real
+      // exactly the coverage mode. Coverage's real
       // effect here is on NOISE (a longer per-call instrumentation overhead
       // makes a GC pause relatively more likely to land inside the
       // measurement window), not a systematic ratio shift — confirmed

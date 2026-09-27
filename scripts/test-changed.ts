@@ -18,7 +18,7 @@
 //   NODESPACE_TEST_ALL=1 bun run test:changed   every tier
 
 import { reportBranchBehind } from "./check-branch-behind";
-import { acquireGateLock, MACHINE_LOCK_PATH, registerLockRelease } from "./gate-lock";
+import { acquireGateLock, DISABLE_ENV_VAR, MACHINE_LOCK_PATH, MACHINE_SLOT_WHAT, registerLockRelease } from "./gate-lock";
 import { describeScope, gateScope } from "./gate-scope";
 import { createLogDir, runStage, TIERS, type StageSpec } from "./gate-stage";
 
@@ -38,6 +38,10 @@ const scope = await gateScope();
 console.log(`\n▶ test:changed: ${describeScope(scope)}`);
 const logDir = createLogDir("changed");
 console.log(`  stage logs: ${logDir}\n`);
+if (!scope.frontend && !scope.rust && !scope.skill && !scope.scripts) {
+  console.log("✓ Nothing to test — no change reaches a test tier.\n");
+  process.exit(0);
+}
 
 const niced = (stage: StageSpec): StageSpec => ({ ...stage, nice: true });
 
@@ -53,7 +57,14 @@ if (scope.scripts) await run(niced(TIERS.scripts));
 if (scope.skill) await run(niced(TIERS.skill));
 if (scope.frontend) await run(niced(TIERS.browser));
 if (scope.rust) {
-  const slot = await acquireGateLock({ lockPath: MACHINE_LOCK_PATH, what: "heavy run (merge gate or test:changed Rust tier)" });
+  const slot = await acquireGateLock({ lockPath: MACHINE_LOCK_PATH, what: MACHINE_SLOT_WHAT });
+  // Past the wait cap the lock would let this run anyway, building Rust beside
+  // a merge gate's tests. Stop instead — unless the person opted out of the
+  // lock on purpose.
+  if (!slot.held && !process.env[DISABLE_ENV_VAR]) {
+    console.error("\n✗ The machine slot stayed busy (see above) — re-run the Rust tier when it is free.\n");
+    process.exit(1);
+  }
   registerLockRelease(slot);
   // Unlike the merge gate's, this tier compiles as well as tests, in this
   // worktree's own incremental build — a cold one can take many minutes.

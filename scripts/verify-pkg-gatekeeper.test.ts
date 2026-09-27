@@ -2,7 +2,7 @@
 // picking the .pkg filename out of a directory listing. The `gh`/`spctl`-
 // talking functions (downloadPublishedPkg, assessGatekeeperInstall) are
 // intentionally not exercised here -- this suite runs as part of
-// `bun run test:scripts` / `test:all` (the pre-push gate), which must stay
+// `bun run test:scripts` / `test:all` (the merge gate), which must stay
 // fast and deterministic, not depend on network, `gh` auth, or macOS-only
 // tools (same reasoning as update-homebrew-cask.test.ts).
 import { describe, expect, test } from "bun:test";

@@ -95,16 +95,16 @@ export function descendantPids(psOutput: string, root: number): number[] {
     if (!Number.isInteger(pid) || !Number.isInteger(ppid)) continue;
     children.set(ppid, [...(children.get(ppid) ?? []), pid]);
   }
-  const found: number[] = [];
+  const found = new Set<number>();
   const pending = [root];
   while (pending.length > 0) {
     for (const child of children.get(pending.pop() as number) ?? []) {
-      if (found.includes(child)) continue;
-      found.push(child);
+      if (found.has(child)) continue;
+      found.add(child);
       pending.push(child);
     }
   }
-  return found;
+  return [...found];
 }
 
 function treeOf(root: number): number[] {
@@ -122,18 +122,29 @@ function signalAll(pids: Iterable<number>, signal: "SIGTERM" | "SIGKILL"): void 
   }
 }
 
+function isAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /**
- * SIGTERM for the stage's whole tree, then SIGKILL for whatever is left after
- * a grace period. The tree is listed before anything is signalled: a child
- * whose parent dies is re-parented to init, and a listing taken afterwards
- * would no longer find it.
+ * SIGTERM for the stage's whole tree, then SIGKILL for whatever is still
+ * alive after a grace period — waiting on every process in the tree, not just
+ * the root, which usually dies first. The tree is listed before anything is
+ * signalled: a child whose parent dies is re-parented to init, and a listing
+ * taken afterwards would no longer find it.
  */
-async function killTree(root: number, exited: Promise<unknown>): Promise<void> {
+async function killTree(root: number): Promise<void> {
   const tree = new Set(treeOf(root));
   signalAll(tree, "SIGTERM");
-  await Promise.race([exited, Bun.sleep(KILL_GRACE_MS)]);
+  const deadline = Date.now() + KILL_GRACE_MS;
+  while (Date.now() < deadline && [...tree].some(isAlive)) await Bun.sleep(100);
   for (const pid of treeOf(root)) tree.add(pid);
-  signalAll(tree, "SIGKILL");
+  signalAll([...tree].filter(isAlive), "SIGKILL");
 }
 
 /**
@@ -160,7 +171,7 @@ export async function runStage(stage: StageSpec, logDir: string): Promise<boolea
       env: { ...process.env, ...stage.env },
     });
     const timer = setTimeout(() => {
-      killing = killTree(proc.pid, proc.exited);
+      killing = killTree(proc.pid);
     }, stage.timeoutMs);
     exitCode = await proc.exited;
     clearTimeout(timer);

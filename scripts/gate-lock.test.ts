@@ -1,7 +1,7 @@
-// Covers the machine-wide gate lock that serializes pre-push gates
-// (scripts/gate-lock.ts). Concurrent gates on one machine oversubscribe the
-// CPU and produce worker/daemon timeouts on correct code; this lock makes
-// them queue instead.
+// Covers the machine-wide locks that serialize merges and heavy runs
+// (scripts/gate-lock.ts). Concurrent heavy runs on one machine oversubscribe
+// the CPU and produce worker/daemon timeouts on correct code; these locks
+// make them queue instead.
 //
 // These tests use real lockfiles in a temp directory — the mutual exclusion
 // being tested IS the filesystem's atomic link(2) behaviour, so faking it away

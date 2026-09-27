@@ -92,6 +92,9 @@ export const MERGE_LOCK_PATH = join(tmpdir(), "nodespace-merge.lock");
  */
 export const MACHINE_LOCK_PATH = join(tmpdir(), "nodespace-compile.lock");
 
+/** What the machine slot serializes, for its waiting messages. */
+export const MACHINE_SLOT_WHAT = "heavy run (merge gate or test:changed Rust tier)";
+
 export interface LockHolder {
   pid: number;
   /** Epoch ms when the holder acquired the lock. */

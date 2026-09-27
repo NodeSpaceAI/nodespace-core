@@ -14,7 +14,7 @@
 // and executes it under bash with a fake `spctl` on PATH that exits with a
 // controlled code -- so a future edit that reintroduces the "any non-zero =
 // rejected" bug regresses this test under `bun test scripts/` (part of
-// `test:all`, enforced by the pre-push gate).
+// `test:all`, enforced by the merge gate).
 import { describe, expect, setDefaultTimeout, test } from "bun:test";
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";

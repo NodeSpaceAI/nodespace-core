@@ -55,7 +55,7 @@ use std::time::Duration;
 /// comment): `SpawnedDaemon::spawn_with_socket`'s child inherits it at spawn
 /// time, so setting and restoring it must be serialized against every other
 /// test in this binary via the same `CONNECT_MUTEX` those tests share, or
-/// two tests running concurrently (the default without the pre-push gate's
+/// two tests running concurrently (the default without the merge gate's
 /// `--test-threads=1`) could interleave: one test's guard restoring the
 /// variable while another test's child is mid-spawn, sending it the wrong
 /// value.

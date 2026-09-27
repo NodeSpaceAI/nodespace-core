@@ -6,7 +6,7 @@
 // DOM-free on purpose: this file runs under `bun test scripts/`, which
 // bypasses the Happy-DOM vitest config (see CLAUDE.md).
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { descendantPids, runStage } from "./gate-stage";
@@ -72,5 +72,17 @@ describe("runStage", () => {
     // Killed asynchronously after the stage's exit resolves; give it a moment.
     await Bun.sleep(200);
     expect(isAlive(grandchild)).toBe(false);
+  }, 20_000);
+
+  test("a grandchild cleaning up after SIGTERM gets the grace period, not an instant SIGKILL", async () => {
+    const marker = join(dir, "cleaned-up");
+    const script = join(dir, "slow-cleanup.sh");
+    // Traps SIGTERM, takes half a second to "clean up", then records that it
+    // finished. `sleep & wait` keeps the trap responsive while idle.
+    writeFileSync(script, `trap 'sleep 0.5; touch ${marker}; exit 0' TERM\nsleep 300 &\nwait\n`);
+    const command = `sh ${script} & wait`;
+
+    expect(await runStage({ label: "slow cleanup", command, timeoutMs: 500 }, dir)).toBe(false);
+    expect(existsSync(marker)).toBe(true);
   }, 20_000);
 });
