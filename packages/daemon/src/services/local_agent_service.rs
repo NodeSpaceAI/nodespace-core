@@ -29,8 +29,7 @@ use nodespace_agent::local_agent::tools::{
 };
 use nodespace_core::models::{
     AiChatCompletedWrite, AiChatMessage, AiChatNode, AiChatPendingDeletion, AiChatResolvedEntity,
-    AiChatTurnOutcome,
-    NodeFilter, NodeUpdate,
+    AiChatTurnOutcome, NodeFilter, NodeUpdate,
 };
 use nodespace_core::services::{NodeEmbeddingService, NodeService, NodeServiceError};
 
@@ -935,7 +934,17 @@ impl LocalAgentServiceImpl {
                 // push an assistant message), could surface a *previous* turn's
                 // content/reasoning instead.
                 match self
-                    .append_assistant_message(&node_id, &result.response, AssistantRecord { reasoning: result.reasoning.as_deref(), completed_writes, resolved_entities: resolved_entities_from(&result.tool_calls_made), clarify: result.clarify.as_ref(), outcome: Some(result.outcome()) })
+                    .append_assistant_message(
+                        &node_id,
+                        &result.response,
+                        AssistantRecord {
+                            reasoning: result.reasoning.as_deref(),
+                            completed_writes,
+                            resolved_entities: resolved_entities_from(&result.tool_calls_made),
+                            clarify: result.clarify.as_ref(),
+                            outcome: Some(result.outcome()),
+                        },
+                    )
                     .await
                 {
                     Ok(()) => needs_idle_reset = false,
@@ -980,7 +989,11 @@ impl LocalAgentServiceImpl {
                         // (`prior_turns_from_history`).
                         let error_text = format!("This turn failed and could not complete: {e}");
                         match self
-                            .append_assistant_message(&node_id, &error_text, AssistantRecord::default())
+                            .append_assistant_message(
+                                &node_id,
+                                &error_text,
+                                AssistantRecord::default(),
+                            )
                             .await
                         {
                             Ok(()) => needs_idle_reset = false,
@@ -1058,7 +1071,15 @@ impl LocalAgentServiceImpl {
         });
 
         if let Err(e) = self
-            .append_assistant_message(node_id, &text, AssistantRecord { completed_writes: writes, outcome: Some(AiChatTurnOutcome::Acted), ..Default::default() })
+            .append_assistant_message(
+                node_id,
+                &text,
+                AssistantRecord {
+                    completed_writes: writes,
+                    outcome: Some(AiChatTurnOutcome::Acted),
+                    ..Default::default()
+                },
+            )
             .await
         {
             tracing::warn!(node_id, error = %e, "failed to append delete confirmation reply");
@@ -4621,7 +4642,14 @@ mod tests {
             options: Vec::new(),
             pending_deletions: vec![pending.clone()],
         };
-        svc.append_assistant_message(&node_id, "Delete \"A\" (text)?", AssistantRecord { clarify: Some(&clarify), ..Default::default() })
+        svc.append_assistant_message(
+            &node_id,
+            "Delete \"A\" (text)?",
+            AssistantRecord {
+                clarify: Some(&clarify),
+                ..Default::default()
+            },
+        )
         .await
         .expect("append");
 
@@ -5117,7 +5145,14 @@ mod tests {
         let (svc, node_service, _tempdir) = test_service().await;
         let node_id = create_ai_chat_node(&node_service).await;
 
-        svc.append_assistant_message(&node_id, "The answer.", AssistantRecord { reasoning: Some("I reasoned about it."), ..Default::default() })
+        svc.append_assistant_message(
+            &node_id,
+            "The answer.",
+            AssistantRecord {
+                reasoning: Some("I reasoned about it."),
+                ..Default::default()
+            },
+        )
         .await
         .expect("append");
 
@@ -5147,8 +5182,15 @@ mod tests {
             ],
             pending_deletions: Vec::new(),
         };
-        svc.append_assistant_message(&node_id, "I can take that a couple of ways. Did you want to track debts or search notes?\n\n\
-             - Track who owes me money\n- Search existing notes", AssistantRecord { clarify: Some(&clarify), ..Default::default() })
+        svc.append_assistant_message(
+            &node_id,
+            "I can take that a couple of ways. Did you want to track debts or search notes?\n\n\
+             - Track who owes me money\n- Search existing notes",
+            AssistantRecord {
+                clarify: Some(&clarify),
+                ..Default::default()
+            },
+        )
         .await
         .expect("append");
 
@@ -5182,8 +5224,14 @@ mod tests {
         let node_id = create_ai_chat_node(&node_service).await;
 
         for (text, outcome) in [
-            ("I can take that a couple of ways. Which?", Some(AiChatTurnOutcome::Clarified)),
-            ("Which contacts do you mean?", Some(AiChatTurnOutcome::Replied)),
+            (
+                "I can take that a couple of ways. Which?",
+                Some(AiChatTurnOutcome::Clarified),
+            ),
+            (
+                "Which contacts do you mean?",
+                Some(AiChatTurnOutcome::Replied),
+            ),
             ("This turn failed and could not complete: boom", None),
             ("Found 3 contacts.", Some(AiChatTurnOutcome::Acted)),
         ] {
@@ -5227,8 +5275,8 @@ mod tests {
         let node_id = create_ai_chat_node(&node_service).await;
 
         svc.append_assistant_message(&node_id, "Here's your answer.", AssistantRecord::default())
-        .await
-        .expect("append");
+            .await
+            .expect("append");
 
         let messages = load_chat_messages(&node_service, &node_id).await;
         let assistant = messages
@@ -5269,7 +5317,14 @@ mod tests {
             serde_json::json!({"id": "nodespace://f1f25564"}),
         )]);
 
-        svc.append_assistant_message(&node_id, "I have added \"Kind of Blue\".", AssistantRecord { completed_writes: writes, ..Default::default() })
+        svc.append_assistant_message(
+            &node_id,
+            "I have added \"Kind of Blue\".",
+            AssistantRecord {
+                completed_writes: writes,
+                ..Default::default()
+            },
+        )
         .await
         .expect("append");
 
@@ -5467,7 +5522,14 @@ mod tests {
             "the read must resolve exactly one entity"
         );
 
-        svc.append_assistant_message(&node_id, "You have one task node: \"Finish the report\".", AssistantRecord { resolved_entities: entities, ..Default::default() })
+        svc.append_assistant_message(
+            &node_id,
+            "You have one task node: \"Finish the report\".",
+            AssistantRecord {
+                resolved_entities: entities,
+                ..Default::default()
+            },
+        )
         .await
         .expect("append");
 
@@ -5500,8 +5562,8 @@ mod tests {
         let node_id = create_ai_chat_node(&node_service).await;
 
         svc.append_assistant_message(&node_id, "I found 3 tasks.", AssistantRecord::default())
-        .await
-        .expect("append");
+            .await
+            .expect("append");
 
         let history = load_node_history(&node_service, &node_id).await;
         assert!(!history.iter().any(|m| matches!(m.role, Role::System)));
@@ -5656,9 +5718,16 @@ mod tests {
 
         // None and whitespace-only both persist no reasoning field.
         svc.append_assistant_message(&node_id, "Plain answer.", AssistantRecord::default())
-        .await
-        .expect("append none");
-        svc.append_assistant_message(&node_id, "Another answer.", AssistantRecord { reasoning: Some("   "), ..Default::default() })
+            .await
+            .expect("append none");
+        svc.append_assistant_message(
+            &node_id,
+            "Another answer.",
+            AssistantRecord {
+                reasoning: Some("   "),
+                ..Default::default()
+            },
+        )
         .await
         .expect("append whitespace");
 

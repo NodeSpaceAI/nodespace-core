@@ -8,18 +8,18 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 
+use nodespace_core::models::AiChatTurnOutcome;
 use opentelemetry::trace::{Span, TraceContextExt, Tracer};
 use opentelemetry::KeyValue;
 use regex::Regex;
 use sha2::{Digest, Sha256};
 use tokio::sync::RwLock;
-use nodespace_core::models::AiChatTurnOutcome;
 use tokio_util::sync::CancellationToken;
 
 use crate::agent_types::{
     AgentSession, AgentToolExecutor, AgentTurnResult, ChatInferenceEngine, ChatMessage,
-    ChatModelSpec, InferenceError, InferenceRequest, InferenceUsage, LocalAgentStatus, Role,
-    PriorTurn, StreamingChunk, ToolCallRaw, ToolExecutionRecord,
+    ChatModelSpec, InferenceError, InferenceRequest, InferenceUsage, LocalAgentStatus, PriorTurn,
+    Role, StreamingChunk, ToolCallRaw, ToolExecutionRecord,
 };
 use crate::local_agent::decisions;
 use crate::local_agent::otlp_tracer::TRACER_NAME;
@@ -12710,7 +12710,10 @@ mod tests {
         .await;
 
         assert!(
-            result.tool_calls_made.iter().any(|r| r.name == "search_nodes"),
+            result
+                .tool_calls_made
+                .iter()
+                .any(|r| r.name == "search_nodes"),
             "the re-prompted turn must act: {:?}",
             result.tool_calls_made
         );
@@ -12803,7 +12806,11 @@ mod tests {
 
         // The turn completes: the agent acts rather than asking again. That
         // closes the intent.
-        seed_turn(&mut session, AiChatTurnOutcome::Acted, "Done — I created it.");
+        seed_turn(
+            &mut session,
+            AiChatTurnOutcome::Acted,
+            "Done — I created it.",
+        );
         assert!(
             !session_already_clarified(&session),
             "a resolved turn starts a new intent; clarifying must be possible again"
@@ -12891,8 +12898,11 @@ mod tests {
         );
         // A search that found two matches, then asked which: a clarification.
         assert_eq!(
-            turn_result(&["search_nodes", routing::ROUTE_CLARIFY_TOOL], Some(clarify_prompt(Vec::new())))
-                .outcome(),
+            turn_result(
+                &["search_nodes", routing::ROUTE_CLARIFY_TOOL],
+                Some(clarify_prompt(Vec::new()))
+            )
+            .outcome(),
             AiChatTurnOutcome::Clarified
         );
         // `route_clarify` performs nothing: it is not acting.
@@ -12927,7 +12937,13 @@ mod tests {
         let mut session = new_session();
         for message in ["hi", "find x"] {
             loop_
-                .run_turn(&mut session, message, |_| {}, |_| {}, CancellationToken::new())
+                .run_turn(
+                    &mut session,
+                    message,
+                    |_| {},
+                    |_| {},
+                    CancellationToken::new(),
+                )
                 .await
                 .expect("turn should succeed");
         }
