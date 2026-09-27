@@ -434,20 +434,6 @@ mod tests {
     }
 
     #[test]
-    fn test_node_properties_merge() {
-        let mut node = Node::new(
-            "task".to_string(),
-            "Task".to_string(),
-            json!({"status": "todo", "priority": "low"}),
-        );
-
-        node.merge_properties(json!({"status": "done"}));
-
-        assert_eq!(node.properties["status"], "done");
-        assert_eq!(node.properties["priority"], "low"); // Original value preserved
-    }
-
-    #[test]
     fn test_node_update_builder() {
         let update = NodeUpdate::new()
             .with_content("Updated content".to_string())

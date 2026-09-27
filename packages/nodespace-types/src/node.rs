@@ -101,16 +101,6 @@ impl Node {
         self.properties = properties;
         self.modified_at = Utc::now();
     }
-
-    pub fn merge_properties(&mut self, updates: serde_json::Value) {
-        if let (Some(existing), Some(new)) = (self.properties.as_object_mut(), updates.as_object())
-        {
-            for (key, value) in new {
-                existing.insert(key.clone(), value.clone());
-            }
-            self.modified_at = Utc::now();
-        }
-    }
 }
 
 /// Sort order specification for query results
