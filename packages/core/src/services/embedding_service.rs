@@ -425,15 +425,9 @@ impl NodeEmbeddingService {
             let token_count = (chunk_text.len() / 4) as i32;
 
             // Generate embedding
-            let vector = self
-                .nlp_engine
-                .generate_embedding(&chunk_text)
-                .map_err(|e| {
-                    NodeServiceError::SerializationError(format!(
-                        "Embedding generation failed: {}",
-                        e
-                    ))
-                })?;
+            let vector = self.nlp_engine.embed_document(&chunk_text).map_err(|e| {
+                NodeServiceError::SerializationError(format!("Embedding generation failed: {}", e))
+            })?;
 
             let chunk_info = crate::models::ChunkInfo {
                 chunk_index: idx as i32,
@@ -693,18 +687,9 @@ impl NodeEmbeddingService {
     ) -> Result<Vec<EmbeddingSearchResult>, NodeServiceError> {
         let total_start = std::time::Instant::now();
 
-        if query.trim().is_empty() {
-            return Err(NodeServiceError::invalid_update(
-                "Search query cannot be empty",
-            ));
-        }
-
         // Generate query embedding (blocking, so do before spawning parallel tasks)
         let embed_start = std::time::Instant::now();
-        let query_vector = self
-            .nlp_engine
-            .generate_embedding(query)
-            .map_err(query_embedding_error)?;
+        let query_vector = self.embed_query_text(query)?;
         let embed_time = embed_start.elapsed();
 
         // Run BM25 and KNN searches in parallel
@@ -1002,10 +987,24 @@ impl NodeEmbeddingService {
             .await
     }
 
-    /// Embed `query` the way [`Self::semantic_search_nodes_of_type`] does, for a
-    /// caller that needs the query vector itself — to run several typed
-    /// searches from one embedding, or to score it against text that is not
-    /// stored as a node embedding.
+    /// Embed `query` the way every search here does, for a caller that needs
+    /// the query vector itself — to run several typed searches from one
+    /// embedding, or to score it against text that is not stored as a node
+    /// embedding.
+    ///
+    /// Queries are embedded with the `search_document` prefix, the same one
+    /// stored content gets in [`Self::embed_root_node`] — deliberately not
+    /// nomic's `search_query` prefix. Measured with the live
+    /// `live_embedding_prefix_measurement` suite, `search_query` did not help
+    /// any retrieval path: skill rank-1 was flat but moved misses onto
+    /// guarded routes (Graph Editing out-ranked Node Deletion on "remove the
+    /// done tasks"), schema recall@5 fell 93%→89%, short-note search rank-1
+    /// fell 88%→79%, and multi-chunk documents were a tie (92% rank-1 both
+    /// ways). Most of what gets stored — skill and schema descriptions, short
+    /// notes — is about as short as a query, so the symmetric framing fits,
+    /// and skill descriptions, exclusions and routing bars are tuned against
+    /// it. Re-measure before changing this, especially once long multi-chunk
+    /// documents dominate a workspace.
     pub fn embed_query_text(&self, query: &str) -> Result<Vec<f32>, NodeServiceError> {
         if query.trim().is_empty() {
             return Err(NodeServiceError::invalid_update(
@@ -1013,7 +1012,7 @@ impl NodeEmbeddingService {
             ));
         }
         self.nlp_engine
-            .generate_embedding(query)
+            .embed_document(query)
             .map_err(query_embedding_error)
     }
 

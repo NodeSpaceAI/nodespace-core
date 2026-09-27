@@ -5,7 +5,7 @@
 //! controlled, apples-to-apples match against that prior FLAT in-process
 //! result. Pointing a real daemon at the resulting database and searching
 //! it over gRPC isolates what an in-process benchmark can't exercise: real
-//! transport latency and a real (blocking) `generate_embedding()` call on
+//! transport latency and a real (blocking) `embed_query()` call on
 //! the query text itself, rather than a stubbed or synchronous path.
 //!
 //! Usage: `cargo run --release --example seed_search_corpus -p nodespace-core -- <db_path> <count>`

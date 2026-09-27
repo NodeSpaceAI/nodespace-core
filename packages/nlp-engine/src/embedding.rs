@@ -551,14 +551,6 @@ impl EmbeddingService {
         self.generate_embedding_internal(&prefixed, &prefixed)
     }
 
-    /// Generate embedding for a single text (defaults to document embedding)
-    ///
-    /// For optimal search quality, prefer using `embed_document` for stored content
-    /// and `embed_query` for search queries.
-    pub fn generate_embedding(&self, text: &str) -> Result<Vec<f32>> {
-        self.embed_document(text)
-    }
-
     /// Warm up the embedding model by generating a dummy embedding
     ///
     /// This triggers model loading and Metal kernel compilation, ensuring
@@ -566,7 +558,7 @@ impl EmbeddingService {
     pub fn warmup(&self) -> Result<()> {
         tracing::info!("Warming up embedding model...");
         let start = std::time::Instant::now();
-        let _ = self.generate_embedding("warmup")?;
+        let _ = self.embed_document("warmup")?;
         tracing::info!("Embedding model warmed up in {:?}", start.elapsed());
         Ok(())
     }
@@ -716,19 +708,6 @@ impl EmbeddingService {
         } else {
             input.to_vec()
         }
-    }
-
-    /// Generate embeddings for multiple texts (batch operation)
-    pub fn generate_batch(&self, texts: Vec<&str>) -> Result<Vec<Vec<f32>>> {
-        if texts.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        // For now, process sequentially (batch optimization can come later)
-        texts
-            .into_iter()
-            .map(|text| self.generate_embedding(text))
-            .collect()
     }
 
     /// Convert embedding vector to F32_BLOB format for storage
@@ -1018,7 +997,7 @@ mod tests {
         let mut service = EmbeddingService::new(config).unwrap();
         service.initialize().unwrap();
 
-        let embedding = service.generate_embedding("test").unwrap();
+        let embedding = service.embed_document("test").unwrap();
         assert_eq!(embedding.len(), EMBEDDING_DIMENSION);
         assert!(embedding.iter().all(|&x| x == 0.0)); // Stub returns zeros
     }
