@@ -131,6 +131,7 @@ mod tests {
                 case_sensitive: None,
                 relationship_type: None,
                 node_id: None,
+                ..Default::default()
             }],
             sorting: None,
             limit: None,
@@ -176,6 +177,7 @@ mod tests {
                 case_sensitive: None,
                 relationship_type: None,
                 node_id: None,
+                ..Default::default()
             }],
             sorting: None,
             limit: None,
@@ -223,6 +225,7 @@ mod tests {
                 case_sensitive: None,
                 relationship_type: None,
                 node_id: None,
+                ..Default::default()
             }],
             sorting: None,
             limit: None,
@@ -276,6 +279,7 @@ mod tests {
                 case_sensitive: Some(true),
                 relationship_type: None,
                 node_id: None,
+                ..Default::default()
             }],
             sorting: None,
             limit: None,
@@ -330,6 +334,7 @@ mod tests {
                 case_sensitive: Some(false),
                 relationship_type: None,
                 node_id: None,
+                ..Default::default()
             }],
             sorting: None,
             limit: None,
@@ -394,6 +399,7 @@ mod tests {
                 case_sensitive: None,
                 relationship_type: Some(RelationshipType::Children),
                 node_id: Some(parent_id.clone()),
+                ..Default::default()
             }],
             sorting: None,
             limit: None,
@@ -521,6 +527,7 @@ mod tests {
                     case_sensitive: None,
                     relationship_type: None,
                     node_id: None,
+                    ..Default::default()
                 },
                 QueryFilter {
                     filter_type: FilterType::Property,
@@ -530,6 +537,7 @@ mod tests {
                     case_sensitive: None,
                     relationship_type: None,
                     node_id: None,
+                    ..Default::default()
                 },
             ],
             sorting: None,
@@ -585,6 +593,7 @@ mod tests {
                 case_sensitive: None,
                 relationship_type: None,
                 node_id: None,
+                ..Default::default()
             }],
             sorting: None,
             limit: None,
@@ -611,6 +620,7 @@ mod tests {
                 case_sensitive: None,
                 relationship_type: None,
                 node_id: None,
+                ..Default::default()
             }],
             sorting: None,
             limit: None,
@@ -658,6 +668,7 @@ mod tests {
                 case_sensitive: None,
                 relationship_type: None,
                 node_id: None,
+                ..Default::default()
             }],
             sorting: None,
             limit: None,
@@ -791,6 +802,7 @@ mod tests {
                 case_sensitive: None,
                 relationship_type: Some(RelationshipType::Parent),
                 node_id: Some(child_id.clone()),
+                ..Default::default()
             }],
             sorting: None,
             limit: None,
@@ -843,6 +855,7 @@ mod tests {
                 case_sensitive: None,
                 relationship_type: None,
                 node_id: None,
+                ..Default::default()
             }],
             sorting: None,
             limit: None,
@@ -890,6 +903,7 @@ mod tests {
                 case_sensitive: Some(true),
                 relationship_type: None,
                 node_id: None,
+                ..Default::default()
             }],
             sorting: None,
             limit: None,
@@ -929,6 +943,7 @@ mod tests {
                 case_sensitive: None,
                 relationship_type: None,
                 node_id: None,
+                ..Default::default()
             }],
             sorting: Some(vec![SortConfig {
                 field: "content".to_string(),
@@ -962,6 +977,7 @@ mod tests {
                 case_sensitive: None,
                 relationship_type: None,
                 node_id: None,
+                ..Default::default()
             }],
             sorting: None,
             limit: None,
@@ -988,6 +1004,7 @@ mod tests {
                 case_sensitive: None,
                 relationship_type: Some(RelationshipType::Children),
                 node_id: None, // Missing!
+                ..Default::default()
             }],
             sorting: None,
             limit: None,
@@ -1014,6 +1031,7 @@ mod tests {
                 case_sensitive: None,
                 relationship_type: None, // Missing!
                 node_id: Some("test-id".to_string()),
+                ..Default::default()
             }],
             sorting: None,
             limit: None,
@@ -1040,6 +1058,7 @@ mod tests {
                 case_sensitive: None,
                 relationship_type: None,
                 node_id: None,
+                ..Default::default()
             }],
             sorting: None,
             limit: None,
@@ -1163,6 +1182,7 @@ mod tests {
                 case_sensitive: None,
                 relationship_type: None,
                 node_id: None,
+                ..Default::default()
             }],
             sorting: None,
             limit: None,
@@ -1203,6 +1223,7 @@ mod tests {
                 case_sensitive: None,
                 relationship_type: None,
                 node_id: None,
+                ..Default::default()
             }],
             sorting: None,
             limit: None,
@@ -1255,6 +1276,7 @@ mod tests {
                     case_sensitive: None,
                     relationship_type: None,
                     node_id: None,
+                    ..Default::default()
                 },
                 QueryFilter {
                     filter_type: FilterType::Content,
@@ -1264,6 +1286,7 @@ mod tests {
                     case_sensitive: Some(true),
                     relationship_type: None,
                     node_id: None,
+                    ..Default::default()
                 },
             ],
             sorting: None,
@@ -1294,6 +1317,7 @@ mod tests {
                 case_sensitive: None,
                 relationship_type: None,
                 node_id: None,
+                ..Default::default()
             }],
             sorting: Some(vec![SortConfig {
                 field: "content".to_string(),
@@ -1476,6 +1500,7 @@ mod tests {
                 case_sensitive: Some(false),
                 relationship_type: None,
                 node_id: None,
+                ..Default::default()
             }],
             sorting: None,
             limit: None,
@@ -1850,6 +1875,7 @@ mod tests {
             case_sensitive: None,
             relationship_type: None,
             node_id: None,
+            ..Default::default()
         };
 
         let mut built = BoundSql::default();
@@ -1914,6 +1940,7 @@ mod tests {
                 case_sensitive: None,
                 relationship_type: None,
                 node_id: None,
+                ..Default::default()
             }],
             sorting: None,
             limit: None,
@@ -2012,6 +2039,7 @@ mod tests {
                 case_sensitive: None,
                 relationship_type: None,
                 node_id: None,
+                ..Default::default()
             }],
             sorting: None,
             limit: None,
@@ -2090,6 +2118,7 @@ mod tests {
                 case_sensitive: None,
                 relationship_type: None,
                 node_id: None,
+                ..Default::default()
             }],
             sorting: None,
             limit: None,
@@ -2134,6 +2163,7 @@ mod tests {
                 case_sensitive: None,
                 relationship_type: None,
                 node_id: None,
+                ..Default::default()
             }],
             sorting: None,
             limit: None,
@@ -2196,6 +2226,7 @@ mod tests {
                 case_sensitive: None,
                 relationship_type: None,
                 node_id: None,
+                ..Default::default()
             }],
             sorting: None,
             limit: None,
@@ -2266,6 +2297,7 @@ mod tests {
                 case_sensitive: Some(false),
                 relationship_type: None,
                 node_id: None,
+                ..Default::default()
             }],
             sorting: None,
             limit: None,
@@ -2311,6 +2343,7 @@ mod tests {
                 case_sensitive: Some(false),
                 relationship_type: None,
                 node_id: None,
+                ..Default::default()
             }],
             sorting: None,
             limit: None,
@@ -2340,6 +2373,7 @@ mod tests {
                 case_sensitive: None,
                 relationship_type: Some(RelationshipType::Children),
                 node_id: Some("parent-1".to_string()),
+                ..Default::default()
             }],
             sorting: None,
             limit: None,
@@ -2379,6 +2413,7 @@ mod tests {
                     case_sensitive: None,
                     relationship_type: None,
                     node_id: None,
+                    ..Default::default()
                 },
                 QueryFilter {
                     filter_type: FilterType::Property,
@@ -2388,6 +2423,7 @@ mod tests {
                     case_sensitive: None,
                     relationship_type: None,
                     node_id: None,
+                    ..Default::default()
                 },
                 QueryFilter {
                     filter_type: FilterType::Property,
@@ -2397,6 +2433,7 @@ mod tests {
                     case_sensitive: None,
                     relationship_type: None,
                     node_id: None,
+                    ..Default::default()
                 },
             ],
             sorting: None,
@@ -2470,6 +2507,7 @@ mod tests {
                     case_sensitive: None,
                     relationship_type: None,
                     node_id: None,
+                    ..Default::default()
                 })
                 .into_iter()
                 .collect(),

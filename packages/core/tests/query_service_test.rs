@@ -492,6 +492,7 @@ fn test_query_serialization_round_trip() {
             case_sensitive: None,
             relationship_type: None,
             node_id: None,
+            ..Default::default()
         }],
         sorting: Some(vec![SortConfig {
             field: "created_at".to_string(),
@@ -534,6 +535,7 @@ fn test_filter_serialization() {
         case_sensitive: Some(false),
         relationship_type: None,
         node_id: None,
+        ..Default::default()
     };
 
     let json = serde_json::to_value(&filter).unwrap();

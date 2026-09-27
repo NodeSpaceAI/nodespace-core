@@ -2585,6 +2585,7 @@ impl GraphToolExecutor {
                     case_sensitive: Some(false),
                     relationship_type: None,
                     node_id: None,
+                    ..Default::default()
                 });
             }
 
