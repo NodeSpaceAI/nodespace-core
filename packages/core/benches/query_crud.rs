@@ -418,6 +418,7 @@ fn bench_jsonpath_query(c: &mut Criterion) {
                         case_sensitive: None,
                         relationship_type: None,
                         node_id: None,
+                        ..Default::default()
                     }],
                     sorting: None,
                     limit: Some(QUERY_CORPUS),
@@ -480,6 +481,7 @@ fn bench_jsonpath_indexed_vs_non_indexed_at_scale(c: &mut Criterion) {
                                 case_sensitive: None,
                                 relationship_type: None,
                                 node_id: None,
+                                ..Default::default()
                             }],
                             sorting: None,
                             limit: Some(count),
@@ -523,6 +525,7 @@ fn bench_jsonpath_indexed_vs_non_indexed_at_scale(c: &mut Criterion) {
                                 case_sensitive: None,
                                 relationship_type: None,
                                 node_id: None,
+                                ..Default::default()
                             }],
                             sorting: None,
                             limit: Some(count),
