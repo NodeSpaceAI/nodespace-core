@@ -58,6 +58,17 @@ tokio-test = "0.4"
 criterion = { version = "0.5", features = ["html_reports"] }
 proptest = "1.5"
 
+# Debug builds keep file:line debug info for workspace code (backtraces and
+# stepping through our own code still work) and none for dependencies. Full
+# debug info made each worktree's target/ tens of gigabytes — most of it
+# variable-inspection data for third-party crates nobody steps into — and
+# every parallel worktree carries its own copy. Also shortens link times.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
 [profile.release]
 panic = "unwind"
 codegen-units = 1

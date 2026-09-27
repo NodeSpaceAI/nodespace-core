@@ -17,10 +17,13 @@
 //   a PR's own worktree, which may never have compiled Rust at all. The PR's
 //   worktree is never touched; the gate checkout does the rebase and pushes
 //   the result.
-// - The gate lock is held from before the rebase until after the merge.
+// - The merge lock is held from before the rebase until after the merge.
 //   Merges therefore land strictly one at a time, and each one rebases onto
 //   the main the previous one produced — so none is invalidated by another
-//   landing while its gate runs.
+//   landing while its gate runs. It is a separate lock from the test lock
+//   (gate-lock.ts): a merge's rebase and compile don't make push checks
+//   wait, and the gate queues for the test lock — ahead of push checks —
+//   only while its tests run.
 //
 // It tests the PR as pushed: commit and push first.
 //
@@ -30,13 +33,16 @@
 import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { $ } from "bun";
-import { acquireGateLock, DISABLE_ENV_VAR, HELD_BY_MERGE_ENV_VAR, registerLockRelease } from "./gate-lock";
+import { acquireGateLock, DISABLE_ENV_VAR, MERGE_LOCK_PATH, registerLockRelease } from "./gate-lock";
 
 /** How many times main may move under us before giving up. */
 export const MAX_ATTEMPTS = 3;
 
 /** Merge attempts, 3s apart, while GitHub catches up with a force-push. */
 const MERGE_TRIES = 5;
+
+/** How long a merge waits for earlier merges on this machine. */
+const MERGE_WAIT_CAP_MS = 2 * 60 * 60 * 1000;
 
 /** The persistent gate checkout, relative to the main repository root. */
 export const GATE_CHECKOUT = join(".claude", "worktrees", "_gate");
@@ -138,15 +144,15 @@ async function main(): Promise<void> {
     }
   }
 
-  // Held from here until this process exits: through the rebase, the gate,
-  // and the merge itself. A push check may run without the lock (it only
-  // slows things down); a merge may not. Two merges share one gate checkout,
-  // so an unserialized one could check its PR out under another's running
-  // tests — and that other merge would then land a tree it never tested. So the lock's usual degrade-and-continue is refused here, as is
-  // the no-lock opt-out.
-  if (process.env[DISABLE_ENV_VAR]) fail(`${DISABLE_ENV_VAR} is set; a merge always takes the gate lock. Unset it and re-run.`);
-  const lock = await acquireGateLock();
-  if (!lock.held) fail("Could not take the gate lock (see above), so the merge would not be serialized. Re-run when the other gate finishes.");
+  // The merge lock, held from here until this process exits: through the
+  // rebase, the gate, and the merge itself. Two merges share one gate
+  // checkout, so an unserialized one could check its PR out under another's
+  // running tests — and that other merge would then land a tree it never
+  // tested. So the lock's usual degrade-and-continue is refused here, as is
+  // the no-lock opt-out. Merges wait on each other only, so the cap is long.
+  if (process.env[DISABLE_ENV_VAR]) fail(`${DISABLE_ENV_VAR} is set; a merge always takes the merge lock. Unset it and re-run.`);
+  const lock = await acquireGateLock({ lockPath: MERGE_LOCK_PATH, what: "merge", maxWaitMs: MERGE_WAIT_CAP_MS });
+  if (!lock.held) fail("Could not take the merge lock (see above), so this merge would not be serialized. Re-run when the other merge finishes.");
   registerLockRelease(lock);
 
   const repoRoot = resolve(dirname(await git(here, "rev-parse", "--path-format=absolute", "--git-common-dir")));
@@ -160,20 +166,54 @@ async function main(): Promise<void> {
     }
     const mainSha = await git(gate, "rev-parse", "origin/main");
 
-    // A clean slate every time: detached at the PR head, no leftovers from
+    // A clean slate every time, starting from current main: no leftovers from
     // the previous merge. Not `clean -x`: target/ and node_modules/ are the
     // warm state this checkout exists to keep.
-    await git(gate, "checkout", "--quiet", "--force", "--detach", prHead);
+    await git(gate, "checkout", "--quiet", "--force", "--detach", mainSha);
     await git(gate, "clean", "-fdq");
     // Ignored build output the gate itself produces or reads, which a
     // previous merge may have left: a file a PR deleted could survive there
     // and mask a failure. Removed so this merge rebuilds it from its own tree.
     await git(gate, "clean", "-fdqX", "--", ...STALE_OUTPUT_PATHS);
-    if ((await git(gate, "merge-base", "HEAD", mainSha)) !== mainSha) {
+
+    // Replay the PR's commits onto main — what a rebase does — without first
+    // checking out the PR's own, older base. That detour rewrote every file
+    // main had changed since the PR branched, then rewrote it back, and cargo,
+    // which judges staleness by modification time, recompiled all of them on
+    // a checkout that exists to stay warm. Starting from main touches only the
+    // files the PR changes.
+    const base = await git(gate, "merge-base", prHead, mainSha);
+    if (base === mainSha) {
+      await git(gate, "checkout", "--quiet", "--detach", prHead);
+    } else {
       console.log(`\n▶ Rebasing PR #${pr} onto origin/main (${mainSha.slice(0, 8)})`);
-      const rebase = await $`git rebase ${mainSha}`.cwd(gate).nothrow();
-      if (rebase.exitCode !== 0) {
-        await $`git rebase --abort`.cwd(gate).quiet().nothrow();
+      // The commit set rebase would replay: linear (merge commits dropped,
+      // their changes arriving through the commits around them), in graph
+      // order, and skipping any commit whose patch main already has.
+      const commits = (
+        await git(
+          gate,
+          "rev-list",
+          "--reverse",
+          "--topo-order",
+          "--no-merges",
+          "--cherry-pick",
+          "--right-only",
+          `${mainSha}...${prHead}`
+        )
+      )
+        .split("\n")
+        .filter((c) => c !== "");
+      if (commits.length === 0) fail(`PR #${pr} has no commits of its own beyond main.`);
+      // Also like rebase: a commit that becomes empty against main is
+      // dropped, and one that was empty to begin with is kept (without
+      // --allow-empty, cherry-pick fails on it and it would read as a conflict).
+      const pick = await $`git cherry-pick --empty=drop --allow-empty ${commits}`.cwd(gate).quiet().nothrow();
+      if (pick.exitCode !== 0) {
+        await $`git cherry-pick --abort`.cwd(gate).quiet().nothrow();
+        // Clear any sequencer state an abort left behind, or every later
+        // merge would fail with "cherry-pick already in progress".
+        await $`git cherry-pick --quit`.cwd(gate).quiet().nothrow();
         fail("The rebase onto main conflicts. Resolve it in your worktree (git rebase origin/main), push, and re-run.");
       }
     }
@@ -181,10 +221,7 @@ async function main(): Promise<void> {
 
     await $`bun install`.cwd(gate).quiet();
     console.log(`\n▶ Full pre-merge gate on ${tested.slice(0, 8)} in ${gate} (attempt ${attempt} of ${MAX_ATTEMPTS})`);
-    const result = await $`bun run scripts/test-gate.ts --mode=merge`
-      .cwd(gate)
-      .env({ ...process.env, [HELD_BY_MERGE_ENV_VAR]: "1" })
-      .nothrow();
+    const result = await $`bun run scripts/test-gate.ts --mode=merge`.cwd(gate).nothrow();
     if (result.exitCode !== 0) {
       fail(
         `The merge gate failed on ${tested.slice(0, 8)}` +

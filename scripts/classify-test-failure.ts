@@ -45,32 +45,6 @@ export function classifyFailure(output: string): FailureKind {
   return ABORT_PATTERNS.some((re) => re.test(output)) ? "abort" : "failure";
 }
 
-function readBufferField(obj: object, key: "stdout" | "stderr"): string {
-  if (!(key in obj)) return "";
-  const value = (obj as Record<string, unknown>)[key];
-  return Buffer.isBuffer(value) ? value.toString() : "";
-}
-
-/**
- * Extracts the text worth scanning from a thrown error. Bun's ShellError
- * exposes `.stdout`/`.stderr` as Buffers (populated alongside the live
- * stream to the terminal, not instead of it — see check-branch-behind.ts's
- * errorMessage for the same pattern), which is where cargo's abort message
- * actually shows up; `.message` alone is a generic "Failed with exit code
- * N". Falls back to `.message` for a non-shell error, and to "" for a
- * thrown value that isn't an Error-shaped object at all.
- */
-export function extractFailureOutput(err: unknown): string {
-  if (!err || typeof err !== "object") return "";
-  const parts: string[] = [];
-  const stdout = readBufferField(err, "stdout");
-  if (stdout) parts.push(stdout);
-  const stderr = readBufferField(err, "stderr");
-  if (stderr) parts.push(stderr);
-  if (err instanceof Error) parts.push(err.message);
-  return parts.join("\n");
-}
-
 export function formatAbortNote(label: string): string {
   return (
     `\n⚠ ${label} looks like a process abort under load (e.g. a signal crash), not a\n` +

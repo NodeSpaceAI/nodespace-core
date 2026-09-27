@@ -77,12 +77,14 @@ export const DEFAULT_POLL_INTERVAL_MS = 2000;
 export const DISABLE_ENV_VAR = "NODESPACE_GATE_NO_LOCK";
 
 /**
- * Set by `bun run merge` (scripts/merge-pr.ts) for the gate it runs. The
- * merge command takes the lock itself, before rebasing, and holds it through
- * the merge — so merges land one at a time and each tests the main it will
- * actually land on. Its gate must not queue behind its own lock.
+ * A second, independent lock for `bun run merge` (scripts/merge-pr.ts). It
+ * serializes merges and guards the one shared gate checkout they test in,
+ * and is held from before the rebase until the merge lands. It is separate
+ * from the test lock above because it protects different things: a merge's
+ * rebase and compile must not make every push check on the machine wait,
+ * but its test run still queues for the test lock like anyone else's.
  */
-export const HELD_BY_MERGE_ENV_VAR = "NODESPACE_GATE_LOCK_HELD_BY_MERGE";
+export const MERGE_LOCK_PATH = join(tmpdir(), "nodespace-merge.lock");
 
 export interface LockHolder {
   pid: number;
@@ -195,6 +197,10 @@ export interface AcquireOptions {
   isAlive?: (pid: number) => boolean;
   /** Injected for tests, which run several waiters in one process. */
   pid?: number;
+  /** What the lock serializes, for the waiting messages. */
+  what?: string;
+  /** Queue ahead of every non-urgent waiter (the merge gate). */
+  urgent?: boolean;
 }
 
 /** Returned by acquireGateLock; call release() exactly once when the gate is done. */
@@ -371,11 +377,15 @@ export function queueDir(lockPath: string): string {
 }
 
 /**
- * A ticket's file name. Zero-padded so lexical order is arrival order; the
- * pid breaks ties between waiters that arrived in the same millisecond.
+ * A ticket's file name. The leading class puts every merge gate's ticket
+ * ahead of every push check's: a merge is finished work waiting to land, a
+ * push is usually mid-iteration, so a merge waits only for the gate already
+ * holding the lock, never for a line of queued pushes. Within a class the
+ * zero-padded start time makes lexical order arrival order; the pid breaks
+ * ties between waiters that arrived in the same millisecond.
  */
-export function ticketName(startedWaitingAt: number, pid: number): string {
-  return `${String(startedWaitingAt).padStart(16, "0")}-${pid}`;
+export function ticketName(startedWaitingAt: number, pid: number, urgent = false): string {
+  return `${urgent ? 0 : 1}-${String(startedWaitingAt).padStart(16, "0")}-${pid}`;
 }
 
 /**
@@ -442,6 +452,37 @@ function ticketsAhead(
   return ahead;
 }
 
+/** How often an unchanged waiting status is repeated, so a wait never looks hung. */
+export const STATUS_HEARTBEAT_MS = 5 * 60 * 1000;
+
+/**
+ * A logger for the waiting status that prints only when what it reports
+ * changes (keyed by `key`), or once per heartbeat.
+ *
+ * A waiting gate used to print a line every poll — every 2s — into the
+ * terminal of whichever session pushed. When that terminal isn't being read,
+ * the pipe fills within minutes and the waiter blocks mid-print. It is still
+ * alive, so its ticket is never reaped; when its turn comes it can't take the
+ * lock, and with first-come-first-served ordering every gate behind it waits
+ * until someone looks at that session. A handful of lines per wait can't
+ * fill a pipe.
+ */
+export function statusLogger(
+  log: (message: string) => void,
+  now: () => number,
+  heartbeatMs: number = STATUS_HEARTBEAT_MS
+): (key: string, line: string) => void {
+  let lastKey: string | null = null;
+  let lastAt = 0;
+  return (key, line) => {
+    const t = now();
+    if (key === lastKey && t - lastAt < heartbeatMs) return;
+    lastKey = key;
+    lastAt = t;
+    log(line);
+  };
+}
+
 const realSleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
@@ -462,6 +503,8 @@ export async function acquireGateLock(options: AcquireOptions = {}): Promise<Gat
   const log = options.log ?? ((message: string) => console.log(message));
   const host = options.host ?? hostname();
   const isAlive = options.isAlive ?? ((pid: number) => isPidAlive(pid));
+  const what = options.what ?? "test gate";
+  const status = statusLogger(log, now);
 
   if (process.env[DISABLE_ENV_VAR]) {
     log(`\n⚠ ${DISABLE_ENV_VAR} set — running without the gate lock (gates may run concurrently).\n`);
@@ -475,7 +518,7 @@ export async function acquireGateLock(options: AcquireOptions = {}): Promise<Gat
   let lastSeen: LockHolder | null = null;
 
   const queue = queueDir(lockPath);
-  const ticket = ticketName(startedWaitingAt, pid);
+  const ticket = ticketName(startedWaitingAt, pid, options.urgent ?? false);
   try {
     fileTicket(queue, ticket, holder);
   } catch (err) {
@@ -506,11 +549,12 @@ export async function acquireGateLock(options: AcquireOptions = {}): Promise<Gat
       const current = readHolder(lockPath);
       if (current.state === "held") lastSeen = current.holder;
       if (!announced) {
-        log("\n⏳ Another test gate is running on this machine — queueing behind it.");
+        log(`\n⏳ Another ${what} is running on this machine — queueing behind it.`);
         log("   (gates are serialized so they don't starve each other of CPU; see ADR-047)");
         announced = true;
       }
-      log(formatQueuedLine(ahead.length, current.state === "held" ? current.holder : null, now(), waitedMs));
+      const holding = current.state === "held" ? current.holder : null;
+      status(`queued:${ahead.length}:${holding?.pid ?? ""}`, formatQueuedLine(ahead.length, holding, now(), waitedMs));
       await sleep(pollIntervalMs);
       continue;
     }
@@ -584,11 +628,11 @@ export async function acquireGateLock(options: AcquireOptions = {}): Promise<Gat
     }
 
     if (!announced) {
-      log("\n⏳ Another test gate is running on this machine — queueing behind it.");
+      log(`\n⏳ Another ${what} is running on this machine — queueing behind it.`);
       log("   (gates are serialized so they don't starve each other of CPU; see ADR-047)");
       announced = true;
     }
-    log(formatWaitingLine(holderNow, now(), waitedMs));
+    status(`waiting:${holderNow.pid}`, formatWaitingLine(holderNow, now(), waitedMs));
     await sleep(pollIntervalMs);
   }
 }

@@ -63,6 +63,7 @@ const GATE_FILES = [
   "scripts/test-gate.ts",
   "scripts/gate-scope.ts",
   "scripts/gate-lock.ts",
+  "scripts/gate-output.ts",
   "scripts/test-app-units.ts",
   "scripts/setup-rust-tooling.ts",
   "scripts/merge-pr.ts",
