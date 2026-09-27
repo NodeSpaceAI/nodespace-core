@@ -1,5 +1,6 @@
 pub mod agent_loop;
 pub mod decisions;
+pub mod deletion_confirmation;
 pub mod inference;
 pub mod model_manager;
 pub mod ndjson;

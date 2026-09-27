@@ -80,6 +80,19 @@ export interface AiChatResolvedEntity {
   nodeType?: string;
 }
 
+/**
+ * A node an agent turn asked to delete, held until the user confirms it.
+ * `version` and `descendantCount` are what the user was shown; a change to
+ * either before the answer aborts the delete.
+ */
+export interface AiChatPendingDeletion {
+  nodeId: string;
+  title: string;
+  nodeType: string;
+  version: number;
+  descendantCount: number;
+}
+
 export interface AiChatMessage {
   role: 'user' | 'assistant' | 'system';
   content: string;
@@ -100,6 +113,11 @@ export interface AiChatMessage {
   question?: string;
   /** Concrete options offered alongside `question`. */
   options?: string[];
+  /**
+   * Deletes this assistant turn asks the user to confirm. Only an affirmative
+   * reply to this message deletes them, against exactly these ids.
+   */
+  pendingDeletions?: AiChatPendingDeletion[];
 }
 
 /**

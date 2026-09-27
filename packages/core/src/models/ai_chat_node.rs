@@ -140,6 +140,34 @@ pub struct AiChatResolvedEntity {
     pub node_type: Option<String>,
 }
 
+/// A node an agent turn asked to delete, held until the user confirms.
+///
+/// The agent's `delete_node` does not delete: it resolves the target and the
+/// turn ends asking the user to confirm. The confirmation message carries these
+/// records, and only an affirmative reply to that message deletes — against
+/// exactly these ids, not a re-resolution of the request. `version` and
+/// `descendant_count` are what the user was shown; a change to either between
+/// the question and the answer aborts the delete rather than removing
+/// something the user did not see.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiChatPendingDeletion {
+    /// Bare node id (no `nodespace://` prefix).
+    pub node_id: String,
+
+    /// How the node was named to the user.
+    pub title: String,
+
+    /// The node's type (e.g. `"task"`).
+    pub node_type: String,
+
+    /// The node's version when the user was asked.
+    pub version: i64,
+
+    /// Nodes beneath it that the delete cascades to (ADR-041).
+    pub descendant_count: u64,
+}
+
 /// A single message in an ai-chat conversation.
 ///
 /// Mirrors the frontend `AiChatMessage` TypeScript interface.
@@ -185,6 +213,11 @@ pub struct AiChatMessage {
     /// `question` is `Some`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub options: Vec<String>,
+
+    /// Deletes this assistant turn is asking the user to confirm. Only the
+    /// user's next message can confirm them; see [`AiChatPendingDeletion`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pending_deletions: Vec<AiChatPendingDeletion>,
 }
 
 /// Strongly-typed view of an `ai-chat` node.

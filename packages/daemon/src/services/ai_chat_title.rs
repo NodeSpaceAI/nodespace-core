@@ -310,6 +310,7 @@ mod tests {
             resolved_entities: Vec::new(),
             question: None,
             options: Vec::new(),
+            pending_deletions: Vec::new(),
         }
     }
 
