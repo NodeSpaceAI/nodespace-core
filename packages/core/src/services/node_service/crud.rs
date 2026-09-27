@@ -50,7 +50,9 @@ impl NodeService {
     /// personal collection that makes it private (the `node_created` privacy
     /// Play). A retype would carry the node's existing inbound mentions and
     /// relationships into the chat and skip the privacy membership entirely,
-    /// so a chat can only come into being by being created as one.
+    /// so a chat can only come into being by being created as one. Retyping
+    /// *out of* ai-chat is deliberately allowed: the node keeps its private
+    /// membership and gains no inbound references, so neither invariant breaks.
     pub(crate) fn ensure_not_retyped_to_ai_chat(
         existing: &Node,
         updated: &Node,
