@@ -217,7 +217,19 @@ async function main(): Promise<void> {
     // files the PR changes.
     const base = await git(gate, "merge-base", prHead, mainSha);
     if (base === mainSha) {
-      await git(gate, "checkout", "--quiet", "--detach", prHead);
+      // `--force`, matching the `mainSha` checkout above: this checkout can
+      // still land on a tracked file whose content differs from what's on
+      // disk (observed with `bun.lock`) even right after that reset and a
+      // `clean -fdq` — some other tool with a handle on this shared,
+      // concurrently-used checkout (a `bun install` from another merge, a
+      // build script) can leave an unstaged modification behind between the
+      // two commands, and a plain `checkout` refuses to overwrite it rather
+      // than silently discarding it. `--force` is the correct choice here,
+      // not a bug to route around some other way: this checkout exists
+      // solely to be blown away and rebuilt every run (see the comment on
+      // the `mainSha` checkout above), so there is never a legitimate local
+      // change here worth preserving.
+      await git(gate, "checkout", "--quiet", "--force", "--detach", prHead);
     } else {
       console.log(`\n▶ Rebasing PR #${pr} onto origin/main (${mainSha.slice(0, 8)})`);
       // The commit set rebase would replay: linear (merge commits dropped,
