@@ -5548,6 +5548,27 @@ async fn test_remove_relationships_rejects_an_undeclared_name_listing_own_names(
     );
 }
 
+/// The rejection happens before any mutation: a list mixing a removable own
+/// name with an inherited one removes neither.
+#[tokio::test]
+async fn test_remove_relationships_mixed_list_is_rejected_whole() {
+    let (svc, _tmp) = create_test_service().await;
+    ticket_and_bug_with_relationships(&svc).await;
+
+    handle_update_schema(
+        &svc,
+        json!({ "schema_id": "bug", "remove_relationships": ["owner", "widgets"] }),
+    )
+    .await
+    .expect_err("a list containing an inherited name must be rejected");
+
+    let bug = svc.get_schema_node("bug").await.unwrap().unwrap();
+    assert!(
+        bug.relationships.iter().any(|r| r.name == "owner"),
+        "the own relationship in the rejected list must not have been removed"
+    );
+}
+
 #[tokio::test]
 async fn test_remove_relationships_still_removes_an_own_declaration() {
     let (svc, _tmp) = create_test_service().await;
