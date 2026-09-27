@@ -199,6 +199,15 @@ pub struct ChildPlacement {
     pub respread: Vec<(String, f64)>,
 }
 
+/// What [`SqliteStore::move_node_in_tx`] did: where the node landed, and the
+/// parent it had before the move (`None` if it was a root), read inside the
+/// same transaction as the edge write.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct NodeMove {
+    pub(crate) former_parent: Option<String>,
+    pub(crate) placement: ChildPlacement,
+}
+
 /// Finds `?2` among the `has_child` descendants of `?1`. Shared by
 /// `validate_no_cycle` and its `_in_tx` twin.
 const HAS_CHILD_CYCLE_SQL: &str = r#"WITH RECURSIVE desc(node_id, depth) AS (
@@ -2881,6 +2890,9 @@ impl SqliteStore {
         Ok(())
     }
 
+    /// Move `node_id` under `new_parent_id` (or make it a root when `None`),
+    /// placed after `insert_after_sibling_id` (first when `None`), as its own
+    /// transaction. See [`Self::move_node_in_tx`].
     pub async fn move_node(
         &self,
         node_id: &str,
@@ -2888,51 +2900,60 @@ impl SqliteStore {
         insert_after_sibling_id: Option<&str>,
     ) -> Result<ChildPlacement> {
         let node_id = node_id.to_string();
-        let new_parent_id = new_parent_id.map(|s| s.to_string());
-        let insert_after_sibling_id = insert_after_sibling_id.map(|s| s.to_string());
+        let new_parent_id = new_parent_id.map(str::to_string);
+        let insert_after_sibling_id = insert_after_sibling_id.map(str::to_string);
+        self.with_transaction(move |tx| {
+            Box::pin(async move {
+                Self::move_node_in_tx(
+                    tx,
+                    &node_id,
+                    new_parent_id.as_deref(),
+                    insert_after_sibling_id.as_deref(),
+                )
+                .await
+                .map(|moved| moved.placement)
+            })
+        })
+        .await
+    }
 
-        // Held across every read the move is decided from (current parent, tree
-        // guards, sibling order) through the write-back (including any
-        // rebalance) until the function returns. Without it, a concurrent move
-        // can change the current parent after it is read, two concurrent
-        // same-parent reorders compute overlapping order keys from the same
-        // stale snapshot, and two crossing moves (A under B, B under A) can both
-        // pass the cycle check. The reads before the write go through reader
-        // connections, so they don't re-enter it.
-        let db = self.write().await;
-
-        if !self.node_exists(&node_id).await? {
+    /// `_in_tx` twin of [`Self::move_node`] (ADR-069 §1a), so the service can
+    /// commit the move together with the node's version bump.
+    ///
+    /// Every read the move is decided from — node and parent existence, the
+    /// current parent, the tree guards and the sibling order — goes through
+    /// `tx`, under the write guard it holds. The same-parent/cross-parent
+    /// decision and the edge write therefore see the same state: a concurrent
+    /// reparent cannot land between them and leave the same-parent `UPDATE`
+    /// matching no edge. Any sibling re-spread rolls back with the rest of the
+    /// transaction, so a failed edge write or a later failure in the caller's
+    /// unit of work never leaves rewritten keys that no event reports.
+    pub(crate) async fn move_node_in_tx(
+        tx: &Tx<'_>,
+        node_id: &str,
+        new_parent_id: Option<&str>,
+        insert_after_sibling_id: Option<&str>,
+    ) -> Result<NodeMove> {
+        if !Self::node_exists_in_tx(tx, node_id).await? {
             return Err(anyhow::anyhow!("Node not found: {}", node_id));
         }
 
-        let current_parent_id = self.get_parent_id(&node_id).await?;
-        let is_same_parent_reorder = match (&new_parent_id, &current_parent_id) {
-            (Some(new_pid), Some(cur_pid)) => new_pid == cur_pid,
-            (None, None) => true,
-            _ => false,
-        };
+        let current_parent_id = Self::get_parent_id_in_tx(tx, node_id).await?;
+        let is_same_parent_reorder = new_parent_id == current_parent_id.as_deref();
 
-        if let Some(ref parent_id) = new_parent_id {
-            if !self.node_exists(parent_id).await? {
+        if let Some(parent_id) = new_parent_id {
+            if !Self::node_exists_in_tx(tx, parent_id).await? {
                 return Err(anyhow::anyhow!("Parent node not found: {}", parent_id));
             }
-            self.validate_no_cycle(parent_id, &node_id).await?;
+            Self::validate_no_cycle_in_tx(tx, parent_id, node_id).await?;
             // ADR-059 §2: a member cannot be moved into an interior position.
-            self.assert_may_gain_parent(&[node_id.as_str()]).await?;
+            Self::assert_may_gain_parent_in_tx(tx, &[node_id]).await?;
         }
 
-        // Everything below — sibling read, any re-spread, re-read, and the edge
-        // write — is one transaction. A re-spread is only announced (by the
-        // service, from `ChildPlacement::respread`) once this returns `Ok`, so
-        // it must not outlive a failed edge write: otherwise the store holds
-        // rewritten sibling keys no event ever reports. Same shape as the
-        // create path, whose re-spread runs on the caller's `tx`. `tx` must be
-        // declared after `db`: locals drop in reverse, so an early `?` rolls
-        // back while the write guard is still held.
-        let tx = db
-            .transaction()
-            .await
-            .context("Failed to begin move_node transaction")?;
+        let tx = tx.conn();
+        let node_id = node_id.to_string();
+        let new_parent_id = new_parent_id.map(str::to_string);
+        let insert_after_sibling_id = insert_after_sibling_id.map(str::to_string);
 
         let mut respread = Vec::new();
         let new_order = if let Some(ref parent_id) = new_parent_id {
@@ -2958,7 +2979,7 @@ impl SqliteStore {
                         if (next - prev_order) < FractionalOrderCalculator::MIN_GAP {
                             // The moving node's own key is overwritten below, so
                             // only its siblings' rewritten keys are reported.
-                            respread = Self::respread_children(&tx, parent_id)
+                            respread = Self::respread_children(tx, parent_id)
                                 .await?
                                 .into_iter()
                                 .filter(|(id, _)| id != &node_id)
@@ -3036,14 +3057,26 @@ impl SqliteStore {
             .context("Failed to delete parent relationship")?;
         }
 
-        tx.commit()
-            .await
-            .context("Failed to commit move_node transaction")?;
-
-        Ok(ChildPlacement {
-            order: new_order,
-            respread,
+        Ok(NodeMove {
+            former_parent: current_parent_id,
+            placement: ChildPlacement {
+                order: new_order,
+                respread,
+            },
         })
+    }
+
+    /// `_in_tx` twin of [`Self::node_exists`].
+    async fn node_exists_in_tx(tx: &Tx<'_>, id: &str) -> Result<bool> {
+        let mut rows = tx
+            .conn()
+            .query(
+                "SELECT 1 FROM node WHERE id = ?1 LIMIT 1",
+                libsql::params![id.to_string()],
+            )
+            .await
+            .context("Failed to check node existence")?;
+        Ok(rows.next().await?.is_some())
     }
 
     /// Re-parent an ordered set of existing children to `new_parent_id` inside

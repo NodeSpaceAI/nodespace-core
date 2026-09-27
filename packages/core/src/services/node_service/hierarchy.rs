@@ -504,78 +504,92 @@ impl NodeService {
 
         self.validate_move(&node, new_parent).await?;
 
-        // Capture the OLD parent before the move so we can surface its edge removal
-        // (sync-epic S3): the store deletes the old has_child
-        // edge but, historically, only a RelationshipUpdated for the NEW parent was
-        // emitted (gated on Some). A move-to-root (new_parent = None) therefore
-        // emitted no relationship event at all, so the detach never propagated to
-        // other devices; a reparent left a stale cloud edge. We now also emit a
-        // RelationshipDeleted for the old parent whenever the parent actually changes.
-        let old_parent_id = self.get_parent(node_id).await?.map(|p| p.id);
-
         let insert_after = self.resolve_insert_position(position, new_parent).await?;
 
-        // Perform the move
-        let placement = self
-            .store
-            .move_node(node_id, new_parent, insert_after.as_deref())
-            .await
-            .map_err(NodeServiceError::from_store)?;
-        self.refresh_for_rootness(
-            node_id,
-            new_parent.is_none(),
-            old_parent_id.as_deref().filter(|p| Some(*p) != new_parent),
-        )
-        .await;
-
-        // ADR-069 §2: bump the version BEFORE emitting any event, not after.
-        // The store's move_node and this bump remain two separate atomic
-        // writes (the store confirmed already-atomic for the move itself —
-        // merging them into one DB transaction is not what this fix needs),
-        // but a consumer must never be told about a move before the write
-        // that makes it OCC-safe has actually landed. The previous order
-        // announced the move first; a failed bump then left consumers
-        // believing a move that was not durably version-committed, with no
-        // way to tell from the event stream alone.
+        // The checks above read through pooled readers and only fail fast with
+        // a readable error; the guarantees come from the transaction below,
+        // where the store re-checks existence, cycles and membership and the
+        // bump re-checks the version against the state it writes.
         //
-        // Even though we're only modifying edge relationships, we bump the
-        // node version so that concurrent move operations will fail with
-        // version conflict. Returns the updated node with new version so
-        // frontend can sync its local state.
-        let updated_node = self
-            .update_node_with_version_bump(node_id, expected_version)
-            .await?;
+        // The edge write, any sibling re-spread, the rootness refresh and the
+        // version bump are one unit of work (ADR-069 §1a). The version check
+        // above reads through a pooled reader, so a concurrent writer can
+        // still bump the node before the write; the bump re-checks
+        // `expected_version` inside the transaction, and a conflict there
+        // rolls the edge and every re-spread key back with it. Events are
+        // buffered and flushed only after commit (ADR-069 §2), so a failed
+        // move announces nothing and a committed one announces all of it.
+        let node_id = node_id.to_string();
+        let new_parent = new_parent.map(str::to_string);
+        let service = self.clone();
+        self.with_transaction(move |tx| {
+            Box::pin(async move {
+                let moved = crate::db::SqliteStore::move_node_in_tx(
+                    tx.store_tx(),
+                    &node_id,
+                    new_parent.as_deref(),
+                    insert_after.as_deref(),
+                )
+                .await
+                .map_err(NodeServiceError::from_store)?;
+                // Read inside the transaction with the edge write, so the
+                // parent the events report as removed is the one it replaced.
+                let old_parent_id = moved.former_parent;
+                let placement = moved.placement;
 
-        // Emit RelationshipUpdated event (unified relationship events).
-        // Emit the NEW-parent edge first so a consumer that inserts-then-deletes
-        // never sees the node parentless mid-move.
-        if let Some(parent_id) = new_parent {
-            self.emit_respread_events(parent_id, &placement.respread);
-            self.emit_event(DomainEvent::RelationshipUpdated {
-                relationship: crate::db::events::RelationshipEvent::new(
-                    format!("relationship:{}:{}", parent_id, node_id),
-                    parent_id,
-                    node_id,
-                    "has_child",
-                    serde_json::json!({"order": placement.order}),
-                ),
-            });
-        }
+                service
+                    .refresh_for_rootness_in_tx(
+                        tx,
+                        &node_id,
+                        new_parent.is_none(),
+                        old_parent_id
+                            .as_deref()
+                            .filter(|p| Some(*p) != new_parent.as_deref()),
+                    )
+                    .await?;
 
-        // Surface the removal of the OLD parent edge when the parent actually
-        // changed (move-to-root OR reparent) — not on a same-parent position move.
-        if let Some(old_id) = old_parent_id {
-            if new_parent != Some(old_id.as_str()) {
-                self.emit_event(DomainEvent::RelationshipDeleted {
-                    id: format!("relationship:{}:{}", old_id, node_id),
-                    from_id: crate::db::events::node_thing(&old_id),
-                    to_id: crate::db::events::node_thing(node_id),
-                    relationship_type: "has_child".to_string(),
-                });
-            }
-        }
+                // Even though we're only modifying edge relationships, we bump
+                // the node version so that concurrent move operations fail with
+                // a version conflict. Returns the updated node with its new
+                // version so the frontend can sync its local state.
+                let updated_node = service
+                    .update_node_with_version_bump_in_tx(tx, &node_id, expected_version)
+                    .await?;
 
-        Ok(updated_node)
+                // Emit the NEW-parent edge first so a consumer that
+                // inserts-then-deletes never sees the node parentless mid-move.
+                if let Some(parent_id) = new_parent.as_deref() {
+                    service.emit_respread_events(parent_id, &placement.respread);
+                    service.emit_event(DomainEvent::RelationshipUpdated {
+                        relationship: crate::db::events::RelationshipEvent::new(
+                            format!("relationship:{}:{}", parent_id, node_id),
+                            parent_id,
+                            &node_id,
+                            "has_child",
+                            serde_json::json!({"order": placement.order}),
+                        ),
+                    });
+                }
+
+                // Surface the removal of the OLD parent edge when the parent
+                // actually changed (move-to-root OR reparent) — not on a
+                // same-parent position move — so the detach propagates to
+                // other devices rather than leaving a stale edge there.
+                if let Some(old_id) = old_parent_id {
+                    if new_parent.as_deref() != Some(old_id.as_str()) {
+                        service.emit_event(DomainEvent::RelationshipDeleted {
+                            id: format!("relationship:{}:{}", old_id, node_id),
+                            from_id: crate::db::events::node_thing(&old_id),
+                            to_id: crate::db::events::node_thing(&node_id),
+                            relationship_type: "has_child".to_string(),
+                        });
+                    }
+                }
+
+                Ok(updated_node)
+            })
+        })
+        .await
     }
 
     /// Reorder a node within its siblings with OCC
@@ -643,8 +657,7 @@ impl NodeService {
 
         // Use graph-native reordering. ADR-069 §2/S4: the write happens here,
         // but the event is deferred until after the version bump below — see
-        // `reorder_child_write`'s doc comment for why, mirroring the
-        // `move_node` fix.
+        // `reorder_child_write`'s doc comment for why.
         let (parent_id, placement) = self.reorder_child_write(node_id, position).await?;
 
         // Bump the node's version to support OCC
@@ -1050,8 +1063,7 @@ impl NodeService {
     /// out (ADR-069 §2/S4). [`Self::reorder_node`] calls this directly and
     /// defers the emit until after its own version bump, so a consumer is
     /// never told about a reorder before the write that makes it OCC-safe
-    /// has landed — the same ordering fix [`Self::move_node`] has. A
-    /// standalone call to `reorder_child` still emits immediately via the
+    /// has landed. A standalone call to `reorder_child` still emits immediately via the
     /// wrapper above, unchanged from its existing public contract.
     async fn reorder_child_write(
         &self,
