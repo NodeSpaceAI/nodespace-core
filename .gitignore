@@ -144,3 +144,6 @@ packages/agent/tests/routing-matrix-latest.txt
 # Per-run compound-intent trace (tests/live_stage1_compound_intent.rs). Same
 # rationale as the routing matrix above.
 packages/agent/tests/stage1-compound-intent-latest.txt
+
+# Rust tooling installed by scripts/setup-rust-tooling.ts (shared by all worktrees)
+.tools
