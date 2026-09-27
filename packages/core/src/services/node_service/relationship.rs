@@ -45,6 +45,14 @@ impl CreatedRelationship {
     }
 }
 
+/// An invariant-rule dispatch a relationship write owes, deferred until the
+/// whole write has landed: the edge's forward source, and the
+/// `RelationshipCreated`/`RelationshipDeleted` event describing the change.
+struct PendingRelationshipDispatch {
+    source: Node,
+    event: DomainEvent,
+}
+
 impl NodeService {
     /// Refuse a `has_child` edge onto a node whose type is always a root: a
     /// collection (ADR-059 §2) or a schema. Shared by the relationship-create
@@ -959,8 +967,14 @@ impl NodeService {
         ))
     }
 
-    /// Tx-scoped twin of [`Self::create_relationship`], for invariant-rule
-    /// `add_relationship` actions (ADR-060 §1). Covers the same validation
+    /// Tx-scoped twin of [`Self::create_relationship`] — the path every
+    /// declared-relationship create runs through, and the one invariant rules
+    /// with a `relationship_added` trigger are dispatched from, after the edge
+    /// lands and inside the same transaction, so a `reject` rolls it back. An
+    /// invariant rule's own `add_relationship` action uses
+    /// [`Self::create_relationship_in_tx_no_invariant_dispatch`] instead.
+    ///
+    /// Covers the same validation
     /// (built-in target-type checks, schema-declared custom relationships,
     /// edge-field validation, cardinality-one, the ADR-059 §2 `member_of`
     /// root-only gate) against tx-consistent reads via
@@ -986,6 +1000,62 @@ impl NodeService {
         target_id: &str,
         edge_data: serde_json::Value,
     ) -> Result<CreatedRelationship, NodeServiceError> {
+        let (created, pending) = self
+            .write_relationship_in_tx(tx, source_id, relationship_name, target_id, edge_data)
+            .await?;
+        self.dispatch_pending_relationship_rules_in_tx(tx, pending)
+            .await?;
+        Ok(created)
+    }
+
+    /// [`Self::create_relationship_in_tx`] without invariant-rule dispatch,
+    /// for an invariant rule's own `add_relationship` action. ADR-060 §2
+    /// requires invariant rules to be depth 1 — an invariant action must not
+    /// itself trigger further rule evaluation — and, as with
+    /// `insert_node_in_tx_no_invariant_dispatch`, that holds by call structure:
+    /// nothing reachable from here dispatches. The compiler guards it too:
+    /// routing an invariant action to the dispatching variant makes
+    /// `execute_actions_in_tx` recursive, which does not compile (E0733)
+    /// without a deliberate `Box::pin`.
+    pub(crate) async fn create_relationship_in_tx_no_invariant_dispatch(
+        &self,
+        tx: &NodeServiceTx<'_>,
+        source_id: &str,
+        relationship_name: &str,
+        target_id: &str,
+        edge_data: serde_json::Value,
+    ) -> Result<CreatedRelationship, NodeServiceError> {
+        self.write_relationship_in_tx(tx, source_id, relationship_name, target_id, edge_data)
+            .await
+            .map(|(created, _)| created)
+    }
+
+    /// Run the invariant rules a relationship write deferred, once the whole
+    /// write — the new edge and any cardinality-one evictions — has landed,
+    /// so every rule reads the relationship as it will commit.
+    async fn dispatch_pending_relationship_rules_in_tx(
+        &self,
+        tx: &NodeServiceTx<'_>,
+        pending: Vec<PendingRelationshipDispatch>,
+    ) -> Result<(), NodeServiceError> {
+        for PendingRelationshipDispatch { source, event } in pending {
+            self.dispatch_invariant_rules_for_relationship_in_tx(tx, &source, event)
+                .await?;
+        }
+        Ok(())
+    }
+
+    /// The write half of [`Self::create_relationship_in_tx`]: validates and
+    /// stores the edge, and returns — undispatched — the invariant-rule
+    /// dispatch each edge it added or evicted is owed.
+    async fn write_relationship_in_tx(
+        &self,
+        tx: &NodeServiceTx<'_>,
+        source_id: &str,
+        relationship_name: &str,
+        target_id: &str,
+        edge_data: serde_json::Value,
+    ) -> Result<(CreatedRelationship, Vec<PendingRelationshipDispatch>), NodeServiceError> {
         let is_builtin = crate::models::schema::is_builtin_relationship(relationship_name);
 
         // A write through an `in` declaration's name is stored as the forward
@@ -1022,6 +1092,11 @@ impl NodeService {
         // performed — see the comment at the gathering site for why eviction
         // must wait until after the new edge is inserted.
         let mut evict_after_insert: Option<(Vec<String>, Vec<String>)> = None;
+
+        // The forward source of a declared relationship, for the invariant
+        // dispatch this edge is owed. Always `None` for a builtin — see
+        // `dispatch_invariant_rules_for_relationship_in_tx` for why.
+        let mut dispatch_source: Option<Node> = None;
 
         if is_builtin {
             if relationship_name == "member_of" {
@@ -1262,6 +1337,7 @@ impl NodeService {
             }
 
             evict_after_insert = Some((forward_targets_to_evict, reverse_sources_to_evict));
+            dispatch_source = Some(source);
         }
 
         // Idempotency check (mirrors `create_relationship`'s generic path;
@@ -1278,10 +1354,9 @@ impl NodeService {
             NodeServiceError::query_failed(format!("Failed to check existing relationship: {}", e))
         })?;
         if already_exists {
-            return Ok(CreatedRelationship::plain(
-                source_id,
-                relationship_name,
-                target_id,
+            return Ok((
+                CreatedRelationship::plain(source_id, relationship_name, target_id),
+                Vec::new(),
             ));
         }
 
@@ -1306,7 +1381,7 @@ impl NodeService {
                 .await?;
         }
 
-        self.emit_event(DomainEvent::RelationshipCreated {
+        let created = DomainEvent::RelationshipCreated {
             relationship: crate::db::events::RelationshipEvent::new(
                 rel_id,
                 source_id,
@@ -1314,7 +1389,8 @@ impl NodeService {
                 relationship_name,
                 final_edge_data,
             ),
-        });
+        };
+        self.emit_event(created.clone());
 
         // Now that the new edge is durably inserted (above), evict whatever
         // cardinality-one replace gathered earlier — see the gathering
@@ -1322,15 +1398,24 @@ impl NodeService {
         // than before it. Each eviction is reported back so the caller can
         // tell a plain create from a reassignment.
         let mut replaced = Vec::new();
+        let mut pending = Vec::new();
+        if let Some(source) = dispatch_source {
+            pending.push(PendingRelationshipDispatch {
+                source,
+                event: created,
+            });
+        }
         if let Some((forward_targets_to_evict, reverse_sources_to_evict)) = evict_after_insert {
             for existing_target_id in forward_targets_to_evict {
-                self.remove_relationship_in_tx(
-                    tx,
-                    source_id,
-                    relationship_name,
-                    &existing_target_id,
-                )
-                .await?;
+                pending.extend(
+                    self.delete_relationship_edge_in_tx(
+                        tx,
+                        source_id,
+                        relationship_name,
+                        &existing_target_id,
+                    )
+                    .await?,
+                );
                 replaced.push(StoredEdge::new(
                     source_id,
                     relationship_name,
@@ -1338,13 +1423,15 @@ impl NodeService {
                 ));
             }
             for existing_source_id in reverse_sources_to_evict {
-                self.remove_relationship_in_tx(
-                    tx,
-                    &existing_source_id,
-                    relationship_name,
-                    target_id,
-                )
-                .await?;
+                pending.extend(
+                    self.delete_relationship_edge_in_tx(
+                        tx,
+                        &existing_source_id,
+                        relationship_name,
+                        target_id,
+                    )
+                    .await?,
+                );
                 replaced.push(StoredEdge::new(
                     &existing_source_id,
                     relationship_name,
@@ -1353,10 +1440,13 @@ impl NodeService {
             }
         }
 
-        Ok(CreatedRelationship {
-            edge: StoredEdge::new(source_id, relationship_name, target_id),
-            replaced,
-        })
+        Ok((
+            CreatedRelationship {
+                edge: StoredEdge::new(source_id, relationship_name, target_id),
+                replaced,
+            },
+            pending,
+        ))
     }
 
     /// Closes the gap `SqliteStore::merge_nodes_in_tx` cannot close on its
@@ -1475,8 +1565,13 @@ impl NodeService {
                         .iter()
                         .any(|(_, existing_target)| existing_target != target_id);
                     if collides {
-                        self.remove_relationship_in_tx(tx, source_id, relationship_type, target_id)
-                            .await?;
+                        self.remove_relationship_in_tx_no_invariant_dispatch(
+                            tx,
+                            source_id,
+                            relationship_type,
+                            target_id,
+                        )
+                        .await?;
                         evicted += 1;
                         continue;
                     }
@@ -1541,8 +1636,13 @@ impl NodeService {
                     }
 
                     if collides {
-                        self.remove_relationship_in_tx(tx, source_id, relationship_type, target_id)
-                            .await?;
+                        self.remove_relationship_in_tx_no_invariant_dispatch(
+                            tx,
+                            source_id,
+                            relationship_type,
+                            target_id,
+                        )
+                        .await?;
                         evicted += 1;
                     }
                 }
@@ -1552,9 +1652,12 @@ impl NodeService {
         Ok(evicted)
     }
 
-    /// Tx-scoped twin of [`Self::delete_relationship`], for invariant-rule
-    /// `remove_relationship` actions (ADR-060 §1). Reproduces the
-    /// required-relationship last-edge protection via tx-consistent reads.
+    /// Tx-scoped twin of [`Self::delete_relationship`]. Reproduces the
+    /// required-relationship last-edge protection via tx-consistent reads,
+    /// then dispatches invariant rules with a `relationship_removed` trigger
+    /// inside the same transaction. An invariant rule's own
+    /// `remove_relationship` action uses
+    /// [`Self::remove_relationship_in_tx_no_invariant_dispatch`] instead.
     pub(crate) async fn remove_relationship_in_tx(
         &self,
         tx: &NodeServiceTx<'_>,
@@ -1562,6 +1665,43 @@ impl NodeService {
         relationship_name: &str,
         target_id: &str,
     ) -> Result<(), NodeServiceError> {
+        let pending = self
+            .delete_relationship_edge_in_tx(tx, source_id, relationship_name, target_id)
+            .await?;
+        self.dispatch_pending_relationship_rules_in_tx(tx, pending.into_iter().collect())
+            .await
+    }
+
+    /// [`Self::remove_relationship_in_tx`] without invariant-rule dispatch —
+    /// the removal twin of
+    /// [`Self::create_relationship_in_tx_no_invariant_dispatch`], for an
+    /// invariant rule's own `remove_relationship` action, and for a merge's
+    /// cardinality repair: a merge re-points edges below this layer, so
+    /// dispatching for its evictions alone would fire rules for some of the
+    /// merge's edge changes and not the ones that actually move membership.
+    pub(crate) async fn remove_relationship_in_tx_no_invariant_dispatch(
+        &self,
+        tx: &NodeServiceTx<'_>,
+        source_id: &str,
+        relationship_name: &str,
+        target_id: &str,
+    ) -> Result<(), NodeServiceError> {
+        self.delete_relationship_edge_in_tx(tx, source_id, relationship_name, target_id)
+            .await
+            .map(|_| ())
+    }
+
+    /// The write half of [`Self::remove_relationship_in_tx`]: validates and
+    /// deletes the edge, and returns — undispatched — the invariant-rule
+    /// dispatch its removal is owed, if any. Removing an edge that does not
+    /// exist is a no-op and owes none: nothing was removed for a rule to veto.
+    async fn delete_relationship_edge_in_tx(
+        &self,
+        tx: &NodeServiceTx<'_>,
+        source_id: &str,
+        relationship_name: &str,
+        target_id: &str,
+    ) -> Result<Option<PendingRelationshipDispatch>, NodeServiceError> {
         let is_builtin = crate::models::schema::is_builtin_relationship(relationship_name);
 
         // Same forward spelling the create path stored — see
@@ -1584,6 +1724,10 @@ impl NodeService {
             target_id,
         );
 
+        // The forward source, for the invariant dispatch this removal is
+        // owed — see the same variable in `write_relationship_in_tx`.
+        let mut dispatch_source: Option<Node> = None;
+
         if !is_builtin {
             if let Some(source) = crate::db::SqliteStore::get_node_in_tx(tx.store_tx(), source_id)
                 .await
@@ -1596,8 +1740,12 @@ impl NodeService {
                         source_id, relationship_name
                     )));
                 }
-                // Chain-aware (ADR-078) — see the non-tx twin in
-                // `delete_relationship` for the full rationale.
+                // Chain-aware (ADR-078): an inherited `required: true`
+                // relationship (declared on an ancestor, not redeclared on
+                // this subtype) still gets last-edge protection — the same
+                // merged set `resolve_declared_relationship` resolves against
+                // on the create side. `required` is an outbound-declaration
+                // property, so only a `direction: out` relationship counts.
                 let (relationships, _) = self.resolve_relationships(&source.node_type).await?;
                 let is_required = relationships
                     .iter()
@@ -1640,6 +1788,7 @@ impl NodeService {
                         )));
                     }
                 }
+                dispatch_source = Some(source);
             }
             // Target end: a required `in` declaration on the target's schema.
             if let Some(target) = crate::db::SqliteStore::get_node_in_tx(tx.store_tx(), target_id)
@@ -1698,16 +1847,21 @@ impl NodeService {
                 .await?;
         }
 
-        if let Some(id) = rel_id {
-            self.emit_event(DomainEvent::RelationshipDeleted {
-                id,
-                from_id: crate::db::events::node_thing(source_id),
-                to_id: crate::db::events::node_thing(target_id),
-                relationship_type: relationship_name.to_string(),
-            });
-        }
+        let Some(id) = rel_id else {
+            return Ok(None);
+        };
+        let deleted = DomainEvent::RelationshipDeleted {
+            id,
+            from_id: crate::db::events::node_thing(source_id),
+            to_id: crate::db::events::node_thing(target_id),
+            relationship_type: relationship_name.to_string(),
+        };
+        self.emit_event(deleted.clone());
 
-        Ok(())
+        Ok(dispatch_source.map(|source| PendingRelationshipDispatch {
+            source,
+            event: deleted,
+        }))
     }
 
     /// Bulk-create `member_of` edges AND emit a `RelationshipCreated` event for
@@ -1802,121 +1956,37 @@ impl NodeService {
     ) -> Result<(), NodeServiceError> {
         // Unified relationship deletion - ALL relationships use the `relationship` table
         // The relationship_type field distinguishes between different relationship types
-
-        // Required-relationship last-edge protection: a schema
-        // relationship declared `required: true` must always retain at least one
-        // edge — deleting its final edge would leave the node violating its own
-        // schema. Reject only when the targeted edge actually exists AND it is the
-        // last remaining edge of that relationship on this source. Removing one of
-        // several is fine; deleting a nonexistent edge stays a harmless no-op.
-        // Built-in structural relationships are not schema-declared and are exempt.
         let is_builtin = crate::models::schema::is_builtin_relationship(relationship_name);
 
-        // Same forward spelling the create path stored — see
-        // `in_declaration_forward_name`.
-        let source_type = if is_builtin {
-            None
-        } else {
-            self.get_node(source_id).await?.map(|n| n.node_type)
-        };
-        let forward_name = self
-            .in_declaration_forward_name(source_type.as_deref(), relationship_name)
-            .await?;
-        let (source_id, relationship_name, target_id) = forward_endpoints(
-            forward_name.as_deref(),
-            source_id,
-            relationship_name,
-            target_id,
-        );
-
         if !is_builtin {
-            if let Some(source) = self.get_node(source_id).await? {
-                // A non-builtin edge whose source is a schema node is a
-                // relationship DECLARATION — deleting it here would bypass the
-                // live-instance-edge protection `set_schema_relationships`
-                // enforces, orphaning every edge written under it.
-                if source.node_type == "schema" {
-                    return Err(NodeServiceError::invalid_update(format!(
-                        "'{}' is a schema node; '{}' is a relationship declaration — \
-                         remove it via update_schema, not delete_relationship",
-                        source_id, relationship_name
-                    )));
-                }
-                // Chain-aware (ADR-078): an inherited `required: true`
-                // relationship (declared on an ancestor, not redeclared on
-                // this subtype) must still get last-edge protection — the
-                // same merged/effective set `resolve_declared_relationship`
-                // resolves against on the create side.
-                let (relationships, _) = self.resolve_relationships(&source.node_type).await?;
-                // `required` is an outbound-declaration property; only enforce
-                // it for a forward (`direction: out`) relationship so an
-                // inbound-declared one never counts the wrong edge set.
-                let is_required = relationships
-                    .iter()
-                    .find(|r| r.name == relationship_name)
-                    .map(|r| {
-                        r.required == Some(true)
-                            && r.direction == crate::models::schema::RelationshipDirection::Out
+            // A declared relationship's removal — the required-relationship
+            // last-edge protection on both ends, and invariant-rule dispatch —
+            // runs in `remove_relationship_in_tx`, wrapped in one transaction
+            // here for the same reason `create_relationship` wraps its twin:
+            // an invariant rule's veto must be able to roll the removal back.
+            let service = self.clone();
+            let service_for_tx = service.clone();
+            let source_id = source_id.to_string();
+            let relationship_name = relationship_name.to_string();
+            let target_id = target_id.to_string();
+            return service
+                .with_transaction(move |tx| {
+                    Box::pin(async move {
+                        service_for_tx
+                            .remove_relationship_in_tx(
+                                tx,
+                                &source_id,
+                                &relationship_name,
+                                &target_id,
+                            )
+                            .await
                     })
-                    .unwrap_or(false);
-                if is_required {
-                    let edge_exists = self
-                        .store
-                        .relationship_exists(source_id, target_id, relationship_name)
-                        .await
-                        .map_err(|e| {
-                            NodeServiceError::query_failed(format!(
-                                "Failed to check relationship existence: {}",
-                                e
-                            ))
-                        })?;
-                    let total = self
-                        .store
-                        .check_relationship_exists(source_id, relationship_name)
-                        .await
-                        .map_err(|e| {
-                            NodeServiceError::query_failed(format!(
-                                "Failed to count relationship edges: {}",
-                                e
-                            ))
-                        })?;
-                    if edge_exists && total <= 1 {
-                        return Err(NodeServiceError::invalid_update(format!(
-                            "Relationship '{}' is required and this is its last edge; add another target before removing this one",
-                            relationship_name
-                        )));
-                    }
-                }
-            }
-            // Target end: the check above resolves the source's schema, so it
-            // never sees a required `in` declaration on the target's schema —
-            // see `required_in_declarations`.
-            if let Some(target) = self.get_node(target_id).await? {
-                let declarations = self
-                    .required_in_declarations(&target.node_type, relationship_name)
-                    .await?;
-                if !declarations.is_empty() {
-                    let inbound_edges = self
-                        .store
-                        .get_relationship_sources_into_target(target_id, relationship_name)
-                        .await
-                        .map_err(|e| {
-                            NodeServiceError::query_failed(format!(
-                                "Failed to read inbound relationship edges: {}",
-                                e
-                            ))
-                        })?;
-                    self.ensure_not_last_required_in_edge(
-                        &declarations,
-                        target_id,
-                        source_id,
-                        &inbound_edges,
-                    )
-                    .await?;
-                }
-            }
+                })
+                .await;
         }
 
+        // Built-in structural relationships are not schema-declared: no
+        // required-edge protection, no reverse-name rewrite.
         let rel_id = self
             .store
             .get_relationship_id(source_id, target_id, relationship_name)

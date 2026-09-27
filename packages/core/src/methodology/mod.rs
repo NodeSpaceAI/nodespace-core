@@ -24,6 +24,7 @@
 //! playbook cannot install a schema a hand-authored call could not.
 
 pub mod install;
+pub mod jira;
 pub mod linear;
 pub mod skills;
 pub mod spec_driven;
@@ -240,7 +241,11 @@ impl InstallReport {
 /// further wiring. Its CLI reference doc is not automatic: it needs a region in
 /// `packages/cli/examples/gen_skill_md.rs` and a `references/` file to hold it.
 pub fn all_playbooks() -> Vec<MethodologyPlaybook> {
-    vec![linear::playbook(), spec_driven::playbook()]
+    vec![
+        linear::playbook(),
+        spec_driven::playbook(),
+        jira::playbook(),
+    ]
 }
 
 /// Look up a playbook by its [`MethodologyPlaybook::id`].
@@ -266,6 +271,7 @@ mod tests {
     fn playbook_by_id_finds_a_shipped_playbook() {
         assert!(playbook_by_id("linear").is_some());
         assert!(playbook_by_id("spec-driven").is_some());
+        assert!(playbook_by_id("jira").is_some());
         assert!(playbook_by_id("nonexistent").is_none());
     }
 
