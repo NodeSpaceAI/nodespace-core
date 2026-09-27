@@ -11,7 +11,7 @@ pub use events::{
 };
 pub use fractional_ordering::FractionalOrderCalculator;
 pub(crate) use sqlite_store::tx::Tx;
-pub(crate) use sqlite_store::{composite_similarity_score, cosine_similarity};
+pub(crate) use sqlite_store::{composite_similarity_score, cosine_similarity, NodeMove};
 pub use sqlite_store::{
     ensure_sqlite_vec_registered, BulkNodeRow, ChildPlacement, RelationshipRecord, ResolvedEntity,
     SqliteStore, StoreChange, StoreOperation, TreeInvariantRule, TreeInvariantViolation,
