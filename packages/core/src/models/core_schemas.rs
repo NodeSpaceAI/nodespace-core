@@ -28,7 +28,7 @@ use crate::models::schema::{
     EnumValue, RelationshipCardinality, RelationshipDirection, SchemaField, SchemaProtectionLevel,
     SchemaRelationship,
 };
-use crate::models::SchemaNode;
+use crate::models::{SchemaNode, AI_CHAT_PROVIDERS};
 use chrono::Utc;
 
 /// Get all core schema definitions as SchemaNode instances
@@ -581,15 +581,20 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                     field_type: "enum".to_string(),
                     local_only: false,
                     protection: SchemaProtectionLevel::Core,
-                    core_values: Some(vec![
-                        EnumValue::new("native".to_string(), "Native (Local)".to_string()),
-                        EnumValue::new("anthropic".to_string(), "Anthropic".to_string()),
-                        EnumValue::new("gemini".to_string(), "Gemini".to_string()),
-                    ]),
+                    // Closed set: validation rejects any provider outside
+                    // `AI_CHAT_PROVIDERS`, so the enum can't be extensible.
+                    core_values: Some(
+                        AI_CHAT_PROVIDERS
+                            .iter()
+                            .map(|(value, label)| {
+                                EnumValue::new(value.to_string(), label.to_string())
+                            })
+                            .collect(),
+                    ),
                     user_values: Some(vec![]),
                     indexed: true,
                     required: Some(true),
-                    extensible: Some(true),
+                    extensible: Some(false),
                     default: Some(serde_json::json!("native")),
                     description: Some("AI provider for this conversation".to_string()),
                     item_type: None,

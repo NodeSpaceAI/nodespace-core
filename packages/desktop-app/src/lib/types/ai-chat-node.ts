@@ -21,7 +21,7 @@ export type AiChatTurnStatus = 'idle' | 'processing';
  */
 export type AiChatSessionStatus = 'active' | 'archived';
 
-export type AiChatProvider = 'native' | 'openai' | 'openai-compat' | 'pty';
+export type AiChatProvider = 'native' | 'openai-compat' | 'pty';
 
 export interface OpenAiCompatConfig {
   id: string;       // uuid, generated client-side

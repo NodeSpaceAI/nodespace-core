@@ -91,12 +91,12 @@ describe('nodeToAiChatNode', () => {
   it('carries through optional lifecycleStatus/provider/model when present', () => {
     const node = makeNode({
       lifecycleStatus: 'archived',
-      provider: 'openai',
+      provider: 'openai-compat',
       model: 'gpt-4o'
     });
     const chat = nodeToAiChatNode(node);
     expect(chat.lifecycleStatus).toBe('archived');
-    expect(chat.provider).toBe('openai');
+    expect(chat.provider).toBe('openai-compat');
     expect(chat.model).toBe('gpt-4o');
   });
 
