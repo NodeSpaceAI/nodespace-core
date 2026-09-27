@@ -2608,14 +2608,15 @@ fn resolve_seed_template(
     node_type: &str,
     seed_key: &str,
 ) -> Result<Option<nodespace_core::markdown::NodeTemplate>, String> {
-    find_unique_seed_template(
-        nodespace_agent::prompt_assembler::PromptAssembler::seed_agent_guidance_nodes()
-            .into_iter()
-            .chain(nodespace_agent::skill_pipeline::seed_skill_nodes())
-            .chain(nodespace_agent::skill_pipeline::seed_tool_nodes()),
-        node_type,
-        seed_key,
-    )
+    find_unique_seed_template(compiled_seed_templates(), node_type, seed_key)
+}
+
+/// Every compiled seed template, in the order `seed_agent_nodes` seeds them.
+fn compiled_seed_templates() -> impl Iterator<Item = nodespace_core::markdown::NodeTemplate> {
+    nodespace_agent::prompt_assembler::PromptAssembler::seed_agent_guidance_nodes()
+        .into_iter()
+        .chain(nodespace_agent::skill_pipeline::seed_skill_nodes())
+        .chain(nodespace_agent::skill_pipeline::seed_tool_nodes())
 }
 
 /// Pick the single template matching `(node_type, seed_key)`. More than one
@@ -4968,11 +4969,7 @@ mod tests {
     #[test]
     fn compiled_seed_templates_have_unique_type_and_title() {
         let mut seen = std::collections::HashSet::new();
-        for t in nodespace_agent::prompt_assembler::PromptAssembler::seed_agent_guidance_nodes()
-            .into_iter()
-            .chain(nodespace_agent::skill_pipeline::seed_skill_nodes())
-            .chain(nodespace_agent::skill_pipeline::seed_tool_nodes())
-        {
+        for t in compiled_seed_templates() {
             assert!(
                 seen.insert((t.root_node_type.clone(), t.title.clone())),
                 "duplicate seed template ({}, {})",
