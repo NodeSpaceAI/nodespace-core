@@ -39,10 +39,15 @@ Once `closed`, a sprint rejects:
 Its name and `goal` stay editable. To carry work forward, link it to a future
 sprint and leave the closed sprint's record alone.
 
+The lock guards writes to the relationship itself. Deleting an issue outright
+still removes it from every sprint, closed ones included — so archive or cancel
+finished work rather than deleting it if the sprint record matters.
+
 ## completed_date is automatic
 
 `completed_date` is set once, automatically, when the sprint closes. Setting it
-by hand is rejected, before the close or after.
+by hand is rejected — before the close, in the same update as the close, or
+after.
 
 ## If a rejection looks wrong
 

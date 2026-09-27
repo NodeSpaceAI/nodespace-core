@@ -110,6 +110,13 @@ pub enum PlayValidationError {
     /// so no open transaction to join. Declaring a rule `invariant` against
     /// one would silently never execute rather than deliver the fail-closed
     /// guarantee its class name promises, so it is rejected here instead.
+    ///
+    /// Relationship triggers are accepted, with a narrower guarantee than node
+    /// triggers: they fire for a declared relationship created or removed
+    /// through `create_relationship`/`delete_relationship`, and not for a
+    /// built-in (`has_child`, `member_of`, `mentions`), an edge dropped because
+    /// an endpoint node was deleted, or an edge re-pointed by a merge. A rule
+    /// relying on one guards those explicit writes only.
     InvariantUnsupportedTrigger { trigger: String, location: String },
     /// An invariant `add_relationship` action targets `member_of` or
     /// `has_child` without an explicit `order` in `edge_data`. Both types

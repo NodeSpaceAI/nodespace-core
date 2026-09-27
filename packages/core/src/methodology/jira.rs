@@ -293,7 +293,8 @@ fn sprint_schema() -> SchemaStep {
 /// update's FIRST changed property, which is some other field whenever an
 /// update sets several at once — starting a sprint and its dates together
 /// is the ordinary case. A missing old value is a sprint created without the
-/// schema default, and counts as `future`.
+/// schema default — `create_node` applies it, but a bulk import does not —
+/// and counts as `future`.
 fn status_moved(from: &[&str], to: &str) -> String {
     let from = from
         .iter()
@@ -369,7 +370,8 @@ fn sprint_transition_gate() -> PlayStep {
                 },
                 "conditions": [
                     "node.sprint_status == 'active'",
-                    "!has(node.start_date) || !has(node.end_date)",
+                    "!has(node.start_date) || node.start_date == null \
+                     || !has(node.end_date) || node.end_date == null",
                 ],
                 "actions": [{
                     "action_type": "reject",
@@ -390,7 +392,7 @@ fn sprint_transition_gate() -> PlayStep {
                 },
                 "conditions": [
                     "(has(node.sprint_status) && node.sprint_status != 'future') \
-                     || has(node.completed_date)",
+                     || (has(node.completed_date) && node.completed_date != null)",
                 ],
                 "actions": [{
                     "action_type": "reject",
@@ -451,7 +453,7 @@ fn sprint_completion_stamp() -> PlayStep {
 ///
 /// `completed_date` accepts exactly one write: the [`sprint_completion_stamp`]
 /// on a closed sprint whose date is still unset. Setting it on an open sprint,
-/// or changing it once stamped, is rejected.
+/// alongside the close, or once stamped, is rejected.
 ///
 /// Membership is locked through `relationship_added`/`relationship_removed`
 /// triggers on the sprint — the edge's source, whichever node the caller
@@ -495,9 +497,15 @@ fn sprint_close_lock() -> PlayStep {
             "node_type": "sprint",
             "property_key": "sprint.completed_date",
         },
+        // Three ways to reject: the sprint is not closed; the value was
+        // already stamped; or this same write also moved `sprint_status` —
+        // the close itself carrying a hand-set date, which would otherwise
+        // pass as "closed, unset before" and pre-empt the stamp.
         "conditions": [
-            "node.sprint_status != 'closed' || trigger.properties.exists(p, \
-             p.key == 'sprint.completed_date' && p.old_value != null)",
+            "node.sprint_status != 'closed' \
+             || trigger.properties.exists(p, p.key == 'sprint.sprint_status') \
+             || trigger.properties.exists(p, \
+                p.key == 'sprint.completed_date' && p.old_value != null)",
         ],
         "actions": [{
             "action_type": "reject",

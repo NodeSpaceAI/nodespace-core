@@ -1013,7 +1013,10 @@ impl NodeService {
     /// requires invariant rules to be depth 1 — an invariant action must not
     /// itself trigger further rule evaluation — and, as with
     /// `insert_node_in_tx_no_invariant_dispatch`, that holds by call structure:
-    /// nothing reachable from here dispatches.
+    /// nothing reachable from here dispatches. The compiler guards it too:
+    /// routing an invariant action to the dispatching variant makes
+    /// `execute_actions_in_tx` recursive, which does not compile (E0733)
+    /// without a deliberate `Box::pin`.
     pub(crate) async fn create_relationship_in_tx_no_invariant_dispatch(
         &self,
         tx: &NodeServiceTx<'_>,
@@ -1562,8 +1565,13 @@ impl NodeService {
                         .iter()
                         .any(|(_, existing_target)| existing_target != target_id);
                     if collides {
-                        self.remove_relationship_in_tx(tx, source_id, relationship_type, target_id)
-                            .await?;
+                        self.remove_relationship_in_tx_no_invariant_dispatch(
+                            tx,
+                            source_id,
+                            relationship_type,
+                            target_id,
+                        )
+                        .await?;
                         evicted += 1;
                         continue;
                     }
@@ -1628,8 +1636,13 @@ impl NodeService {
                     }
 
                     if collides {
-                        self.remove_relationship_in_tx(tx, source_id, relationship_type, target_id)
-                            .await?;
+                        self.remove_relationship_in_tx_no_invariant_dispatch(
+                            tx,
+                            source_id,
+                            relationship_type,
+                            target_id,
+                        )
+                        .await?;
                         evicted += 1;
                     }
                 }
@@ -1662,7 +1675,10 @@ impl NodeService {
     /// [`Self::remove_relationship_in_tx`] without invariant-rule dispatch —
     /// the removal twin of
     /// [`Self::create_relationship_in_tx_no_invariant_dispatch`], for an
-    /// invariant rule's own `remove_relationship` action.
+    /// invariant rule's own `remove_relationship` action, and for a merge's
+    /// cardinality repair: a merge re-points edges below this layer, so
+    /// dispatching for its evictions alone would fire rules for some of the
+    /// merge's edge changes and not the ones that actually move membership.
     pub(crate) async fn remove_relationship_in_tx_no_invariant_dispatch(
         &self,
         tx: &NodeServiceTx<'_>,
@@ -1724,8 +1740,12 @@ impl NodeService {
                         source_id, relationship_name
                     )));
                 }
-                // Chain-aware (ADR-078) — see the non-tx twin in
-                // `delete_relationship` for the full rationale.
+                // Chain-aware (ADR-078): an inherited `required: true`
+                // relationship (declared on an ancestor, not redeclared on
+                // this subtype) still gets last-edge protection — the same
+                // merged set `resolve_declared_relationship` resolves against
+                // on the create side. `required` is an outbound-declaration
+                // property, so only a `direction: out` relationship counts.
                 let (relationships, _) = self.resolve_relationships(&source.node_type).await?;
                 let is_required = relationships
                     .iter()

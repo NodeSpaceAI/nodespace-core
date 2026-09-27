@@ -395,6 +395,15 @@ async fn closing_a_sprint_records_when_it_closed() -> Result<()> {
         "completed_date on an open sprint must be rejected"
     );
 
+    assert!(
+        !h.set(
+            &open,
+            json!({ "sprint_status": "closed", "completed_date": "2020-01-01" })
+        )
+        .await?,
+        "a hand-set completed_date riding along with the close must be rejected"
+    );
+
     assert!(h.set(&open, json!({ "sprint_status": "closed" })).await?);
     assert!(
         h.wait_for(&open, "completed_date", |v| v
@@ -488,6 +497,62 @@ async fn a_closed_sprints_issues_are_locked() -> Result<()> {
     let open = h.active_sprint().await?;
     assert!(h.link(&open, "issues", &late).await);
     assert!(h.unlink(&open, "issues", &late).await);
+
+    h.stop().await;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Engine: relationship dispatch
+// ---------------------------------------------------------------------------
+
+/// Relinking an issue to a second epic evicts its edge from the first
+/// (`epic` is one-per-issue). The eviction is a removal in its own right: a
+/// `relationship_removed` rule on the first epic must see it, and its veto must
+/// roll back the whole relink — new edge included.
+#[tokio::test]
+async fn a_cardinality_eviction_dispatches_its_removal() -> Result<()> {
+    let h = Harness::start().await?;
+    let epic = h.create("epic", json!({})).await?;
+    let other = h.create("epic", json!({})).await?;
+    let story = h.create("story", json!({})).await?;
+    assert!(h.link(&epic, "issues", &story).await);
+
+    h.service
+        .create_node(Node::new(
+            "play".to_string(),
+            "Keep work in a scheduled epic".to_string(),
+            json!({ "rules": [{
+                "name": "reject-leaving-a-scheduled-epic",
+                "class": "invariant",
+                "trigger": {
+                    "type": "graph_event",
+                    "on": "relationship_removed",
+                    "node_type": "epic",
+                },
+                // The epic's own field: an own-scope condition reads only the
+                // node's own bucket, so an inherited field like `status`
+                // (stored under `task`) is not visible here.
+                "conditions": ["has(node.target_date)"],
+                "actions": [{
+                    "action_type": "reject",
+                    "params": { "message": "scheduled epics keep their issues" },
+                }],
+            }] }),
+        ))
+        .await?;
+    tokio::time::sleep(Duration::from_millis(80)).await;
+    assert!(h.set(&epic, json!({ "target_date": "2026-09-30" })).await?);
+
+    assert!(
+        !h.link(&other, "issues", &story).await,
+        "moving an issue out of a scheduled epic must be rejected via its eviction"
+    );
+    assert_eq!(h.containers_of(&story, "epic").await?, vec![epic.clone()]);
+    assert!(
+        h.issues_of(&other).await?.is_empty(),
+        "the rejected relink's new edge must be rolled back too"
+    );
 
     h.stop().await;
     Ok(())
