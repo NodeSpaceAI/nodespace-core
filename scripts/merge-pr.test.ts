@@ -124,9 +124,14 @@ describe("replayCommits", () => {
       (c) => commit(c, "pr-only.txt", "p\n", "pr change").then(() => {})
     );
 
-    const result = await replayCommits(cwd, ["0123456789abcdef0123456789abcdef01234567"]);
+    const missing = "0123456789abcdef0123456789abcdef01234567";
+    const result = await replayCommits(cwd, [missing]);
     expect(result.kind).toBe("error");
-    if (result.kind === "error") expect(result.message.length).toBeGreaterThan(0);
+    // git's own message, naming the object it could not find — not ours.
+    if (result.kind === "error") {
+      expect(result.message).toContain("fatal");
+      expect(result.message).toContain(missing);
+    }
     await clean(cwd);
   });
 });

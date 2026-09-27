@@ -92,8 +92,10 @@ export type ReplayResult =
   | { kind: "error"; message: string };
 
 /**
- * Cherry-pick `commits` onto the checkout in `cwd`, leaving it clean whatever
- * happens.
+ * Cherry-pick `commits` onto the checkout in `cwd`. On any failure no
+ * cherry-pick is left in progress, and a conflict restores HEAD; a change
+ * that was already in the checkout before the pick is not this function's to
+ * discard (the gate resets its checkout at the start of every attempt).
  *
  * `--keep-redundant-commits` rather than `--empty=drop`: the latter needs Git
  * 2.45, and on older git the whole command is a usage error. A commit that
@@ -294,6 +296,12 @@ async function main(): Promise<void> {
       }
       if (replay.kind === "error") {
         fail(`Replaying PR #${pr} onto main failed, and not on a conflict:\n${replay.message}`);
+      }
+      // Commits that became empty are kept, so a PR main already fully
+      // contains replays "successfully" onto main's own tree. Stop here
+      // rather than spend a full gate run and squash-merge an empty diff.
+      if ((await git(gate, "rev-parse", "HEAD^{tree}")) === (await git(gate, "rev-parse", `${mainSha}^{tree}`))) {
+        fail(`PR #${pr} has no changes beyond main: main already contains everything it does.`);
       }
     }
     const tested = await git(gate, "rev-parse", "HEAD");
