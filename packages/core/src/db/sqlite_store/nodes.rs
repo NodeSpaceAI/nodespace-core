@@ -374,7 +374,9 @@ impl SqliteStore {
             // this path mints a UUID, so it could never create a valid schema
             // anyway — and schemas are always roots.
             return Err(anyhow::Error::new(
-                super::TreeInvariantViolation::schema_not_root(content),
+                super::TreeInvariantViolation::schema_not_root(
+                    &crate::services::node_service::normalize_schema_id(content),
+                ),
             ));
         }
 
@@ -2707,8 +2709,9 @@ impl SqliteStore {
     /// node, likewise always a root: see
     /// [`super::TreeInvariantViolation::schema_not_root`]. The DB schema's
     /// `collection_is_root_*` / `schema_is_root_*` triggers back this up on
-    /// every write path; checking here gives the reparent paths a readable error. One chunked query finds both kinds of
-    /// offender, keeping the bulk/cold-sweep path a single round trip per chunk.
+    /// every write path; checking here gives the reparent paths a readable error.
+    /// One chunked query finds every kind of offender, keeping the
+    /// bulk/cold-sweep path a single round trip per chunk.
     pub(crate) async fn assert_may_gain_parent(&self, node_ids: &[&str]) -> Result<()> {
         if node_ids.is_empty() {
             return Ok(());

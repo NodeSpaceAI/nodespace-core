@@ -144,6 +144,7 @@ impl NodeService {
         for node in &mut nodes {
             // Step 1: Core behavior validation
             self.behaviors.validate_node(node)?;
+            Self::ensure_not_creating_core_schema(node)?;
 
             // A create: always held to the templated-type content rule.
             if !schemas.contains_key(&node.node_type) {
@@ -374,6 +375,7 @@ impl NodeService {
 
             // Validate via behaviors
             self.behaviors.validate_node(&temp_node)?;
+            Self::ensure_not_creating_core_schema(&temp_node)?;
 
             // Validate against the chain-resolved schema (skip for schema
             // nodes themselves)
@@ -558,6 +560,7 @@ impl NodeService {
 
             // Only behavior validation - skip schema validation
             self.behaviors.validate_node(&temp_node)?;
+            Self::ensure_not_creating_core_schema(&temp_node)?;
         }
 
         // Collect embeddable root node IDs (nodes with no parent AND embeddable type)

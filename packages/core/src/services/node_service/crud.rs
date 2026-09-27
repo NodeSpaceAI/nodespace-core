@@ -33,11 +33,7 @@ impl NodeService {
         existing: &Node,
         updated: &Node,
     ) -> Result<(), NodeServiceError> {
-        let is_core_schema = |node: &Node| {
-            node.node_type == "schema"
-                && node.properties.get("isCore").and_then(|v| v.as_bool()) == Some(true)
-        };
-        if is_core_schema(existing) != is_core_schema(updated) {
+        if Self::is_core_schema(existing) != Self::is_core_schema(updated) {
             return Err(NodeServiceError::invalid_update(format!(
                 "schema_is_core: whether schema '{}' is core is fixed when it is created",
                 existing.id
@@ -261,6 +257,29 @@ impl NodeService {
         Ok(node.id)
     }
 
+    /// Refuse creating a core schema through the service.
+    ///
+    /// Core schemas are seeded straight into the store at startup; nothing
+    /// else may mint one. Since whether a schema is core is fixed at creation
+    /// (see [`Self::ensure_schema_core_status_unchanged`]), a user schema
+    /// created with `isCore: true` could never be corrected or deleted.
+    pub(crate) fn ensure_not_creating_core_schema(node: &Node) -> Result<(), NodeServiceError> {
+        if Self::is_core_schema(node) {
+            return Err(NodeServiceError::invalid_update(format!(
+                "schema_is_core: schema '{}' cannot be created as a core type; core schemas are built in",
+                node.id
+            )));
+        }
+        Ok(())
+    }
+
+    /// Whether `node` is a core schema — the same test the store's delete
+    /// refusal applies (`isCore` must be the boolean `true`).
+    fn is_core_schema(node: &Node) -> bool {
+        node.node_type == "schema"
+            && node.properties.get("isCore").and_then(|v| v.as_bool()) == Some(true)
+    }
+
     /// Insert-only half of [`Self::create_node_in_tx`]: identical
     /// validation/normalization/title pipeline and the store insert, but
     /// WITHOUT invariant-rule dispatch — returns the fully-resolved `Node`
@@ -287,6 +306,7 @@ impl NodeService {
         }
 
         self.behaviors.validate_node(&node)?;
+        Self::ensure_not_creating_core_schema(&node)?;
         self.validate_templated_content(&node).await?;
 
         if node.node_type != "schema" {
@@ -473,13 +493,9 @@ impl NodeService {
         // leaves no auto-created date container behind.
         self.ensure_known_node_type(&params.node_type).await?;
 
-        // Step 2: Auto-create date container if parent is a date ID
-        if let Some(ref parent_id) = params.parent_id {
-            self.ensure_date_exists(parent_id).await?;
-        }
-
-        // Step 3: Validate parent exists and is a container (if provided)
-        if let Some(ref parent_id) = params.parent_id {
+        // Refuse a parent for a type that is always a root — before step 2,
+        // so a rejected call leaves no auto-created date container behind.
+        if params.parent_id.is_some() {
             if params.node_type == "collection" {
                 return Err(
                     TreeInvariantViolation::collection_not_root(params.id.as_deref()).into(),
@@ -492,6 +508,15 @@ impl NodeService {
                     .unwrap_or_else(|| normalize_schema_id(&params.content));
                 return Err(TreeInvariantViolation::schema_not_root(&schema_id).into());
             }
+        }
+
+        // Step 2: Auto-create date container if parent is a date ID
+        if let Some(ref parent_id) = params.parent_id {
+            self.ensure_date_exists(parent_id).await?;
+        }
+
+        // Step 3: Validate parent exists and is a container (if provided)
+        if let Some(ref parent_id) = params.parent_id {
             let parent_node = self
                 .get_node(parent_id)
                 .await?

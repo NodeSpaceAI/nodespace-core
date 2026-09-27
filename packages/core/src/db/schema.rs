@@ -363,8 +363,8 @@ async fn create_schema_body(conn: &libsql::Connection) -> Result<()> {
     // type deletable; one that sets it would make a user type undeletable.
     conn.execute(
         r#"CREATE TRIGGER IF NOT EXISTS schema_core_status_fixed BEFORE UPDATE OF node_type, properties ON node
-        WHEN (old.node_type = 'schema' AND coalesce(json_extract(old.properties, '$.isCore'), 0) = 1)
-          IS NOT (new.node_type = 'schema' AND coalesce(json_extract(new.properties, '$.isCore'), 0) = 1)
+        WHEN (old.node_type = 'schema' AND coalesce(json_type(old.properties, '$.isCore') = 'true', 0))
+          IS NOT (new.node_type = 'schema' AND coalesce(json_type(new.properties, '$.isCore') = 'true', 0))
         BEGIN
             SELECT RAISE(ABORT, 'schema_is_core: whether a schema is core is fixed when it is created');
         END"#,

@@ -3795,6 +3795,37 @@ mod tests {
         assert!(is_refusal(&err), "{err:#}");
         assert!(svc.get_node("widget").await.unwrap().is_none());
 
+        // Created under a date: refused before the date container is
+        // auto-created, so nothing is left behind.
+        const DATE: &str = "2031-02-03";
+        let err = svc
+            .create_node_with_parent(CreateNodeParams {
+                id: None,
+                node_type: "schema".into(),
+                content: "Widget".into(),
+                parent_id: Some(DATE.into()),
+                position: InsertPositionOwned::End,
+                properties: json!({"isCore": false, "schemaVersion": 1, "fields": []}),
+                lifecycle_status: None,
+            })
+            .await
+            .expect_err("a schema cannot be created under a date");
+        assert!(is_refusal(&err), "{err:#}");
+        // The store, not `get_node`, which synthesizes a virtual date node.
+        assert!(svc.store().get_node(DATE).await.unwrap().is_none());
+
+        // Created through the store's atomic child create.
+        let err = svc
+            .store()
+            .create_child_node_atomic(TEXT_ROOT, "schema", "My Widget", json!({}), None)
+            .await
+            .expect_err("the store refuses a schema child");
+        let violation = err
+            .downcast_ref::<crate::db::TreeInvariantViolation>()
+            .unwrap_or_else(|| panic!("expected a typed refusal, got {err:#}"));
+        assert_eq!(violation.rule, crate::db::TreeInvariantRule::SchemaNotRoot);
+        assert_eq!(violation.node_id.as_deref(), Some("my_widget"));
+
         // Moved under a parent.
         let err = svc
             .move_node_unchecked(
@@ -3851,6 +3882,26 @@ mod tests {
             .expect_err("a child cannot become a schema");
         assert!(err.to_string().contains("schema_not_root"), "{err}");
 
+        // Merged with a child: the root schema survivor would take the
+        // loser's parent.
+        svc.create_node_with_parent(CreateNodeParams {
+            id: None,
+            node_type: "schema".into(),
+            content: "Gadget".into(),
+            parent_id: None,
+            position: InsertPositionOwned::End,
+            properties: json!({"isCore": false, "schemaVersion": 1, "fields": []}),
+            lifecycle_status: None,
+        })
+        .await
+        .unwrap();
+        let err = svc
+            .merge_nodes("gadget", TEXT_CHILD, None)
+            .await
+            .expect_err("a merge cannot give a schema a parent");
+        assert!(is_refusal(&err), "{err:#}");
+        assert!(svc.store().get_parent_id("gadget").await.unwrap().is_none());
+
         // Nothing above left a parent on a schema.
         assert!(svc
             .store()
@@ -3892,6 +3943,22 @@ mod tests {
             .await
             .expect_err("isCore cannot be cleared through bulk update");
         assert!(format!("{err:#}").contains("schema_is_core"), "{err:#}");
+
+        // Creating a user schema as core.
+        let err = svc
+            .create_node_with_parent(CreateNodeParams {
+                id: None,
+                node_type: "schema".into(),
+                content: "Fake Core".into(),
+                parent_id: None,
+                position: InsertPositionOwned::End,
+                properties: json!({"isCore": true, "schemaVersion": 1, "fields": []}),
+                lifecycle_status: None,
+            })
+            .await
+            .expect_err("a schema cannot be created as core");
+        assert!(is_refusal(&err), "{err:#}");
+        assert!(svc.get_node("fake_core").await.unwrap().is_none());
 
         // Setting isCore on a user schema.
         svc.create_node_with_parent(CreateNodeParams {
