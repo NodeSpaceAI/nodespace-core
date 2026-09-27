@@ -199,7 +199,11 @@ impl CelScope {
     /// Build the scope for reading `node` at `scope_type` (ADR-078).
     ///
     /// Returns `Ok(None)` when there is nothing to scope — the node is already
-    /// `scope_type` and reads natively. The one builder for every surface that
+    /// `scope_type` and that type extends nothing, so its own bucket is its
+    /// whole view. A node read at its own type that DOES extend something
+    /// still gets a scope: its inherited fields live in its ancestors'
+    /// buckets, and a condition at its own scope is entitled to every field
+    /// of its chain. The one builder for every surface that
     /// reads a node at a declared type: a rule's trigger (the engine's
     /// `cel_scope_for`) and a `.where(...)` collection item read at its
     /// relationship's target type (`actions::BindingContext`). Two builders is
@@ -212,11 +216,22 @@ impl CelScope {
         scope_type: &str,
         node: &Node,
     ) -> Result<Option<Self>, crate::services::NodeServiceError> {
+        let chain = node_service.resolve_type_chain(scope_type).await?;
+
         if scope_type == node.node_type {
-            return Ok(None);
+            if chain.len() == 1 {
+                return Ok(None);
+            }
+            let scope_fields = node_service.resolve_field_owners(scope_type).await?.0;
+            return Ok(Some(Self {
+                scope_type: scope_type.to_string(),
+                node_chain: chain.clone(),
+                chain,
+                node_fields: scope_fields.clone(),
+                scope_fields,
+            }));
         }
 
-        let chain = node_service.resolve_type_chain(scope_type).await?;
         let scope_fields = node_service.resolve_field_owners(scope_type).await?.0;
         // The node's OWN chain, not the scope's. Reading the scope's ancestry
         // would skip every bucket between the node and the reading scope — on
@@ -904,8 +919,9 @@ pub async fn evaluate_conditions(
 /// That is the point of scoping rather than a limitation of it: a base-scoped
 /// Play then behaves identically whether it fired on a plain task or a
 /// subtype, and cannot come to depend on a field only some of its matches
-/// carry. `None` evaluates at the node's own scope, which is every Play in a
-/// database where nothing declares `extends`.
+/// carry. `None` reads the node's own bucket alone, which is its whole view
+/// only when its type extends nothing — [`CelScope::resolve`] returns `None`
+/// exactly then, so callers pass what it built rather than `None` by hand.
 pub async fn evaluate_conditions_at_scope(
     conditions: &[CompiledCondition],
     node: &Node,

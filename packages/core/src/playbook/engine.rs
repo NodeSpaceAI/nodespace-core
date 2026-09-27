@@ -210,10 +210,11 @@ impl PlaybookEngine {
     ///
     /// A rule registered against a base type evaluates its conditions at that
     /// type's scope, so it sees the field set and enum vocabulary it was
-    /// authored against whatever concrete subtype fired it. Returns
-    /// `Ok(None)` when there is nothing to scope — the node is already the
-    /// registered type, or the trigger is not type-scoped — which is every
-    /// rule until something declares `extends`.
+    /// authored against whatever concrete subtype fired it. A wildcard (`*`)
+    /// trigger reads the node at its own type. Returns `Ok(None)` when there
+    /// is nothing to scope — the node reads at its own type and that type
+    /// extends nothing — which is every rule until something declares
+    /// `extends`.
     ///
     /// Returns `Err` when a resolver call itself fails (a transient DB error,
     /// not a schema-shape problem). This is deliberately distinct from
@@ -232,11 +233,26 @@ impl PlaybookEngine {
             ParsedTrigger::GraphEvent { node_type, .. } => node_type,
             ParsedTrigger::Scheduled { node_type, .. } => node_type,
         };
-
-        if scope_type == "*" {
-            return Ok(None);
-        }
+        let scope_type = if scope_type == "*" {
+            &node.node_type
+        } else {
+            scope_type
+        };
         crate::playbook::cel::CelScope::resolve(node_service, scope_type, node).await
+    }
+
+    /// The type a rule's graph resolver reads traversed nodes at — see
+    /// `GraphResolver::reading_type`.
+    ///
+    /// The rule's registered type, except for a wildcard (`*`) trigger: that
+    /// rule has no vocabulary of its own, so a related node reads at its own
+    /// type rather than at whatever type happened to fire it.
+    pub(crate) fn reading_type(rule: &ParsedRule) -> Option<String> {
+        let registered = match &rule.trigger {
+            ParsedTrigger::GraphEvent { node_type, .. } => node_type,
+            ParsedTrigger::Scheduled { node_type, .. } => node_type,
+        };
+        (registered != "*").then(|| registered.clone())
     }
 
     /// Rebuild the `extends` ancestry cache from the store (ADR-078).
@@ -625,7 +641,7 @@ impl PlaybookEngine {
             // traversed node is projected exactly as the trigger node is.
             let mut resolver =
                 crate::playbook::graph_resolver::GraphResolver::new(Arc::clone(&self.node_service))
-                    .with_scope(cel_scope.clone());
+                    .with_reading_type(PlaybookEngine::reading_type(&rule_ref.rule));
             let condition_result = crate::playbook::cel::evaluate_conditions_at_scope(
                 &rule_ref.rule.conditions,
                 &node,
@@ -1209,7 +1225,7 @@ pub(crate) async fn rule_processor_loop(
             };
             // Each rule in this work item carries its own registered scope, so
             // the shared resolver is re-pointed per rule rather than per item.
-            resolver.set_scope(cel_scope.clone());
+            resolver.set_reading_type(PlaybookEngine::reading_type(&rule_ref.rule));
             let condition_result = crate::playbook::cel::evaluate_conditions_at_scope(
                 &rule_ref.rule.conditions,
                 &work_item.trigger_node,
@@ -1546,6 +1562,21 @@ mod scope_tests {
             .expect("node should exist")
     }
 
+    async fn make_ticket(svc: &Arc<NodeService>) -> crate::models::Node {
+        let id = svc
+            .create_node(crate::models::Node::new(
+                "ticket".to_string(),
+                "a ticket".to_string(),
+                json!({ "state": "open" }),
+            ))
+            .await
+            .expect("ticket creation failed");
+        svc.get_node(&id)
+            .await
+            .expect("get_node failed")
+            .expect("node should exist")
+    }
+
     #[tokio::test]
     async fn base_scoped_condition_matches_through_maps_to() {
         let (svc, _tmp) = test_service().await;
@@ -1587,6 +1618,62 @@ mod scope_tests {
             eval(&svc, &rule, &node).await,
             "a bug-scoped condition reads the stored value unresolved"
         );
+    }
+
+    /// `ticket.state` is a plain enum `bug` inherits without extending, so a
+    /// bug's `state` stays in the `ticket` bucket — unlike [`seed_chain`],
+    /// where `add_field_values` materializes it onto `bug`'s own.
+    async fn seed_inheriting_chain(svc: &Arc<NodeService>) {
+        handle_create_schema(
+            svc,
+            json!({
+                "name": "Ticket",
+                "fields": [{
+                    "name": "state",
+                    "type": "enum",
+                    "protection": "user",
+                    "indexed": false,
+                    "coreValues": [
+                        { "value": "open", "label": "Open" },
+                        { "value": "done", "label": "Done" }
+                    ]
+                }]
+            }),
+        )
+        .await
+        .expect("ticket schema creation failed");
+
+        handle_create_schema(
+            svc,
+            json!({ "name": "Bug", "extends": "ticket", "fields": [] }),
+        )
+        .await
+        .expect("bug schema creation failed");
+    }
+
+    #[tokio::test]
+    async fn own_scoped_condition_reads_an_inherited_field() {
+        let (svc, _tmp) = test_service().await;
+        seed_inheriting_chain(&svc).await;
+        let done = make_bug(&svc, json!({ "state": "done" })).await;
+        let open = make_bug(&svc, json!({ "state": "open" })).await;
+        assert!(
+            done.properties["ticket"]["state"] == "done",
+            "precondition: the inherited field must live in the ancestor's bucket, got {}",
+            done.properties
+        );
+
+        for trigger_type in ["bug", "*"] {
+            let rule = rule_on(trigger_type, "node.state == 'done'");
+            assert!(
+                eval(&svc, &rule, &done).await,
+                "a `{trigger_type}` Play must read a bug's inherited `state`"
+            );
+            assert!(
+                !eval(&svc, &rule, &open).await,
+                "a `{trigger_type}` Play must not match an open bug"
+            );
+        }
     }
 
     #[tokio::test]
@@ -1638,11 +1725,12 @@ mod scope_tests {
     async fn an_unextended_type_gets_no_scope_at_all() {
         let (svc, _tmp) = test_service().await;
         seed_chain(&svc).await;
-        let node = make_bug(&svc, json!({ "state": "open" })).await;
+        let node = make_ticket(&svc).await;
 
-        // A rule registered against the node's own type needs no projection or
-        // resolution, so the engine short-circuits before touching the store.
-        let rule = rule_on("bug", "node.state == 'open'");
+        // A rule registered against the node's own type, when that type
+        // extends nothing, needs no projection or resolution: its own bucket
+        // is its whole view.
+        let rule = rule_on("ticket", "node.state == 'open'");
         assert!(
             PlaybookEngine::cel_scope_for(&svc, &rule, &node)
                 .await
@@ -1652,14 +1740,14 @@ mod scope_tests {
         );
     }
 
-    /// The other legitimate `Ok(None)` case: a trigger that is not
-    /// type-scoped at all (`node_type: "*"`) needs no projection either,
-    /// same short-circuit as the node's-own-type case above.
+    /// A trigger that is not type-scoped at all (`node_type: "*"`) reads the
+    /// node at its own type, so on an unextended type it needs no scope
+    /// either — same short-circuit as the node's-own-type case above.
     #[tokio::test]
     async fn a_wildcard_trigger_gets_no_scope_at_all() {
         let (svc, _tmp) = test_service().await;
         seed_chain(&svc).await;
-        let node = make_bug(&svc, json!({ "state": "open" })).await;
+        let node = make_ticket(&svc).await;
 
         let rule = rule_on("*", "node.state == 'open'");
         assert!(
@@ -1814,7 +1902,7 @@ mod scope_tests {
             .await
             .expect("scope resolution should not fail against a healthy store");
         let mut resolver = crate::playbook::graph_resolver::GraphResolver::new(Arc::clone(&svc))
-            .with_scope(scope.clone());
+            .with_reading_type(PlaybookEngine::reading_type(&rule));
         let event = DomainEvent::NodeCreated {
             node_id: parent.id.clone(),
             node_type: parent.node_type.clone(),
@@ -1836,6 +1924,213 @@ mod scope_tests {
             "a related subtype node must be projected to the reading scope; \
              child properties were {:?}",
             child.properties
+        );
+    }
+
+    /// Evaluate `rule` against `node` with a graph resolver, as dispatch does.
+    async fn eval_resolved(
+        svc: &Arc<NodeService>,
+        rule: &ParsedRule,
+        node: &crate::models::Node,
+    ) -> bool {
+        let scope = PlaybookEngine::cel_scope_for(svc, rule, node)
+            .await
+            .expect("scope resolution should not fail against a healthy store");
+        let mut resolver = crate::playbook::graph_resolver::GraphResolver::new(Arc::clone(svc))
+            .with_reading_type(PlaybookEngine::reading_type(rule));
+        let event = DomainEvent::NodeCreated {
+            node_id: node.id.clone(),
+            node_type: node.node_type.clone(),
+        };
+        matches!(
+            evaluate_conditions_at_scope(
+                &rule.conditions,
+                node,
+                &event,
+                Some(&mut resolver),
+                scope.as_ref(),
+            )
+            .await,
+            ConditionResult::Pass
+        )
+    }
+
+    async fn make_text(svc: &Arc<NodeService>) -> crate::models::Node {
+        let id = svc
+            .create_node(crate::models::Node::new(
+                "text".to_string(),
+                "a note".to_string(),
+                json!({}),
+            ))
+            .await
+            .expect("text creation failed");
+        svc.get_node(&id)
+            .await
+            .expect("get_node failed")
+            .expect("node should exist")
+    }
+
+    /// A related subtype node reached from a Play on an unrelated type is read
+    /// at its own type — with its inherited fields, which live in its
+    /// ancestor's bucket — not narrowed to its own bucket alone.
+    #[tokio::test]
+    async fn a_related_subtype_collection_reads_inherited_fields() {
+        let (svc, _tmp) = test_service().await;
+        seed_inheriting_chain(&svc).await;
+
+        let parent = make_text(&svc).await;
+        let first = make_bug(&svc, json!({ "state": "done" })).await;
+        assert!(
+            first.properties["ticket"]["state"] == "done",
+            "precondition: the inherited field must live in the ancestor's bucket, got {}",
+            first.properties
+        );
+        svc.create_relationship(&parent.id, "has_child", &first.id, json!({}))
+            .await
+            .expect("relationship creation failed");
+
+        let rule = rule_on("text", "node.has_child.all(c, c.state == 'done')");
+        assert!(
+            eval_resolved(&svc, &rule, &parent).await,
+            "a done bug child must read as done"
+        );
+
+        let second = make_bug(&svc, json!({ "state": "open" })).await;
+        svc.create_relationship(&parent.id, "has_child", &second.id, json!({}))
+            .await
+            .expect("relationship creation failed");
+        assert!(
+            !eval_resolved(&svc, &rule, &parent).await,
+            "an open bug child must fail the `.all`"
+        );
+    }
+
+    /// The scalar half: a dot-path walked to a related subtype node reads an
+    /// inherited field of it.
+    #[tokio::test]
+    async fn a_related_subtype_scalar_path_reads_an_inherited_field() {
+        let (svc, _tmp) = test_service().await;
+        seed_inheriting_chain(&svc).await;
+
+        let done = make_bug(&svc, json!({ "state": "done" })).await;
+        let open = make_bug(&svc, json!({ "state": "open" })).await;
+        assert!(
+            done.properties["ticket"]["state"] == "done",
+            "precondition: the inherited field must live in the ancestor's bucket, got {}",
+            done.properties
+        );
+        let rule = rule_on("text", "node.child_of.state == 'done'");
+
+        for (parent, expected) in [(&done, true), (&open, false)] {
+            let child = make_text(&svc).await;
+            svc.create_relationship(&parent.id, "has_child", &child.id, json!({}))
+                .await
+                .expect("relationship creation failed");
+            assert_eq!(
+                eval_resolved(&svc, &rule, &child).await,
+                expected,
+                "parent properties were {}",
+                parent.properties
+            );
+        }
+    }
+
+    /// A scalar path into a related subtype node reads it exactly as the node
+    /// itself is read at the rule's type: `maps_to`-resolved and projected.
+    /// `node.child_of.state` and `node.child_of` must agree about one node.
+    #[tokio::test]
+    async fn a_scalar_path_into_a_related_subtype_is_read_at_the_rules_type() {
+        let (svc, _tmp) = test_service().await;
+        seed_chain(&svc).await;
+
+        let parent = make_bug(&svc, json!({ "state": "backlog", "severity": "high" })).await;
+        let child = make_ticket(&svc).await;
+        svc.create_relationship(&parent.id, "has_child", &child.id, json!({}))
+            .await
+            .expect("relationship creation failed");
+
+        assert!(
+            eval_resolved(
+                &svc,
+                &rule_on("ticket", "node.child_of.state == 'open'"),
+                &child
+            )
+            .await,
+            "a `backlog` parent reads as `open` at ticket scope"
+        );
+        assert!(
+            !eval_resolved(
+                &svc,
+                &rule_on("ticket", "node.child_of.state == 'backlog'"),
+                &child
+            )
+            .await,
+            "the raw extended value must not reach a ticket-scoped condition"
+        );
+        assert!(
+            !eval_resolved(
+                &svc,
+                &rule_on("ticket", "node.child_of.severity == 'high'"),
+                &child
+            )
+            .await,
+            "a bug-only field must not resolve at ticket scope"
+        );
+    }
+
+    /// A related subtype is read at the rule's registered type whatever fired
+    /// it: a Play on `ticket` fired by a plain ticket — which needs no scope of
+    /// its own — still reads a `bug` child through ticket's vocabulary.
+    #[tokio::test]
+    async fn a_related_subtype_is_read_at_the_rules_type_not_the_triggers_scope() {
+        let (svc, _tmp) = test_service().await;
+        seed_chain(&svc).await;
+
+        let parent = make_ticket(&svc).await;
+        let child = make_bug(&svc, json!({ "state": "backlog" })).await;
+        svc.create_relationship(&parent.id, "has_child", &child.id, json!({}))
+            .await
+            .expect("relationship creation failed");
+
+        let rule = rule_on("ticket", "node.has_child.all(c, c.state == 'open')");
+        assert!(
+            PlaybookEngine::cel_scope_for(&svc, &rule, &parent)
+                .await
+                .expect("scope resolution should not fail")
+                .is_none(),
+            "precondition: the trigger itself needs no scope"
+        );
+        assert!(
+            eval_resolved(&svc, &rule, &parent).await,
+            "a `backlog` child reads as `open` at ticket scope"
+        );
+    }
+
+    /// A wildcard rule has no vocabulary of its own, so a related node reads
+    /// at its own type — never projected to whatever type fired the rule.
+    #[tokio::test]
+    async fn a_wildcard_rule_reads_related_nodes_at_their_own_type() {
+        let (svc, _tmp) = test_service().await;
+        seed_chain(&svc).await;
+
+        let parent = make_ticket(&svc).await;
+        let child = make_bug(&svc, json!({ "state": "backlog", "severity": "high" })).await;
+        svc.create_relationship(&parent.id, "has_child", &child.id, json!({}))
+            .await
+            .expect("relationship creation failed");
+
+        let rule = rule_on(
+            "*",
+            "node.has_child.all(c, c.state == 'backlog' && c.severity == 'high')",
+        );
+        assert_eq!(PlaybookEngine::reading_type(&rule), None);
+        assert_eq!(
+            PlaybookEngine::reading_type(&rule_on("ticket", "true")),
+            Some("ticket".to_string())
+        );
+        assert!(
+            eval_resolved(&svc, &rule, &parent).await,
+            "a wildcard rule must see the child's own value and own field"
         );
     }
 
@@ -1861,7 +2156,7 @@ mod scope_tests {
             .await
             .expect("scope resolution should not fail against a healthy store");
         let mut resolver = crate::playbook::graph_resolver::GraphResolver::new(Arc::clone(&svc))
-            .with_scope(scope.clone());
+            .with_reading_type(PlaybookEngine::reading_type(&rule));
         let event = DomainEvent::NodeCreated {
             node_id: parent.id.clone(),
             node_type: parent.node_type.clone(),

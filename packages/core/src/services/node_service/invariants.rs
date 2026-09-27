@@ -229,12 +229,34 @@ impl NodeService {
             }
 
             let scoped = Arc::new(self.clone());
-            let mut resolver = crate::playbook::graph_resolver::GraphResolver::new(scoped.clone());
-            let condition_result = crate::playbook::cel::evaluate_conditions(
+            // Evaluate at the rule's registered scope (ADR-078), exactly as
+            // the reactive engine does. A resolver failure fails the write
+            // rather than evaluating the raw node: that read misses
+            // inherited fields, and a missed field lets a reject rule allow
+            // the very write it exists to veto.
+            let cel_scope = crate::playbook::engine::PlaybookEngine::cel_scope_for(
+                &scoped,
+                &rule_ref.rule,
+                node,
+            )
+            .await
+            .map_err(|e| {
+                NodeServiceError::invariant_rule_failed(
+                    rule_ref.play_id.clone(),
+                    rule_ref.rule.name.clone(),
+                    format!("resolving the rule's evaluation scope failed: {e}"),
+                )
+            })?;
+            let mut resolver = crate::playbook::graph_resolver::GraphResolver::new(scoped.clone())
+                .with_reading_type(crate::playbook::engine::PlaybookEngine::reading_type(
+                    &rule_ref.rule,
+                ));
+            let condition_result = crate::playbook::cel::evaluate_conditions_at_scope(
                 &rule_ref.rule.conditions,
                 node,
                 event,
                 Some(&mut resolver),
+                cel_scope.as_ref(),
             )
             .await;
 

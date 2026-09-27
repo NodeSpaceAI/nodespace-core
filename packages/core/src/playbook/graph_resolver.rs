@@ -13,7 +13,7 @@
 use crate::models::Node;
 use crate::ops::rel_ops::{self, ResolvedRelName};
 use crate::ops::OpsError;
-use crate::playbook::cel::{json_to_cel, key, scoped_node_value};
+use crate::playbook::cel::{json_to_cel, key, scoped_node_value, CelScope};
 use crate::playbook::path_extractor::{CollectionPath, ExtractedPath};
 use crate::services::NodeService;
 use cel_interpreter::Value;
@@ -49,18 +49,28 @@ pub struct GraphResolver {
     /// a single root dominates, but keying on segments alone would silently
     /// serve one node's answer for another's the moment that stopped holding.
     cache: HashMap<(String, Vec<String>), ResolvedValue>,
-    /// The scope a resolved node's CEL value is built at (ADR-078).
+    /// The type the rule reading through this resolver was registered on
+    /// (ADR-078).
     ///
-    /// A node reached by traversal is read at the *reading* scope, exactly as
-    /// the trigger node is: a Play registered on `task` sees a `bug` child's
-    /// `task` fields, with `bug`-only values resolved through `maps_to`.
-    /// Without it the child is built at its own scope and an extended value
-    /// (`backlog`) reaches a base-scoped condition raw, never matching — a
-    /// silent false, not an error.
+    /// A traversed node of that type or a subtype of it is read at this type,
+    /// exactly as the trigger node is: a Play registered on `task` sees a
+    /// `bug` child's `task` fields, with `bug`-only values resolved through
+    /// `maps_to`. Without it the child is built at its own scope and an
+    /// extended value (`backlog`) reaches a base-scoped condition raw, never
+    /// matching — a silent false, not an error.
     ///
-    /// `None` reads at each node's own scope, which is every Play in a
-    /// database where nothing declares `extends`.
-    scope: Option<crate::playbook::cel::CelScope>,
+    /// It is the rule's registered type, not the trigger's scope: a Play on
+    /// `ticket` must read a related `bug` the same way whether a plain ticket
+    /// or a bug fired it. `None` — a wildcard rule, which has no vocabulary
+    /// of its own — reads every node at its own type.
+    reading_type: Option<String>,
+    /// Each node type's own `extends` chain, nearest-first. A node's
+    /// inherited fields live in its ancestors' buckets, so every property
+    /// read on a traversed node needs its chain, not just its type.
+    chains: HashMap<String, Vec<String>>,
+    /// The scope each concrete node type is read at under `reading_type`,
+    /// built once per type. Cleared whenever `reading_type` changes.
+    node_scopes: HashMap<String, Option<CelScope>>,
 }
 
 impl GraphResolver {
@@ -68,13 +78,16 @@ impl GraphResolver {
         Self {
             node_service,
             cache: HashMap::new(),
-            scope: None,
+            reading_type: None,
+            chains: HashMap::new(),
+            node_scopes: HashMap::new(),
         }
     }
 
-    /// Set the scope resolved nodes are read at. See [`GraphResolver::scope`].
-    pub fn with_scope(mut self, scope: Option<crate::playbook::cel::CelScope>) -> Self {
-        self.set_scope(scope);
+    /// Set the type resolved nodes are read at. See
+    /// [`GraphResolver::reading_type`].
+    pub fn with_reading_type(mut self, reading_type: Option<String>) -> Self {
+        self.set_reading_type(reading_type);
         self
     }
 
@@ -84,15 +97,94 @@ impl GraphResolver {
         &self.node_service
     }
 
-    /// Point an existing resolver at a different reading scope.
+    /// Point an existing resolver at a different reading type.
     ///
     /// One resolver is reused across the rules of a work item, and each rule
-    /// carries its own registered scope. The segment cache holds `ResolvedValue`s
-    /// — raw `Node`s, not yet projected — so it stays valid across a scope
-    /// change and is deliberately kept: projection happens at read time in
+    /// carries its own registered type. The segment cache holds `ResolvedValue`s
+    /// — raw `Node`s, not yet projected — so it stays valid across a change
+    /// and is deliberately kept: projection happens at read time in
     /// `enrich_context`, after the cache is consulted.
-    pub fn set_scope(&mut self, scope: Option<crate::playbook::cel::CelScope>) {
-        self.scope = scope;
+    pub fn set_reading_type(&mut self, reading_type: Option<String>) {
+        if self.reading_type != reading_type {
+            self.reading_type = reading_type;
+            self.node_scopes.clear();
+        }
+    }
+
+    /// `node_type`'s own chain, nearest-first. A resolver failure degrades
+    /// to the type alone — the node's own bucket — rather than failing the
+    /// walk, the same posture as every other lookup failure here. Like
+    /// `node_value`'s `None`, that can only under-match: a field is missed,
+    /// never invented.
+    async fn chain_of(&mut self, node_type: &str) -> Vec<String> {
+        if let Some(chain) = self.chains.get(node_type) {
+            return chain.clone();
+        }
+        let chain = match self.node_service.resolve_type_chain(node_type).await {
+            Ok(chain) => chain,
+            Err(e) => {
+                warn!("chain_of: failed to resolve the extends chain of '{node_type}': {e}");
+                return vec![node_type.to_string()];
+            }
+        };
+        self.chains.insert(node_type.to_string(), chain.clone());
+        chain
+    }
+
+    /// Read `node`'s property `key` across its own chain, so an inherited
+    /// field resolves from its declaring ancestor's bucket.
+    async fn node_property(&mut self, node: &Node, key: &str) -> Option<serde_json::Value> {
+        let chain = self.chain_of(&node.node_type).await;
+        let chain: Vec<&str> = chain.iter().map(String::as_str).collect();
+        get_node_property_at_scope(node, key, &chain)
+    }
+
+    /// A traversed node's CEL value (ADR-078).
+    ///
+    /// A node in the reading type's family — that type or a subtype of it —
+    /// is read at that type, so a base-scoped Play sees a related subtype
+    /// through its own vocabulary. Any other node is read at its own type:
+    /// the reading type names no base to project it to, and filtering it by
+    /// another type's fields would hide every field it has.
+    ///
+    /// `None` when the scope cannot be built; the path is then absent and the
+    /// condition reading it does not match, rather than reading a raw bucket
+    /// that misses inherited fields.
+    async fn node_value(&mut self, node: &Node) -> Option<Value> {
+        if !self.node_scopes.contains_key(&node.node_type) {
+            let chain = self.chain_of(&node.node_type).await;
+            let read_at = match &self.reading_type {
+                Some(reading_type) if chain.contains(reading_type) => reading_type.clone(),
+                _ => node.node_type.clone(),
+            };
+            let scope = match CelScope::resolve(&self.node_service, &read_at, node).await {
+                Ok(scope) => scope,
+                Err(e) => {
+                    warn!(
+                        "node_value: failed to build the '{read_at}' scope for a '{}' node: {e}",
+                        node.node_type
+                    );
+                    return None;
+                }
+            };
+            self.node_scopes.insert(node.node_type.clone(), scope);
+        }
+        let scope = self
+            .node_scopes
+            .get(&node.node_type)
+            .and_then(Option::as_ref);
+        Some(scoped_node_value(node, scope))
+    }
+
+    /// [`Self::node_value`] for every node, or `None` if any one cannot be
+    /// read: a collection missing an item would make `.all(...)` vacuously
+    /// true of the rest.
+    async fn node_values(&mut self, nodes: &[Node]) -> Option<Vec<Value>> {
+        let mut list = Vec::with_capacity(nodes.len());
+        for node in nodes {
+            list.push(self.node_value(node).await?);
+        }
+        Some(list)
     }
 
     /// Resolve a dot-path starting from a root node.
@@ -190,7 +282,7 @@ impl GraphResolver {
             }
 
             // Try as a property first (check node.properties)
-            if let Some(prop_val) = get_node_property(&current_node, segment) {
+            if let Some(prop_val) = self.node_property(&current_node, segment).await {
                 let result = ResolvedValue::Scalar(prop_val);
                 self.cache
                     .insert(cache_key(&segments[..=i]), result.clone());
@@ -632,7 +724,11 @@ impl GraphResolver {
             // reverse segment (`node.assignee`) breaks that: the related node
             // IS the value, so a length test would skip the very paths this
             // resolver exists to answer.
-            if path.segments.len() == 2 && get_node_property(root_node, &path.segments[1]).is_some()
+            if path.segments.len() == 2
+                && self
+                    .node_property(root_node, &path.segments[1])
+                    .await
+                    .is_some()
             {
                 continue;
             }
@@ -641,20 +737,36 @@ impl GraphResolver {
             let segments = &path.segments[1..];
             match self.resolve_path(root_node, segments).await {
                 ResolvedValue::Node(n) => {
-                    resolved_values.insert(
-                        path.segments.clone(),
-                        scoped_node_value(&n, self.scope.as_ref()),
-                    );
+                    if let Some(value) = self.node_value(&n).await {
+                        resolved_values.insert(path.segments.clone(), value);
+                    }
                 }
                 ResolvedValue::Scalar(v) => {
+                    // A field of a traversed node reads through that node's
+                    // scoped value — projected and `maps_to`-resolved exactly
+                    // as the node itself would be — so `node.child_of.state`
+                    // and `node.child_of` agree about the same node.
+                    if segments.len() > 1 {
+                        let (owner_path, field) = segments.split_at(segments.len() - 1);
+                        if let ResolvedValue::Node(owner) =
+                            self.resolve_path(root_node, owner_path).await
+                        {
+                            if let Some(Value::Map(owner)) = self.node_value(&owner).await {
+                                if let Some(value) = owner.map.get(&key(&field[0])) {
+                                    resolved_values.insert(path.segments.clone(), value.clone());
+                                }
+                            }
+                            continue;
+                        }
+                    }
+                    // Defensive: a scalar is only ever reached through a node,
+                    // so a multi-segment path always takes the branch above.
                     resolved_values.insert(path.segments.clone(), json_to_cel(&v));
                 }
                 ResolvedValue::Collection(nodes) => {
-                    let list: Vec<Value> = nodes
-                        .iter()
-                        .map(|n| scoped_node_value(n, self.scope.as_ref()))
-                        .collect();
-                    resolved_values.insert(path.segments.clone(), Value::List(list.into()));
+                    if let Some(list) = self.node_values(&nodes).await {
+                        resolved_values.insert(path.segments.clone(), Value::List(list.into()));
+                    }
                 }
                 ResolvedValue::Missing => {
                     // Missing path → will evaluate to false via NoSuchKey in CEL
@@ -679,11 +791,10 @@ impl GraphResolver {
             // a real empty list, it would return vacuously true, and a childless
             // parent would auto-complete itself (ADR-079 §4).
             if !nodes.is_empty() {
-                let list: Vec<Value> = nodes
-                    .iter()
-                    .map(|n| scoped_node_value(n, self.scope.as_ref()))
-                    .collect();
-                resolved_values.insert(coll.collection.segments.clone(), Value::List(list.into()));
+                if let Some(list) = self.node_values(&nodes).await {
+                    resolved_values
+                        .insert(coll.collection.segments.clone(), Value::List(list.into()));
+                }
             }
         }
 

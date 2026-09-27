@@ -408,13 +408,44 @@ pub async fn get_workflow_state(
     for rule_ref in &candidate_refs {
         let mut condition_states = Vec::with_capacity(rule_ref.rule.conditions.len());
 
+        // Evaluate at the rule's registered scope (ADR-078), exactly as a live
+        // trigger does — otherwise a base-scoped rule reads the subtype's raw
+        // vocabulary and a subtype-scoped one misses its inherited fields.
+        let cel_scope = match crate::playbook::engine::PlaybookEngine::cel_scope_for(
+            node_service,
+            &rule_ref.rule,
+            node,
+        )
+        .await
+        {
+            Ok(scope) => scope,
+            Err(e) => {
+                let msg = format!(
+                    "Failed to resolve the evaluation scope for rule '{}' ({e}); its conditions \
+                     were evaluated against the node's own bucket only",
+                    rule_ref.rule.name
+                );
+                record_degradation(
+                    &mut degraded,
+                    &node.node_type,
+                    &e,
+                    "get_workflow_state",
+                    msg,
+                );
+                None
+            }
+        };
+        resolver.set_reading_type(crate::playbook::engine::PlaybookEngine::reading_type(
+            &rule_ref.rule,
+        ));
+
         for condition in &rule_ref.rule.conditions {
             let state = evaluate_one_condition(
                 condition,
                 node,
                 &synthetic_event,
                 &mut resolver,
-                node_service,
+                cel_scope.as_ref(),
                 schema.as_ref(),
                 &mut degraded,
             )
@@ -452,7 +483,7 @@ pub async fn get_workflow_state(
 /// Evaluate a single condition and classify its result as satisfied, not-yet-met,
 /// or unresolvable.
 ///
-/// Reuses `cel::evaluate_conditions` (a one-condition slice) for the actual
+/// Reuses `cel::evaluate_conditions_at_scope` (a one-condition slice) for the actual
 /// evaluation so this can never silently diverge from live-trigger semantics
 /// — the classification layer added here is purely about *why* a `false`
 /// happened, not a second evaluation path.
@@ -461,18 +492,24 @@ async fn evaluate_one_condition(
     node: &Node,
     event: &DomainEvent,
     resolver: &mut GraphResolver,
-    node_service: &Arc<NodeService>,
+    scope: Option<&cel::CelScope>,
     schema: Option<&crate::models::SchemaNode>,
     degraded: &mut Vec<String>,
 ) -> ConditionState {
-    let result =
-        cel::evaluate_conditions(std::slice::from_ref(condition), node, event, Some(resolver))
-            .await;
+    let result = cel::evaluate_conditions_at_scope(
+        std::slice::from_ref(condition),
+        node,
+        event,
+        Some(resolver),
+        scope,
+    )
+    .await;
 
     match result {
         ConditionResult::Pass => ConditionState::Satisfied,
         ConditionResult::Fail { .. } => {
-            match classify_failure(condition, node, node_service, schema, degraded).await {
+            match classify_failure(condition, node, resolver.node_service(), schema, degraded).await
+            {
                 Some(state) => state,
                 None => ConditionState::NotYetMet {
                     condition: condition.source.clone(),
@@ -863,6 +900,62 @@ mod tests {
                 assert_eq!(condition, "node.story.status == 'active'");
             }
             other => panic!("expected NotYetMet, got {:?}", other),
+        }
+    }
+
+    /// A rule on a subtype reports on a field the subtype inherits, the same
+    /// as a live trigger would: the value sits in the ancestor's bucket, and
+    /// reading the node's own bucket alone would report it never met.
+    #[tokio::test]
+    async fn subtype_rule_reads_an_inherited_field() {
+        let (svc, _tmp) = test_service().await;
+        crate::schema::handle_create_schema(
+            &svc,
+            json!({
+                "name": "wf_ticket",
+                "fields": [{ "name": "state", "type": "string", "protection": "user", "indexed": false }]
+            }),
+        )
+        .await
+        .unwrap();
+        crate::schema::handle_create_schema(
+            &svc,
+            json!({ "name": "wf_bug", "extends": "wf_ticket", "fields": [] }),
+        )
+        .await
+        .unwrap();
+
+        let lifecycle = Arc::new(RwLock::new(PlaybookLifecycleManager::new()));
+        {
+            let mut lm = lifecycle.write().unwrap();
+            let play = make_play_node(
+                "pb-inherited",
+                json!([{
+                    "name": "r1",
+                    "trigger": { "type": "graph_event", "on": "node_created", "node_type": "wf_bug" },
+                    "conditions": ["node.state == 'done'"],
+                    "actions": []
+                }]),
+            );
+            lm.activate_play(&play).unwrap();
+        }
+
+        for (state, satisfied) in [("done", true), ("open", false)] {
+            let node = make_test_node(
+                "wf_bug",
+                json!({ "wf_bug": {}, "wf_ticket": { "state": state } }),
+            );
+            let result = get_workflow_state(&lifecycle, &svc, &node).await;
+            assert_eq!(
+                result.rules[0].all_conditions_satisfied, satisfied,
+                "state '{state}': {:?}",
+                result.rules[0].conditions
+            );
+            assert!(
+                result.degraded_reasons.is_empty(),
+                "{:?}",
+                result.degraded_reasons
+            );
         }
     }
 
