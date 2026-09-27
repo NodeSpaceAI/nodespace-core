@@ -1250,10 +1250,19 @@ impl GrpcNodeService for NodeServiceImpl {
             .await
             .map_err(service_error_to_status)?;
 
-        let children_proto = nodes_to_proto(&this.node_service, updated).await?;
+        let orders = updated
+            .iter()
+            .map(|(node, order)| crate::nodespace::SiblingOrder {
+                node_id: node.id.clone(),
+                order: *order,
+            })
+            .collect();
+        let nodes = updated.into_iter().map(|(node, _)| node).collect();
+        let children_proto = nodes_to_proto(&this.node_service, nodes).await?;
 
         Ok(Response::new(MoveChildrenToParentResponse {
             children: children_proto,
+            orders,
         }))
     }
 

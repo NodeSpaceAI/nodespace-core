@@ -83,17 +83,37 @@ export function applyHasChildDeleted(
  *
  * Only corrects nodes still under `placement.parentId`: a node the local tree has
  * since moved elsewhere is left alone — the later write's own reply places it.
+ *
+ * Known limit: replies and the event stream are separate channels, and replies to
+ * concurrent writes can resolve out of commit order. A reply applied after a newer
+ * re-spread (its own or another client's) writes older-space keys until the next
+ * write or refetch corrects them. The window is narrow — it needs two re-spreads of
+ * one parent racing — and placements carry no sequence to order them by.
  */
 export function applyChildPlacement(
   structureTree: ReactiveStructureTree,
   childId: string,
   placement: ChildPlacement
 ): void {
-  const { parentId } = placement;
+  applySiblingOrders(structureTree, placement.parentId, [
+    ...placement.respread,
+    { nodeId: childId, order: placement.order }
+  ]);
+}
+
+/**
+ * Write the store's order keys for children of `parentId`, as a hierarchy write's
+ * reply returned them, in one reactive batch. Children no longer under `parentId`
+ * are left alone (see `applyChildPlacement`).
+ */
+export function applySiblingOrders(
+  structureTree: ReactiveStructureTree,
+  parentId: string,
+  orders: ReadonlyArray<{ nodeId: string; order: number }>
+): void {
   structureTree.runBatch(() => {
-    for (const sibling of placement.respread) {
-      structureTree.updateChildOrder(parentId, sibling.nodeId, sibling.order);
+    for (const { nodeId, order } of orders) {
+      structureTree.updateChildOrder(parentId, nodeId, order);
     }
-    structureTree.updateChildOrder(parentId, childId, placement.order);
   });
 }

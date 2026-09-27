@@ -1462,7 +1462,10 @@ async fn move_node_to_root_when_new_parent_id_empty_string() {
 /// re-spread. Root creates and moves to root carry no placement.
 #[tokio::test]
 async fn create_and_move_replies_carry_the_store_placement() {
-    use nodespace_daemon::nodespace::{move_node_request::Position as MovePos, MoveNodeRequest};
+    use nodespace_daemon::nodespace::{
+        move_node_request::Position as MovePos, ChildMove, MoveChildrenToParentRequest,
+        MoveNodeRequest,
+    };
     use std::collections::HashMap;
 
     let (mut client, shutdown, _tempdir) = spawn_test_daemon().await;
@@ -1608,6 +1611,59 @@ async fn create_and_move_replies_carry_the_store_placement() {
         .expect("move to root")
         .into_inner();
     assert!(moved.placement.is_none(), "a move to root has no placement");
+
+    // A child transfer returns each new edge's order, in request order.
+    let target = client
+        .create_node(create("target", None, None))
+        .await
+        .expect("create transfer target")
+        .into_inner();
+    let mut transfer = Vec::new();
+    for id in &created[..3] {
+        let version = client
+            .get_node(GetNodeRequest {
+                node_id: id.clone(),
+            })
+            .await
+            .expect("get_node")
+            .into_inner()
+            .node_data
+            .expect("node_data")
+            .version;
+        transfer.push(ChildMove {
+            node_id: id.clone(),
+            version,
+        });
+    }
+    let reply = client
+        .move_children_to_parent(MoveChildrenToParentRequest {
+            new_parent_id: target.node_id.clone(),
+            children: transfer,
+        })
+        .await
+        .expect("move_children_to_parent")
+        .into_inner();
+    let replied: Vec<&str> = reply.orders.iter().map(|o| o.node_id.as_str()).collect();
+    assert_eq!(
+        replied,
+        created[..3].iter().map(String::as_str).collect::<Vec<_>>()
+    );
+    assert!(
+        reply.orders.windows(2).all(|w| w[0].order < w[1].order),
+        "transfer orders must ascend in request order"
+    );
+    let stored: Vec<String> = client
+        .get_children(GetChildrenRequest {
+            node_id: target.node_id.clone(),
+        })
+        .await
+        .expect("get_children")
+        .into_inner()
+        .nodes
+        .into_iter()
+        .map(|n| n.id)
+        .collect();
+    assert_eq!(stored, created[..3].to_vec());
 
     let _ = shutdown.send(());
 }

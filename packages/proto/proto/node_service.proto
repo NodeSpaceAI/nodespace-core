@@ -869,9 +869,12 @@ message ChildMove {
   int64 version = 2;
 }
 
-// Returns the updated children with new versions and authoritative orders.
+// Returns the updated children with new versions, and the order key the store
+// gave each one's new edge (the caller's own relationship events are
+// echo-suppressed, so this is how it learns them).
 message MoveChildrenToParentResponse {
   repeated NodeData children = 1;
+  repeated SiblingOrder orders = 2;
 }
 
 // ---------------------------------------------------------------------------

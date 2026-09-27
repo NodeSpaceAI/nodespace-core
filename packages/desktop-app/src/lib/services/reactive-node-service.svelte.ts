@@ -36,7 +36,7 @@ const log = createLogger('ReactiveNodeService');
 import { backendAdapter } from './backend-adapter';
 import type { InsertPosition } from '$lib/services/backend-adapter';
 import { structureTree } from '$lib/stores/reactive-structure-tree.svelte';
-import { applyChildPlacement } from './hierarchy-sync';
+import { applyChildPlacement, applySiblingOrders } from './hierarchy-sync';
 import { conflictNotifications } from '$lib/stores/conflict-notifications.svelte';
 
 export interface NodeManagerEvents {
@@ -774,11 +774,6 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
   }
 
   /**
-   * Persists an optimistic child transfer as ONE atomic RPC (all-or-nothing OCC, one daemon
-   * transaction; children are appended under `newParentId` in the given order), then syncs
-   * each moved child's version from the response. On throw, none of the children moved.
-   */
-  /**
    * Persist a move, then reconcile local state with the reply: the node's bumped
    * version, and the store's order keys for the moved edge and any siblings a
    * re-spread rewrote. The reply is this client's only source of those keys — its
@@ -808,6 +803,12 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     }
   }
 
+  /**
+   * Persists an optimistic child transfer as ONE atomic RPC (all-or-nothing OCC, one daemon
+   * transaction; children are appended under `newParentId` in the given order), then syncs
+   * each moved child's version and store order key from the response. On throw, none of the
+   * children moved.
+   */
   async function persistChildTransfer(newParentId: string, childIds: string[]): Promise<void> {
     const children = childIds.flatMap((id) => {
       const child = sharedNodeStore.getNode(id);
@@ -815,10 +816,9 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     });
     if (children.length === 0) return;
 
-    const updatedChildren = await backendAdapter.moveChildrenToParent(newParentId, children);
+    const { nodes, orders } = await backendAdapter.moveChildrenToParent(newParentId, children);
 
-    // Order reconciles via RelationshipUpdated events; only versions need syncing here.
-    for (const updated of updatedChildren) {
+    for (const updated of nodes) {
       sharedNodeStore.updateNode(
         updated.id,
         { version: updated.version },
@@ -826,6 +826,9 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
         { skipPersistence: true }
       );
     }
+    // This write's own relationship events are echo-suppressed, so the reply is the only
+    // source of the store's keys for the new edges.
+    applySiblingOrders(structureTree, newParentId, orders);
   }
 
   function notifyChildTransferFailure(nodeId: string): void {

@@ -309,6 +309,15 @@ pub struct MovedNodeOutput {
     pub placement: Option<ChildPlacementOutput>,
 }
 
+/// Result of `move_children_to_parent`: the children with their bumped
+/// versions, and the order key the store gave each one's new edge.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MovedChildrenOutput {
+    pub nodes: Vec<Value>,
+    pub orders: Vec<SiblingOrderOutput>,
+}
+
 /// Convert proto NodeResponse → core Node
 fn proto_node_response_to_node(resp: NodeResponse) -> Result<Node, CommandError> {
     let nd = resp.node_data.ok_or_else(|| CommandError {
@@ -730,7 +739,7 @@ pub async fn move_children_to_parent(
     client: State<'_, GrpcClient>,
     new_parent_id: String,
     children: Vec<ChildMoveInput>,
-) -> Result<Vec<Value>, CommandError> {
+) -> Result<MovedChildrenOutput, CommandError> {
     let mut c = client.client().await;
     let resp = c
         .move_children_to_parent(Request::new(MoveChildrenToParentRequest {
@@ -744,16 +753,26 @@ pub async fn move_children_to_parent(
                 .collect(),
         }))
         .await
-        .map_err(status_to_command_error)?;
+        .map_err(status_to_command_error)?
+        .into_inner();
 
     let nodes: Result<Vec<Node>, CommandError> = resp
-        .into_inner()
         .children
         .into_iter()
         .map(proto_node_data_to_node)
         .collect();
 
-    nodes_to_typed_values(nodes?)
+    Ok(MovedChildrenOutput {
+        nodes: nodes_to_typed_values(nodes?)?,
+        orders: resp
+            .orders
+            .into_iter()
+            .map(|s| SiblingOrderOutput {
+                node_id: s.node_id,
+                order: s.order,
+            })
+            .collect(),
+    })
 }
 
 /// Get child nodes of a parent node

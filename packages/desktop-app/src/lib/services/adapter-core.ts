@@ -141,6 +141,12 @@ export interface MovedNode {
   placement: ChildPlacement | null;
 }
 
+/** Result of `moveChildrenToParent`: the children with bumped versions, and each new edge's store order key. */
+export interface MovedChildren {
+  nodes: Node[];
+  orders: Array<{ nodeId: string; order: number }>;
+}
+
 export interface BackendAdapter {
   // Node CRUD
   createNode(input: CreateNodeInput | Node): Promise<CreatedNode>;
@@ -157,7 +163,7 @@ export interface BackendAdapter {
   getDescendants(rootNodeId: string): Promise<Node[]>;
   getChildrenTree(parentId: string): Promise<NodeWithChildren | null>;
   moveNode(nodeId: string, version: number, newParentId: string | null, insertPosition: InsertPosition | null): Promise<MovedNode>;
-  moveChildrenToParent(newParentId: string, children: Array<{ id: string; version: number }>): Promise<Node[]>;
+  moveChildrenToParent(newParentId: string, children: Array<{ id: string; version: number }>): Promise<MovedChildren>;
 
   // Mentions
   createMention(mentioningNodeId: string, mentionedNodeId: string): Promise<void>;

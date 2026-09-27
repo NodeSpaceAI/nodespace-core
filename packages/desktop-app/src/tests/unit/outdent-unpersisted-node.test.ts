@@ -68,7 +68,10 @@ describe('outdentNode propagates root reparenting and sibling transfer', () => {
       .mockImplementation(async (id) => ({ node: makeNode(id, 2), placement: null }));
     moveChildrenSpy = vi
       .spyOn(backendAdapter, 'moveChildrenToParent')
-      .mockImplementation(async (_parentId, children) => children.map((c) => makeNode(c.id, 2)));
+      .mockImplementation(async (_parentId, children) => ({
+        nodes: children.map((c) => makeNode(c.id, 2)),
+        orders: children.map((c, i) => ({ nodeId: c.id, order: 100 + i }))
+      }));
     conflictNotifications.dismissAll();
 
     service = createReactiveNodeService({

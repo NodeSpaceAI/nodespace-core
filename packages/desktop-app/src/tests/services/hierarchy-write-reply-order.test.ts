@@ -103,6 +103,35 @@ describe("a hierarchy write's reply carries the store's order keys to its caller
     expect(sharedNodeStore.getNode('b')?.version).toBe(2);
   });
 
+  it("an outdent applies the store's keys to the node and to the trailing siblings it adopts", async () => {
+    // root: a (1); a has children b (1), c (2). Outdenting b moves it under root
+    // after a, and c — the sibling below it — becomes b's child in one transfer.
+    addPersistedNode('a', 'root', 1);
+    addPersistedNode('b', 'a', 1);
+    addPersistedNode('c', 'a', 2);
+
+    vi.spyOn(backendAdapter, 'moveNode').mockImplementation(async (id) => ({
+      node: makeNode(id, 2),
+      placement: { parentId: 'root', order: 1.5, respread: [] }
+    }));
+    const moveChildrenSpy = vi
+      .spyOn(backendAdapter, 'moveChildrenToParent')
+      .mockImplementation(async (_parentId, children) => ({
+        nodes: children.map((c) => makeNode(c.id, 2)),
+        orders: children.map((c) => ({ nodeId: c.id, order: 42 }))
+      }));
+
+    expect(await service.outdentNode('b')).toBe(true);
+    await waitForPendingMoveOperations();
+
+    expect(moveChildrenSpy).toHaveBeenCalledWith('b', [{ id: 'c', version: 1 }]);
+    expect(withOrders('root')).toEqual([
+      ['a', 1],
+      ['b', 1.5]
+    ]);
+    expect(withOrders('b')).toEqual([['c', 42]]);
+  });
+
   it("a create applies the new edge's key and the re-spread sibling keys from the reply", async () => {
     addPersistedNode('a', 'root', 1);
     addPersistedNode('b', 'root', 1.0000001);

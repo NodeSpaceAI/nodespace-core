@@ -693,11 +693,16 @@ impl NodeService {
     ///
     /// * `new_parent_id` — freshly-created split node; must be an empty container
     /// * `children`      — `(node_id, expected_version)` pairs in sibling order
+    ///
+    /// Returns each child with its bumped version and the order key the store
+    /// gave its new edge. The caller that made the write needs those keys: echo
+    /// suppression keeps this write's own `RelationshipUpdated` events from
+    /// reaching it.
     pub async fn move_children_to_parent(
         &self,
         new_parent_id: &str,
         children: &[(String, i64)],
-    ) -> Result<Vec<Node>, NodeServiceError> {
+    ) -> Result<Vec<(Node, f64)>, NodeServiceError> {
         if children.is_empty() {
             return Ok(Vec::new());
         }
@@ -781,7 +786,7 @@ impl NodeService {
         let new_parent_id = new_parent_id.to_string();
         let children: Vec<(String, i64)> = children.to_vec();
         let service = self.clone();
-        let updated: Vec<Node> = self
+        let updated: Vec<(Node, f64)> = self
             .with_transaction(move |tx| {
                 Box::pin(async move {
                     let children_with_versions: Vec<(&str, i64)> = children
@@ -828,7 +833,7 @@ impl NodeService {
                             ),
                         });
 
-                        updated.push(updated_node);
+                        updated.push((updated_node, *order));
                     }
                     Ok(updated)
                 })
