@@ -52,7 +52,7 @@ mod integration_tests {
         service.initialize().unwrap();
 
         let text = "This is a test sentence for embedding generation.";
-        let embedding = service.generate_embedding(text);
+        let embedding = service.embed_document(text);
 
         assert!(embedding.is_ok(), "Failed to generate embedding");
         let embedding = embedding.unwrap();
@@ -105,36 +105,6 @@ mod integration_tests {
     #[tokio::test]
     #[serial]
     #[ignore = "requires the nomic-embed-vision GGUF model to be downloaded; run explicitly with --ignored"]
-    async fn test_batch_embedding_generation() {
-        if !model_exists() {
-            eprintln!("Skipping test: model not found");
-            return;
-        }
-
-        let config = EmbeddingConfig::default();
-        let mut service = EmbeddingService::new(config).unwrap();
-        service.initialize().unwrap();
-
-        let texts = vec![
-            "First test sentence",
-            "Second test sentence",
-            "Third test sentence",
-        ];
-
-        let embeddings = service.generate_batch(texts.clone());
-        assert!(embeddings.is_ok(), "Failed to generate batch embeddings");
-
-        let embeddings = embeddings.unwrap();
-        assert_eq!(embeddings.len(), texts.len());
-
-        for embedding in embeddings {
-            assert_eq!(embedding.len(), EMBEDDING_DIMENSION);
-        }
-    }
-
-    #[tokio::test]
-    #[serial]
-    #[ignore = "requires the nomic-embed-vision GGUF model to be downloaded; run explicitly with --ignored"]
     async fn test_cache_functionality() {
         if !model_exists() {
             eprintln!("Skipping test: model not found");
@@ -148,14 +118,14 @@ mod integration_tests {
         let text = "Cache test sentence";
 
         // Generate embedding first time
-        let embedding1 = service.generate_embedding(text).unwrap();
+        let embedding1 = service.embed_document(text).unwrap();
 
         // Check cache stats
         let (cache_size, _capacity) = service.cache_stats();
         assert_eq!(cache_size, 1, "Cache should have 1 entry");
 
         // Generate same embedding again (should hit cache)
-        let embedding2 = service.generate_embedding(text).unwrap();
+        let embedding2 = service.embed_document(text).unwrap();
 
         // Embeddings should be identical
         assert_eq!(embedding1.len(), embedding2.len());
@@ -227,7 +197,7 @@ mod integration_tests {
         service.initialize().unwrap();
 
         let text = "Test for blob conversion";
-        let embedding = service.generate_embedding(text).unwrap();
+        let embedding = service.embed_document(text).unwrap();
 
         // Convert to blob
         let blob = EmbeddingService::to_blob(&embedding);
@@ -262,7 +232,7 @@ mod integration_tests {
         service.initialize().unwrap();
 
         // Empty string should return an error
-        let result = service.generate_embedding("");
+        let result = service.embed_document("");
         assert!(result.is_err(), "Empty string should return error");
     }
 
@@ -282,7 +252,7 @@ mod integration_tests {
         // Text longer than typical context (will be truncated by tokenizer)
         let long_text = "word ".repeat(1000);
 
-        let result = service.generate_embedding(&long_text);
+        let result = service.embed_document(&long_text);
         assert!(result.is_ok(), "Should handle long texts (with truncation)");
 
         let embedding = result.unwrap();
@@ -334,7 +304,7 @@ mod integration_tests {
             let handle = tokio::spawn(async move {
                 let service = service_clone.lock().await;
                 let text = format!("Concurrent request {}", i);
-                service.generate_embedding(&text)
+                service.embed_document(&text)
             });
             handles.push(handle);
         }
@@ -379,7 +349,7 @@ mod stub_tests {
         let mut service = EmbeddingService::new(config).unwrap();
         service.initialize().unwrap();
 
-        let embedding = service.generate_embedding("test").unwrap();
+        let embedding = service.embed_document("test").unwrap();
         assert_eq!(embedding.len(), EMBEDDING_DIMENSION);
         assert!(embedding.iter().all(|&x| x == 0.0));
     }

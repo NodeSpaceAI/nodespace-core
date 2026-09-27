@@ -108,7 +108,7 @@ mod search_result_scaling_tests {
     /// that discards any result whose node is `None` — so a regression there
     /// would not fail this test. Asserting past that `filter_map` needs a
     /// `NodeEmbeddingService`, whose `semantic_search_nodes` calls
-    /// `generate_embedding` on a real NLP engine and fails with "Model not
+    /// `embed_query` on a real NLP engine and fails with "Model not
     /// initialized" without a loaded model; the rest of this crate's tests
     /// deliberately stay off that path. Covering the service layer therefore
     /// belongs in a test that can afford a model, not in a scaling test.

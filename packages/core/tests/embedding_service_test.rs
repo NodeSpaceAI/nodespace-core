@@ -2032,7 +2032,7 @@ async fn test_search_semantic_enumerate_multi_type_counts_every_type_past_fetch_
 // A full integration test of `skip_scope_filter`'s effect on a real,
 // non-enumerate semantic query would require driving `search_semantic`'s
 // embedding path to a genuine similarity match — which requires generating
-// a real *query* embedding via `EmbeddingService::generate_embedding`, and
+// a real *query* embedding via `EmbeddingService::embed_query`, and
 // that call unconditionally errors ("Embedding service not ready") unless a
 // real model has been `.initialize()`d (see `embedding.rs`'s
 // `generate_embedding_internal`; there is no zero-vector stub for queries,
