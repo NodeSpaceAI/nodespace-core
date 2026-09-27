@@ -105,6 +105,7 @@ fn message(role: &str, content: &str) -> AiChatMessage {
         resolved_entities: Vec::new(),
         question: None,
         options: Vec::new(),
+        pending_deletions: Vec::new(),
     }
 }
 

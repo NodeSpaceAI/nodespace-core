@@ -804,9 +804,7 @@ fn duplicate_entity_backstop(session: &mut AgentSession, result: &mut AgentTurnR
     // the existing record rather than duplicating it.
     let resolved_after = !bare_id.is_empty()
         && result.tool_calls_made[refused_at + 1..].iter().any(|r| {
-            !r.is_error
-                && super::tools::is_write_tool(&r.name)
-                && r.args.to_string().contains(bare_id)
+            super::deletion_confirmation::landed_write(r) && r.args.to_string().contains(bare_id)
         });
     if resolved_after {
         return;
@@ -819,7 +817,7 @@ fn duplicate_entity_backstop(session: &mut AgentSession, result: &mut AgentTurnR
     let done: Vec<String> = result
         .tool_calls_made
         .iter()
-        .filter(|r| !r.is_error && super::tools::is_write_tool(&r.name))
+        .filter(|r| super::deletion_confirmation::landed_write(r))
         .map(|r| {
             let label = humanize_tool_name(&r.name);
             ["content", "title", "name"]
@@ -850,7 +848,44 @@ fn duplicate_entity_backstop(session: &mut AgentSession, result: &mut AgentTurnR
 
     replace_turn_reply(session, &clarification);
     result.response = clarification;
-    result.clarify = Some(crate::agent_types::ClarifyPrompt { question, options });
+    result.clarify = Some(crate::agent_types::ClarifyPrompt {
+        question,
+        options,
+        pending_deletions: Vec::new(),
+    });
+}
+
+/// End a turn that held deletes by asking the user to confirm them.
+///
+/// `delete_node` never deletes (see `deletion_confirmation`); whatever the
+/// model said after holding one — often that it deleted it — is replaced by
+/// a question naming every held target. Returns whether it did.
+///
+/// A turn the model ended with its own clarifying question keeps that
+/// question and its held deletes lapse: the model was unsure what the user
+/// meant, and nothing is deleted either way.
+fn confirm_held_deletions(session: &mut AgentSession, result: &mut AgentTurnResult) -> bool {
+    use super::deletion_confirmation as dc;
+    if result.clarify.is_some() {
+        return false;
+    }
+    let targets = dc::held_deletions(&result.tool_calls_made);
+    if targets.is_empty() {
+        return false;
+    }
+    let question = dc::confirmation_question(&targets);
+    let text = dc::confirmation_text(&question);
+    replace_turn_reply(session, &text);
+    result.response = text;
+    result.clarify = Some(crate::agent_types::ClarifyPrompt {
+        question,
+        options: vec![
+            dc::CONFIRM_OPTION.to_string(),
+            dc::DECLINE_OPTION.to_string(),
+        ],
+        pending_deletions: targets,
+    });
+    true
 }
 
 /// Make `reply` the turn's final assistant message in the session history.
@@ -1145,7 +1180,7 @@ fn suppressed_response_replacement(executions: &[ToolExecutionRecord]) -> String
     let (mut any_write, mut any_landed) = (false, false);
     for r in executions
         .iter()
-        .filter(|r| !r.is_error && super::tools::is_write_tool(&r.name))
+        .filter(|r| super::deletion_confirmation::landed_write(r))
     {
         any_write = true;
         any_landed |= persisted_field_count(&r.name, &r.result) != Some(0);
@@ -1928,7 +1963,9 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
         // Applied here, over the finished turn, because the loop has several
         // exits (final reply, iteration cap, loop breaks) and the question must
         // reach the user whichever one the turn took.
-        duplicate_entity_backstop(session, &mut result);
+        if !confirm_held_deletions(session, &mut result) {
+            duplicate_entity_backstop(session, &mut result);
+        }
         Ok(result)
     }
 
@@ -3257,6 +3294,7 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                     clarify: Some(crate::agent_types::ClarifyPrompt {
                         question,
                         options: labels,
+                        pending_deletions: Vec::new(),
                     }),
                 });
             }
@@ -3680,6 +3718,7 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                     outcome.clarify_prompt = Some(crate::agent_types::ClarifyPrompt {
                         question: question.clone(),
                         options: options.clone(),
+                        pending_deletions: Vec::new(),
                     });
                     let elapsed_ms = started.elapsed().as_millis() as i64;
                     span.set_attribute(KeyValue::new("routing.latency_ms", elapsed_ms));
@@ -10192,6 +10231,123 @@ mod tests {
                 .any(|c| c == "create_nodes_from_markdown"),
             "a distinct import must not be blocked"
         );
+    }
+
+    fn held_delete_executor(
+        pending: &nodespace_core::models::AiChatPendingDeletion,
+    ) -> MockToolExecutor {
+        MockToolExecutor::new().with_tool(
+            "delete_node",
+            json!({"type": "object", "properties": {"id": {"type": "string"}}}),
+            crate::local_agent::deletion_confirmation::held_result(pending),
+        )
+    }
+
+    fn pending_login_task(descendant_count: u64) -> nodespace_core::models::AiChatPendingDeletion {
+        nodespace_core::models::AiChatPendingDeletion {
+            node_id: "n1".to_string(),
+            title: "Fix login".to_string(),
+            node_type: "task".to_string(),
+            version: 3,
+            descendant_count,
+        }
+    }
+
+    /// A held `delete_node` ends the turn asking the user to confirm, whatever
+    /// the model said after it — here, a false claim that the node is gone.
+    #[tokio::test]
+    async fn a_held_delete_ends_the_turn_with_a_confirmation_naming_it() {
+        use crate::local_agent::deletion_confirmation as dc;
+        let pending = pending_login_task(2);
+        let engine = Arc::new(MockEngine::tool_then_text(
+            "delete_node",
+            r#"{"id":"nodespace://n1"}"#,
+            "I deleted it.",
+        ));
+        let agent_loop = LocalAgentLoop::new(engine, Arc::new(held_delete_executor(&pending)));
+
+        let mut session = new_session();
+        let result = agent_loop
+            .run_turn(
+                &mut session,
+                "delete the login task",
+                |_| {},
+                |_| {},
+                CancellationToken::new(),
+            )
+            .await
+            .expect("turn should succeed");
+
+        let question = "Delete \"Fix login\" (task) and the 2 items nested under it? \
+                        This can't be undone.";
+        assert_eq!(result.response, dc::confirmation_text(question));
+        let clarify = result.clarify.expect("the confirmation is a question");
+        assert_eq!(clarify.question, question);
+        assert_eq!(
+            clarify.options,
+            vec![dc::CONFIRM_OPTION, dc::DECLINE_OPTION]
+        );
+        assert_eq!(clarify.pending_deletions, vec![pending]);
+        assert_eq!(
+            session.messages.last().map(|m| m.content.as_str()),
+            Some(result.response.as_str()),
+            "the history must carry the question, not the false claim"
+        );
+    }
+
+    /// A turn the model ended with its own clarifying question keeps it; the
+    /// held delete lapses rather than becoming confirmable.
+    #[tokio::test]
+    async fn a_model_clarification_supersedes_a_held_delete() {
+        let call = |id: &str, name: &str, args: &str| {
+            vec![
+                StreamingChunk::ToolCallStart {
+                    id: id.to_string(),
+                    name: name.to_string(),
+                    provider_extra: None,
+                },
+                StreamingChunk::ToolCallArgs {
+                    id: id.to_string(),
+                    args_json: args.to_string(),
+                },
+                StreamingChunk::Done {
+                    usage: InferenceUsage {
+                        prompt_tokens: 1,
+                        completion_tokens: 1,
+                    },
+                },
+            ]
+        };
+        let engine = Arc::new(MockEngine::new(vec![
+            call("tc_1", "delete_node", r#"{"id":"n1"}"#),
+            call(
+                "tc_2",
+                routing::ROUTE_CLARIFY_TOOL,
+                r#"{"question":"Which login task?","options":[]}"#,
+            ),
+        ]));
+        let executor = held_delete_executor(&pending_login_task(0)).with_tool(
+            routing::ROUTE_CLARIFY_TOOL,
+            json!({"type": "object"}),
+            json!({}),
+        );
+        let agent_loop = LocalAgentLoop::new(engine, Arc::new(executor));
+
+        let mut session = new_session();
+        let result = agent_loop
+            .run_turn(
+                &mut session,
+                "delete the login task",
+                |_| {},
+                |_| {},
+                CancellationToken::new(),
+            )
+            .await
+            .expect("turn should succeed");
+
+        let clarify = result.clarify.expect("the model's question stands");
+        assert_eq!(clarify.question, "Which login task?");
+        assert!(clarify.pending_deletions.is_empty());
     }
 
     fn delete_node_executor() -> MockToolExecutor {

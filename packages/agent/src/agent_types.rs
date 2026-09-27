@@ -533,6 +533,11 @@ pub struct ClarifyPrompt {
     pub question: String,
     /// Concrete options to offer, when the model supplied any.
     pub options: Vec<String>,
+    /// Deletes a yes to this question would run. Non-empty only when the
+    /// question is a delete confirmation — see
+    /// `local_agent::deletion_confirmation`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pending_deletions: Vec<nodespace_core::models::AiChatPendingDeletion>,
 }
 
 /// Result of a complete agent turn (one round of generation + tool execution).

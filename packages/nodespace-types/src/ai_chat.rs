@@ -39,6 +39,19 @@ pub struct AiChatResolvedEntity {
     pub node_type: Option<String>,
 }
 
+/// A node an agent turn asked to delete, held until the user confirms.
+///
+/// Mirrors `nodespace_core::models::AiChatPendingDeletion`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiChatPendingDeletion {
+    pub node_id: String,
+    pub title: String,
+    pub node_type: String,
+    pub version: i64,
+    pub descendant_count: u64,
+}
+
 /// A single message in an ai-chat conversation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -67,6 +80,10 @@ pub struct AiChatMessage {
     /// `question` is `Some`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub options: Vec<String>,
+
+    /// Deletes this assistant turn is asking the user to confirm.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pending_deletions: Vec<AiChatPendingDeletion>,
 }
 
 /// Wire shape for ai-chat nodes sent to the frontend.

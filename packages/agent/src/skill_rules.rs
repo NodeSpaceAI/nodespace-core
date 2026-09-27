@@ -333,7 +333,7 @@ pub const TASK_STATUS_DEDICATED_VERB: InteractionRule = InteractionRule {
 
 pub const SINGLE_ITEM_PER_CALL: InteractionRule = InteractionRule {
     id: "single-item-per-call",
-    imperative: "SINGLE DELETE: Call delete_node once per node. Confirm each deletion before proceeding to the next.",
+    imperative: "SINGLE DELETE: Call delete_node once per node, for every node the request covers. The user is asked to confirm before anything is removed, so do not ask them yourself.",
     prose: "act on one node per call; confirm each individually before moving to the next.",
     skill_md_key_phrase: "Delete one node per call; confirm each deletion before moving to the next",
 };

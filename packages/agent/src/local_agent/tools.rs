@@ -1565,7 +1565,7 @@ fn def_update_schema() -> ToolDefinition {
 fn def_delete_node() -> ToolDefinition {
     ToolDefinition {
         name: "delete_node".into(),
-        description: "Delete a node from the knowledge graph by its ID. Use get_node first to confirm the node exists before deleting.".into(),
+        description: "Delete a node from the knowledge graph by its ID, along with everything nested under it. The user is asked to confirm before anything is removed; call it once for each record the request covers.".into(),
         parameters_schema: json!({
             "type": "object",
             "properties": {
@@ -4005,20 +4005,26 @@ impl GraphToolExecutor {
             })?;
 
         let ns = self.node_service()?;
+        let node_id = strip_node_uri(&params.id);
 
-        let input = node_ops::DeleteNodeInput {
-            node_id: strip_node_uri(&params.id).to_string(),
-            version: None, // ops layer auto-fetches
-        };
-
-        let output = node_ops::delete_node(&ns, input)
+        // Held, not performed: the user confirms before anything is removed.
+        // See `deletion_confirmation`.
+        let pending = super::deletion_confirmation::preview_deletion(&ns, node_id)
             .await
-            .map_err(|e| ops_error_to_tool(e, "delete_node"))?;
+            .map_err(|e| ops_error_to_tool(OpsError::from(e), "delete_node"))?
+            .ok_or_else(|| {
+                ops_error_to_tool(
+                    OpsError::NotFound {
+                        id: node_id.to_string(),
+                    },
+                    "delete_node",
+                )
+            })?;
 
         Ok(ok_result(
             tool_call_id,
             "delete_node",
-            json!({ "id": node_uri(&output.node_id), "deleted": output.existed }),
+            super::deletion_confirmation::held_result(&pending),
         ))
     }
 
@@ -7233,6 +7239,62 @@ mod tests {
             }
             other => panic!("Expected InvalidArguments, got {:?}", other),
         }
+    }
+
+    /// `delete_node` never deletes: it returns what would go, held for the
+    /// user to confirm (see `deletion_confirmation`).
+    #[tokio::test]
+    async fn delete_node_holds_the_delete_and_leaves_the_node() {
+        use nodespace_core::db::SqliteStore;
+        use nodespace_core::services::{CreateNodeParams, InsertPositionOwned};
+        use tempfile::TempDir;
+
+        let tmp = TempDir::new().unwrap();
+        let mut store: Arc<SqliteStore> =
+            Arc::new(SqliteStore::new(tmp.path().join("test.db")).await.unwrap());
+        let ns = Arc::new(NodeService::new(&mut store).await.unwrap());
+        let params = |content: &str, parent: Option<&str>| CreateNodeParams {
+            id: None,
+            node_type: "text".to_string(),
+            content: content.to_string(),
+            parent_id: parent.map(str::to_string),
+            position: InsertPositionOwned::End,
+            properties: json!({}),
+            lifecycle_status: None,
+        };
+        let plan = ns
+            .create_node_with_parent(params("Plan", None))
+            .await
+            .unwrap();
+        ns.create_node_with_parent(params("Step", Some(&plan)))
+            .await
+            .unwrap();
+        let executor = GraphToolExecutor {
+            node_service: Some(ns.clone()),
+            embedding_service: Arc::new(RwLock::new(None)),
+            inference_engine: None,
+            playbook_lifecycle: None,
+        };
+
+        let result = executor
+            .execute("delete_node", json!({ "id": node_uri(&plan) }))
+            .await
+            .unwrap();
+
+        assert!(!result.is_error, "{}", result.result);
+        assert!(super::super::deletion_confirmation::is_held_deletion(
+            &result.result
+        ));
+        assert_eq!(result.result["descendant_count"], 1);
+        assert!(ns.get_node(&plan).await.unwrap().is_some());
+
+        let missing = executor
+            .execute("delete_node", json!({ "id": "no-such-node" }))
+            .await;
+        assert!(
+            missing.is_err(),
+            "a missing node cannot be held for deletion"
+        );
     }
 
     /// A cardinality-one end replaces rather than rejects, so reassigning a
