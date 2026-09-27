@@ -13,8 +13,9 @@
 //! caller show the user exactly what landed under which name.
 //!
 //! Re-keying rewrites every later reference to that id within the same install
-//! — a Play or a saved view targeting `cycle` follows the rename, so the installed set stays
-//! internally consistent rather than half-pointing at a stranger's schema.
+//! — a Play or a saved view targeting `cycle` follows the rename, so the
+//! installed set stays internally consistent rather than half-pointing at a
+//! stranger's schema.
 
 use crate::markdown::{prepare_nodes_from_template, MarkdownError};
 use crate::methodology::{InstallReport, MethodologyPlaybook, StepOutcome, StepReport};
@@ -750,10 +751,22 @@ mod tests {
         let properties = serde_json::json!({
             "targetType": "issue",
             "filters": [
-                { "type": "metadata", "operator": "equals", "property": "node_type", "value": "issue" },
-                { "type": "metadata", "operator": "in", "property": "node_type", "value": ["issue", "task"] },
-                { "type": "property", "operator": "equals", "property": "issue", "value": "issue" },
-                { "type": "metadata", "operator": "contains", "property": "content", "value": "issue" },
+                {
+                    "type": "metadata", "operator": "equals",
+                    "property": "node_type", "value": "issue",
+                },
+                {
+                    "type": "metadata", "operator": "in",
+                    "property": "node_type", "value": ["issue", "task"],
+                },
+                {
+                    "type": "property", "operator": "equals",
+                    "property": "issue", "value": "issue",
+                },
+                {
+                    "type": "metadata", "operator": "contains",
+                    "property": "content", "value": "issue",
+                },
             ],
             "sorting": [{ "field": "issue", "direction": "asc" }],
             "generatedBy": "user",

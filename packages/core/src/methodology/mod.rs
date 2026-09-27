@@ -2,8 +2,8 @@
 //!
 //! A playbook composes NodeSpace's existing authoring primitives (schema
 //! creation, enum-vocabulary extension, Play installation, skill seeding,
-//! saved-view seeding) into a setup a user recognizes on day one — "Linear-style", and later
-//! others. It adds no platform capability: every step is a call a user or an
+//! saved-view seeding) into a setup a user recognizes on day one —
+//! "Linear-style", and later others. It adds no platform capability: every step is a call a user or an
 //! agent could already make by hand.
 //!
 //! # First-party content, installed on demand

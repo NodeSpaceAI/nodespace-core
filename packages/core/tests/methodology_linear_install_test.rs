@@ -433,9 +433,9 @@ async fn installing_twice_re_keys_rather_than_failing_or_overwriting() -> Result
         second.failure()
     );
     // Every id-bearing step collides the second time: both schemas, all
-    // three play nodes, and every seeded view. Vocabulary extensions do not — they target the
-    // re-keyed schema, which has no values yet — and skills reconcile by
-    // seed key rather than colliding.
+    // three play nodes, and every seeded view. Vocabulary extensions do not —
+    // they target the re-keyed schema, which has no values yet — and skills
+    // reconcile by seed key rather than colliding.
     assert_eq!(
         second.suffixed().len(),
         playbook.schemas.len() + playbook.plays.len() + playbook.views.len(),
@@ -996,5 +996,53 @@ async fn a_re_keyed_schema_retargets_the_views_seeded_over_it() -> Result<()> {
         cycles.properties["query"]["targetType"], "cycle",
         "a view over a schema that did not collide is left alone"
     );
+    Ok(())
+}
+
+/// Every field a seeded view names exists on the type it targets, and a
+/// Kanban's `groupBy` is an enum.
+///
+/// The view's JSON is otherwise unchecked vocabulary: a misspelt `groupBy`, or
+/// one naming a free-text field, opens the board on the group-by picker rather
+/// than the columns the playbook authored. Checked against the effective field
+/// set — inherited fields included, since `issue` groups by the `status` it
+/// gets from `task` — which is the same set the viewer offers.
+#[tokio::test]
+async fn every_view_names_fields_its_target_type_has() -> Result<()> {
+    let (service, _tmp) = test_service().await?;
+    let playbook = linear();
+    let report = install_playbook(&service, &playbook).await;
+    assert!(report.success, "first failure: {:?}", report.failure());
+
+    for view in &playbook.views {
+        let target = view.definition["targetType"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{} must name a targetType", view.view_id));
+        let (fields, _, _) = service.resolve_field_owners(target).await?;
+        let field = |name: &str| fields.iter().find(|f| f.name == name);
+
+        if let Some(group_by) = view.view_config["kanban"]["groupBy"].as_str() {
+            let group_field = field(group_by).unwrap_or_else(|| {
+                panic!(
+                    "{}: groups by `{group_by}`, which `{target}` lacks",
+                    view.view_id
+                )
+            });
+            assert_eq!(
+                group_field.field_type, "enum",
+                "{}: a Kanban's columns come from an enum's values",
+                view.view_id
+            );
+        }
+
+        for sort in view.definition["sorting"].as_array().into_iter().flatten() {
+            let sort_field = sort["field"].as_str().expect("a sort names its field");
+            assert!(
+                field(sort_field).is_some(),
+                "{}: sorts by `{sort_field}`, which `{target}` lacks",
+                view.view_id
+            );
+        }
+    }
     Ok(())
 }
