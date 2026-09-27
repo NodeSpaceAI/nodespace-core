@@ -401,45 +401,9 @@ impl NodeService {
         new_parent: Option<&str>,
         position: crate::services::InsertPosition<'_>,
     ) -> Result<(), NodeServiceError> {
-        // Verify node exists
-        let node = self
-            .get_node(node_id)
-            .await?
-            .ok_or_else(|| NodeServiceError::node_not_found(node_id))?;
-
-        self.validate_move(&node, new_parent).await?;
-
-        let former_parent = self.get_parent(node_id).await?.map(|p| p.id);
-        let insert_after = self.resolve_insert_position(position, new_parent).await?;
-
-        // Hierarchy is now managed via relationships - use store's move_node
-        let placement = self
-            .store
-            .move_node(node_id, new_parent, insert_after.as_deref())
+        self.move_existing_node(node_id, None, new_parent, position)
             .await
-            .map_err(NodeServiceError::from_store)?;
-        self.refresh_for_rootness(
-            node_id,
-            new_parent.is_none(),
-            former_parent.as_deref().filter(|p| Some(*p) != new_parent),
-        )
-        .await;
-
-        // Emit RelationshipUpdated event (unified relationship events)
-        if let Some(parent_id) = new_parent {
-            self.emit_respread_events(parent_id, &placement.respread);
-            self.emit_event(DomainEvent::RelationshipUpdated {
-                relationship: crate::db::events::RelationshipEvent::new(
-                    format!("relationship:{}:{}", parent_id, node_id),
-                    parent_id,
-                    node_id,
-                    "has_child",
-                    serde_json::json!({"order": placement.order}),
-                ),
-            });
-        }
-
-        Ok(())
+            .map(|_| ())
     }
 
     /// Move a node to a new parent with OCC (Optimistic Concurrency Control)
@@ -493,109 +457,150 @@ impl NodeService {
         new_parent: Option<&str>,
         position: crate::services::InsertPosition<'_>,
     ) -> Result<(Node, Option<crate::db::ChildPlacement>), NodeServiceError> {
-        // Get current node and verify version
+        let (updated, placement) = self
+            .move_existing_node(node_id, Some(expected_version), new_parent, position)
+            .await?;
+        Ok((
+            updated.expect("a versioned move returns the node it bumped"),
+            placement,
+        ))
+    }
+
+    /// The body of [`Self::move_node`] and [`Self::move_node_unchecked`]:
+    /// with `expected_version`, the move is version-checked and bumps the
+    /// node, returning it; without, it neither checks nor bumps. Also returns
+    /// the store's placement of the written edge when the node landed under a
+    /// parent (see [`Self::move_node`]).
+    ///
+    /// The checks before the transaction read through pooled readers and
+    /// only fail fast with a readable error. The guarantees come from the
+    /// transaction (ADR-069 §1a): the store re-checks existence, cycles and
+    /// membership against the state it writes, and the bump re-checks
+    /// `expected_version`, so a concurrent writer that bumped the node after
+    /// the pre-check rolls the edge and every re-spread key back. Events are
+    /// buffered and flushed only after commit (ADR-069 §2), so a failed move
+    /// announces nothing and a committed one announces all of it.
+    async fn move_existing_node(
+        &self,
+        node_id: &str,
+        expected_version: Option<i64>,
+        new_parent: Option<&str>,
+        position: crate::services::InsertPosition<'_>,
+    ) -> Result<(Option<Node>, Option<crate::db::ChildPlacement>), NodeServiceError> {
         let node = self
             .get_node(node_id)
             .await?
             .ok_or_else(|| NodeServiceError::node_not_found(node_id))?;
 
-        // Check version before proceeding
-        if node.version != expected_version {
-            return Err(NodeServiceError::version_conflict(
-                node_id,
-                expected_version,
-                node.version,
-            ));
+        if let Some(expected_version) = expected_version {
+            if node.version != expected_version {
+                return Err(NodeServiceError::version_conflict(
+                    node_id,
+                    expected_version,
+                    node.version,
+                ));
+            }
         }
 
         self.validate_move(&node, new_parent).await?;
 
         let insert_after = self.resolve_insert_position(position, new_parent).await?;
 
-        // The checks above read through pooled readers and only fail fast with
-        // a readable error; the guarantees come from the transaction below,
-        // where the store re-checks existence, cycles and membership and the
-        // bump re-checks the version against the state it writes.
-        //
-        // The edge write, any sibling re-spread, the rootness refresh and the
-        // version bump are one unit of work (ADR-069 §1a). The version check
-        // above reads through a pooled reader, so a concurrent writer can
-        // still bump the node before the write; the bump re-checks
-        // `expected_version` inside the transaction, and a conflict there
-        // rolls the edge and every re-spread key back with it. Events are
-        // buffered and flushed only after commit (ADR-069 §2), so a failed
-        // move announces nothing and a committed one announces all of it.
         let node_id = node_id.to_string();
         let new_parent = new_parent.map(str::to_string);
         let service = self.clone();
         self.with_transaction(move |tx| {
             Box::pin(async move {
-                let moved = crate::db::SqliteStore::move_node_in_tx(
-                    tx.store_tx(),
-                    &node_id,
-                    new_parent.as_deref(),
-                    insert_after.as_deref(),
-                )
-                .await
-                .map_err(NodeServiceError::from_store)?;
-                // Read inside the transaction with the edge write, so the
-                // parent the events report as removed is the one it replaced.
-                let old_parent_id = moved.former_parent;
-                let placement = moved.placement;
-
-                service
-                    .refresh_for_rootness_in_tx(
-                        tx,
-                        &node_id,
-                        new_parent.is_none(),
-                        old_parent_id
-                            .as_deref()
-                            .filter(|p| Some(*p) != new_parent.as_deref()),
-                    )
+                let moved = service
+                    .move_in_tx(tx, &node_id, new_parent.as_deref(), insert_after.as_deref())
                     .await?;
 
                 // Even though we're only modifying edge relationships, we bump
                 // the node version so that concurrent move operations fail with
-                // a version conflict. Returns the updated node with its new
-                // version so the frontend can sync its local state.
-                let updated_node = service
-                    .update_node_with_version_bump_in_tx(tx, &node_id, expected_version)
-                    .await?;
+                // a version conflict. Bumped after the rootness refresh, so the
+                // returned node — and its `NodeUpdated` — carry the new title.
+                let updated_node = match expected_version {
+                    Some(expected_version) => Some(
+                        service
+                            .update_node_with_version_bump_in_tx(tx, &node_id, expected_version)
+                            .await?,
+                    ),
+                    None => None,
+                };
 
-                // Emit the NEW-parent edge first so a consumer that
-                // inserts-then-deletes never sees the node parentless mid-move.
-                if let Some(parent_id) = new_parent.as_deref() {
-                    service.emit_respread_events(parent_id, &placement.respread);
-                    service.emit_event(DomainEvent::RelationshipUpdated {
-                        relationship: crate::db::events::RelationshipEvent::new(
-                            format!("relationship:{}:{}", parent_id, node_id),
-                            parent_id,
-                            &node_id,
-                            "has_child",
-                            serde_json::json!({"order": placement.order}),
-                        ),
-                    });
-                }
-
-                // Surface the removal of the OLD parent edge when the parent
-                // actually changed (move-to-root OR reparent) — not on a
-                // same-parent position move — so the detach propagates to
-                // other devices rather than leaving a stale edge there.
-                if let Some(old_id) = old_parent_id {
-                    if new_parent.as_deref() != Some(old_id.as_str()) {
-                        service.emit_event(DomainEvent::RelationshipDeleted {
-                            id: format!("relationship:{}:{}", old_id, node_id),
-                            from_id: crate::db::events::node_thing(&old_id),
-                            to_id: crate::db::events::node_thing(&node_id),
-                            relationship_type: "has_child".to_string(),
-                        });
-                    }
-                }
-
-                Ok((updated_node, new_parent.map(|_| placement)))
+                service.emit_move_events(&node_id, new_parent.as_deref(), &moved);
+                Ok((updated_node, new_parent.map(|_| moved.placement)))
             })
         })
         .await
+    }
+
+    /// Move `node_id` under `new_parent` (a root when `None`) inside `tx`,
+    /// then refresh its title and embeddings for any change of rootness. The
+    /// former parent is read inside the transaction with the edge write, so
+    /// it is the parent the write actually replaced.
+    async fn move_in_tx(
+        &self,
+        tx: &NodeServiceTx<'_>,
+        node_id: &str,
+        new_parent: Option<&str>,
+        insert_after: Option<&str>,
+    ) -> Result<crate::db::NodeMove, NodeServiceError> {
+        let moved = crate::db::SqliteStore::move_node_in_tx(
+            tx.store_tx(),
+            node_id,
+            new_parent,
+            insert_after,
+        )
+        .await
+        .map_err(NodeServiceError::from_store)?;
+        self.refresh_for_rootness_in_tx(
+            tx,
+            node_id,
+            new_parent.is_none(),
+            moved
+                .former_parent
+                .as_deref()
+                .filter(|p| Some(*p) != new_parent),
+        )
+        .await?;
+        Ok(moved)
+    }
+
+    /// Emit the relationship events for a committed move: the re-spread
+    /// siblings and the NEW-parent edge first, so a consumer that
+    /// inserts-then-deletes never sees the node parentless mid-move, then the
+    /// removal of the OLD parent edge when the parent actually changed
+    /// (move-to-root or reparent), so the detach propagates to other devices
+    /// rather than leaving a stale edge there.
+    fn emit_move_events(
+        &self,
+        node_id: &str,
+        new_parent: Option<&str>,
+        moved: &crate::db::NodeMove,
+    ) {
+        if let Some(parent_id) = new_parent {
+            self.emit_respread_events(parent_id, &moved.placement.respread);
+            self.emit_event(DomainEvent::RelationshipUpdated {
+                relationship: crate::db::events::RelationshipEvent::new(
+                    format!("relationship:{}:{}", parent_id, node_id),
+                    parent_id,
+                    node_id,
+                    "has_child",
+                    serde_json::json!({"order": moved.placement.order}),
+                ),
+            });
+        }
+        if let Some(old_id) = moved.former_parent.as_deref() {
+            if new_parent != Some(old_id) {
+                self.emit_event(DomainEvent::RelationshipDeleted {
+                    id: format!("relationship:{}:{}", old_id, node_id),
+                    from_id: crate::db::events::node_thing(old_id),
+                    to_id: crate::db::events::node_thing(node_id),
+                    relationship_type: "has_child".to_string(),
+                });
+            }
+        }
     }
 
     /// Reorder a node within its siblings with OCC
@@ -653,42 +658,35 @@ impl NodeService {
             ));
         }
 
-        // Root nodes cannot be reordered (they have no parent)
-        if self.is_root_node(node_id).await? {
-            return Err(NodeServiceError::hierarchy_violation(format!(
-                "Root node '{}' cannot be reordered (it has no parent)",
-                node_id
-            )));
-        }
-
         let insert_after = self.resolve_reorder_position(node_id, position).await?;
 
         // The reorder, any sibling re-spread and the version bump are one
         // unit of work (ADR-069 §1a). The checks above read through pooled
-        // readers and only fail fast; a concurrent writer can still bump the
-        // node before the write. The bump re-checks `expected_version` inside
-        // the transaction, and a conflict there rolls the new order key and
-        // every re-spread key back with it. Events are buffered and flushed
-        // only after commit (ADR-069 §2), after the bump's `NodeUpdated`.
+        // readers and only fail fast; a concurrent writer can still change
+        // the node before the write. The bump runs first inside the
+        // transaction and re-checks `expected_version`, so it alone decides
+        // who lost a race: any concurrent versioned write — an edit, a move,
+        // a move to root — fails this reorder with `VersionConflict` before
+        // it writes, rather than with whatever the reorder would then trip
+        // over. Nothing else in the reorder reads the node's own row, so the
+        // bump's `NodeUpdated` is unaffected by running first. Events are
+        // buffered and flushed only after commit (ADR-069 §2).
         let node_id = node_id.to_string();
         let service = self.clone();
         self.with_transaction(move |tx| {
             Box::pin(async move {
-                let Some((parent_id, placement)) =
-                    Self::reorder_child_in_tx(tx, &node_id, insert_after.as_deref()).await?
-                else {
-                    return Err(NodeServiceError::hierarchy_violation(format!(
-                        "Root node '{}' cannot be reordered (it has no parent)",
-                        node_id
-                    )));
-                };
-
                 // Even though we're only modifying edge ordering, we bump the
                 // node version so that concurrent reorders fail with a
                 // version conflict.
                 service
                     .update_node_with_version_bump_in_tx(tx, &node_id, expected_version)
                     .await?;
+
+                let Some((parent_id, placement)) =
+                    Self::reorder_child_in_tx(tx, &node_id, insert_after.as_deref()).await?
+                else {
+                    return Err(root_reorder_violation(&node_id));
+                };
 
                 service.emit_reorder_event(&node_id, &parent_id, &placement);
                 Ok(())
@@ -913,7 +911,11 @@ impl NodeService {
         // `child_id` is already a child of `parent_id` AND the position is
         // End (no explicit reorder hint), treat this call as a no-op.
         // `Beginning` and `After(_)` still trigger a real reorder.
-        let existing_parent = self.get_parent(child_id).await?.map(|p| p.id);
+        let existing_parent = self
+            .store
+            .get_parent_id(child_id)
+            .await
+            .map_err(NodeServiceError::from_store)?;
         if matches!(position, crate::services::InsertPosition::End)
             && existing_parent.as_deref() == Some(parent_id)
         {
@@ -926,38 +928,39 @@ impl NodeService {
         }
 
         // Resolve InsertPosition::End to the actual last sibling id so the
-        // store's move_node gets a concrete Option<&str>.
-        let resolved = self
+        // store's move gets a concrete Option<&str>.
+        let insert_after = self
             .resolve_insert_position(position, Some(parent_id))
             .await?;
-        let insert_after_id: Option<&str> = resolved.as_deref();
 
-        // SQLite is synchronous/ACID: move_node commits before returning; the result
-        // is immediately visible on the next read. Trust the single call result.
-        let placement = self
-            .store
-            .move_node(child_id, Some(parent_id), insert_after_id)
-            .await
-            .map_err(NodeServiceError::from_store)?;
-        // `move_node` replaces any existing parent, so this can reparent.
-        self.refresh_for_rootness(
-            child_id,
-            false,
-            existing_parent.as_deref().filter(|p| *p != parent_id),
-        )
-        .await;
+        // The edge write — which replaces any existing parent, so this can
+        // reparent — its sibling re-spread and the rootness refresh commit as
+        // one transaction (ADR-069 §1a). The parent the refresh treats as
+        // left is read inside it, with the write. Events are buffered and
+        // flushed only after commit (ADR-069 §2).
+        let child_id = child_id.to_string();
+        let parent_id = parent_id.to_string();
+        let service = self.clone();
+        self.with_transaction(move |tx| {
+            Box::pin(async move {
+                let moved = service
+                    .move_in_tx(tx, &child_id, Some(&parent_id), insert_after.as_deref())
+                    .await?;
 
-        // Emit RelationshipCreated event (unified relationship events)
-        self.emit_respread_events(parent_id, &placement.respread);
-        self.emit_event(DomainEvent::RelationshipCreated {
-            relationship: crate::db::events::RelationshipEvent::new(
-                format!("relationship:{}:{}", parent_id, child_id),
-                parent_id,
-                child_id,
-                "has_child",
-                serde_json::json!({"order": placement.order}),
-            ),
-        });
+                service.emit_respread_events(&parent_id, &moved.placement.respread);
+                service.emit_event(DomainEvent::RelationshipCreated {
+                    relationship: crate::db::events::RelationshipEvent::new(
+                        format!("relationship:{}:{}", parent_id, child_id),
+                        &parent_id,
+                        &child_id,
+                        "has_child",
+                        serde_json::json!({"order": moved.placement.order}),
+                    ),
+                });
+                Ok(())
+            })
+        })
+        .await?;
 
         tracing::debug!("create_parent_edge: COMPLETE");
         Ok(())
@@ -1050,71 +1053,23 @@ impl NodeService {
         Ok(created.len())
     }
 
-    /// Reorder a child within its parent's children list.
-    ///
-    /// Updates the `has_child` edge `order` field to reposition a node among its siblings.
-    ///
-    /// # Arguments
-    ///
-    /// * `node_id` - The node to reorder
-    /// * `position` - Where to place the node among its siblings
-    ///
-    /// # Examples
-    ///
-    /// ```no_run
-    /// # use nodespace_core::services::{NodeService, InsertPosition};
-    /// # use nodespace_core::db::SqliteStore;
-    /// # use std::path::PathBuf;
-    /// # use std::sync::Arc;
-    /// # #[tokio::main]
-    /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /// # let mut db = Arc::new(SqliteStore::new(PathBuf::from("./test.db")).await?);
-    /// # let service = NodeService::new(&mut db).await?;
-    /// // Position node after sibling
-    /// service.reorder_child("node-id", InsertPosition::After("sibling-id")).await?;
-    ///
-    /// // Move to first position
-    /// service.reorder_child("node-id", InsertPosition::Beginning).await?;
-    /// # Ok(())
-    /// # }
-    /// ```
-    pub async fn reorder_child(
-        &self,
-        node_id: &str,
-        position: crate::services::InsertPosition<'_>,
-    ) -> Result<(), NodeServiceError> {
-        let insert_after = self.resolve_reorder_position(node_id, position).await?;
-
-        // The reorder and its sibling re-spread commit as one transaction;
-        // events are buffered and flushed only after commit (ADR-069 §2).
-        let node_id = node_id.to_string();
-        let service = self.clone();
-        self.with_transaction(move |tx| {
-            Box::pin(async move {
-                if let Some((parent_id, placement)) =
-                    Self::reorder_child_in_tx(tx, &node_id, insert_after.as_deref()).await?
-                {
-                    service.emit_reorder_event(&node_id, &parent_id, &placement);
-                }
-                Ok(())
-            })
-        })
-        .await
-    }
-
-    /// The fast-fail checks and position resolution shared by
-    /// [`Self::reorder_child`] and [`Self::reorder_node`], run before their
-    /// transaction: the node and any `After` sibling must exist, and the
-    /// position is resolved against the node's current parent. Returns the
-    /// sibling to insert after (`None` = first).
+    /// [`Self::reorder_node`]'s fast-fail checks and position resolution, run
+    /// before its transaction: the node must not be a root and any `After`
+    /// sibling must exist. Resolves the position against the node's current
+    /// parent and returns the sibling to insert after (`None` = first).
     async fn resolve_reorder_position(
         &self,
         node_id: &str,
         position: crate::services::InsertPosition<'_>,
     ) -> Result<Option<String>, NodeServiceError> {
-        if !self.node_exists(node_id).await? {
-            return Err(NodeServiceError::node_not_found(node_id));
-        }
+        let Some(parent_id) = self
+            .store
+            .get_parent_id(node_id)
+            .await
+            .map_err(NodeServiceError::from_store)?
+        else {
+            return Err(root_reorder_violation(node_id));
+        };
 
         if let crate::services::InsertPosition::After(sibling_id) = position {
             if !self.node_exists(sibling_id).await? {
@@ -1125,12 +1080,7 @@ impl NodeService {
             }
         }
 
-        let parent_id = self
-            .store
-            .get_parent_id(node_id)
-            .await
-            .map_err(NodeServiceError::from_store)?;
-        self.resolve_insert_position(position, parent_id.as_deref())
+        self.resolve_insert_position(position, Some(&parent_id))
             .await
     }
 
@@ -1139,11 +1089,11 @@ impl NodeService {
     /// or `None` without writing if the node is a root.
     ///
     /// The parent is read inside the transaction, so the write is always a
-    /// same-parent reorder. If a concurrent move reparented the node after
-    /// `insert_after` was resolved, that sibling is no longer among its
-    /// children and the store places the node last under its new parent,
-    /// rather than moving it back to the parent the position was resolved
-    /// against.
+    /// same-parent reorder, never a move back to the parent `insert_after`
+    /// was resolved against. If a concurrent move reparented the node after
+    /// that resolution, an `insert_after` sibling is no longer among its
+    /// children and the store places the node last under its new parent; a
+    /// `None` (first) position still places it first.
     pub(crate) async fn reorder_child_in_tx(
         tx: &NodeServiceTx<'_>,
         node_id: &str,
@@ -1267,6 +1217,14 @@ pub fn flatten_subtree_content(
         }
     }
     parts
+}
+
+/// Roots have no parent edge to reposition under, so they cannot be reordered.
+fn root_reorder_violation(node_id: &str) -> NodeServiceError {
+    NodeServiceError::hierarchy_violation(format!(
+        "Root node '{}' cannot be reordered (it has no parent)",
+        node_id
+    ))
 }
 
 #[cfg(test)]

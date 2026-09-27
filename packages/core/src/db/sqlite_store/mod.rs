@@ -757,6 +757,7 @@ mod embedding_roots;
 mod embeddings;
 pub(crate) use embeddings::{composite_similarity_score, cosine_similarity};
 mod nodes;
+pub(crate) use nodes::NodeMove;
 pub use nodes::{BulkNodeRow, ChildPlacement, ResolvedEntity};
 mod relationships;
 mod search;
