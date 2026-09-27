@@ -125,37 +125,54 @@ pub fn playbook_overview_skill(source: &str, installed: &InstalledIds) -> NodeTe
 }
 
 fn render_installed(installed: &InstalledIds) -> String {
-    let mut out = String::from("\n## Installed in this workspace\n\n");
+    let mut out = String::from("\n## Installed in this workspace\n");
 
-    out.push_str("Types:\n\n");
-    for (requested, actual) in &installed.schemas {
+    let types = installed.schemas.iter().map(|(requested, actual)| {
         if requested == actual {
-            out.push_str(&format!("- `{actual}`\n"));
+            format!("`{actual}`")
         } else {
-            out.push_str(&format!(
-                "- `{actual}` — this Playbook's `{requested}`, re-keyed because `{requested}` \
-                 already belonged to something unrelated. Use `{actual}` wherever the \
-                 guidance says `{requested}`.\n"
-            ));
+            format!(
+                "`{actual}` — this Playbook's `{requested}`, re-keyed because `{requested}` \
+                 already existed. Use `{actual}` wherever the guidance says `{requested}`."
+            )
         }
-    }
-
-    out.push_str("\nPlays:\n\n");
-    for (name, id) in &installed.plays {
-        out.push_str(&format!("- {name} (`{id}`)\n"));
-    }
-
-    out.push_str("\nGuidance skills:\n\n");
-    for title in &installed.skills {
-        out.push_str(&format!("- {title}\n"));
-    }
-
-    out.push_str("\nSaved views:\n\n");
-    for (name, id) in &installed.views {
-        out.push_str(&format!("- {name} (`{id}`)\n"));
-    }
+    });
+    push_list(&mut out, "Types", types);
+    push_list(
+        &mut out,
+        "Plays",
+        installed
+            .plays
+            .iter()
+            .map(|(name, id)| format!("{name} (`{id}`)")),
+    );
+    push_list(
+        &mut out,
+        "Guidance skills",
+        installed.skills.iter().cloned(),
+    );
+    push_list(
+        &mut out,
+        "Saved views",
+        installed
+            .views
+            .iter()
+            .map(|(name, id)| format!("{name} (`{id}`)")),
+    );
 
     out
+}
+
+/// Append `label` and a bullet per item, or nothing when there are no items.
+fn push_list(out: &mut String, label: &str, items: impl Iterator<Item = String>) {
+    let mut items = items.peekable();
+    if items.peek().is_none() {
+        return;
+    }
+    out.push_str(&format!("\n{label}:\n\n"));
+    for item in items {
+        out.push_str(&format!("- {item}\n"));
+    }
 }
 
 /// Split `source` into `(title, description, body)`.
@@ -228,6 +245,18 @@ mod tests {
         assert!(section.contains("- Gate (`gate__2`)"), "{section}");
         assert!(section.contains("- Creating an Issue"), "{section}");
         assert!(section.contains("- Board (`board`)"), "{section}");
+    }
+
+    #[test]
+    fn an_empty_category_is_omitted_rather_than_left_as_a_bare_label() {
+        let installed = InstalledIds {
+            schemas: vec![("widget".into(), "widget".into())],
+            ..Default::default()
+        };
+        let section = render_installed(&installed);
+        assert!(section.contains("Types:"), "{section}");
+        assert!(!section.contains("Plays:"), "{section}");
+        assert!(!section.contains("Saved views:"), "{section}");
     }
 
     #[test]

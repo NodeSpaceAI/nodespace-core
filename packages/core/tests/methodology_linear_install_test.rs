@@ -521,30 +521,28 @@ async fn install_seeds_a_bundle_skill_naming_what_it_installed() -> Result<()> {
     let report = install_playbook(&service, &playbook).await;
     assert!(report.success, "first failure: {:?}", report.failure());
 
+    // Each list item is its own node, so an exact match on a whole node
+    // lands only on the generated section — the authored prose also mentions
+    // `issue` and `cycle`, and a substring check would pass on that alone.
     let guidance = seeded_guidance(&service, "Linear-style Workspace").await?;
-    for step in &playbook.schemas {
+    let items: Vec<&str> = guidance.lines().collect();
+    let names = |expected: String| {
         assert!(
-            guidance.contains(&format!("`{}`", step.schema_id)),
-            "overview must name the `{}` schema:\n{guidance}",
-            step.schema_id
+            items.contains(&expected.as_str()),
+            "overview must list {expected}:\n{guidance}"
         );
+    };
+    for step in &playbook.schemas {
+        names(format!("`{}`", step.schema_id));
     }
     for play in &playbook.plays {
-        assert!(
-            guidance.contains(&format!("{} (`{}`)", play.name, play.play_id)),
-            "overview must name Play {}:\n{guidance}",
-            play.name
-        );
+        names(format!("{} (`{}`)", play.name, play.play_id));
     }
     for skill in &playbook.skills {
-        assert!(
-            guidance.contains(&skill.title),
-            "overview must point at {}",
-            skill.title
-        );
+        names(skill.title.clone());
     }
     for view in &playbook.views {
-        assert!(guidance.contains(&format!("{} (`{}`)", view.name, view.view_id)));
+        names(format!("{} (`{}`)", view.name, view.view_id));
     }
     Ok(())
 }
@@ -572,7 +570,7 @@ async fn the_bundle_skill_names_a_re_keyed_schema_by_its_real_id() -> Result<()>
 
     let guidance = seeded_guidance(&service, "Linear-style Workspace").await?;
     assert!(
-        guidance.contains(&format!("`{new_id}` — this Playbook's `cycle`")),
+        guidance.contains(&format!("`{new_id}` — this Playbook's `cycle`, re-keyed")),
         "overview must map `cycle` to {new_id}:\n{guidance}"
     );
     Ok(())

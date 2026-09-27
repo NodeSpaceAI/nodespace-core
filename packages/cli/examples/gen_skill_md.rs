@@ -461,22 +461,6 @@ fn render_linear_playbook_block() -> String {
             .description;
         let _ = writeln!(out, "**{}** — {}\n", skill.title, description);
     }
-    let overview = nodespace_core::methodology::skills::playbook_overview_skill(
-        playbook.overview,
-        &Default::default(),
-    );
-    let overview_description =
-        SkillNode::from_properties(&overview.title, &overview.root_properties)
-            .unwrap_or_else(|e| panic!("Playbook overview '{}' must decode: {e}", overview.title))
-            .description;
-    let _ = writeln!(
-        out,
-        "**{}** — {} Seeded last, and titled exactly so: it is how an agent in this \
-         workspace later recognizes the Playbook is installed. End its body with an \
-         \"Installed in this workspace\" section listing the types, Plays, guidance skills \
-         and views you created, by id.\n",
-        overview.title, overview_description
-    );
     let _ = writeln!(
         out,
         "Create each with `nodespace node create --type skill`, then add its guidance as \
@@ -501,6 +485,24 @@ fn render_linear_playbook_block() -> String {
         );
     }
 
+    let _ = writeln!(out, "### 6. Workspace skill\n");
+    let overview = nodespace_core::methodology::skills::playbook_overview_skill(
+        playbook.overview,
+        &Default::default(),
+    );
+    let overview_description =
+        SkillNode::from_properties(&overview.title, &overview.root_properties)
+            .unwrap_or_else(|e| panic!("Playbook overview '{}' must decode: {e}", overview.title))
+            .description;
+    let _ = writeln!(
+        out,
+        "One more skill, created after everything else because it names what you created. \
+         Title it exactly as shown: it is how an agent in this workspace later recognizes \
+         the Playbook is installed.\n\n**{}** — {}\n\nCreate it the same way as the \
+         guidance skills, and end its body with an \"Installed in this workspace\" section \
+         listing the types, Plays, guidance skills and views above, by id.",
+        overview.title, overview_description
+    );
     out.trim_end().to_string()
 }
 

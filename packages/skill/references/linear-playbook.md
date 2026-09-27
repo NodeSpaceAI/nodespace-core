@@ -95,8 +95,6 @@ Skill nodes carrying usage guidance, discovered through the ordinary skill-searc
 
 **Issue Validation Rules** — Why a status change on an issue was rejected: the sub-issue completion gate and the blocker gate, what each checks, and how to proceed when one fires.
 
-**Linear-style Workspace** — What workflow this workspace uses: the Linear-style Playbook installed here — its issue and cycle types, the Plays that automate and gate them, its saved views, and the schema ids they were actually created under. Seeded last, and titled exactly so: it is how an agent in this workspace later recognizes the Playbook is installed. End its body with an "Installed in this workspace" section listing the types, Plays, guidance skills and views you created, by id.
-
 Create each with `nodespace node create --type skill`, then add its guidance as markdown children. The bodies are long-form prose; read them from `packages/core/src/methodology/skills/linear/` rather than reproducing them here.
 
 ### 5. Saved views
@@ -116,6 +114,14 @@ nodespace node create --type query --content 'Issues by Status' \
 nodespace node create --type query --content 'Cycles' \
   --properties '{"filters":[],"generated_by":"user","sorting":[{"direction":"desc","field":"start_date"}],"target_type":"cycle","view_config":{"lastView":"table"}}'
 ```
+
+### 6. Workspace skill
+
+One more skill, created after everything else because it names what you created. Title it exactly as shown: it is how an agent in this workspace later recognizes the Playbook is installed.
+
+**Linear-style Workspace** — What workflow this workspace uses: the Linear-style Playbook installed here — its issue and cycle types, the Plays that automate and gate them, its saved views, and the schema ids they were actually created under.
+
+Create it the same way as the guidance skills, and end its body with an "Installed in this workspace" section listing the types, Plays, guidance skills and views above, by id.
 <!-- END GENERATED: linear-playbook -->
 
 ## After installing

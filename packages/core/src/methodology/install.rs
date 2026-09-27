@@ -36,8 +36,9 @@ const MAX_SUFFIX_ATTEMPTS: u32 = 16;
 /// Install `playbook` into the graph.
 ///
 /// Steps run in the playbook's declared order — schemas, then vocabulary
-/// extensions, then Plays, then skills, then saved views, then the bundle-level
-/// overview skill — because each tier depends on the ones before it. A Play whose trigger names a type is rejected by
+/// extensions, then Plays, then skills, then saved views, then the
+/// bundle-level overview skill — because each tier depends on the ones before
+/// it. A Play whose trigger names a type is rejected by
 /// `validate_play_rules` until that type's schema exists, so the order is
 /// enforced by the write path rather than merely conventional. The overview
 /// comes last because it names the ids every earlier step landed under.
