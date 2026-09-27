@@ -66,7 +66,7 @@ export async function createSchemaInstance(typeId: string): Promise<Node> {
     mentions: [],
     parentId: null,
   });
-  // Deliberate second round-trip: createNode returns only the id, but the caller
+  // Deliberate second round-trip: createNode doesn't return the node, but the caller
   // needs the full hydrated Node to seed the shared store — so load it back.
   const created = await backendAdapter.getNode(newId);
   if (!created) {

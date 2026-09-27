@@ -55,6 +55,8 @@ import {
   type ExecuteQueryInput,
   type CreateContainerInput,
   type InsertPosition,
+  type CreatedNode,
+  type MovedNode,
 } from './adapter-core';
 
 const log = createLogger('BackendAdapter');
@@ -69,6 +71,9 @@ export type {
   NodeQuery,
   ExecuteQueryInput,
   CreateContainerInput,
+  ChildPlacement,
+  CreatedNode,
+  MovedNode,
 } from './adapter-core';
 export { insertPosition } from './adapter-core';
 
@@ -77,12 +82,12 @@ export { insertPosition } from './adapter-core';
 // ============================================================================
 
 class TauriAdapter implements BackendAdapter {
-  async createNode(input: CreateNodeInput | Node): Promise<string> {
+  async createNode(input: CreateNodeInput | Node): Promise<CreatedNode> {
     // Tauri 2.x with #[serde(rename_all = "camelCase")] expects camelCase field names
     const nodeInput = buildCreateNodeFields(input);
     return withDiagnosticLogging(
       'createNode',
-      () => invoke<string>('create_node', { node: nodeInput }),
+      () => invoke<CreatedNode>('create_node', { node: nodeInput }),
       [nodeInput]
     );
   }
@@ -180,10 +185,10 @@ class TauriAdapter implements BackendAdapter {
     );
   }
 
-  async moveNode(nodeId: string, version: number, newParentId: string | null, insertPosition: InsertPosition | null): Promise<Node> {
+  async moveNode(nodeId: string, version: number, newParentId: string | null, insertPosition: InsertPosition | null): Promise<MovedNode> {
     return withDiagnosticLogging(
       'moveNode',
-      () => invoke<Node>('move_node', {
+      () => invoke<MovedNode>('move_node', {
         nodeId,
         version,
         newParentId,
@@ -489,7 +494,7 @@ export class HttpAdapter implements BackendAdapter {
     return await response.json();
   }
 
-  async createNode(input: CreateNodeInput | Node): Promise<string> {
+  async createNode(input: CreateNodeInput | Node): Promise<CreatedNode> {
     const now = new Date().toISOString();
     const fields = buildCreateNodeFields(input);
     const requestBody = {
@@ -505,7 +510,7 @@ export class HttpAdapter implements BackendAdapter {
       body: JSON.stringify(requestBody)
     });
 
-    return await this.handleResponse<string>(response);
+    return await this.handleResponse<CreatedNode>(response);
   }
 
   async getNode(id: string): Promise<Node | null> {
@@ -587,13 +592,13 @@ export class HttpAdapter implements BackendAdapter {
     return normalizeChildrenTree(result);
   }
 
-  async moveNode(nodeId: string, version: number, newParentId: string | null, insertPosition: InsertPosition | null): Promise<Node> {
+  async moveNode(nodeId: string, version: number, newParentId: string | null, insertPosition: InsertPosition | null): Promise<MovedNode> {
     const response = await fetch(`${this.baseUrl}${HTTP_ROUTES.moveNode(nodeId)}`, {
       method: 'POST',
       headers: this.getHeaders(),
       body: JSON.stringify({ version, parentId: newParentId, insertPosition })
     });
-    return this.handleResponse<Node>(response);
+    return this.handleResponse<MovedNode>(response);
   }
 
   async moveChildrenToParent(newParentId: string, children: Array<{ id: string; version: number }>): Promise<Node[]> {
@@ -690,7 +695,7 @@ export class HttpAdapter implements BackendAdapter {
 
   async createContainerNode(input: CreateContainerInput): Promise<string> {
     // Use createNode with no parent for root node creation
-    return this.createNode({
+    const created = await this.createNode({
       id: crypto.randomUUID(),
       nodeType: input.nodeType,
       content: input.content,
@@ -698,6 +703,7 @@ export class HttpAdapter implements BackendAdapter {
       mentions: [],
       parentId: null
     });
+    return created.id;
   }
 
   async getAllSchemas(): Promise<SchemaNode[]> {
@@ -788,8 +794,8 @@ async function getDescendantsViaChildren(
 // ============================================================================
 
 class MockAdapter implements BackendAdapter {
-  async createNode(_input: CreateNodeInput | Node): Promise<string> {
-    return 'mock-id';
+  async createNode(_input: CreateNodeInput | Node): Promise<CreatedNode> {
+    return { id: 'mock-id', placement: null };
   }
   async getNode(_id: string): Promise<Node | null> {
     return null;
@@ -847,8 +853,8 @@ class MockAdapter implements BackendAdapter {
   async getDescendants(_rootNodeId: string): Promise<Node[]> {
     return [];
   }
-  async moveNode(_nodeId: string, _version: number, _newParentId: string | null, _insertPosition: InsertPosition | null): Promise<Node> {
-    return {} as Node;
+  async moveNode(_nodeId: string, _version: number, _newParentId: string | null, _insertPosition: InsertPosition | null): Promise<MovedNode> {
+    return { node: {} as Node, placement: null };
   }
   async moveChildrenToParent(_newParentId: string, children: Array<{ id: string; version: number }>): Promise<Node[]> {
     return children.map(() => ({} as Node));

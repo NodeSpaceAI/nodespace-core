@@ -256,6 +256,26 @@ message NodeResponse {
   reserved 3, 4;
   reserved "parent_id", "collection_id";
   NodeData node_data = 5;
+  // Set by CreateNode and MoveNode when the write placed the node under a
+  // parent; unset for a root node and on every other RPC. The caller's own
+  // relationship events are echo-suppressed, so this is how the client that
+  // made the write learns the store's order keys.
+  ChildPlacement placement = 6;
+}
+
+// Where a hierarchy write placed a node's has_child edge.
+message ChildPlacement {
+  string parent_id = 1;
+  // The store's order key for the written edge.
+  double order = 2;
+  // Every other child of `parent_id` whose order key a re-spread rewrote, with
+  // its new key. Empty unless the parent's order gap collapsed.
+  repeated SiblingOrder respread = 3;
+}
+
+message SiblingOrder {
+  string node_id = 1;
+  double order = 2;
 }
 
 // ---------------------------------------------------------------------------

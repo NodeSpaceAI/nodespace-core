@@ -352,7 +352,7 @@ describe('SharedNodeStore - Extended Coverage', () => {
       vi.spyOn(backendAdapter, 'updateNode').mockRejectedValue(
         new Error('NodeNotFound: Node does not exist')
       );
-      vi.spyOn(backendAdapter, 'createNode').mockResolvedValue(mockNode.id);
+      vi.spyOn(backendAdapter, 'createNode').mockResolvedValue({ id: mockNode.id, placement: null });
       vi.spyOn(backendAdapter, 'getNode').mockResolvedValue({ ...mockNode, version: 1 });
 
       // Simulate node marked as persisted but not in DB
@@ -365,7 +365,7 @@ describe('SharedNodeStore - Extended Coverage', () => {
     });
 
     it('should handle setNode with success', async () => {
-      vi.spyOn(backendAdapter, 'createNode').mockResolvedValue(mockNode.id);
+      vi.spyOn(backendAdapter, 'createNode').mockResolvedValue({ id: mockNode.id, placement: null });
       vi.spyOn(backendAdapter, 'getNode').mockResolvedValue({ ...mockNode, version: 1 });
 
       store.setNode(mockNode, viewerSource);
@@ -475,7 +475,7 @@ describe('SharedNodeStore - Extended Coverage', () => {
           createCalled = true;
           throw new Error('UNIQUE constraint failed');
         }
-        return 'race-node';
+        return { id: 'race-node', placement: null };
       });
 
       vi.spyOn(backendAdapter, 'updateNode').mockResolvedValue({
@@ -505,7 +505,7 @@ describe('SharedNodeStore - Extended Coverage', () => {
           createCalled = true;
           throw new Error('Node already exists');
         }
-        return 'exists-node';
+        return { id: 'exists-node', placement: null };
       });
 
       vi.spyOn(backendAdapter, 'updateNode').mockResolvedValue({
@@ -529,7 +529,7 @@ describe('SharedNodeStore - Extended Coverage', () => {
 
     it('should handle batch CREATE with proper error recovery', async () => {
       // Mock successful creation to avoid unhandled rejections
-      vi.spyOn(backendAdapter, 'createNode').mockResolvedValue('error-node');
+      vi.spyOn(backendAdapter, 'createNode').mockResolvedValue({ id: 'error-node', placement: null });
       vi.spyOn(backendAdapter, 'getNode').mockResolvedValue({ ...mockNode, version: 1 });
 
       const node = { ...mockNode, id: 'error-node', nodeType: 'quote-block', content: '> Test' };

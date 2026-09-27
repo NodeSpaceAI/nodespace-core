@@ -448,6 +448,12 @@ impl NodeService {
     /// from silently overwriting each other. The node's version is bumped after a
     /// successful move.
     ///
+    /// Returns the updated node and, when the node landed under a parent, the
+    /// store's [`crate::db::ChildPlacement`] for the written edge. The caller
+    /// that made the write needs it: echo suppression keeps this write's own
+    /// `RelationshipUpdated` events from reaching it, so the reply is the only
+    /// place it learns the authoritative order keys (including any re-spread).
+    ///
     /// # Arguments
     ///
     /// * `node_id` - The node to move
@@ -486,7 +492,7 @@ impl NodeService {
         expected_version: i64,
         new_parent: Option<&str>,
         position: crate::services::InsertPosition<'_>,
-    ) -> Result<Node, NodeServiceError> {
+    ) -> Result<(Node, Option<crate::db::ChildPlacement>), NodeServiceError> {
         // Get current node and verify version
         let node = self
             .get_node(node_id)
@@ -586,7 +592,7 @@ impl NodeService {
                     }
                 }
 
-                Ok(updated_node)
+                Ok((updated_node, new_parent.map(|_| placement)))
             })
         })
         .await
@@ -950,7 +956,7 @@ impl NodeService {
         child_id: &str,
         parent_id: &str,
         position: crate::services::InsertPosition<'_>,
-    ) -> Result<(), NodeServiceError> {
+    ) -> Result<crate::db::ChildPlacement, NodeServiceError> {
         let resolved = self
             .resolve_insert_position(position, Some(parent_id))
             .await?;
@@ -976,7 +982,7 @@ impl NodeService {
             ),
         });
 
-        Ok(())
+        Ok(placement)
     }
 
     /// Batched sibling of [`Self::create_parent_edge`] for the sync-apply cold-sweep's

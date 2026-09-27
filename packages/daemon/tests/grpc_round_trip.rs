@@ -1454,6 +1454,164 @@ async fn move_node_to_root_when_new_parent_id_empty_string() {
     let _ = shutdown.send(());
 }
 
+/// The client that makes a hierarchy write never receives that write's own
+/// events, so CreateNode and MoveNode return the store's placement: the
+/// written edge's order and every re-spread sibling's new order. A client that
+/// learns sibling order from those replies alone must end in store order, even
+/// once repeated inserts after one anchor collapse the gap and force a
+/// re-spread. Root creates and moves to root carry no placement.
+#[tokio::test]
+async fn create_and_move_replies_carry_the_store_placement() {
+    use nodespace_daemon::nodespace::{move_node_request::Position as MovePos, MoveNodeRequest};
+    use std::collections::HashMap;
+
+    let (mut client, shutdown, _tempdir) = spawn_test_daemon().await;
+
+    let create =
+        |content: &str, parent_id: Option<String>, position: Option<CreatePos>| CreateNodeRequest {
+            node_type: "text".into(),
+            content: content.into(),
+            parent_id,
+            properties: String::new(),
+            collections: Vec::new(),
+            collection_ids: Vec::new(),
+            lifecycle_status: None,
+            id: None,
+            position,
+        };
+
+    let parent = client
+        .create_node(create("parent", None, None))
+        .await
+        .expect("create parent")
+        .into_inner();
+    assert!(parent.placement.is_none(), "a root create has no placement");
+
+    let mut orders: HashMap<String, f64> = HashMap::new();
+    let mut respreads = 0;
+    let mut apply = |orders: &mut HashMap<String, f64>,
+                     child: &str,
+                     placement: nodespace_daemon::nodespace::ChildPlacement| {
+        assert_eq!(placement.parent_id, parent.node_id);
+        if !placement.respread.is_empty() {
+            respreads += 1;
+        }
+        for sibling in placement.respread {
+            orders.insert(sibling.node_id, sibling.order);
+        }
+        orders.insert(child.to_string(), placement.order);
+    };
+
+    let mut anchor_id = String::new();
+    for content in ["anchor", "tail"] {
+        let resp = client
+            .create_node(create(content, Some(parent.node_id.clone()), None))
+            .await
+            .expect("create child")
+            .into_inner();
+        apply(
+            &mut orders,
+            &resp.node_id,
+            resp.placement.expect("child create returns placement"),
+        );
+        if content == "anchor" {
+            anchor_id = resp.node_id;
+        }
+    }
+
+    // ~50 halvings collapse an f64 gap of 1.0, so 60 inserts re-spread.
+    let mut created = Vec::new();
+    for i in 0..60 {
+        let resp = client
+            .create_node(create(
+                &format!("item-{i}"),
+                Some(parent.node_id.clone()),
+                Some(CreatePos::After(anchor_id.clone())),
+            ))
+            .await
+            .expect("create after anchor")
+            .into_inner();
+        apply(
+            &mut orders,
+            &resp.node_id,
+            resp.placement.expect("child create returns placement"),
+        );
+        created.push(resp.node_id);
+    }
+    for id in &created {
+        let version = client
+            .get_node(GetNodeRequest {
+                node_id: id.clone(),
+            })
+            .await
+            .expect("get_node")
+            .into_inner()
+            .node_data
+            .expect("node_data")
+            .version;
+        let resp = client
+            .move_node(MoveNodeRequest {
+                node_id: id.clone(),
+                version,
+                new_parent_id: Some(parent.node_id.clone()),
+                position: Some(MovePos::After(anchor_id.clone())),
+            })
+            .await
+            .expect("move after anchor")
+            .into_inner();
+        apply(
+            &mut orders,
+            id,
+            resp.placement
+                .expect("move under a parent returns placement"),
+        );
+    }
+    assert!(respreads > 0, "no write re-spread the siblings");
+
+    let mut mirrored: Vec<(String, f64)> = orders.into_iter().collect();
+    mirrored.sort_by(|a, b| a.1.total_cmp(&b.1));
+    let mirrored: Vec<String> = mirrored.into_iter().map(|(id, _)| id).collect();
+    let stored: Vec<String> = client
+        .get_children(GetChildrenRequest {
+            node_id: parent.node_id.clone(),
+        })
+        .await
+        .expect("get_children")
+        .into_inner()
+        .nodes
+        .into_iter()
+        .map(|n| n.id)
+        .collect();
+    assert_eq!(
+        mirrored, stored,
+        "reply-only client diverged from the store"
+    );
+
+    let anchor_version = client
+        .get_node(GetNodeRequest {
+            node_id: anchor_id.clone(),
+        })
+        .await
+        .expect("get_node")
+        .into_inner()
+        .node_data
+        .expect("node_data")
+        .version;
+    let moved = client
+        .move_node(MoveNodeRequest {
+            node_id: anchor_id.clone(),
+            version: anchor_version,
+            new_parent_id: None,
+            position: None,
+        })
+        .await
+        .expect("move to root")
+        .into_inner();
+    assert!(moved.placement.is_none(), "a move to root has no placement");
+
+    let _ = shutdown.send(());
+}
+
 /// Fetch one `QueryNodesSimple` page scoped to nodes whose content contains
 /// `marker`, returning just the node ids in response order.
 async fn fetch_marked_page(

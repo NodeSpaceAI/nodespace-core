@@ -113,8 +113,10 @@ describe('Node content persistence regression', () => {
     const nodeId = 'persist-regression-3';
     const newNode = makeNode(nodeId, 'Brand new node content', 1);
 
-    // createNode returns the node ID string, not a Node object
-    const createSpy = vi.spyOn(backendAdapter, 'createNode').mockResolvedValueOnce(nodeId);
+    // createNode returns the node ID and its placement, not a Node object
+    const createSpy = vi
+      .spyOn(backendAdapter, 'createNode')
+      .mockResolvedValueOnce({ id: nodeId, placement: null });
 
     // New node arrives from viewer (not yet in DB)
     store.setNode(newNode, viewerSource);

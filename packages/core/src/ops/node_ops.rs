@@ -3,6 +3,7 @@
 //! Typed orchestration for node CRUD. Extracted from MCP handlers so both
 //! MCP and local agent tools share the same logic.
 
+use crate::db::ChildPlacement;
 use crate::models::{FilterOperator, Node, NodeFilter, NodeUpdate, OrderBy, PropertyFilter};
 use crate::ops::OpsError;
 use crate::services::{CollectionService, InsertPositionOwned, NodeService};
@@ -43,6 +44,8 @@ pub struct CreateNodeOutput {
     /// Leaf collection IDs the node was added to, in request order.
     pub collection_ids: Vec<String>,
     pub node_data: Value,
+    /// Where the store placed the node's parent edge; `None` for a root node.
+    pub placement: Option<ChildPlacement>,
 }
 
 #[derive(Debug)]
@@ -174,8 +177,8 @@ pub async fn create_node(
     // active, while the caller was told the operation failed. Setting it on
     // the initial insert makes that window impossible: the status is part
     // of the one write that creates the row.
-    let node_id = node_service
-        .create_node_with_parent(crate::services::CreateNodeParams {
+    let (node_id, placement) = node_service
+        .create_placed_node(crate::services::CreateNodeParams {
             id: input.id,
             node_type: input.node_type,
             content: input.content,
@@ -223,6 +226,7 @@ pub async fn create_node(
         parent_id,
         collection_ids,
         node_data,
+        placement,
     })
 }
 

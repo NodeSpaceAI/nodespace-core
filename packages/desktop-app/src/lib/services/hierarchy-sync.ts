@@ -1,6 +1,7 @@
 // services/hierarchy-sync.ts
 
 import type { ReactiveStructureTree } from '$lib/stores/reactive-structure-tree.svelte';
+import type { ChildPlacement } from './adapter-core';
 import { createLogger } from '$lib/utils/logger';
 
 const log = createLogger('HierarchySync');
@@ -70,4 +71,29 @@ export function applyHasChildDeleted(
   payload: { parentId: string; childId: string }
 ): void {
   structureTree.removeChild({ parentId: payload.parentId, childId: payload.childId, order: 0 });
+}
+
+/**
+ * Apply the placement a create or move returned to its own caller.
+ *
+ * The client that made a hierarchy write never receives that write's own
+ * relationship events (same-origin echo suppression), so its optimistic,
+ * locally computed order keys would otherwise never be replaced by the store's.
+ * This writes the store's keys for the re-spread siblings and the written edge.
+ *
+ * Only corrects nodes still under `placement.parentId`: a node the local tree has
+ * since moved elsewhere is left alone — the later write's own reply places it.
+ */
+export function applyChildPlacement(
+  structureTree: ReactiveStructureTree,
+  childId: string,
+  placement: ChildPlacement
+): void {
+  const { parentId } = placement;
+  structureTree.runBatch(() => {
+    for (const sibling of placement.respread) {
+      structureTree.updateChildOrder(parentId, sibling.nodeId, sibling.order);
+    }
+    structureTree.updateChildOrder(parentId, childId, placement.order);
+  });
 }

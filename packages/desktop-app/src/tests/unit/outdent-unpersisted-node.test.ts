@@ -61,11 +61,11 @@ describe('outdentNode propagates root reparenting and sibling transfer', () => {
 
     createNodeSpy = vi
       .spyOn(backendAdapter, 'createNode')
-      .mockImplementation(async (input) => input.id ?? '');
+      .mockImplementation(async (input) => ({ id: input.id ?? '', placement: null }));
     vi.spyOn(backendAdapter, 'getNode').mockResolvedValue(null);
     moveNodeSpy = vi
       .spyOn(backendAdapter, 'moveNode')
-      .mockImplementation(async (id) => makeNode(id, 2));
+      .mockImplementation(async (id) => ({ node: makeNode(id, 2), placement: null }));
     moveChildrenSpy = vi
       .spyOn(backendAdapter, 'moveChildrenToParent')
       .mockImplementation(async (_parentId, children) => children.map((c) => makeNode(c.id, 2)));
@@ -201,7 +201,7 @@ describe('outdentNode propagates root reparenting and sibling transfer', () => {
     // Start the CREATE and hold it mid-RPC: it has already read the OLD parent.
     let releaseCreate!: () => void;
     createNodeSpy.mockImplementation(
-      (input) => new Promise((resolve) => (releaseCreate = () => resolve(input.id ?? '')))
+      (input) => new Promise((resolve) => (releaseCreate = () => resolve({ id: input.id ?? '', placement: null })))
     );
     const firstFlush = sharedNodeStore.flushAllPendingSaves();
     await vi.waitFor(() => expect(sharedNodeStore.isNodePersistenceExecuting('child')).toBe(true));
@@ -311,7 +311,7 @@ describe('outdentNode propagates root reparenting and sibling transfer', () => {
 
     let releaseCreate!: () => void;
     createNodeSpy.mockImplementation(
-      (input) => new Promise((resolve) => (releaseCreate = () => resolve(input.id ?? '')))
+      (input) => new Promise((resolve) => (releaseCreate = () => resolve({ id: input.id ?? '', placement: null })))
     );
     const firstFlush = sharedNodeStore.flushAllPendingSaves();
     await vi.waitFor(() => expect(sharedNodeStore.isNodePersistenceExecuting('child')).toBe(true));

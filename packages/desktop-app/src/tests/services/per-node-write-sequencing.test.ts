@@ -126,14 +126,17 @@ describe('per-node write sequencing', () => {
       const createGate = deferred();
       const createSpy = vi.spyOn(backendAdapter, 'createNode').mockImplementation(async (input) => {
         await createGate.promise;
-        return input.id ?? '';
+        return { id: input.id ?? '', placement: null };
       });
       const typedSpy = vi
         .spyOn(backendAdapter, 'updateTaskNode')
         .mockImplementation(async (id, version, payload) => typedResponse(id, version + 1, payload));
       const moveSpy = vi
         .spyOn(backendAdapter, 'moveNode')
-        .mockImplementation(async (id, version) => makeNode(id, 'task', version + 1));
+        .mockImplementation(async (id, version) => ({
+          node: makeNode(id, 'task', version + 1),
+          placement: null
+        }));
 
       // The CREATE is now in flight.
       void store.flushNodeSaves(['task-1']);
@@ -164,7 +167,7 @@ describe('per-node write sequencing', () => {
         .spyOn(backendAdapter, 'moveNode')
         .mockImplementation(async (id, version) => {
           if (moveSpy.mock.calls.length === 1) await firstMoveGate.promise;
-          return makeNode(id, 'task', version + 1);
+          return { node: makeNode(id, 'task', version + 1), placement: null };
         });
       const typedSpy = vi
         .spyOn(backendAdapter, 'updateTaskNode')
@@ -200,7 +203,10 @@ describe('per-node write sequencing', () => {
         .mockImplementation(async (id, version) => makeNode(id, 'text', version + 1));
       const moveSpy = vi
         .spyOn(backendAdapter, 'moveNode')
-        .mockImplementation(async (id, version) => makeNode(id, 'text', version + 1));
+        .mockImplementation(async (id, version) => ({
+          node: makeNode(id, 'text', version + 1),
+          placement: null
+        }));
 
       // Typing leaves a debounced write pending; Tab flushes it.
       store.updateNode('text-1', { content: 'typed' }, viewerSource);

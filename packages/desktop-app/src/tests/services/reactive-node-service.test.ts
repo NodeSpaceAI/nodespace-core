@@ -27,10 +27,21 @@ import { conflictNotifications } from '$lib/stores/conflict-notifications.svelte
 // Mock backend-adapter to avoid backend calls in tests
 vi.mock('$lib/services/backend-adapter', () => ({
   backendAdapter: {
-    moveNode: vi.fn().mockResolvedValue(undefined),
+    moveNode: vi.fn().mockResolvedValue({
+      node: {
+        id: 'mock-node',
+        nodeType: 'text',
+        content: '',
+        version: 2,
+        properties: {},
+        createdAt: '2026-01-01T00:00:00.000Z',
+        modifiedAt: '2026-01-01T00:00:00.000Z'
+      },
+      placement: null
+    }),
     moveChildrenToParent: vi.fn().mockResolvedValue([]),
     getNode: vi.fn().mockResolvedValue(null),
-    createNode: vi.fn().mockResolvedValue('mock-id'),
+    createNode: vi.fn().mockResolvedValue({ id: 'mock-id', placement: null }),
     updateNode: vi.fn().mockResolvedValue(null),
     deleteNode: vi.fn().mockResolvedValue({ deleted: true }),
     getChildren: vi.fn().mockResolvedValue([]),

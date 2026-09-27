@@ -19,6 +19,8 @@ import {
   buildTaskNodeUpdatePatch,
   encodeInsertPosition,
   HTTP_ROUTE_PATTERNS,
+  type ChildPlacement,
+  type CreatedNode,
   type InsertPosition,
 } from '../../desktop-app/src/lib/services/adapter-core.ts';
 import { storageNodeToApiFields } from '../../desktop-app/src/lib/services/node-normalize.ts';
@@ -403,11 +405,12 @@ async function handleRequest(req: Request): Promise<Response> {
       if (body.parentId && body.parentId !== '') request.parentId = body.parentId;
       if (body.collection && body.collection !== '') request.collection = body.collection;
       if (body.lifecycleStatus && body.lifecycleStatus !== '') request.lifecycleStatus = body.lifecycleStatus;
-      const res = await call<typeof request, { nodeId: string }>(
+      const res = await call<typeof request, { nodeId: string; placement: ChildPlacement | null }>(
         (nodeClient as unknown as Record<string, Function>).createNode,
         request
       );
-      return json(res.nodeId);
+      const created: CreatedNode = { id: res.nodeId, placement: res.placement ?? null };
+      return json(created);
     } catch (err) {
       return grpcError(err as grpc.ServiceError);
     }
@@ -612,12 +615,13 @@ async function handleRequest(req: Request): Promise<Response> {
         newParentId: body.parentId ?? '',
         ...encodeInsertPosition(body.insertPosition as InsertPosition | null | undefined)
       };
-      const res = await call<typeof request, { nodeData?: ProtoNodeData }>(
-        (nodeClient as unknown as Record<string, Function>).moveNode,
-        request
-      );
+      const res = await call<
+        typeof request,
+        { nodeData?: ProtoNodeData; placement: ChildPlacement | null }
+      >((nodeClient as unknown as Record<string, Function>).moveNode, request);
       if (!res.nodeData) return error('NO_DATA', 'MoveNode returned no data');
-      return json(nodeDataToApiNode(res.nodeData));
+      // The frontend's MovedNode shape: { node, placement }.
+      return json({ node: nodeDataToApiNode(res.nodeData), placement: res.placement ?? null });
     } catch (err) {
       return grpcError(err as grpc.ServiceError);
     }

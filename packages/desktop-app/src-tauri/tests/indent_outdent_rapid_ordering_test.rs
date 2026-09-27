@@ -64,9 +64,13 @@ async fn rapid_indent_then_outdent_survives_against_a_real_daemon() {
     )
     .await
     .expect("indent (move B under A) failed");
-    let version_after_indent = indented["version"]
+    let version_after_indent = indented.node["version"]
         .as_i64()
         .expect("version must be a number");
+    let placement = indented
+        .placement
+        .expect("a move under a parent returns its placement");
+    assert_eq!(placement.parent_id, a_id);
 
     // Outdent: B moves back under root, using the version move_node just
     // returned — the real sequencing a coordinated frontend must achieve.

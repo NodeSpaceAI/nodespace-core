@@ -19,6 +19,7 @@ import { structureTree } from '$lib/stores/reactive-structure-tree.svelte';
 import { requiresAtomicBatching } from '$lib/utils/atomic-batching';
 import { shouldLogDatabaseErrors, isTestEnvironment } from '$lib/utils/test-environment';
 import { backendAdapter } from './backend-adapter';
+import { applyChildPlacement } from './hierarchy-sync';
 import { isVersionConflict, isSubtreeAccessDenied, isPlayRuleRejected } from '$lib/types/errors';
 import { showSubtreeAccessDenied } from './subtree-access-denied.svelte';
 import { isValidDateId } from '$lib/types/date-node';
@@ -1523,6 +1524,21 @@ export class SharedNodeStore {
   }
 
   /**
+   * Persist a create, then apply the store's order keys from its reply: the new
+   * edge's and any siblings' a re-spread rewrote. The reply is this client's only
+   * source of those keys — its own relationship events are echo-suppressed — so
+   * without it the optimistic, locally computed key would never be replaced.
+   */
+  private async persistCreate(
+    input: import('$lib/services/backend-adapter').CreateNodeInput
+  ): Promise<void> {
+    const { id, placement } = await backendAdapter.createNode(input);
+    if (placement && structureTree) {
+      applyChildPlacement(structureTree, id, placement);
+    }
+  }
+
+  /**
    * Check if a node exists
    */
   hasNode(nodeId: string): boolean {
@@ -2141,7 +2157,7 @@ export class SharedNodeStore {
                           parentId: this.getParentId(nodeId),
                           insertPosition: null
                         };
-                      await backendAdapter.createNode(updateFallbackInput);
+                      await this.persistCreate(updateFallbackInput);
                       this.persistedNodeIds.add(nodeId); // Now it's persisted
                     } else {
                       // Re-throw other errors
@@ -2168,7 +2184,7 @@ export class SharedNodeStore {
                       parentId: this.getParentId(nodeId),
                       insertPosition: null
                     };
-                  await backendAdapter.createNode(updatePathCreateInput);
+                  await this.persistCreate(updatePathCreateInput);
                   this.persistedNodeIds.add(nodeId); // Track as persisted
 
                   // CRITICAL: Fetch the created node to get its version from backend
@@ -2784,7 +2800,7 @@ export class SharedNodeStore {
                         parentId: this.getParentId(nodeId),
                         insertPosition: null
                       };
-                    await backendAdapter.createNode(fallbackCreateInput);
+                    await this.persistCreate(fallbackCreateInput);
                     this.persistedNodeIds.add(nodeId);
                   } else {
                     throw updateError;
@@ -2820,7 +2836,7 @@ export class SharedNodeStore {
                   parentId: this.getParentId(nodeId),
                   insertPosition: nodeWithInsertPos.insertPosition ?? null
                 };
-                await backendAdapter.createNode(createInput);
+                await this.persistCreate(createInput);
                 this.persistedNodeIds.add(nodeId); // Track as persisted
 
                 // CRITICAL: Fetch the created node to get its version from backend
@@ -4820,7 +4836,7 @@ export class SharedNodeStore {
                 parentId: this.getParentId(nodeId),
                 insertPosition: null
               };
-              await backendAdapter.createNode(batchCreateInput);
+              await this.persistCreate(batchCreateInput);
               this.persistedNodeIds.add(nodeId);
 
               // CRITICAL: Fetch the created node to get its version from backend

@@ -10,7 +10,7 @@
 //! otherwise slot the new edge's key among stale ones.
 
 use nodespace_core::db::events::DomainEvent;
-use nodespace_core::db::SqliteStore;
+use nodespace_core::db::{ChildPlacement, SqliteStore};
 use nodespace_core::services::{
     CreateNodeParams, InsertPosition, InsertPositionOwned, NodeService,
 };
@@ -313,6 +313,123 @@ async fn moves_that_respread_leave_an_event_only_client_in_store_order() {
             .unwrap();
         mirror.assert_matches_store(&f).await;
     }
+}
+
+/// The client that made a write never receives that write's own events (echo
+/// suppression), so it learns sibling keys from the write's reply alone: the
+/// edge's order plus any re-spread siblings'. Seeded from the store, a mirror
+/// fed only replies must hold exactly the store's keys after every write.
+struct ReplyMirror {
+    orders: HashMap<String, f64>,
+    respreads_seen: usize,
+}
+
+impl ReplyMirror {
+    async fn new(f: &Fixture) -> Self {
+        Self {
+            orders: sibling_keys(f).await,
+            respreads_seen: 0,
+        }
+    }
+
+    async fn apply_and_assert(&mut self, f: &Fixture, child: &str, placement: &ChildPlacement) {
+        if !placement.respread.is_empty() {
+            self.respreads_seen += 1;
+        }
+        for (sibling, order) in &placement.respread {
+            self.orders.insert(sibling.clone(), *order);
+        }
+        self.orders.insert(child.to_string(), placement.order);
+        assert_eq!(
+            self.orders,
+            sibling_keys(f).await,
+            "reply-only client's keys diverged from the store"
+        );
+    }
+}
+
+#[tokio::test]
+async fn creates_that_respread_leave_a_reply_only_client_on_store_keys() {
+    let f = fixture().await;
+    let mut mirror = ReplyMirror::new(&f).await;
+    for i in 0..INSERTS {
+        let (id, placement) = f
+            .service
+            .create_placed_node(params(
+                &format!("item-{i}"),
+                Some(&f.parent),
+                InsertPositionOwned::After(f.anchor.clone()),
+            ))
+            .await
+            .unwrap();
+        let placement = placement.expect("a child create returns its placement");
+        mirror.apply_and_assert(&f, &id, &placement).await;
+    }
+    assert!(
+        mirror.respreads_seen > 0,
+        "no create re-spread its siblings"
+    );
+}
+
+#[tokio::test]
+async fn moves_that_respread_leave_a_reply_only_client_on_store_keys() {
+    let f = fixture().await;
+    let mut items = Vec::new();
+    for i in 0..INSERTS {
+        let id = f
+            .service
+            .create_node_with_parent(params(
+                &format!("item-{i}"),
+                Some(&f.parent),
+                InsertPositionOwned::End,
+            ))
+            .await
+            .unwrap();
+        items.push(id);
+    }
+    let mut mirror = ReplyMirror::new(&f).await;
+    for id in &items {
+        let version = f.service.get_node(id).await.unwrap().unwrap().version;
+        let (_, placement) = f
+            .service
+            .move_node(
+                id,
+                version,
+                Some(&f.parent),
+                InsertPosition::After(&f.anchor),
+            )
+            .await
+            .unwrap();
+        let placement = placement.expect("a move under a parent returns its placement");
+        mirror.apply_and_assert(&f, id, &placement).await;
+    }
+    assert!(mirror.respreads_seen > 0, "no move re-spread its siblings");
+}
+
+#[tokio::test]
+async fn move_to_root_and_root_create_return_no_placement() {
+    let f = fixture().await;
+    let (root, placement) = f
+        .service
+        .create_placed_node(params("root", None, InsertPositionOwned::End))
+        .await
+        .unwrap();
+    assert!(placement.is_none());
+
+    let version = f
+        .service
+        .get_node(&f.anchor)
+        .await
+        .unwrap()
+        .unwrap()
+        .version;
+    let (_, placement) = f
+        .service
+        .move_node(&f.anchor, version, None, InsertPosition::End)
+        .await
+        .unwrap();
+    assert!(placement.is_none());
+    assert!(f.service.get_node(&root).await.unwrap().is_some());
 }
 
 /// Every `has_child` key under the fixture's parent, by child id.

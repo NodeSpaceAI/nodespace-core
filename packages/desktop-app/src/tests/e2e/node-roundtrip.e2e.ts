@@ -124,7 +124,7 @@ describe('Node CRUD round-trip (HTTP → gRPC → SQLite)', () => {
   it('createNode returns the new node id string', async () => {
     const id = crypto.randomUUID();
     const result = await h.adapter.createNode({ id, nodeType: 'text', content: 'id check' });
-    expect(typeof result).toBe('string');
-    expect(result.length).toBeGreaterThan(0);
+    expect(typeof result.id).toBe('string');
+    expect(result.id.length).toBeGreaterThan(0);
   });
 });

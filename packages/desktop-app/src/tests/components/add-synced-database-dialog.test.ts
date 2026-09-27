@@ -172,7 +172,7 @@ describe('AddSyncedDatabaseDialog', () => {
     const switchToSpy = vi.spyOn(databaseStore, 'switchTo').mockResolvedValue(undefined);
     const createNodeSpy = vi
       .spyOn(backendAdapter, 'createNode')
-      .mockResolvedValue('coll-landing');
+      .mockResolvedValue({ id: 'coll-landing', placement: null });
 
     mockInvoke.mockImplementation((cmd: string, args?: Record<string, unknown>) => {
       if (cmd === 'pro_current_person') return Promise.resolve(SIGNED_IN);
@@ -227,7 +227,7 @@ describe('AddSyncedDatabaseDialog', () => {
   it('a failed bind leaves the dialog on an error step, database already switched to', async () => {
     vi.spyOn(databaseStore, 'create').mockResolvedValue(dbEntry());
     const switchToSpy = vi.spyOn(databaseStore, 'switchTo').mockResolvedValue(undefined);
-    vi.spyOn(backendAdapter, 'createNode').mockResolvedValue('coll-landing');
+    vi.spyOn(backendAdapter, 'createNode').mockResolvedValue({ id: 'coll-landing', placement: null });
 
     mockInvoke.mockImplementation((cmd: string) => {
       if (cmd === 'pro_current_person') return Promise.resolve(SIGNED_IN);
@@ -251,7 +251,7 @@ describe('AddSyncedDatabaseDialog', () => {
   it('a failed bind with a plain CommandError object surfaces its real message, not "[object Object]"', async () => {
     vi.spyOn(databaseStore, 'create').mockResolvedValue(dbEntry());
     const switchToSpy = vi.spyOn(databaseStore, 'switchTo').mockResolvedValue(undefined);
-    vi.spyOn(backendAdapter, 'createNode').mockResolvedValue('coll-landing');
+    vi.spyOn(backendAdapter, 'createNode').mockResolvedValue({ id: 'coll-landing', placement: null });
 
     mockInvoke.mockImplementation((cmd: string) => {
       if (cmd === 'pro_current_person') return Promise.resolve(SIGNED_IN);
@@ -318,7 +318,7 @@ describe('AddSyncedDatabaseDialog', () => {
     const switchToSpy = vi.spyOn(databaseStore, 'switchTo').mockResolvedValue(undefined);
     const createNodeSpy = vi
       .spyOn(backendAdapter, 'createNode')
-      .mockResolvedValue('coll-landing');
+      .mockResolvedValue({ id: 'coll-landing', placement: null });
 
     const identitySpy = vi.fn().mockResolvedValue(SIGNED_IN);
     const tenantsSpy = vi.fn().mockResolvedValue(ONE_ACTIVE_TENANT);
@@ -365,7 +365,7 @@ describe('AddSyncedDatabaseDialog', () => {
   it('cannot be dismissed while a bind is in flight, and closes on its own once it settles', async () => {
     vi.spyOn(databaseStore, 'create').mockResolvedValue(dbEntry());
     vi.spyOn(databaseStore, 'switchTo').mockResolvedValue(undefined);
-    vi.spyOn(backendAdapter, 'createNode').mockResolvedValue('coll-landing');
+    vi.spyOn(backendAdapter, 'createNode').mockResolvedValue({ id: 'coll-landing', placement: null });
 
     // A mutable holder (rather than a bare reassigned `let`) so TypeScript
     // doesn't narrow the closure-assigned function to `never` at the call site.

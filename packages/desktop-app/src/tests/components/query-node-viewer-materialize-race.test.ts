@@ -122,7 +122,10 @@ describe('QueryNodeViewer — materialize race', () => {
 
   it('clicking Kanban on the default view materializes a query node and reroutes the tab', async () => {
     mockGetNode.mockResolvedValue(null); // fresh default-view load: no query node exists yet
-    mockCreateNode.mockImplementation(async (input: { id: string }) => input.id);
+    mockCreateNode.mockImplementation(async (input: { id: string }) => ({
+      id: input.id,
+      placement: null
+    }));
 
     let reroutedTo = '';
     const { getByRole } = render(QueryNodeViewer, {
@@ -192,7 +195,10 @@ describe('QueryNodeViewer — materialize race', () => {
 
   it('choosing a Kanban group-by field on the default view materializes with that group-by and restores it on remount', async () => {
     mockGetNode.mockResolvedValue(null);
-    mockCreateNode.mockImplementation(async (input: { id: string }) => input.id);
+    mockCreateNode.mockImplementation(async (input: { id: string }) => ({
+      id: input.id,
+      placement: null
+    }));
 
     let reroutedTo = '';
     const { getByRole } = render(QueryNodeViewer, {

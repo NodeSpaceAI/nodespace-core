@@ -58,7 +58,7 @@ describe('Backend Adapter - MockAdapter (Test Environment)', () => {
 
       const result = await adapter.createNode(input);
 
-      expect(result).toBe('mock-id');
+      expect(result).toEqual({ id: 'mock-id', placement: null });
     });
 
     it('should return null from getNode', async () => {
@@ -312,7 +312,7 @@ describe('Backend Adapter - HttpAdapter (Browser Dev Mode)', () => {
         ok: true,
         status: 200,
         headers: new Headers(),
-        json: async () => 'created-node-id'
+        json: async () => ({ id: 'created-node-id', placement: null })
       });
 
       const input: CreateNodeInput = {
@@ -323,7 +323,7 @@ describe('Backend Adapter - HttpAdapter (Browser Dev Mode)', () => {
 
       const result = await adapter.createNode(input);
 
-      expect(result).toBe('created-node-id');
+      expect(result).toEqual({ id: 'created-node-id', placement: null });
       expect(mockFetch).toHaveBeenCalledWith(
         'http://localhost:3001/api/nodes',
         expect.objectContaining({
@@ -781,7 +781,7 @@ describe('Backend Adapter - HttpAdapter (Browser Dev Mode)', () => {
         ok: true,
         status: 200,
         headers: new Headers(),
-        json: async () => 'container-id'
+        json: async () => ({ id: 'container-id', placement: null })
       });
 
       const input: CreateContainerInput = {
@@ -1146,7 +1146,7 @@ describe('Backend Adapter - TauriAdapter (Tauri IPC Mode)', () => {
       const { getBackendAdapter } = await import('$lib/services/backend-adapter');
       const adapter = getBackendAdapter();
 
-      mockInvoke.mockResolvedValueOnce('created-node-id');
+      mockInvoke.mockResolvedValueOnce({ id: 'created-node-id', placement: null });
 
       const input: CreateNodeInput = {
         id: 'test-id',
@@ -1160,7 +1160,7 @@ describe('Backend Adapter - TauriAdapter (Tauri IPC Mode)', () => {
 
       const result = await adapter.createNode(input);
 
-      expect(result).toBe('created-node-id');
+      expect(result).toEqual({ id: 'created-node-id', placement: null });
       expect(mockInvoke).toHaveBeenCalledWith('create_node', {
         node: {
           id: 'test-id',
@@ -1178,7 +1178,7 @@ describe('Backend Adapter - TauriAdapter (Tauri IPC Mode)', () => {
       const { getBackendAdapter } = await import('$lib/services/backend-adapter');
       const adapter = getBackendAdapter();
 
-      mockInvoke.mockResolvedValueOnce('node-id');
+      mockInvoke.mockResolvedValueOnce({ id: 'node-id', placement: null });
 
       const input: CreateNodeInput = {
         id: 'test-id',
@@ -1662,7 +1662,7 @@ describe('Backend Adapter - Environment Detection', () => {
     const adapter = getBackendAdapter();
 
     const result = await adapter.createNode({ id: 'test', nodeType: 'text', content: 'test' });
-    expect(result).toBe('mock-id');
+    expect(result).toEqual({ id: 'mock-id', placement: null });
   });
 
   it('should export singleton backendAdapter instance', async () => {

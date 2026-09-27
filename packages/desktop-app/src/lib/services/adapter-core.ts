@@ -115,9 +115,35 @@ export interface CreateContainerInput {
   mentionedBy?: string;
 }
 
+/**
+ * Where a create or move placed its node's `has_child` edge: the store's order
+ * key for that edge, plus the new key of every sibling a re-spread rewrote.
+ *
+ * The client that made the write never receives that write's own relationship
+ * events (same-origin echo suppression), so the reply is the only place it
+ * learns the authoritative keys. Apply with `applyChildPlacement`.
+ */
+export interface ChildPlacement {
+  parentId: string;
+  order: number;
+  respread: Array<{ nodeId: string; order: number }>;
+}
+
+/** Result of `createNode`. `placement` is null for a root node. */
+export interface CreatedNode {
+  id: string;
+  placement: ChildPlacement | null;
+}
+
+/** Result of `moveNode`: the node with its bumped version. `placement` is null for a move to root. */
+export interface MovedNode {
+  node: Node;
+  placement: ChildPlacement | null;
+}
+
 export interface BackendAdapter {
   // Node CRUD
-  createNode(input: CreateNodeInput | Node): Promise<string>;
+  createNode(input: CreateNodeInput | Node): Promise<CreatedNode>;
   getNode(id: string): Promise<Node | null>;
   updateNode(id: string, version: number, update: UpdateNodeInput): Promise<Node>;
   updateTaskNode(id: string, version: number, update: TaskNodeUpdate): Promise<TaskNode>;
@@ -130,7 +156,7 @@ export interface BackendAdapter {
   getChildren(parentId: string): Promise<Node[]>;
   getDescendants(rootNodeId: string): Promise<Node[]>;
   getChildrenTree(parentId: string): Promise<NodeWithChildren | null>;
-  moveNode(nodeId: string, version: number, newParentId: string | null, insertPosition: InsertPosition | null): Promise<Node>;
+  moveNode(nodeId: string, version: number, newParentId: string | null, insertPosition: InsertPosition | null): Promise<MovedNode>;
   moveChildrenToParent(newParentId: string, children: Array<{ id: string; version: number }>): Promise<Node[]>;
 
   // Mentions

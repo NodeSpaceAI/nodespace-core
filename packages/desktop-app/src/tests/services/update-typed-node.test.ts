@@ -275,7 +275,7 @@ describe('updateNode routing for typed core types', () => {
     const order: string[] = [];
     vi.spyOn(backendAdapter, 'createNode').mockImplementation(async () => {
       order.push('create');
-      return 'pr1';
+      return { id: 'pr1', placement: null };
     });
     vi.spyOn(backendAdapter, 'getNode').mockImplementation(
       async (id) => makeNode(id, 'project', { status: 'planning' })

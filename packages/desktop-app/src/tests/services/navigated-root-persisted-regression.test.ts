@@ -55,7 +55,7 @@ describe('navigated-to root node — persisted tracking', () => {
       children: []
     });
     vi.spyOn(backendAdapter, 'getMentioningContainers').mockResolvedValue([]);
-    const createNodeSpy = vi.spyOn(backendAdapter, 'createNode').mockResolvedValue(ROOT_ID);
+    const createNodeSpy = vi.spyOn(backendAdapter, 'createNode').mockResolvedValue({ id: ROOT_ID, placement: null });
     const updateNodeSpy = vi
       .spyOn(backendAdapter, 'updateNode')
       .mockImplementation(async (_id, version, update) =>

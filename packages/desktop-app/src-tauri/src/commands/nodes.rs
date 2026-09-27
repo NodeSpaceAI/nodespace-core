@@ -255,6 +255,60 @@ pub(crate) fn proto_node_data_to_node(nd: NodeData) -> Result<Node, CommandError
     })
 }
 
+/// Where a create or move placed its node's `has_child` edge: the store's
+/// order key for that edge, plus the new key of every sibling a re-spread
+/// rewrote. The frontend applies these to its structure tree when the call
+/// resolves — its own relationship events are echo-suppressed, so the reply
+/// is the only place it learns them.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChildPlacementOutput {
+    pub parent_id: String,
+    pub order: f64,
+    pub respread: Vec<SiblingOrderOutput>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SiblingOrderOutput {
+    pub node_id: String,
+    pub order: f64,
+}
+
+impl From<nodespace_proto::nodespace::ChildPlacement> for ChildPlacementOutput {
+    fn from(p: nodespace_proto::nodespace::ChildPlacement) -> Self {
+        Self {
+            parent_id: p.parent_id,
+            order: p.order,
+            respread: p
+                .respread
+                .into_iter()
+                .map(|s| SiblingOrderOutput {
+                    node_id: s.node_id,
+                    order: s.order,
+                })
+                .collect(),
+        }
+    }
+}
+
+/// Result of `create_node`.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreatedNodeOutput {
+    pub id: String,
+    pub placement: Option<ChildPlacementOutput>,
+}
+
+/// Result of `move_node`: the node with its bumped version, and its placement
+/// (`None` for a move to root).
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MovedNodeOutput {
+    pub node: Value,
+    pub placement: Option<ChildPlacementOutput>,
+}
+
 /// Convert proto NodeResponse → core Node
 fn proto_node_response_to_node(resp: NodeResponse) -> Result<Node, CommandError> {
     let nd = resp.node_data.ok_or_else(|| CommandError {
@@ -329,7 +383,7 @@ pub struct CreateRootNodeInput {
 pub async fn create_node(
     client: State<'_, GrpcClient>,
     node: CreateNodeInput,
-) -> Result<String, CommandError> {
+) -> Result<CreatedNodeOutput, CommandError> {
     let mut c = client.client().await;
     validate_node_type(&node.node_type, &mut c).await?;
 
@@ -354,9 +408,13 @@ pub async fn create_node(
             lifecycle_status: None,
         }))
         .await
-        .map_err(status_to_command_error)?;
+        .map_err(status_to_command_error)?
+        .into_inner();
 
-    Ok(resp.into_inner().node_id)
+    Ok(CreatedNodeOutput {
+        id: resp.node_id,
+        placement: resp.placement.map(Into::into),
+    })
 }
 
 /// Create a new root node (top-level node that can contain other nodes)
@@ -624,10 +682,10 @@ pub async fn move_node(
     version: i64,
     new_parent_id: Option<String>,
     insert_position: Option<InsertPositionInput>,
-) -> Result<Value, CommandError> {
+) -> Result<MovedNodeOutput, CommandError> {
     let mut c = client.client().await;
     let position = insert_position.and_then(InsertPositionInput::into_move_proto_position);
-    let resp = c
+    let mut resp = c
         .move_node(Request::new(MoveNodeRequest {
             node_id,
             version,
@@ -635,10 +693,15 @@ pub async fn move_node(
             position,
         }))
         .await
-        .map_err(status_to_command_error)?;
+        .map_err(status_to_command_error)?
+        .into_inner();
 
-    let node = proto_node_response_to_node(resp.into_inner())?;
-    node_to_typed_value(node)
+    let placement = resp.placement.take().map(Into::into);
+    let node = proto_node_response_to_node(resp)?;
+    Ok(MovedNodeOutput {
+        node: node_to_typed_value(node)?,
+        placement,
+    })
 }
 
 /// Reorder a node by changing its sibling position

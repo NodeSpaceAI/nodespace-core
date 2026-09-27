@@ -36,6 +36,7 @@ const log = createLogger('ReactiveNodeService');
 import { backendAdapter } from './backend-adapter';
 import type { InsertPosition } from '$lib/services/backend-adapter';
 import { structureTree } from '$lib/stores/reactive-structure-tree.svelte';
+import { applyChildPlacement } from './hierarchy-sync';
 import { conflictNotifications } from '$lib/stores/conflict-notifications.svelte';
 
 export interface NodeManagerEvents {
@@ -777,6 +778,36 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
    * transaction; children are appended under `newParentId` in the given order), then syncs
    * each moved child's version from the response. On throw, none of the children moved.
    */
+  /**
+   * Persist a move, then reconcile local state with the reply: the node's bumped
+   * version, and the store's order keys for the moved edge and any siblings a
+   * re-spread rewrote. The reply is this client's only source of those keys — its
+   * own relationship events are echo-suppressed — so without it the optimistic,
+   * locally computed keys would never be replaced.
+   */
+  async function persistMove(
+    nodeId: string,
+    version: number,
+    newParentId: string | null,
+    insertPosition: InsertPosition | null
+  ): Promise<void> {
+    const { node, placement } = await backendAdapter.moveNode(
+      nodeId,
+      version,
+      newParentId,
+      insertPosition
+    );
+    sharedNodeStore.updateNode(
+      nodeId,
+      { version: node.version },
+      { type: 'database', reason: 'move-version-sync' },
+      { skipPersistence: true }
+    );
+    if (placement) {
+      applyChildPlacement(structureTree, nodeId, placement);
+    }
+  }
+
   async function persistChildTransfer(newParentId: string, childIds: string[]): Promise<void> {
     const children = childIds.flatMap((id) => {
       const child = sharedNodeStore.getNode(id);
@@ -981,21 +1012,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
         }
 
         // Now safe to move the node (with OCC)
-        // Backend returns updated node with new version
-        const updatedNode = await backendAdapter.moveNode(
-          nodeId,
-          freshNode.version,
-          targetParentId,
-          null
-        );
-
-        // Sync local version from backend response
-        sharedNodeStore.updateNode(
-          nodeId,
-          { version: updatedNode.version },
-          { type: 'database', reason: 'move-version-sync' },
-          { skipPersistence: true }
-        );
+        await persistMove(nodeId, freshNode.version, targetParentId, null);
       } catch (error) {
         // Check if error is ignorable (unit test environment or unpersisted nodes)
         const isIgnorableError =
@@ -1046,7 +1063,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     // relative-after intent. structureTree is the single source of truth for hierarchy — an
     // unpersisted node's CREATE derives its parentId from structureTree.getParent(nodeId), so
     // this must happen on every path, including the move to root.
-    // Authoritative fractional order arrives via relationship:updated event.
+    // The store's order key replaces this local one when the move's reply lands (persistMove).
     structureTree.moveInMemoryRelationship(oldParentId, newParentId, nodeId);
 
     const isNodePersisted = sharedNodeStore.isNodePersisted(nodeId);
@@ -1159,22 +1176,8 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
         if (needsNodeMove) {
           // Now safe to move the node (with OCC)
           // When outdenting, insert after the old parent (so it appears right below it)
-          // Backend returns updated node with new version
           const outdentPosition: InsertPosition = { type: 'after', siblingId: oldParentId };
-          const updatedNode = await backendAdapter.moveNode(
-            nodeId,
-            freshNode.version,
-            newParentId,
-            outdentPosition
-          );
-
-          // Sync local version from backend response
-          sharedNodeStore.updateNode(
-            nodeId,
-            { version: updatedNode.version },
-            { type: 'database', reason: 'move-version-sync' },
-            { skipPersistence: true }
-          );
+          await persistMove(nodeId, freshNode.version, newParentId, outdentPosition);
         }
 
         nodeCommitted = needsNodeMove || sharedNodeStore.isNodePersisted(nodeId);
@@ -1301,20 +1304,8 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
         ? { type: 'after', siblingId: insertAfterSiblingId }
         : { type: 'end' };
 
-      // Use moveNodeCommand to properly update the has_child edge in the backend (with OCC)
-      const childVersion = child.version;
-      backendAdapter
-        .moveNode(child.id, childVersion, newParentForChild, insertPosition)
-        .then((updatedChild) => {
-          // Sync child's local version from backend response
-          sharedNodeStore.updateNode(
-            child.id,
-            { version: updatedChild.version },
-            { type: 'database', reason: 'move-version-sync' },
-            { skipPersistence: true }
-          );
-        })
-        .catch((error) => {
+      // Update the has_child edge in the backend (with OCC)
+      persistMove(child.id, child.version, newParentForChild, insertPosition).catch((error) => {
           log.error(
             `[promoteChildren] Failed to move child ${child.id} to parent ${newParentForChild}:`,
             error
