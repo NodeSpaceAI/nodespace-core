@@ -87,13 +87,28 @@ nodespace node create --type play --content 'Lock closed sprints' \
 
 Skill nodes carrying usage guidance, discovered through the ordinary skill-search mechanism. Each is a `skill` root node whose markdown body becomes ordinary child nodes. Deliberately several narrow skills rather than one broad one: retrieval scores a precise match far better than a skill diluted across every intent.
 
+Create each as below, then add its guidance as markdown children. The properties carry the whole retrieval surface — `description`, and an `exclusion` where the skill has one, which keeps general requests from ranking it above a built-in — so set them verbatim. The bodies are long-form prose; read them from `packages/core/src/methodology/skills/jira/` rather than reproducing them here.
+
 **Creating Epics, Stories, and Bugs** — How to create work in a Jira-style workspace: choosing between task, story, bug and epic, story points, bug severity and environment, linking work to an epic, and sub-tasks.
+
+```bash
+nodespace node create --type skill --content 'Creating Epics, Stories, and Bugs' \
+  --properties '{"description":"How to create work in a Jira-style workspace: choosing between task, story, bug and epic, story points, bug severity and environment, linking work to an epic, and sub-tasks.","max_iterations":3,"tool_whitelist":["create_node","create_relationship","search_nodes","get_node"]}'
+```
 
 **Working with Sprints** — How sprints work in a Jira-style workspace: planning work into a sprint, starting and closing it, the future, active and closed lifecycle, and what can still change after a sprint closes.
 
+```bash
+nodespace node create --type skill --content 'Working with Sprints' \
+  --properties '{"description":"How sprints work in a Jira-style workspace: planning work into a sprint, starting and closing it, the future, active and closed lifecycle, and what can still change after a sprint closes.","max_iterations":3,"tool_whitelist":["create_node","update_node","create_relationship","search_nodes","get_node"]}'
+```
+
 **Sprint Validation Rules** — Why a change to a sprint was rejected in a Jira-style workspace: illegal status moves, starting without dates, and the lock on a closed sprint's dates, completed date and issues.
 
-Create each with `nodespace node create --type skill`, then add its guidance as markdown children. The bodies are long-form prose; read them from `packages/core/src/methodology/skills/jira/` rather than reproducing them here.
+```bash
+nodespace node create --type skill --content 'Sprint Validation Rules' \
+  --properties '{"description":"Why a change to a sprint was rejected in a Jira-style workspace: illegal status moves, starting without dates, and the lock on a closed sprint'\''s dates, completed date and issues.","max_iterations":3,"tool_whitelist":["create_node","update_node","search_nodes","get_node"]}'
+```
 
 ### 5. Saved views
 
