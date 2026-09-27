@@ -15,6 +15,7 @@ use std::sync::Arc;
 use chrono::{DateTime, Utc};
 use nodespace_agent::local_agent::deletion_confirmation::{self, DeletionStop};
 use nodespace_core::db::events::DomainEvent;
+use nodespace_core::db::ChildPlacement;
 use nodespace_core::models::{
     AiChatPendingDeletion, Node, NodeQuery, NodeUpdate, OrderBy, PersonNodeUpdate,
     ProjectNodeUpdate, QueryNodeUpdate, TaskNodeUpdate, TaskPriority, TaskStatus,
@@ -303,11 +304,17 @@ impl GrpcNodeService for NodeServiceImpl {
 
         let node = fetch_node(&this.node_service, &output.node_id).await?;
         let node_type = node.node_type.clone();
+        let placement = output
+            .parent_id
+            .as_deref()
+            .zip(output.placement.as_ref())
+            .map(|(parent_id, placement)| child_placement_to_proto(parent_id, placement));
 
         Ok(Response::new(NodeResponse {
             node_id: output.node_id,
             node_type,
             node_data: Some(node_to_proto_collapsed(&this.node_service, node).await?),
+            placement,
         }))
     }
 
@@ -322,6 +329,7 @@ impl GrpcNodeService for NodeServiceImpl {
         let node_type = node.node_type.clone();
 
         Ok(Response::new(NodeResponse {
+            placement: None,
             node_id: req.node_id,
             node_type,
             node_data: Some(node_to_proto_collapsed(&this.node_service, node).await?),
@@ -354,12 +362,14 @@ impl GrpcNodeService for NodeServiceImpl {
                 let node_id = node.id.clone();
                 let node_type = node.node_type.clone();
                 Ok(Response::new(NodeResponse {
+                    placement: None,
                     node_id,
                     node_type,
                     node_data: Some(node_to_proto_collapsed(&this.node_service, node).await?),
                 }))
             }
             None => Ok(Response::new(NodeResponse {
+                placement: None,
                 node_id: String::new(),
                 node_type: String::new(),
                 node_data: None,
@@ -530,6 +540,7 @@ impl GrpcNodeService for NodeServiceImpl {
         let node_type = node.node_type.clone();
 
         Ok(Response::new(NodeResponse {
+            placement: None,
             node_id: output.node_id,
             node_type,
             node_data: Some(node_to_proto_collapsed(&this.node_service, node).await?),
@@ -1178,17 +1189,22 @@ impl GrpcNodeService for NodeServiceImpl {
             None => InsertPosition::End,
         };
 
-        let node = this
+        let (node, placement) = this
             .node_service
             .move_node(&req.node_id, req.version, new_parent.as_deref(), position)
             .await
             .map_err(service_error_to_status)?;
+        let placement = new_parent
+            .as_deref()
+            .zip(placement.as_ref())
+            .map(|(parent_id, placement)| child_placement_to_proto(parent_id, placement));
 
         let node_type = node.node_type.clone();
         Ok(Response::new(NodeResponse {
             node_id: node.id.clone(),
             node_type,
             node_data: Some(node_to_proto_collapsed(&this.node_service, node).await?),
+            placement,
         }))
     }
 
@@ -1234,10 +1250,19 @@ impl GrpcNodeService for NodeServiceImpl {
             .await
             .map_err(service_error_to_status)?;
 
-        let children_proto = nodes_to_proto(&this.node_service, updated).await?;
+        let orders = updated
+            .iter()
+            .map(|(node, order)| crate::nodespace::SiblingOrder {
+                node_id: node.id.clone(),
+                order: *order,
+            })
+            .collect();
+        let nodes = updated.into_iter().map(|(node, _)| node).collect();
+        let children_proto = nodes_to_proto(&this.node_service, nodes).await?;
 
         Ok(Response::new(MoveChildrenToParentResponse {
             children: children_proto,
+            orders,
         }))
     }
 
@@ -1540,6 +1565,7 @@ impl GrpcNodeService for NodeServiceImpl {
         let node_id = node.id.clone();
 
         Ok(Response::new(NodeResponse {
+            placement: None,
             node_id,
             node_type,
             node_data: Some(node_to_proto(node)),
@@ -1633,6 +1659,7 @@ impl GrpcNodeService for NodeServiceImpl {
             let node_type = n.node_type.clone();
             let node_id = n.id.clone();
             NodeResponse {
+                placement: None,
                 node_id,
                 node_type,
                 node_data: Some(node_to_proto(n)),
@@ -1659,6 +1686,7 @@ impl GrpcNodeService for NodeServiceImpl {
         let node_type = node.node_type.clone();
         let node_id = node.id.clone();
         Ok(Response::new(NodeResponse {
+            placement: None,
             node_id,
             node_type,
             node_data: Some(node_to_proto(node)),
@@ -1918,6 +1946,7 @@ impl GrpcNodeService for NodeServiceImpl {
             }
         };
         Ok(Response::new(NodeResponse {
+            placement: None,
             node_id: req.schema_id,
             node_type: "schema".to_string(),
             node_data: Some(node_to_proto(schema.into_wire_node())),
@@ -2202,6 +2231,7 @@ impl GrpcNodeService for NodeServiceImpl {
             let node_type = n.node_type.clone();
             let node_id = n.id.clone();
             NodeResponse {
+                placement: None,
                 node_id,
                 node_type,
                 node_data: Some(node_to_proto(n)),
@@ -2229,6 +2259,7 @@ impl GrpcNodeService for NodeServiceImpl {
             let node_type = n.node_type.clone();
             let node_id = n.id.clone();
             NodeResponse {
+                placement: None,
                 node_id,
                 node_type,
                 node_data: Some(node_to_proto(n)),
@@ -2281,6 +2312,7 @@ impl GrpcNodeService for NodeServiceImpl {
         let node_type = node.node_type.clone();
         let node_id = node.id.clone();
         Ok(Response::new(NodeResponse {
+            placement: None,
             node_id,
             node_type,
             node_data: Some(node_to_proto(node)),
@@ -2980,8 +3012,28 @@ async fn typed_update_error_to_status(
     }
 }
 
+/// The wire form of a hierarchy write's [`ChildPlacement`] under `parent_id`.
+fn child_placement_to_proto(
+    parent_id: &str,
+    placement: &ChildPlacement,
+) -> crate::nodespace::ChildPlacement {
+    crate::nodespace::ChildPlacement {
+        parent_id: parent_id.to_string(),
+        order: placement.order,
+        respread: placement
+            .respread
+            .iter()
+            .map(|(node_id, order)| crate::nodespace::SiblingOrder {
+                node_id: node_id.clone(),
+                order: *order,
+            })
+            .collect(),
+    }
+}
+
 fn node_response(node: Node) -> NodeResponse {
     NodeResponse {
+        placement: None,
         node_id: node.id.clone(),
         node_type: node.node_type.clone(),
         node_data: Some(node_to_proto(node)),

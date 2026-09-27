@@ -2,7 +2,8 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import {
   applyHasChildCreated,
   applyHasChildUpdated,
-  applyHasChildDeleted
+  applyHasChildDeleted,
+  applyChildPlacement
 } from '$lib/services/hierarchy-sync';
 import { structureTree } from '$lib/stores/reactive-structure-tree.svelte';
 
@@ -131,6 +132,69 @@ describe('hierarchy-sync', () => {
       applyHasChildCreated(structureTree, { parentId: 'p', childId: 'c', order: 1 });
       applyHasChildDeleted(structureTree, { parentId: 'p', childId: 'c' });
       expect(structureTree.getChildren('p')).toEqual([]);
+    });
+  });
+
+  describe('applyChildPlacement', () => {
+    /** Children of `p` as `[id, order]`, in tree order. */
+    const tree = () => structureTree.getChildrenWithOrder('p').map((c) => [c.nodeId, c.order]);
+
+    it("replaces the written edge's local key with the store's", () => {
+      structureTree.batchAddRelationships([
+        { parentId: 'p', childId: 'a', order: 1 },
+        { parentId: 'p', childId: 'b', order: 2 }
+      ]);
+      // Optimistic local placement between a and b.
+      structureTree.addInMemoryRelationship('p', 'x', 1.5);
+
+      applyChildPlacement(structureTree, 'x', { parentId: 'p', order: 1.25, respread: [] });
+
+      expect(tree()).toEqual([
+        ['a', 1],
+        ['x', 1.25],
+        ['b', 2]
+      ]);
+    });
+
+    it('moves every sibling onto the re-spread keys, so a later event lands in the right slot', () => {
+      structureTree.batchAddRelationships([
+        { parentId: 'p', childId: 'a', order: 1 },
+        { parentId: 'p', childId: 'b', order: 1.0000001 },
+        { parentId: 'p', childId: 'c', order: 2 }
+      ]);
+      structureTree.addInMemoryRelationship('p', 'x', 1.00000005);
+
+      // The store re-spread p's children to 1..=n and placed x after a.
+      applyChildPlacement(structureTree, 'x', {
+        parentId: 'p',
+        order: 1.5,
+        respread: [
+          { nodeId: 'a', order: 1 },
+          { nodeId: 'b', order: 2 },
+          { nodeId: 'c', order: 3 }
+        ]
+      });
+      expect(tree()).toEqual([
+        ['a', 1],
+        ['x', 1.5],
+        ['b', 2],
+        ['c', 3]
+      ]);
+
+      // Another client then places y between b and c in the new key space.
+      applyHasChildCreated(structureTree, { parentId: 'p', childId: 'y', order: 2.5 });
+      expect(structureTree.getChildren('p')).toEqual(['a', 'x', 'b', 'y', 'c']);
+    });
+
+    it('leaves a node the local tree has since moved to another parent alone', () => {
+      structureTree.addInMemoryRelationship('p', 'a', 1);
+      structureTree.addInMemoryRelationship('q', 'x', 7);
+
+      applyChildPlacement(structureTree, 'x', { parentId: 'p', order: 2, respread: [] });
+
+      expect(structureTree.getParent('x')).toBe('q');
+      expect(structureTree.getChildrenWithOrder('q')).toEqual([{ nodeId: 'x', order: 7 }]);
+      expect(tree()).toEqual([['a', 1]]);
     });
   });
 });

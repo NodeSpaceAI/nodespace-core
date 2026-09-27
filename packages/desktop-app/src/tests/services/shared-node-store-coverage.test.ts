@@ -255,7 +255,7 @@ describe('SharedNodeStore - Coverage Completion', () => {
       vi.spyOn(backendAdapter, 'updateNode').mockRejectedValue(
         new Error('NodeNotFound: node does not exist')
       );
-      vi.spyOn(backendAdapter, 'createNode').mockResolvedValue(mockNode.id);
+      vi.spyOn(backendAdapter, 'createNode').mockResolvedValue({ id: mockNode.id, placement: null });
       vi.spyOn(backendAdapter, 'getNode').mockResolvedValue({ ...mockNode, version: 1 });
 
       // Mark as persisted but node doesn't exist in DB
@@ -273,7 +273,7 @@ describe('SharedNodeStore - Coverage Completion', () => {
       vi.spyOn(backendAdapter, 'updateNode').mockRejectedValue(
         new Error('Node not found in database')
       );
-      vi.spyOn(backendAdapter, 'createNode').mockResolvedValue(mockNode.id);
+      vi.spyOn(backendAdapter, 'createNode').mockResolvedValue({ id: mockNode.id, placement: null });
       vi.spyOn(backendAdapter, 'getNode').mockResolvedValue({ ...mockNode, version: 1 });
 
       store.setNode(mockNode, databaseSource);
@@ -329,7 +329,7 @@ describe('SharedNodeStore - Coverage Completion', () => {
         return { ...mockNode, version: 2 };
       });
 
-      vi.spyOn(backendAdapter, 'createNode').mockResolvedValue(mockNode.id);
+      vi.spyOn(backendAdapter, 'createNode').mockResolvedValue({ id: mockNode.id, placement: null });
       vi.spyOn(backendAdapter, 'getNode').mockResolvedValue({ ...mockNode, version: 1 });
 
       // Mark as persisted (simulating stale state)
@@ -352,7 +352,7 @@ describe('SharedNodeStore - Coverage Completion', () => {
         }
         return { ...mockNode, version: 2 };
       });
-      vi.spyOn(backendAdapter, 'createNode').mockResolvedValue(mockNode.id);
+      vi.spyOn(backendAdapter, 'createNode').mockResolvedValue({ id: mockNode.id, placement: null });
       vi.spyOn(backendAdapter, 'getNode').mockResolvedValue({ ...mockNode, version: 3 });
 
       store.setNode(mockNode, databaseSource);
@@ -420,7 +420,7 @@ describe('SharedNodeStore - Coverage Completion', () => {
           createCalled = true;
           throw new Error('Node already exists in database');
         }
-        return 'race-exists';
+        return { id: 'race-exists', placement: null };
       });
 
       vi.spyOn(backendAdapter, 'updateNode').mockResolvedValue({
@@ -448,7 +448,7 @@ describe('SharedNodeStore - Coverage Completion', () => {
           createCalled = true;
           throw new Error('UNIQUE constraint failed');
         }
-        return 'race-version';
+        return { id: 'race-version', placement: null };
       });
 
       vi.spyOn(backendAdapter, 'updateNode').mockResolvedValue({
@@ -859,9 +859,10 @@ describe('SharedNodeStore - Coverage Completion', () => {
       });
 
       // Mock createNode to delay so we can simulate user typing during the operation
-      vi.spyOn(backendAdapter, 'createNode').mockImplementation(async () => {
-        return createNodePromise;
-      });
+      vi.spyOn(backendAdapter, 'createNode').mockImplementation(async () => ({
+        id: await createNodePromise,
+        placement: null
+      }));
 
       vi.spyOn(backendAdapter, 'getNode').mockResolvedValue({
         ...mockNode,
@@ -920,9 +921,10 @@ describe('SharedNodeStore - Coverage Completion', () => {
         createNodeResolve = resolve;
       });
 
-      vi.spyOn(backendAdapter, 'createNode').mockImplementation(async () => {
-        return createNodePromise;
-      });
+      vi.spyOn(backendAdapter, 'createNode').mockImplementation(async () => ({
+        id: await createNodePromise,
+        placement: null
+      }));
 
       vi.spyOn(backendAdapter, 'getNode').mockResolvedValue({
         ...mockNode,
@@ -975,9 +977,10 @@ describe('SharedNodeStore - Coverage Completion', () => {
         createNodeResolve = resolve;
       });
 
-      vi.spyOn(backendAdapter, 'createNode').mockImplementation(async () => {
-        return createNodePromise;
-      });
+      vi.spyOn(backendAdapter, 'createNode').mockImplementation(async () => ({
+        id: await createNodePromise,
+        placement: null
+      }));
 
       vi.spyOn(backendAdapter, 'getNode').mockResolvedValue({
         ...mockNode,

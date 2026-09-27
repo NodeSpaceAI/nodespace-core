@@ -44,7 +44,7 @@ describe('createSchemaInstance + SharedNodeStore.setNode() — persisted-id regr
   function mockBackend() {
     const createNodeSpy = vi
       .spyOn(backendAdapter, 'createNode')
-      .mockImplementation(async (input) => (input as Node).id);
+      .mockImplementation(async (input) => ({ id: (input as Node).id, placement: null }));
     const getNodeSpy = vi
       .spyOn(backendAdapter, 'getNode')
       .mockImplementation(async (id: string) => aiChatNode(id));

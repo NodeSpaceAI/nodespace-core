@@ -428,17 +428,33 @@ impl NodeService {
         &self,
         params: CreateNodeParams,
     ) -> Result<String, NodeServiceError> {
+        self.create_placed_node(params).await.map(|(id, _)| id)
+    }
+
+    /// [`Self::create_node_with_parent`], also returning the store's
+    /// [`crate::db::ChildPlacement`] for the new node's parent edge (`None`
+    /// for a root node).
+    ///
+    /// A caller that relays the create to a client returns the placement in
+    /// its reply: echo suppression keeps this write's own relationship events
+    /// from reaching the client that made it, so the reply is the only place
+    /// that client learns the authoritative order keys (including any
+    /// re-spread of the new node's siblings).
+    pub async fn create_placed_node(
+        &self,
+        params: CreateNodeParams,
+    ) -> Result<(String, Option<crate::db::ChildPlacement>), NodeServiceError> {
         let (node, parent, node_type) = self.prepare_create_node_with_parent(params).await?;
         let has_parent = parent.is_some();
 
-        let created_id = if let Some((parent_id, position)) = parent {
+        let (created_id, placement) = if let Some((parent_id, position)) = parent {
             let service = self.clone();
             let service_for_tx = service.clone();
             service
                 .with_transaction(move |tx| {
                     Box::pin(async move {
                         let created_id = service_for_tx.create_node_in_tx(tx, node, false).await?;
-                        service_for_tx
+                        let placement = service_for_tx
                             .create_parent_edge_in_tx(
                                 tx,
                                 &created_id,
@@ -446,18 +462,18 @@ impl NodeService {
                                 position.as_ref(),
                             )
                             .await?;
-                        Ok(created_id)
+                        Ok((created_id, Some(placement)))
                     })
                 })
                 .await?
         } else {
-            self.create_node(node).await?
+            (self.create_node(node).await?, None)
         };
 
         self.queue_created_root_for_embedding(&created_id, &node_type, has_parent)
             .await;
 
-        Ok(created_id)
+        Ok((created_id, placement))
     }
 
     /// `_in_tx` twin of [`Self::create_node_with_parent`] (ADR-069 §1b/S3),

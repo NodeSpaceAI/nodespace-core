@@ -23,9 +23,9 @@ import type { Node } from '$lib/types';
 vi.mock('$lib/services/backend-adapter', () => ({
   backendAdapter: {
     moveNode: vi.fn().mockResolvedValue(undefined),
-    moveChildrenToParent: vi.fn().mockResolvedValue([]),
+    moveChildrenToParent: vi.fn().mockResolvedValue({ nodes: [], orders: [] }),
     getNode: vi.fn().mockResolvedValue(null),
-    createNode: vi.fn().mockResolvedValue('mock-id'),
+    createNode: vi.fn().mockResolvedValue({ id: 'mock-id', placement: null }),
     updateNode: vi.fn().mockResolvedValue(null),
     deleteNode: vi.fn().mockResolvedValue({ deleted: true }),
     getChildren: vi.fn().mockResolvedValue([]),
@@ -80,15 +80,18 @@ describe('Rapid Hierarchy Operations - Stress Tests', () => {
   beforeEach(() => {
     // Reset mocks
     vi.clearAllMocks();
-    // Mock returns a Node object - moveNode returns the updated node
+    // moveNode returns the updated node plus its placement (none in this mock)
     mockMoveNode.mockResolvedValue({
-      id: 'mock-node',
-      nodeType: 'text',
-      content: 'mock',
-      version: 1,
-      properties: {},
-      createdAt: new Date().toISOString(),
-      modifiedAt: new Date().toISOString()
+      node: {
+        id: 'mock-node',
+        nodeType: 'text',
+        content: 'mock',
+        version: 1,
+        properties: {},
+        createdAt: new Date().toISOString(),
+        modifiedAt: new Date().toISOString()
+      },
+      placement: null
     });
 
     // Reset SharedNodeStore singleton for each test
@@ -304,15 +307,18 @@ describe('Stress Test - High Volume Operations', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    // Mock returns a Node object - moveNode returns the updated node
+    // moveNode returns the updated node plus its placement (none in this mock)
     mockMoveNode.mockResolvedValue({
-      id: 'mock-node',
-      nodeType: 'text',
-      content: 'mock',
-      version: 1,
-      properties: {},
-      createdAt: new Date().toISOString(),
-      modifiedAt: new Date().toISOString()
+      node: {
+        id: 'mock-node',
+        nodeType: 'text',
+        content: 'mock',
+        version: 1,
+        properties: {},
+        createdAt: new Date().toISOString(),
+        modifiedAt: new Date().toISOString()
+      },
+      placement: null
     });
     SharedNodeStore.resetInstance();
     sharedNodeStore = SharedNodeStore.getInstance();

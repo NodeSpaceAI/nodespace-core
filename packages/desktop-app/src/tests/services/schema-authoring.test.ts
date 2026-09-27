@@ -31,8 +31,8 @@ function makeNode(id: string, nodeType: string): Node {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  // createNode returns the id (string); default getNode echoes a node for it.
-  createNodeMock.mockImplementation(async (input) => (input as Node).id);
+  // createNode returns the id and its placement; default getNode echoes a node for it.
+  createNodeMock.mockImplementation(async (input) => ({ id: (input as Node).id, placement: null }));
   getNodeMock.mockImplementation(async (id: string) => makeNode(id, 'invoice'));
 });
 

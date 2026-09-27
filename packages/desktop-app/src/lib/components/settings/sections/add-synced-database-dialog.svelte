@@ -241,12 +241,12 @@
       // rather than minting a second "My Workspace" collection on retry.
       let collectionId = mintedCollectionId;
       if (!collectionId) {
-        collectionId = await backendAdapter.createNode({
+        ({ id: collectionId } = await backendAdapter.createNode({
           id: globalThis.crypto.randomUUID(),
           nodeType: 'collection',
           content: 'My Workspace',
           properties: { collection: { restrictedToMembers: true } }
-        });
+        }));
         mintedCollectionId = collectionId;
       }
 

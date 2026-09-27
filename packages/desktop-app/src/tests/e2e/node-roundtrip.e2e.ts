@@ -121,10 +121,55 @@ describe('Node CRUD round-trip (HTTP → gRPC → SQLite)', () => {
     expect(child?.properties).toEqual({});
   });
 
+  it('create and move replies carry the store placement for the written edge', async () => {
+    const parent = crypto.randomUUID();
+    const a = crypto.randomUUID();
+    const b = crypto.randomUUID();
+    const root = await h.adapter.createNode({ id: parent, nodeType: 'text', content: 'p' });
+    expect(root.placement).toBeNull();
+
+    const createdA = await h.adapter.createNode({ id: a, nodeType: 'text', content: 'a', parentId: parent });
+    await h.adapter.createNode({ id: b, nodeType: 'text', content: 'b', parentId: parent });
+    expect(createdA.placement).toMatchObject({ parentId: parent, respread: [] });
+
+    // Move b before a: its new key must sort below a's.
+    const moved = await h.adapter.moveNode(b, 1, parent, { type: 'beginning' });
+    expect(moved.node.version).toBe(2);
+    expect(moved.placement!.parentId).toBe(parent);
+    expect(moved.placement!.order).toBeLessThan(createdA.placement!.order);
+
+    const toRoot = await h.adapter.moveNode(b, 2, null, null);
+    expect(toRoot.placement).toBeNull();
+  });
+
+  it('moveChildrenToParent returns each transferred edge’s store order', async () => {
+    const from = crypto.randomUUID();
+    const to = crypto.randomUUID();
+    const c1 = crypto.randomUUID();
+    const c2 = crypto.randomUUID();
+    await h.adapter.createNode({ id: from, nodeType: 'text', content: 'from' });
+    await h.adapter.createNode({ id: to, nodeType: 'text', content: 'to' });
+    await h.adapter.createNode({ id: c1, nodeType: 'text', content: 'c1', parentId: from });
+    await h.adapter.createNode({ id: c2, nodeType: 'text', content: 'c2', parentId: from });
+
+    const { nodes, orders } = await h.adapter.moveChildrenToParent(to, [
+      { id: c1, version: 1 },
+      { id: c2, version: 1 }
+    ]);
+
+    expect(nodes.map((n) => [n.id, n.version])).toEqual([
+      [c1, 2],
+      [c2, 2]
+    ]);
+    expect(orders.map((o) => o.nodeId)).toEqual([c1, c2]);
+    expect(orders[0].order).toBeLessThan(orders[1].order);
+    expect((await h.adapter.getChildren(to)).map((n) => n.id)).toEqual([c1, c2]);
+  });
+
   it('createNode returns the new node id string', async () => {
     const id = crypto.randomUUID();
     const result = await h.adapter.createNode({ id, nodeType: 'text', content: 'id check' });
-    expect(typeof result).toBe('string');
-    expect(result.length).toBeGreaterThan(0);
+    expect(typeof result.id).toBe('string');
+    expect(result.id.length).toBeGreaterThan(0);
   });
 });

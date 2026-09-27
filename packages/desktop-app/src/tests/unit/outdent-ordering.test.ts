@@ -29,17 +29,20 @@ const { moveInMemoryRelationshipSpy } = vi.hoisted(() => ({
 vi.mock('$lib/services/backend-adapter', () => ({
   backendAdapter: {
     moveNode: vi.fn().mockResolvedValue({
-      id: 'mock-node',
-      nodeType: 'text',
-      content: '',
-      version: 2,
-      properties: {},
-      createdAt: new Date().toISOString(),
-      modifiedAt: new Date().toISOString()
+      node: {
+        id: 'mock-node',
+        nodeType: 'text',
+        content: '',
+        version: 2,
+        properties: {},
+        createdAt: new Date().toISOString(),
+        modifiedAt: new Date().toISOString()
+      },
+      placement: null
     }),
-    moveChildrenToParent: vi.fn().mockResolvedValue([]),
+    moveChildrenToParent: vi.fn().mockResolvedValue({ nodes: [], orders: [] }),
     getNode: vi.fn().mockResolvedValue(null),
-    createNode: vi.fn().mockResolvedValue('mock-id'),
+    createNode: vi.fn().mockResolvedValue({ id: 'mock-id', placement: null }),
     updateNode: vi.fn().mockResolvedValue(null),
     deleteNode: vi.fn().mockResolvedValue({ deleted: true }),
     getChildren: vi.fn().mockResolvedValue([]),

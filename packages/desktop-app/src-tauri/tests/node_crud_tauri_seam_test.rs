@@ -31,10 +31,14 @@ async fn creates_a_node_and_reads_it_back() {
     let state = harness.client_state();
 
     let id = uuid::Uuid::new_v4().to_string();
-    let created_id = create_node(state.clone(), text_input(&id, "hello tauri seam"))
+    let created = create_node(state.clone(), text_input(&id, "hello tauri seam"))
         .await
         .expect("create_node failed");
-    assert_eq!(created_id, id);
+    assert_eq!(created.id, id);
+    assert!(
+        created.placement.is_none(),
+        "a root node has no parent edge"
+    );
 
     let node = get_node(state.clone(), id.clone())
         .await
