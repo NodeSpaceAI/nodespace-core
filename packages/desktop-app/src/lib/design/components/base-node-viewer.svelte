@@ -38,10 +38,6 @@
   } from '$lib/design/components/node-type-predicates';
   import { updateSchemaField } from '$lib/design/components/schema-field-update';
   import { normalizeCodeBlockContent } from '$lib/design/components/fallback-node-render';
-  import {
-    saveCursorPosition,
-    restoreCursorPosition
-  } from '$lib/design/components/viewer-cursor-utils';
   import type {
     ViewerRenderNode,
     ContentChangedDetail,
@@ -692,19 +688,9 @@
         return;
       }
 
-      // Store cursor position before DOM changes
-      const cursorPosition = saveCursorPosition(nodeId);
-
-      // Use NodeManager to handle indentation
-      const success = await nodeManager.indentNode(nodeId);
-
-      if (success) {
-        // NodeManager.indentNode() already persists via updateNode()
-        // No need for separate saveHierarchyChange() call (was causing double-write)
-
-        // Restore cursor position after DOM update
-        setTimeout(() => restoreCursorPosition(nodeId, cursorPosition), 0);
-      }
+      // NodeManager.indentNode() persists via updateNode(). The focused textarea
+      // is keyed on node id, so it is not remounted and keeps its caret.
+      await nodeManager.indentNode(nodeId);
     } catch (error) {
       log.error('Error during node indentation:', error);
     }
@@ -721,20 +707,10 @@
         return;
       }
 
-      // Store cursor position before DOM changes
-      const cursorPosition = saveCursorPosition(nodeId);
-
-      // Use NodeManager to handle outdentation
-      const success = await nodeManager.outdentNode(nodeId);
-
-      if (success) {
-        // NodeManager.outdentNode() already persists via updateNode()
-        // No need for separate saveHierarchyChange() calls (was causing double-write)
-        // Both the outdented node and transferred siblings are persisted automatically
-
-        // Restore cursor position after DOM update
-        setTimeout(() => restoreCursorPosition(nodeId, cursorPosition), 0);
-      }
+      // NodeManager.outdentNode() persists the outdented node and any transferred
+      // siblings via updateNode(). The focused textarea is keyed on node id, so it
+      // is not remounted and keeps its caret.
+      await nodeManager.outdentNode(nodeId);
     } catch (error) {
       log.error('Error during node outdentation:', error);
     }
@@ -742,30 +718,7 @@
 
   // Handle chevron click to toggle expand/collapse
   function handleToggleExpanded(toggleNodeId: string) {
-    // Get the currently focused element before DOM changes
-    const activeElement = document.activeElement as HTMLElement;
-    const isTextEditor = activeElement && activeElement.id?.startsWith('contenteditable-');
-    let focusedNodeId: string | null = null;
-    let cursorPosition = 0;
-
-    // Store cursor position if we have an active text editor
-    if (isTextEditor) {
-      focusedNodeId = activeElement.id.replace('contenteditable-', '');
-      cursorPosition = saveCursorPosition(focusedNodeId);
-    }
-
-    // Toggle expanded state via nodeManager
     nodeManager.toggleExpanded(toggleNodeId);
-
-    // Restore focus and cursor position after DOM update
-    if (focusedNodeId && isTextEditor) {
-      setTimeout(() => {
-        const element = document.getElementById(`contenteditable-${focusedNodeId}`);
-        if (element && document.body.contains(element)) {
-          restoreCursorPosition(focusedNodeId, cursorPosition);
-        }
-      }, 0);
-    }
   }
 
   /**
