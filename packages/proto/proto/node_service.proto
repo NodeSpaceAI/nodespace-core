@@ -173,7 +173,6 @@ service NodeService {
 
   // Streaming
   rpc WatchNodes(WatchRequest) returns (stream NodeEvent);
-  rpc Chat(stream ChatRequest) returns (stream ChatResponse);
 }
 
 // ---------------------------------------------------------------------------
@@ -569,21 +568,6 @@ message RelationshipDeletedPayload {
   string from_id = 2;
   string to_id = 3;
   string relationship_type = 4;
-}
-
-// ---------------------------------------------------------------------------
-// Chat — bidirectional streaming
-// ---------------------------------------------------------------------------
-
-message ChatRequest {
-  string content = 1;
-  string session_id = 2; // client-chosen session identifier; empty = auto-assign
-}
-
-message ChatResponse {
-  string content = 1;
-  bool done = 2;          // true on the final chunk of a response
-  string session_id = 3;  // echoed back so client can correlate streams
 }
 
 // ---------------------------------------------------------------------------
