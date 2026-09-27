@@ -19,8 +19,8 @@
 
 use crate::skill_rules::{
     ADD_ENUM_VALUES, AMBIGUITY_CLARIFY, BULK_IMPORT_NO_FOLLOWUP_SEARCH, COLLECTION_AT_CREATE_TIME,
-    CREATING_TWO_LINKED_TYPES, DELETE_A_SCHEMA, EDIT_DONT_RECREATE, FIND_THEN_ACT,
-    GROUPING_IS_COLLECTIONS, NAMED_RECORD_RESOLUTION, ONE_SCHEMA_PER_REQUEST,
+    CREATING_TWO_LINKED_TYPES, DELETE_A_SCHEMA, EDIT_DONT_RECREATE, EXTENDS_SCHEMA_COMPOSITION,
+    FIND_THEN_ACT, GROUPING_IS_COLLECTIONS, NAMED_RECORD_RESOLUTION, ONE_SCHEMA_PER_REQUEST,
     RELATIONSHIP_VS_FIELD, RENAME_VS_RELABEL, SCHEMA_ALREADY_EXISTS, SCHEMA_VALIDATION_ERROR_RETRY,
     SINGLE_ITEM_PER_CALL, SUCCESS_NO_REVERIFY, TARGET_TYPE_MUST_EXIST, TASK_STATUS_DEDICATED_VERB,
     TITLE_TEMPLATE_PLACEHOLDERS, UNIQUE_FIELD_FLAGS,
@@ -78,6 +78,8 @@ CALL create_schema NOW: your next action is the tool call, not planning text.
 
 {delete_a_schema}
 
+{extends_schema_composition}
+
 {relationship_vs_field} {target_type_must_exist}
 
 {grouping_is_collections}
@@ -94,6 +96,7 @@ CALL create_schema NOW: your next action is the tool call, not planning text.
         grouping_is_collections = GROUPING_IS_COLLECTIONS.imperative,
         rename_vs_relabel = RENAME_VS_RELABEL.imperative,
         delete_a_schema = DELETE_A_SCHEMA.imperative,
+        extends_schema_composition = EXTENDS_SCHEMA_COMPOSITION.imperative,
         relationship_vs_field = RELATIONSHIP_VS_FIELD.imperative,
         target_type_must_exist = TARGET_TYPE_MUST_EXIST.imperative,
         title_template_placeholders = TITLE_TEMPLATE_PLACEHOLDERS.imperative,
