@@ -52,7 +52,7 @@
   import { focusManager } from '$lib/services/focus-manager.svelte';
   import type { Node as NodeData } from '$lib/types/node';
   import { positionCursor } from '$lib/actions/position-cursor';
-  import { createMockElementForView, findCharacterFromClickFast } from './cursor-positioning';
+  import { createMockElementForView, findCharacterFromClick } from './cursor-positioning';
   import { mapViewPositionToEditPosition } from '$lib/utils/view-edit-mapper';
   import { DEFAULT_PANE_ID } from '$lib/stores/navigation.svelte';
 
@@ -898,7 +898,7 @@
         const mockRect = mockElement.getBoundingClientRect();
 
         // Find character position in VIEW content
-        const viewPositionResult = findCharacterFromClickFast(mockElement, clickX, clickY, {
+        const viewPositionResult = findCharacterFromClick(mockElement, clickX, clickY, {
           left: mockRect.left,
           top: mockRect.top,
           width: mockRect.width,

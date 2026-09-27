@@ -24,7 +24,7 @@ export interface PositionResult {
  * @param editableRect - Bounding rectangle of the target editable element
  * @returns Character index optimized for < 50ms performance
  */
-export function findCharacterFromClickFast(
+export function findCharacterFromClick(
   mockElement: HTMLDivElement,
   clickX: number,
   clickY: number,
@@ -263,7 +263,7 @@ export function createMockElementForView(
   mockElement.style.cssText = cssText;
 
   // Wrap each character in span with data-position attribute
-  // This allows findCharacterFromClickFast to map coordinates → position
+  // This allows findCharacterFromClick to map coordinates → position
   content.split('').forEach((char, index) => {
     if (char === '\n') {
       // Handle newlines: add span + <br> (matches view rendering)
