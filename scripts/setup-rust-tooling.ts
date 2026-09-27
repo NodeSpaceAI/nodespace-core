@@ -80,7 +80,7 @@ export const NEXTEST: Tool = {
   releases: { "darwin-arm64": NEXTEST_MAC, "darwin-x64": NEXTEST_MAC },
 };
 
-export const CACHE_SIZE_BYTES = 40 * 1024 ** 3;
+export const CACHE_SIZE_BYTES = 20 * 1024 ** 3;
 
 export type CargoConfigPlan =
   | { action: "write"; content: string }
@@ -154,7 +154,7 @@ export function planCargoConfig(
 }
 
 export function sccacheConfigContent(): string {
-  return `[cache.disk]\nsize = ${CACHE_SIZE_BYTES} # 40 GiB\n`;
+  return `[cache.disk]\nsize = ${CACHE_SIZE_BYTES} # 20 GiB\n`;
 }
 
 // SCCACHE_CONF is sccache's own override for where it reads its config.

@@ -111,7 +111,7 @@ describe("release pins", () => {
   });
 });
 
-test("sccache config sets a 40 GiB disk cache", () => {
+test("sccache config sets a 20 GiB disk cache", () => {
   const parsed = Bun.TOML.parse(sccacheConfigContent()) as { cache: { disk: { size: number } } };
   expect(parsed.cache.disk.size).toBe(CACHE_SIZE_BYTES);
 });
