@@ -2812,9 +2812,10 @@ impl SqliteStore {
     /// twin) — so every reparent path is covered, symmetrically with the
     /// forward guard `assert_root_only_membership` on the `member_of` INSERT
     /// sites. (Fresh-node attach sites can't pre-hold a membership;
-    /// `move_children_to_parent` only moves already-interior nodes.) Rejects rather than dropping the membership (a node can hold several
-    /// grants, each an independent access path). `person` (grantee, ADR-037 §4)
-    /// nodes are exempt.
+    /// `move_children_to_parent` only moves already-interior nodes.) Rejects
+    /// rather than dropping the membership (a node can hold several grants,
+    /// each an independent access path). `person` (grantee, ADR-037 §4) nodes
+    /// are exempt.
     ///
     /// Also refuses a `collection`, which is always a root (ADR-059 §2): see
     /// [`super::TreeInvariantViolation::collection_not_root`], and a `schema`
@@ -2892,6 +2893,16 @@ impl SqliteStore {
         let new_parent_id = new_parent_id.map(|s| s.to_string());
         let insert_after_sibling_id = insert_after_sibling_id.map(|s| s.to_string());
 
+        // Held across every read the move is decided from (current parent, tree
+        // guards, sibling order) through the write-back (including any
+        // rebalance) until the function returns. Without it, a concurrent move
+        // can change the current parent after it is read, two concurrent
+        // same-parent reorders compute overlapping order keys from the same
+        // stale snapshot, and two crossing moves (A under B, B under A) can both
+        // pass the cycle check. The reads before the write go through reader
+        // connections, so they don't re-enter it.
+        let db = self.write().await;
+
         if !self.node_exists(&node_id).await? {
             return Err(anyhow::anyhow!("Node not found: {}", node_id));
         }
@@ -2902,14 +2913,6 @@ impl SqliteStore {
             (None, None) => true,
             _ => false,
         };
-
-        // Held across the tree guards and the sibling-order read → fractional-key
-        // compute → write-back (including any rebalance) until the function
-        // returns. Without it, two concurrent same-parent reorders interleave and
-        // compute overlapping order keys from the same stale snapshot, and two
-        // crossing moves (A under B, B under A) can both pass the cycle check.
-        // The guards read through reader connections, so they don't re-enter it.
-        let db = self.write().await;
 
         if let Some(ref parent_id) = new_parent_id {
             if !self.node_exists(parent_id).await? {
