@@ -22,3 +22,11 @@ export function deriveTaskState(metadata: Record<string, unknown>, content: stri
   }
   return 'pending';
 }
+
+/**
+ * Remove a leading task-syntax shortcut marker (e.g. left over from converting a
+ * text node typed as `[ ] ...`).
+ */
+export function stripTaskMarker(content: string): string {
+  return content.replace(/^\s*-?\s*\[[x~o\s]*\]\s*/i, '').trim();
+}

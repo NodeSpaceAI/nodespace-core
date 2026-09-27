@@ -11,7 +11,7 @@
 
 import { describe, it, expect } from 'vitest';
 import type { NodeReference } from '$lib/types/node';
-import { deriveTaskState } from '$lib/design/components/task-state-syntax';
+import { deriveTaskState, stripTaskMarker } from '$lib/design/components/task-state-syntax';
 
 // ============================================================================
 // BacklinksPanel — Props Interface
@@ -119,7 +119,7 @@ describe('TaskNode props contract', () => {
     expect(props.nodeType).toBe('task');
   });
 
-  it('derives taskState from metadata.taskState (pre-computed by extractNodeMetadata)', () => {
+  it('derives taskState from metadata.taskState, falling back to content task syntax', () => {
     // metadata.taskState from extractNodeMetadata takes priority
     expect(deriveTaskState({ taskState: 'completed' }, 'Some content')).toBe('completed');
     expect(deriveTaskState({ taskState: 'inProgress' }, 'Some content')).toBe('inProgress');
@@ -138,6 +138,12 @@ describe('TaskNode props contract', () => {
     expect(deriveTaskState({}, '[ ] Finish memo]')).toBe('pending');
     expect(deriveTaskState({}, 'Write the memo] draft')).toBe('pending');
     expect(deriveTaskState({}, '[ ] Mark [o] later')).toBe('pending');
+  });
+
+  it('strips a leading task marker from content', () => {
+    expect(stripTaskMarker('- [x] Done')).toBe('Done');
+    expect(stripTaskMarker('[ ] Open')).toBe('Open');
+    expect(stripTaskMarker('Plain [o] text')).toBe('Plain [o] text');
   });
 
   it('extractMetadata maps cancelled status to completed taskState', () => {

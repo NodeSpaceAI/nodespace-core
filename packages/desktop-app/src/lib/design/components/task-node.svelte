@@ -17,7 +17,7 @@
   import { createEventDispatcher, getContext } from 'svelte';
   import BaseNode from './base-node.svelte';
   import type { NodeState } from '$lib/design/icons/registry';
-  import { deriveTaskState } from './task-state-syntax';
+  import { deriveTaskState, stripTaskMarker } from './task-state-syntax';
   import { getNavigationService } from '$lib/services/navigation-service';
   import { DEFAULT_PANE_ID } from '$lib/stores/navigation.svelte';
 
@@ -76,13 +76,6 @@
   let taskMetadata = $derived({ taskState });
 
   /**
-   * Clean content by removing task syntax shortcut markers
-   */
-  function cleanContentForDisplay(content: string): string {
-    return content.replace(/^\s*-?\s*\[[x~o\s]*\]\s*/i, '').trim();
-  }
-
-  /**
    * Update task state and sync with node manager
    *
    * WHY THIS FUNCTION STILL EXISTS:
@@ -100,7 +93,7 @@
     // when we update the content or metadata below
 
     // Clean the content if it has any shortcut syntax from node conversion
-    const cleanedContent = cleanContentForDisplay(content);
+    const cleanedContent = stripTaskMarker(content);
     if (cleanedContent !== content) {
       content = cleanedContent;
       // Only dispatch contentChanged if content actually changed (prevents
