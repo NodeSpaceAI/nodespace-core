@@ -11,6 +11,9 @@
 //! `StreamingTaskRegistry`. When `terminate_session` is called, the registry
 //! cancels the token, which causes the background streaming loop to exit
 //! promptly rather than waiting for the next gRPC message or a closed stream.
+//! The reader task removes its own entry when it exits for any other reason
+//! (stream ended, or `StreamOutput` failed to open), so no entry outlives its
+//! reader.
 //!
 //! ## Client-side timeouts
 //!
@@ -33,12 +36,12 @@ use nodespace_proto::{
     TerminateSessionRequest, WriteInputRequest,
 };
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tokio_util::sync::CancellationToken;
 use tonic::Request;
 
 use crate::commands::nodes::CommandError;
-use crate::services::GrpcClient;
+use crate::services::{AgentSessionClient, GrpcClient};
 
 // ---------------------------------------------------------------------------
 // Streaming task registry — tracks cancellation tokens by session ID
@@ -56,6 +59,14 @@ impl StreamingTaskRegistry {
     pub fn insert(&self, session_id: &str, token: CancellationToken) {
         if let Ok(mut map) = self.tokens.lock() {
             map.insert(session_id.to_string(), token);
+        }
+    }
+
+    /// Drop a session's entry without cancelling it — for a reader task that
+    /// has already exited on its own.
+    pub fn remove(&self, session_id: &str) {
+        if let Ok(mut map) = self.tokens.lock() {
+            map.remove(session_id);
         }
     }
 
@@ -224,7 +235,7 @@ pub async fn launch_session(
     let created_at = inner.created_at;
 
     // Obtain the client before spawning (State<'_> has a non-'static lifetime).
-    let mut stream_client = client.agent_session_client().await;
+    let stream_client = client.agent_session_client().await;
 
     let cancel_token = CancellationToken::new();
     registry.insert(&session_id, cancel_token.clone());
@@ -232,71 +243,87 @@ pub async fn launch_session(
     // Spawn background task: reads StreamOutput and emits Tauri events.
     let session_id_for_task = session_id.clone();
     tauri::async_runtime::spawn(async move {
-        let stream_result = stream_client
-            .stream_output(Request::new(nodespace_proto::StreamOutputRequest {
-                session_id: session_id_for_task.clone(),
-            }))
-            .await;
-
-        let mut stream = match stream_result {
-            Ok(r) => r.into_inner(),
-            Err(e) => {
-                tracing::warn!(
-                    session_id = %session_id_for_task,
-                    error = %e,
-                    "Failed to open StreamOutput for session"
-                );
-                return;
-            }
-        };
-
-        let event_name = format!("pty-output-{}", session_id_for_task);
-        loop {
-            tokio::select! {
-                // Stop the loop when terminate_session cancels the token.
-                _ = cancel_token.cancelled() => {
-                    tracing::debug!(session_id = %session_id_for_task, "StreamOutput reader cancelled");
-                    break;
-                }
-                chunk_result = stream.next() => {
-                    match chunk_result {
-                        Some(Ok(chunk)) => {
-                            let payload = PtyOutputPayload {
-                                data: chunk.data.to_vec(),
-                                timestamp_ms: chunk.timestamp_ms,
-                                dropped_chunks: chunk.dropped_chunks,
-                            };
-                            if let Err(e) = app.emit(&event_name, payload) {
-                                tracing::warn!(
-                                    session_id = %session_id_for_task,
-                                    error = %e,
-                                    "Failed to emit pty-output event"
-                                );
-                                break;
-                            }
-                        }
-                        Some(Err(e)) => {
-                            tracing::debug!(
-                                session_id = %session_id_for_task,
-                                error = %e,
-                                "StreamOutput ended"
-                            );
-                            break;
-                        }
-                        None => break,
-                    }
-                }
-            }
-        }
-
-        // Emit a sentinel so the frontend knows the stream is done.
-        let _ = app.emit(&format!("pty-closed-{}", session_id_for_task), ());
+        read_stream_output(stream_client, &app, &session_id_for_task, cancel_token).await;
+        // Whichever way the reader exits — cancelled, stream ended, or
+        // StreamOutput failing to open — its entry must not outlive it.
+        app.state::<StreamingTaskRegistry>()
+            .remove(&session_id_for_task);
     });
 
     Ok(LaunchSessionResult {
         session_id,
         created_at,
     })
+}
+
+/// Read a session's `StreamOutput` and emit each chunk as a
+/// `pty-output-{sessionId}` event until the stream ends or `cancel_token`
+/// fires, then emit `pty-closed-{sessionId}`.
+async fn read_stream_output(
+    mut stream_client: AgentSessionClient,
+    app: &AppHandle,
+    session_id: &str,
+    cancel_token: CancellationToken,
+) {
+    let stream_result = stream_client
+        .stream_output(Request::new(nodespace_proto::StreamOutputRequest {
+            session_id: session_id.to_string(),
+        }))
+        .await;
+
+    let mut stream = match stream_result {
+        Ok(r) => r.into_inner(),
+        Err(e) => {
+            tracing::warn!(
+                session_id = %session_id,
+                error = %e,
+                "Failed to open StreamOutput for session"
+            );
+            return;
+        }
+    };
+
+    let event_name = format!("pty-output-{}", session_id);
+    loop {
+        tokio::select! {
+            // Stop the loop when terminate_session cancels the token.
+            _ = cancel_token.cancelled() => {
+                tracing::debug!(session_id = %session_id, "StreamOutput reader cancelled");
+                break;
+            }
+            chunk_result = stream.next() => {
+                match chunk_result {
+                    Some(Ok(chunk)) => {
+                        let payload = PtyOutputPayload {
+                            data: chunk.data.to_vec(),
+                            timestamp_ms: chunk.timestamp_ms,
+                            dropped_chunks: chunk.dropped_chunks,
+                        };
+                        if let Err(e) = app.emit(&event_name, payload) {
+                            tracing::warn!(
+                                session_id = %session_id,
+                                error = %e,
+                                "Failed to emit pty-output event"
+                            );
+                            break;
+                        }
+                    }
+                    Some(Err(e)) => {
+                        tracing::debug!(
+                            session_id = %session_id,
+                            error = %e,
+                            "StreamOutput ended"
+                        );
+                        break;
+                    }
+                    None => break,
+                }
+            }
+        }
+    }
+
+    // Emit a sentinel so the frontend knows the stream is done.
+    let _ = app.emit(&format!("pty-closed-{}", session_id), ());
 }
 
 /// Write raw bytes (keystrokes) to a PTY session's stdin.
@@ -426,6 +453,30 @@ pub async fn check_agent_availability(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn registry_remove_drops_the_entry_without_cancelling() {
+        let registry = StreamingTaskRegistry::default();
+        let token = CancellationToken::new();
+        registry.insert("s1", token.clone());
+
+        registry.remove("s1");
+
+        assert!(registry.tokens.lock().unwrap().is_empty());
+        assert!(!token.is_cancelled());
+    }
+
+    #[test]
+    fn registry_cancel_and_remove_cancels_and_drops_the_entry() {
+        let registry = StreamingTaskRegistry::default();
+        let token = CancellationToken::new();
+        registry.insert("s1", token.clone());
+
+        registry.cancel_and_remove("s1");
+
+        assert!(registry.tokens.lock().unwrap().is_empty());
+        assert!(token.is_cancelled());
+    }
 
     #[tokio::test]
     async fn with_timeout_maps_a_hung_call_to_deadline_exceeded() {
