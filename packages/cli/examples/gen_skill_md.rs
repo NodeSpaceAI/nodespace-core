@@ -38,10 +38,11 @@
 use clap::{ArgAction, Command as ClapCommand, CommandFactory};
 use nodespace_agent::skill_rules::{
     ADD_ENUM_VALUES, CREATING_TWO_LINKED_TYPES, DELETE_A_SCHEMA, EDIT_DONT_RECREATE,
-    ENUM_EDGE_FIELDS, ENUM_FORMAT, FIELDS_FROM_REQUEST_ONLY, GROUPING_IS_COLLECTIONS,
-    NAME_PLACEHOLDER_EXCEPTION, NO_NAME_TITLE_FIELD, ONE_SCHEMA_PER_REQUEST, RELATIONSHIP_VS_FIELD,
-    RENAME_VS_RELABEL, SCHEMA_ALREADY_EXISTS, SCHEMA_VALIDATION_ERROR_RETRY,
-    TARGET_TYPE_MUST_EXIST, TITLE_TEMPLATE_PLACEHOLDERS, UNIQUE_FIELD_FLAGS,
+    ENUM_EDGE_FIELDS, ENUM_FORMAT, EXTENDS_SCHEMA_COMPOSITION, FIELDS_FROM_REQUEST_ONLY,
+    GROUPING_IS_COLLECTIONS, NAME_PLACEHOLDER_EXCEPTION, NO_NAME_TITLE_FIELD,
+    ONE_SCHEMA_PER_REQUEST, RELATIONSHIP_VS_FIELD, RENAME_VS_RELABEL, SCHEMA_ALREADY_EXISTS,
+    SCHEMA_VALIDATION_ERROR_RETRY, TARGET_TYPE_MUST_EXIST, TITLE_TEMPLATE_PLACEHOLDERS,
+    UNIQUE_FIELD_FLAGS,
 };
 use nodespace_cli::Cli;
 use nodespace_core::models::SkillNode;
@@ -134,6 +135,7 @@ fn render_schema_rules_block() -> String {
          {add_enum_values}\n\n\
          {rename_vs_relabel}\n\n\
          {delete_a_schema}\n\n\
+         {extends_schema_composition}\n\n\
          **Schema fields:** {no_name_title_field} {name_placeholder_exception}\n\n\
          {fields_from_request_only}\n\n\
          {enum_format}\n\n\
@@ -150,6 +152,7 @@ fn render_schema_rules_block() -> String {
         add_enum_values = ADD_ENUM_VALUES.prose,
         rename_vs_relabel = RENAME_VS_RELABEL.prose,
         delete_a_schema = DELETE_A_SCHEMA.prose,
+        extends_schema_composition = EXTENDS_SCHEMA_COMPOSITION.prose,
         no_name_title_field = NO_NAME_TITLE_FIELD.prose,
         name_placeholder_exception = NAME_PLACEHOLDER_EXCEPTION.prose,
         fields_from_request_only = FIELDS_FROM_REQUEST_ONLY.prose,
