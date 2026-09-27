@@ -19,7 +19,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { render, cleanup, fireEvent, waitFor } from '@testing-library/svelte';
 import type { SchemaNode } from '$lib/types/schema-node';
-import type { Node } from '$lib/types';
+import type { Node, QueryNode, QueryNodeUpdate } from '$lib/types';
 
 import { mockTauriCore } from '../helpers/mock-tauri-core';
 
@@ -43,6 +43,7 @@ const mockQueryNodes = vi.fn();
 const mockExecuteQuery = vi.fn();
 const mockCreateNode = vi.fn();
 const mockUpdateNode = vi.fn();
+const mockUpdateQueryNode = vi.fn();
 
 vi.mock('$lib/services/backend-adapter', () => ({
   backendAdapter: {
@@ -51,7 +52,8 @@ vi.mock('$lib/services/backend-adapter', () => ({
     queryNodes: (...args: unknown[]) => mockQueryNodes(...args),
     executeQuery: (...args: unknown[]) => mockExecuteQuery(...args),
     createNode: (...args: unknown[]) => mockCreateNode(...args),
-    updateNode: (...args: unknown[]) => mockUpdateNode(...args)
+    updateNode: (...args: unknown[]) => mockUpdateNode(...args),
+    updateQueryNode: (...args: unknown[]) => mockUpdateQueryNode(...args)
   }
 }));
 
@@ -85,7 +87,8 @@ function schema(): SchemaNode {
   };
 }
 
-function materializedQueryNode(id: string): Node {
+/** A query node as the backend returns it: typed top-level fields. */
+function materializedQueryNode(id: string): QueryNode & Node {
   return {
     id,
     nodeType: 'query',
@@ -93,12 +96,12 @@ function materializedQueryNode(id: string): Node {
     createdAt: '2026-01-01T00:00:00Z',
     modifiedAt: '2026-01-01T00:00:00Z',
     version: 1,
-    properties: {
-      targetType: SCHEMA_ID,
-      filters: [],
-      generatedBy: 'user',
-      viewConfig: { lastView: 'kanban' }
-    },
+    properties: {},
+    targetType: SCHEMA_ID,
+    filters: [],
+    generatedBy: 'user',
+    executionCount: 0,
+    viewConfig: { lastView: 'kanban' },
     mentions: []
   };
 }
@@ -142,6 +145,20 @@ describe('QueryNodeViewer — materialize race', () => {
     await waitFor(() => expect(mockCreateNode).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(reroutedTo).toBeTruthy());
     expect(sharedNodeStore.getNode(reroutedTo)?.nodeType).toBe('query');
+
+    // Created under the query schema's storage keys, with one target key
+    // holding the schema's own type — never the schema default '*'.
+    const { properties } = mockCreateNode.mock.calls[0][0] as {
+      properties: Record<string, unknown>;
+    };
+    expect(Object.keys(properties).sort()).toEqual([
+      'filters',
+      'generated_by',
+      'target_type',
+      'view_config'
+    ]);
+    expect(properties.target_type).toBe(SCHEMA_ID);
+    expect(properties.view_config).toEqual({ lastView: 'kanban' });
   });
 
   it('the remounted instance restores Kanban from sharedNodeStore even if the network fetch would race behind the create', async () => {
@@ -192,10 +209,7 @@ describe('QueryNodeViewer — materialize race', () => {
     const materializedId = reroutedTo;
     const groupByChanged = {
       ...materializedQueryNode(materializedId),
-      properties: {
-        ...materializedQueryNode(materializedId).properties,
-        viewConfig: { lastView: 'kanban', kanban: { groupBy: 'status' } }
-      }
+      viewConfig: { lastView: 'kanban', kanban: { groupBy: 'status' } }
     };
 
     // Remount against the materialized id (as pane-content would), with the
@@ -237,17 +251,14 @@ describe('QueryNodeViewer — materialize race', () => {
     const saved = {
       ...materializedQueryNode(savedId),
       content: 'My Board',
-      properties: {
-        ...materializedQueryNode(savedId).properties,
-        viewConfig: { lastView: 'table' }
-      }
+      viewConfig: { lastView: 'table' }
     };
     mockGetNode.mockResolvedValue(saved);
-    mockUpdateNode.mockImplementation(
-      async (_id: string, _version: number, update: { properties?: Record<string, unknown> }) => ({
+    mockUpdateQueryNode.mockImplementation(
+      async (_id: string, _version: number, update: QueryNodeUpdate) => ({
         ...saved,
         version: 2,
-        properties: { ...saved.properties, ...update.properties }
+        ...update
       })
     );
 
@@ -261,10 +272,16 @@ describe('QueryNodeViewer — materialize race', () => {
 
     await fireEvent.click(getByRole('button', { name: 'Kanban' }));
 
-    // Saved-mode view changes persist onto the existing node — no create.
+    // Saved-mode view changes persist onto the existing node — no create —
+    // through the typed update, never the properties bag.
     await waitFor(() => {
       expect(getByRole('button', { name: 'Kanban' }).getAttribute('aria-pressed')).toBe('true');
     });
     expect(mockCreateNode).not.toHaveBeenCalled();
+    await waitFor(() => expect(mockUpdateQueryNode).toHaveBeenCalledTimes(1));
+    expect(mockUpdateQueryNode).toHaveBeenCalledWith(savedId, 1, {
+      viewConfig: { lastView: 'kanban' }
+    });
+    expect(mockUpdateNode).not.toHaveBeenCalled();
   });
 });

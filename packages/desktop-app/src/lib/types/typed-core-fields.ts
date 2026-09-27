@@ -2,7 +2,7 @@
  * Typed core fields per core node type — the frontend mirror of Rust's
  * `promoted_fields` (`packages/nodespace-types/src/convert.rs`).
  *
- * For `task`, `person` and `project`, the backend moves each schema-declared
+ * For `task`, `person`, `project` and `query`, the backend moves each schema-declared
  * core field out of `properties` to a top-level typed field: `due_date` is
  * stored in the `task` bucket and travels as `dueDate`. The frontend reads and
  * writes those fields only by their typed key; `properties` holds extension
@@ -23,6 +23,8 @@ export interface TypedCoreField {
   wire: string;
   /** Dates are normalized to `YYYY-MM-DD` on read. */
   date?: boolean;
+  /** Not a string — an array, number or object, promoted as stored. */
+  structured?: boolean;
 }
 
 export const TYPED_CORE_FIELDS: Readonly<Record<string, readonly TypedCoreField[]>> = {
@@ -43,16 +45,30 @@ export const TYPED_CORE_FIELDS: Readonly<Record<string, readonly TypedCoreField[
     { storage: 'priority', wire: 'priority' },
     { storage: 'start_date', wire: 'startDate', date: true },
     { storage: 'end_date', wire: 'endDate', date: true }
+  ],
+  query: [
+    { storage: 'target_type', wire: 'targetType' },
+    { storage: 'filters', wire: 'filters', structured: true },
+    { storage: 'sorting', wire: 'sorting', structured: true },
+    { storage: 'limit', wire: 'limit', structured: true },
+    { storage: 'generated_by', wire: 'generatedBy' },
+    { storage: 'generator_context', wire: 'generatorContext' },
+    { storage: 'execution_count', wire: 'executionCount', structured: true },
+    { storage: 'last_executed', wire: 'lastExecuted' },
+    { storage: 'view_config', wire: 'viewConfig', structured: true }
   ]
 };
 
 /**
  * Values the backend fills when a stored node has none — `task_node_to_value`
- * and `project_node_to_value` default `status`; nothing else is defaulted.
+ * and `project_node_to_value` default `status`, and `QueryFields` fills the
+ * query schema's defaults; nothing else is defaulted. Consumers copy before
+ * use, since `filters` is an array.
  */
-export const TYPED_CORE_DEFAULTS: Readonly<Record<string, Readonly<Record<string, string>>>> = {
+export const TYPED_CORE_DEFAULTS: Readonly<Record<string, Readonly<Record<string, unknown>>>> = {
   task: { status: 'open' },
-  project: { status: 'planning' }
+  project: { status: 'planning' },
+  query: { targetType: '*', filters: [], generatedBy: 'user', executionCount: 0 }
 };
 
 /** True when `nodeType` has typed core fields. */

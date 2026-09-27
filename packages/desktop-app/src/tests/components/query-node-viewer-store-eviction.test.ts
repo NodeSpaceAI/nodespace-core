@@ -11,7 +11,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { render, cleanup, waitFor } from '@testing-library/svelte';
 import type { SchemaNode } from '$lib/types/schema-node';
-import type { Node } from '$lib/types';
+import type { Node, QueryNode } from '$lib/types';
 
 import { mockTauriCore } from '../helpers/mock-tauri-core';
 
@@ -58,19 +58,19 @@ const schema: SchemaNode = {
   fields: []
 };
 
-const queryNode: Node = {
+const queryNode: QueryNode & Node = {
   id: QUERY_ID,
   nodeType: 'query',
   content: 'Widgets',
   createdAt: '2026-01-01T00:00:00Z',
   modifiedAt: '2026-01-01T00:00:00Z',
   version: 1,
-  properties: {
-    targetType: SCHEMA_ID,
-    filters: [],
-    generatedBy: 'user',
-    viewConfig: { lastView: 'table' }
-  },
+  properties: {},
+  targetType: SCHEMA_ID,
+  filters: [],
+  generatedBy: 'user',
+  executionCount: 0,
+  viewConfig: { lastView: 'table' },
   mentions: []
 };
 

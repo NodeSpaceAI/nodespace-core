@@ -30,9 +30,8 @@
   import ListView from '$lib/components/query/list-view.svelte';
   import KanbanView from '$lib/components/query/kanban-view.svelte';
   import QueryEditor from '$lib/components/query/query-editor.svelte';
-  import type { QueryDefinition } from '$lib/types/query';
+  import { nodeToQueryNode, type QueryDefinition, type QueryNode } from '$lib/types/query';
   import type { SchemaNode, SchemaField } from '$lib/types/schema-node';
-  import type { Node } from '$lib/types';
   import { createLogger } from '$lib/utils/logger';
   import { toError } from '$lib/types/errors';
   import {
@@ -76,7 +75,7 @@
   /** Which shape we're serving; set once the backing node is loaded. */
   let mode = $state<ViewerMode>('default');
   /** The saved query node (SAVED branch only); null on the default type view. */
-  let queryNode = $state<Node | null>(null);
+  let queryNode = $state<QueryNode | null>(null);
   /** The schema whose fields drive columns / Kanban grouping. */
   let schemaNode = $state<SchemaNode | null>(null);
   /** The node type the query targets — schema id (default) or the query's
@@ -235,11 +234,12 @@
       mode = resolveViewerMode(raw);
 
       if (mode === 'saved' && raw) {
-        // SAVED branch: read the stored definition + view config off the node.
-        queryNode = raw;
-        const definition = parseQueryDefinition(raw);
+        // SAVED branch: read the typed definition + view config off the node.
+        const saved = nodeToQueryNode(raw);
+        queryNode = saved;
+        const definition = parseQueryDefinition(saved);
         targetType = definition.targetType;
-        const viewConfig = parseViewConfig(raw);
+        const viewConfig = parseViewConfig(saved);
         activeView = viewConfig.lastView;
         kanbanGroupBy = viewConfig.kanban?.groupBy;
 
@@ -420,11 +420,14 @@
     saveError = null;
     const merged = mergeViewConfig(parseViewConfig(queryNode), partial);
     try {
-      const updated = await backendAdapter.updateNode(queryNode.id, queryNode.version, {
-        properties: { ...queryNode.properties, viewConfig: merged }
+      const updated = await backendAdapter.updateQueryNode(queryNode.id, queryNode.version, {
+        viewConfig: { ...merged }
       });
       queryNode = updated;
-      sharedNodeStore.setNode(updated, { type: 'database', reason: 'query-node-viewer view config' });
+      sharedNodeStore.setNode(updated, {
+        type: 'database',
+        reason: 'query-node-viewer view config'
+      });
     } catch (e) {
       const message = toError(e).message;
       log.error('QueryNodeViewer: failed to persist view config', { error: message });
@@ -445,11 +448,18 @@
         return;
       }
       try {
-        const updated = await backendAdapter.updateNode(queryNode.id, queryNode.version, {
-          properties: { ...queryNode.properties, targetType, filters, sorting, limit }
+        // The edited definition replaces the stored one: a sorting or limit
+        // the editor no longer carries is cleared, not left behind.
+        const updated = await backendAdapter.updateQueryNode(queryNode.id, queryNode.version, {
+          filters,
+          sorting: sorting ?? null,
+          limit: limit ?? null
         });
         queryNode = updated;
-        sharedNodeStore.setNode(updated, { type: 'database', reason: 'query-node-viewer save' });
+        sharedNodeStore.setNode(updated, {
+          type: 'database',
+          reason: 'query-node-viewer save'
+        });
         isEditMode = false;
         log.debug('QueryNodeViewer: query definition saved', { nodeId: updated.id });
         // Re-execute with the updated definition.
@@ -538,7 +548,7 @@
         const updated = await backendAdapter.updateNode(queryNode.id, queryNode.version, {
           content: name
         });
-        queryNode = updated;
+        queryNode = nodeToQueryNode(updated);
         sharedNodeStore.setNode(updated, { type: 'database', reason: 'query-node-viewer rename' });
         log.debug('QueryNodeViewer: query renamed', { nodeId: updated.id });
       } catch (e) {

@@ -60,6 +60,9 @@ export { isPersonNode, nodeToPersonNode } from './person-node';
 export type { ProjectNode, ProjectNodeUpdate, ProjectStatus } from './project-node';
 export { isProjectNode, nodeToProjectNode } from './project-node';
 
+export type { QueryNode, QueryNodeUpdate, QueryGeneratedBy } from './query';
+export { isQueryNode, nodeToQueryNode } from './query';
+
 export type { SchemaNode, SchemaField, ProtectionLevel, EnumValue } from './schema-node';
 // Only isSchemaNode remains - type guard for runtime checking
 // All other properties are typed top-level fields accessed directly (e.g., node.isCore, node.fields)

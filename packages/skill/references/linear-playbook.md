@@ -99,20 +99,20 @@ Create each with `nodespace node create --type skill`, then add its guidance as 
 
 ### 5. Saved views
 
-A saved view is a node of type `query`. Its properties carry both the query (`targetType`, `filters`, `sorting`) and how it renders (`viewConfig`), so the board opens as authored with no per-user setup.
+A saved view is a node of type `query`. Its properties carry both the query (`target_type`, `filters`, `sorting`) and how it renders (`view_config`), so the board opens as authored with no per-user setup.
 
 **Issues by Status**
 
 ```bash
 nodespace node create --type query --content 'Issues by Status' \
-  --properties '{"filters":[],"generatedBy":"user","targetType":"issue","viewConfig":{"kanban":{"groupBy":"status"},"lastView":"kanban"}}'
+  --properties '{"filters":[],"generated_by":"user","target_type":"issue","view_config":{"kanban":{"groupBy":"status"},"lastView":"kanban"}}'
 ```
 
 **Cycles**
 
 ```bash
 nodespace node create --type query --content 'Cycles' \
-  --properties '{"filters":[],"generatedBy":"user","sorting":[{"direction":"desc","field":"start_date"}],"targetType":"cycle","viewConfig":{"lastView":"table"}}'
+  --properties '{"filters":[],"generated_by":"user","sorting":[{"direction":"desc","field":"start_date"}],"target_type":"cycle","view_config":{"lastView":"table"}}'
 ```
 <!-- END GENERATED: linear-playbook -->
 

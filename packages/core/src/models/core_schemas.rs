@@ -2150,7 +2150,7 @@ mod tests {
     #[test]
     fn promoted_fields_match_each_typed_core_schema() {
         let schemas = get_core_schemas();
-        for node_type in ["task", "person", "project"] {
+        for node_type in ["task", "person", "project", "query"] {
             let schema = schemas
                 .iter()
                 .find(|s| s.id == node_type)

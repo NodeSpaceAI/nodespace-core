@@ -28,7 +28,12 @@ import { onDaemonReconnect } from './daemon-status';
 import { focusManager } from './focus-manager.svelte';
 import type { Node } from '$lib/types';
 import type { NodeReference } from '$lib/types/node';
-import type { PersonNodeUpdate, ProjectNodeUpdate, TaskNodeUpdate } from '$lib/types';
+import type {
+  PersonNodeUpdate,
+  ProjectNodeUpdate,
+  QueryNodeUpdate,
+  TaskNodeUpdate
+} from '$lib/types';
 import { hasTypedCoreFields, typedCoreKeys } from '$lib/types/typed-core-fields';
 import type { InsertPosition } from '$lib/services/backend-adapter';
 import type {
@@ -795,7 +800,7 @@ interface Subscription {
 }
 
 /** Core node types with typed fields and a typed backend update. */
-export type TypedNodeType = 'task' | 'person' | 'project';
+export type TypedNodeType = 'task' | 'person' | 'project' | 'query';
 
 /**
  * The keys `updateTypedNode()` accepts for a type: its typed core fields
@@ -834,6 +839,8 @@ function sendTypedUpdate(
       return backendAdapter.updatePersonNode(nodeId, version, payload as PersonNodeUpdate);
     case 'project':
       return backendAdapter.updateProjectNode(nodeId, version, payload as ProjectNodeUpdate);
+    case 'query':
+      return backendAdapter.updateQueryNode(nodeId, version, payload as QueryNodeUpdate);
   }
 }
 
@@ -3457,7 +3464,8 @@ export class SharedNodeStore {
 
   /**
    * Write a core type's typed fields (`TYPED_CORE_FIELDS`) through its typed
-   * backend update (`updateTaskNode`/`updatePersonNode`/`updateProjectNode`).
+   * backend update (`updateTaskNode`/`updatePersonNode`/`updateProjectNode`/
+   * `updateQueryNode`).
    *
    * Core fields have exactly one home on a typed node — the top level — so
    * this is the only write path for them; `properties` carries extension

@@ -574,6 +574,26 @@ async function handleRequest(req: Request): Promise<Response> {
     }
   }
 
+  // PATCH /api/queries/:id
+  const queryMatch = pathname.match(HTTP_ROUTE_PATTERNS.updateQueryNode);
+  if (method === 'PATCH' && queryMatch) {
+    const nodeId = decodeURIComponent(queryMatch[1]);
+    try {
+      const { version, ...update } = await req.json() as Record<string, unknown>;
+      // The daemon decodes the JSON-encoded QueryNodeUpdate itself; `null`
+      // (clear) survives JSON.stringify, and an absent key stays absent.
+      const request = { nodeId, version: version ?? 0, updateJson: JSON.stringify(update) };
+      const res = await call<typeof request, { nodeData?: ProtoNodeData }>(
+        (nodeClient as unknown as Record<string, Function>).updateQueryNode,
+        request
+      );
+      if (!res.nodeData) return error('NO_DATA', 'UpdateQueryNode returned no data');
+      return json(nodeDataToApiNode(res.nodeData));
+    } catch (err) {
+      return grpcError(err as grpc.ServiceError);
+    }
+  }
+
   // POST /api/nodes/:id/parent  (move node)
   const parentMatch = pathname.match(HTTP_ROUTE_PATTERNS.moveNode);
   if (method === 'POST' && parentMatch) {

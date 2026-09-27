@@ -16,8 +16,7 @@ use chrono::{DateTime, Utc};
 use nodespace_core::db::events::DomainEvent;
 use nodespace_core::models::{
     Node, NodeQuery, NodeUpdate, OrderBy, PersonNodeUpdate, ProjectNodeUpdate, QueryNodeUpdate,
-    TaskNodeUpdate,
-    TaskPriority, TaskStatus,
+    TaskNodeUpdate, TaskPriority, TaskStatus,
 };
 use nodespace_core::ops::{
     collection_ops::{
@@ -68,9 +67,9 @@ use crate::nodespace::{
     RenameCollectionRequest, ReorderNodeRequest, ReorderNodeResponse, ResetSeedNodeRequest,
     ResetSeedNodeResponse, ResolveConflictRequest, SchemaParamsRequest, SchemaResultResponse,
     SearchRequest, SetLocalPersonIdentityRequest, UpdateNodeRequest, UpdateNodesBatchRequest,
-    UpdateNodesBatchResponse, UpdatePersonNodeRequest, UpdateProjectNodeRequest, UpdateQueryNodeRequest,
-    UpdateRelationshipPropertiesRequest, UpdateRelationshipPropertiesResponse,
-    UpdateTaskNodeRequest, WatchRequest,
+    UpdateNodesBatchResponse, UpdatePersonNodeRequest, UpdateProjectNodeRequest,
+    UpdateQueryNodeRequest, UpdateRelationshipPropertiesRequest,
+    UpdateRelationshipPropertiesResponse, UpdateTaskNodeRequest, WatchRequest,
 };
 
 /// The most rows a paged query RPC will return, whatever the request asks for:

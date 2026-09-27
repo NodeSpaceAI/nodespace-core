@@ -32,6 +32,8 @@ import type {
   PersonNodeUpdate,
   ProjectNode,
   ProjectNodeUpdate,
+  QueryNode,
+  QueryNodeUpdate,
   TaskNode,
   TaskNodeUpdate
 } from '$lib/types';
@@ -133,6 +135,14 @@ class TauriAdapter implements BackendAdapter {
     return withDiagnosticLogging(
       'updateProjectNode',
       () => invoke<ProjectNode>('update_project_node', { id, version, update }),
+      [id, version, update]
+    );
+  }
+
+  async updateQueryNode(id: string, version: number, update: QueryNodeUpdate): Promise<QueryNode> {
+    return withDiagnosticLogging(
+      'updateQueryNode',
+      () => invoke<QueryNode>('update_query_node', { id, version, update }),
       [id, version, update]
     );
   }
@@ -544,6 +554,15 @@ export class HttpAdapter implements BackendAdapter {
     return await this.handleResponse<ProjectNode>(response);
   }
 
+  async updateQueryNode(id: string, version: number, update: QueryNodeUpdate): Promise<QueryNode> {
+    const response = await fetch(`${this.baseUrl}${HTTP_ROUTES.updateQueryNode(id)}`, {
+      method: 'PATCH',
+      headers: this.getHeaders(),
+      body: JSON.stringify({ ...update, version })
+    });
+    return await this.handleResponse<QueryNode>(response);
+  }
+
   async deleteNode(id: string, version: number): Promise<DeleteResult> {
     const response = await fetch(`${this.baseUrl}${HTTP_ROUTES.deleteNode(id)}`, {
       method: 'DELETE',
@@ -794,6 +813,14 @@ class MockAdapter implements BackendAdapter {
     _update: ProjectNodeUpdate
   ): Promise<ProjectNode> {
     return {} as ProjectNode;
+  }
+
+  async updateQueryNode(
+    _id: string,
+    _version: number,
+    _update: QueryNodeUpdate
+  ): Promise<QueryNode> {
+    return {} as QueryNode;
   }
   async deleteNode(_id: string, _version: number): Promise<DeleteResult> {
     return { existed: true, deletedCount: 0 };

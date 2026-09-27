@@ -467,7 +467,10 @@ mod tests {
 
     #[test]
     fn update_rejects_a_camel_case_storage_key_or_system_field() {
-        for body in [json!({ "target_type": "task" }), json!({ "executionCount": 3 })] {
+        for body in [
+            json!({ "target_type": "task" }),
+            json!({ "executionCount": 3 }),
+        ] {
             assert!(
                 serde_json::from_value::<QueryNodeUpdate>(body.clone()).is_err(),
                 "{body} must be rejected"

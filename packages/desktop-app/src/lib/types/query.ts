@@ -1,63 +1,92 @@
 /**
  * Query Node Type Definitions
  *
- * QueryNode follows the Universal Graph Architecture (similar to TaskNode/SchemaNode):
- * - Node content (`node.content`): Plain text description (e.g., "All open high-priority tasks")
- * - Node properties (`node.properties`): Structured query definition fields stored as JSON
- * - No separate query table — Universal Graph Architecture uses only `node`, `relationship`, `embedding`
+ * `QueryNode` matches the Rust `QueryNode` wire shape
+ * (`packages/nodespace-types/src/query.rs`): the query schema's fields travel
+ * as typed top-level fields (`targetType`, `filters`, `viewConfig`, …).
+ * `properties` carries only extension fields (`custom:…`), never a query
+ * field. Storage uses the schema's snake_case names (`target_type`,
+ * `view_config`, …) under `properties.query` — the shape a query is created
+ * with (see `buildMaterializedProperties`), and nothing else reads it.
  *
- * Primary use case: AI chat creating queries as child nodes (not manual search UI).
- *
- * @example Node content
- * ```
- * "All open tasks with high priority due this week"
- * ```
- *
- * @example Node properties
- * ```typescript
- * {
- *   targetType: "task",
- *   filters: [{type: "property", operator: "equals", property: "status", value: "open"}],
- *   sorting: [{field: "dueDate", direction: "asc"}],
- *   limit: 50,
- *   generatedBy: "ai",
- *   generatorContext: "chat-node-123"
- * }
- * ```
+ * Node content is the query's name (e.g. "All open high-priority tasks").
  */
+
+import type { Node } from './node';
+
+export interface QueryNode {
+  id: string;
+  nodeType: 'query';
+  content: string;
+  title?: string | null;
+  version: number;
+  createdAt: string;
+  modifiedAt: string;
+  /** Extension fields only — query fields are the typed fields below. */
+  properties: Record<string, unknown>;
+
+  /** Target node type, or '*' for all types */
+  targetType: string;
+  /** Filter conditions to apply */
+  filters: QueryFilter[];
+  sorting?: SortConfig[];
+  limit?: number;
+  /** Who created this query */
+  generatedBy: QueryGeneratedBy;
+  /** Parent chat ID for AI-generated queries */
+  generatorContext?: string;
+  /** System-managed */
+  executionCount: number;
+  /** ISO timestamp of last execution (system-managed) */
+  lastExecuted?: string;
+  /**
+   * How the query renders. Its keys (`lastView`, `kanban.groupBy`) are the
+   * viewer's own vocabulary — `parseViewConfig` in `query-node-model.ts` is
+   * their reader.
+   */
+  viewConfig?: Record<string, unknown>;
+}
+
+export type QueryGeneratedBy = 'ai' | 'user';
 
 /**
- * Strongly-typed QueryNode structure
- *
- * Deserialized directly from node properties with base node data via record link.
- * Follows the same pattern as TaskNode and SchemaNode.
+ * Partial update for a query's fields. Mirrors the Rust `QueryNodeUpdate`:
+ * absent = no change, `null` = clear, a value = set. `targetType`, `filters`
+ * and `generatedBy` cannot be cleared (the schema requires them);
+ * `viewConfig` is replaced whole. The system-managed fields are not
+ * writable.
  */
-export interface QueryNode {
-	// Node fields (from query.node.* via record link)
-	id: string;
-	/** Plain text description of the query */
-	content: string;
-	version: number;
-	createdAt: string;
-	modifiedAt: string;
+export interface QueryNodeUpdate {
+  targetType?: string;
+  filters?: QueryFilter[];
+  sorting?: SortConfig[] | null;
+  limit?: number | null;
+  generatedBy?: QueryGeneratedBy;
+  generatorContext?: string | null;
+  viewConfig?: Record<string, unknown> | null;
+}
 
-	// Type-specific fields (deserialized from node.properties)
-	/** Target node type: 'task', 'text', 'date', or '*' for all types */
-	targetType: string;
-	/** Filter conditions to apply */
-	filters: QueryFilter[];
-	/** Optional sorting configuration */
-	sorting?: SortConfig[];
-	/** Optional result limit (default: 50) */
-	limit?: number;
-	/** Who created this query: 'ai' or 'user' */
-	generatedBy: 'ai' | 'user';
-	/** Parent chat ID for AI-generated queries (optional) */
-	generatorContext?: string;
-	/** Number of times query has been executed (system-managed) */
-	executionCount?: number;
-	/** ISO timestamp of last execution (system-managed) */
-	lastExecuted?: string;
+export function isQueryNode(node: Node | QueryNode): node is QueryNode {
+  return node.nodeType === 'query';
+}
+
+/**
+ * Convert a node received over any transport to a `QueryNode`. The backend
+ * (`node_to_typed_value`) already promotes the query fields to the top level
+ * for every transport, so this only narrows the type and fills the schema
+ * defaults.
+ */
+export function nodeToQueryNode(node: Node): QueryNode {
+  const query = node as unknown as QueryNode;
+  return {
+    ...query,
+    nodeType: 'query',
+    properties: node.properties ?? {},
+    targetType: query.targetType ?? '*',
+    filters: query.filters ?? [],
+    generatedBy: query.generatedBy ?? 'user',
+    executionCount: query.executionCount ?? 0
+  };
 }
 
 /**
@@ -100,48 +129,9 @@ export interface SortConfig {
 }
 
 /**
- * View configuration (discriminated union)
- *
- * View type and configuration are specified at render time via
- * QueryPreferencesService, enabling different users to view
- * the same query differently.
- */
-export interface BaseViewConfig {
-	view: 'list' | 'table' | 'kanban';
-}
-
-export interface ListViewConfig extends BaseViewConfig {
-	view: 'list';
-	layout: 'compact' | 'comfortable' | 'spacious';
-	showProperties?: string[];
-	groupBy?: string;
-}
-
-export interface TableViewConfig extends BaseViewConfig {
-	view: 'table';
-	columns: ColumnConfig[];
-	sortBy?: { field: string; direction: 'asc' | 'desc' };
-}
-
-export interface KanbanViewConfig extends BaseViewConfig {
-	view: 'kanban';
-	groupBy: string; // REQUIRED for kanban
-	cardLayout: 'compact' | 'detailed';
-}
-
-export type QueryViewConfig = ListViewConfig | TableViewConfig | KanbanViewConfig;
-
-export interface ColumnConfig {
-	field: string;
-	label: string;
-	width?: number;
-	sortable?: boolean;
-	format?: 'text' | 'date' | 'number' | 'enum';
-}
-
-/**
  * A QueryDefinition is the subset of QueryNode fields that define the query
- * itself — stored as node.properties on a query node.
+ * itself — the execution shape `backendAdapter.executeQuery` takes. Built
+ * from a `QueryNode` by `parseQueryDefinition`.
  *
  * Extracted here so both components and services can import it without
  * coupling to a specific .svelte file.

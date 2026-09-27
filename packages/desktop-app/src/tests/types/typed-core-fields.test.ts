@@ -46,7 +46,7 @@ describe('TYPED_CORE_FIELDS', () => {
       ])
     );
 
-    expect(Object.keys(rust).sort()).toEqual(['person', 'project', 'task']);
+    expect(Object.keys(rust).sort()).toEqual(['person', 'project', 'query', 'task']);
     expect(ts).toEqual(rust);
   });
 

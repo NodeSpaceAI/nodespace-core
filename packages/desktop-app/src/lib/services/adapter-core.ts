@@ -25,6 +25,8 @@ import type {
   PersonNodeUpdate,
   ProjectNode,
   ProjectNodeUpdate,
+  QueryNode,
+  QueryNodeUpdate,
   TaskNode,
   TaskNodeUpdate
 } from '$lib/types';
@@ -121,6 +123,7 @@ export interface BackendAdapter {
   updateTaskNode(id: string, version: number, update: TaskNodeUpdate): Promise<TaskNode>;
   updatePersonNode(id: string, version: number, update: PersonNodeUpdate): Promise<PersonNode>;
   updateProjectNode(id: string, version: number, update: ProjectNodeUpdate): Promise<ProjectNode>;
+  updateQueryNode(id: string, version: number, update: QueryNodeUpdate): Promise<QueryNode>;
   deleteNode(id: string, version: number): Promise<DeleteResult>;
 
   // Hierarchy
@@ -473,6 +476,7 @@ export const HTTP_ROUTES = {
   updateTaskNode: (id: string) => `/api/tasks/${encodeURIComponent(id)}`,
   updatePersonNode: (id: string) => `/api/persons/${encodeURIComponent(id)}`,
   updateProjectNode: (id: string) => `/api/projects/${encodeURIComponent(id)}`,
+  updateQueryNode: (id: string) => `/api/queries/${encodeURIComponent(id)}`,
   moveNode: (id: string) => `/api/nodes/${encodeURIComponent(id)}/parent`,
   moveChildrenToParent: (parentId: string) => `/api/nodes/${encodeURIComponent(parentId)}/move-children`,
   getChildren: (parentId: string) => `/api/nodes/${encodeURIComponent(parentId)}/children`,
@@ -511,6 +515,7 @@ export const HTTP_ROUTE_PATTERNS = {
   updateTaskNode: /^\/api\/tasks\/([^/]+)$/,
   updatePersonNode: /^\/api\/persons\/([^/]+)$/,
   updateProjectNode: /^\/api\/projects\/([^/]+)$/,
+  updateQueryNode: /^\/api\/queries\/([^/]+)$/,
   moveNode: /^\/api\/nodes\/([^/]+)\/parent$/,
   moveChildrenToParent: /^\/api\/nodes\/([^/]+)\/move-children$/,
   getChildren: /^\/api\/nodes\/([^/]+)\/children$/,

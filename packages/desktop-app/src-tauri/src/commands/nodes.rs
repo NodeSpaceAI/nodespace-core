@@ -6,7 +6,8 @@
 use crate::types::{
     node_to_typed_value as types_node_to_typed_value,
     nodes_to_typed_values as types_nodes_to_typed_values, DeleteResult, Node, NodeQuery,
-    NodeReference, NodeUpdate, PersonNodeUpdate, ProjectNodeUpdate, QueryNodeUpdate, TaskNodeUpdate,
+    NodeReference, NodeUpdate, PersonNodeUpdate, ProjectNodeUpdate, QueryNodeUpdate,
+    TaskNodeUpdate,
 };
 use chrono::{DateTime, Utc};
 use nodespace_proto::nodespace::{

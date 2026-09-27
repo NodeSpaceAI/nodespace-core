@@ -2,6 +2,7 @@ import type { Node } from '$lib/types/node';
 import { nodeToTaskNode } from '$lib/types/task-node';
 import { nodeToPersonNode } from '$lib/types/person-node';
 import { nodeToProjectNode } from '$lib/types/project-node';
+import { nodeToQueryNode } from '$lib/types/query';
 import { nodeToAiChatNode } from '$lib/types/ai-chat-node';
 import { TYPED_CORE_DEFAULTS, TYPED_CORE_FIELDS } from '$lib/types/typed-core-fields';
 
@@ -20,6 +21,8 @@ export function normalizeNodeData(nodeData: Node): Node {
       return nodeToPersonNode(nodeData) as unknown as Node;
     case 'project':
       return nodeToProjectNode(nodeData) as unknown as Node;
+    case 'query':
+      return nodeToQueryNode(nodeData) as unknown as Node;
     case 'ai-chat':
       return nodeToAiChatNode(nodeData) as unknown as Node;
     default:
@@ -159,14 +162,19 @@ export function storageNodeToApiFields(
     }
   }
 
-  const promoted: Record<string, unknown> = { ...(TYPED_CORE_DEFAULTS[nodeType] ?? {}) };
-  for (const { storage, wire, date } of TYPED_CORE_FIELDS[nodeType] ?? []) {
+  // Copied per node: a default can be an array (`query.filters`).
+  const promoted: Record<string, unknown> = Object.fromEntries(
+    Object.entries(TYPED_CORE_DEFAULTS[nodeType] ?? {}).map(([k, v]) => [k, Array.isArray(v) ? [...v] : v])
+  );
+  for (const { storage, wire, date, structured } of TYPED_CORE_FIELDS[nodeType] ?? []) {
     // Only task_node_to_value reads the legacy typed-key spelling, and it
     // prefers it when the key is present at all (even as null) — `.get(wire)
-    // .or_else(storage)`. person/project read the storage key alone.
+    // .or_else(storage)`. Every other type reads the storage key alone.
     const raw = nodeType === 'task' && wire in properties ? properties[wire] : properties[storage];
     if (typeof raw === 'string') {
       promoted[wire] = date ? normalizeDate(raw) : raw;
+    } else if (structured && raw !== null && raw !== undefined) {
+      promoted[wire] = raw;
     }
     delete properties[storage];
     delete properties[wire];
