@@ -2771,9 +2771,8 @@ impl SqliteStore {
     /// Callers run it on their transaction — `move_node`'s own or an `_in_tx`
     /// caller's — so the re-spread commits or rolls back with the edge write
     /// that follows, and the caller's re-read or index arithmetic sees these
-    /// new keys. The
-    /// `(order, id)` sequence is the one callers must read siblings in for
-    /// index `i` to map to key `i + 1`.
+    /// new keys. The `(order, id)` sequence is the one callers must read
+    /// siblings in for index `i` to map to key `i + 1`.
     ///
     /// Returns each child whose key changed, with its new key, for the caller
     /// to hand back in [`ChildPlacement::respread`]. A child already on its
@@ -2928,7 +2927,9 @@ impl SqliteStore {
         // service, from `ChildPlacement::respread`) once this returns `Ok`, so
         // it must not outlive a failed edge write: otherwise the store holds
         // rewritten sibling keys no event ever reports. Same shape as the
-        // create path, whose re-spread runs on the caller's `tx`.
+        // create path, whose re-spread runs on the caller's `tx`. `tx` must be
+        // declared after `db`: locals drop in reverse, so an early `?` rolls
+        // back while the write guard is still held.
         let tx = db
             .transaction()
             .await
