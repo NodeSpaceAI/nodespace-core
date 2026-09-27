@@ -68,7 +68,7 @@ pub fn playbook() -> MethodologyPlaybook {
         ],
         skills: vec![
             playbook_skill(include_str!("skills/linear/creating-an-issue.md")),
-            playbook_skill(include_str!("skills/linear/working-with-cycles.md")),
+            playbook_skill(include_str!("skills/linear/sprints-and-cycles.md")),
             playbook_skill(include_str!("skills/linear/issue-validation-rules.md")),
         ],
         overview: include_str!("skills/linear/linear-style-workspace.md"),

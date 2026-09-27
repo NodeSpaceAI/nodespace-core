@@ -1,6 +1,7 @@
 ---
 title: "Creating an Issue"
-description: "How to create an issue in a Linear-style workspace: when to use issue rather than task, the extended status and priority vocabularies, and point estimates."
+description: "Report a bug, defect, crash or something broken, open a ticket, or raise an issue. Use when the user wants to file or log a bug, open a ticket, report a problem, or request a feature."
+exclusion: "Add a task or a reminder."
 ---
 # Creating an Issue
 

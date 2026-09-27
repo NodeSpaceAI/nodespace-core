@@ -483,19 +483,27 @@ fn render_playbook_block(id: &str, skills_dir: &str) -> String {
          nodes. Deliberately several narrow skills rather than one broad one: retrieval \
          scores a precise match far better than a skill diluted across every intent.\n"
     );
+    let _ = writeln!(
+        out,
+        "Create each as below, then add its guidance as markdown children. The properties \
+         carry the whole retrieval surface — `description`, and an `exclusion` where the \
+         skill has one, which keeps general requests from ranking it above a built-in — so \
+         set them verbatim. The bodies are long-form prose; read them from \
+         `packages/core/src/methodology/skills/{skills_dir}/` rather than reproducing them \
+         here.\n"
+    );
     for skill in &playbook.skills {
         let description = SkillNode::from_properties(&skill.title, &skill.root_properties)
             .unwrap_or_else(|e| panic!("Playbook skill '{}' must decode: {e}", skill.title))
             .description;
         let _ = writeln!(out, "**{}** — {}\n", skill.title, description);
+        let _ = writeln!(
+            out,
+            "```bash\nnodespace node create --type skill --content '{}' \\\n  --properties '{}'\n```\n",
+            shell_single_quote_body(&skill.title),
+            compact_json(&skill.root_properties)
+        );
     }
-    let _ = writeln!(
-        out,
-        "Create each with `nodespace node create --type skill`, then add its guidance as \
-         markdown children. The bodies are long-form prose; read them from \
-         `packages/core/src/methodology/skills/{skills_dir}/` rather than reproducing them \
-         here.\n"
-    );
 
     let _ = writeln!(out, "### 5. Saved views\n");
     let _ = writeln!(

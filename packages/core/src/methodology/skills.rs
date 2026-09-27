@@ -8,7 +8,8 @@
 //! ```text
 //! ---
 //! title: "Creating an Issue"
-//! description: "How to create an issue in a Linear-style workspace: ..."
+//! description: "Report a bug, defect, crash or something broken, open a ticket, ..."
+//! exclusion: "Add a task or a reminder."
 //! ---
 //! # Creating an Issue
 //! ...
@@ -19,9 +20,11 @@
 //! compiled into the binary, so nothing is read from disk at runtime.
 //!
 //! The frontmatter is a strict subset of YAML: the two required keys `title`
-//! and `description`, plus an optional `tools` — a comma-separated tool
+//! and `description`, plus two optional ones. `tools` is a comma-separated tool
 //! whitelist for a skill that needs more than [`DEFAULT_TOOLS`], such as one
-//! that links nodes or changes a task's status. One key per line, each value
+//! that links nodes or changes a task's status. `exclusion` is the skill's
+//! `SkillNode::exclusion` — see *Writing the description* for when a
+//! Playbook skill needs one. One key per line, each value
 //! double-quoted with no escapes and no embedded `"`. Anything else fails every
 //! test that builds the Playbook, so a malformed file cannot ship.
 //!
@@ -36,19 +39,54 @@
 //!
 //! Retrieval (`skill_ops::find_skills`) is pure KNN cosine over skill ROOTS,
 //! limit-capped, with the threshold at 0.0 — the cosine noise floor, not a
-//! confidence cutoff (ADR-038 describes an 0.8 floor; the code deliberately
-//! moved past that so the model judges confidence from the raw score). Two
-//! consequences for anything seeded here:
+//! confidence cutoff (ADR-038; the 0.8 floor in the superseded ADR-030 is
+//! gone, so the model judges confidence from the raw score). Two consequences
+//! for anything seeded here:
 //!
 //!   - The markdown body is NOT indexed. Only the root's title and
 //!     `description` are, so the description is the entire retrieval surface.
 //!   - Nothing is filtered out; a weak description is out-RANKED. These
-//!     compete directly with the 11 built-ins, so "Creating an Issue" loses to
+//!     compete directly with the built-ins, so "Creating an Issue" loses to
 //!     "Node Creation" on a query like "file a bug" unless its description is
 //!     written in the words a request actually arrives in.
 //!
 //! Keeping the description in the same file as the body makes a skill's
 //! retrieval surface and its content one editable unit.
+//!
+//! # Writing the description
+//!
+//! Write it as a retrieval target, not a summary of the body. A description
+//! that lists what the guidance covers ("the extended status and priority
+//! vocabularies, and point estimates") reads well and matches nothing a user
+//! says. Follow the built-ins' convention:
+//!
+//!   - Lead with the user's verbs, and their synonyms: "Report a bug, defect,
+//!     crash or something broken, open a ticket, or raise an issue", not "How
+//!     to create an issue".
+//!   - Name the trigger in the user's own framing: "Use when the user says
+//!     start the sprint, …". A gate that *rejects* a write is met as "it won't
+//!     let me mark this done" or "why can't I close this" — name those, not
+//!     only the system's "status change was rejected".
+//!   - The title is embedded too. "Working with Cycles" alone pulled "add a
+//!     task to follow up next week" away from Node Creation whatever the
+//!     description said; "Sprints and Cycles" does not.
+//!   - Only words for what the skill does. An embedding has no negation, so
+//!     "not for plain tasks" pulls the skill onto plain-task requests.
+//!   - No generic noun tail ("…a node or record"): it makes the skill an
+//!     attractor for anything node-shaped.
+//!
+//! Where a general request sits closer to the skill than any wording can fix,
+//! give it an `exclusion` naming that request positively ("Add a task or a
+//! reminder.") rather than widening the description's disclaimers. It lowers
+//! the skill only on queries nearer the exclusion than the description.
+//!
+//! Then measure it rather than argue about it: add the skill's own-intent
+//! queries and the general queries it must not take to
+//! `packages/agent/tests/live_skill_retrieval_stability.rs` (see
+//! `linear_playbook_skills_win_their_own_intents` and
+//! `linear_playbook_skills_do_not_displace_built_ins`), which rank the real
+//! registry with the locked embedding model. The Linear skills' first drafts
+//! summarised their bodies and won 7 of 17 of their own intents there.
 //!
 //! # Shape
 //!
@@ -77,6 +115,7 @@ struct Parsed<'a> {
     title: &'a str,
     description: &'a str,
     tools: Vec<&'a str>,
+    exclusion: Option<&'a str>,
     body: &'a str,
 }
 
@@ -91,12 +130,13 @@ pub fn playbook_skill(source: &str) -> NodeTemplate {
     let parsed = parse(source).unwrap_or_else(|e| {
         panic!("malformed Playbook skill frontmatter: {e}");
     });
+    let mut skill = SkillNode::new(parsed.title, parsed.description, &parsed.tools, 3);
+    if let Some(exclusion) = parsed.exclusion {
+        skill = skill.with_exclusion(exclusion);
+    }
     NodeTemplate {
         tier: SeedTier::Starter,
-        ..NodeTemplate::skill(
-            SkillNode::new(parsed.title, parsed.description, &parsed.tools, 3),
-            parsed.body,
-        )
+        ..NodeTemplate::skill(skill, parsed.body)
     }
 }
 
@@ -197,6 +237,7 @@ fn parse(source: &str) -> Result<Parsed<'_>, String> {
     let mut title = None;
     let mut description = None;
     let mut tools = None;
+    let mut exclusion = None;
     for line in front.lines() {
         let (key, raw) = line
             .split_once(": ")
@@ -212,6 +253,7 @@ fn parse(source: &str) -> Result<Parsed<'_>, String> {
             "title" => &mut title,
             "description" => &mut description,
             "tools" => &mut tools,
+            "exclusion" => &mut exclusion,
             other => return Err(format!("unknown frontmatter key {other:?}")),
         };
         if slot.replace(value).is_some() {
@@ -236,6 +278,7 @@ fn parse(source: &str) -> Result<Parsed<'_>, String> {
                 title,
                 description,
                 tools,
+                exclusion,
                 body,
             })
         }
@@ -256,6 +299,7 @@ mod tests {
                 title: "T",
                 description: "a: b",
                 tools: DEFAULT_TOOLS.to_vec(),
+                exclusion: None,
                 body: "# T\n\n---\nbody\n",
             })
         );
@@ -268,6 +312,15 @@ mod tests {
             parse(src).map(|p| p.tools),
             Ok(vec!["get_node", "create_relationship"])
         );
+    }
+
+    #[test]
+    fn an_exclusion_reaches_the_seeded_skill() {
+        let src = "---\ntitle: \"T\"\ndescription: \"D\"\nexclusion: \"Add a task.\"\n---\nb";
+        let template = playbook_skill(src);
+        let skill = SkillNode::from_properties(&template.title, &template.root_properties)
+            .expect("seed decodes as a skill");
+        assert_eq!(skill.exclusion.as_deref(), Some("Add a task."));
     }
 
     #[test]

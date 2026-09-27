@@ -1,6 +1,7 @@
 ---
 title: "Issue Validation Rules"
-description: "Why a status change on an issue was rejected: the sub-issue completion gate and the blocker gate, what each checks, and how to proceed when one fires."
+description: "Why an issue won't close or won't start: its status change was rejected because sub-issues are still open or a blocker isn't done. Use when the user says it won't let me mark this done, it won't let me move this to in progress, why can't I close this, or why is this blocked."
+exclusion: "Link a task to a decision."
 ---
 # Issue Validation Rules
 
