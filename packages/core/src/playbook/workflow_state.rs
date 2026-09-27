@@ -435,7 +435,9 @@ pub async fn get_workflow_state(
                 None
             }
         };
-        resolver.set_scope(cel_scope.clone());
+        resolver.set_reading_type(crate::playbook::engine::PlaybookEngine::reading_type(
+            &rule_ref.rule,
+        ));
 
         for condition in &rule_ref.rule.conditions {
             let state = evaluate_one_condition(

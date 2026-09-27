@@ -248,7 +248,9 @@ impl NodeService {
                 )
             })?;
             let mut resolver = crate::playbook::graph_resolver::GraphResolver::new(scoped.clone())
-                .with_scope(cel_scope.clone());
+                .with_reading_type(crate::playbook::engine::PlaybookEngine::reading_type(
+                    &rule_ref.rule,
+                ));
             let condition_result = crate::playbook::cel::evaluate_conditions_at_scope(
                 &rule_ref.rule.conditions,
                 node,
