@@ -10,7 +10,7 @@ package nodespace;
 //   - content: string (plain text or markdown content of the node)
 //   - properties: JSON-encoded string (arbitrary key-value metadata); see NodeData.properties
 //   - version: int64 optimistic concurrency control counter
-//   - lifecycle_status: string enum ("active", "archived", "deleted")
+//   - lifecycle_status: string enum ("active", "archived")
 service NodeService {
   // Report the running daemon's own version so the frontend can detect a stale
   // detached daemon (a previous install still bound to the socket) and relaunch
@@ -195,7 +195,7 @@ message NodeData {
   // happens server-side before the value reaches the wire.
   string properties = 5;
   int64 version = 6;
-  string lifecycle_status = 7; // "active" | "archived" | "deleted"
+  string lifecycle_status = 7; // "active" | "archived"
   string created_at = 8;       // RFC 3339 timestamp
   string modified_at = 9;      // RFC 3339 timestamp
   // Aggregated markdown for this node's subtree (root content plus every
