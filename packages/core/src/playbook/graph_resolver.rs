@@ -759,6 +759,8 @@ impl GraphResolver {
                             continue;
                         }
                     }
+                    // Defensive: a scalar is only ever reached through a node,
+                    // so a multi-segment path always takes the branch above.
                     resolved_values.insert(path.segments.clone(), json_to_cel(&v));
                 }
                 ResolvedValue::Collection(nodes) => {

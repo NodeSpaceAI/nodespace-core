@@ -2123,6 +2123,11 @@ mod scope_tests {
             "*",
             "node.has_child.all(c, c.state == 'backlog' && c.severity == 'high')",
         );
+        assert_eq!(PlaybookEngine::reading_type(&rule), None);
+        assert_eq!(
+            PlaybookEngine::reading_type(&rule_on("ticket", "true")),
+            Some("ticket".to_string())
+        );
         assert!(
             eval_resolved(&svc, &rule, &parent).await,
             "a wildcard rule must see the child's own value and own field"
