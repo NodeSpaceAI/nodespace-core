@@ -792,6 +792,9 @@ impl NodeService {
             if target.node_type == "collection" {
                 return Err(TreeInvariantViolation::collection_not_root(Some(target_id)).into());
             }
+            if target.node_type == "schema" {
+                return Err(TreeInvariantViolation::schema_not_root(target_id).into());
+            }
         }
 
         // The outline is single-parent, and every read path assumes it:

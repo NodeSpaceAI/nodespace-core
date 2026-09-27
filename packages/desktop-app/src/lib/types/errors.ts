@@ -216,11 +216,16 @@ export function isPlayRuleRejected(error: unknown): error is PlayRuleRejectedCom
 }
 
 /** The tree invariant a refused write would have broken. */
-export type TreeInvariantRule = 'member_of_not_root' | 'collection_not_root' | 'cycle';
+export type TreeInvariantRule =
+  | 'member_of_not_root'
+  | 'collection_not_root'
+  | 'schema_not_root'
+  | 'cycle';
 
 const TREE_INVARIANT_RULES: readonly string[] = [
   'member_of_not_root',
   'collection_not_root',
+  'schema_not_root',
   'cycle'
 ] satisfies readonly TreeInvariantRule[];
 

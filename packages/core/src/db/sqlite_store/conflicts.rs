@@ -646,6 +646,11 @@ impl SqliteStore {
                     super::TreeInvariantViolation::collection_not_root(Some(survivor_id)),
                 ));
             }
+            if survivor.node_type == "schema" {
+                return Err(anyhow::Error::new(
+                    super::TreeInvariantViolation::schema_not_root(survivor_id),
+                ));
+            }
             if !super::relationships::member_may_have_parent(&survivor.node_type) {
                 // Name the node that holds the membership, so the refusal
                 // points at the membership the user has to remove. When both

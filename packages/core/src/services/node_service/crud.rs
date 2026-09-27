@@ -20,6 +20,32 @@ pub(crate) enum VersionCheckedUpdateOutcome {
 }
 
 impl NodeService {
+    /// Refuse an update that changes whether a node is a core schema.
+    ///
+    /// The core-schema delete refusal (`assert_schema_deletable`) reads
+    /// `isCore` from the stored row, so it is only as strong as the guarantee
+    /// that nothing rewrites it: an update clearing `isCore` — or retyping the
+    /// row away from `schema` — would make a core type deletable. Whether a
+    /// schema is core is fixed when it is created. The `schema_core_status_fixed`
+    /// trigger backs this up on every write path; checking here gives the
+    /// update paths a readable error.
+    pub(crate) fn ensure_schema_core_status_unchanged(
+        existing: &Node,
+        updated: &Node,
+    ) -> Result<(), NodeServiceError> {
+        let is_core_schema = |node: &Node| {
+            node.node_type == "schema"
+                && node.properties.get("isCore").and_then(|v| v.as_bool()) == Some(true)
+        };
+        if is_core_schema(existing) != is_core_schema(updated) {
+            return Err(NodeServiceError::invalid_update(format!(
+                "schema_is_core: whether schema '{}' is core is fixed when it is created",
+                existing.id
+            )));
+        }
+        Ok(())
+    }
+
     /// Create a new node
     ///
     /// Validates the node using the appropriate behavior (Text, Task, or Date),
@@ -459,6 +485,13 @@ impl NodeService {
                     TreeInvariantViolation::collection_not_root(params.id.as_deref()).into(),
                 );
             }
+            if params.node_type == "schema" {
+                let schema_id = params
+                    .id
+                    .clone()
+                    .unwrap_or_else(|| normalize_schema_id(&params.content));
+                return Err(TreeInvariantViolation::schema_not_root(&schema_id).into());
+            }
             let parent_node = self
                 .get_node(parent_id)
                 .await?
@@ -862,6 +895,7 @@ impl NodeService {
         }
 
         // Step 1: Core behavior validation (PROTECTED)
+        Self::ensure_schema_core_status_unchanged(&existing, &updated)?;
         self.behaviors.validate_node(&updated)?;
 
         // Step 1.5: Apply schema defaults and validate (if node type changed)
@@ -982,6 +1016,7 @@ impl NodeService {
             }
         }
 
+        Self::ensure_schema_core_status_unchanged(&existing, &updated)?;
         self.behaviors.validate_node(&updated)?;
 
         if updated.node_type != "schema" {
@@ -1102,6 +1137,7 @@ impl NodeService {
             updated.lifecycle_status = status;
         }
 
+        Self::ensure_schema_core_status_unchanged(&existing, &updated)?;
         self.behaviors.validate_node(&updated)?;
 
         if updated.node_type != "schema" {
@@ -1365,6 +1401,7 @@ impl NodeService {
         }
 
         // Step 1: Core behavior validation (PROTECTED)
+        Self::ensure_schema_core_status_unchanged(&existing, &updated)?;
         self.behaviors.validate_node(&updated)?;
 
         // Step 2: Schema validation (USER-EXTENSIBLE)

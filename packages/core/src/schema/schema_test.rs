@@ -6572,10 +6572,16 @@ async fn delete_by_id(
     svc.delete_node(id, node.version).await
 }
 
-/// Create a text node and move each schema under it, so deleting the text node
+/// Create a text node and nest each schema under it, so deleting the text node
 /// reaches the schemas through the `has_child` subtree rather than as the target.
+///
+/// A schema is always a root — every write path refuses to give one a parent —
+/// so this can only be built by dropping the `schema_is_root_edge` trigger and
+/// inserting the edge raw. It stands in for a database where the invariant was
+/// somehow broken, which is what `delete_subtree_atomic`'s defensive scan over
+/// the whole subtree is for.
 async fn nest_schemas_under_text(svc: &Arc<NodeService>, schema_ids: &[&str]) -> String {
-    use crate::services::{CreateNodeParams, InsertPosition, InsertPositionOwned};
+    use crate::services::{CreateNodeParams, InsertPositionOwned};
 
     let holder = svc
         .create_node_with_parent(CreateNodeParams {
@@ -6589,10 +6595,18 @@ async fn nest_schemas_under_text(svc: &Arc<NodeService>, schema_ids: &[&str]) ->
         })
         .await
         .expect("holder creation failed");
-    for id in schema_ids {
-        svc.move_node_unchecked(id, Some(&holder), InsertPosition::End)
-            .await
-            .unwrap_or_else(|e| panic!("moving {id} under the holder failed: {e}"));
+    let db = svc.store().write().await;
+    db.execute("DROP TRIGGER schema_is_root_edge", ())
+        .await
+        .expect("dropping the schema-is-root trigger failed");
+    for (i, id) in schema_ids.iter().enumerate() {
+        db.execute(
+            "INSERT INTO relationship (id, in_node, out_node, relationship_type, properties, version, created_at, modified_at) \
+             VALUES (?1, ?2, ?3, 'has_child', json_object('order', ?4), 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+            libsql::params![uuid::Uuid::new_v4().to_string(), holder.clone(), *id, (i + 1) as f64],
+        )
+        .await
+        .unwrap_or_else(|e| panic!("nesting {id} under the holder failed: {e}"));
     }
     holder
 }

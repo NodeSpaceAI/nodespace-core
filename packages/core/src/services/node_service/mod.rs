@@ -3744,6 +3744,199 @@ mod tests {
         assert!(svc.store().get_node(NESTED).await.unwrap().is_none());
     }
 
+    /// A schema node is always a root. It may have `has_child` children (its
+    /// description), but no write path can give it a parent: create, move,
+    /// relationship create, a raw edge insert, or switching a child's type to
+    /// `schema`. Otherwise a subtree delete — e.g. `update_schema` replacing
+    /// another schema's description — would cascade it away unguarded.
+    #[tokio::test]
+    async fn schema_is_always_a_root() {
+        use crate::services::{CreateNodeParams, InsertPositionOwned};
+
+        let (svc, _tmp) = create_test_service().await;
+        const TEXT_ROOT: &str = "55555555-5555-5555-5555-5555555555a1";
+        const TEXT_CHILD: &str = "55555555-5555-5555-5555-5555555555a2";
+        // Core schemas are seeded by `NodeService::new`.
+        const CORE_SCHEMA: &str = "task";
+
+        svc.create_node_with_parent(CreateNodeParams {
+            id: Some(TEXT_ROOT.into()),
+            node_type: "text".into(),
+            content: "root".into(),
+            parent_id: None,
+            position: InsertPositionOwned::End,
+            properties: json!({}),
+            lifecycle_status: None,
+        })
+        .await
+        .unwrap();
+
+        let is_refusal = |e: &NodeServiceError| {
+            matches!(
+                e,
+                NodeServiceError::TreeInvariantViolation(v)
+                    if v.rule == crate::db::TreeInvariantRule::SchemaNotRoot
+            )
+        };
+
+        // Created under a parent.
+        let err = svc
+            .create_node_with_parent(CreateNodeParams {
+                id: None,
+                node_type: "schema".into(),
+                content: "Widget".into(),
+                parent_id: Some(TEXT_ROOT.into()),
+                position: InsertPositionOwned::End,
+                properties: json!({"isCore": false, "schemaVersion": 1, "fields": []}),
+                lifecycle_status: None,
+            })
+            .await
+            .expect_err("a schema cannot be created under a parent");
+        assert!(is_refusal(&err), "{err:#}");
+        assert!(svc.get_node("widget").await.unwrap().is_none());
+
+        // Moved under a parent.
+        let err = svc
+            .move_node_unchecked(
+                CORE_SCHEMA,
+                Some(TEXT_ROOT),
+                crate::services::InsertPosition::End,
+            )
+            .await
+            .expect_err("a schema cannot be moved under a parent");
+        assert!(is_refusal(&err), "{err:#}");
+
+        // Given a parent through the relationship API.
+        let err = svc
+            .create_relationship(TEXT_ROOT, "has_child", CORE_SCHEMA, json!({}))
+            .await
+            .expect_err("a schema cannot gain a has_child parent");
+        assert!(is_refusal(&err), "{err:#}");
+
+        // Given a parent by a raw edge insert, bypassing every Rust check.
+        let err = svc
+            .store()
+            .write()
+            .await
+            .execute(
+                "INSERT INTO relationship (in_node, out_node, relationship_type, properties, version, created_at, modified_at) \
+                 VALUES (?1, ?2, 'has_child', '{}', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+                libsql::params![TEXT_ROOT, CORE_SCHEMA],
+            )
+            .await
+            .expect_err("the DB schema refuses a schema child edge");
+        assert!(err.to_string().contains("schema_not_root"), "{err}");
+
+        // A child cannot become a schema.
+        svc.create_node_with_parent(CreateNodeParams {
+            id: Some(TEXT_CHILD.into()),
+            node_type: "text".into(),
+            content: "child".into(),
+            parent_id: Some(TEXT_ROOT.into()),
+            position: InsertPositionOwned::End,
+            properties: json!({}),
+            lifecycle_status: None,
+        })
+        .await
+        .unwrap();
+        let err = svc
+            .store()
+            .write()
+            .await
+            .execute(
+                "UPDATE node SET node_type = 'schema' WHERE id = ?1",
+                libsql::params![TEXT_CHILD],
+            )
+            .await
+            .expect_err("a child cannot become a schema");
+        assert!(err.to_string().contains("schema_not_root"), "{err}");
+
+        // Nothing above left a parent on a schema.
+        assert!(svc
+            .store()
+            .get_parent_id(CORE_SCHEMA)
+            .await
+            .unwrap()
+            .is_none());
+    }
+
+    /// Whether a schema is core is fixed at creation. The core-schema delete
+    /// refusal reads `isCore` from the row, so a generic update that cleared
+    /// it (or retyped the row away from `schema`) would make a core type
+    /// deletable, and one that set it would make a user type undeletable.
+    #[tokio::test]
+    async fn schema_core_status_cannot_change_through_generic_updates() {
+        use crate::services::{CreateNodeParams, InsertPositionOwned};
+
+        let (svc, _tmp) = create_test_service().await;
+        let is_refusal = |e: &NodeServiceError| matches!(e, NodeServiceError::InvalidUpdate(msg) if msg.starts_with("schema_is_core:"));
+
+        // Clearing isCore on a core schema.
+        let task = svc.get_node("task").await.unwrap().unwrap();
+        let err = svc
+            .update_node(
+                "task",
+                task.version,
+                NodeUpdate::new().with_properties(json!({"isCore": false})),
+            )
+            .await
+            .expect_err("isCore cannot be cleared on a core schema");
+        assert!(is_refusal(&err), "{err:#}");
+
+        // Same through bulk update.
+        let err = svc
+            .bulk_update(vec![(
+                "task".to_string(),
+                NodeUpdate::new().with_properties(json!({"isCore": false})),
+            )])
+            .await
+            .expect_err("isCore cannot be cleared through bulk update");
+        assert!(format!("{err:#}").contains("schema_is_core"), "{err:#}");
+
+        // Setting isCore on a user schema.
+        svc.create_node_with_parent(CreateNodeParams {
+            id: None,
+            node_type: "schema".into(),
+            content: "Widget".into(),
+            parent_id: None,
+            position: InsertPositionOwned::End,
+            properties: json!({"isCore": false, "schemaVersion": 1, "fields": []}),
+            lifecycle_status: None,
+        })
+        .await
+        .unwrap();
+        let widget = svc.get_node("widget").await.unwrap().unwrap();
+        let err = svc
+            .update_node(
+                "widget",
+                widget.version,
+                NodeUpdate::new().with_properties(json!({"isCore": true})),
+            )
+            .await
+            .expect_err("isCore cannot be set on a user schema");
+        assert!(is_refusal(&err), "{err:#}");
+
+        // Raw writes, bypassing every Rust check: clearing isCore, and
+        // retyping a core schema away from `schema`.
+        for sql in [
+            "UPDATE node SET properties = json_set(properties, '$.isCore', json('false')) WHERE id = 'task'",
+            "UPDATE node SET node_type = 'text' WHERE id = 'task'",
+        ] {
+            let err = svc
+                .store()
+                .write()
+                .await
+                .execute(sql, ())
+                .await
+                .expect_err("the DB schema refuses a core-status change");
+            assert!(err.to_string().contains("schema_is_core"), "{sql}: {err}");
+        }
+
+        let task = svc.get_node("task").await.unwrap().unwrap();
+        assert_eq!(task.node_type, "schema");
+        assert_eq!(task.properties.get("isCore"), Some(&json!(true)));
+    }
+
     /// Which descendants count as ADR-059 §7 access boundaries, shape by
     /// shape. Every shape asserts both `access_boundaries_under` (what
     /// aggregation excludes) and `embedding_root_id` (where a node's embedding

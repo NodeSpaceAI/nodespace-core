@@ -123,6 +123,9 @@ pub enum TreeInvariantRule {
     /// A collection would gain a `has_child` parent; collections are always
     /// roots and nest through `member_of` (ADR-059 §2).
     CollectionNotRoot,
+    /// A schema node would gain a `has_child` parent; schemas are always
+    /// roots.
+    SchemaNotRoot,
     /// The write would make a node its own `has_child` ancestor.
     Cycle,
 }
@@ -135,6 +138,7 @@ impl TreeInvariantRule {
         match self {
             Self::MemberOfNotRoot => "member_of_not_root",
             Self::CollectionNotRoot => "collection_not_root",
+            Self::SchemaNotRoot => "schema_not_root",
             Self::Cycle => "cycle",
         }
     }
@@ -175,6 +179,19 @@ impl TreeInvariantViolation {
             detail: format!(
                 "{} cannot have a parent; collections nest through member_of, not has_child (ADR-059 §2)",
                 subject
+            ),
+        }
+    }
+
+    /// Giving a schema node a parent.
+    pub fn schema_not_root(schema_id: &str) -> Self {
+        Self {
+            rule: TreeInvariantRule::SchemaNotRoot,
+            node_id: Some(schema_id.to_string()),
+            related_ids: Vec::new(),
+            detail: format!(
+                "schema '{}' cannot have a parent; schemas are always roots",
+                schema_id
             ),
         }
     }

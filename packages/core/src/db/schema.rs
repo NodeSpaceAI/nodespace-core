@@ -327,6 +327,52 @@ async fn create_schema_body(conn: &libsql::Connection) -> Result<()> {
     .await
     .context("Failed to create collection-is-root type trigger")?;
 
+    // A schema is always a root, for the same reason and by the same means as
+    // a collection: a subtree delete (e.g. `update_schema` replacing a
+    // description subtree) cascades its descendants without the schema delete
+    // guard, so a nested schema — core or extended by others — would be
+    // removed unchecked.
+    conn.execute(
+        r#"CREATE TRIGGER IF NOT EXISTS schema_is_root_edge BEFORE INSERT ON relationship
+        WHEN new.relationship_type = 'has_child'
+          AND (SELECT node_type FROM node WHERE id = new.out_node) = 'schema'
+        BEGIN
+            SELECT RAISE(ABORT, 'schema_not_root: a schema cannot have a parent; schemas are always roots');
+        END"#,
+        (),
+    )
+    .await
+    .context("Failed to create schema-is-root edge trigger")?;
+
+    conn.execute(
+        r#"CREATE TRIGGER IF NOT EXISTS schema_is_root_type BEFORE UPDATE OF node_type ON node
+        WHEN new.node_type = 'schema'
+          AND EXISTS (SELECT 1 FROM relationship
+                      WHERE out_node = new.id AND relationship_type = 'has_child')
+        BEGIN
+            SELECT RAISE(ABORT, 'schema_not_root: a node with a parent cannot become a schema; schemas are always roots');
+        END"#,
+        (),
+    )
+    .await
+    .context("Failed to create schema-is-root type trigger")?;
+
+    // Whether a row is a core schema is fixed when it is created. The core
+    // schema delete refusal reads `isCore` from the row, so an update that
+    // clears it — or retypes the row away from `schema` — would make a core
+    // type deletable; one that sets it would make a user type undeletable.
+    conn.execute(
+        r#"CREATE TRIGGER IF NOT EXISTS schema_core_status_fixed BEFORE UPDATE OF node_type, properties ON node
+        WHEN (old.node_type = 'schema' AND coalesce(json_extract(old.properties, '$.isCore'), 0) = 1)
+          IS NOT (new.node_type = 'schema' AND coalesce(json_extract(new.properties, '$.isCore'), 0) = 1)
+        BEGIN
+            SELECT RAISE(ABORT, 'schema_is_core: whether a schema is core is fixed when it is created');
+        END"#,
+        (),
+    )
+    .await
+    .context("Failed to create schema-core-status trigger")?;
+
     // sqlite-vec virtual table for embedding KNN search. Keyed by `embedding.id`
     // (the per-chunk UUID); holds ONLY real, non-stale vectors (see upsert/
     // delete/mark-stale paths). vec0 is a fast brute-force SIMD scan, not an ANN

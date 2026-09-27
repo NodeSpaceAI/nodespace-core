@@ -740,6 +740,7 @@ impl NodeService {
             // that actually land in storage, not a pre-rebucket snapshot; for
             // an unextended type `rebucket_and_validate` is a no-op reshuffle,
             // so this changes nothing for the common case.
+            Self::ensure_schema_core_status_unchanged(existing, &updated)?;
             self.behaviors.validate_node(&updated).map_err(|e| {
                 NodeServiceError::bulk_operation_failed(format!(
                     "Failed to validate node {}: {}",
