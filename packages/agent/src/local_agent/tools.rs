@@ -4445,9 +4445,12 @@ impl AgentToolExecutor for GraphToolExecutor {
         Ok(SkillRetrieval { candidates })
     }
 
-    /// Every `skill` root's title, sorted so the Stage-1 prompt is stable
-    /// across turns. The same set `retrieve_skills` searches — a name listed
-    /// here is one retrieval can return.
+    /// Every `skill` root's title, normalised by
+    /// [`super::agent_loop::stage1_skill_names`].
+    ///
+    /// Read from the store rather than the embedding index, so a skill whose
+    /// embedding has not landed yet is still named — retrieval may not return
+    /// it until then, but Stage 1 only needs to know the capability exists.
     ///
     /// A failed read yields no names: the prompt loses one line, and the turn
     /// still routes.
@@ -4457,14 +4460,7 @@ impl AgentToolExecutor for GraphToolExecutor {
         };
         match ns.query_nodes_by_type("skill", None).await {
             Ok(nodes) => {
-                let mut names: Vec<String> = nodes
-                    .into_iter()
-                    .map(|n| n.content.trim().to_string())
-                    .filter(|n| !n.is_empty())
-                    .collect();
-                names.sort();
-                names.dedup();
-                names
+                super::agent_loop::stage1_skill_names(nodes.into_iter().map(|n| n.content))
             }
             Err(e) => {
                 tracing::warn!(error = %e, "Could not read skill names for Stage 1; routing without them");

@@ -36,12 +36,11 @@ use nodespace_nlp_engine::chat::ChatConfig;
 /// The skill names production's Stage-1 prompt carries on a freshly seeded
 /// registry — what `GraphToolExecutor::skill_names` returns there.
 fn seeded_skill_names() -> Vec<String> {
-    let mut names: Vec<String> = nodespace_agent::skill_pipeline::seed_skill_nodes()
-        .into_iter()
-        .map(|t| t.title)
-        .collect();
-    names.sort();
-    names
+    nodespace_agent::local_agent::agent_loop::stage1_skill_names(
+        nodespace_agent::skill_pipeline::seed_skill_nodes()
+            .into_iter()
+            .map(|t| t.title),
+    )
 }
 
 /// Standard on-disk path for the locked native model (ADR-056), matching
