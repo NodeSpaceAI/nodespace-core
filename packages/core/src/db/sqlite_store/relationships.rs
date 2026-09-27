@@ -1226,13 +1226,15 @@ impl SqliteStore {
 
         // ADR-059 §2 (reparent side): this cold-sweep attach path must not give a
         // `has_child` parent to a node that holds a `member_of` edge — symmetric
-        // with the forward guard on `bulk_add_to_collections`. Run before the
-        // write guard is taken, since it only reads. See `assert_may_gain_parent`.
+        // with the forward guard on `bulk_add_to_collections`. Run under the
+        // write guard (it reads through reader connections, so it doesn't
+        // re-enter it), so no other writer can invalidate it before the
+        // INSERTs. See `assert_may_gain_parent`.
+        let db = self.write().await;
         let child_ids: Vec<&str> = edges.iter().map(|(_, child, _)| child.as_str()).collect();
         self.assert_may_gain_parent(&child_ids).await?;
 
         let now = Utc::now().to_rfc3339();
-        let db = self.write().await;
         let tx = db
             .transaction()
             .await

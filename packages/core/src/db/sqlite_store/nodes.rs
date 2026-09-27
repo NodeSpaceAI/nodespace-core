@@ -2809,10 +2809,10 @@ impl SqliteStore {
     /// (the service `move_node` reparent path), `bulk_create_has_child` (the
     /// sync-apply cold-sweep), and the relationship API's `has_child` inserts
     /// (`append_child_edge`, `create_generic_relationship` and its `_in_tx`
-    /// twin) — so every reparent path is covered, symmetrically with the forward guard `assert_root_only_
-    /// membership` on the `member_of` INSERT sites. (Fresh-node attach sites can't
-    /// pre-hold a membership; `move_children_to_parent` only moves already-interior
-    /// nodes.) Rejects rather than dropping the membership (a node can hold several
+    /// twin) — so every reparent path is covered, symmetrically with the
+    /// forward guard `assert_root_only_membership` on the `member_of` INSERT
+    /// sites. (Fresh-node attach sites can't pre-hold a membership;
+    /// `move_children_to_parent` only moves already-interior nodes.) Rejects rather than dropping the membership (a node can hold several
     /// grants, each an independent access path). `person` (grantee, ADR-037 §4)
     /// nodes are exempt.
     ///
@@ -2903,6 +2903,14 @@ impl SqliteStore {
             _ => false,
         };
 
+        // Held across the tree guards and the sibling-order read → fractional-key
+        // compute → write-back (including any rebalance) until the function
+        // returns. Without it, two concurrent same-parent reorders interleave and
+        // compute overlapping order keys from the same stale snapshot, and two
+        // crossing moves (A under B, B under A) can both pass the cycle check.
+        // The guards read through reader connections, so they don't re-enter it.
+        let db = self.write().await;
+
         if let Some(ref parent_id) = new_parent_id {
             if !self.node_exists(parent_id).await? {
                 return Err(anyhow::anyhow!("Parent node not found: {}", parent_id));
@@ -2911,12 +2919,6 @@ impl SqliteStore {
             // ADR-059 §2: a member cannot be moved into an interior position.
             self.assert_may_gain_parent(&[node_id.as_str()]).await?;
         }
-
-        // Held across the sibling-order read → fractional-key compute → write-back
-        // (including any rebalance) until the function returns. Without it, two
-        // concurrent same-parent reorders interleave and compute overlapping order
-        // keys from the same stale snapshot, corrupting the final sibling order.
-        let db = self.write().await;
 
         let mut respread = Vec::new();
         let new_order = if let Some(ref parent_id) = new_parent_id {

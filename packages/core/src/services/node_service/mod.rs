@@ -5669,6 +5669,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_move_node_under_itself_is_refused() {
+        let (service, _temp) = create_test_service().await;
+        let node = create_text(&service, "alone").await;
+        let version = service.get_node(&node).await.unwrap().unwrap().version;
+
+        let err = service
+            .move_node(
+                &node,
+                version,
+                Some(&node),
+                crate::services::InsertPosition::End,
+            )
+            .await
+            .expect_err("a node cannot be moved under itself");
+        match &err {
+            NodeServiceError::TreeInvariantViolation(v) => {
+                assert_eq!(v.rule, crate::db::TreeInvariantRule::Cycle);
+            }
+            other => panic!("expected a Cycle refusal, got {other:?}"),
+        }
+        assert_eq!(service.store.get_parent_id(&node).await.unwrap(), None);
+    }
+
+    #[tokio::test]
     async fn test_has_child_relationship_refuses_a_self_edge() {
         for path in HAS_CHILD_PATHS {
             let (service, _temp) = create_test_service().await;
