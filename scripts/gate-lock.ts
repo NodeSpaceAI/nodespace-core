@@ -86,6 +86,16 @@ export const DISABLE_ENV_VAR = "NODESPACE_GATE_NO_LOCK";
  */
 export const MERGE_LOCK_PATH = join(tmpdir(), "nodespace-merge.lock");
 
+/**
+ * The compile slot: a third lock, held by a gate only around its compile
+ * stages (scripts/test-gate.ts). It keeps compiles to one at a time without
+ * making anyone's tests wait on them: a gate releases it before queueing for
+ * the test lock, and nothing holds the test lock while waiting for it. Lock
+ * order is merge → compile → test, each of the last two released before the
+ * next is taken, so the three can't deadlock.
+ */
+export const COMPILE_LOCK_PATH = join(tmpdir(), "nodespace-compile.lock");
+
 export interface LockHolder {
   pid: number;
   /** Epoch ms when the holder acquired the lock. */
