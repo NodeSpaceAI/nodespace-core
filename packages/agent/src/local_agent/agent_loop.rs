@@ -1374,9 +1374,10 @@ pub fn stage1_query_from_turns(prior_turns: &[&str], user_message: &str) -> Stri
 /// a clarification answered twenty turns ago must not stop a genuinely new
 /// ambiguous request from being clarified today.
 ///
-/// The intent boundary is a turn that *acted* — made a tool call. Once the
-/// agent has done something, whatever the user says next starts a fresh
-/// intent and the mechanism re-arms.
+/// The intent boundary is a turn that *acted* — made a successful write. Once
+/// the agent has changed something, whatever the user says next starts a
+/// fresh intent and the mechanism re-arms. A turn that only read does not
+/// close the intent (see [`AgentTurnResult::outcome`]).
 fn session_already_clarified(session: &AgentSession) -> bool {
     !answered_clarifications(session).is_empty()
 }
@@ -1394,11 +1395,13 @@ fn session_already_clarified(session: &AgentSession) -> bool {
 /// marker a text match could find; reading the prose for one would mean
 /// judging free text for intent, which ADR-038 built `route_clarify` to avoid.
 /// What is exact is that such a turn did not act, so it neither resolves the
-/// intent nor escapes the count. That also keeps a prose question from
-/// erasing a composed clarification before it — which is what reading every
-/// non-composed reply as a resolution did. The cost is on the other side: a
-/// prose answer that needed no tool keeps the intent open, so one later
-/// clarification in it falls through to retrieval instead.
+/// intent nor escapes the count — including when it searched before asking.
+/// That also keeps a prose question from erasing a composed clarification
+/// before it — which is what reading every non-composed reply as a resolution
+/// did. The cost is on the other side: a reply that only read or needed no
+/// tool keeps the intent open, so a conversation that has only read counts
+/// its first reply as the clarification, and a later ambiguous request in it
+/// falls through to retrieval instead of being clarified.
 fn answered_clarifications(session: &AgentSession) -> Vec<&str> {
     session
         .prior_turns
@@ -2919,8 +2922,8 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                 // ADR-038 built `route_clarify` to avoid. Widening this is a
                 // model-behavior question for #1922/#1927 to own, not a
                 // rendering gap for this turn's response to paper over. The
-                // clarification contract still counts it: a turn with no tool
-                // call is recorded as `Replied` (`AgentTurnResult::outcome`),
+                // clarification contract still counts it: a turn that made no
+                // write is recorded as `Replied` (`AgentTurnResult::outcome`),
                 // whatever its text says.
                 return Ok(AgentTurnResult {
                     response: final_response,
@@ -12732,10 +12735,57 @@ mod tests {
                 .any(|m| m.content == "Do you want to see all contacts, or filter them?"),
             "the dropped prose question must not stay in history for the model to re-read"
         );
+        // It only read, so it does not close the intent.
         assert_eq!(
             session.prior_turns.last().map(|t| t.outcome),
-            Some(AiChatTurnOutcome::Acted)
+            Some(AiChatTurnOutcome::Replied)
         );
+    }
+
+    /// The shape the routing eval actually produced: Stage 2 searched and then
+    /// asked in prose, twice, before the scored turn. A search is not acting,
+    /// so the first such turn stays on record as the intent's clarification
+    /// and the next prose reply is put back, rather than each search closing
+    /// the intent and leaving nothing on record.
+    #[tokio::test]
+    async fn a_search_then_prose_question_keeps_the_intent_open() {
+        let mut session = new_session();
+
+        let (first, _) = run_routed_turn(
+            &mut session,
+            vec![
+                tool_round("tc_1", "search_nodes", r#"{"query":"contacts"}"#),
+                text_round("I found two trackers. Which one holds your contacts?"),
+            ],
+        )
+        .await;
+        assert!(first.tool_calls_made.iter().any(|r| r.name == "search_nodes"));
+        assert_eq!(
+            session.prior_turns.last().map(|t| t.outcome),
+            Some(AiChatTurnOutcome::Replied)
+        );
+        assert!(
+            session_already_clarified(&session),
+            "a search followed by a question must stay on record"
+        );
+
+        let (second, _) = run_routed_turn(
+            &mut session,
+            vec![
+                text_round("Could you tell me which list they are in?"),
+                tool_round("tc_2", "search_nodes", r#"{"query":"contacts"}"#),
+                text_round("Here are your contacts."),
+            ],
+        )
+        .await;
+        assert!(
+            session
+                .messages
+                .iter()
+                .any(|m| m.role == Role::System && m.content == ALREADY_CLARIFIED_NUDGE),
+            "the prose reply after it must be put back"
+        );
+        assert_eq!(second.response, "Here are your contacts.");
     }
 
     /// A reply with no answered clarification on record is an ordinary
@@ -12892,10 +12942,19 @@ mod tests {
     #[test]
     fn a_turn_outcome_is_derived_from_what_the_turn_did() {
         assert_eq!(turn_result(&[], None).outcome(), AiChatTurnOutcome::Replied);
+        // Reading is not acting: a search may have been on the way to a question.
         assert_eq!(
             turn_result(&["search_nodes"], None).outcome(),
+            AiChatTurnOutcome::Replied
+        );
+        assert_eq!(
+            turn_result(&["search_nodes", "create_node"], None).outcome(),
             AiChatTurnOutcome::Acted
         );
+        // A write that failed changed nothing.
+        let mut failed = turn_result(&["create_node"], None);
+        failed.tool_calls_made[0].is_error = true;
+        assert_eq!(failed.outcome(), AiChatTurnOutcome::Replied);
         // A search that found two matches, then asked which: a clarification.
         assert_eq!(
             turn_result(

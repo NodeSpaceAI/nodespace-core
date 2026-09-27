@@ -587,12 +587,16 @@ pub struct AgentTurnResult {
 impl AgentTurnResult {
     /// How this turn ended, derived from what it did rather than what it said.
     ///
-    /// A composed clarifying question wins over any tool call the turn made
-    /// on the way to it (a search that found two matches, then asked which).
-    /// A delete confirmation carries a question too, but it is the delete
-    /// resolving its target, not a clarification: it counts as acting. The
-    /// `route_clarify` call itself performs nothing and does not count as a
-    /// tool call.
+    /// Acting means changing the graph: a turn is `Acted` only when a write
+    /// succeeded. A turn that only read is `Replied`, because reading and then
+    /// replying looks the same whether the reply showed what was found or
+    /// asked about it (a search that found two matches, then asked which in
+    /// prose). Counting reads as acting let a search close the intent before
+    /// every prose question, so no question was ever on record.
+    ///
+    /// A composed clarifying question wins over anything the turn did on the
+    /// way to it. A delete confirmation carries a question too, but it is the
+    /// delete resolving its target, not a clarification: it counts as acting.
     pub fn outcome(&self) -> AiChatTurnOutcome {
         match &self.clarify {
             Some(c) if c.pending_deletions.is_empty() => AiChatTurnOutcome::Clarified,
@@ -600,7 +604,7 @@ impl AgentTurnResult {
             None if self
                 .tool_calls_made
                 .iter()
-                .any(|r| r.name != crate::local_agent::routing::ROUTE_CLARIFY_TOOL) =>
+                .any(|r| !r.is_error && crate::local_agent::tools::is_write_tool(&r.name)) =>
             {
                 AiChatTurnOutcome::Acted
             }
