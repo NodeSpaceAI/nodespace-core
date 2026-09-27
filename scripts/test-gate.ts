@@ -117,6 +117,12 @@ async function run(stage: StageSpec) {
   process.exit(1);
 }
 
+// A merge gate always takes the machine slot; refuse the opt-out before any work.
+if (merge && process.env[DISABLE_ENV_VAR]) {
+  console.error(`\n✗ ${DISABLE_ENV_VAR} is set; the merge gate always takes the machine slot. Unset it and re-run.\n`);
+  process.exit(1);
+}
+
 console.log(
   merge
     ? "\n▶ Merge gate: full pyramid on the rebased PR."
@@ -180,13 +186,10 @@ if (!existsSync(join(TOOLS_DIR, "bin", "cargo-nextest"))) {
 // Held until this process exits: registerLockRelease() covers Ctrl-C and every
 // early exit, including the process.exit(1) inside run(). A merge's ticket
 // queues ahead of every test:changed run's. The lock's usual degrade-and-run
-// is refused here, as is the no-lock opt-out: a merge gate sharing the machine
-// is exactly what the slot exists to prevent. The cap sits above the longest
-// legitimate hold ahead of it (a test:changed Rust tier's 60-minute timeout).
-if (process.env[DISABLE_ENV_VAR]) {
-  console.error(`\n✗ ${DISABLE_ENV_VAR} is set; the merge gate always takes the machine slot. Unset it and re-run.\n`);
-  process.exit(1);
-}
+// is refused here (as is the no-lock opt-out, at the top): a merge gate
+// sharing the machine is exactly what the slot exists to prevent. The cap sits
+// above the longest legitimate hold ahead of it (a test:changed Rust tier's
+// 60-minute timeout).
 const machineSlot = await acquireGateLock({
   lockPath: MACHINE_LOCK_PATH,
   what: MACHINE_SLOT_WHAT,

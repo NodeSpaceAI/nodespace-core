@@ -11,7 +11,7 @@
 // snippet out of build-pkg.sh (between sentinel comments) and executes it under bash
 // against fixture trees, so a future edit that reintroduces a stale/hardcoded/wrong-file
 // read fails this test under `bun test scripts/` (part of `test:all`, enforced by the
-// pre-push gate) — without needing Apple certs or a real signed .pkg build.
+// merge gate) — without needing Apple certs or a real signed .pkg build.
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
