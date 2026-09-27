@@ -43,9 +43,16 @@ impl std::fmt::Display for NdjsonError {
 /// by [`MAX_LINE_BYTES`]: a completed line whose length exceeds the cap, or an
 /// unterminated tail that grows past it, makes [`push`](Self::push) return
 /// [`NdjsonError::LineTooLong`] before the oversized line is allocated.
+///
+/// Each `push` searches only bytes not already searched: the unterminated tail
+/// is known to be newline-free up to `scanned`, so a line drip-fed in many small
+/// chunks costs time linear in its length rather than quadratic.
 #[derive(Default)]
 pub struct NdjsonLineBuffer {
     buffer: Vec<u8>,
+    /// Length of the prefix of `buffer` already searched and known to contain
+    /// no newline.
+    scanned: usize,
 }
 
 impl NdjsonLineBuffer {
@@ -62,23 +69,32 @@ impl NdjsonLineBuffer {
         self.buffer.extend_from_slice(chunk);
 
         let mut lines = Vec::new();
-        while let Some(pos) = self.buffer.iter().position(|&b| b == b'\n') {
-            // Reject an oversized completed line before allocating it. `pos` is
-            // the line length excluding the terminating newline.
-            if pos > MAX_LINE_BYTES {
+        // Start of the current (not yet completed) line within `buffer`.
+        let mut line_start = 0;
+        let mut search_from = self.scanned;
+        while let Some(offset) = self.buffer[search_from..].iter().position(|&b| b == b'\n') {
+            let newline = search_from + offset;
+            // Reject an oversized completed line before allocating it. The
+            // length excludes the terminating newline.
+            if newline - line_start > MAX_LINE_BYTES {
                 return Err(NdjsonError::LineTooLong {
                     limit: MAX_LINE_BYTES,
                 });
             }
-            let line_bytes: Vec<u8> = self.buffer.drain(..=pos).collect();
-            // Exclude the trailing newline before decoding.
-            let line = std::str::from_utf8(&line_bytes[..pos])
+            let line = std::str::from_utf8(&self.buffer[line_start..newline])
                 .map_err(|_| NdjsonError::InvalidUtf8)?
                 .trim();
             if !line.is_empty() {
                 lines.push(line.to_string());
             }
+            line_start = newline + 1;
+            search_from = line_start;
         }
+
+        // Drop every completed line in one shift; what remains is the
+        // unterminated tail, all of which has now been searched.
+        self.buffer.drain(..line_start);
+        self.scanned = self.buffer.len();
 
         // A newline resets the count, so only an unterminated tail remains here.
         if self.buffer.len() > MAX_LINE_BYTES {
@@ -166,6 +182,32 @@ mod tests {
                 limit: MAX_LINE_BYTES
             })
         );
+    }
+
+    #[test]
+    fn drip_fed_line_is_not_rescanned() {
+        // A line delivered one byte per chunk must cost linear time. Rescanning
+        // the buffered prefix on every push makes this ~5 * 10^11 comparisons
+        // at the cap, which would not finish.
+        let mut buf = NdjsonLineBuffer::new();
+        for _ in 0..MAX_LINE_BYTES {
+            assert!(buf.push(b"x").unwrap().is_empty());
+        }
+        let lines = buf.push(b"\n").unwrap();
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].len(), MAX_LINE_BYTES);
+    }
+
+    #[test]
+    fn line_completed_after_partial_scan_keeps_later_lines() {
+        // The resume offset must not skip a newline arriving in the same chunk
+        // as the end of a partially-scanned line, nor lines after it.
+        let mut buf = NdjsonLineBuffer::new();
+        assert!(buf.push(b"ab").unwrap().is_empty());
+        assert!(buf.push(b"c").unwrap().is_empty());
+        let lines = buf.push(b"d\ne\nf").unwrap();
+        assert_eq!(lines, vec!["abcd", "e"]);
+        assert_eq!(buf.push(b"g\n").unwrap(), vec!["fg"]);
     }
 
     #[test]
