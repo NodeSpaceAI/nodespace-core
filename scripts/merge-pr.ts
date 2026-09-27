@@ -80,6 +80,7 @@ export function isPrBranch(localBranch: string, prBranch: string): boolean {
 
 interface PullRequest {
   headRefName: string;
+  /** Read from origin itself once this merge's turn comes — not from the API. */
   headRefOid: string;
   state: string;
   baseRefName: string;
@@ -97,9 +98,19 @@ async function git(cwd: string, ...args: string[]): Promise<string> {
  * wait out the whole merge queue, then refuse on finding the new one.
  */
 async function remoteHead(cwd: string, branch: string): Promise<string> {
-  const line = await git(cwd, "ls-remote", "origin", `refs/heads/${branch}`);
-  const sha = line.split(/\s+/)[0] ?? "";
-  if (!/^[0-9a-f]{40}$/.test(sha)) fail(`Could not read the head of ${branch} from origin.`);
+  const ref = `refs/heads/${branch}`;
+  let output = "";
+  try {
+    output = await git(cwd, "ls-remote", "origin", ref);
+  } catch (err) {
+    fail(`Could not reach origin to read ${branch}'s head: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  // ls-remote matches refs by suffix; take only the exact branch.
+  const sha = output
+    .split("\n")
+    .map((line) => line.split(/\s+/))
+    .find(([, name]) => name === ref)?.[0];
+  if (sha === undefined || !/^[0-9a-f]{40}$/.test(sha)) fail(`${branch} was not found on origin.`);
   return sha;
 }
 
@@ -135,7 +146,7 @@ async function main(): Promise<void> {
   const here = process.cwd();
   const repo = (await $`gh repo view --json nameWithOwner --jq .nameWithOwner`.quiet().text()).trim();
   const info = JSON.parse(
-    await $`gh pr view ${pr} --json headRefName,headRefOid,state,baseRefName`.quiet().text()
+    await $`gh pr view ${pr} --json headRefName,state,baseRefName`.quiet().text()
   ) as PullRequest;
   if (info.state !== "OPEN") fail(`PR #${pr} is ${info.state.toLowerCase()}, not open.`);
   if (info.baseRefName !== "main") fail(`PR #${pr} targets ${info.baseRefName}; this command merges into main only.`);
@@ -174,7 +185,10 @@ async function main(): Promise<void> {
 
   // Read the head now that this merge's turn has come, not at startup: the
   // queue wait can be long, and a push just before it may not have been
-  // visible yet. This is the commit the gate tests and the merge must match.
+  // visible yet. A merge tests the PR as pushed when its turn comes — so a
+  // fix pushed while it waited is what gets tested and landed. This is the
+  // commit the gate tests and the merge must match; a push during the gate
+  // itself is still refused below.
   info.headRefOid = await remoteHead(gate, info.headRefName);
 
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
@@ -281,6 +295,7 @@ async function main(): Promise<void> {
     for (let tries = 1; ; tries++) {
       const merged = await $`gh pr merge ${pr} --squash --match-head-commit ${tested}`.quiet().nothrow();
       if (merged.exitCode === 0) break;
+      if (tries === 1) console.log("  waiting for GitHub to show the pushed commit as the PR head…");
       if (tries === MERGE_TRIES) {
         console.error(`${merged.stdout.toString()}${merged.stderr.toString()}`.trim());
         fail(

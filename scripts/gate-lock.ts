@@ -90,9 +90,10 @@ export const MERGE_LOCK_PATH = join(tmpdir(), "nodespace-merge.lock");
  * The compile slot: a third lock, held by a gate only around its compile
  * stages (scripts/test-gate.ts). It keeps compiles to one at a time without
  * making anyone's tests wait on them: a gate releases it before queueing for
- * the test lock, and nothing holds the test lock while waiting for it. Lock
- * order is merge → compile → test, each of the last two released before the
- * next is taken, so the three can't deadlock.
+ * the test lock, and nothing holds the test lock while waiting for it. Locks
+ * are only ever taken in the order merge → compile → test, and the compile
+ * slot is released before the test lock is requested, so the three can't
+ * deadlock.
  */
 export const COMPILE_LOCK_PATH = join(tmpdir(), "nodespace-compile.lock");
 
@@ -591,7 +592,18 @@ export async function acquireGateLock(options: AcquireOptions = {}): Promise<Gat
     if (created) {
       leaveQueue();
       if (announced) log("  lock acquired — starting.\n");
-      return { held: true, release: () => removeLockIfHeldBy(lockPath, holder.pid) };
+      // Idempotent: a gate may release early (the compile slot) and again
+      // from its exit handler. A second release could otherwise read the lock
+      // just as another gate takes it and remove theirs.
+      let released = false;
+      return {
+        held: true,
+        release: () => {
+          if (released) return;
+          released = true;
+          removeLockIfHeldBy(lockPath, holder.pid);
+        },
+      };
     }
 
     const current = readHolder(lockPath);

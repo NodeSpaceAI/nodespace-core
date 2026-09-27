@@ -737,4 +737,24 @@ describe("the merge, compile and test locks", () => {
     expect([merge.held, compile.held, test.held]).toEqual([true, true, true]);
     for (const lock of [test, compile, merge]) lock.release();
   });
+
+  test("the gate releases the compile slot before it requests the test lock", () => {
+    // The no-deadlock argument depends on this order in scripts/test-gate.ts:
+    // a gate must never hold the compile slot while waiting for the test lock.
+    const gate = readFileSync(join(import.meta.dir, "test-gate.ts"), "utf8");
+    const releaseAt = gate.indexOf("compileSlot.release()");
+    const testLockAt = gate.indexOf("acquireGateLock({ urgent: merge })");
+    expect(releaseAt).toBeGreaterThan(-1);
+    expect(testLockAt).toBeGreaterThan(releaseAt);
+  });
+
+  test("releasing twice never removes a lock taken since — even by this same process", async () => {
+    const first = await acquireGateLock(harness().options);
+    first.release();
+    // The same pid holds the path again (a later acquisition by this gate):
+    // a pid check alone can't tell the two apart, only the released flag can.
+    plantLock({ pid: process.pid });
+    first.release();
+    expect(parseHolder(readFileSync(lockPath, "utf8"))?.pid).toBe(process.pid);
+  });
 });
