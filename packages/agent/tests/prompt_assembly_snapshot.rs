@@ -297,7 +297,10 @@ fn fixture_workspace_context() -> WorkspaceContext {
                 description: String::new(),
             },
         ],
-        relevant_schemas: vec![fixture_schema_ticket(), fixture_schema_adr()],
+        relevant_schemas: vec![
+            EntityTypeDescriptor::from_chain(&fixture_schema_ticket(), []),
+            EntityTypeDescriptor::from_chain(&fixture_schema_adr(), []),
+        ],
         related_schemas: vec![fixture_schema_release()],
         semantic_schema_count: 2,
         // Populated rather than left `NotRun`, so the assembled prompt this
@@ -325,8 +328,8 @@ fn fixture_workspace_context() -> WorkspaceContext {
 /// hand-rolled JSON shape.
 fn fixture_schema_metadata() -> serde_json::Value {
     serde_json::Value::Array(vec![
-        EntityTypeDescriptor::from_schema(&fixture_schema_ticket()).to_json(),
-        EntityTypeDescriptor::from_schema(&fixture_schema_adr()).to_json(),
+        EntityTypeDescriptor::from_chain(&fixture_schema_ticket(), []).to_json(),
+        EntityTypeDescriptor::from_chain(&fixture_schema_adr(), []).to_json(),
     ])
 }
 

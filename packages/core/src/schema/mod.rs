@@ -1860,9 +1860,21 @@ pub async fn handle_create_schema(
             ))
         })?;
     if let Some(existing_schema) = existing_schema {
-        let existing_definition =
-            crate::ops::entity_types_block::EntityTypeDescriptor::from_schema(&existing_schema)
-                .render_line();
+        // Described across its `extends` chain: "describe the type using only
+        // the definition above" must not leave out what it inherits.
+        let existing_definition = crate::ops::entity_types_block::EntityTypeDescriptor::resolve(
+            node_service,
+            &existing_schema,
+        )
+        .await
+        .map_err(|e| {
+            MarkdownError::internal_error(format!(
+                "Schema '{}' already exists and was NOT modified, but its definition could \
+                 not be read: {}",
+                schema_id, e
+            ))
+        })?
+        .render_line();
         return Err(MarkdownError::already_exists(
             schema_id.clone(),
             format!(

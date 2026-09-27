@@ -74,11 +74,11 @@
 //! binding back to a `get_schema_node`-family call within the *same*
 //! function body, not across a function boundary. A real instance of
 //! exactly that shape was found by manual audit while building this guard
-//! (`EntityTypeDescriptor::from_schema` in `ops/entity_types_block.rs`,
-//! fed unmerged schemas from `ops/context_ops.rs` and `ops/skill_ops.rs`)
-//! and filed as its own follow-up rather than fixed here, per this guard's
-//! own non-goals; there is nothing to allowlist for it since the scanner
-//! does not find it in the first place.
+//! (the prompt-facing entity-type descriptor in `ops/entity_types_block.rs`,
+//! fed unmerged schemas from `ops/context_ops.rs` and `ops/skill_ops.rs`).
+//! It was fixed at the type level rather than here: that descriptor now has
+//! no single-schema constructor, so every caller must supply the ancestors
+//! (`EntityTypeDescriptor::from_corpus`/`resolve`).
 //!
 //! A second known false negative, also found during construction:
 //! `workflow_state.rs::walk_path_against_schema` reads
