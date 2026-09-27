@@ -152,6 +152,13 @@ impl SkillNode {
         Value::Object(props)
     }
 
+    /// A flat patch that sets only `description`, leaving every other field
+    /// as stored. For a write that must not clobber concurrent edits to the
+    /// rest of the config.
+    pub fn description_patch(description: &str) -> Value {
+        json!({ "description": description })
+    }
+
     /// A new skill [`Node`] carrying this config, with a fresh id.
     pub fn into_node(self) -> Node {
         let properties = self.properties();
@@ -232,6 +239,14 @@ mod tests {
         assert_eq!(
             SkillNode::from_properties("Research", &props).unwrap(),
             skill
+        );
+    }
+
+    #[test]
+    fn description_patch_sets_only_the_description() {
+        assert_eq!(
+            SkillNode::description_patch("new"),
+            json!({ "description": "new" })
         );
     }
 

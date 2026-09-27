@@ -161,7 +161,7 @@ impl SkillUpdater {
         };
 
         // 4. Check if update is needed (avoid unnecessary writes).
-        let mut skill = match SkillNode::from_node(&skill_node) {
+        let skill = match SkillNode::from_node(&skill_node) {
             Ok(skill) => skill,
             Err(e) => {
                 warn!(
@@ -176,10 +176,10 @@ impl SkillUpdater {
             return Ok(());
         }
 
-        // 5. Update the skill node's description property.
-        skill.description = new_description;
+        // 5. Update only the description, so a concurrent edit to the rest
+        // of the skill's config survives this write.
         let update = NodeUpdate {
-            properties: Some(skill.properties()),
+            properties: Some(SkillNode::description_patch(&new_description)),
             ..Default::default()
         };
 
