@@ -50,6 +50,14 @@ fn model_path() -> String {
     format!("{home}/.nodespace/models/gemma-4-E4B-it-Q4_K_M.gguf")
 }
 
+/// Loaded once per test and shared by every rep's fixture; each rep still
+/// gets a fresh DB.
+fn load_embedder() -> Arc<EmbeddingService> {
+    let mut nlp = EmbeddingService::new(EmbeddingConfig::default()).expect("embedding config");
+    nlp.initialize().expect("embedding model must load");
+    Arc::new(nlp)
+}
+
 fn load_engine() -> Arc<LlamaChatInferenceEngine> {
     let config = ChatConfig {
         n_ctx: 32768,
@@ -79,7 +87,10 @@ struct Fixture {
 /// A fresh DB with the seeded skill registry, an `Incident` schema whose
 /// `state` enum includes `resolved`, two resolved incidents and one open one.
 /// Every root is embedded, as the daemon's embedding pass does in steady state.
-async fn fixture(engine: Arc<LlamaChatInferenceEngine>) -> Fixture {
+async fn fixture(
+    engine: Arc<LlamaChatInferenceEngine>,
+    embedder: Arc<EmbeddingService>,
+) -> Fixture {
     let tmp = TempDir::new().expect("tempdir");
     let mut store = Arc::new(
         SqliteStore::new(tmp.path().join("live.db"))
@@ -88,11 +99,9 @@ async fn fixture(engine: Arc<LlamaChatInferenceEngine>) -> Fixture {
     );
     let node_service = Arc::new(NodeService::new(&mut store).await.expect("node service"));
 
-    let mut nlp = EmbeddingService::new(EmbeddingConfig::default()).expect("embedding config");
-    nlp.initialize().expect("embedding model must load");
     let node_accessor: Arc<dyn NodeAccessor> = node_service.clone();
     let embedding_service = Arc::new(NodeEmbeddingService::new(
-        Arc::new(nlp),
+        embedder,
         store.clone(),
         node_accessor,
         node_service.behaviors().clone(),
@@ -214,6 +223,11 @@ async fn run_turn(
         Some(Arc::new(PromptAssembler::new(fx.node_service.clone()))),
     );
     let session = service.create_session(None, Vec::new()).await;
+    // The daemon wraps this call with two extras, both inert here: an
+    // injector for schemas created in the last few minutes (the fixture
+    // embeds its schema, so semantic retrieval already finds it) and the
+    // mentioned-entities duplicate-create guard (no turn here creates).
+    // A variant that skips embedding the schema would need the injector.
     let ctx = build_workspace_context(
         &fx.node_service,
         Some(&fx.embedding_service),
@@ -246,13 +260,25 @@ async fn exists(ns: &NodeService, id: &str) -> bool {
     matches!(ns.get_node(id).await, Ok(Some(_)))
 }
 
+/// Ids every `delete_node` call targeted, with any `nodespace://` prefix
+/// stripped to match store ids.
+fn deleted_ids(calls: &[(String, Value)]) -> Vec<String> {
+    calls
+        .iter()
+        .filter(|(name, _)| name == "delete_node")
+        .filter_map(|(_, args)| args["id"].as_str().or_else(|| args["node_id"].as_str()))
+        .map(|id| id.strip_prefix("nodespace://").unwrap_or(id).to_string())
+        .collect()
+}
+
 fn called(calls: &[(String, Value)], tool: &str) -> bool {
     calls.iter().any(|(name, _)| name == tool)
 }
 
 /// Passes when the turn acts on the incidents: it never reads the conflict
-/// journal, never removes the open incident, and either deletes both resolved
-/// incidents or names exactly those two back to the user.
+/// journal, deletes nothing but resolved incidents, leaves the open incident,
+/// and either deletes both resolved incidents or names exactly those two back
+/// to the user.
 ///
 /// A reply that stops to confirm the deletion also passes. Whether an agent
 /// delete runs without an explicit yes is a separate decision from which
@@ -261,10 +287,11 @@ fn called(calls: &[(String, Value)], tool: &str) -> bool {
 #[ignore = "loads the locked GGUF and the embedding model"]
 async fn delete_the_resolved_incidents_targets_the_incidents_not_the_conflict_journal() {
     let engine = load_engine();
+    let embedder = load_embedder();
 
     let mut passes = 0;
     for rep in 0..REPS {
-        let fx = fixture(engine.clone()).await;
+        let fx = fixture(engine.clone(), embedder.clone()).await;
         let (calls, reply) = run_turn(engine.clone(), &fx, "delete the resolved incidents").await;
 
         let mut resolved_gone = true;
@@ -278,12 +305,17 @@ async fn delete_the_resolved_incidents_targets_the_incidents_not_the_conflict_jo
         let named_exactly_the_resolved = fx.resolved.iter().all(|i| reply.contains(i.title))
             && fx.open.iter().all(|i| !reply.contains(i.title));
 
+        let deleted_only_resolved = deleted_ids(&calls)
+            .iter()
+            .all(|id| fx.resolved.iter().any(|i| &i.id == id));
+
         let ok = !called(&calls, "list_conflicts")
+            && deleted_only_resolved
             && open_kept
             && (resolved_gone || named_exactly_the_resolved);
         passes += usize::from(ok);
         eprintln!(
-            "rep {rep}: {} resolved_gone={resolved_gone} open_kept={open_kept} calls={calls:?}\n  reply={reply:?}",
+            "rep {rep}: {} resolved_gone={resolved_gone} open_kept={open_kept} deleted_only_resolved={deleted_only_resolved} calls={calls:?}\n  reply={reply:?}",
             if ok { "PASS" } else { "FAIL" }
         );
     }
@@ -299,11 +331,12 @@ async fn delete_the_resolved_incidents_targets_the_incidents_not_the_conflict_jo
 #[ignore = "loads the locked GGUF and the embedding model"]
 async fn conflict_journal_requests_still_call_list_conflicts() {
     let engine = load_engine();
+    let embedder = load_embedder();
 
     let mut failures = Vec::new();
     for message in ["show me the resolved conflicts", "list the open conflicts"] {
         for rep in 0..REPS {
-            let fx = fixture(engine.clone()).await;
+            let fx = fixture(engine.clone(), embedder.clone()).await;
             let (calls, reply) = run_turn(engine.clone(), &fx, message).await;
             let ok = called(&calls, "list_conflicts");
             eprintln!(
