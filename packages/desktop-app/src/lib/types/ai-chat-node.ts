@@ -118,6 +118,11 @@ export interface AiChatMessage {
    * reply to this message deletes them, against exactly these ids.
    */
   pendingDeletions?: AiChatPendingDeletion[];
+  /**
+   * How this assistant turn ended, when an agent turn produced it: it called a
+   * tool, asked a composed clarifying question, or replied in prose.
+   */
+  outcome?: 'acted' | 'clarified' | 'replied';
 }
 
 /**

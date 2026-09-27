@@ -1817,6 +1817,7 @@ fn def_route_clarify() -> ToolDefinition {
              completed as understood — e.g. a search returned more than one plausible match and \
              nothing already said picks one, the request's wording could mean more than one \
              thing, or none of the available tools can do what was asked. \
+             Any question for the user goes through this tool — never ask one in a plain reply. \
              Ends the turn with the question; do not call another tool in the same turn."
             .into(),
         parameters_schema: json!({

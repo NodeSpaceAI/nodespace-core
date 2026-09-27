@@ -10,6 +10,7 @@
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use nodespace_core::models::AiChatTurnOutcome;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -487,6 +488,25 @@ pub struct AgentSession {
     /// no workspace context.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub mentioned_entities: Vec<MentionedEntity>,
+
+    /// How each earlier turn of this conversation ended, oldest first.
+    ///
+    /// The record ADR-038's "at most one clarification per intent" contract
+    /// is enforced from: `messages` carries only each turn's text, which
+    /// cannot tell a prose question from an answer. The loop appends to it as
+    /// each turn ends; a caller that rebuilds the session from persisted
+    /// history seeds it from the outcomes persisted with those messages.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub prior_turns: Vec<PriorTurn>,
+}
+
+/// An earlier turn as the clarification contract sees it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PriorTurn {
+    /// How the turn ended.
+    pub outcome: AiChatTurnOutcome,
+    /// The reply the user saw — for a clarification, the question asked.
+    pub response: String,
 }
 
 /// An existing node named in the current message, as the entity-resolution
@@ -563,6 +583,31 @@ pub struct AgentTurnResult {
     /// (see #1930's scope note on `agent_loop::run_turn`).
     #[serde(default)]
     pub clarify: Option<ClarifyPrompt>,
+}
+
+impl AgentTurnResult {
+    /// How this turn ended, derived from what it did rather than what it said.
+    ///
+    /// A composed clarifying question wins over any tool call the turn made
+    /// on the way to it (a search that found two matches, then asked which).
+    /// A delete confirmation carries a question too, but it is the delete
+    /// resolving its target, not a clarification: it counts as acting. The
+    /// `route_clarify` call itself performs nothing and does not count as a
+    /// tool call.
+    pub fn outcome(&self) -> AiChatTurnOutcome {
+        match &self.clarify {
+            Some(c) if c.pending_deletions.is_empty() => AiChatTurnOutcome::Clarified,
+            Some(_) => AiChatTurnOutcome::Acted,
+            None if self
+                .tool_calls_made
+                .iter()
+                .any(|r| r.name != crate::local_agent::routing::ROUTE_CLARIFY_TOOL) =>
+            {
+                AiChatTurnOutcome::Acted
+            }
+            None => AiChatTurnOutcome::Replied,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

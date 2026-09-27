@@ -251,6 +251,7 @@ mod tests {
             question: None,
             options: Vec::new(),
             pending_deletions: Vec::new(),
+            outcome: None,
         });
 
         let mut props = node.properties.clone();
