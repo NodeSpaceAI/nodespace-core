@@ -11,7 +11,7 @@ mod tests {
     use crate::services::node_service::{CreateNodeParams, NodeService};
     use crate::services::query_service::{
         BoundSql, FilterOperator, FilterType, QueryDefinition, QueryFilter, QueryService,
-        RelationshipType, SortConfig, SortDirection,
+        RelationshipType, ResolvedRelationship, SortConfig, SortDirection,
     };
     use serde_json::json;
     use std::sync::Arc;
@@ -1887,6 +1887,84 @@ mod tests {
             "build_property_filter output must start with the exact expression \
              idx_task_status is built on, or the index won't cover this filter: {sql}"
         );
+    }
+
+    /// Regression test for a placeholder-renumbering bug found in code
+    /// review: `renumber_placeholders` corrupted a nested filter's bound
+    /// parameter positions when a repeated whole-string `str::replace`'s
+    /// OUTPUT for one placeholder happened to contain another, not-yet-
+    /// renumbered placeholder's literal text as a substring (e.g. offset 10:
+    /// `?2` -> `?12` written first, then the later `?1` -> `?11` replacement
+    /// also matched the `"?1"` prefix INSIDE the just-written `"?12"`,
+    /// corrupting it to `"?112"`). Reachable through an entirely ordinary
+    /// query shape — any `Related` filter that isn't the query's first
+    /// filter (giving it a nonzero offset) with a nested filter binding 2+
+    /// parameters (`FilterOperator::In` with multiple values). Verifies the
+    /// bound VALUES land at the right placeholder positions, not merely that
+    /// the query runs without error — the corruption was silent (a
+    /// misdirected bound value), not a SQL syntax failure.
+    #[tokio::test]
+    async fn test_related_filter_placeholder_renumbering_survives_a_double_digit_offset() {
+        let (query_service, _node_service, _temp) = create_test_services().await;
+
+        let nested_in_filter = QueryFilter {
+            filter_type: FilterType::Property,
+            operator: FilterOperator::In,
+            property: Some("status".to_string()),
+            value: Some(json!(["active", "planning"])),
+            ..Default::default()
+        };
+        let related_filter = QueryFilter {
+            filter_type: FilterType::Related,
+            operator: FilterOperator::Equals,
+            relationship_name: Some("project".to_string()),
+            filter: Some(Box::new(nested_in_filter)),
+            resolved_relationship: Some(ResolvedRelationship {
+                stored_type: "project".to_string(),
+                outer_is_in_node: true,
+                source_type: None,
+                related_type: Some("project".to_string()),
+            }),
+            ..Default::default()
+        };
+
+        // Nine placeholders already bound ahead of the Related filter, so
+        // its own nested params land at offset 9 -- reproducing the
+        // double-digit-offset collision the bug required.
+        let mut built = BoundSql::default();
+        for i in 0..9 {
+            built.bind(libsql::Value::Text(format!("prior-{i}")));
+        }
+
+        let condition = query_service
+            .build_related_filter("id", &related_filter, &mut built)
+            .unwrap();
+
+        assert!(
+            condition.contains("?11)"),
+            "expected the relationship_type placeholder to be ?11 (offset 9 + 2 nested params \
+             renumbered to ?10, ?11), got: {condition}"
+        );
+        assert!(
+            condition.contains("(?10, ?11)") || condition.contains("(?10,?11)"),
+            "expected the IN list's two nested placeholders to renumber to ?10 and ?11 \
+             (not e.g. a corrupted ?1010 or ?1011), got: {condition}"
+        );
+
+        // The values themselves must land at the positions the SQL text
+        // claims -- this is what the corruption actually broke, not the
+        // text shape alone.
+        assert_eq!(
+            built.params.len(),
+            12,
+            "9 prior + 2 nested + 1 relationship_type"
+        );
+        assert_eq!(built.params[9], libsql::Value::Text("active".to_string()));
+        assert_eq!(
+            built.params[10],
+            libsql::Value::Text("planning".to_string())
+        );
+        assert_eq!(built.params[11], libsql::Value::Text("project".to_string()));
     }
 
     // ========== count ==========

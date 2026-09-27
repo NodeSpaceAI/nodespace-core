@@ -352,44 +352,42 @@ impl BoundSql {
 /// the nested params to the outer list and recorded its length beforehand as
 /// `offset`.
 ///
-/// Text substitution rather than re-walking a parsed AST: [`BoundSql`]'s
-/// builders only ever emit a placeholder as the exact literal `?` followed by
-/// digits, never as part of a longer identifier (no column or string a
-/// builder emits contains a bare `?`), so matching that literal shape is
-/// unambiguous. Longer numbers are replaced first so `?10` is never matched
-/// as `?1` with a trailing `0`.
+/// A single left-to-right pass over the text, copying every non-placeholder
+/// byte verbatim and emitting `?(N + offset)` in place of each `?N` found —
+/// not a series of whole-string `str::replace` calls keyed by original
+/// number. That repeated-replace shape looks sound (descending order so
+/// `?10` isn't matched as `?1` followed by a stray `0`) but is not: replacing
+/// `?2` with, say, `?12` before `?1` has been replaced writes the literal
+/// text `"?12"` into the string, and the later, unrelated replacement of
+/// `?1` -> `?11` then matches the `"?1"` *inside* that already-written
+/// `"?12"` too, corrupting it to `"?112"`. A single forward pass has no such
+/// hazard: each placeholder is consumed exactly once, character by character,
+/// and the cursor never revisits text already emitted.
 fn renumber_placeholders(condition: &str, offset: usize) -> String {
     if offset == 0 {
         return condition.to_string();
     }
 
-    let mut numbers = Vec::new();
-    let bytes = condition.as_bytes();
+    let chars: Vec<char> = condition.chars().collect();
+    let mut result = String::with_capacity(condition.len());
     let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'?' {
+    while i < chars.len() {
+        if chars[i] == '?' {
             let start = i + 1;
             let mut end = start;
-            while end < bytes.len() && bytes[end].is_ascii_digit() {
+            while end < chars.len() && chars[end].is_ascii_digit() {
                 end += 1;
             }
             if end > start {
-                numbers.push(condition[start..end].parse::<usize>().unwrap());
+                let digits: String = chars[start..end].iter().collect();
+                let n: usize = digits.parse().unwrap();
+                result.push_str(&format!("?{}", n + offset));
                 i = end;
                 continue;
             }
         }
+        result.push(chars[i]);
         i += 1;
-    }
-    // Longest (numerically largest, since none are zero-padded) first, so
-    // replacing `?10` never leaves a dangling `0` behind from an earlier
-    // `?1` -> `?N` substitution.
-    numbers.sort_unstable_by(|a, b| b.cmp(a));
-    numbers.dedup();
-
-    let mut result = condition.to_string();
-    for n in numbers {
-        result = result.replace(&format!("?{n}"), &format!("?{}", n + offset));
     }
     result
 }
