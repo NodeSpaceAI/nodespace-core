@@ -62,6 +62,17 @@ describe('describeMergeRefusal', () => {
     expect(text).toContain('Move "Loser" to the top level first, then merge.');
     expect(text).not.toContain('keep');
   });
+
+  it('tells the user to lift the loser out for schema_not_root', () => {
+    const text = describeMergeRefusal(
+      { rule: 'schema_not_root', node_id: 's', related_ids: [], detail: '' },
+      's',
+      'l',
+      labelOf
+    );
+    expect(text).toContain('"Survivor" is a type definition');
+    expect(text).toContain('Move "Loser" to the top level first, then merge.');
+  });
 });
 
 describe('describeSurvivorPosition', () => {

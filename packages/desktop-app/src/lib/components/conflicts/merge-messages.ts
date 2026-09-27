@@ -57,6 +57,11 @@ export function describeMergeRefusal(
         `Can't merge: ${survivor} is a collection, and collections can't sit under a parent. ` +
         `Move ${loser} to the top level first, then merge.`
       );
+    case 'schema_not_root':
+      return (
+        `Can't merge: ${survivor} is a type definition, and types can't sit under a parent. ` +
+        `Move ${loser} to the top level first, then merge.`
+      );
   }
 }
 
