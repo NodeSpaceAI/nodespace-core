@@ -31,6 +31,11 @@ async fn test_service() -> Result<(Arc<NodeService>, TempDir)> {
     Ok((service, temp_dir))
 }
 
+/// A minimal bundle-level skill for the hand-built fixture playbooks below,
+/// which exercise re-keying rather than guidance content.
+const FIXTURE_OVERVIEW: &str =
+    "---\ntitle: \"Fixture Workspace\"\ndescription: \"A test playbook.\"\n---\n# Fixture\n";
+
 fn linear() -> MethodologyPlaybook {
     playbook_by_id("linear").expect("the linear playbook ships")
 }
@@ -310,7 +315,8 @@ async fn install_playbook_reports_every_step_created_in_a_clean_workspace() -> R
         + playbook.field_value_extensions.len()
         + playbook.plays.len()
         + playbook.skills.len()
-        + playbook.views.len();
+        + playbook.views.len()
+        + 1; // the bundle-level overview skill
     assert_eq!(report.steps.len(), expected, "one report row per step");
 
     for step in &report.steps {
@@ -505,6 +511,71 @@ async fn a_clean_install_leaves_the_guidance_unannotated() -> Result<()> {
     Ok(())
 }
 
+/// Installing a Playbook seeds a bundle-level skill naming what landed, so an
+/// agent in an installed workspace can learn which methodology it is running
+/// from the graph rather than from the install doc.
+#[tokio::test]
+async fn install_seeds_a_bundle_skill_naming_what_it_installed() -> Result<()> {
+    let (service, _tmp) = test_service().await?;
+    let playbook = linear();
+    let report = install_playbook(&service, &playbook).await;
+    assert!(report.success, "first failure: {:?}", report.failure());
+
+    // Each list item is its own node, so an exact match on a whole node
+    // lands only on the generated section — the authored prose also mentions
+    // `issue` and `cycle`, and a substring check would pass on that alone.
+    let guidance = seeded_guidance(&service, "Linear-style Workspace").await?;
+    let items: Vec<&str> = guidance.lines().collect();
+    let names = |expected: String| {
+        assert!(
+            items.contains(&expected.as_str()),
+            "overview must list {expected}:\n{guidance}"
+        );
+    };
+    for step in &playbook.schemas {
+        names(format!("`{}`", step.schema_id));
+    }
+    for play in &playbook.plays {
+        names(format!("{} (`{}`)", play.name, play.play_id));
+    }
+    for skill in &playbook.skills {
+        names(skill.title.clone());
+    }
+    for view in &playbook.views {
+        names(format!("{} (`{}`)", view.name, view.view_id));
+    }
+    Ok(())
+}
+
+/// The overview names the id a re-keyed schema actually landed under — the
+/// one thing a static install doc, written before any install, cannot know.
+#[tokio::test]
+async fn the_bundle_skill_names_a_re_keyed_schema_by_its_real_id() -> Result<()> {
+    let (service, _tmp) = test_service().await?;
+
+    handle_create_schema(
+        &service,
+        serde_json::json!({
+            "name": "Cycle",
+            "description": "A bicycle in the shed",
+            "fields": [{ "name": "colour", "type": "string", "protection": "user" }],
+        }),
+    )
+    .await
+    .expect("pre-existing schema");
+
+    let report = install_playbook(&service, &linear()).await;
+    assert!(report.success, "first failure: {:?}", report.failure());
+    let new_id = report.suffixed()[0].1.to_string();
+
+    let guidance = seeded_guidance(&service, "Linear-style Workspace").await?;
+    assert!(
+        guidance.contains(&format!("`{new_id}` — this Playbook's `cycle`, re-keyed")),
+        "overview must map `cycle` to {new_id}:\n{guidance}"
+    );
+    Ok(())
+}
+
 /// The flattened markdown body of the seeded skill whose title contains
 /// `title_fragment`.
 async fn seeded_guidance(service: &Arc<NodeService>, title_fragment: &str) -> Result<String> {
@@ -580,6 +651,7 @@ async fn a_later_schema_step_follows_an_earlier_step_s_re_key() -> Result<()> {
         field_value_extensions: vec![],
         plays: vec![],
         skills: vec![],
+        overview: FIXTURE_OVERVIEW,
         views: vec![],
     };
 
@@ -674,6 +746,7 @@ async fn a_field_named_like_a_re_keyed_schema_is_not_rewritten() -> Result<()> {
         field_value_extensions: vec![],
         plays: vec![],
         skills: vec![],
+        overview: FIXTURE_OVERVIEW,
         views: vec![],
     };
 
@@ -778,6 +851,7 @@ async fn a_vocabulary_extension_targets_the_field_the_playbook_wrote() -> Result
         }],
         plays: vec![],
         skills: vec![],
+        overview: FIXTURE_OVERVIEW,
         views: vec![],
     };
 

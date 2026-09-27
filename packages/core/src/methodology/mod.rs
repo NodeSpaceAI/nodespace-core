@@ -57,6 +57,18 @@ pub struct MethodologyPlaybook {
     /// `skills/<id>/` and loaded with [`skills::playbook_skill`] — see
     /// [`skills`] for the file format.
     pub skills: Vec<NodeTemplate>,
+    /// The bundle-level skill: what this Playbook is, the constraints that
+    /// come with it, and — appended at install time by
+    /// [`skills::playbook_overview_skill`] — the ids everything actually
+    /// landed under. The graph-resident answer to "what workflow is this
+    /// workspace using?", so an agent in an installed workspace never has to
+    /// reach for the install doc to find out.
+    ///
+    /// Markdown source in the same format as [`Self::skills`], titled
+    /// `<name> Workspace` — the title SKILL.md tells an agent to look for.
+    /// Kept apart from `skills` because its body depends on the install:
+    /// it is seeded last, once every id is known.
+    pub overview: &'static str,
     /// Saved views — pre-configured boards and lists — seeded as `query`
     /// nodes, so the install lands with something to look at rather than a
     /// type the user has to build a view over by hand. Installed last:

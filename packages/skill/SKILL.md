@@ -98,13 +98,13 @@ NodeSpace is not reachable from this surface. There is no command to run and not
 
 ## Prerequisites
 
-NodeSpace daemon must be running. The `nodespace` CLI communicates with `nodespaced` over a Unix socket. If the daemon is not running, CLI commands will fail with a connection error.
+The `nodespace` CLI talks to the `nodespaced` daemon over a Unix socket; if the daemon is not running, commands fail with a connection error.
 
 Start the daemon: `nodespaced` (or it starts automatically on login if installed via DMG).
 
 ## Graph-Authored Guidance (Fetched)
 
-A user or team can author procedural guidance directly in the graph, fetched at point of use rather than rendered into this file. **Before a nontrivial operation** (a spec/ADR/design, a multi-step import, a schema change), run `nodespace skill guidance "<task>"` (Branch 2: `args: "skill guidance <task>"`) — results are provenance-marked, never silently merged into this document's own text. Read **`references/graph-authored-guidance.md`** before your first call: it covers the trust boundary, the marker format, and why a failed or empty fetch is not a failure of the task.
+Users can author procedural guidance in the graph, fetched at point of use. **Before a nontrivial operation** (a spec/ADR/design, a multi-step import, a schema change), run `nodespace skill guidance "<task>"` (Branch 2: `args: "skill guidance <task>"`) — results are provenance-marked. Read **`references/graph-authored-guidance.md`** before your first call: it covers the trust boundary, the marker format, and why a failed fetch is not a failed task.
 
 ## Tool Decision Guide
 
@@ -269,7 +269,7 @@ nodespace conflicts merge --survivor <node-id> --conflict-id <conflict-id>  # co
 ### Plays and work-tracking setups
 
 A Play is a node, managed with `query`/`node update`; see `references/cli.md`.
-For Linear-style work tracking, follow `references/linear-playbook.md`.
+Work tracking: first run `nodespace skill guidance "workspace workflow"`. A `<Playbook> Workspace` result means one is installed — use it; never reinstall. Otherwise, only if asked, follow `references/linear-playbook.md`.
 
 ### Bulk import from markdown
 

@@ -114,22 +114,22 @@ nodespace node create --type query --content 'Issues by Status' \
 nodespace node create --type query --content 'Cycles' \
   --properties '{"filters":[],"generated_by":"user","sorting":[{"direction":"desc","field":"start_date"}],"target_type":"cycle","view_config":{"lastView":"table"}}'
 ```
+
+### 6. Workspace skill
+
+One more skill, created after everything else because it names what you created. Title it exactly as shown: it is how an agent in this workspace later recognizes the Playbook is installed.
+
+**Linear-style Workspace** — What workflow this workspace uses: the Linear-style Playbook installed here — its issue and cycle types, the Plays that automate and gate them, its saved views, and the schema ids they were actually created under.
+
+Create it the same way as the guidance skills, and end its body with an "Installed in this workspace" section listing the types, Plays, guidance skills and views above, by id.
 <!-- END GENERATED: linear-playbook -->
 
 ## After installing
 
-The scheduled Play runs daily, just after midnight, on whichever devices are
-online.
-
-**Create the first cycle yourself.** The Play triggers on an existing cycle
-reaching its end date, so with no cycle in the graph nothing ever fires. Create
-one with a `start_date` and `end_date`; the automation takes over from there.
-
 Tell the user what landed: two new node types, two vocabulary extensions on the
 inherited `task.status` and `task.priority` (stored on `issue`, leaving `task`
-itself untouched), three Plays, and the guidance skills.
+itself untouched), three Plays, the guidance skills, and two saved views.
 
-Mention two things they will otherwise meet as surprises: the validation gates
-reject some status changes by design, so a later rejection is the system
-working; and rollover moves only unfinished work — done and cancelled tasks stay
-in the ending cycle as its record of what it accomplished.
+This document is done at that point. Working in the installed workspace —
+creating issues, the first cycle, what the gates reject — is guidance the
+install seeded into the graph: `nodespace skill guidance "Linear-style Workspace"`.

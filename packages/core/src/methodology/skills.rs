@@ -55,6 +55,10 @@
 //! cross-schema narrative no per-schema description can — how types relate,
 //! what the Plays do, why a write was rejected.
 //!
+//! The one bundle-level skill ([`playbook_overview_skill`]) is narrow too, in
+//! its own way: it answers "what workflow is this workspace using?" and points
+//! at the task-scoped skills rather than restating them.
+//!
 //! The built-in skills in `nodespace-agent`'s `skill_pipeline` stay in Rust
 //! because they interpolate shared rule constants; Playbook skills are static
 //! prose and have no such reason.
@@ -84,6 +88,90 @@ pub fn playbook_skill(source: &str) -> NodeTemplate {
             ),
             body,
         )
+    }
+}
+
+/// What an install created, under the ids it actually used.
+///
+/// Every id here is the one that landed, which differs from the Playbook's
+/// own when a collision re-keyed it. Pairs are `(what the Playbook calls it,
+/// id in this workspace)`: the requested schema id, a Play's name, a view's
+/// name.
+#[derive(Debug, Default)]
+pub struct InstalledIds {
+    pub schemas: Vec<(String, String)>,
+    pub plays: Vec<(String, String)>,
+    pub skills: Vec<String>,
+    pub views: Vec<(String, String)>,
+}
+
+/// Build a Playbook's bundle-level skill (see
+/// [`crate::methodology::MethodologyPlaybook::overview`]) with an
+/// "Installed in this workspace" section naming what `installed` records.
+///
+/// The section is written for every install, not only a re-keyed one: the
+/// point is that the answer comes from what happened here, not from what the
+/// Playbook would have done in an empty graph.
+///
+/// # Panics
+///
+/// As [`playbook_skill`], if the source's frontmatter is malformed.
+pub fn playbook_overview_skill(source: &str, installed: &InstalledIds) -> NodeTemplate {
+    let mut template = playbook_skill(source);
+    template
+        .markdown_content
+        .push_str(&render_installed(installed));
+    template
+}
+
+fn render_installed(installed: &InstalledIds) -> String {
+    let mut out = String::from("\n## Installed in this workspace\n");
+
+    let types = installed.schemas.iter().map(|(requested, actual)| {
+        if requested == actual {
+            format!("`{actual}`")
+        } else {
+            format!(
+                "`{actual}` — this Playbook's `{requested}`, re-keyed because `{requested}` \
+                 already existed. Use `{actual}` wherever the guidance says `{requested}`."
+            )
+        }
+    });
+    push_list(&mut out, "Types", types);
+    push_list(
+        &mut out,
+        "Plays",
+        installed
+            .plays
+            .iter()
+            .map(|(name, id)| format!("{name} (`{id}`)")),
+    );
+    push_list(
+        &mut out,
+        "Guidance skills",
+        installed.skills.iter().cloned(),
+    );
+    push_list(
+        &mut out,
+        "Saved views",
+        installed
+            .views
+            .iter()
+            .map(|(name, id)| format!("{name} (`{id}`)")),
+    );
+
+    out
+}
+
+/// Append `label` and a bullet per item, or nothing when there are no items.
+fn push_list(out: &mut String, label: &str, items: impl Iterator<Item = String>) {
+    let mut items = items.peekable();
+    if items.peek().is_none() {
+        return;
+    }
+    out.push_str(&format!("\n{label}:\n\n"));
+    for item in items {
+        out.push_str(&format!("- {item}\n"));
     }
 }
 
@@ -134,6 +222,41 @@ mod tests {
     fn splits_frontmatter_from_body_verbatim() {
         let src = "---\ntitle: \"T\"\ndescription: \"a: b\"\n---\n# T\n\n---\nbody\n";
         assert_eq!(parse(src), Ok(("T", "a: b", "# T\n\n---\nbody\n")));
+    }
+
+    #[test]
+    fn the_installed_section_names_the_ids_that_landed() {
+        let installed = InstalledIds {
+            schemas: vec![
+                ("issue".into(), "issue".into()),
+                ("cycle".into(), "cycle__2".into()),
+            ],
+            plays: vec![("Gate".into(), "gate__2".into())],
+            skills: vec!["Creating an Issue".into()],
+            views: vec![("Board".into(), "board".into())],
+        };
+        let section = render_installed(&installed);
+
+        assert!(section.contains("- `issue`\n"), "{section}");
+        assert!(
+            section.contains("`cycle__2` — this Playbook's `cycle`"),
+            "{section}"
+        );
+        assert!(section.contains("- Gate (`gate__2`)"), "{section}");
+        assert!(section.contains("- Creating an Issue"), "{section}");
+        assert!(section.contains("- Board (`board`)"), "{section}");
+    }
+
+    #[test]
+    fn an_empty_category_is_omitted_rather_than_left_as_a_bare_label() {
+        let installed = InstalledIds {
+            schemas: vec![("widget".into(), "widget".into())],
+            ..Default::default()
+        };
+        let section = render_installed(&installed);
+        assert!(section.contains("Types:"), "{section}");
+        assert!(!section.contains("Plays:"), "{section}");
+        assert!(!section.contains("Saved views:"), "{section}");
     }
 
     #[test]
