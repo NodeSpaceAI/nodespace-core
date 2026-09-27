@@ -2658,16 +2658,7 @@ impl NodeService {
             // Validate object-shaped fields structurally: a field declared
             // `object` must hold a JSON object, and a field declared `array`
             // with `item_type: "object"` must hold an array whose every
-            // element is a JSON object. This is deliberately scoped to the
-            // `object` shape only — not every declared `field_type` (string,
-            // number, boolean, date) — because that is the specific,
-            // concretely-declared gap (core_schemas.rs declares `object`
-            // fields and object-item arrays with no enforcement at all), and
-            // a survey of every writer against every declared type is a much
-            // larger, separately-scoped effort. Widening further risks
-            // repeating the `ai-chat.status` incident, where enabling
-            // enum validation broke 16 daemon tests because the schema and
-            // the writers had already drifted apart.
+            // element is a JSON object.
             //
             // Deliberately NOT recursive: a nested `object` field declared via
             // `fields`/`item_fields` (e.g. `ai-chat.messages[].args`, which
@@ -2716,7 +2707,42 @@ impl NodeService {
                 }
             }
 
-            // Future: Add more type validation (number ranges, string formats, etc.)
+            // Validate scalar fields: `number` holds a JSON number, `boolean`
+            // a JSON bool, `date` an ISO-8601 date or RFC 3339 date-time
+            // string, and `datetime` an RFC 3339 date-time string. Sorting,
+            // `gt`/`lt` query filters and the CEL date functions all trust
+            // the declared type, so a value that doesn't match it is rejected
+            // here rather than misread later. Null clears a field, as it does
+            // for `object`.
+            if let Some(value) = field_value.filter(|v| !v.is_null()) {
+                let check = match field.field_type.as_str() {
+                    "number" => Some((value.is_number(), "")),
+                    "boolean" => Some((value.is_boolean(), "")),
+                    "date" => Some((
+                        value
+                            .as_str()
+                            .is_some_and(crate::schema::is_iso_date_or_datetime),
+                        " (a YYYY-MM-DD date or RFC 3339 date-time string)",
+                    )),
+                    "datetime" => Some((
+                        value
+                            .as_str()
+                            .is_some_and(crate::schema::is_rfc3339_datetime),
+                        " (an RFC 3339 date-time string)",
+                    )),
+                    _ => None,
+                };
+                if let Some((false, expected)) = check {
+                    let received = match value.as_str() {
+                        Some(s) => format!("the string '{}'", s),
+                        None => crate::schema::json_type_name(value).to_string(),
+                    };
+                    return Err(NodeServiceError::invalid_update(format!(
+                        "Field '{}' is declared as type '{}'{} but received {}",
+                        field.name, field.field_type, expected, received
+                    )));
+                }
+            }
         }
 
         Ok(())

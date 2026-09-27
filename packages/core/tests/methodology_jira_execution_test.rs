@@ -183,11 +183,8 @@ impl Harness {
 // Types
 // ---------------------------------------------------------------------------
 
-/// Each issue type is its own node type carrying its own fields.
-///
-/// Of the fields' declared types only `enum` is enforced on write — schema
-/// validation checks enums and object shapes, not numbers or dates — so that
-/// is the one rejection asserted here.
+/// Each issue type is its own node type carrying its own fields, and each
+/// field's declared type is enforced on write.
 #[tokio::test]
 async fn issue_types_carry_their_own_validated_fields() -> Result<()> {
     let h = Harness::start().await?;
@@ -215,6 +212,18 @@ async fn issue_types_carry_their_own_validated_fields() -> Result<()> {
             .await
             .is_err(),
         "severity is an enum"
+    );
+    assert!(
+        h.try_create("story", json!({ "story_points": "large" }))
+            .await
+            .is_err(),
+        "story_points is a number"
+    );
+    assert!(
+        h.try_create("epic", json!({ "target_date": "next spring" }))
+            .await
+            .is_err(),
+        "target_date is a date"
     );
 
     h.stop().await;

@@ -1673,6 +1673,25 @@ fn describe_missing_reverse_fields(relationships: &Value) -> Result<(), Markdown
     Ok(())
 }
 
+/// Whether `s` is one of the two date shapes a `date` field accepts: a bare
+/// ISO-8601 calendar date (`2026-03-01`) or an RFC 3339 date-time
+/// (`2026-03-01T09:30:00Z`). These are the shapes the CEL date functions
+/// (`days_since`, `days_until`, `add_days`) parse.
+///
+/// The bare date must be zero-padded. chrono's `%Y-%m-%d` also parses
+/// `2026-3-1`, but sorting and `gt`/`lt` filters compare date strings
+/// lexically, where `2026-3-1` sorts after `2026-12-01`.
+pub(crate) fn is_iso_date_or_datetime(s: &str) -> bool {
+    (s.len() == 10 && chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").is_ok())
+        || is_rfc3339_datetime(s)
+}
+
+/// Whether `s` is an RFC 3339 date-time (`2026-03-01T09:30:00Z`), the shape a
+/// `datetime` field accepts.
+pub(crate) fn is_rfc3339_datetime(s: &str) -> bool {
+    chrono::DateTime::parse_from_rfc3339(s).is_ok()
+}
+
 /// Name of a JSON value's type, for error messages.
 pub(crate) fn json_type_name(v: &Value) -> &'static str {
     match v {

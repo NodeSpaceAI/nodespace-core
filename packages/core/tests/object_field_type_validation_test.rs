@@ -2,14 +2,12 @@
 //! declared `object` (or an `array` whose `itemType` is `object`) accepted any
 //! JSON shape and stored it as-is, with no error and no warning.
 //!
-//! Scope, deliberately narrow: this closes the `object`-shape gap only —
-//! structural validation that a field declared `object` holds a JSON object,
-//! and that an `array` field declared `itemType: "object"` holds an array of
-//! JSON objects. It does NOT validate every declared `field_type` (string,
-//! number, boolean, date), and it does NOT recurse into a declared `object`
-//! field's own `fields`/`item_fields` sub-schema — both are out of scope for
-//! this fix; see the doc comment on the validation itself in
-//! `packages/core/src/services/node_service/crud.rs` for the full reasoning.
+//! This covers the `object` shape: a field declared `object` holds a JSON
+//! object, and an `array` field declared `itemType: "object"` holds an array
+//! of JSON objects. It does NOT recurse into a declared `object` field's own
+//! `fields`/`item_fields` sub-schema; see the comment on the validation itself
+//! in `packages/core/src/services/node_service/crud.rs`. Scalar types are
+//! covered by `scalar_field_type_validation_test.rs`.
 //!
 //! A survey of every writer of a declared `object`/`array<object>` field in
 //! `core_schemas.rs` (`ai-chat.messages`, `query.filters`, `query.sorting`)
