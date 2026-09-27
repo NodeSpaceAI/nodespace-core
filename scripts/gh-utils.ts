@@ -124,7 +124,7 @@ class NodeSpaceGitHubManager {
   async viewIssue(issueNumber: number, web: boolean = false) {
     try {
       if (web) {
-        console.log(`🌐 View issue #${issueNumber} at: https://github.com/malibio/nodespace-core/issues/${issueNumber}`);
+        console.log(`🌐 View issue #${issueNumber} at: https://github.com/NodeSpaceAI/nodespace-core/issues/${issueNumber}`);
         return;
       }
       

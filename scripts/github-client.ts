@@ -58,13 +58,9 @@ interface GitHubIssue {
 export class GitHubClient {
   private octokit: Octokit;
   
-  // Project configuration from docs/architecture/development/process/issue-workflow.md
-  private readonly owner = "malibio";
+  // The NodeSpaceAI organization owns both the repo and the ProjectV2 board.
+  private readonly owner = "NodeSpaceAI";
   private readonly repo = "nodespace-core";
-  // The ProjectV2 board is owned by the NodeSpaceAI organization, not the
-  // `owner` user login above (that one is only used for REST issue/PR calls
-  // against the repo, which still resolves via GitHub's rename redirect).
-  private readonly projectOwner = "NodeSpaceAI";
   private readonly projectNumber = 2;
   private readonly projectId = "PVT_kwDODxjmQM4BUxjb";
   private readonly statusFieldId = "PVTSSF_lADODxjmQM4BUxjbzhDzQv0";
@@ -210,7 +206,7 @@ export class GitHubClient {
       `;
 
       const response: ProjectItemsQueryResponse = await this.octokit.graphql<ProjectItemsQueryResponse>(query, {
-        owner: this.projectOwner,
+        owner: this.owner,
         projectNumber: this.projectNumber,
         cursor,
       });

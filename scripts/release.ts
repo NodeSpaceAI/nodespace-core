@@ -14,7 +14,7 @@
 import { readFileSync, writeFileSync } from "fs";
 import path from "path";
 
-const OWNER = "malibio";
+const OWNER = "NodeSpaceAI";
 const REPO = "nodespace-core";
 
 interface ReleaseConfig {

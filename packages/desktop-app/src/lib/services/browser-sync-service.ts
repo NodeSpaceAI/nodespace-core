@@ -91,8 +91,6 @@ type ConnectionState = 'disconnected' | 'connecting' | 'connected';
  * 2. Add sequence numbers to verify event ordering
  * 3. Buffer events and deliver in correct order
  * 4. Add cache to detect missing nodes and delay edge processing
- *
- * See: https://github.com/malibio/nodespace-core/issues/643
  */
 class BrowserSyncService {
   private eventSource: EventSource | null = null;
