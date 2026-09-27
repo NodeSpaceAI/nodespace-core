@@ -63,7 +63,9 @@ impl StreamingTaskRegistry {
     }
 
     /// Drop a session's entry without cancelling it — for a reader task that
-    /// has already exited on its own.
+    /// has already exited on its own. Removing by id alone is safe because the
+    /// daemon issues a fresh id per launch, so this never drops another
+    /// reader's token.
     pub fn remove(&self, session_id: &str) {
         if let Ok(mut map) = self.tokens.lock() {
             map.remove(session_id);
