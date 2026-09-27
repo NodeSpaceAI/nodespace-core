@@ -960,6 +960,59 @@ fn reject_reserved_relationship_removal_names(names: &[String]) -> Result<(), Ma
     Ok(())
 }
 
+/// Reject a `remove_relationships` name the schema does not declare itself.
+///
+/// Removal edits only the schema's own declarations, so any other name used
+/// to remove nothing and report `relationships_removed: 0` with no reason. An
+/// inherited name is the likely case: a schema's definition lists what it
+/// inherits (ADR-078) alongside what it declares. That relationship belongs
+/// to an ancestor, and the error names it so the caller can target the
+/// schema that actually declares it.
+async fn reject_undeclared_relationship_removals(
+    node_service: &NodeService,
+    schema_id: &str,
+    names: &[String],
+) -> Result<(), MarkdownError> {
+    let (merged, owners) = node_service
+        .resolve_relationships(schema_id)
+        .await
+        .map_err(|e| {
+            MarkdownError::internal_error(format!(
+                "Failed to resolve relationships for schema '{schema_id}': {e}"
+            ))
+        })?;
+    for name in names {
+        match owners.get(name) {
+            Some(owner) if owner == schema_id => {}
+            Some(owner) => {
+                return Err(MarkdownError::invalid_params(format!(
+                    "Relationship '{name}' is inherited by '{schema_id}' from '{owner}', not \
+                     declared on '{schema_id}' itself, so it cannot be removed here. Remove it \
+                     from '{owner}' instead — that removes it from every schema extending \
+                     '{owner}'."
+                )));
+            }
+            None => {
+                let own: Vec<&str> = merged
+                    .iter()
+                    .filter(|r| owners.get(&r.name).is_some_and(|o| o == schema_id))
+                    .map(|r| r.name.as_str())
+                    .collect();
+                let listed = if own.is_empty() {
+                    "none".to_string()
+                } else {
+                    own.join(", ")
+                };
+                return Err(MarkdownError::invalid_params(format!(
+                    "Schema '{schema_id}' declares no relationship named '{name}', so there is \
+                     nothing to remove. Relationships it declares itself: {listed}."
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Snapshot of every schema's `extends` edge, for chain walking.
 ///
 /// Resolution needs a [`ParentLookup`](extends_chain::ParentLookup) that can
@@ -2286,6 +2339,13 @@ pub async fn handle_update_schema(
         .ok_or_else(|| {
             MarkdownError::invalid_params(format!("Schema '{}' not found", params.schema_id))
         })?;
+
+    // Before any mutation, like the reserved-name check above: a name this
+    // schema does not declare itself would otherwise remove nothing, silently.
+    if let Some(ref remove_names) = params.remove_relationships {
+        reject_undeclared_relationship_removals(node_service, &params.schema_id, remove_names)
+            .await?;
+    }
 
     // Validate renames before executing any mutations (including the play guard below)
     if let Some(ref renames) = params.rename_fields {

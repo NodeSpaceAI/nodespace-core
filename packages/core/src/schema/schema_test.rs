@@ -5476,6 +5476,95 @@ async fn test_remove_relationships_rejects_a_builtin_structural_name() {
     );
 }
 
+/// `ticket` declares `widgets`; `bug` extends it and declares `owner` itself.
+async fn ticket_and_bug_with_relationships(svc: &Arc<NodeService>) {
+    handle_create_schema(svc, json!({ "name": "Widget", "fields": [] }))
+        .await
+        .expect("widget schema should be created");
+    handle_create_schema(
+        svc,
+        json!({
+            "name": "Ticket",
+            "fields": [],
+            "relationships": [widget_relationship("widgets", "widget", "tickets")]
+        }),
+    )
+    .await
+    .expect("ticket schema should be created");
+    handle_create_schema(
+        svc,
+        json!({
+            "name": "Bug",
+            "extends": "ticket",
+            "fields": [],
+            "relationships": [widget_relationship("owner", "widget", "owned_bugs")]
+        }),
+    )
+    .await
+    .expect("bug extends ticket should succeed");
+}
+
+#[tokio::test]
+async fn test_remove_relationships_rejects_an_inherited_name_naming_its_owner() {
+    let (svc, _tmp) = create_test_service().await;
+    ticket_and_bug_with_relationships(&svc).await;
+
+    // A schema's definition lists inherited relationships, so this is the
+    // removal an agent actually attempts; it used to remove nothing, silently.
+    let err = handle_update_schema(
+        &svc,
+        json!({ "schema_id": "bug", "remove_relationships": ["widgets"] }),
+    )
+    .await
+    .expect_err("removing an inherited relationship from the child must be rejected");
+    let msg = format!("{err:?}");
+    assert!(
+        msg.contains("widgets") && msg.contains("inherited") && msg.contains("ticket"),
+        "error should say the relationship is inherited and name the declaring schema: {msg}"
+    );
+
+    let ticket = svc.get_schema_node("ticket").await.unwrap().unwrap();
+    assert!(
+        ticket.relationships.iter().any(|r| r.name == "widgets"),
+        "the ancestor's declaration must be untouched"
+    );
+}
+
+#[tokio::test]
+async fn test_remove_relationships_rejects_an_undeclared_name_listing_own_names() {
+    let (svc, _tmp) = create_test_service().await;
+    ticket_and_bug_with_relationships(&svc).await;
+
+    let err = handle_update_schema(
+        &svc,
+        json!({ "schema_id": "bug", "remove_relationships": ["ownr"] }),
+    )
+    .await
+    .expect_err("removing an undeclared relationship must be rejected");
+    let msg = format!("{err:?}");
+    assert!(
+        msg.contains("ownr") && msg.contains("owner") && !msg.contains("widgets"),
+        "error should name the missing relationship and list only the schema's own: {msg}"
+    );
+}
+
+#[tokio::test]
+async fn test_remove_relationships_still_removes_an_own_declaration() {
+    let (svc, _tmp) = create_test_service().await;
+    ticket_and_bug_with_relationships(&svc).await;
+
+    let result = handle_update_schema(
+        &svc,
+        json!({ "schema_id": "bug", "remove_relationships": ["owner"] }),
+    )
+    .await
+    .expect("removing an own relationship must succeed");
+    assert_eq!(result["relationshipsRemoved"], json!(1), "{result}");
+
+    let bug = svc.get_schema_node("bug").await.unwrap().unwrap();
+    assert!(!bug.relationships.iter().any(|r| r.name == "owner"));
+}
+
 // ============================================================================
 // ADR-078 write-time collision enforcement: cross-domain (field vs.
 // relationship) redeclaration
