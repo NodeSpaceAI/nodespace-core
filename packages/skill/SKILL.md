@@ -269,7 +269,7 @@ nodespace conflicts merge --survivor <node-id> --conflict-id <conflict-id>  # co
 ### Plays and work-tracking setups
 
 A Play is a node, managed with `query`/`node update`; see `references/cli.md`.
-For Linear-style work tracking, follow `references/linear-playbook.md`.
+Work tracking: first run `nodespace skill guidance "what workflow does this workspace use"`. A `<Playbook> Workspace` result (e.g. `Linear-style Workspace`) means one is installed — work from it; never reinstall. None, and asked for Linear-style tracking? Follow `references/linear-playbook.md`.
 
 ### Bulk import from markdown
 

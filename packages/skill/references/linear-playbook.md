@@ -95,6 +95,8 @@ Skill nodes carrying usage guidance, discovered through the ordinary skill-searc
 
 **Issue Validation Rules** — Why a status change on an issue was rejected: the sub-issue completion gate and the blocker gate, what each checks, and how to proceed when one fires.
 
+**Linear-style Workspace** — What workflow this workspace uses: the Linear-style Playbook installed here — its issue and cycle types, the Plays that automate and gate them, its saved views, and the schema ids they were actually created under. Seeded last, and titled exactly so: it is how an agent in this workspace later recognizes the Playbook is installed. End its body with an "Installed in this workspace" section listing the types, Plays, guidance skills and views you created, by id.
+
 Create each with `nodespace node create --type skill`, then add its guidance as markdown children. The bodies are long-form prose; read them from `packages/core/src/methodology/skills/linear/` rather than reproducing them here.
 
 ### 5. Saved views
@@ -118,18 +120,10 @@ nodespace node create --type query --content 'Cycles' \
 
 ## After installing
 
-The scheduled Play runs daily, just after midnight, on whichever devices are
-online.
-
-**Create the first cycle yourself.** The Play triggers on an existing cycle
-reaching its end date, so with no cycle in the graph nothing ever fires. Create
-one with a `start_date` and `end_date`; the automation takes over from there.
-
 Tell the user what landed: two new node types, two vocabulary extensions on the
 inherited `task.status` and `task.priority` (stored on `issue`, leaving `task`
-itself untouched), three Plays, and the guidance skills.
+itself untouched), three Plays, the guidance skills, and two saved views.
 
-Mention two things they will otherwise meet as surprises: the validation gates
-reject some status changes by design, so a later rejection is the system
-working; and rollover moves only unfinished work — done and cancelled tasks stay
-in the ending cycle as its record of what it accomplished.
+This document is done at that point. Working in the installed workspace —
+creating issues, the first cycle, what the gates reject — is guidance the
+install seeded into the graph: `nodespace skill guidance "Linear-style Workspace"`.

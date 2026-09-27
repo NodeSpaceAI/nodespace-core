@@ -71,6 +71,7 @@ pub fn playbook() -> MethodologyPlaybook {
             playbook_skill(include_str!("skills/linear/working-with-cycles.md")),
             playbook_skill(include_str!("skills/linear/issue-validation-rules.md")),
         ],
+        overview: include_str!("skills/linear/linear-style-workspace.md"),
         views: vec![issues_by_status_view(), cycles_view()],
     }
 }
@@ -737,6 +738,20 @@ mod tests {
             // ADR-057: guidance children are ordinary markdown nodes.
             assert!(s.child_node_type.is_none());
         }
+    }
+
+    /// SKILL.md tells an agent to recognise an installed Playbook by a skill
+    /// titled `<name> Workspace`. A retitled overview silently breaks that
+    /// routing, sending agents in installed workspaces back to the install doc.
+    #[test]
+    fn overview_is_titled_as_skill_md_routes_on() {
+        let pb = playbook();
+        let overview = crate::methodology::skills::playbook_overview_skill(
+            pb.overview,
+            &crate::methodology::skills::InstalledIds::default(),
+        );
+        assert_eq!(overview.title, format!("{} Workspace", pb.name));
+        assert!(matches!(overview.tier, SeedTier::Starter));
     }
 
     /// Playbook content is opt-in, so it must not be seeded at startup with the

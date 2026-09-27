@@ -17,7 +17,8 @@
 //! installed set stays internally consistent rather than half-pointing at a
 //! stranger's schema.
 
-use crate::markdown::{prepare_nodes_from_template, MarkdownError};
+use crate::markdown::{prepare_nodes_from_template, MarkdownError, NodeTemplate};
+use crate::methodology::skills::{playbook_overview_skill, InstalledIds};
 use crate::methodology::{InstallReport, MethodologyPlaybook, StepOutcome, StepReport, ViewStep};
 use crate::models::Node;
 use crate::schema::{handle_create_schema, handle_update_schema};
@@ -35,10 +36,11 @@ const MAX_SUFFIX_ATTEMPTS: u32 = 16;
 /// Install `playbook` into the graph.
 ///
 /// Steps run in the playbook's declared order — schemas, then vocabulary
-/// extensions, then Plays, then skills, then saved views — because each tier
-/// depends on the ones before it. A Play whose trigger names a type is rejected by
+/// extensions, then Plays, then skills, then saved views, then the bundle-level
+/// overview skill — because each tier depends on the ones before it. A Play whose trigger names a type is rejected by
 /// `validate_play_rules` until that type's schema exists, so the order is
-/// enforced by the write path rather than merely conventional.
+/// enforced by the write path rather than merely conventional. The overview
+/// comes last because it names the ids every earlier step landed under.
 ///
 /// Stops at the first failure. Later steps are reported as
 /// [`StepOutcome::Skipped`] rather than attempted, since a playbook missing its
@@ -49,6 +51,7 @@ pub async fn install_playbook(
 ) -> InstallReport {
     let mut steps: Vec<StepReport> = Vec::new();
     let mut renames: HashMap<String, String> = HashMap::new();
+    let mut installed = InstalledIds::default();
     let mut failed = false;
 
     for step in &playbook.schemas {
@@ -64,6 +67,11 @@ pub async fn install_playbook(
         let outcome = create_schema_resolving_collisions(node_service, step, &renames).await;
         if let StepOutcome::Suffixed { created, .. } = &outcome {
             renames.insert(step.schema_id.to_string(), created.clone());
+        }
+        if let Some(id) = landed_id(&outcome) {
+            installed
+                .schemas
+                .push((step.schema_id.to_string(), id.to_string()));
         }
         failed |= matches!(outcome, StepOutcome::Failed { .. });
         steps.push(StepReport { label, outcome });
@@ -105,6 +113,11 @@ pub async fn install_playbook(
             properties,
         )
         .await;
+        if let Some(id) = landed_id(&outcome) {
+            installed
+                .plays
+                .push((play.name.to_string(), id.to_string()));
+        }
         failed |= matches!(outcome, StepOutcome::Failed { .. });
         steps.push(StepReport { label, outcome });
     }
@@ -131,19 +144,10 @@ pub async fn install_playbook(
             None => std::borrow::Cow::Borrowed(template),
         };
 
-        let outcome = match prepare_nodes_from_template(&template) {
-            Ok(nodes) => match node_service.seed_nodes_from_templates(vec![nodes]).await {
-                Ok(_) => StepOutcome::Created {
-                    id: template.title.clone(),
-                },
-                Err(e) => StepOutcome::Failed {
-                    message: e.to_string(),
-                },
-            },
-            Err(e) => StepOutcome::Failed {
-                message: format!("{e}"),
-            },
-        };
+        let outcome = seed_skill(node_service, &template).await;
+        if landed_id(&outcome).is_some() {
+            installed.skills.push(template.title.clone());
+        }
         failed |= matches!(outcome, StepOutcome::Failed { .. });
         steps.push(StepReport { label, outcome });
     }
@@ -169,6 +173,21 @@ pub async fn install_playbook(
             properties,
         )
         .await;
+        if let Some(id) = landed_id(&outcome) {
+            installed
+                .views
+                .push((view.name.to_string(), id.to_string()));
+        }
+        failed |= matches!(outcome, StepOutcome::Failed { .. });
+        steps.push(StepReport { label, outcome });
+    }
+
+    let overview = playbook_overview_skill(playbook.overview, &installed);
+    let label = format!("Seed skill: {}", overview.title);
+    if failed {
+        steps.push(StepReport::skipped(label));
+    } else {
+        let outcome = seed_skill(node_service, &overview).await;
         failed |= matches!(outcome, StepOutcome::Failed { .. });
         steps.push(StepReport { label, outcome });
     }
@@ -177,6 +196,32 @@ pub async fn install_playbook(
         playbook_id: playbook.id.to_string(),
         success: !failed,
         steps,
+    }
+}
+
+/// The id a step's target landed under, or `None` if it did not land.
+fn landed_id(outcome: &StepOutcome) -> Option<&str> {
+    match outcome {
+        StepOutcome::Created { id } => Some(id),
+        StepOutcome::Suffixed { created, .. } => Some(created),
+        StepOutcome::Skipped | StepOutcome::Failed { .. } => None,
+    }
+}
+
+/// Seed one skill template, reporting it under its title.
+async fn seed_skill(node_service: &Arc<NodeService>, template: &NodeTemplate) -> StepOutcome {
+    match prepare_nodes_from_template(template) {
+        Ok(nodes) => match node_service.seed_nodes_from_templates(vec![nodes]).await {
+            Ok(_) => StepOutcome::Created {
+                id: template.title.clone(),
+            },
+            Err(e) => StepOutcome::Failed {
+                message: e.to_string(),
+            },
+        },
+        Err(e) => StepOutcome::Failed {
+            message: format!("{e}"),
+        },
     }
 }
 

@@ -55,6 +55,10 @@
 //! cross-schema narrative no per-schema description can — how types relate,
 //! what the Plays do, why a write was rejected.
 //!
+//! The one bundle-level skill ([`playbook_overview_skill`]) is narrow too, in
+//! its own way: it answers "what workflow is this workspace using?" and points
+//! at the task-scoped skills rather than restating them.
+//!
 //! The built-in skills in `nodespace-agent`'s `skill_pipeline` stay in Rust
 //! because they interpolate shared rule constants; Playbook skills are static
 //! prose and have no such reason.
@@ -85,6 +89,73 @@ pub fn playbook_skill(source: &str) -> NodeTemplate {
             body,
         )
     }
+}
+
+/// What an install created, under the ids it actually used.
+///
+/// Every id here is the one that landed, which differs from the Playbook's
+/// own when a collision re-keyed it. Pairs are `(what the Playbook calls it,
+/// id in this workspace)`: the requested schema id, a Play's name, a view's
+/// name.
+#[derive(Debug, Default)]
+pub struct InstalledIds {
+    pub schemas: Vec<(String, String)>,
+    pub plays: Vec<(String, String)>,
+    pub skills: Vec<String>,
+    pub views: Vec<(String, String)>,
+}
+
+/// Build a Playbook's bundle-level skill (see
+/// [`crate::methodology::MethodologyPlaybook::overview`]) with an
+/// "Installed in this workspace" section naming what `installed` records.
+///
+/// The section is written for every install, not only a re-keyed one: the
+/// point is that the answer comes from what happened here, not from what the
+/// Playbook would have done in an empty graph.
+///
+/// # Panics
+///
+/// As [`playbook_skill`], if the source's frontmatter is malformed.
+pub fn playbook_overview_skill(source: &str, installed: &InstalledIds) -> NodeTemplate {
+    let mut template = playbook_skill(source);
+    template
+        .markdown_content
+        .push_str(&render_installed(installed));
+    template
+}
+
+fn render_installed(installed: &InstalledIds) -> String {
+    let mut out = String::from("\n## Installed in this workspace\n\n");
+
+    out.push_str("Types:\n\n");
+    for (requested, actual) in &installed.schemas {
+        if requested == actual {
+            out.push_str(&format!("- `{actual}`\n"));
+        } else {
+            out.push_str(&format!(
+                "- `{actual}` — this Playbook's `{requested}`, re-keyed because `{requested}` \
+                 already belonged to something unrelated. Use `{actual}` wherever the \
+                 guidance says `{requested}`.\n"
+            ));
+        }
+    }
+
+    out.push_str("\nPlays:\n\n");
+    for (name, id) in &installed.plays {
+        out.push_str(&format!("- {name} (`{id}`)\n"));
+    }
+
+    out.push_str("\nGuidance skills:\n\n");
+    for title in &installed.skills {
+        out.push_str(&format!("- {title}\n"));
+    }
+
+    out.push_str("\nSaved views:\n\n");
+    for (name, id) in &installed.views {
+        out.push_str(&format!("- {name} (`{id}`)\n"));
+    }
+
+    out
 }
 
 /// Split `source` into `(title, description, body)`.
@@ -134,6 +205,29 @@ mod tests {
     fn splits_frontmatter_from_body_verbatim() {
         let src = "---\ntitle: \"T\"\ndescription: \"a: b\"\n---\n# T\n\n---\nbody\n";
         assert_eq!(parse(src), Ok(("T", "a: b", "# T\n\n---\nbody\n")));
+    }
+
+    #[test]
+    fn the_installed_section_names_the_ids_that_landed() {
+        let installed = InstalledIds {
+            schemas: vec![
+                ("issue".into(), "issue".into()),
+                ("cycle".into(), "cycle__2".into()),
+            ],
+            plays: vec![("Gate".into(), "gate__2".into())],
+            skills: vec!["Creating an Issue".into()],
+            views: vec![("Board".into(), "board".into())],
+        };
+        let section = render_installed(&installed);
+
+        assert!(section.contains("- `issue`\n"), "{section}");
+        assert!(
+            section.contains("`cycle__2` — this Playbook's `cycle`"),
+            "{section}"
+        );
+        assert!(section.contains("- Gate (`gate__2`)"), "{section}");
+        assert!(section.contains("- Creating an Issue"), "{section}");
+        assert!(section.contains("- Board (`board`)"), "{section}");
     }
 
     #[test]

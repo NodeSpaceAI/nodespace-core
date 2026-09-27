@@ -461,6 +461,22 @@ fn render_linear_playbook_block() -> String {
             .description;
         let _ = writeln!(out, "**{}** — {}\n", skill.title, description);
     }
+    let overview = nodespace_core::methodology::skills::playbook_overview_skill(
+        playbook.overview,
+        &Default::default(),
+    );
+    let overview_description =
+        SkillNode::from_properties(&overview.title, &overview.root_properties)
+            .unwrap_or_else(|e| panic!("Playbook overview '{}' must decode: {e}", overview.title))
+            .description;
+    let _ = writeln!(
+        out,
+        "**{}** — {} Seeded last, and titled exactly so: it is how an agent in this \
+         workspace later recognizes the Playbook is installed. End its body with an \
+         \"Installed in this workspace\" section listing the types, Plays, guidance skills \
+         and views you created, by id.\n",
+        overview.title, overview_description
+    );
     let _ = writeln!(
         out,
         "Create each with `nodespace node create --type skill`, then add its guidance as \
