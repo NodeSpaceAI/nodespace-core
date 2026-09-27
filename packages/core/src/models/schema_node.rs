@@ -247,8 +247,10 @@ impl SchemaNode {
     /// `nodespace_types::SchemaNode::from_node`, which reads
     /// `properties.relationships` — the wire contract intentionally carries the
     /// fully-assembled view so no client needs to know how declarations are
-    /// stored. Never persist the result: that would write the JSON copy back
-    /// into storage.
+    /// stored. A parent is carried as a top-level `extends` key — the shape
+    /// create/update accept — never as an `extends` entry in `relationships`.
+    /// Never persist the result: that would write the JSON copy back into
+    /// storage.
     pub fn into_wire_node(self) -> Node {
         // A parent is written as a top-level `extends` key, never as a
         // `relationships` entry (create/update reject that shape), so it is
