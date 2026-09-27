@@ -188,7 +188,7 @@ mod tests {
     fn drip_fed_line_is_not_rescanned() {
         // A line delivered one byte per chunk must cost linear time. Rescanning
         // the buffered prefix on every push makes this ~5 * 10^11 comparisons
-        // at the cap, which would not finish.
+        // at the cap, far past any reasonable test timeout.
         let mut buf = NdjsonLineBuffer::new();
         for _ in 0..MAX_LINE_BYTES {
             assert!(buf.push(b"x").unwrap().is_empty());
