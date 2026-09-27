@@ -96,6 +96,24 @@ Skill nodes carrying usage guidance, discovered through the ordinary skill-searc
 **Issue Validation Rules** — Why a status change on an issue was rejected: the sub-issue completion gate and the blocker gate, what each checks, and how to proceed when one fires.
 
 Create each with `nodespace node create --type skill`, then add its guidance as markdown children. The bodies are long-form prose; read them from `packages/core/src/methodology/skills/linear/` rather than reproducing them here.
+
+### 5. Saved views
+
+A saved view is a node of type `query`. Its properties carry both the query (`targetType`, `filters`, `sorting`) and how it renders (`viewConfig`), so the board opens as authored with no per-user setup.
+
+**Issues by Status**
+
+```bash
+nodespace node create --type query --content 'Issues by Status' \
+  --properties '{"filters":[],"generatedBy":"user","targetType":"issue","viewConfig":{"kanban":{"groupBy":"status"},"lastView":"kanban"}}'
+```
+
+**Cycles**
+
+```bash
+nodespace node create --type query --content 'Cycles' \
+  --properties '{"filters":[],"generatedBy":"user","sorting":[{"direction":"desc","field":"start_date"}],"targetType":"cycle","viewConfig":{"lastView":"table"}}'
+```
 <!-- END GENERATED: linear-playbook -->
 
 ## After installing
