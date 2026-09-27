@@ -49,7 +49,7 @@ pub(crate) mod schema;
 
 pub use conflicts::deterministic_conflict_id;
 pub use hierarchy::flatten_subtree_content;
-pub use relationship::ReplacedEdge;
+pub use relationship::{CreatedRelationship, StoredEdge};
 
 /// Reserved ID for the DatabaseSettingsNode singleton instance.
 ///
@@ -11511,15 +11511,15 @@ mod tests {
             .create_relationship(&person1_id, "tasks", &task_id, serde_json::json!({}))
             .await
             .expect("first assignment must succeed");
-        assert!(first.is_empty(), "a plain create evicts nothing");
+        assert!(first.replaced.is_empty(), "a plain create evicts nothing");
 
         let replaced = service
             .create_relationship(&person2_id, "tasks", &task_id, serde_json::json!({}))
             .await
             .expect("a second edge into a reverse-cardinality-one target must replace the first");
         assert_eq!(
-            replaced,
-            vec![ReplacedEdge {
+            replaced.replaced,
+            vec![StoredEdge {
                 source_id: person1_id.clone(),
                 relationship_name: "tasks".to_string(),
                 target_id: task_id.clone(),
@@ -11532,7 +11532,10 @@ mod tests {
             .create_relationship(&person2_id, "tasks", &task_id, serde_json::json!({}))
             .await
             .unwrap();
-        assert!(repeat.is_empty(), "an idempotent repeat evicts nothing");
+        assert!(
+            repeat.replaced.is_empty(),
+            "an idempotent repeat evicts nothing"
+        );
 
         // The task must show exactly one assignee — person2, not both.
         let inbound = crate::ops::rel_ops::get_node_relationships(&service, &task_id)
@@ -11677,8 +11680,8 @@ mod tests {
             .await
             .expect("a second edge from a cardinality-one source must replace the first");
         assert_eq!(
-            replaced,
-            vec![ReplacedEdge {
+            replaced.replaced,
+            vec![StoredEdge {
                 source_id: "g1".to_string(),
                 relationship_name: "primary_widget".to_string(),
                 target_id: "w1".to_string(),

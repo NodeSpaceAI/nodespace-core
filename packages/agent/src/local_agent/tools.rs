@@ -3517,7 +3517,16 @@ impl GraphToolExecutor {
             .await
             .map_err(|e| ops_error_to_tool(e, "create_relationship"))?;
 
-        let mut result = json!({ "from_id": params.from_id, "to_id": params.to_id, "type": params.relationship_type, "created": true });
+        // The edge as stored, in the same form as its `replaced` entries: a
+        // write through an `in` declaration's name comes back on the forward
+        // name with its endpoints swapped. Echoing the arguments instead would
+        // spell one edge two ways, and a later eviction of it would not match.
+        let mut result = json!({
+            "from_id": node_uri(&output.source_id),
+            "to_id": node_uri(&output.target_id),
+            "type": output.relationship_name,
+            "created": true,
+        });
         // A cardinality-one end replaces rather than rejects: "assign this task
         // to Bob" unassigns Alice as a side effect. Name the evicted edges so
         // the model can tell the user instead of reporting a plain create.
