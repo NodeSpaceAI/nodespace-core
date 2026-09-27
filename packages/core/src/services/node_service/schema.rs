@@ -511,6 +511,26 @@ impl NodeService {
         .await
     }
 
+    /// Update a saved query's fields (definition, `generated_by`,
+    /// `generator_context`, `view_config`) with optimistic concurrency
+    /// control. See [`Self::update_person_node`] for why this delegates to the
+    /// generic pipeline; the resulting field shapes are checked there by
+    /// `QueryNodeBehavior::validate`.
+    pub async fn update_query_node(
+        &self,
+        id: &str,
+        expected_version: i64,
+        update: crate::models::QueryNodeUpdate,
+    ) -> Result<Node, NodeServiceError> {
+        if update.is_empty() {
+            return Err(NodeServiceError::invalid_update(
+                "QueryNodeUpdate contains no changes",
+            ));
+        }
+        self.update_typed_fields(id, "query", expected_version, update.to_properties_patch())
+            .await
+    }
+
     /// Write a typed update's flat properties patch to a node that must be of
     /// `node_type`.
     ///
@@ -1519,7 +1539,7 @@ impl NodeService {
 mod typed_update_tests {
     use super::*;
     use crate::db::SqliteStore;
-    use crate::models::{PersonNodeUpdate, ProjectNodeUpdate};
+    use crate::models::{PersonNodeUpdate, ProjectNodeUpdate, QueryNodeUpdate};
     use crate::services::{CreateNodeParams, InsertPositionOwned};
     use serde_json::json;
     use tempfile::TempDir;
@@ -1716,5 +1736,138 @@ mod typed_update_tests {
             .unwrap_err();
 
         assert!(err.to_string().contains("Invalid value 'someday'"), "{err}");
+    }
+
+    fn saved_query_properties() -> serde_json::Value {
+        json!({
+            "target_type": "task",
+            "filters": [
+                { "type": "property", "operator": "equals", "property": "status", "value": "open" }
+            ],
+            "sorting": [{ "field": "due_date", "direction": "asc" }],
+            "generated_by": "user",
+            "view_config": { "lastView": "table" },
+            "custom:pinned": true
+        })
+    }
+
+    #[tokio::test]
+    async fn query_update_writes_fields_and_leaves_others() {
+        let (service, _t) = create_test_service().await;
+        let query = create(&service, "query", saved_query_properties()).await;
+
+        let update: QueryNodeUpdate = serde_json::from_value(json!({
+            "viewConfig": { "lastView": "kanban", "kanban": { "groupBy": "status" } },
+            "limit": 25
+        }))
+        .unwrap();
+        let updated = service
+            .update_query_node(&query.id, query.version, update)
+            .await
+            .expect("typed query update succeeds");
+
+        assert_eq!(updated.version, query.version + 1);
+        let typed = crate::models::node_to_typed_value(updated).unwrap();
+        assert_eq!(typed["viewConfig"]["kanban"]["groupBy"], "status");
+        assert_eq!(typed["limit"], 25);
+        assert_eq!(typed["targetType"], "task", "an untouched field survives");
+        assert_eq!(typed["filters"][0]["property"], "status");
+        assert_eq!(typed["sorting"][0]["field"], "due_date");
+        assert_eq!(typed["properties"], json!({ "custom:pinned": true }));
+    }
+
+    #[tokio::test]
+    async fn query_update_null_clears_a_field() {
+        let (service, _t) = create_test_service().await;
+        let query = create(&service, "query", saved_query_properties()).await;
+
+        let update: QueryNodeUpdate =
+            serde_json::from_value(json!({ "sorting": null, "viewConfig": null })).unwrap();
+        let updated = service
+            .update_query_node(&query.id, query.version, update)
+            .await
+            .unwrap();
+
+        let typed = crate::models::node_to_typed_value(updated).unwrap();
+        assert!(typed.get("sorting").is_none(), "{typed}");
+        assert!(typed.get("viewConfig").is_none(), "{typed}");
+        assert_eq!(typed["targetType"], "task");
+    }
+
+    #[tokio::test]
+    async fn query_update_on_a_stale_version_conflicts() {
+        let (service, _t) = create_test_service().await;
+        let query = create(&service, "query", saved_query_properties()).await;
+
+        let err = service
+            .update_query_node(
+                &query.id,
+                query.version + 5,
+                QueryNodeUpdate {
+                    limit: Some(Some(10)),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap_err();
+
+        assert!(
+            matches!(err, NodeServiceError::VersionConflict { .. }),
+            "{err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn query_update_rejects_a_node_of_another_type() {
+        let (service, _t) = create_test_service().await;
+        let task = create(&service, "task", json!({})).await;
+
+        let err = service
+            .update_query_node(
+                &task.id,
+                task.version,
+                QueryNodeUpdate {
+                    limit: Some(Some(10)),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap_err();
+
+        assert!(err.to_string().contains("not a query node"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn empty_query_update_is_rejected() {
+        let (service, _t) = create_test_service().await;
+        let query = create(&service, "query", saved_query_properties()).await;
+
+        assert!(service
+            .update_query_node(&query.id, query.version, QueryNodeUpdate::default())
+            .await
+            .is_err());
+    }
+
+    /// A query whose filters the query service could not execute is refused
+    /// on write, through any path — here the generic update — rather than
+    /// stored and discovered when the view is opened.
+    #[tokio::test]
+    async fn a_query_with_an_unexecutable_filter_is_rejected_on_write() {
+        let (service, _t) = create_test_service().await;
+        let query = create(&service, "query", saved_query_properties()).await;
+
+        let err = service
+            .update_node(
+                &query.id,
+                query.version,
+                NodeUpdate {
+                    properties: Some(json!({ "filters": [{ "type": "nonsense" }] })),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap_err();
+
+        assert!(err.to_string().contains("'filters'"), "{err}");
     }
 }

@@ -15,7 +15,8 @@ use std::sync::Arc;
 use chrono::{DateTime, Utc};
 use nodespace_core::db::events::DomainEvent;
 use nodespace_core::models::{
-    Node, NodeQuery, NodeUpdate, OrderBy, PersonNodeUpdate, ProjectNodeUpdate, TaskNodeUpdate,
+    Node, NodeQuery, NodeUpdate, OrderBy, PersonNodeUpdate, ProjectNodeUpdate, QueryNodeUpdate,
+    TaskNodeUpdate,
     TaskPriority, TaskStatus,
 };
 use nodespace_core::ops::{
@@ -67,7 +68,7 @@ use crate::nodespace::{
     RenameCollectionRequest, ReorderNodeRequest, ReorderNodeResponse, ResetSeedNodeRequest,
     ResetSeedNodeResponse, ResolveConflictRequest, SchemaParamsRequest, SchemaResultResponse,
     SearchRequest, SetLocalPersonIdentityRequest, UpdateNodeRequest, UpdateNodesBatchRequest,
-    UpdateNodesBatchResponse, UpdatePersonNodeRequest, UpdateProjectNodeRequest,
+    UpdateNodesBatchResponse, UpdatePersonNodeRequest, UpdateProjectNodeRequest, UpdateQueryNodeRequest,
     UpdateRelationshipPropertiesRequest, UpdateRelationshipPropertiesResponse,
     UpdateTaskNodeRequest, WatchRequest,
 };
@@ -1568,6 +1569,26 @@ impl GrpcNodeService for NodeServiceImpl {
         match this
             .node_service
             .update_project_node(&req.node_id, req.version, update)
+            .await
+        {
+            Ok(node) => Ok(Response::new(node_response(node))),
+            Err(e) => Err(typed_update_error_to_status(&this.node_service, e).await),
+        }
+    }
+
+    async fn update_query_node(
+        &self,
+        request: Request<UpdateQueryNodeRequest>,
+    ) -> Result<Response<NodeResponse>, Status> {
+        let this = self.route(&request).await?;
+        let req = request.into_inner();
+
+        let update: QueryNodeUpdate = serde_json::from_str(&req.update_json)
+            .map_err(|e| Status::invalid_argument(format!("Invalid query update: {e}")))?;
+
+        match this
+            .node_service
+            .update_query_node(&req.node_id, req.version, update)
             .await
         {
             Ok(node) => Ok(Response::new(node_response(node))),
@@ -4264,6 +4285,25 @@ mod tests {
             }))
             .await
             .expect_err("malformed date must be rejected");
+
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+    }
+
+    /// UpdateQueryNode rejects an update that is not a `QueryNodeUpdate` —
+    /// here a snake_case storage key, the spelling mismatch the typed update
+    /// exists to rule out — before it reaches the service.
+    #[tokio::test]
+    async fn update_query_node_rejects_a_storage_key_in_the_update() {
+        let (svc, _tmp) = make_service().await;
+
+        let err = svc
+            .update_query_node(Request::new(crate::nodespace::UpdateQueryNodeRequest {
+                node_id: "anything".to_string(),
+                version: 1,
+                update_json: r#"{"target_type": "task"}"#.to_string(),
+            }))
+            .await
+            .expect_err("an unknown key must be rejected");
 
         assert_eq!(err.code(), tonic::Code::InvalidArgument);
     }

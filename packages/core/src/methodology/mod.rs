@@ -30,6 +30,8 @@ pub mod skills;
 pub use install::install_playbook;
 
 use crate::markdown::NodeTemplate;
+use crate::models::{QueryGeneratedBy, QueryNodeUpdate};
+use crate::services::QueryDefinition;
 use serde::{Deserialize, Serialize};
 
 /// A methodology playbook: the content to install, plus the identity the GUI
@@ -115,32 +117,38 @@ impl PlayStep {
 
 /// One saved view, installed as a `query` node.
 ///
-/// A saved query is an ordinary node whose properties carry both *what* it
-/// shows (a `QueryDefinition`) and *how* it renders (`viewConfig`), so the
-/// board travels with the node — a seeded Kanban opens as a Kanban, grouped
-/// the way the playbook authored it, with no per-user setup.
+/// A saved query is an ordinary node whose fields carry both *what* it shows
+/// (the definition) and *how* it renders (`view_config`), so the board
+/// travels with the node — a seeded Kanban opens as a Kanban, grouped the
+/// way the playbook authored it, with no per-user setup.
 pub struct ViewStep {
     /// Stable id for the query node.
     pub view_id: &'static str,
     /// Display name, stored as the node's content.
     pub name: &'static str,
-    /// A [`crate::services::QueryDefinition`] payload — `targetType`,
-    /// `filters`, and optionally `sorting` and `limit`.
-    pub definition: serde_json::Value,
+    /// What the view selects.
+    pub definition: QueryDefinition,
     /// The view configuration: `lastView` (`list` | `table` | `kanban`), plus
     /// `kanban.groupBy` naming the field whose values become columns.
     pub view_config: serde_json::Value,
 }
 
 impl ViewStep {
-    /// The query node's properties, in the shape the query viewer reads and
-    /// writes when a user saves a view by hand: the definition's keys at the
-    /// top level, `generatedBy`, and `viewConfig`.
+    /// The query node's properties: the query schema's snake_case storage
+    /// keys, the same shape the query viewer creates when a user saves a view
+    /// by hand.
     pub fn properties(&self) -> serde_json::Value {
-        let mut properties = self.definition.clone();
-        properties["generatedBy"] = serde_json::json!("user");
-        properties["viewConfig"] = self.view_config.clone();
-        properties
+        let definition = &self.definition;
+        QueryNodeUpdate {
+            target_type: Some(definition.target_type.clone()),
+            filters: Some(definition.filters.clone()),
+            sorting: definition.sorting.clone().map(Some),
+            limit: definition.limit.map(Some),
+            generated_by: Some(QueryGeneratedBy::User),
+            generator_context: None,
+            view_config: Some(Some(self.view_config.clone())),
+        }
+        .to_properties_patch()
     }
 }
 
@@ -264,12 +272,9 @@ mod tests {
     /// either is otherwise invisible until someone opens the board.
     #[test]
     fn every_view_is_an_executable_query_with_a_renderable_view_config() {
-        use crate::services::QueryDefinition;
-
         for playbook in all_playbooks() {
             for view in &playbook.views {
-                let definition: QueryDefinition = serde_json::from_value(view.definition.clone())
-                    .unwrap_or_else(|e| panic!("{}: not a QueryDefinition: {e}", view.view_id));
+                let definition = &view.definition;
                 definition
                     .validate_identifiers()
                     .unwrap_or_else(|e| panic!("{}: {e}", view.view_id));

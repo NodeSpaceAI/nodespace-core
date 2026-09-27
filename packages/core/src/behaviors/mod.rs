@@ -11,7 +11,7 @@
 
 use crate::models::schema::SchemaField;
 use crate::models::{
-    Node, SchemaNode, SkillNode, TaskNode, ValidationError as NodeValidationError,
+    Node, QueryFields, SchemaNode, SkillNode, TaskNode, ValidationError as NodeValidationError,
     AI_CHAT_PROVIDERS, DEFAULT_SKILL_MAX_ITERATIONS,
 };
 use crate::services::NodeAccessor;
@@ -1537,7 +1537,8 @@ impl NodeBehavior for SchemaNodeBehavior {
 ///
 /// Query nodes store all data in the unified `node` table (Universal Graph Architecture):
 /// - **Content (`node.content`)**: Plain text description (e.g., "All open high-priority tasks")
-/// - **Properties (`node.properties`)**: Structured query fields (target_type, filters, sorting, limit, etc.)
+/// - **Properties (`node.properties`)**: The query schema's snake_case fields (target_type, filters,
+///   sorting, limit, view_config, …), read only through [`QueryFields`]
 ///
 /// # Characteristics
 ///
@@ -1567,9 +1568,12 @@ impl NodeBehavior for QueryNodeBehavior {
         "query"
     }
 
-    fn validate(&self, _node: &Node) -> Result<(), NodeValidationError> {
-        // Content is plain text description - no validation needed
-        // Query structure validation happens at property level via schema
+    /// Every field must decode through [`QueryFields`], the one reader of a
+    /// stored query, so a filter the query service cannot execute or a
+    /// non-object `view_config` is rejected on write rather than discovered
+    /// when the view is opened.
+    fn validate(&self, node: &Node) -> Result<(), NodeValidationError> {
+        QueryFields::from_node(node)?;
         Ok(())
     }
 

@@ -89,9 +89,14 @@ pub use nodespace_types::{
 
 // Typed update payloads for the core types whose writes route through the
 // generic update pipeline (`NodeService::update_person_node` /
-// `update_project_node`). Defined once in nodespace-types so the Tauri
-// command layer deserializes the same struct the service consumes.
-pub use nodespace_types::{PersonNodeUpdate, ProjectNodeUpdate};
+// `update_project_node` / `update_query_node`). Defined once in
+// nodespace-types so the Tauri command layer deserializes the same struct
+// the service consumes.
+pub use nodespace_types::{PersonNodeUpdate, ProjectNodeUpdate, QueryNodeUpdate};
+
+// The stored query's typed fields — the only reader of a query node's
+// properties (see `QueryDefinition::from_fields` for the execution mapping).
+pub use nodespace_types::{QueryFields, QueryGeneratedBy, QUERY_NODE_TYPE};
 
 // The lifecycle-status allow-list and its validator live in nodespace-types
 // (owner of the `Node`/`NodeUpdate` types), re-exported here as the single

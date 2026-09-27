@@ -30,6 +30,7 @@ use crate::methodology::skills::playbook_skill;
 use crate::methodology::{
     FieldValueExtension, MethodologyPlaybook, PlayStep, SchemaStep, ViewStep,
 };
+use crate::services::{QueryDefinition, SortConfig, SortDirection};
 use serde_json::json;
 
 /// Days a cycle spans unless the user edits `cycle.duration_days`.
@@ -460,10 +461,12 @@ fn issues_by_status_view() -> ViewStep {
     ViewStep {
         view_id: "linear-issues-by-status",
         name: "Issues by Status",
-        definition: json!({
-            "targetType": "issue",
-            "filters": [],
-        }),
+        definition: QueryDefinition {
+            target_type: "issue".to_string(),
+            filters: vec![],
+            sorting: None,
+            limit: None,
+        },
         view_config: json!({
             "lastView": "kanban",
             "kanban": { "groupBy": "status" },
@@ -480,11 +483,15 @@ fn cycles_view() -> ViewStep {
     ViewStep {
         view_id: "linear-cycles",
         name: "Cycles",
-        definition: json!({
-            "targetType": "cycle",
-            "filters": [],
-            "sorting": [{ "field": "start_date", "direction": "desc" }],
-        }),
+        definition: QueryDefinition {
+            target_type: "cycle".to_string(),
+            filters: vec![],
+            sorting: Some(vec![SortConfig {
+                field: "start_date".to_string(),
+                direction: SortDirection::Descending,
+            }]),
+            limit: None,
+        },
         view_config: json!({ "lastView": "table" }),
     }
 }

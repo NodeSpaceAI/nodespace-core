@@ -17,10 +17,12 @@
 //! as exactly one of the two suites failing.
 
 use nodespace_app_lib::commands::nodes::{
-    create_node, get_children, move_node, update_person_node, update_task_node, CreateNodeInput,
-    InsertPositionInput,
+    create_node, get_children, get_node, move_node, update_person_node, update_query_node,
+    update_task_node, CreateNodeInput, InsertPositionInput,
 };
-use nodespace_app_lib::types::{PersonNodeUpdate, TaskNodeUpdate, TaskPriority, TaskStatus};
+use nodespace_app_lib::types::{
+    PersonNodeUpdate, QueryNodeUpdate, TaskNodeUpdate, TaskPriority, TaskStatus,
+};
 use nodespace_app_test_support::{SpawnedDaemon, TauriTestApp, DAEMON_CONNECT_TIMEOUT};
 use serde_json::json;
 
@@ -162,6 +164,72 @@ async fn person_typed_update_matches_the_http_adapter_contract() {
         "cleared email must be absent"
     );
     assert_eq!(cleared["lastName"], json!("Lovelace"));
+}
+
+/// Mirrors `adapter-contract.e2e.ts`'s "create → typed query update → read
+/// back carries typed fields".
+#[tokio::test]
+async fn query_typed_update_matches_the_http_adapter_contract() {
+    let daemon = SpawnedDaemon::spawn();
+    let harness = TauriTestApp::connect(&daemon, DAEMON_CONNECT_TIMEOUT).await;
+    let state = harness.client_state();
+
+    let id = uuid::Uuid::new_v4().to_string();
+    create_node(
+        state.clone(),
+        CreateNodeInput {
+            id: id.clone(),
+            node_type: "query".to_string(),
+            content: "Open tasks".to_string(),
+            parent_id: None,
+            insert_position: None,
+            properties: json!({
+                "target_type": "task",
+                "filters": [],
+                "generated_by": "user",
+                "view_config": { "lastView": "table" },
+            }),
+        },
+    )
+    .await
+    .expect("create query failed");
+
+    let update: QueryNodeUpdate = serde_json::from_value(json!({
+        "filters": [
+            { "type": "property", "operator": "equals", "property": "status", "value": "open" }
+        ],
+        "viewConfig": { "lastView": "kanban", "kanban": { "groupBy": "status" } },
+    }))
+    .unwrap();
+    let updated = update_query_node(state.clone(), id.clone(), 1, update)
+        .await
+        .expect("update_query_node (set) failed");
+    assert_eq!(updated["targetType"], json!("task"));
+    assert_eq!(updated["filters"][0]["property"], json!("status"));
+    assert_eq!(updated["viewConfig"]["kanban"]["groupBy"], json!("status"));
+    assert_eq!(updated["properties"], json!({}));
+    let version = updated["version"]
+        .as_i64()
+        .expect("version must be a number");
+
+    let cleared = update_query_node(
+        state.clone(),
+        id.clone(),
+        version,
+        serde_json::from_value(json!({ "viewConfig": null })).unwrap(),
+    )
+    .await
+    .expect("update_query_node (clear) failed");
+    assert!(
+        cleared.get("viewConfig").is_none(),
+        "cleared viewConfig must be absent"
+    );
+
+    let reread = get_node(state.clone(), id.clone())
+        .await
+        .expect("get_node failed")
+        .expect("query must exist");
+    assert_eq!(reread["filters"][0]["value"], json!("open"));
 }
 
 /// Mirrors `adapter-contract.e2e.ts`'s "createNode honors an explicit

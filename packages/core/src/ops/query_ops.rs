@@ -67,7 +67,7 @@ pub struct AgentFilterItem {
     /// The nested filter a related-node filter evaluates against the
     /// related node(s). Recursive by construction; validated to at most one
     /// level of `related` nesting (see
-    /// `QueryFilter::validate_identifiers`/`MAX_RELATED_DEPTH`).
+    /// `query_service::validate_filter_identifiers`/`MAX_RELATED_DEPTH`).
     #[serde(default)]
     pub filter: Option<Box<AgentFilterItem>>,
 }
