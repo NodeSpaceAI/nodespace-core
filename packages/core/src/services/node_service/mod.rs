@@ -5952,6 +5952,174 @@ mod tests {
         }
     }
 
+    /// A parent with children `first`, `second`, `moving` (in that order),
+    /// the gap between `first` and `second` collapsed so reordering `moving`
+    /// between them forces a re-spread. Returns `(first, moving)`.
+    async fn reorder_fixture(service: &NodeService) -> (String, String) {
+        let parent = Node::new("text".to_string(), "parent".to_string(), json!({}));
+        let parent_id = service.create_node(parent).await.unwrap();
+        let mut ids = Vec::new();
+        for content in ["first", "second", "moving"] {
+            ids.push(
+                service
+                    .create_node_with_parent(CreateNodeParams {
+                        id: None,
+                        node_type: "text".to_string(),
+                        content: content.to_string(),
+                        parent_id: Some(parent_id.clone()),
+                        position: crate::services::InsertPositionOwned::End,
+                        properties: json!({}),
+                        lifecycle_status: None,
+                    })
+                    .await
+                    .unwrap(),
+            );
+        }
+        collapse_sibling_gap(service, &ids[0], &ids[1]).await;
+        (ids[0].clone(), ids[2].clone())
+    }
+
+    /// The steps `reorder_node` composes — the in-transaction reorder with
+    /// its sibling re-spread, then the version-checked bump — are one unit
+    /// of work. Forces the bump to conflict and asserts the new order key and
+    /// the re-spread rolled back with it and no event escaped.
+    #[tokio::test]
+    async fn test_reorder_node_bump_conflict_rolls_back_reorder_and_respread() {
+        let (service, _temp) = create_test_service().await;
+        let (first_id, moving_id) = reorder_fixture(&service).await;
+
+        let edges_before = has_child_edges(&service).await;
+        let version = service.get_node(&moving_id).await.unwrap().unwrap().version;
+        let mut rx = service.subscribe_to_events();
+
+        let service_for_tx = service.clone();
+        let (node_id, after_id) = (moving_id.clone(), first_id.clone());
+        let result: Result<(), NodeServiceError> = service
+            .with_transaction(move |tx| {
+                Box::pin(async move {
+                    let (_, placement) =
+                        NodeService::reorder_child_in_tx(tx, &node_id, Some(&after_id))
+                            .await?
+                            .expect("the node has a parent");
+                    assert!(
+                        !placement.respread.is_empty(),
+                        "reordering into the collapsed gap must re-spread a sibling"
+                    );
+
+                    // A concurrent writer bumped the node after the reorder.
+                    service_for_tx
+                        .update_node_with_version_bump_in_tx(tx, &node_id, version - 1)
+                        .await?;
+                    Ok(())
+                })
+            })
+            .await;
+
+        assert!(
+            matches!(result, Err(NodeServiceError::VersionConflict { .. })),
+            "the forced bump conflict must propagate, got {result:?}"
+        );
+        assert_eq!(
+            has_child_edges(&service).await,
+            edges_before,
+            "the new order key and the sibling re-spread must roll back with the failed bump"
+        );
+        assert!(
+            rx.try_recv().is_err(),
+            "no event may escape a rolled-back transaction"
+        );
+    }
+
+    /// `reorder_node` checks the version through a pooled reader before it
+    /// writes. A concurrent writer that bumps the node after that check must
+    /// fail the reorder at its in-transaction bump with `VersionConflict`,
+    /// leaving every order key as it was and announcing nothing. Same
+    /// best-effort ordering as
+    /// `test_move_node_version_conflict_after_check_rolls_back_move_and_respread`;
+    /// the rollback itself is covered deterministically by
+    /// `test_reorder_node_bump_conflict_rolls_back_reorder_and_respread`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn test_reorder_node_version_conflict_after_check_rolls_back_reorder() {
+        let (service, _temp) = create_test_service().await;
+        let (first_id, moving_id) = reorder_fixture(&service).await;
+
+        let edges_before = has_child_edges(&service).await;
+        let version = service.get_node(&moving_id).await.unwrap().unwrap().version;
+        let mut rx = service.subscribe_to_events();
+
+        let (held_tx, held_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
+        let store = Arc::clone(service.store());
+        let write_id = moving_id.clone();
+        let writer = tokio::spawn(async move {
+            store
+                .with_transaction(move |tx| {
+                    Box::pin(async move {
+                        SqliteStore::update_node_with_version_check_in_tx(
+                            tx,
+                            &write_id,
+                            version,
+                            NodeUpdate {
+                                content: Some("edited".to_string()),
+                                ..Default::default()
+                            },
+                        )
+                        .await?
+                        .expect("the writer bumps the version the reorder expects");
+                        held_tx.send(()).unwrap();
+                        let _ = release_rx.await;
+                        Ok(())
+                    })
+                })
+                .await
+        });
+        held_rx.await.unwrap();
+
+        let reorderer = service.clone();
+        let (node_id, after_id) = (moving_id.clone(), first_id.clone());
+        let reorder_task = tokio::spawn(async move {
+            reorderer
+                .reorder_node(
+                    &node_id,
+                    version,
+                    crate::services::InsertPosition::After(&after_id),
+                )
+                .await
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert!(
+            !reorder_task.is_finished(),
+            "the reorder must pass its version check and wait on the writer's guard"
+        );
+        release_tx.send(()).unwrap();
+        writer.await.unwrap().unwrap();
+
+        match reorder_task.await.unwrap() {
+            Err(NodeServiceError::VersionConflict {
+                node_id,
+                expected_version,
+                actual_version,
+            }) => {
+                assert_eq!(node_id, moving_id);
+                assert_eq!(expected_version, version);
+                assert_eq!(actual_version, version + 1);
+            }
+            other => panic!("expected VersionConflict, got {other:?}"),
+        }
+        assert_eq!(
+            has_child_edges(&service).await,
+            edges_before,
+            "the new order key and the sibling re-spread must roll back with the failed bump"
+        );
+        while let Ok(envelope) = rx.try_recv() {
+            assert!(
+                !matches!(envelope.event, DomainEvent::RelationshipUpdated { .. }),
+                "no relationship event may escape a rolled-back reorder, got {:?}",
+                envelope.event
+            );
+        }
+    }
+
     #[tokio::test]
     async fn test_reparenting_a_collection_member_is_rejected() {
         // ADR-059 §2 (reparent side): a content node that holds a `member_of` edge

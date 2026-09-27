@@ -661,22 +661,40 @@ impl NodeService {
             )));
         }
 
-        // Use graph-native reordering. ADR-069 §2/S4: the write happens here,
-        // but the event is deferred until after the version bump below — see
-        // `reorder_child_write`'s doc comment for why.
-        let (parent_id, placement) = self.reorder_child_write(node_id, position).await?;
+        let insert_after = self.resolve_reorder_position(node_id, position).await?;
 
-        // Bump the node's version to support OCC
-        // Even though we're only modifying edge ordering, we bump the node version
-        // so that concurrent reorder operations will fail with version conflict
-        // Note: We discard the returned Node since reorder_node returns ()
-        let _ = self
-            .update_node_with_version_bump(node_id, expected_version)
-            .await?;
+        // The reorder, any sibling re-spread and the version bump are one
+        // unit of work (ADR-069 §1a). The checks above read through pooled
+        // readers and only fail fast; a concurrent writer can still bump the
+        // node before the write. The bump re-checks `expected_version` inside
+        // the transaction, and a conflict there rolls the new order key and
+        // every re-spread key back with it. Events are buffered and flushed
+        // only after commit (ADR-069 §2), after the bump's `NodeUpdated`.
+        let node_id = node_id.to_string();
+        let service = self.clone();
+        self.with_transaction(move |tx| {
+            Box::pin(async move {
+                let Some((parent_id, placement)) =
+                    Self::reorder_child_in_tx(tx, &node_id, insert_after.as_deref()).await?
+                else {
+                    return Err(NodeServiceError::hierarchy_violation(format!(
+                        "Root node '{}' cannot be reordered (it has no parent)",
+                        node_id
+                    )));
+                };
 
-        self.emit_reorder_event(node_id, parent_id.as_deref(), &placement);
+                // Even though we're only modifying edge ordering, we bump the
+                // node version so that concurrent reorders fail with a
+                // version conflict.
+                service
+                    .update_node_with_version_bump_in_tx(tx, &node_id, expected_version)
+                    .await?;
 
-        Ok(())
+                service.emit_reorder_event(&node_id, &parent_id, &placement);
+                Ok(())
+            })
+        })
+        .await
     }
 
     /// Atomically re-parent an ordered set of existing children to `new_parent_id`
@@ -1065,32 +1083,41 @@ impl NodeService {
         node_id: &str,
         position: crate::services::InsertPosition<'_>,
     ) -> Result<(), NodeServiceError> {
-        let (parent_id, placement) = self.reorder_child_write(node_id, position).await?;
-        self.emit_reorder_event(node_id, parent_id.as_deref(), &placement);
-        Ok(())
+        let insert_after = self.resolve_reorder_position(node_id, position).await?;
+
+        // The reorder and its sibling re-spread commit as one transaction;
+        // events are buffered and flushed only after commit (ADR-069 §2).
+        let node_id = node_id.to_string();
+        let service = self.clone();
+        self.with_transaction(move |tx| {
+            Box::pin(async move {
+                if let Some((parent_id, placement)) =
+                    Self::reorder_child_in_tx(tx, &node_id, insert_after.as_deref()).await?
+                {
+                    service.emit_reorder_event(&node_id, &parent_id, &placement);
+                }
+                Ok(())
+            })
+        })
+        .await
     }
 
-    /// The write half of [`Self::reorder_child`], with event emission split
-    /// out (ADR-069 §2/S4). [`Self::reorder_node`] calls this directly and
-    /// defers the emit until after its own version bump, so a consumer is
-    /// never told about a reorder before the write that makes it OCC-safe
-    /// has landed. A standalone call to `reorder_child` still emits immediately via the
-    /// wrapper above, unchanged from its existing public contract.
-    async fn reorder_child_write(
+    /// The fast-fail checks and position resolution shared by
+    /// [`Self::reorder_child`] and [`Self::reorder_node`], run before their
+    /// transaction: the node and any `After` sibling must exist, and the
+    /// position is resolved against the node's current parent. Returns the
+    /// sibling to insert after (`None` = first).
+    async fn resolve_reorder_position(
         &self,
         node_id: &str,
         position: crate::services::InsertPosition<'_>,
-    ) -> Result<(Option<String>, crate::db::ChildPlacement), NodeServiceError> {
-        // Verify node exists
-        let _node = self
-            .get_node(node_id)
-            .await?
-            .ok_or_else(|| NodeServiceError::node_not_found(node_id))?;
+    ) -> Result<Option<String>, NodeServiceError> {
+        if !self.node_exists(node_id).await? {
+            return Err(NodeServiceError::node_not_found(node_id));
+        }
 
-        // Verify sibling exists for After variant
         if let crate::services::InsertPosition::After(sibling_id) = position {
-            let sibling_exists = self.node_exists(sibling_id).await?;
-            if !sibling_exists {
+            if !self.node_exists(sibling_id).await? {
                 return Err(NodeServiceError::hierarchy_violation(format!(
                     "Sibling node {} does not exist",
                     sibling_id
@@ -1098,44 +1125,65 @@ impl NodeService {
             }
         }
 
-        // Get current parent to move within the same parent
-        let parent = self.get_parent(node_id).await?;
-        let parent_id = parent.map(|p| p.id);
-
-        let insert_after = self
-            .resolve_insert_position(position, parent_id.as_deref())
-            .await?;
-
-        // Use move_node to handle edge ordering
-        let placement = self
+        let parent_id = self
             .store
-            .move_node(node_id, parent_id.as_deref(), insert_after.as_deref())
+            .get_parent_id(node_id)
             .await
             .map_err(NodeServiceError::from_store)?;
-
-        Ok((parent_id, placement))
+        self.resolve_insert_position(position, parent_id.as_deref())
+            .await
     }
 
-    /// Emit the `RelationshipUpdated` event for a completed reorder.
-    /// Reordering updates the hierarchy edge's order field.
+    /// Reposition `node_id` among its siblings inside `tx`, after
+    /// `insert_after` (`None` = first). Returns the parent and the placement,
+    /// or `None` without writing if the node is a root.
+    ///
+    /// The parent is read inside the transaction, so the write is always a
+    /// same-parent reorder. If a concurrent move reparented the node after
+    /// `insert_after` was resolved, that sibling is no longer among its
+    /// children and the store places the node last under its new parent,
+    /// rather than moving it back to the parent the position was resolved
+    /// against.
+    pub(crate) async fn reorder_child_in_tx(
+        tx: &NodeServiceTx<'_>,
+        node_id: &str,
+        insert_after: Option<&str>,
+    ) -> Result<Option<(String, crate::db::ChildPlacement)>, NodeServiceError> {
+        let Some(parent_id) = crate::db::SqliteStore::get_parent_id_in_tx(tx.store_tx(), node_id)
+            .await
+            .map_err(NodeServiceError::from_store)?
+        else {
+            return Ok(None);
+        };
+        let moved = crate::db::SqliteStore::move_node_in_tx(
+            tx.store_tx(),
+            node_id,
+            Some(&parent_id),
+            insert_after,
+        )
+        .await
+        .map_err(NodeServiceError::from_store)?;
+        Ok(Some((parent_id, moved.placement)))
+    }
+
+    /// Emit the `RelationshipUpdated` events for a completed reorder: the
+    /// re-spread siblings first, then the reordered edge.
     fn emit_reorder_event(
         &self,
         node_id: &str,
-        parent_id: Option<&str>,
+        parent_id: &str,
         placement: &crate::db::ChildPlacement,
     ) {
-        if let Some(parent_id) = parent_id {
-            self.emit_respread_events(parent_id, &placement.respread);
-            self.emit_event(DomainEvent::RelationshipUpdated {
-                relationship: crate::db::events::RelationshipEvent::new(
-                    format!("relationship:{}:{}", parent_id, node_id),
-                    parent_id,
-                    node_id,
-                    "has_child",
-                    serde_json::json!({"order": placement.order}),
-                ),
-            });
-        }
+        self.emit_respread_events(parent_id, &placement.respread);
+        self.emit_event(DomainEvent::RelationshipUpdated {
+            relationship: crate::db::events::RelationshipEvent::new(
+                format!("relationship:{}:{}", parent_id, node_id),
+                parent_id,
+                node_id,
+                "has_child",
+                serde_json::json!({"order": placement.order}),
+            ),
+        });
     }
 
     /// Emit a `RelationshipUpdated` for each sibling whose order key a
