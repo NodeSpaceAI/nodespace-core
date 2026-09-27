@@ -800,6 +800,14 @@ async fn linear_playbook_skills_win_their_own_intents() {
 /// Validation Rules. "Add a new task to follow up with the vendor next week"
 /// was held by retitling "Working with Cycles", whose title alone outranked
 /// Node Creation on it.
+///
+/// Accepted, not held: on "Create a new task called 'Review Q3 report'",
+/// Creating an Issue ranks first (0.890 when measured) and Node Creation moves
+/// from second (0.867, behind Graph Editing's 0.877) to third — the last slot
+/// in the window. `create_node` stays reachable and the issue guidance itself
+/// sends a plain to-do to `task`. A further Playbook skill that scores above
+/// 0.867 there will push Node Creation out and fail this test; that is the
+/// test doing its job, and the fix is that skill's wording or `exclusion`.
 #[tokio::test]
 #[ignore = "requires the locked nomic-embed-text-v1.5 GGUF on disk"]
 async fn linear_playbook_skills_do_not_displace_built_ins() {

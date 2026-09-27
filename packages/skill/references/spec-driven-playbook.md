@@ -85,15 +85,35 @@ nodespace node create --type play --content 'Lock superseded specs and plans' \
 
 Skill nodes carrying usage guidance, discovered through the ordinary skill-search mechanism. Each is a `skill` root node whose markdown body becomes ordinary child nodes. Deliberately several narrow skills rather than one broad one: retrieval scores a precise match far better than a skill diluted across every intent.
 
+Create each as below, then add its guidance as markdown children. The properties carry the whole retrieval surface — `description`, and an `exclusion` where the skill has one, which keeps general requests from ranking it above a built-in — so set them verbatim. The bodies are long-form prose; read them from `packages/core/src/methodology/skills/spec_driven/` rather than reproducing them here.
+
 **Writing a Spec** — Write a spec before any plan or implementation: capture the objective, testable success criteria and boundaries (always do, ask first, never do). Use when the user says write a spec, spec this out, define requirements, or starts describing a feature or fix that has no spec yet.
+
+```bash
+nodespace node create --type skill --content 'Writing a Spec' \
+  --properties '{"description":"Write a spec before any plan or implementation: capture the objective, testable success criteria and boundaries (always do, ask first, never do). Use when the user says write a spec, spec this out, define requirements, or starts describing a feature or fix that has no spec yet.","max_iterations":3,"tool_whitelist":["create_node","update_node","search_nodes","get_node"]}'
+```
 
 **Writing a Plan from a Spec** — Draft the technical plan for an approved spec: approach, components, sequencing and risks, linked back to the spec. Use when the user says plan this out, what's the approach, how should we build this, or asks for a plan for an existing spec.
 
+```bash
+nodespace node create --type skill --content 'Writing a Plan from a Spec' \
+  --properties '{"description":"Draft the technical plan for an approved spec: approach, components, sequencing and risks, linked back to the spec. Use when the user says plan this out, what'\''s the approach, how should we build this, or asks for a plan for an existing spec.","max_iterations":3,"tool_whitelist":["create_node","update_node","create_relationship","search_nodes","get_node"]}'
+```
+
 **Creating Implementation Tasks** — Break an approved plan into tasks linked to both the plan and its spec. Use when the user says create tasks for this plan, break this down, let's start implementing, or asks to turn a plan into actionable work.
+
+```bash
+nodespace node create --type skill --content 'Creating Implementation Tasks' \
+  --properties '{"description":"Break an approved plan into tasks linked to both the plan and its spec. Use when the user says create tasks for this plan, break this down, let'\''s start implementing, or asks to turn a plan into actionable work.","max_iterations":3,"tool_whitelist":["create_node","create_relationship","search_nodes","get_node"]}'
+```
 
 **Completing a Spec-Driven Task** — Close out a spec-driven task by recording how it was verified, then marking it done. Use when the user says a task is finished, wants to close it out, or asks to mark work done that traces to a spec or plan.
 
-Create each with `nodespace node create --type skill`, then add its guidance as markdown children. The bodies are long-form prose; read them from `packages/core/src/methodology/skills/spec_driven/` rather than reproducing them here.
+```bash
+nodespace node create --type skill --content 'Completing a Spec-Driven Task' \
+  --properties '{"description":"Close out a spec-driven task by recording how it was verified, then marking it done. Use when the user says a task is finished, wants to close it out, or asks to mark work done that traces to a spec or plan.","max_iterations":3,"tool_whitelist":["update_node","update_task_status","get_node"]}'
+```
 
 ### 5. Saved views
 
