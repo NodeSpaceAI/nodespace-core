@@ -459,8 +459,25 @@ fn render_linear_playbook_block() -> String {
         out,
         "Create each with `nodespace node create --type skill`, then add its guidance as \
          markdown children. The bodies are long-form prose; read them from \
-         `packages/core/src/methodology/skills/linear/` rather than reproducing them here."
+         `packages/core/src/methodology/skills/linear/` rather than reproducing them here.\n"
     );
+
+    let _ = writeln!(out, "### 5. Saved views\n");
+    let _ = writeln!(
+        out,
+        "A saved view is a node of type `query`. Its properties carry both the query \
+         (`targetType`, `filters`, `sorting`) and how it renders (`viewConfig`), so the \
+         board opens as authored with no per-user setup.\n"
+    );
+    for view in &playbook.views {
+        let _ = writeln!(out, "**{}**\n", view.name);
+        let _ = writeln!(
+            out,
+            "```bash\nnodespace node create --type query --content '{}' \\\n  --properties '{}'\n```\n",
+            view.name,
+            compact_json(&view.properties())
+        );
+    }
 
     out.trim_end().to_string()
 }

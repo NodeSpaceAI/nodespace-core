@@ -13,8 +13,9 @@
 //! caller show the user exactly what landed under which name.
 //!
 //! Re-keying rewrites every later reference to that id within the same install
-//! — a Play targeting `cycle` follows the rename, so the installed set stays
-//! internally consistent rather than half-pointing at a stranger's schema.
+//! — a Play or a saved view targeting `cycle` follows the rename, so the
+//! installed set stays internally consistent rather than half-pointing at a
+//! stranger's schema.
 
 use crate::markdown::{prepare_nodes_from_template, MarkdownError};
 use crate::methodology::{InstallReport, MethodologyPlaybook, StepOutcome, StepReport};
@@ -34,8 +35,8 @@ const MAX_SUFFIX_ATTEMPTS: u32 = 16;
 /// Install `playbook` into the graph.
 ///
 /// Steps run in the playbook's declared order — schemas, then vocabulary
-/// extensions, then Plays, then skills — because each tier depends on the one
-/// before it. A Play whose trigger names a type is rejected by
+/// extensions, then Plays, then skills, then saved views — because each tier
+/// depends on the ones before it. A Play whose trigger names a type is rejected by
 /// `validate_play_rules` until that type's schema exists, so the order is
 /// enforced by the write path rather than merely conventional.
 ///
@@ -143,6 +144,26 @@ pub async fn install_playbook(
                 message: format!("{e}"),
             },
         };
+        failed |= matches!(outcome, StepOutcome::Failed { .. });
+        steps.push(StepReport { label, outcome });
+    }
+
+    for view in &playbook.views {
+        let label = format!("Seed view: {}", view.name);
+        if failed {
+            steps.push(StepReport::skipped(label));
+            continue;
+        }
+
+        let properties = rewrite_view_step_ids(&view.properties(), &renames);
+        let outcome = create_node_resolving_collisions(
+            node_service,
+            view.view_id,
+            "query",
+            view.name,
+            properties,
+        )
+        .await;
         failed |= matches!(outcome, StepOutcome::Failed { .. });
         steps.push(StepReport { label, outcome });
     }
@@ -501,6 +522,64 @@ fn rewrite_action_ids(rule: &mut serde_json::Value, renames: &HashMap<String, St
     }
 }
 
+/// Follow a re-key through a saved view's **id-bearing keys only** —
+/// `targetType`, and the value of any `metadata` filter on `node_type`.
+///
+/// Enumerated from `QueryDefinition`'s shape, as for the other tiers. A
+/// `property` filter's `property` is a field name within the target type and
+/// its `value` is vocabulary (an enum value like `in_review` may spell
+/// anything); `content` filters match body text; `relationship` filters name
+/// a built-in edge kind and a literal node id; sort fields are field names;
+/// `viewConfig.kanban.groupBy` is a field name. None of those is a schema id.
+///
+/// A `metadata` filter on `node_type` is the exception: its value *is* a type
+/// id, compared against the node's stored type. Left behind, it would narrow a
+/// retargeted board back onto the stranger's type and show nothing.
+fn rewrite_view_step_ids(
+    properties: &serde_json::Value,
+    renames: &HashMap<String, String>,
+) -> serde_json::Value {
+    let mut out = properties.clone();
+    if renames.is_empty() {
+        return out;
+    }
+
+    if let Some(target) = out.get("targetType").and_then(|v| v.as_str()) {
+        if let Some(renamed) = renames.get(target) {
+            out["targetType"] = serde_json::json!(renamed);
+        }
+    }
+
+    let Some(filters) = out.get_mut("filters").and_then(|v| v.as_array_mut()) else {
+        return out;
+    };
+    for filter in filters {
+        let is_node_type_filter = filter.get("type").and_then(|v| v.as_str()) == Some("metadata")
+            && filter.get("property").and_then(|v| v.as_str()) == Some("node_type");
+        if !is_node_type_filter {
+            continue;
+        }
+        // A single id for `equals`, a list of ids for `in`.
+        match filter.get_mut("value") {
+            Some(serde_json::Value::String(id)) => {
+                if let Some(renamed) = renames.get(id.as_str()) {
+                    *id = renamed.clone();
+                }
+            }
+            Some(serde_json::Value::Array(ids)) => {
+                for id in ids {
+                    if let Some(renamed) = id.as_str().and_then(|s| renames.get(s)) {
+                        *id = serde_json::json!(renamed);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    out
+}
+
 /// Follow a re-key through a `create_schema` payload's **id-bearing keys
 /// only** — `extends` and each relationship's `targetType`.
 ///
@@ -662,6 +741,69 @@ mod tests {
         );
     }
 
+    /// A view follows a rename through its target and any `node_type`
+    /// metadata filter, and leaves every field name and value alone.
+    #[test]
+    fn a_views_target_and_node_type_filter_follow_a_rename() {
+        let mut renames = HashMap::new();
+        renames.insert("issue".to_string(), "issue_2".to_string());
+
+        let properties = serde_json::json!({
+            "targetType": "issue",
+            "filters": [
+                {
+                    "type": "metadata", "operator": "equals",
+                    "property": "node_type", "value": "issue",
+                },
+                {
+                    "type": "metadata", "operator": "in",
+                    "property": "node_type", "value": ["issue", "task"],
+                },
+                {
+                    "type": "property", "operator": "equals",
+                    "property": "issue", "value": "issue",
+                },
+                {
+                    "type": "metadata", "operator": "contains",
+                    "property": "content", "value": "issue",
+                },
+            ],
+            "sorting": [{ "field": "issue", "direction": "asc" }],
+            "generatedBy": "user",
+            "viewConfig": { "lastView": "kanban", "kanban": { "groupBy": "issue" } },
+        });
+
+        let out = rewrite_view_step_ids(&properties, &renames);
+
+        assert_eq!(out["targetType"], "issue_2", "the target is a reference");
+        assert_eq!(
+            out["filters"][0]["value"], "issue_2",
+            "a node_type filter's value is a type id"
+        );
+        assert_eq!(
+            out["filters"][1]["value"],
+            serde_json::json!(["issue_2", "task"]),
+            "each id in a node_type `in` filter follows the rename; others are untouched"
+        );
+
+        assert_eq!(
+            out["filters"][2], properties["filters"][2],
+            "a property filter's field and value are vocabulary"
+        );
+        assert_eq!(
+            out["filters"][3], properties["filters"][3],
+            "a metadata filter on another field carries text, not a type id"
+        );
+        assert_eq!(
+            out["sorting"], properties["sorting"],
+            "a sort field is a field name"
+        );
+        assert_eq!(
+            out["viewConfig"], properties["viewConfig"],
+            "groupBy is a field name"
+        );
+    }
+
     #[test]
     fn rewrites_are_identity_without_renames() {
         let empty = HashMap::new();
@@ -672,5 +814,7 @@ mod tests {
         assert_eq!(rewrite_schema_step_ids(&schema, &empty), schema);
         assert_eq!(rewrite_update_schema_step_ids(&update, &empty), update);
         assert_eq!(rewrite_play_step_ids(&play, &empty), play);
+        let view = serde_json::json!({ "targetType": "cycle" });
+        assert_eq!(rewrite_view_step_ids(&view, &empty), view);
     }
 }

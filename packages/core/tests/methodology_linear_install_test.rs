@@ -19,7 +19,7 @@ use nodespace_core::methodology::{
 };
 use nodespace_core::models::Node;
 use nodespace_core::schema::{handle_create_schema, handle_update_schema};
-use nodespace_core::services::NodeService;
+use nodespace_core::services::{NodeService, QueryDefinition, QueryService};
 use std::sync::Arc;
 use tempfile::TempDir;
 
@@ -309,7 +309,8 @@ async fn install_playbook_reports_every_step_created_in_a_clean_workspace() -> R
     let expected = playbook.schemas.len()
         + playbook.field_value_extensions.len()
         + playbook.plays.len()
-        + playbook.skills.len();
+        + playbook.skills.len()
+        + playbook.views.len();
     assert_eq!(report.steps.len(), expected, "one report row per step");
 
     for step in &report.steps {
@@ -431,14 +432,14 @@ async fn installing_twice_re_keys_rather_than_failing_or_overwriting() -> Result
         "a second install should resolve collisions, not fail: {:?}",
         second.failure()
     );
-    // Every id-bearing step collides the second time: both schemas and all
-    // three play nodes. Vocabulary extensions do not — they target the
-    // re-keyed schema, which has no values yet — and skills reconcile by
-    // seed key rather than colliding.
+    // Every id-bearing step collides the second time: both schemas, all
+    // three play nodes, and every seeded view. Vocabulary extensions do not —
+    // they target the re-keyed schema, which has no values yet — and skills
+    // reconcile by seed key rather than colliding.
     assert_eq!(
         second.suffixed().len(),
-        playbook.schemas.len() + playbook.plays.len(),
-        "each schema and play collides on a second install and must be re-keyed; got {:?}",
+        playbook.schemas.len() + playbook.plays.len() + playbook.views.len(),
+        "each schema, play and view collides on a second install and must be re-keyed; got {:?}",
         second.suffixed()
     );
 
@@ -579,6 +580,7 @@ async fn a_later_schema_step_follows_an_earlier_step_s_re_key() -> Result<()> {
         field_value_extensions: vec![],
         plays: vec![],
         skills: vec![],
+        views: vec![],
     };
 
     let report = install_playbook(&service, &playbook).await;
@@ -672,6 +674,7 @@ async fn a_field_named_like_a_re_keyed_schema_is_not_rewritten() -> Result<()> {
         field_value_extensions: vec![],
         plays: vec![],
         skills: vec![],
+        views: vec![],
     };
 
     let report = install_playbook(&service, &playbook).await;
@@ -775,6 +778,7 @@ async fn a_vocabulary_extension_targets_the_field_the_playbook_wrote() -> Result
         }],
         plays: vec![],
         skills: vec![],
+        views: vec![],
     };
 
     let report = install_playbook(&service, &playbook).await;
@@ -884,5 +888,161 @@ async fn a_re_keyed_trigger_keeps_its_property_key_namespace_consistent() -> Res
         }
     }
 
+    Ok(())
+}
+
+/// A seeded view lands as a saved query the viewer opens as authored — a
+/// Kanban grouped by status — and executes against the playbook's own type.
+///
+/// Executed rather than just inspected: a view whose stored properties do not
+/// deserialize as a `QueryDefinition`, or whose target the query layer cannot
+/// resolve, is a board that opens empty with nothing to say why.
+#[tokio::test]
+async fn the_issues_board_is_seeded_as_a_saved_kanban_that_finds_issues() -> Result<()> {
+    let (service, _tmp) = test_service().await?;
+    let report = install_playbook(&service, &linear()).await;
+    assert!(report.success, "first failure: {:?}", report.failure());
+
+    let issue_id = service
+        .create_node(Node::new(
+            "issue".to_string(),
+            "Fix the thing".to_string(),
+            serde_json::json!({ "status": "backlog" }),
+        ))
+        .await?;
+    // A plain task must not appear on an issue board.
+    service
+        .create_node(Node::new(
+            "task".to_string(),
+            "Unrelated chore".to_string(),
+            serde_json::json!({ "status": "open" }),
+        ))
+        .await?;
+
+    let view = service
+        .get_node("linear-issues-by-status")
+        .await?
+        .expect("the issues board should be seeded");
+    // Stored properties are namespaced under the node's type.
+    assert_eq!(view.node_type, "query");
+    assert_eq!(view.content, "Issues by Status");
+    assert_eq!(view.properties["query"]["targetType"], "issue");
+    assert_eq!(view.properties["query"]["viewConfig"]["lastView"], "kanban");
+    assert_eq!(
+        view.properties["query"]["viewConfig"]["kanban"]["groupBy"],
+        "status"
+    );
+
+    let definition: QueryDefinition = serde_json::from_value(view.properties["query"].clone())?;
+    let results = QueryService::new(service.store().clone())
+        .execute(&definition)
+        .await?;
+    let ids: Vec<&str> = results.iter().map(|n| n.id.as_str()).collect();
+    assert_eq!(
+        ids,
+        vec![issue_id.as_str()],
+        "the board shows issues, and only issues"
+    );
+    Ok(())
+}
+
+/// A re-keyed schema takes its views with it. A workspace that already has an
+/// `issue` gets the playbook's issue type under a suffixed id, and the seeded
+/// board must target that — not silently filter the stranger's schema, which
+/// has no `status` to group by.
+#[tokio::test]
+async fn a_re_keyed_schema_retargets_the_views_seeded_over_it() -> Result<()> {
+    let (service, _tmp) = test_service().await?;
+
+    handle_create_schema(
+        &service,
+        serde_json::json!({
+            "name": "Issue",
+            "description": "A magazine issue",
+            "fields": [{ "name": "volume", "type": "number", "protection": "user" }],
+        }),
+    )
+    .await
+    .expect("pre-existing schema");
+
+    let report = install_playbook(&service, &linear()).await;
+    assert!(report.success, "first failure: {:?}", report.failure());
+
+    let new_id = report
+        .suffixed()
+        .into_iter()
+        .find(|(requested, _)| *requested == "issue")
+        .map(|(_, created)| created.to_string())
+        .expect("the issue schema should have re-keyed");
+
+    let view = service
+        .get_node("linear-issues-by-status")
+        .await?
+        .expect("the issues board should be seeded");
+    assert_eq!(
+        view.properties["query"]["targetType"], new_id,
+        "the board must follow the re-key to the playbook's own issue type"
+    );
+    assert_eq!(
+        view.properties["query"]["viewConfig"]["kanban"]["groupBy"], "status",
+        "groupBy is a field name and must not be rewritten"
+    );
+
+    let cycles = service
+        .get_node("linear-cycles")
+        .await?
+        .expect("the cycles view should be seeded");
+    assert_eq!(
+        cycles.properties["query"]["targetType"], "cycle",
+        "a view over a schema that did not collide is left alone"
+    );
+    Ok(())
+}
+
+/// Every field a seeded view names exists on the type it targets, and a
+/// Kanban's `groupBy` is an enum.
+///
+/// The view's JSON is otherwise unchecked vocabulary: a misspelt `groupBy`, or
+/// one naming a free-text field, opens the board on the group-by picker rather
+/// than the columns the playbook authored. Checked against the effective field
+/// set — inherited fields included, since `issue` groups by the `status` it
+/// gets from `task` — which is the same set the viewer offers.
+#[tokio::test]
+async fn every_view_names_fields_its_target_type_has() -> Result<()> {
+    let (service, _tmp) = test_service().await?;
+    let playbook = linear();
+    let report = install_playbook(&service, &playbook).await;
+    assert!(report.success, "first failure: {:?}", report.failure());
+
+    for view in &playbook.views {
+        let target = view.definition["targetType"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{} must name a targetType", view.view_id));
+        let (fields, _, _) = service.resolve_field_owners(target).await?;
+        let field = |name: &str| fields.iter().find(|f| f.name == name);
+
+        if let Some(group_by) = view.view_config["kanban"]["groupBy"].as_str() {
+            let group_field = field(group_by).unwrap_or_else(|| {
+                panic!(
+                    "{}: groups by `{group_by}`, which `{target}` lacks",
+                    view.view_id
+                )
+            });
+            assert_eq!(
+                group_field.field_type, "enum",
+                "{}: a Kanban's columns come from an enum's values",
+                view.view_id
+            );
+        }
+
+        for sort in view.definition["sorting"].as_array().into_iter().flatten() {
+            let sort_field = sort["field"].as_str().expect("a sort names its field");
+            assert!(
+                field(sort_field).is_some(),
+                "{}: sorts by `{sort_field}`, which `{target}` lacks",
+                view.view_id
+            );
+        }
+    }
     Ok(())
 }

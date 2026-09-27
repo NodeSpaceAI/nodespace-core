@@ -1,9 +1,9 @@
 //! Methodology playbooks — installable, first-party work-tracking setups.
 //!
 //! A playbook composes NodeSpace's existing authoring primitives (schema
-//! creation, enum-vocabulary extension, Play installation, skill seeding)
-//! into a setup a user recognizes on day one — "Linear-style", and later
-//! others. It adds no platform capability: every step is a call a user or an
+//! creation, enum-vocabulary extension, Play installation, skill seeding,
+//! saved-view seeding) into a setup a user recognizes on day one —
+//! "Linear-style", and later others. It adds no platform capability: every step is a call a user or an
 //! agent could already make by hand.
 //!
 //! # First-party content, installed on demand
@@ -55,6 +55,11 @@ pub struct MethodologyPlaybook {
     /// `skills/<id>/` and loaded with [`skills::playbook_skill`] — see
     /// [`skills`] for the file format.
     pub skills: Vec<NodeTemplate>,
+    /// Saved views — pre-configured boards and lists — seeded as `query`
+    /// nodes, so the install lands with something to look at rather than a
+    /// type the user has to build a view over by hand. Installed last:
+    /// every view targets a schema, which must exist first.
+    pub views: Vec<ViewStep>,
 }
 
 /// One `create_schema` call.
@@ -105,6 +110,37 @@ impl PlayStep {
             "rules": self.rules,
             "_seed": { "default_rules": self.rules },
         })
+    }
+}
+
+/// One saved view, installed as a `query` node.
+///
+/// A saved query is an ordinary node whose properties carry both *what* it
+/// shows (a `QueryDefinition`) and *how* it renders (`viewConfig`), so the
+/// board travels with the node — a seeded Kanban opens as a Kanban, grouped
+/// the way the playbook authored it, with no per-user setup.
+pub struct ViewStep {
+    /// Stable id for the query node.
+    pub view_id: &'static str,
+    /// Display name, stored as the node's content.
+    pub name: &'static str,
+    /// A [`crate::services::QueryDefinition`] payload — `targetType`,
+    /// `filters`, and optionally `sorting` and `limit`.
+    pub definition: serde_json::Value,
+    /// The view configuration: `lastView` (`list` | `table` | `kanban`), plus
+    /// `kanban.groupBy` naming the field whose values become columns.
+    pub view_config: serde_json::Value,
+}
+
+impl ViewStep {
+    /// The query node's properties, in the shape the query viewer reads and
+    /// writes when a user saves a view by hand: the definition's keys at the
+    /// top level, `generatedBy`, and `viewConfig`.
+    pub fn properties(&self) -> serde_json::Value {
+        let mut properties = self.definition.clone();
+        properties["generatedBy"] = serde_json::json!("user");
+        properties["viewConfig"] = self.view_config.clone();
+        properties
     }
 }
 
@@ -218,6 +254,51 @@ mod tests {
                     props.get("rules"),
                     "{}'s shipped default must match its live rules",
                     play.play_id
+                );
+            }
+        }
+    }
+
+    /// A seeded view must be a query the backend will execute and a view
+    /// config the viewer will honour. Both are plain JSON here, so a typo in
+    /// either is otherwise invisible until someone opens the board.
+    #[test]
+    fn every_view_is_an_executable_query_with_a_renderable_view_config() {
+        use crate::services::QueryDefinition;
+
+        for playbook in all_playbooks() {
+            for view in &playbook.views {
+                let definition: QueryDefinition = serde_json::from_value(view.definition.clone())
+                    .unwrap_or_else(|e| panic!("{}: not a QueryDefinition: {e}", view.view_id));
+                definition
+                    .validate_identifiers()
+                    .unwrap_or_else(|e| panic!("{}: {e}", view.view_id));
+
+                let last_view = view.view_config["lastView"].as_str();
+                assert!(
+                    matches!(last_view, Some("list" | "table" | "kanban")),
+                    "{}: lastView must be list, table or kanban, got {last_view:?}",
+                    view.view_id
+                );
+                if last_view == Some("kanban") {
+                    assert!(
+                        view.view_config["kanban"]["groupBy"].is_string(),
+                        "{}: a kanban view needs a groupBy to derive its columns",
+                        view.view_id
+                    );
+                }
+
+                // A misspelt target is a valid identifier and an empty board.
+                let target = definition.target_type.as_str();
+                let known = playbook.schemas.iter().any(|s| s.schema_id == target)
+                    || crate::models::core_schemas::get_core_schemas()
+                        .iter()
+                        .any(|s| s.id == target);
+                assert!(
+                    known,
+                    "{}: targets `{target}`, which is neither a core type nor one this \
+                     playbook creates",
+                    view.view_id
                 );
             }
         }

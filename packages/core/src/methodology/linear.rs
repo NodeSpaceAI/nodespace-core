@@ -27,7 +27,9 @@
 //! to `open`.
 
 use crate::methodology::skills::playbook_skill;
-use crate::methodology::{FieldValueExtension, MethodologyPlaybook, PlayStep, SchemaStep};
+use crate::methodology::{
+    FieldValueExtension, MethodologyPlaybook, PlayStep, SchemaStep, ViewStep,
+};
 use serde_json::json;
 
 /// Days a cycle spans unless the user edits `cycle.duration_days`.
@@ -68,6 +70,7 @@ pub fn playbook() -> MethodologyPlaybook {
             playbook_skill(include_str!("skills/linear/working-with-cycles.md")),
             playbook_skill(include_str!("skills/linear/issue-validation-rules.md")),
         ],
+        views: vec![issues_by_status_view(), cycles_view()],
     }
 }
 
@@ -441,6 +444,48 @@ fn blocker_gate() -> PlayStep {
                 },
             }],
         }]),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Views
+// ---------------------------------------------------------------------------
+
+/// Issues by Status — the board Linear opens on.
+///
+/// Grouped by the inherited `status`, so the columns are the extended
+/// vocabulary (`backlog`, `triage`, `in_review` alongside the base values)
+/// rather than anything this view has to declare.
+fn issues_by_status_view() -> ViewStep {
+    ViewStep {
+        view_id: "linear-issues-by-status",
+        name: "Issues by Status",
+        definition: json!({
+            "targetType": "issue",
+            "filters": [],
+        }),
+        view_config: json!({
+            "lastView": "kanban",
+            "kanban": { "groupBy": "status" },
+        }),
+    }
+}
+
+/// Cycles, most recent first.
+///
+/// A table rather than a board: a cycle has no stored status to group by
+/// (see [`cycle_schema`]), and its dates are what distinguishes one from the
+/// next.
+fn cycles_view() -> ViewStep {
+    ViewStep {
+        view_id: "linear-cycles",
+        name: "Cycles",
+        definition: json!({
+            "targetType": "cycle",
+            "filters": [],
+            "sorting": [{ "field": "start_date", "direction": "desc" }],
+        }),
+        view_config: json!({ "lastView": "table" }),
     }
 }
 
