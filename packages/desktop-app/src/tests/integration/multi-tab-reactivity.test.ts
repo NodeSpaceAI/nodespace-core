@@ -94,26 +94,21 @@ describe('Multi-Tab/Pane Reactivity', () => {
       expect(viewer2.findNode('shared-node-1')?.content).toBe('Updated content from viewer 1');
     });
 
-    it('should update all viewers within milliseconds (no network round-trip)', async () => {
+    it('should propagate a viewer update to the shared store (no network round-trip)', async () => {
       // Setup
-      const node = createTestNode('perf-node', 'Performance test content');
+      const node = createTestNode('propagation-node', 'Original content');
       sharedNodeStore.setNode(node, { type: 'database', reason: 'test-setup' });
 
       const viewer1 = createReactiveNodeService(createMockEvents() as never);
       viewer1.initializeNodes([node]);
 
-      // Act: Measure update propagation time
-      const startTime = performance.now();
-      viewer1.updateNodeContent('perf-node', 'New content');
+      // Act
+      viewer1.updateNodeContent('propagation-node', 'New content');
       await waitForSubscribers();
-      const endTime = performance.now();
 
-      // Assert: Update should propagate in < 10ms (no network delay)
-      const propagationTime = endTime - startTime;
-      expect(propagationTime).toBeLessThan(10);
-
-      // Verify content was updated
-      expect(sharedNodeStore.getNode('perf-node')?.content).toBe('New content');
+      // Assert: the store, and the viewer reading it, see the update
+      expect(sharedNodeStore.getNode('propagation-node')?.content).toBe('New content');
+      expect(viewer1.findNode('propagation-node')?.content).toBe('New content');
     });
 
     it('should maintain version tracking across viewers', async () => {

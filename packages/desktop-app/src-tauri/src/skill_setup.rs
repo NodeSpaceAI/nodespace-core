@@ -1156,7 +1156,7 @@ mod tests {
     /// registered, so this exercises the fallback branch and asserts it
     /// lands on the real `packages/skill/dist/install.js` built by
     /// `bun run build:skill` (staged before this test runs — see
-    /// scripts/test-gate.ts and CLAUDE.md's Rust test instructions).
+    /// scripts/gate-stage.ts and CLAUDE.md's Rust test instructions).
     #[test]
     fn resolve_installer_path_falls_back_to_source_checkout_dist() {
         let app = tauri::test::mock_app();
@@ -1578,7 +1578,7 @@ mod tests {
     /// they should. Requires `bun` on $PATH (this repo is Bun-only, so the
     /// test/pre-push environment always has it — see CLAUDE.md) and
     /// `packages/skill` already built (`bun run build:skill`, staged by
-    /// scripts/test-gate.ts before this runs).
+    /// scripts/gate-stage.ts's skill-installer tier before this runs).
     #[test]
     fn run_skill_installer_actually_installs_into_an_isolated_home() {
         let app = tauri::test::mock_app();

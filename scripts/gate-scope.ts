@@ -1,20 +1,20 @@
 #!/usr/bin/env bun
-// Decides which stages of the pre-push gate (scripts/test-gate.ts, ADR-047)
-// a push can affect.
+// Decides which test tiers a change reaches, for `bun run test:changed`
+// (scripts/test-changed.ts, ADR-047).
 //
-// The gate used to run the whole pyramid on every push, so a one-line Svelte
-// change paid for compiling and testing the entire Rust workspace. Scoping is
-// safe only if it is conservative, so the rule runs one way: a stage is
-// skipped only when no changed file can reach it. A file this module does not
-// recognize, or a change to the gate's own machinery, runs everything.
+// Running the whole pyramid for a one-line Svelte change pays for compiling
+// and testing the entire Rust workspace. Scoping is safe only if it is
+// conservative, so the rule runs one way: a tier is skipped only when no
+// changed file can reach it. A file this module does not recognize, or a
+// change to the gate's own machinery, runs everything.
 //
 // "Changed" is the diff from the merge-base with origin/main to the working
-// tree — every commit this branch would push plus anything uncommitted, since
-// the tests run against the working tree, not against HEAD.
+// tree — every commit on this branch plus anything uncommitted, since the
+// tests run against the working tree, not against HEAD.
 
 import { $ } from "bun";
 
-export const FULL_ENV_VAR = "NODESPACE_GATE_FULL";
+export const FULL_ENV_VAR = "NODESPACE_TEST_ALL";
 
 export interface GateScope {
   /** Why everything runs, when it does; null for a scoped run. */
@@ -30,9 +30,6 @@ export interface GateScope {
 }
 
 const ALL: Omit<GateScope, "fullReason"> = { frontend: true, rust: true, skill: true, scripts: true };
-
-/** Every stage, for the merge gate, which never scopes. */
-export const FULL_SCOPE: GateScope = { fullReason: "merge gate", ...ALL };
 
 /** Crates of the Rust workspace, whole directories: fixtures and SQL count. */
 const RUST_DIRS = [
@@ -64,6 +61,8 @@ const GATE_FILES = [
   "scripts/gate-scope.ts",
   "scripts/gate-lock.ts",
   "scripts/gate-output.ts",
+  "scripts/gate-stage.ts",
+  "scripts/test-changed.ts",
   "scripts/test-app-units.ts",
   "scripts/setup-rust-tooling.ts",
   "scripts/merge-pr.ts",
@@ -78,13 +77,11 @@ function isInert(file: string): boolean {
   return file.endsWith(".md") || file.startsWith(".claude/") || file === ".gitignore";
 }
 
-/** Maps changed files to the stages they can affect. Pure, for testing. */
+/**
+ * Maps changed files to the tiers they can reach. Pure, for testing. An empty
+ * diff reaches none: main already passed the merge gate as it stands.
+ */
 export function classify(files: string[]): GateScope {
-  if (files.length === 0) {
-    // Nothing differs from main — e.g. pushing a fresh branch. Scoping an
-    // empty diff would skip everything; run it all instead.
-    return { fullReason: "no changes against origin/main", ...ALL };
-  }
   const scope: GateScope = { fullReason: null, frontend: false, rust: false, skill: false, scripts: false };
   for (const file of files) {
     const gateFile = GATE_FILES.find((g) => (g.endsWith("/") ? file.startsWith(g) : file === g));
@@ -133,7 +130,7 @@ async function changedFiles(): Promise<string[]> {
   return [...new Set(all.filter((f) => f !== ""))];
 }
 
-/** The scope for this push. Anything that stops it from being computed runs everything. */
+/** The scope of the working diff. Anything that stops it from being computed runs everything. */
 export async function gateScope(): Promise<GateScope> {
   if (process.env[FULL_ENV_VAR]) return { fullReason: `${FULL_ENV_VAR} is set`, ...ALL };
   try {
@@ -147,5 +144,5 @@ export function describeScope(scope: GateScope): string {
   if (scope.fullReason !== null) return `every tier — ${scope.fullReason}`;
   const on = (Object.keys(ALL) as (keyof typeof ALL)[]).filter((k) => scope[k]);
   const off = (Object.keys(ALL) as (keyof typeof ALL)[]).filter((k) => !scope[k]);
-  return `scoped to this push's changes — running: ${on.join(", ") || "lint only"}; skipping: ${off.join(", ") || "nothing"} (${FULL_ENV_VAR}=1 runs everything)`;
+  return `scoped to this branch's changes — running: ${on.join(", ") || "nothing"}; skipping: ${off.join(", ") || "nothing"} (${FULL_ENV_VAR}=1 runs everything)`;
 }

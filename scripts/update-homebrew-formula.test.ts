@@ -3,7 +3,7 @@
 // GitHub-talking functions (resolveFormulaDigests's fetchReleaseAssets call,
 // fetchTapFormulaVersion, checkFormulaDrift, pushFormulaUpdate) are
 // intentionally not exercised here -- this suite runs as part of
-// `bun run test:scripts` / `test:all` (the pre-push gate), which must stay
+// `bun run test:scripts` / `test:all` (the merge gate), which must stay
 // fast and deterministic, not depend on network or `gh` auth. See
 // scripts/update-homebrew-cask.test.ts for the same pattern applied to the
 // sibling cask-sync script.

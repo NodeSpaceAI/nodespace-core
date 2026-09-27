@@ -14,12 +14,7 @@ import { SharedNodeStore } from '../../lib/services/shared-node-store.svelte';
 import { backendAdapter } from '../../lib/services/backend-adapter';
 import { conflictNotifications } from '../../lib/stores/conflict-notifications.svelte';
 import type { Node } from '../../lib/types';
-import {
-  CASCADE_SETTLE_TIMEOUT_MS,
-  DEBOUNCED_WRITE_WAIT_MS,
-  FLUSH_PENDING_TIMEOUT_MS,
-  PERSISTENCE_DEBOUNCE_MS
-} from '../utils/test-constants';
+import { CASCADE_SETTLE_TIMEOUT_MS, PERSISTENCE_DEBOUNCE_MS } from '../utils/test-constants';
 
 const makeNode = (id: string, content: string, version = 1): Node => ({
   id,
@@ -31,6 +26,10 @@ const makeNode = (id: string, content: string, version = 1): Node => ({
   properties: {},
   mentions: []
 });
+
+// Own timeout of the hang regression test below; its flush is given a longer
+// one so that a hang surfaces as this timeout firing.
+const HANG_TEST_TIMEOUT_MS = 10_000;
 
 const dbSource = { type: 'database' as const, reason: 'initial-load' };
 const viewerSource = { type: 'viewer' as const, viewerId: 'pane-1' };
@@ -202,19 +201,14 @@ describe('Persistence serial writer regression', () => {
     store.updateNode(nodeId, { content: 'abc' }, viewerSource);
     expect(store.hasPendingSave(nodeId)).toBe(true);
 
-    // Must not hang: flushAllPendingSaves races each node's promise
-    // against its OWN 5s internal timeout. Without the fix, the collapsed
-    // queued write's promise never settles, so this call only "succeeds"
-    // by burning the full internal timeout — asserting on elapsed time
-    // catches that even though the call eventually resolves either way.
-    const flushStart = performance.now();
-    const failed = await store.flushAllPendingSaves(FLUSH_PENDING_TIMEOUT_MS);
-    const flushDuration = performance.now() - flushStart;
-
-    // A correctly-settled promise resolves once the in-flight RPC's own
-    // latency elapses — bounded by that latency plus settle margin, and
-    // nowhere near the internal flush timeout a hung promise would burn.
-    expect(flushDuration).toBeLessThan(occRpcLatencyMs + DEBOUNCED_WRITE_WAIT_MS);
+    // Must not hang: flushAllPendingSaves races each node's promise against
+    // its own timeout, and reports a timed-out node as failed exactly like a
+    // rejected one. Without the fix the collapsed queued write's promise never
+    // settles, so the flush would only return by burning that timeout. Give it
+    // a timeout longer than this test's own: the flush can then only return
+    // because the promise settled, and a hang fails the test by timing out
+    // rather than by a wall-clock threshold that machine load can also trip.
+    const failed = await store.flushAllPendingSaves(HANG_TEST_TIMEOUT_MS * 2);
 
     // The queued write must be reported as settled (rejected, since it was
     // cancelled), not silently forgotten.
@@ -224,5 +218,5 @@ describe('Persistence serial writer regression', () => {
     // `true` here would mean database broadcasts are permanently skipped for
     // this node (see setNode's skip-while-editing guard).
     expect(store.hasPendingSave(nodeId)).toBe(false);
-  }, 10000);
+  }, HANG_TEST_TIMEOUT_MS);
 });

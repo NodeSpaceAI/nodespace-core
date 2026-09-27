@@ -1,7 +1,6 @@
-// Covers the origin/main staleness warning: the pre-push gate
-// (scripts/test-gate.ts, ADR-047) has no awareness of origin/main, so a
-// green gate only proves the branch passes on its own base, not on the
-// merge result. These tests inject fake fetch/countBehind implementations
+// Covers the origin/main staleness warning: `bun run test:changed`
+// (scripts/test-changed.ts, ADR-047) tests the branch on its own base, not
+// on the merge result. These tests inject fake fetch/countBehind implementations
 // so they exercise the behind/not-behind/fetch-failed branches without
 // touching the network or the real git repo.
 import { describe, expect, test } from "bun:test";

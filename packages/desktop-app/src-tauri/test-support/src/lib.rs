@@ -25,7 +25,7 @@
 //!
 //! Running this crate's tests directly with a bare `cargo test -p
 //! nodespace-app` uses cargo's default per-binary test concurrency, NOT the
-//! `--test-threads=1` the pre-push gate (`scripts/test-gate.ts`) applies —
+//! `--test-threads=1` the merge gate (`scripts/test-gate.ts`) applies —
 //! see that file's comment for why serializing matters here. Prefer `cargo
 //! test -p nodespace-app -- --test-threads=1` when iterating locally on more
 //! than one test in the same file to avoid the same daemon-spawn contention

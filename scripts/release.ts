@@ -7,6 +7,7 @@
  *   bun run release                     # Interactive release (prompts for version)
  *   bun run release v0.1.0              # Create release with specified version
  *   bun run release v0.1.0 --draft      # Create as draft (builds run once published)
+ *   bun run release v0.1.0 --skip-perf  # Skip the pre-release performance benchmarks
  *   bun run release:list                # List recent releases
  *   bun run release:watch               # Watch build progress
  */
@@ -221,6 +222,55 @@ async function createRelease(config: ReleaseConfig): Promise<void> {
   }
 }
 
+/** Lines of `test:perf` output printed when the benchmarks fail. */
+const PERF_OUTPUT_TAIL_LINES = 40;
+
+/**
+ * Pull the failing benchmarks out of vitest's output: its "Failed Tests"
+ * summary names each one on a `FAIL  <file> > <suite> > <test>` line.
+ */
+function failingBenchmarks(output: string): string[] {
+  return output
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.startsWith("FAIL "))
+    .map((line) => line.slice("FAIL ".length).trim());
+}
+
+/**
+ * Run the wall-clock performance benchmarks (`test:perf`, full scale).
+ *
+ * They run here, on the releaser's machine just before a release, and never in
+ * the push check or merge gate: under machine contention their timings are
+ * unbounded, so a gate would fail them for reasons unrelated to the change.
+ * GitHub's shared runners are noisy for the same reason, so release.yml does
+ * not run them either. Returns whether they passed; on failure prints the
+ * failing benchmarks and the tail of the output.
+ */
+function runPerfBenchmarks(): boolean {
+  console.log("\n⏱️  Running performance benchmarks (test:perf)...");
+  const result = Bun.spawnSync(["bun", "run", "--cwd", "packages/desktop-app", "test:perf"], {
+    stdout: "pipe",
+    stderr: "pipe",
+    env: { ...process.env, NO_COLOR: "1" }
+  });
+
+  if (result.exitCode === 0) {
+    console.log("✅ Performance benchmarks passed");
+    return true;
+  }
+
+  const output = `${result.stdout.toString()}\n${result.stderr.toString()}`;
+  const failures = failingBenchmarks(output);
+  console.error("\n❌ Performance benchmarks failed:");
+  for (const failure of failures) {
+    console.error(`   - ${failure}`);
+  }
+  console.error(`\n--- last ${PERF_OUTPUT_TAIL_LINES} lines of test:perf output ---`);
+  console.error(output.trimEnd().split("\n").slice(-PERF_OUTPUT_TAIL_LINES).join("\n"));
+  return false;
+}
+
 /**
  * List recent releases
  */
@@ -339,6 +389,12 @@ async function main() {
   bun run release v0.1.0 --title "Custom Title"
   bun run release v0.1.0 --notes "Custom release notes"
   bun run release v0.1.0 --notes-file CHANGELOG.md
+  bun run release v0.1.0 --skip-perf  # Skip the performance benchmarks
+
+  Creating a release first runs the performance benchmarks (test:perf) on
+  this machine, and refuses to release if any fail. They are not part of the
+  push check or merge gate, so this is where they run. Pass --skip-perf only
+  for a run you know was noisy (e.g. another build was running).
 
 📋 Manage Releases:
   bun run release:list                # List recent releases
@@ -413,6 +469,16 @@ async function main() {
           config.notes = readFileSync(args[notesFileIndex + 1], "utf-8");
         }
 
+        // Benchmarks run first, before the version bump is committed and
+        // pushed, so a failure leaves nothing to undo.
+        if (args.includes("--skip-perf")) {
+          console.log("⚠️  Skipping performance benchmarks (--skip-perf)");
+        } else if (!runPerfBenchmarks()) {
+          console.error("\nRefusing to release. If the machine was busy, rerun on a quiet one;");
+          console.error("if you know the run was noisy, override with --skip-perf.");
+          process.exit(1);
+        }
+
         // Update version in config files before creating release
         console.log("📝 Updating version in config files...");
         updateVersion(version);
@@ -474,4 +540,4 @@ if (import.meta.main) {
   main();
 }
 
-export { createRelease, listReleases, watchWorkflow, updateVersion };
+export { createRelease, listReleases, watchWorkflow, updateVersion, failingBenchmarks };

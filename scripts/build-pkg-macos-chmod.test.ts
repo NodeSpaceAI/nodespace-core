@@ -15,7 +15,7 @@
 // block, and executes it under bash against fixture trees — so a future edit
 // that drops the chmod, the nullglob guard, or the empty-check regresses
 // this test under `bun test scripts/` (part of `test:all`, enforced by the
-// pre-push gate).
+// merge gate).
 import { describe, expect, test } from "bun:test";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";

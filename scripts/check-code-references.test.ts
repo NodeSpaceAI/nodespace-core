@@ -198,7 +198,7 @@ describe("real-repo ratchet", () => {
     // a decrease (someone pays down the backlog) passes silently; only an
     // increase — new drift — fails this test. This is the check's actual
     // enforcement path (wired in via bun test scripts/ -> test:scripts ->
-    // test:all -> the pre-push gate) — unlike the `if (import.meta.main)`
+    // test:all -> the merge gate) — unlike the `if (import.meta.main)`
     // block below, a bare toBeLessThanOrEqual() here would fail with only
     // "Expected: <= N, Received: N+1" and no indication of what that means
     // or how to fix it, so this throws the same actionable message the CLI

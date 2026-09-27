@@ -43,7 +43,7 @@ const MODEL_FILENAME: &str = "gemma-4-E4B-it-Q4_K_M.gguf";
 /// No provisioning step downloads this model in bun install/test-gate.ts
 /// today. Tests that need it already present skip cleanly with a clear
 /// message rather than silently kicking off a live multi-gigabyte
-/// HuggingFace fetch and hanging the pre-push gate on a machine that hasn't
+/// HuggingFace fetch and hanging the merge gate on a machine that hasn't
 /// run `model load` for it before.
 macro_rules! skip_if_model_absent {
     () => {

@@ -1,5 +1,5 @@
-// Covers the abort-vs-failure classifier for the pre-push gate's reporting
-// (scripts/test-gate.ts, ADR-047): a load-induced process abort (SIGSEGV
+// Covers the abort-vs-failure classifier for the gate's stage reporting
+// (scripts/gate-stage.ts, ADR-047): a load-induced process abort (SIGSEGV
 // under parallel-test resource contention) and a genuine assertion failure
 // currently look identical in the gate's output, wasting time re-running a
 // multi-minute suite to tell them apart. These tests exercise the pattern

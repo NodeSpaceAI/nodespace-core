@@ -75,7 +75,7 @@ const SKILL_RESOURCES: &str = "resources/skill/**/*";
 /// `tauri_build::build()` copies every declared resource and sidecar into the
 /// build output and fails on a missing one. All of them are gitignored build
 /// output, so any build of this crate in a fresh worktree — clippy,
-/// `cargo check`, `cargo test`, the pre-push gate — used to need them staged
+/// `cargo check`, `cargo test`, the merge gate — used to need them staged
 /// first (or copied in from another checkout, which risks a stale daemon),
 /// although none of those builds runs the bundled app. A debug build
 /// therefore declares only what is staged, and says so.

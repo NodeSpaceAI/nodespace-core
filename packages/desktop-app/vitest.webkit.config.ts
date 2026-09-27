@@ -21,7 +21,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  * the proof that the browser tier is genuinely engine-agnostic.
  *
  * This tier is NIGHTLY and NON-BLOCKING — it is deliberately kept out of
- * `test:all` and the pre-push gate (see `.github/workflows/nightly-webkit.yml`).
+ * `test:all` and the merge gate (see `.github/workflows/nightly-webkit.yml`).
  *
  * Run with: bun run test:webkit
  * Requires one-time setup: bunx playwright install webkit

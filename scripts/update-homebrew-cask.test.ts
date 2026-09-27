@@ -3,7 +3,7 @@
 // predicate. The GitHub-talking functions (fetchReleaseAssets,
 // downloadAndHash, checkTapDrift, pushCaskUpdate) are intentionally not
 // exercised here -- this suite runs as part of `bun run test:scripts` /
-// `test:all` (the pre-push gate), which must stay fast and deterministic,
+// `test:all` (the merge gate), which must stay fast and deterministic,
 // not depend on network or `gh` auth.
 import { describe, expect, test } from "bun:test";
 import {

@@ -1,6 +1,7 @@
 // Enforces the app-version single source of truth. If any of
 // the four app-version fields drifts from the canonical tauri.conf.json, this test
-// fails under `bun test scripts/` (part of `test:all`) so the pre-push gate catches
+// fails under `bun test scripts/` (part of `test:all`, run by the merge gate; the
+// push check runs check-version-sync.ts itself) so the gates catch
 // it before a stale-versioned build can ship.
 import { describe, expect, test } from "bun:test";
 import { CANONICAL, checkAppVersionSync } from "./check-version-sync";

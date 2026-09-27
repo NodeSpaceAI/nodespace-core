@@ -332,25 +332,16 @@ describe('Node Management Integration Tests', () => {
     });
   });
 
-  describe('Performance and Scalability', () => {
-    it('handles reasonable number of nodes efficiently', async () => {
+  describe('Scalability', () => {
+    it('bulk-creates many nodes and finds them all by search', async () => {
       const nodeCount = 100;
-      const start = Date.now();
 
       // Create many nodes
       const contents = Array.from({ length: nodeCount }, (_, i) => `Node ${i + 1}`);
       await nodeManager.bulkCreateNodes(contents);
 
-      const createTime = Date.now() - start;
-      expect(createTime).toBeLessThan(5000); // Should complete in under 5 seconds
-
-      // Search should be fast
-      const searchStart = Date.now();
       const results = await api.searchNodes('Node');
-      const searchTime = Date.now() - searchStart;
-
       expect(results).toHaveLength(nodeCount);
-      expect(searchTime).toBeLessThan(100); // Should complete in under 100ms
     });
 
     it('memory usage remains reasonable', () => {

@@ -186,6 +186,7 @@ IMPORTANT SUB-AGENT INSTRUCTIONS:
 
 3. **Testing**
    ```bash
+   bun run test:changed      # The tiers your working diff reaches — run before committing
    bun run test              # Fast unit tests, Happy-DOM — use during development
    bun run test:unit         # Same as above
    bun run test:watch        # TDD watch mode
@@ -194,13 +195,14 @@ IMPORTANT SUB-AGENT INSTRUCTIONS:
    bun run test:all          # Unit + scripts + skill + Rust (nextest)
    bun run test:all:coverage # Same, with coverage instrumentation (reporting only)
    bun run test:db           # Full SQLite integration (before merging critical changes)
-   bun run test:perf         # Full performance validation (large datasets)
+   bun run test:perf         # Performance benchmarks — run at release time, never in the gates
    bun run test:coverage
    ```
 
+   - **Tests are your job, not the push's.** A push only lints; the merge gate is the single full run. Run `bun run test` or `bun run test:changed` while you work and before you commit — a failure found at merge time costs a full slot in the one-at-a-time merge queue. `test:changed` runs the tiers `scripts/gate-scope.ts` says your diff against `origin/main` reaches (a change it doesn't recognize, or to the gate itself, runs every tier; `NODESPACE_TEST_ALL=1` forces that). Its Rust tier waits while a merge gate is running and holds the machine slot while it runs; the other tiers take no lock and run at low priority.
    - **Happy-DOM** (`bun run test`): 99% of tests — logic, services, utilities
    - **Browser mode** (`bun run test:browser`): only for real focus/blur or browser-specific DOM APIs; requires `bunx playwright install chromium` (the gate installs it when missing)
-   - **Performance**: fast mode (default) for daily dev, `bun run test:perf` before perf-critical merges
+   - **Performance**: `src/tests/performance/**` is excluded from the unit run; wall-clock thresholds fail under machine load for reasons unrelated to the change. `bun run release` runs `test:perf` on the releaser's quiet machine before it creates a release (`--skip-perf` overrides a run known to be noisy). Don't add timing assertions to correctness tests
    - **Database mode**: full integration validation before merging critical changes
 
 4. **Quality Checks & PR**
@@ -211,10 +213,9 @@ IMPORTANT SUB-AGENT INSTRUCTIONS:
    bun run gh:pr <number>    # Creates PR, updates status to "In Review"
    ```
 
-   > Do **not** run `bun run test:all` by hand here — the push check runs the tiers your change
-   > reaches, and the merge gate runs everything. Run the narrower `bun run test` during
-   > development for fast feedback; let the gate be the gate. `quality:fix` stays manual
-   > because it rewrites files, which you want done before you commit.
+   > Do **not** run `bun run test:all` by hand here — `bun run test:changed` covers what your
+   > change reaches, and the merge gate runs everything. `quality:fix` stays manual because it
+   > rewrites files, which you want done before you commit.
 
    > ⚠️ **`bun run gh:pr` infers the head branch from the LOCAL branch name**, which `EnterWorktree` prefixes with `worktree-`. It therefore fails with `Validation Failed: {"field":"head","code":"invalid"}` against a remote branch pushed without that prefix. Create the PR directly instead, then set status:
    > ```bash
@@ -225,11 +226,11 @@ IMPORTANT SUB-AGENT INSTRUCTIONS:
    >
    > The Status field accepts exactly six values — `Backlog`, `Todo`, `In Progress`, `In Review`, `Done`, `Blocked` — each mapped to a single-select option ID on the project board. Anything else is rejected; there is no "Ready for Review".
 
-   > ⚠️ **The test gate has two modes (`scripts/test-gate.ts`, ADR-047).**
-   > - **`git push` runs the push check:** lint, plus only the unit tiers your changes reach (frontend, browser, scripts, skill, Rust via nextest). A frontend-only push skips all Rust; a docs-only push runs lint alone. Anything the scoper doesn't recognize, or a change to the gate itself, runs every tier. `NODESPACE_GATE_FULL=1` forces that.
-   > - **`bun run merge <PR#>` runs the full pyramid once**, on the PR rebased onto current main — every unit tier plus the daemon build, SKILL.md drift check, e2e and Tauri-seam tests — then squash-merges. It is how PRs are merged (see step 6).
+   > ⚠️ **The gate has two modes (`scripts/test-gate.ts`, ADR-047).**
+   > - **`git push` runs lint only** — scripts lint/typecheck, the design-token check and the app-version drift check. Seconds, no lock, no tests. A push needs no long timeout.
+   > - **`bun run merge <PR#>` runs the full pyramid once**, on the PR rebased onto current main — every unit tier plus the daemon build, SKILL.md drift check, e2e and Tauri-seam tests — then squash-merges. It is the only automated test run, and how PRs are merged (see step 6).
    >
-   > A gate lints and compiles first, at low priority and outside the test lock (compiles go one gate at a time through a separate compile slot), then queues for the machine-wide **test lock** only to run tests — first come first served, with merge gates ahead of push checks. It prints one line per stage; full output goes to a log file whose path it prints (and the tail, on failure). Gate builds skip incremental compilation, and the gate refuses to start with under 20 GB free — every worktree's `target/` holds its own build output, so remove finished worktrees rather than letting them accumulate. Give pushes and merges a long timeout (10+ minutes) or run them in the background and wait — a command that times out before the gate finishes looks identical to a real failure but isn't one. `bun install` installs pinned cargo-nextest and sccache into the repo's `.tools/` (`scripts/setup-rust-tooling.ts`), shared by every worktree through a `.tools` link — nothing is installed or configured outside the repository, and only gate builds use sccache; sidecar binaries never need staging or copying in. Do not reach for `--no-verify` to work around slowness — it's reserved for WIP Handoff Commits.
+   > The merge gate holds the machine-wide **machine slot** from its first compile until it exits, so no other Rust build or Rust test run (a `test:changed` Rust tier) shares the machine with it; a merge's ticket queues ahead of those. Neither ever runs without the slot: a merge gate that can't get it within two hours fails, and a `test:changed` Rust tier that can't get it within 30 minutes stops and asks you to re-run. Every stage has a timeout, printed when it starts (`▶ rust:test … (timeout 20m)`), sized to catch hangs, not slowness: a stage that exceeds it is killed with its whole process tree and fails the gate, releasing the slot. A waiting run prints a status line every minute naming the holder's pid and worktree and how long it has held — a wait with fresh status lines is a queue, not a hang. The gate prints one line per stage; full output goes to a log file whose path it prints (and the tail, on failure). Gate builds skip incremental compilation, and the merge gate refuses to start with under 20 GB free — every worktree's `target/` holds its own build output, so remove finished worktrees rather than letting them accumulate. Give merges a long timeout (30+ minutes) or run them in the background and wait — a command that times out before the gate finishes looks identical to a real failure but isn't one. `bun install` installs pinned cargo-nextest and sccache into the repo's `.tools/` (`scripts/setup-rust-tooling.ts`), shared by every worktree through a `.tools` link — nothing is installed or configured outside the repository, and only gate builds use sccache; sidecar binaries never need staging or copying in. `--no-verify` is reserved for WIP Handoff Commits and non-executable diffs.
 
 5. **Code Review** — run `/pragmatic-code-review` on every PR before merge. NEVER merge without it. **Always follow it with `/address-review`, unconditionally — even when the review comes back APPROVE with zero findings.** Do not pre-judge from the review text whether anything is "just nits" or "nothing to address" and skip the step on that basis; `/address-review` itself owns that triage and the "is a re-review needed?" decision. Repeat review → address-review until `/address-review` reports no re-review needed. Then STOP — merging is the user's call, not automatic.
 
@@ -238,7 +239,7 @@ IMPORTANT SUB-AGENT INSTRUCTIONS:
    # Step 1: Full gate, then merge (from any checkout; everything pushed first)
    bun run merge <PR#>
    ```
-   It takes the machine's merge lock (merges only wait on each other), then in one persistent gate checkout (`.claude/worktrees/_gate`, kept warm across merges so only changed crates recompile) checks out the PR as pushed when its turn comes (a fix pushed while it queued is what gets tested), rebases it onto current main, runs the full pyramid, pushes the rebased branch if it moved, squash-merges exactly that commit (`--match-head-commit`, so nothing untested can land), and deletes the remote branch. The merge lock is held until the merge lands, so concurrent merges go one at a time and none is invalidated by another; its tests queue for the test lock ahead of push checks. If main moves anyway (a merge from another machine), it rebases and tests again. Your PR worktree is never touched; unpushed commits are refused, not silently skipped. `bun run merge <PR#> --dry-run` runs the gate without pushing or merging. **Merge with `bun run merge`, not `gh pr merge` or the GitHub button** — the push check is deliberately partial, so `bun run merge` is where a change gets its one full test run. For a branch that predates this command, run it from the primary checkout.
+   It takes the machine's merge lock (merges only wait on each other), then in one persistent gate checkout (`.claude/worktrees/_gate`, kept warm across merges so only changed crates recompile) checks out the PR as pushed when its turn comes (a fix pushed while it queued is what gets tested), rebases it onto current main, runs the full pyramid, pushes the rebased branch if it moved, squash-merges exactly that commit (`--match-head-commit`, so nothing untested can land), and deletes the remote branch. The merge lock is held until the merge lands, so concurrent merges go one at a time and none is invalidated by another; the gate then takes the machine slot ahead of any queued `test:changed` Rust run. If main moves anyway (a merge from another machine), it rebases and tests again. Your PR worktree is never touched; unpushed commits are refused, not silently skipped. `bun run merge <PR#> --dry-run` runs the gate without pushing or merging. **Merge with `bun run merge`, not `gh pr merge` or the GitHub button** — a push only lints, so `bun run merge` is where a change gets its one full test run. For a branch that predates this command, run it from the primary checkout.
    ```
    # Step 2: Leave the worktree
    ExitWorktree({action: "remove", discard_changes: true})
@@ -250,7 +251,7 @@ IMPORTANT SUB-AGENT INSTRUCTIONS:
    ```
    `discard_changes: true` is safe — the squash merge supersedes local branch commits.
 
-**TodoWrite — NEW tasks:** First item must be the full startup sequence as a single step. Last items: "Run quality:fix and commit", "Push (push check runs the tiers the change reaches)", "Create PR", "bun run merge + ExitWorktree".
+**TodoWrite — NEW tasks:** First item must be the full startup sequence as a single step. Last items: "Run test:changed", "Run quality:fix and commit", "Push (lint only)", "Create PR", "bun run merge + ExitWorktree".
 
 **TodoWrite — WIP continuation:** First item: "WIP continuation sequence: git status, pull branch, review WIP commit, resume from Remaining Work". Last items same as above.
 
@@ -264,7 +265,7 @@ Every plan MUST include:
    > `git status` and `git pull origin main` on primary checkout, `EnterWorktree({name: "issue-<N>-brief-desc"})` (the tool owns the location and branch name — accept them), then inside the worktree: `bun install`, `bun run test` (baseline), `bun run gh:comment <N> "..."`, `bun run gh:assign <N> "@me"`, `bun run gh:status <N> "In Progress"`
 
 2. **Final steps:**
-   > `bun run quality:fix` + commit, `git push origin HEAD:issue-<N>-brief-desc` (the push check runs the tiers the change reaches — don't run `test:all` by hand first), then `gh pr create --head issue-<N>-brief-desc` (not `bun run gh:pr` — it fails on the `worktree-` branch prefix). After the user approves the merge: `bun run merge <PR#>` (full pyramid on the rebased PR in the warm gate checkout, then squash-merge), then `ExitWorktree({action: "remove", discard_changes: true})`.
+   > `bun run test:changed`, `bun run quality:fix` + commit, `git push origin HEAD:issue-<N>-brief-desc` (lint only — don't run `test:all` by hand), then `gh pr create --head issue-<N>-brief-desc` (not `bun run gh:pr` — it fails on the `worktree-` branch prefix). After the user approves the merge: `bun run merge <PR#>` (full pyramid on the rebased PR in the warm gate checkout, then squash-merge), then `ExitWorktree({action: "remove", discard_changes: true})`.
 
 3. **Inline standards** the implementation agent needs: e.g. "use `createLogger` not `console.log`", "mock Tauri with `vi.mock('@tauri-apps/api/core')`", "use `bun run test` not `bun test`".
 

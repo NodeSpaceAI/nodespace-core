@@ -1,4 +1,4 @@
-// Covers the pre-push gate's failure/upstream correlation: when a stage
+// Covers test:changed's failure/upstream correlation: when a stage
 // fails and origin/main already carries a commit touching that code, the
 // failure may be stale code rather than a live regression. These tests
 // inject a fake `git log` so they exercise the parsing, scoping and

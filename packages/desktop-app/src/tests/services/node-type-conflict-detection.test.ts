@@ -323,8 +323,8 @@ describe('NodeType Conflict Detection', () => {
     });
   });
 
-  describe('Performance Under Load', () => {
-    it('should handle rapid nodeType conversions efficiently', async () => {
+  describe('Rapid Conversions', () => {
+    it('should apply rapid nodeType conversions across many nodes', async () => {
       const nodes: Node[] = Array.from({ length: 20 }, (_, i) => ({
         id: `test-node-${i}`,
         nodeType: 'text' as const,
@@ -338,8 +338,6 @@ describe('NodeType Conflict Detection', () => {
 
       // Add all nodes
       nodes.forEach((node) => store.setNode(node, viewer1Source));
-
-      const startTime = Date.now();
 
       // Convert all to headers rapidly
       nodes.forEach((node) =>
@@ -359,12 +357,6 @@ describe('NodeType Conflict Detection', () => {
         const updatedNode = store.getNode(node.id);
         expect(updatedNode?.nodeType).toBe('header');
       });
-
-      const endTime = Date.now();
-      const duration = endTime - startTime;
-
-      // Should be fast (< 1 second for 20 nodes)
-      expect(duration).toBeLessThan(1000);
 
       // Wait for persistence
       await new Promise((resolve) => setTimeout(resolve, 100));

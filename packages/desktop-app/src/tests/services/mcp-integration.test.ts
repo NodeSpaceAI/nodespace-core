@@ -214,7 +214,7 @@ describe('Phase 3: MCP Integration (Simulated)', () => {
   // ========================================================================
 
   describe('MCP Update Performance', () => {
-    it('should handle high-frequency MCP updates efficiently', () => {
+    it('should apply every one of a burst of high-frequency MCP updates', () => {
       // Create multiple nodes
       const nodes: Node[] = [];
       for (let i = 0; i < 100; i++) {
@@ -228,8 +228,6 @@ describe('Phase 3: MCP Integration (Simulated)', () => {
       }
 
       // Simulate high-frequency MCP updates
-      const startTime = performance.now();
-
       for (let i = 0; i < 100; i++) {
         const mcpUpdate: NodeUpdate = {
           nodeId: `node-${i}`,
@@ -240,11 +238,6 @@ describe('Phase 3: MCP Integration (Simulated)', () => {
 
         store.handleExternalUpdate('mcp-server', mcpUpdate);
       }
-
-      const duration = performance.now() - startTime;
-
-      // Should complete within reasonable time (< 100ms for 100 updates)
-      expect(duration).toBeLessThan(100);
 
       // Verify all updates applied
       for (let i = 0; i < 100; i++) {

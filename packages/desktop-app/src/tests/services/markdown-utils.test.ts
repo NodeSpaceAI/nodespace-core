@@ -799,13 +799,9 @@ This is a long article with many paragraphs and lots of content.`.repeat(50);
 			}).not.toThrow();
 		});
 
-		it('should efficiently strip markdown from large text', () => {
+		it('should strip markdown from large text', () => {
 			const largeMarkdown = '**Bold** and *italic* text. '.repeat(1000);
-			const start = Date.now();
-			stripMarkdown(largeMarkdown);
-			const duration = Date.now() - start;
-			// Should complete in reasonable time (under 100ms)
-			expect(duration).toBeLessThan(100);
+			expect(stripMarkdown(largeMarkdown)).toBe('Bold and italic text. '.repeat(1000).trim());
 		});
 	});
 });
