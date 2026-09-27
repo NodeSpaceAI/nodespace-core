@@ -199,6 +199,95 @@ pub struct ChildPlacement {
     pub respread: Vec<(String, f64)>,
 }
 
+/// Finds `?2` among the `has_child` descendants of `?1`. Shared by
+/// `validate_no_cycle` and its `_in_tx` twin.
+const HAS_CHILD_CYCLE_SQL: &str = r#"WITH RECURSIVE desc(node_id, depth) AS (
+    SELECT out_node, 1 FROM relationship WHERE in_node = ?1 AND relationship_type = 'has_child'
+    UNION ALL
+    SELECT r.out_node, d.depth + 1 FROM relationship r
+    JOIN desc d ON r.in_node = d.node_id
+    WHERE r.relationship_type = 'has_child' AND d.depth < 100
+)
+SELECT node_id FROM desc WHERE node_id = ?2 LIMIT 1"#;
+
+fn has_child_cycle_violation(parent_id: &str, child_id: &str) -> anyhow::Error {
+    let detail = if parent_id == child_id {
+        format!("node '{}' cannot be placed under itself", child_id)
+    } else {
+        format!(
+            "node '{}' cannot be placed under '{}', which is one of its descendants",
+            child_id, parent_id
+        )
+    };
+    anyhow::Error::new(super::TreeInvariantViolation::cycle(
+        child_id, parent_id, detail,
+    ))
+}
+
+/// Collections and schemas are always roots; their refusal needs no
+/// membership lookup.
+fn is_always_root(node_type: &str) -> bool {
+    node_type == "collection" || node_type == "schema"
+}
+
+/// Dedupe `node_ids` and chunk them under SQLite's compiled
+/// SQLITE_MAX_VARIABLE_NUMBER (32766) for `may_gain_parent_query`.
+fn may_gain_parent_chunks<'a>(node_ids: &[&'a str]) -> Vec<Vec<&'a str>> {
+    const ID_CHUNK: usize = 900;
+    let mut unique: Vec<&str> = node_ids.to_vec();
+    unique.sort_unstable();
+    unique.dedup();
+    unique.chunks(ID_CHUNK).map(<[&str]>::to_vec).collect()
+}
+
+/// Offenders among `chunk`: collections, schemas, and non-exempt nodes that
+/// already hold a `member_of` edge. Returns `(id, node_type)` rows.
+fn may_gain_parent_query(chunk: &[&str]) -> (String, Vec<libsql::Value>) {
+    let placeholders: Vec<String> = (1..=chunk.len()).map(|i| format!("?{}", i)).collect();
+    let sql = format!(
+        "SELECT n.id, n.node_type FROM node n \
+         WHERE n.id IN ({}) \
+           AND (n.node_type IN ('collection', 'schema') \
+                OR (n.node_type != 'person' \
+                    AND EXISTS(SELECT 1 FROM relationship r \
+                               WHERE r.in_node = n.id AND r.relationship_type = 'member_of')))",
+        placeholders.join(", ")
+    );
+    let params = chunk
+        .iter()
+        .map(|id| libsql::Value::Text(id.to_string()))
+        .collect();
+    (sql, params)
+}
+
+/// The refusal for an offender `may_gain_parent_query` found. `memberships`
+/// is the collections a member offender belongs to; ignored for an
+/// always-root type.
+fn may_gain_parent_violation(
+    offender: String,
+    node_type: &str,
+    memberships: Vec<String>,
+) -> anyhow::Error {
+    match node_type {
+        "collection" => anyhow::Error::new(super::TreeInvariantViolation::collection_not_root(
+            Some(&offender),
+        )),
+        "schema" => anyhow::Error::new(super::TreeInvariantViolation::schema_not_root(&offender)),
+        _ => {
+            let detail = format!(
+                "node '{}' holds collection membership ({}) and cannot be moved under a parent — only root nodes may hold collection membership (ADR-059 §2). Remove it from the collection(s) first, or move its root instead.",
+                offender,
+                memberships.join(", ")
+            );
+            anyhow::Error::new(super::TreeInvariantViolation::member_of_not_root(
+                offender,
+                memberships,
+                detail,
+            ))
+        }
+    }
+}
+
 impl SqliteStore {
     pub async fn create_node(
         &self,
@@ -2534,29 +2623,51 @@ impl SqliteStore {
         Ok(relationships)
     }
 
-    async fn validate_no_cycle(&self, parent_id: &str, child_id: &str) -> Result<()> {
-        // Check if parent_id is a descendant of child_id (would create cycle)
-        let mut rows = self.read().await?.query(
-            r#"WITH RECURSIVE desc(node_id, depth) AS (
-                SELECT out_node, 1 FROM relationship WHERE in_node = ?1 AND relationship_type = 'has_child'
-                UNION ALL
-                SELECT r.out_node, d.depth + 1 FROM relationship r
-                JOIN desc d ON r.in_node = d.node_id
-                WHERE r.relationship_type = 'has_child' AND d.depth < 100
+    /// Refuse a `has_child` edge `parent_id → child_id` that would make
+    /// `child_id` its own ancestor: `parent_id` is `child_id` itself or one of
+    /// its descendants. Checked at every store site that attaches an existing
+    /// node to a parent — `move_node`, `append_child_edge`, and the `has_child`
+    /// branch of `create_generic_relationship` (and its `_in_tx` twin).
+    pub(crate) async fn validate_no_cycle(&self, parent_id: &str, child_id: &str) -> Result<()> {
+        if parent_id == child_id {
+            return Err(has_child_cycle_violation(parent_id, child_id));
+        }
+        let mut rows = self
+            .read()
+            .await?
+            .query(
+                HAS_CHILD_CYCLE_SQL,
+                libsql::params![child_id.to_string(), parent_id.to_string()],
             )
-            SELECT node_id FROM desc WHERE node_id = ?2 LIMIT 1"#,
-            libsql::params![child_id.to_string(), parent_id.to_string()],
-        ).await.context("Failed to check for cycles")?;
-
+            .await
+            .context("Failed to check for cycles")?;
         if rows.next().await?.is_some() {
-            return Err(anyhow::Error::new(super::TreeInvariantViolation::cycle(
-                child_id,
-                parent_id,
-                format!(
-                    "node '{}' cannot be placed under '{}', which is one of its descendants",
-                    child_id, parent_id
-                ),
-            )));
+            return Err(has_child_cycle_violation(parent_id, child_id));
+        }
+        Ok(())
+    }
+
+    /// `_in_tx` twin of [`Self::validate_no_cycle`] (ADR-069 §1a): reads
+    /// through `tx.conn()`, so a `has_child` edge written earlier in the same
+    /// transaction counts toward the cycle.
+    pub(crate) async fn validate_no_cycle_in_tx(
+        tx: &Tx<'_>,
+        parent_id: &str,
+        child_id: &str,
+    ) -> Result<()> {
+        if parent_id == child_id {
+            return Err(has_child_cycle_violation(parent_id, child_id));
+        }
+        let mut rows = tx
+            .conn()
+            .query(
+                HAS_CHILD_CYCLE_SQL,
+                libsql::params![child_id.to_string(), parent_id.to_string()],
+            )
+            .await
+            .context("Failed to check for cycles")?;
+        if rows.next().await?.is_some() {
+            return Err(has_child_cycle_violation(parent_id, child_id));
         }
         Ok(())
     }
@@ -2693,11 +2804,12 @@ impl SqliteStore {
     /// ADR-059 §2 (reparent side of the root-only content-membership rule): a node
     /// that holds a `member_of` edge is a root member and must not be given a
     /// `has_child` parent — that would make it a forbidden interior member with no
-    /// `member_of` write for the store's forward guard to catch. Called at BOTH
-    /// store-level sites that attach an *existing* node to a parent — `move_node`
-    /// (the service `move_node` reparent path) and
-    /// `bulk_create_has_child` (the sync-apply cold-sweep) — so every reparent
-    /// path is covered, symmetrically with the forward guard `assert_root_only_
+    /// `member_of` write for the store's forward guard to catch. Called at every
+    /// store-level site that attaches an *existing* node to a parent — `move_node`
+    /// (the service `move_node` reparent path), `bulk_create_has_child` (the
+    /// sync-apply cold-sweep), and the relationship API's `has_child` inserts
+    /// (`append_child_edge`, `create_generic_relationship` and its `_in_tx`
+    /// twin) — so every reparent path is covered, symmetrically with the forward guard `assert_root_only_
     /// membership` on the `member_of` INSERT sites. (Fresh-node attach sites can't
     /// pre-hold a membership; `move_children_to_parent` only moves already-interior
     /// nodes.) Rejects rather than dropping the membership (a node can hold several
@@ -2713,32 +2825,8 @@ impl SqliteStore {
     /// One chunked query finds every kind of offender, keeping the
     /// bulk/cold-sweep path a single round trip per chunk.
     pub(crate) async fn assert_may_gain_parent(&self, node_ids: &[&str]) -> Result<()> {
-        if node_ids.is_empty() {
-            return Ok(());
-        }
-        let mut unique: Vec<&str> = node_ids.to_vec();
-        unique.sort_unstable();
-        unique.dedup();
-
-        // Chunk the `IN (...)` under SQLite's compiled SQLITE_MAX_VARIABLE_NUMBER (32766).
-        const ID_CHUNK: usize = 900;
-        for chunk in unique.chunks(ID_CHUNK) {
-            let placeholders: Vec<String> = (1..=chunk.len()).map(|i| format!("?{}", i)).collect();
-            // Offenders: collections, schemas, and non-exempt nodes that already
-            // hold a `member_of` edge.
-            let sql = format!(
-                "SELECT n.id, n.node_type FROM node n \
-                 WHERE n.id IN ({}) \
-                   AND (n.node_type IN ('collection', 'schema') \
-                        OR (n.node_type != 'person' \
-                            AND EXISTS(SELECT 1 FROM relationship r \
-                                       WHERE r.in_node = n.id AND r.relationship_type = 'member_of')))",
-                placeholders.join(", ")
-            );
-            let params: Vec<libsql::Value> = chunk
-                .iter()
-                .map(|id| libsql::Value::Text(id.to_string()))
-                .collect();
+        for chunk in may_gain_parent_chunks(node_ids) {
+            let (sql, params) = may_gain_parent_query(&chunk);
             // Drain and drop the cursor before `get_node_memberships` checks out a
             // second reader connection — see `ReadRows` in `connections.rs`.
             let offender: Option<(String, String)> = {
@@ -2754,29 +2842,41 @@ impl SqliteStore {
                 }
             };
             if let Some((offender, node_type)) = offender {
-                if node_type == "collection" {
-                    return Err(anyhow::Error::new(
-                        super::TreeInvariantViolation::collection_not_root(Some(&offender)),
-                    ));
+                let memberships = if is_always_root(&node_type) {
+                    Vec::new()
+                } else {
+                    self.get_node_memberships(&offender).await?
+                };
+                return Err(may_gain_parent_violation(offender, &node_type, memberships));
+            }
+        }
+        Ok(())
+    }
+
+    /// `_in_tx` twin of [`Self::assert_may_gain_parent`] (ADR-069 §1a): reads
+    /// through `tx.conn()`, so a membership or node written earlier in the same
+    /// transaction is seen.
+    pub(crate) async fn assert_may_gain_parent_in_tx(tx: &Tx<'_>, node_ids: &[&str]) -> Result<()> {
+        for chunk in may_gain_parent_chunks(node_ids) {
+            let (sql, params) = may_gain_parent_query(&chunk);
+            let offender: Option<(String, String)> = {
+                let mut rows = tx
+                    .conn()
+                    .query(&sql, params)
+                    .await
+                    .context("Failed to validate root-only membership on reparent")?;
+                match rows.next().await? {
+                    Some(row) => Some((row.get(0)?, row.get(1)?)),
+                    None => None,
                 }
-                if node_type == "schema" {
-                    return Err(anyhow::Error::new(
-                        super::TreeInvariantViolation::schema_not_root(&offender),
-                    ));
-                }
-                let memberships = self.get_node_memberships(&offender).await?;
-                let detail = format!(
-                    "node '{}' holds collection membership ({}) and cannot be moved under a parent — only root nodes may hold collection membership (ADR-059 §2). Remove it from the collection(s) first, or move its root instead.",
-                    offender,
-                    memberships.join(", ")
-                );
-                return Err(anyhow::Error::new(
-                    super::TreeInvariantViolation::member_of_not_root(
-                        offender,
-                        memberships,
-                        detail,
-                    ),
-                ));
+            };
+            if let Some((offender, node_type)) = offender {
+                let memberships = if is_always_root(&node_type) {
+                    Vec::new()
+                } else {
+                    Self::get_node_memberships_in_tx(tx, &offender).await?
+                };
+                return Err(may_gain_parent_violation(offender, &node_type, memberships));
             }
         }
         Ok(())

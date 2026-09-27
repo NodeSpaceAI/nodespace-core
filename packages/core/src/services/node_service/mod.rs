@@ -5563,6 +5563,209 @@ mod tests {
         );
     }
 
+    /// How a `has_child` edge is written through the relationship API: each
+    /// reaches a different store insert site.
+    #[derive(Debug, Clone, Copy)]
+    enum HasChildPath {
+        /// No `order` — `append_child_edge`.
+        AutoOrder,
+        /// Explicit `order` — `create_generic_relationship`.
+        ExplicitOrder,
+        /// `create_relationship_in_tx` — `create_generic_relationship_in_tx`.
+        InTx,
+    }
+
+    const HAS_CHILD_PATHS: [HasChildPath; 3] = [
+        HasChildPath::AutoOrder,
+        HasChildPath::ExplicitOrder,
+        HasChildPath::InTx,
+    ];
+
+    async fn create_has_child_via(
+        service: &NodeService,
+        path: HasChildPath,
+        parent_id: &str,
+        child_id: &str,
+    ) -> Result<(), NodeServiceError> {
+        match path {
+            HasChildPath::AutoOrder => service
+                .create_relationship(parent_id, "has_child", child_id, json!({}))
+                .await
+                .map(|_| ()),
+            HasChildPath::ExplicitOrder => service
+                .create_relationship(parent_id, "has_child", child_id, json!({ "order": 1.0 }))
+                .await
+                .map(|_| ()),
+            HasChildPath::InTx => {
+                let service_for_tx = service.clone();
+                let (parent, child) = (parent_id.to_string(), child_id.to_string());
+                service
+                    .with_transaction(move |tx| {
+                        let service = service_for_tx.clone();
+                        let (parent, child) = (parent.clone(), child.clone());
+                        Box::pin(async move {
+                            service
+                                .create_relationship_in_tx(
+                                    tx,
+                                    &parent,
+                                    "has_child",
+                                    &child,
+                                    json!({ "order": 1.0 }),
+                                )
+                                .await
+                                .map(|_| ())
+                        })
+                    })
+                    .await
+            }
+        }
+    }
+
+    async fn create_text(service: &NodeService, content: &str) -> String {
+        service
+            .create_node(Node::new(
+                "text".to_string(),
+                content.to_string(),
+                json!({}),
+            ))
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_has_child_relationship_refuses_a_cycle() {
+        // `root → mid → leaf`; `leaf has_child root` would make `root` its own
+        // ancestor. Every relationship-API path must refuse it, typed, and
+        // write nothing.
+        for path in HAS_CHILD_PATHS {
+            let (service, _temp) = create_test_service().await;
+            let root = create_text(&service, "root").await;
+            let mid = create_text(&service, "mid").await;
+            let leaf = create_text(&service, "leaf").await;
+            create_has_child_via(&service, path, &root, &mid)
+                .await
+                .unwrap();
+            create_has_child_via(&service, path, &mid, &leaf)
+                .await
+                .unwrap();
+
+            let err = create_has_child_via(&service, path, &leaf, &root)
+                .await
+                .expect_err("closing a has_child cycle must be refused");
+            match &err {
+                NodeServiceError::TreeInvariantViolation(v) => {
+                    assert_eq!(v.rule, crate::db::TreeInvariantRule::Cycle, "{path:?}");
+                    assert_eq!(v.node_id.as_deref(), Some(root.as_str()), "{path:?}");
+                    assert_eq!(v.related_ids, vec![leaf.clone()], "{path:?}");
+                }
+                other => panic!("{path:?}: expected a Cycle refusal, got {other:?}"),
+            }
+            assert_eq!(
+                service.store.get_parent_id(&root).await.unwrap(),
+                None,
+                "{path:?}: the refused edge must not be written"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_has_child_relationship_refuses_a_self_edge() {
+        for path in HAS_CHILD_PATHS {
+            let (service, _temp) = create_test_service().await;
+            let node = create_text(&service, "alone").await;
+
+            let err = create_has_child_via(&service, path, &node, &node)
+                .await
+                .expect_err("a node cannot be its own child");
+            match &err {
+                NodeServiceError::TreeInvariantViolation(v) => {
+                    assert_eq!(v.rule, crate::db::TreeInvariantRule::Cycle, "{path:?}");
+                }
+                other => panic!("{path:?}: expected a Cycle refusal, got {other:?}"),
+            }
+            assert_eq!(service.store.get_parent_id(&node).await.unwrap(), None);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_has_child_relationship_refuses_parenting_a_collection_member() {
+        // ADR-059 §2: a root member of a collection must stay a root. The
+        // refusal names the collection and leaves the membership in place.
+        for path in HAS_CHILD_PATHS {
+            let (service, _temp) = create_test_service().await;
+            let coll = service
+                .create_node(Node::new(
+                    "collection".to_string(),
+                    "Coll".to_string(),
+                    json!({}),
+                ))
+                .await
+                .unwrap();
+            let member = create_text(&service, "member").await;
+            service
+                .create_relationship(&member, "member_of", &coll, json!({}))
+                .await
+                .unwrap();
+            let parent = create_text(&service, "parent").await;
+
+            let err = create_has_child_via(&service, path, &parent, &member)
+                .await
+                .expect_err("giving a collection member a parent must be refused");
+            match &err {
+                NodeServiceError::TreeInvariantViolation(v) => {
+                    assert_eq!(
+                        v.rule,
+                        crate::db::TreeInvariantRule::MemberOfNotRoot,
+                        "{path:?}"
+                    );
+                    assert_eq!(v.node_id.as_deref(), Some(member.as_str()), "{path:?}");
+                    assert_eq!(v.related_ids, vec![coll.clone()], "{path:?}");
+                }
+                other => panic!("{path:?}: expected a MemberOfNotRoot refusal, got {other:?}"),
+            }
+            assert_eq!(service.store.get_parent_id(&member).await.unwrap(), None);
+            assert_eq!(
+                service.store.get_node_memberships(&member).await.unwrap(),
+                vec![coll.clone()],
+                "{path:?}: the refusal must not drop the membership"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_has_child_relationship_allows_a_person_member() {
+        // `person` membership is a grant (ADR-037 §4), exempt from the
+        // root-only rule.
+        for path in HAS_CHILD_PATHS {
+            let (service, _temp) = create_test_service().await;
+            let coll = service
+                .create_node(Node::new(
+                    "collection".to_string(),
+                    "Coll".to_string(),
+                    json!({}),
+                ))
+                .await
+                .unwrap();
+            let person = service
+                .create_node(Node::new("person".to_string(), String::new(), json!({})))
+                .await
+                .unwrap();
+            service
+                .create_relationship(&person, "member_of", &coll, json!({}))
+                .await
+                .unwrap();
+            let parent = create_text(&service, "parent").await;
+
+            create_has_child_via(&service, path, &parent, &person)
+                .await
+                .unwrap_or_else(|e| panic!("{path:?}: a person member may gain a parent: {e:?}"));
+            assert_eq!(
+                service.store.get_parent_id(&person).await.unwrap(),
+                Some(parent.clone())
+            );
+        }
+    }
+
     /// `create_node_with_parent` must reject an unknown node type before it
     /// auto-creates a missing date parent.
     #[tokio::test]

@@ -470,12 +470,21 @@ impl SqliteStore {
     /// duplicate edge — already guarded by the caller's existence check — is a
     /// benign no-op rather than a unique-index error. Returns the assigned order
     /// and the new relationship id.
+    ///
+    /// `child_id` is an existing node, so the edge is refused with a
+    /// `TreeInvariantViolation` when it would close a cycle or give a parent
+    /// to a node that must stay a root (see `assert_may_gain_parent`). Both
+    /// guards read through reader connections, so they run under the write
+    /// guard — no other writer can invalidate them before the INSERT.
     pub async fn append_child_edge(
         &self,
         parent_id: &str,
         child_id: &str,
     ) -> Result<(f64, String)> {
         let db = self.write().await;
+
+        self.validate_no_cycle(parent_id, child_id).await?;
+        self.assert_may_gain_parent(&[child_id]).await?;
 
         let new_order = self
             .get_next_order_for_relationship(parent_id, "has_child", false)
@@ -690,7 +699,8 @@ impl SqliteStore {
     }
 
     /// `_in_tx` twin of [`Self::create_generic_relationship`] (ADR-069 §1a).
-    /// Covers the same ADR-059 §2 `member_of` root-only gate. Does not
+    /// Covers the same ADR-059 §2 `member_of` root-only gate and `has_child`
+    /// tree guards, read through `tx.conn()`. Does not
     /// implement the atomic-auto-order paths `add_to_collection`/
     /// `append_child_edge` provide for `member_of`/`has_child` with no
     /// explicit `order` — a caller needing those must supply an explicit
@@ -705,8 +715,13 @@ impl SqliteStore {
         reverse_name: Option<&str>,
         properties: &serde_json::Value,
     ) -> Result<String> {
-        if rel_type == "member_of" {
-            Self::assert_root_only_membership_in_tx(tx, &[source_id]).await?;
+        match rel_type {
+            "member_of" => Self::assert_root_only_membership_in_tx(tx, &[source_id]).await?,
+            "has_child" => {
+                Self::validate_no_cycle_in_tx(tx, source_id, target_id).await?;
+                Self::assert_may_gain_parent_in_tx(tx, &[target_id]).await?;
+            }
+            _ => {}
         }
         let now = chrono::Utc::now().to_rfc3339();
         let rel_id = uuid::Uuid::new_v4().to_string();
@@ -879,6 +894,23 @@ impl SqliteStore {
 
     pub async fn get_node_memberships(&self, node_id: &str) -> Result<Vec<String>> {
         let mut rows = self.read().await?.query(
+            "SELECT out_node FROM relationship WHERE in_node = ?1 AND relationship_type = 'member_of'",
+            libsql::params![node_id.to_string()],
+        ).await.context("Failed to get node memberships")?;
+
+        let mut ids = Vec::new();
+        while let Some(row) = rows.next().await? {
+            ids.push(row.get(0)?);
+        }
+        Ok(ids)
+    }
+
+    /// `_in_tx` twin of [`Self::get_node_memberships`] (ADR-069 §1a).
+    pub(crate) async fn get_node_memberships_in_tx(
+        tx: &Tx<'_>,
+        node_id: &str,
+    ) -> Result<Vec<String>> {
+        let mut rows = tx.conn().query(
             "SELECT out_node FROM relationship WHERE in_node = ?1 AND relationship_type = 'member_of'",
             libsql::params![node_id.to_string()],
         ).await.context("Failed to get node memberships")?;
@@ -1657,8 +1689,18 @@ impl SqliteStore {
         // fork, the play `add_relationship` action, and the CLI
         // `relationship create --edge-data` — so it must be gated too. (Auto-order
         // `member_of` goes through `add_to_collection` instead; both are guarded.)
-        if rel_type == "member_of" {
-            self.assert_root_only_membership(&[source_id]).await?;
+        // Explicit-order `has_child` reaches here likewise, so it carries the
+        // same tree guards as `move_node` and `append_child_edge`. They run
+        // under the write guard (they read through reader connections), so no
+        // other writer can invalidate them before the INSERT.
+        let db = self.write().await;
+        match rel_type {
+            "member_of" => self.assert_root_only_membership(&[source_id]).await?,
+            "has_child" => {
+                self.validate_no_cycle(source_id, target_id).await?;
+                self.assert_may_gain_parent(&[target_id]).await?;
+            }
+            _ => {}
         }
         let now = chrono::Utc::now().to_rfc3339();
         let rel_id = uuid::Uuid::new_v4().to_string();
@@ -1671,23 +1713,21 @@ impl SqliteStore {
              VALUES (?1, ?2, ?3, ?4, COALESCE(?8, {}), ?5, 1, ?6, ?7)",
             builtin_reverse_name_sql("?4")
         );
-        self.write()
-            .await
-            .execute(
-                &sql,
-                libsql::params![
-                    rel_id.clone(),
-                    source_id.to_string(),
-                    target_id.to_string(),
-                    rel_type.to_string(),
-                    props_json,
-                    now.clone(),
-                    now,
-                    reverse_name.map(str::to_string)
-                ],
-            )
-            .await
-            .context("Failed to create generic relationship")?;
+        db.execute(
+            &sql,
+            libsql::params![
+                rel_id.clone(),
+                source_id.to_string(),
+                target_id.to_string(),
+                rel_type.to_string(),
+                props_json,
+                now.clone(),
+                now,
+                reverse_name.map(str::to_string)
+            ],
+        )
+        .await
+        .context("Failed to create generic relationship")?;
         Ok(rel_id)
     }
 
