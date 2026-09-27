@@ -543,10 +543,9 @@ pub struct PriorWrite {
 /// clickable options instead of parsing markdown bullets back out of prose.
 ///
 /// `response` on [`AgentTurnResult`] still carries `format_clarification`'s
-/// flattened text for the internal LLM-facing history — a bare string is what
-/// `session_already_clarified` scans for and what any plain-text reader of
-/// `response` still gets. This struct is the additional structured channel
-/// the UI needs.
+/// flattened text for the internal LLM-facing history and any plain-text
+/// reader of `response`. This struct is the additional structured channel the
+/// UI needs.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClarifyPrompt {
     /// The specific question put to the user.
