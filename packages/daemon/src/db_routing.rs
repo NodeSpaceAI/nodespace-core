@@ -30,8 +30,8 @@ use crate::services::DatabaseServices;
 pub use nodespace_proto::DATABASE_ID_HEADER;
 
 /// Resolve the database a routed request targets (ADR-053). This is the single
-/// routing contract shared by every per-database service's `route` adapter
-/// (node, embeddings, import, agent-session).
+/// routing contract shared by every per-database service's `route` adapter;
+/// most reach it through [`route_or_self`].
 ///
 /// When the routing middleware ([`DbManagerLayer`]) injected a
 /// [`DatabaseManager`], the `x-ns-database-id` header selects a registered
