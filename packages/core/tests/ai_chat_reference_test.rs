@@ -6,12 +6,15 @@
 //! creates a reference refuses an ai-chat target at write time: content
 //! mentions (`@mention` / `[[wikilink]]`), the direct mention API, the generic
 //! relationship API, bulk import, mention autocomplete, and schema
-//! relationship declarations. A chat remains free to be an edge's *source*.
+//! relationship declarations. An existing node cannot be retyped into a chat,
+//! which would otherwise carry its inbound references along. A chat remains
+//! free to be an edge's *source*.
 
 use anyhow::Result;
 use nodespace_core::{
     db::SqliteStore,
     models::{Node, NodeUpdate},
+    schema::handle_create_schema,
     services::NodeService,
 };
 use serde_json::json;
@@ -109,6 +112,78 @@ async fn create_relationship_rejects_ai_chat_target() -> Result<()> {
         .expect_err("a relationship targeting an ai-chat must be rejected");
     assert!(err.to_string().contains("ai-chat"), "{err}");
     assert!(service.get_mentions(&source.id).await?.is_empty());
+    Ok(())
+}
+
+/// A schema-declared relationship with no `targetType` accepts any target
+/// type, so the declaration check cannot catch it: the refusal must come from
+/// the transactional create path a declared relationship runs through.
+#[tokio::test]
+async fn untyped_declared_relationship_rejects_ai_chat_target() -> Result<()> {
+    let (service, _store, _t) = create_test_service().await?;
+    let service = Arc::new(service);
+
+    handle_create_schema(
+        &service,
+        json!({
+            "name": "finding",
+            "fields": [],
+            "relationships": [
+                { "name": "cites", "direction": "out", "cardinality": "many", "reverseName": "cited_by", "reverseCardinality": "many" }
+            ]
+        }),
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("schema: {e}"))?;
+
+    let chat = create_typed_node(&service, "ai-chat", "Private chat").await?;
+    let page = create_typed_node(&service, "text", "page").await?;
+    let finding = create_typed_node(&service, "finding", "A finding").await?;
+
+    let err = service
+        .create_relationship(&finding.id, "cites", &chat.id, json!({}))
+        .await
+        .expect_err("a declared relationship targeting an ai-chat must be rejected");
+    assert!(err.to_string().contains("ai-chat"), "{err}");
+
+    // The same declaration still accepts an ordinary target.
+    service
+        .create_relationship(&finding.id, "cites", &page.id, json!({}))
+        .await?;
+    Ok(())
+}
+
+/// Retyping an existing node into a chat would carry its inbound references
+/// into the chat and skip the privacy membership a chat gets at creation.
+#[tokio::test]
+async fn existing_node_cannot_be_retyped_to_ai_chat() -> Result<()> {
+    let (service, _store, _t) = create_test_service().await?;
+
+    let target = create_typed_node(&service, "text", "Soon a chat?").await?;
+    let source = create_typed_node(&service, "text", "note").await?;
+    service.create_mention(&source.id, &target.id).await?;
+
+    let err = service
+        .with_client(TEST_CLIENT_ID)
+        .update_node(
+            &target.id,
+            target.version,
+            NodeUpdate {
+                node_type: Some("ai-chat".to_string()),
+                ..NodeUpdate::new()
+            },
+        )
+        .await
+        .expect_err("retyping a node into an ai-chat must be rejected");
+    assert!(
+        err.to_string()
+            .contains("cannot be converted to an ai-chat node"),
+        "{err}"
+    );
+    assert_eq!(
+        service.get_node(&target.id).await?.map(|n| n.node_type),
+        Some("text".to_string())
+    );
     Ok(())
 }
 

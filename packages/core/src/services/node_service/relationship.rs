@@ -714,9 +714,12 @@ impl NodeService {
 
         // A declared (custom) relationship runs this same refusal inside
         // `create_relationship_in_tx`, after its `in` rewrite settles which
-        // end is the stored target.
-        if let Some(target) = self.get_node(target_id).await? {
-            Self::refuse_ai_chat_target(relationship_name, &target)?;
+        // end is the stored target. `has_child` is exempt, so it skips the
+        // lookup on the hot outline path.
+        if relationship_name != "has_child" {
+            if let Some(target) = self.get_node(target_id).await? {
+                Self::refuse_ai_chat_target(relationship_name, &target)?;
+            }
         }
 
         // Built-in type-specific validation. Only a builtin reaches here — a

@@ -42,6 +42,30 @@ impl NodeService {
         Ok(())
     }
 
+    /// Refuse retyping an existing node into an `ai-chat`.
+    ///
+    /// Two invariants hold for a chat only because they are enforced when the
+    /// chat is *created*: nothing references it (edges onto an ai-chat are
+    /// refused at creation, see `refuse_ai_chat_target`), and it joins the
+    /// personal collection that makes it private (the `node_created` privacy
+    /// Play). A retype would carry the node's existing inbound mentions and
+    /// relationships into the chat and skip the privacy membership entirely,
+    /// so a chat can only come into being by being created as one.
+    pub(crate) fn ensure_not_retyped_to_ai_chat(
+        existing: &Node,
+        updated: &Node,
+    ) -> Result<(), NodeServiceError> {
+        if updated.node_type == crate::models::AI_CHAT_NODE_TYPE
+            && existing.node_type != crate::models::AI_CHAT_NODE_TYPE
+        {
+            return Err(NodeServiceError::invalid_update(format!(
+                "Node '{}' cannot be converted to an ai-chat node; create a new ai-chat instead",
+                existing.id
+            )));
+        }
+        Ok(())
+    }
+
     /// Create a new node
     ///
     /// Validates the node using the appropriate behavior (Text, Task, or Date),
@@ -921,6 +945,7 @@ impl NodeService {
 
         // Step 1: Core behavior validation (PROTECTED)
         Self::ensure_schema_core_status_unchanged(&existing, &updated)?;
+        Self::ensure_not_retyped_to_ai_chat(&existing, &updated)?;
         self.behaviors.validate_node(&updated)?;
 
         // Step 1.5: Apply schema defaults and validate (if node type changed)
@@ -1042,6 +1067,7 @@ impl NodeService {
         }
 
         Self::ensure_schema_core_status_unchanged(&existing, &updated)?;
+        Self::ensure_not_retyped_to_ai_chat(&existing, &updated)?;
         self.behaviors.validate_node(&updated)?;
 
         if updated.node_type != "schema" {
@@ -1163,6 +1189,7 @@ impl NodeService {
         }
 
         Self::ensure_schema_core_status_unchanged(&existing, &updated)?;
+        Self::ensure_not_retyped_to_ai_chat(&existing, &updated)?;
         self.behaviors.validate_node(&updated)?;
 
         if updated.node_type != "schema" {
@@ -1427,6 +1454,7 @@ impl NodeService {
 
         // Step 1: Core behavior validation (PROTECTED)
         Self::ensure_schema_core_status_unchanged(&existing, &updated)?;
+        Self::ensure_not_retyped_to_ai_chat(&existing, &updated)?;
         self.behaviors.validate_node(&updated)?;
 
         // Step 2: Schema validation (USER-EXTENSIBLE)
