@@ -4444,6 +4444,34 @@ impl AgentToolExecutor for GraphToolExecutor {
 
         Ok(SkillRetrieval { candidates })
     }
+
+    /// Every `skill` root's title, sorted so the Stage-1 prompt is stable
+    /// across turns. The same set `retrieve_skills` searches — a name listed
+    /// here is one retrieval can return.
+    ///
+    /// A failed read yields no names: the prompt loses one line, and the turn
+    /// still routes.
+    async fn skill_names(&self) -> Vec<String> {
+        let Some(ns) = self.node_service.as_ref() else {
+            return Vec::new();
+        };
+        match ns.query_nodes_by_type("skill", None).await {
+            Ok(nodes) => {
+                let mut names: Vec<String> = nodes
+                    .into_iter()
+                    .map(|n| n.content.trim().to_string())
+                    .filter(|n| !n.is_empty())
+                    .collect();
+                names.sort();
+                names.dedup();
+                names
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "Could not read skill names for Stage 1; routing without them");
+                Vec::new()
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -7197,6 +7225,53 @@ mod tests {
             }
             other => panic!("Expected ExecutionFailed, got {:?}", other),
         }
+    }
+
+    /// Stage 1 names exactly the seeded registry's skills, sorted — the set
+    /// retrieval searches, so every name offered is one it can return.
+    #[tokio::test]
+    async fn skill_names_lists_every_seeded_skill_sorted() {
+        use nodespace_core::db::SqliteStore;
+        use nodespace_core::markdown::prepare_nodes_from_template;
+        use nodespace_core::services::node_service::CreateNodeParams;
+        use nodespace_core::services::InsertPositionOwned;
+        use tempfile::TempDir;
+
+        let tmp = TempDir::new().unwrap();
+        let mut store: Arc<SqliteStore> =
+            Arc::new(SqliteStore::new(tmp.path().join("test.db")).await.unwrap());
+        let ns = Arc::new(NodeService::new(&mut store).await.unwrap());
+        let templates = crate::skill_pipeline::seed_skill_nodes();
+        for tmpl in &templates {
+            for p in prepare_nodes_from_template(tmpl).unwrap() {
+                ns.create_node_with_parent(CreateNodeParams {
+                    id: Some(p.id),
+                    node_type: p.node_type,
+                    content: p.content,
+                    parent_id: p.parent_id,
+                    position: InsertPositionOwned::End,
+                    properties: p.properties,
+                    lifecycle_status: None,
+                })
+                .await
+                .unwrap();
+            }
+        }
+        let executor = GraphToolExecutor {
+            node_service: Some(ns),
+            embedding_service: Arc::new(RwLock::new(None)),
+            inference_engine: None,
+            playbook_lifecycle: None,
+        };
+
+        let mut expected: Vec<String> = templates.into_iter().map(|t| t.title).collect();
+        expected.sort();
+        assert_eq!(executor.skill_names().await, expected);
+    }
+
+    #[tokio::test]
+    async fn skill_names_is_empty_without_a_node_service() {
+        assert!(test_executor().skill_names().await.is_empty());
     }
 
     #[tokio::test]

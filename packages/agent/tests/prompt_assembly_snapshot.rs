@@ -44,7 +44,7 @@
 //! 3. **Stage-2 tool surface** — `routing::stage2_tools`: names,
 //!    descriptions, and full parameter schemas, scoped to the fixture
 //!    candidates' whitelists.
-//! 4. **Stage-1 request** — `STAGE1_SYSTEM_PROMPT` + `stage1_tool_definitions()`.
+//! 4. **Stage-1 request** — `stage1_system_prompt` + `stage1_tool_definitions()`.
 //! 5. **`EXISTING SCHEMAS`**, which reaches the prompt from two
 //!    independent sites and both are covered separately:
 //!    - the Stage-2 candidate block (site 2, inside this file's
@@ -108,7 +108,7 @@
 use std::collections::HashMap;
 
 use nodespace_agent::agent_types::{SkillCandidate, ToolDefinition};
-use nodespace_agent::local_agent::agent_loop::STAGE1_SYSTEM_PROMPT;
+use nodespace_agent::local_agent::agent_loop::stage1_system_prompt;
 use nodespace_agent::local_agent::routing::{
     declare_write_tool_fields, render_candidates_for_prompt, stage1_tool_definitions, stage2_tools,
 };
@@ -123,6 +123,17 @@ use nodespace_core::models::{Node, SchemaField, SchemaProtectionLevel, SkillNode
 use nodespace_core::ops::context_ops::{EntityResolution, PlaybookInfo, WorkspaceContext};
 use nodespace_core::ops::entity_types_block::EntityTypeDescriptor;
 use nodespace_core::services::flatten_subtree_content;
+
+/// The skill names production's Stage-1 prompt carries on a freshly seeded
+/// registry — what `GraphToolExecutor::skill_names` returns there.
+fn seeded_skill_names() -> Vec<String> {
+    let mut names: Vec<String> = nodespace_agent::skill_pipeline::seed_skill_nodes()
+        .into_iter()
+        .map(|t| t.title)
+        .collect();
+    names.sort();
+    names
+}
 
 // ---------------------------------------------------------------------------
 // Fixture constants
@@ -667,13 +678,13 @@ fn stage2_tool_surface_matches_golden() {
     golden::assert_matches("stage2_tool_surface", &rendered);
 }
 
-/// Site 4: the Stage-1 request — `STAGE1_SYSTEM_PROMPT` plus
+/// Site 4: the Stage-1 request — `stage1_system_prompt` plus
 /// `stage1_tool_definitions()`, exactly as `agent_loop.rs::route` sends it.
 #[test]
 fn stage1_request_matches_golden() {
     let mut rendered = String::new();
     rendered.push_str("SYSTEM PROMPT:\n");
-    rendered.push_str(STAGE1_SYSTEM_PROMPT);
+    rendered.push_str(&stage1_system_prompt(&seeded_skill_names()));
     rendered.push_str("\n\nTOOLS:\n");
     rendered.push_str(&render_tool_definitions(&stage1_tool_definitions()));
     golden::assert_matches("stage1_request", &rendered);

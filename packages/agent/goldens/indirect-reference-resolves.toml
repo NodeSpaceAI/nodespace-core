@@ -11,7 +11,7 @@ means the runner is not faithful to what that test measured.
 
 What is being tuned here is the `system` field: it is the WHOLE resident
 prompt for this case, hand-authored, reusing no production assembly source (no
-STAGE1_SYSTEM_PROMPT, no skill_pipeline.rs, no agent_guidance.rs, no
+stage1_system_prompt, no skill_pipeline.rs, no agent_guidance.rs, no
 def_resolve_query()). A golden cannot be the target production is engineered
 toward if it is assembled from production's own current text. Shortening a
 rule, rewording it, or deleting it is a text edit in this file — no recompile.

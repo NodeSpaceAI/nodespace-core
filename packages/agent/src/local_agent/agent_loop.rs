@@ -50,22 +50,46 @@ const MAX_CONSECUTIVE_PARSE_FAILURES: usize = 2;
 /// the extra turn adds and gives a runaway generation nowhere to go.
 pub const STAGE1_MAX_TOKENS: u32 = 256;
 
-/// The Stage-1 system prompt.
+/// The Stage-1 system prompt, naming the registry's skills.
 ///
-/// Deliberately small. Stage 1 makes one structural choice and the two tool
+/// Deliberately small. Stage 1 makes one structural choice and the tool
 /// schemas carry the shape of that choice, so prose here would duplicate the
 /// channel that already decides it — the failure ADR-064 rule 5 names. It says
 /// who to be, what the single decision is, and that clarifying is the
 /// exception.
-pub const STAGE1_SYSTEM_PROMPT: &str =
-    "You are routing a user's request to the right capability.\n\
-    Call route_query with a short description of the capability the request needs.\n\
-    Call route_multi ONLY if the request contains two or more distinct, unambiguous things to do \
-    — not one thing phrased at length.\n\
-    Call route_clarify ONLY if the request is too ambiguous to describe at all.\n\
-    Prefer route_query: most requests can be described even when phrased indirectly, and most \
-    requests are a single intent even when they mention several details.\n\
-    Call exactly one tool. Do not answer the user.";
+///
+/// The one fact it adds is which capabilities exist. Without it Stage 1 sees
+/// only the raw message, so a request built on a NodeSpace concept reads as
+/// open-ended: "are there any unresolved conflicts?" was measured calling
+/// route_clarify 3/3 to ask what kind of conflicts, with "list all unresolved
+/// conflicts" as its own first option. What a term refers to is the question
+/// retrieval answers, not one for the user. Naming the skills routed 5 of 7
+/// such phrasings while all 12 genuinely vague controls ("fix it", "delete
+/// them") still clarified. Two prose alternatives — telling the model an
+/// unknown term is not ambiguity, in this prompt and in route_clarify's
+/// description — moved none of them.
+///
+/// `skill_names` comes from the live registry, so a skill added later is named
+/// too. An empty list omits the line rather than claiming no capabilities.
+pub fn stage1_system_prompt(skill_names: &[String]) -> String {
+    let mut prompt = String::from("You are routing a user's request to the right capability.\n");
+    if !skill_names.is_empty() {
+        prompt.push_str(&format!(
+            "The capabilities available are: {}.\n",
+            skill_names.join(", ")
+        ));
+    }
+    prompt.push_str(
+        "Call route_query with a short description of the capability the request needs.\n\
+        Call route_multi ONLY if the request contains two or more distinct, unambiguous things to \
+        do — not one thing phrased at length.\n\
+        Call route_clarify ONLY if the request is too ambiguous to describe at all.\n\
+        Prefer route_query: most requests can be described even when phrased indirectly, and most \
+        requests are a single intent even when they mention several details.\n\
+        Call exactly one tool. Do not answer the user.",
+    );
+    prompt
+}
 
 /// Opening phrase of a routing clarification.
 ///
@@ -3642,8 +3666,9 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
         // again. Shares `build_retrieval_query` with schema retrieval so the
         // two context constructions cannot drift apart.
         let routing_query = stage1_query(session, user_message);
+        let skill_names = self.tool_executor.skill_names().await;
         let messages = vec![
-            ChatMessage::text(Role::System, STAGE1_SYSTEM_PROMPT.to_string()),
+            ChatMessage::text(Role::System, stage1_system_prompt(&skill_names)),
             ChatMessage::text(Role::User, routing_query),
         ];
         let request = InferenceRequest {
@@ -11182,6 +11207,9 @@ mod tests {
             c.truncate(limit);
             Ok(crate::agent_types::SkillRetrieval { candidates: c })
         }
+        async fn skill_names(&self) -> Vec<String> {
+            self.candidates.iter().map(|c| c.name.clone()).collect()
+        }
     }
 
     fn skill_candidate(name: &str, score: f32, tools: &[&str]) -> SkillCandidate {
@@ -11563,6 +11591,61 @@ mod tests {
             stage2_prompt.contains("research"),
             "Stage 2's prompt must carry the matched candidate: {stage2_prompt}"
         );
+    }
+
+    #[tokio::test]
+    async fn stage1_prompt_names_the_registry_skills() {
+        let engine = RecordingEngine::new(routed_engine(
+            "list conflicts",
+            "search_nodes",
+            r#"{"query":"x"}"#,
+            "Done.",
+        ));
+        let prompts = engine.system_prompts_handle();
+        let exec = RoutingToolExecutor::new(
+            MockToolExecutor::new(),
+            vec![
+                skill_candidate("Conflict Journal", 0.9, &["search_nodes"]),
+                skill_candidate("Node Deletion", 0.2, &["search_nodes"]),
+            ],
+        );
+        let loop_ = LocalAgentLoop::new(Arc::new(engine), Arc::new(exec));
+        let mut session = new_session();
+
+        loop_
+            .run_turn(
+                &mut session,
+                "are there any unresolved conflicts?",
+                |_| {},
+                |_| {},
+                CancellationToken::new(),
+            )
+            .await
+            .expect("turn should succeed");
+
+        let stage1_prompt = &prompts.lock().unwrap()[0];
+        assert!(
+            stage1_prompt
+                .contains("The capabilities available are: Conflict Journal, Node Deletion."),
+            "Stage 1 must see which capabilities exist: {stage1_prompt}"
+        );
+    }
+
+    #[test]
+    fn stage1_system_prompt_lists_names_after_the_role_line() {
+        let prompt = stage1_system_prompt(&["A".to_string(), "B".to_string()]);
+        assert!(prompt.starts_with(
+            "You are routing a user's request to the right capability.\n\
+             The capabilities available are: A, B.\n\
+             Call route_query"
+        ));
+    }
+
+    #[test]
+    fn stage1_system_prompt_without_names_omits_the_line() {
+        let prompt = stage1_system_prompt(&[]);
+        assert!(!prompt.contains("capabilities available"), "{prompt}");
+        assert!(prompt.ends_with("Call exactly one tool. Do not answer the user."));
     }
 
     /// Run one routed turn whose only candidate does NOT whitelist

@@ -327,6 +327,10 @@ async fn delete_the_resolved_incidents_targets_the_incidents_not_the_conflict_jo
 
 /// The guard's other side: requests that are about the conflict journal must
 /// still reach `list_conflicts`, in the same workspace.
+///
+/// The question form reaches it only because Stage 1 is told which skills
+/// exist (`stage1_system_prompt`); without that it asked what kind of
+/// conflicts were meant.
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "loads the locked GGUF and the embedding model"]
 async fn conflict_journal_requests_still_call_list_conflicts() {
@@ -334,7 +338,11 @@ async fn conflict_journal_requests_still_call_list_conflicts() {
     let embedder = load_embedder();
 
     let mut failures = Vec::new();
-    for message in ["show me the resolved conflicts", "list the open conflicts"] {
+    for message in [
+        "show me the resolved conflicts",
+        "list the open conflicts",
+        "are there any unresolved conflicts?",
+    ] {
         for rep in 0..REPS {
             let fx = fixture(engine.clone(), embedder.clone()).await;
             let (calls, reply) = run_turn(engine.clone(), &fx, message).await;

@@ -1,5 +1,5 @@
 //! Hand-authored golden prompt for agent-matrix scenario 6, built independent
-//! of ANY NodeSpace prompt-assembly source (no `STAGE1_SYSTEM_PROMPT`, no
+//! of ANY NodeSpace prompt-assembly source (no `stage1_system_prompt`, no
 //! `skill_pipeline.rs`, no `agent_guidance.rs` constants). Every string below
 //! is authored fresh in this file.
 //!

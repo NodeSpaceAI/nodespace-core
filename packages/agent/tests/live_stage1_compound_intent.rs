@@ -10,7 +10,7 @@
 //! identified by reading the code, not yet a measured defect; this test is
 //! the live measurement #1909 asks for before proposing a fix.
 //!
-//! Fires production's exact Stage-1 request — `STAGE1_SYSTEM_PROMPT`,
+//! Fires production's exact Stage-1 request — `stage1_system_prompt`,
 //! `stage1_tool_definitions()`, temperature 0.1, `STAGE1_MAX_TOKENS` — against
 //! the **locked native model, loaded in-process** (ADR-056: Gemma 4 E4B via
 //! llama.cpp), for a wider set of compound-but-unambiguous prompts than the
@@ -44,7 +44,7 @@
 use nodespace_agent::agent_types::{
     ChatInferenceEngine, InferenceRequest, ModelFamily, StreamingChunk,
 };
-use nodespace_agent::local_agent::agent_loop::{STAGE1_MAX_TOKENS, STAGE1_SYSTEM_PROMPT};
+use nodespace_agent::local_agent::agent_loop::{stage1_system_prompt, STAGE1_MAX_TOKENS};
 use nodespace_agent::local_agent::inference::LlamaChatInferenceEngine;
 use nodespace_agent::local_agent::model_manager::GgufModelManager;
 use nodespace_agent::local_agent::routing::{
@@ -53,6 +53,17 @@ use nodespace_agent::local_agent::routing::{
 use nodespace_nlp_engine::chat::types::{ChatMessage, Role};
 use nodespace_nlp_engine::ChatConfig;
 use std::sync::{Arc, Mutex};
+
+/// The skill names production's Stage-1 prompt carries on a freshly seeded
+/// registry — what `GraphToolExecutor::skill_names` returns there.
+fn seeded_skill_names() -> Vec<String> {
+    let mut names: Vec<String> = nodespace_agent::skill_pipeline::seed_skill_nodes()
+        .into_iter()
+        .map(|t| t.title)
+        .collect();
+    names.sort();
+    names
+}
 
 /// The locked native agent model (ADR-056). This probe measures only this
 /// model — a routing result on anything else does not describe what ships.
@@ -260,7 +271,7 @@ enum Stage1Outcome {
     /// The model called neither Stage-1 tool.
     NoToolCall,
     /// More than one tool call in a single Stage-1 turn — itself notable,
-    /// since `STAGE1_SYSTEM_PROMPT` says "call exactly one tool".
+    /// since `stage1_system_prompt` says "call exactly one tool".
     MultipleToolCalls(Vec<(String, String)>),
     /// The generation itself failed. Not a finding about routing.
     Errored(String),
@@ -276,7 +287,7 @@ enum Stage1Outcome {
 async fn run_stage1(engine: &Arc<dyn ChatInferenceEngine>, user_message: &str) -> Stage1Outcome {
     let request = InferenceRequest {
         messages: vec![
-            ChatMessage::text(Role::System, STAGE1_SYSTEM_PROMPT.to_string()),
+            ChatMessage::text(Role::System, stage1_system_prompt(&seeded_skill_names())),
             ChatMessage::text(Role::User, user_message.to_string()),
         ],
         tools: Some(routing::stage1_tool_definitions()),

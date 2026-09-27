@@ -86,12 +86,23 @@
 use nodespace_agent::agent_types::{
     ChatInferenceEngine, InferenceRequest, SkillCandidate, StreamingChunk, ToolDefinition,
 };
-use nodespace_agent::local_agent::agent_loop::{STAGE1_MAX_TOKENS, STAGE1_SYSTEM_PROMPT};
+use nodespace_agent::local_agent::agent_loop::{stage1_system_prompt, STAGE1_MAX_TOKENS};
 use nodespace_agent::local_agent::openai_compat_discovery::discover_models;
 use nodespace_agent::local_agent::openai_compat_inference::OpenAiCompatInferenceEngine;
 use nodespace_agent::local_agent::routing;
 use nodespace_nlp_engine::chat::types::{ChatMessage, Role};
 use std::sync::{Arc, Mutex};
+
+/// The skill names production's Stage-1 prompt carries on a freshly seeded
+/// registry — what `GraphToolExecutor::skill_names` returns there.
+fn seeded_skill_names() -> Vec<String> {
+    let mut names: Vec<String> = nodespace_agent::skill_pipeline::seed_skill_nodes()
+        .into_iter()
+        .map(|t| t.title)
+        .collect();
+    names.sort();
+    names
+}
 
 const BASE_URL: &str = "http://127.0.0.1:11434/v1";
 
@@ -289,7 +300,7 @@ async fn run_arm(model: &str, arm: Arm) -> ArmResult {
         // ones without breaking the build.
         let stage1 = InferenceRequest {
             messages: vec![
-                ChatMessage::text(Role::System, STAGE1_SYSTEM_PROMPT),
+                ChatMessage::text(Role::System, stage1_system_prompt(&seeded_skill_names())),
                 ChatMessage::text(Role::User, USER_MESSAGE),
             ],
             tools: Some(routing::stage1_tool_definitions()),
