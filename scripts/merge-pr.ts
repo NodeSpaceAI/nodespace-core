@@ -166,20 +166,37 @@ async function main(): Promise<void> {
     }
     const mainSha = await git(gate, "rev-parse", "origin/main");
 
-    // A clean slate every time: detached at the PR head, no leftovers from
+    // A clean slate every time, starting from current main: no leftovers from
     // the previous merge. Not `clean -x`: target/ and node_modules/ are the
     // warm state this checkout exists to keep.
-    await git(gate, "checkout", "--quiet", "--force", "--detach", prHead);
+    await git(gate, "checkout", "--quiet", "--force", "--detach", mainSha);
     await git(gate, "clean", "-fdq");
     // Ignored build output the gate itself produces or reads, which a
     // previous merge may have left: a file a PR deleted could survive there
     // and mask a failure. Removed so this merge rebuilds it from its own tree.
     await git(gate, "clean", "-fdqX", "--", ...STALE_OUTPUT_PATHS);
-    if ((await git(gate, "merge-base", "HEAD", mainSha)) !== mainSha) {
+
+    // Replay the PR's commits onto main — what a rebase does — without first
+    // checking out the PR's own, older base. That detour rewrote every file
+    // main had changed since the PR branched, then rewrote it back, and cargo,
+    // which judges staleness by modification time, recompiled all of them on
+    // a checkout that exists to stay warm. Starting from main touches only the
+    // files the PR changes.
+    const base = await git(gate, "merge-base", prHead, mainSha);
+    if (base === mainSha) {
+      await git(gate, "checkout", "--quiet", "--detach", prHead);
+    } else {
       console.log(`\n▶ Rebasing PR #${pr} onto origin/main (${mainSha.slice(0, 8)})`);
-      const rebase = await $`git rebase ${mainSha}`.cwd(gate).nothrow();
-      if (rebase.exitCode !== 0) {
-        await $`git rebase --abort`.cwd(gate).quiet().nothrow();
+      // Linear, like rebase: merge commits are dropped and their changes
+      // arrive through the commits around them; picks that became empty
+      // against main (already landed there) are dropped too.
+      const commits = (await git(gate, "rev-list", "--reverse", "--no-merges", `${base}..${prHead}`))
+        .split("\n")
+        .filter((c) => c !== "");
+      if (commits.length === 0) fail(`PR #${pr} has no commits of its own beyond main.`);
+      const pick = await $`git cherry-pick --empty=drop ${commits}`.cwd(gate).quiet().nothrow();
+      if (pick.exitCode !== 0) {
+        await $`git cherry-pick --abort`.cwd(gate).quiet().nothrow();
         fail("The rebase onto main conflicts. Resolve it in your worktree (git rebase origin/main), push, and re-run.");
       }
     }

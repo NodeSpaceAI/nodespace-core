@@ -130,9 +130,14 @@ async function run(label: string, command: string, env: Record<string, string> =
   } catch {
     // Intentionally silent — reporting must not mask the failure below.
   }
-  console.error(`\n✗ ${label} failed — ${merge ? "merge blocked" : "push blocked"}.`);
-  console.error("  Fix the failure, or if this is a WIP Handoff Commit (see CLAUDE.md),");
-  console.error("  bypass with: git push --no-verify\n");
+  if (merge) {
+    console.error(`\n✗ ${label} failed — merge blocked.`);
+    console.error("  Fix the failure, push, and re-run: bun run merge <PR#>\n");
+  } else {
+    console.error(`\n✗ ${label} failed — push blocked.`);
+    console.error("  Fix the failure, or if this is a WIP Handoff Commit (see CLAUDE.md),");
+    console.error("  bypass with: git push --no-verify\n");
+  }
   process.exit(1);
 }
 
