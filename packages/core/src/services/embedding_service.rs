@@ -992,19 +992,16 @@ impl NodeEmbeddingService {
     /// embedding, or to score it against text that is not stored as a node
     /// embedding.
     ///
-    /// Queries are embedded with the `search_document` prefix, the same one
-    /// stored content gets in [`Self::embed_root_node`] — deliberately not
-    /// nomic's `search_query` prefix. Measured with the live
-    /// `live_embedding_prefix_measurement` suite, `search_query` did not help
-    /// any retrieval path: skill rank-1 was flat but moved misses onto
-    /// guarded routes (Graph Editing out-ranked Node Deletion on "remove the
-    /// done tasks"), schema recall@5 fell 93%→89%, short-note search rank-1
-    /// fell 88%→79%, and multi-chunk documents were a tie (92% rank-1 both
-    /// ways). Most of what gets stored — skill and schema descriptions, short
-    /// notes — is about as short as a query, so the symmetric framing fits,
-    /// and skill descriptions, exclusions and routing bars are tuned against
-    /// it. Re-measure before changing this, especially once long multi-chunk
-    /// documents dominate a workspace.
+    /// Deliberately uses the document prefix (`search_document`), the same one
+    /// stored content gets in [`Self::embed_root_node`], not nomic's
+    /// `search_query`. Measured with the live `live_embedding_prefix_measurement`
+    /// suite, `search_query` brought no net gain and broke guarded skill routes
+    /// (Graph Editing started out-ranking Node Deletion on "remove the done
+    /// tasks"). Most of what gets stored — skill and schema descriptions,
+    /// short notes — is about as short as a query, so the symmetric framing
+    /// fits, and skill descriptions, exclusions and routing bars are tuned
+    /// against it. Re-measure before changing this, especially once long
+    /// multi-chunk documents dominate a workspace.
     pub fn embed_query_text(&self, query: &str) -> Result<Vec<f32>, NodeServiceError> {
         if query.trim().is_empty() {
             return Err(NodeServiceError::invalid_update(

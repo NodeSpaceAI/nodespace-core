@@ -46,7 +46,9 @@ use nodespace_nlp_engine::{EmbeddingConfig, EmbeddingService};
 use serde_json::json;
 use tempfile::TempDir;
 
-/// `context_ops::SCHEMA_SIMILARITY_THRESHOLD` / `MAX_SEMANTIC_SCHEMAS`.
+/// Copies of production's private constants — check they still match before
+/// trusting a run. `context_ops::SCHEMA_SIMILARITY_THRESHOLD` /
+/// `MAX_SEMANTIC_SCHEMAS`.
 const SCHEMA_THRESHOLD: f64 = 0.2;
 const MAX_SEMANTIC_SCHEMAS: usize = 5;
 /// `SEMANTIC_THRESHOLD` in `local_agent/tools.rs` and `context_assembly.rs`.
@@ -792,7 +794,7 @@ async fn measure_skills(env: &Env) {
             .collect();
         all_scores.extend(candidates.iter().map(|c| f64::from(c.score)));
         let pos = candidates.iter().position(|c| c.name == *want);
-        let top = &candidates[0];
+        let top = candidates.first().expect("find_skills returned no skills");
         if pos == Some(0) {
             rank1 += 1;
             if let Some(second) = candidates.get(1) {
@@ -834,7 +836,7 @@ async fn measure_skills(env: &Env) {
         "  expected-skill score mean {:.3} | rank-1 margin mean {:.3} | all skill scores min {:.3} median {:.3} max {:.3}",
         mean(&expected_scores),
         mean(&margins),
-        all_scores[0],
+        all_scores.first().expect("no skill scores"),
         all_scores[all_scores.len() / 2],
         all_scores[all_scores.len() - 1],
     );
@@ -930,7 +932,7 @@ async fn measure_schemas(env: &Env) {
         target_scores.iter().copied().fold(f64::INFINITY, f64::min),
         mean(&best_other_scores),
         best_other_scores.iter().copied().fold(0.0, f64::max),
-        other_scores[0],
+        other_scores.first().expect("no off-target scores"),
         other_scores[other_scores.len() / 2],
     );
 }
@@ -971,7 +973,7 @@ async fn measure_node_search(env: &Env) {
             .collect();
         returned += neighbours.len();
         same_topic += neighbours.iter().filter(|i| topics[**i] == *topic).count();
-        possible += 2;
+        possible += NOTES.iter().filter(|(t, _)| t == topic).count() - 1;
     }
     println!(
         "  same-topic recall {} | precision {}",
@@ -1042,7 +1044,7 @@ async fn report_node_search(
         "  target score mean {:.3} min {:.3} | off-topic score min {:.3} median {:.3} p90 {:.3} max {:.3}",
         mean(&target_scores),
         target_scores.iter().copied().fold(f64::INFINITY, f64::min),
-        other_scores[0],
+        other_scores.first().expect("no off-target scores"),
         other_scores[other_scores.len() / 2],
         other_scores[other_scores.len() * 9 / 10],
         other_scores[other_scores.len() - 1],
