@@ -58,7 +58,6 @@ interface GitHubIssue {
 export class GitHubClient {
   private octokit: Octokit;
   
-  // Project configuration from docs/architecture/development/process/issue-workflow.md
   // The NodeSpaceAI organization owns both the repo and the ProjectV2 board.
   private readonly owner = "NodeSpaceAI";
   private readonly repo = "nodespace-core";
