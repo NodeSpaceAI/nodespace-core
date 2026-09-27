@@ -693,6 +693,16 @@ pub trait AgentToolExecutor: Send + Sync {
         Ok(SkillRetrieval::default())
     }
 
+    /// Names of every skill in the registry, for Stage 1 to know which
+    /// capabilities exist.
+    ///
+    /// Names only: Stage 1 decides whether a request can be described, not
+    /// which skill serves it — retrieval still does that. The default is empty,
+    /// which leaves the Stage-1 prompt without the line.
+    async fn skill_names(&self) -> Vec<String> {
+        Vec::new()
+    }
+
     /// `task.status`'s currently-declared values (`core_values` +
     /// `user_values`), used to keep `update_task_status`'s parameter `enum`
     /// in step with a vocabulary ADR-076 lets a methodology bundle extend at

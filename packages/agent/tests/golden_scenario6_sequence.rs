@@ -8,7 +8,7 @@
 //! exercises, each turn hand-authored and validated independently against
 //! bare llama.cpp before any NodeSpace assembly code is asked to reproduce
 //! it. No production prompt-assembly source is reused here (no
-//! `skill_pipeline.rs`, no `agent_guidance.rs`, no `STAGE1_SYSTEM_PROMPT`) —
+//! `skill_pipeline.rs`, no `agent_guidance.rs`, no `stage1_system_prompt`) —
 //! every string is authored fresh, same discipline as
 //! `golden_scenario6_handauthored.rs`.
 //!

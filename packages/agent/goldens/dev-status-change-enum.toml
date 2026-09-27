@@ -19,7 +19,7 @@ STRUCTURAL REFERENCE
 Derived from a real NODESPACE_PROMPT_DUMP capture, not assumed. Blocks appear
 in production's own order, each sourced from the code that emits it:
 
-  resident system prompt   agent_loop.rs STAGE1_SYSTEM_PROMPT
+  resident system prompt   agent_loop.rs stage1_system_prompt
   COLLECTIONS:             context_ops.rs format_for_prompt
   EXISTING SCHEMAS:   context_ops.rs RELEVANT_NODE_TYPES_HEADER, with
                            the per-type line from entity_types_block.rs

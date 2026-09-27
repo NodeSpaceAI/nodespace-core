@@ -2,7 +2,7 @@
 //! deterministic prompt-assembly snapshot-test deliverable tracked on #1917.
 //!
 //! This is deliberately the SMALLEST possible call: build the exact
-//! `STAGE1_SYSTEM_PROMPT` + `stage1_tool_definitions()` request
+//! `stage1_system_prompt` + `stage1_tool_definitions()` request
 //! `agent_loop.rs`'s `route` function sends, call `LlamaChatInferenceEngine`
 //! directly (in-process, no daemon, no chat-node lifecycle, no DB), and parse
 //! the resulting tool call. No retrieval, no Stage 2, no tool execution.
@@ -26,12 +26,22 @@
 use std::sync::Arc;
 
 use nodespace_agent::agent_types::{ChatInferenceEngine, ChatMessage, InferenceRequest, Role};
-use nodespace_agent::local_agent::agent_loop::{STAGE1_MAX_TOKENS, STAGE1_SYSTEM_PROMPT};
+use nodespace_agent::local_agent::agent_loop::{stage1_system_prompt, STAGE1_MAX_TOKENS};
 use nodespace_agent::local_agent::inference::LlamaChatInferenceEngine;
 use nodespace_agent::local_agent::routing::{
     parse_route_decision, stage1_tool_definitions, RouteDecision,
 };
 use nodespace_nlp_engine::chat::ChatConfig;
+
+/// The skill names production's Stage-1 prompt carries on a freshly seeded
+/// registry — what `GraphToolExecutor::skill_names` returns there.
+fn seeded_skill_names() -> Vec<String> {
+    nodespace_agent::local_agent::agent_loop::stage1_skill_names(
+        nodespace_agent::skill_pipeline::seed_skill_nodes()
+            .into_iter()
+            .map(|t| t.title),
+    )
+}
 
 /// Standard on-disk path for the locked native model (ADR-056), matching
 /// `model_manager.rs`'s catalog filename under the NodeSpace home directory.
@@ -77,7 +87,7 @@ async fn run_stage1_with_history(
         nodespace_agent::local_agent::agent_loop::stage1_query_from_turns(prior_turns, message);
     let request = InferenceRequest {
         messages: vec![
-            ChatMessage::text(Role::System, STAGE1_SYSTEM_PROMPT.to_string()),
+            ChatMessage::text(Role::System, stage1_system_prompt(&seeded_skill_names())),
             ChatMessage::text(Role::User, routing_query),
         ],
         tools: Some(stage1_tool_definitions()),
@@ -123,7 +133,7 @@ async fn run_stage1_with_history(
 /// discards the "new kind of thing" intent, which then retrieves
 /// Organization/Node Creation instead of Schema Creation. This test pins what
 /// Stage 1 ACTUALLY generates for this exact message today, so any future
-/// prompt-content fix (a change to STAGE1_SYSTEM_PROMPT or
+/// prompt-content fix (a change to stage1_system_prompt or
 /// stage1_tool_definitions' descriptions) can be iterated against this in
 /// seconds, and the change verified here BEFORE spending a full matrix gate.
 #[tokio::test]
