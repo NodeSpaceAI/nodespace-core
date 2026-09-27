@@ -259,6 +259,18 @@ const ALLOWLIST: &[Allowed] = &[
               writing the schema back — the field counterpart of this \
               function's `relationships` entry's reason (2) above.",
     },
+    Allowed {
+        file: "services/node_service/mod.rs",
+        function: "set_ai_chat_personal_collection_default",
+        field_kind: "fields",
+        why: "Same shape as handle_update_schema's Phase 2 entries above: \
+              mutates the `ai-chat` schema's OWN `.fields` Vec in place \
+              (find-or-insert the `personal_collection_id` field, stamp its \
+              default) before writing the schema node back. Not about \
+              inheritance at all — `personal_collection_id` is declared \
+              directly on `ai-chat`, never inherited, so there is no \
+              chain-merged set to read here in the first place.",
+    },
 ];
 
 /// Directories skipped entirely — generated/vendored code, not source this
