@@ -72,10 +72,7 @@ impl AgentSessionHandler {
     /// per-database context assembler and node service (for context + capture),
     /// so it follows the targeted database.
     async fn route<T>(&self, request: &Request<T>) -> Result<AgentSessionHandler, Status> {
-        match crate::db_routing::routed_database_services(request).await? {
-            Some(services) => Ok(services.agent_session.clone()),
-            None => Ok(self.clone()),
-        }
+        crate::db_routing::route_or_self(self, request, |s| &s.agent_session).await
     }
 }
 

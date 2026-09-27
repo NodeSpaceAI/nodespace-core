@@ -583,10 +583,7 @@ impl LocalAgentServiceImpl {
     /// engine and catalog regardless of which database a caller names — routing
     /// it would be a no-op that only obscured that fact.
     async fn route<T>(&self, request: &Request<T>) -> Result<LocalAgentServiceImpl, Status> {
-        match crate::db_routing::routed_database_services(request).await? {
-            Some(services) => Ok(services.local_agent.clone()),
-            None => Ok(self.clone()),
-        }
+        crate::db_routing::route_or_self(self, request, |s| &s.local_agent).await
     }
 
     /// The process-global GGUF model manager. See

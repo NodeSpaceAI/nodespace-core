@@ -59,10 +59,7 @@ impl ImportServiceImpl {
     /// routing middleware installed a header-less request falls back to `self`
     /// while a header-carrying one is rejected.
     async fn route<T>(&self, request: &Request<T>) -> Result<ImportServiceImpl, Status> {
-        match crate::db_routing::routed_database_services(request).await? {
-            Some(services) => Ok(services.import.clone()),
-            None => Ok(self.clone()),
-        }
+        crate::db_routing::route_or_self(self, request, |s| &s.import).await
     }
 }
 

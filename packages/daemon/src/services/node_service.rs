@@ -213,10 +213,8 @@ impl NodeServiceImpl {
     /// (which all start with `let this = self.route(&request).await?`) picks
     /// it up without individually touching the client-id header.
     async fn route<T>(&self, request: &Request<T>) -> Result<NodeServiceImpl, Status> {
-        let mut this = match crate::db_routing::routed_database_services(request).await? {
-            Some(services) => services.node_service_grpc.clone(),
-            None => self.clone(),
-        };
+        let mut this =
+            crate::db_routing::route_or_self(self, request, |s| &s.node_service_grpc).await?;
         if let Some(client_id) = client_id_header(request).map_err(|e| *e)? {
             this.node_service = Arc::new(this.node_service.with_client(client_id));
         }

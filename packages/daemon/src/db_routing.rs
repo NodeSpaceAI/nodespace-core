@@ -74,6 +74,22 @@ pub(crate) async fn routed_database_services<T>(
     Ok(Some(services))
 }
 
+/// The common `route` adapter: resolve the target database via
+/// [`routed_database_services`] and return `pick`'s service from it, or a
+/// clone of `this` when no routing is in play. Services whose routed handle
+/// can be absent (embeddings) must not use this — falling back to `this`
+/// there would silently serve another database.
+pub(crate) async fn route_or_self<S: Clone, T>(
+    this: &S,
+    request: &tonic::Request<T>,
+    pick: impl FnOnce(&DatabaseServices) -> &S,
+) -> Result<S, Status> {
+    Ok(match routed_database_services(request).await? {
+        Some(services) => pick(&services).clone(),
+        None => this.clone(),
+    })
+}
+
 /// `tower::Layer` that inserts the shared [`Arc<DatabaseManager>`] into each
 /// request's extensions. See the module docs for why this is core-only and
 /// behavior-preserving for the Pro daemon.
