@@ -243,10 +243,12 @@ pub(super) fn member_may_have_parent(node_type: &str) -> bool {
 /// [`root_only_membership_query`], shared by both guard twins.
 fn check_root_only_member(id: String, node_type: String, has_parent: i64) -> Result<()> {
     if has_parent != 0 && !member_may_have_parent(&node_type) {
-        return Err(anyhow::anyhow!(
-            "member_of_not_root: content node '{}' (type '{}') has a parent, so it cannot be a member of a collection directly — file its root node instead",
-            id,
-            node_type
+        let detail = format!(
+            "content node '{}' (type '{}') has a parent, so it cannot be a member of a collection directly — file its root node instead",
+            id, node_type
+        );
+        return Err(anyhow::Error::new(
+            super::TreeInvariantViolation::member_of_not_root(id, Vec::new(), detail),
         ));
     }
     Ok(())
@@ -2552,7 +2554,14 @@ mod tests {
         assert!(check_root_only_member("b".into(), "person".into(), 1).is_ok());
         for node_type in ["text", "task", "collection"] {
             let err = check_root_only_member("c".into(), node_type.into(), 1).unwrap_err();
-            assert!(err.to_string().starts_with("member_of_not_root:"));
+            let violation = err
+                .downcast_ref::<super::super::TreeInvariantViolation>()
+                .expect("a typed TreeInvariantViolation");
+            assert_eq!(
+                violation.rule,
+                super::super::TreeInvariantRule::MemberOfNotRoot
+            );
+            assert_eq!(violation.node_id.as_deref(), Some("c"));
         }
     }
 

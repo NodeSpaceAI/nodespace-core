@@ -3,7 +3,7 @@
 //! This module defines error types for service-layer operations, providing
 //! detailed error handling for business logic failures.
 
-use crate::db::DatabaseError;
+use crate::db::{DatabaseError, TreeInvariantViolation};
 use crate::models::ValidationError;
 use thiserror::Error;
 
@@ -33,9 +33,13 @@ pub enum NodeServiceError {
     #[error("Invalid root node: {root_node_id}")]
     InvalidRoot { root_node_id: String },
 
-    /// Circular reference detected
-    #[error("Circular reference detected: {context}")]
-    CircularReference { context: String },
+    /// A write refused because it would break a tree invariant — a cycle, a
+    /// collection with a parent, or a member below a parent (ADR-059 §2). A
+    /// refusal the caller can act on, carrying which rule fired and which
+    /// nodes were involved; distinct from [`Self::QueryFailed`] so clients
+    /// never have to parse the message to tell the two apart.
+    #[error("{0}")]
+    TreeInvariantViolation(#[from] TreeInvariantViolation),
 
     /// Node hierarchy constraint violation
     #[error("Hierarchy constraint violated: {0}")]
@@ -146,10 +150,10 @@ pub enum NodeServiceError {
     /// The persisted hierarchy is malformed — a cyclic or unreachably deep
     /// `has_child` chain found while reading, not proposed by the caller.
     ///
-    /// Distinct from [`Self::CircularReference`] and [`Self::HierarchyViolation`],
+    /// Distinct from [`Self::TreeInvariantViolation`] and [`Self::HierarchyViolation`],
     /// which the write paths raise when a caller *proposes* a cycle (moving a
-    /// node under its own descendant); those are genuine `invalid_argument`
-    /// cases the caller can fix by sending a different request. This one is a
+    /// node under its own descendant); those are refusals the caller can fix
+    /// by sending a different request. This one is a
     /// stored-data bug: the request was valid, retrying it unchanged fails
     /// identically, and only a repair of the graph resolves it. It therefore
     /// maps to an internal error so it lands in server-error reporting rather
@@ -199,10 +203,17 @@ impl NodeServiceError {
         }
     }
 
-    /// Create a circular reference error
-    pub fn circular_reference(context: impl Into<String>) -> Self {
-        Self::CircularReference {
-            context: context.into(),
+    /// Map a store error, recovering a [`TreeInvariantViolation`] a store
+    /// guard raised by type; anything else is a [`Self::QueryFailed`] carrying
+    /// the whole context chain, so `store_call.map_err(|e|
+    /// from_store(e.context("Failed to …")))` reads "Failed to …: cause".
+    pub fn from_store(err: anyhow::Error) -> Self {
+        match err
+            .chain()
+            .find_map(|e| e.downcast_ref::<TreeInvariantViolation>())
+        {
+            Some(violation) => Self::TreeInvariantViolation(violation.clone()),
+            None => Self::QueryFailed(format!("{err:#}")),
         }
     }
 
@@ -385,11 +396,26 @@ mod tests {
     }
 
     #[test]
-    fn test_circular_reference_error() {
-        let err = NodeServiceError::circular_reference("node A -> B -> A");
-        let msg = err.to_string();
-        assert!(matches!(err, NodeServiceError::CircularReference { .. }));
-        assert!(msg.contains("Circular reference"));
+    fn from_store_recovers_tree_invariant_violation_through_context() {
+        use crate::db::TreeInvariantRule;
+        let violation = TreeInvariantViolation::cycle("a", "b", "a cannot go under b");
+        let err = anyhow::Error::new(violation.clone()).context("while moving");
+        match NodeServiceError::from_store(err) {
+            NodeServiceError::TreeInvariantViolation(v) => {
+                assert_eq!(v, violation);
+                assert_eq!(v.rule, TreeInvariantRule::Cycle);
+            }
+            other => panic!("expected TreeInvariantViolation, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn from_store_maps_other_errors_to_query_failed() {
+        let err = NodeServiceError::from_store(anyhow::anyhow!("disk I/O error"));
+        assert!(
+            matches!(&err, NodeServiceError::QueryFailed(msg) if msg == "disk I/O error"),
+            "{err:?}"
+        );
     }
 
     #[test]

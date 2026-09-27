@@ -4,7 +4,7 @@
  * daemon trailers.
  *
  * The daemon (packages/daemon/src/services/node_service.rs, `ops_error_to_status`)
- * attaches two ASCII trailer keys to specific tonic::Status codes:
+ * attaches structured trailer keys to specific tonic::Status codes:
  *
  *   - `Aborted` + `x-version-conflict` — a JSON payload
  *     `{ node_id, expected, actual, current_node }` describing an OCC conflict.
@@ -23,16 +23,21 @@
  *     gated on the metadata key, not the status code alone, and checked
  *     independently of it (the two never both appear on one status, but
  *     neither implies the other's absence).
+ *   - `FailedPrecondition` + `x-tree-invariant-violation-bin` — a JSON payload
+ *     `{ rule, node_id, related_ids, detail }` describing a write refused
+ *     because it would break a tree invariant (`member_of_not_root`,
+ *     `collection_not_root`, `cycle`). Binary for the same reason, with the
+ *     same gating on the metadata key.
  *
  * `status_to_command_error` (packages/desktop-app/src-tauri/src/commands/nodes.rs)
  * reads those same trailers over tonic on the Tauri path to build
- * `VERSION_CONFLICT` / `SUBTREE_ACCESS_DENIED` / `PLAY_RULE_REJECTED`
- * `CommandError`s. This module is the dev-proxy/gRPC-js-side mirror of that
+ * `VERSION_CONFLICT` / `SUBTREE_ACCESS_DENIED` / `PLAY_RULE_REJECTED` /
+ * `TREE_INVARIANT_VIOLATION` `CommandError`s. This module is the dev-proxy/gRPC-js-side mirror of that
  * logic, so a live refusal reached through `bun run dev:browser` carries the
  * same `code`/`conflictData` shape a refusal reached through the Tauri
  * command layer does — which is what
- * `isSubtreeAccessDenied`/`isVersionConflict`/`isPlayRuleRejected`
- * (packages/desktop-app/src/lib/types/errors.ts) structurally match against,
+ * `isSubtreeAccessDenied`/`isVersionConflict`/`isPlayRuleRejected`/
+ * `isTreeInvariantViolation` (packages/desktop-app/src/lib/types/errors.ts) structurally match against,
  * regardless of transport.
  */
 
@@ -72,8 +77,11 @@ function safeJsonParse(raw: string): unknown {
  *  - `FAILED_PRECONDITION` with a parseable `x-play-rule-rejected-bin`
  *    binary metadata value → code `PLAY_RULE_REJECTED`, `conflictData` =
  *    the parsed JSON payload (`{ node_id, play_id, rule_name, message }`).
- *  - A `FAILED_PRECONDITION` matching neither metadata key falls through to
- *    the generic mapping below — it is neither kind of refusal.
+ *  - `FAILED_PRECONDITION` with a parseable `x-tree-invariant-violation-bin`
+ *    binary metadata value → code `TREE_INVARIANT_VIOLATION`, `conflictData`
+ *    = the parsed JSON payload (`{ rule, node_id, related_ids, detail }`).
+ *  - A `FAILED_PRECONDITION` matching none of these metadata keys falls
+ *    through to the generic mapping below — it is none of these refusals.
  *  - Everything else keeps the pre-existing dev-proxy behavior: the generic
  *    gRPC status name (`grpc.status[code]`), no `conflictData`.
  */
@@ -111,6 +119,14 @@ export function mapGrpcError(err: grpc.ServiceError): MappedGrpcError {
       const conflictData = safeJsonParse(rejectedRaw);
       if (conflictData !== undefined) {
         return { code: 'PLAY_RULE_REJECTED', conflictData };
+      }
+    }
+
+    const invariantRaw = firstMetadataString(metadata, 'x-tree-invariant-violation-bin');
+    if (invariantRaw !== undefined) {
+      const conflictData = safeJsonParse(invariantRaw);
+      if (conflictData !== undefined) {
+        return { code: 'TREE_INVARIANT_VIOLATION', conflictData };
       }
     }
   }

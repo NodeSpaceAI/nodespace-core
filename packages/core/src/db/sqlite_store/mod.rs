@@ -114,6 +114,108 @@ impl std::fmt::Display for VersionConflict {
 
 impl std::error::Error for VersionConflict {}
 
+/// Which tree invariant a refused write would have broken.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TreeInvariantRule {
+    /// A node holding `member_of` would sit below a `has_child` parent — only
+    /// root nodes may hold collection membership (ADR-059 §2).
+    MemberOfNotRoot,
+    /// A collection would gain a `has_child` parent; collections are always
+    /// roots and nest through `member_of` (ADR-059 §2).
+    CollectionNotRoot,
+    /// The write would make a node its own `has_child` ancestor.
+    Cycle,
+}
+
+impl TreeInvariantRule {
+    /// The rule's stable wire name, carried to clients as structured data.
+    /// It also prefixes the refusal's message, matching the schema triggers'
+    /// `RAISE` text so every path that refuses a rule reads the same.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::MemberOfNotRoot => "member_of_not_root",
+            Self::CollectionNotRoot => "collection_not_root",
+            Self::Cycle => "cycle",
+        }
+    }
+}
+
+/// A write refused because it would break a tree invariant.
+///
+/// Store guards return it inside their `anyhow::Error`; the service recovers
+/// it by type (`NodeServiceError::from_store`) — never by parsing message
+/// text — so a client learns which rule fired and which nodes were involved,
+/// and can tell the refusal apart from a database failure.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TreeInvariantViolation {
+    pub rule: TreeInvariantRule,
+    /// The node the write would have left in violation. `None` only for a
+    /// collection refused before it was given an id.
+    pub node_id: Option<String>,
+    /// The other nodes involved: for `MemberOfNotRoot` on a reparent or merge,
+    /// the collections the node belongs to (empty when the refused write is
+    /// the membership itself); for `Cycle`, the node on the other end of the
+    /// edge that would have closed the cycle.
+    pub related_ids: Vec<String>,
+    /// Human-readable explanation, including what the caller can do about it.
+    pub detail: String,
+}
+
+impl TreeInvariantViolation {
+    /// Giving a collection a parent.
+    pub fn collection_not_root(collection_id: Option<&str>) -> Self {
+        let subject = match collection_id {
+            Some(id) => format!("collection '{}'", id),
+            None => "a new collection".to_string(),
+        };
+        Self {
+            rule: TreeInvariantRule::CollectionNotRoot,
+            node_id: collection_id.map(str::to_string),
+            related_ids: Vec::new(),
+            detail: format!(
+                "{} cannot have a parent; collections nest through member_of, not has_child (ADR-059 §2)",
+                subject
+            ),
+        }
+    }
+
+    /// A member of `collection_ids` that has, or would gain, a parent.
+    pub fn member_of_not_root(
+        node_id: impl Into<String>,
+        collection_ids: Vec<String>,
+        detail: impl Into<String>,
+    ) -> Self {
+        Self {
+            rule: TreeInvariantRule::MemberOfNotRoot,
+            node_id: Some(node_id.into()),
+            related_ids: collection_ids,
+            detail: detail.into(),
+        }
+    }
+
+    /// The write would make `node_id` its own ancestor through `other_id`.
+    pub fn cycle(
+        node_id: impl Into<String>,
+        other_id: impl Into<String>,
+        detail: impl Into<String>,
+    ) -> Self {
+        Self {
+            rule: TreeInvariantRule::Cycle,
+            node_id: Some(node_id.into()),
+            related_ids: vec![other_id.into()],
+            detail: detail.into(),
+        }
+    }
+}
+
+impl std::fmt::Display for TreeInvariantViolation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {}", self.rule.as_str(), self.detail)
+    }
+}
+
+impl std::error::Error for TreeInvariantViolation {}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StoreOperation {
     Created,
@@ -621,21 +723,6 @@ impl SqliteStore {
     }
 }
 
-/// The refusal for giving a collection a parent (ADR-059 §2): a collection is
-/// always a root and nests through `member_of`. The `collection_not_root`
-/// prefix matches the schema triggers' `RAISE` message, so every path that
-/// refuses it reads the same.
-pub(crate) fn collection_not_root(collection_id: Option<&str>) -> String {
-    let subject = match collection_id {
-        Some(id) => format!("collection '{}'", id),
-        None => "a new collection".to_string(),
-    };
-    format!(
-        "collection_not_root: {} cannot have a parent; collections nest through member_of, not has_child (ADR-059 §2)",
-        subject
-    )
-}
-
 // The remaining `impl SqliteStore` methods are split by concern into these
 // child modules; each is an additional `impl SqliteStore` block over the same
 // struct. See ADR-053 groundwork (node CRUD / relationships / embeddings / search).
@@ -655,6 +742,13 @@ mod tests {
     use super::*;
     use serde_json::json;
     use tempfile::TempDir;
+
+    /// The typed tree-invariant refusal inside a store error.
+    fn tree_violation(err: &anyhow::Error) -> &TreeInvariantViolation {
+        err.chain()
+            .find_map(|e| e.downcast_ref::<TreeInvariantViolation>())
+            .unwrap_or_else(|| panic!("expected a TreeInvariantViolation, got: {err:#}"))
+    }
 
     async fn create_test_store() -> Result<(Arc<SqliteStore>, TempDir)> {
         use crate::services::NodeService;
@@ -1433,11 +1527,9 @@ mod tests {
             .add_to_collection(&interior.id, &coll_id, &json!({}))
             .await
             .expect_err("an interior content node must not be fileable into a collection");
-        let msg = err.to_string();
-        assert!(
-            msg.contains("member_of_not_root") && msg.contains(&interior.id),
-            "rejection must name the node and why it was refused; got: {msg}"
-        );
+        let violation = tree_violation(&err);
+        assert_eq!(violation.rule, TreeInvariantRule::MemberOfNotRoot);
+        assert_eq!(violation.node_id.as_deref(), Some(interior.id.as_str()));
 
         // The GENERIC relationship path is gated too. A `member_of` edge created
         // with an explicit `order` — the CLI `relationship create --edge-data`,
@@ -1456,9 +1548,10 @@ mod tests {
             )
             .await
             .expect_err("member_of via the generic path must reject an interior node");
-        assert!(
-            err_generic.to_string().contains("member_of_not_root"),
-            "generic-path rejection must carry the same reason; got: {err_generic}"
+        assert_eq!(
+            tree_violation(&err_generic).rule,
+            TreeInvariantRule::MemberOfNotRoot,
+            "generic-path rejection must carry the same rule"
         );
         // A non-member_of generic edge is unaffected by the rule.
         assert!(
@@ -1498,9 +1591,9 @@ mod tests {
             .create_child_node_atomic(&root_id, "collection", "Interior", json!({}), None)
             .await
             .expect_err("a collection cannot be created under a parent");
-        assert!(
-            format!("{err:#}").contains("collection_not_root"),
-            "{err:#}"
+        assert_eq!(
+            tree_violation(&err).rule,
+            TreeInvariantRule::CollectionNotRoot
         );
 
         // End-to-end: a restricted task inside an OPEN project still works. The
@@ -1660,9 +1753,13 @@ mod tests {
             .move_node(&member_id, Some(&parent_id), None)
             .await
             .expect_err("store must reject reparenting a collection member");
-        assert!(
-            err.to_string().contains("member_of_not_root") && err.to_string().contains(&coll_id),
-            "rejection must name the reason and the collection; got: {err}"
+        let violation = tree_violation(&err);
+        assert_eq!(violation.rule, TreeInvariantRule::MemberOfNotRoot);
+        assert_eq!(violation.node_id.as_deref(), Some(member_id.as_str()));
+        assert_eq!(
+            violation.related_ids,
+            vec![coll_id.clone()],
+            "rejection must name the collection"
         );
 
         // Moving the same member to root is allowed (the guard only fires on gaining a parent).
@@ -1717,10 +1814,9 @@ mod tests {
             ])
             .await
             .expect_err("bulk_create_has_child must reject attaching a root member to a parent");
-        assert!(
-            bulk_err.to_string().contains("member_of_not_root"),
-            "bulk cold-sweep reparent must be gated; got: {bulk_err}"
-        );
+        let violation = tree_violation(&bulk_err);
+        assert_eq!(violation.rule, TreeInvariantRule::MemberOfNotRoot);
+        assert_eq!(violation.node_id.as_deref(), Some(bulk_member_id.as_str()));
         Ok(())
     }
 

@@ -350,6 +350,11 @@ impl SqliteStore {
         source: Option<String>,
     ) -> Result<Node> {
         self.validate_node_type(node_type)?;
+        if node_type == "collection" {
+            return Err(anyhow::Error::new(
+                super::TreeInvariantViolation::collection_not_root(None),
+            ));
+        }
 
         let node_id = uuid::Uuid::new_v4().to_string();
 
@@ -2511,12 +2516,14 @@ impl SqliteStore {
         ).await.context("Failed to check for cycles")?;
 
         if rows.next().await?.is_some() {
-            return Err(anyhow::anyhow!(
-                "Cannot create parent-child relationship: would create cycle. \
-                Node '{}' is a descendant of node '{}'.",
+            return Err(anyhow::Error::new(super::TreeInvariantViolation::cycle(
+                child_id,
                 parent_id,
-                child_id
-            ));
+                format!(
+                    "node '{}' cannot be placed under '{}', which is one of its descendants",
+                    child_id, parent_id
+                ),
+            )));
         }
         Ok(())
     }
@@ -2651,7 +2658,7 @@ impl SqliteStore {
     /// nodes are exempt.
     ///
     /// Also refuses a `collection`, which is always a root (ADR-059 §2): see
-    /// [`super::collection_not_root`]. The schema's `collection_is_root_*`
+    /// [`super::TreeInvariantViolation::collection_not_root`]. The schema's `collection_is_root_*`
     /// triggers back this up on every write path; checking here gives the
     /// reparent paths a readable error. One chunked query finds both kinds of
     /// offender, keeping the bulk/cold-sweep path a single round trip per chunk.
@@ -2698,13 +2705,22 @@ impl SqliteStore {
             };
             if let Some((offender, node_type)) = offender {
                 if node_type == "collection" {
-                    return Err(anyhow::anyhow!(super::collection_not_root(Some(&offender))));
+                    return Err(anyhow::Error::new(
+                        super::TreeInvariantViolation::collection_not_root(Some(&offender)),
+                    ));
                 }
                 let memberships = self.get_node_memberships(&offender).await?;
-                return Err(anyhow::anyhow!(
-                    "member_of_not_root: node '{}' holds collection membership ({}) and cannot be moved under a parent — only root nodes may hold collection membership (ADR-059 §2). Remove it from the collection(s) first, or move its root instead.",
+                let detail = format!(
+                    "node '{}' holds collection membership ({}) and cannot be moved under a parent — only root nodes may hold collection membership (ADR-059 §2). Remove it from the collection(s) first, or move its root instead.",
                     offender,
                     memberships.join(", ")
+                );
+                return Err(anyhow::Error::new(
+                    super::TreeInvariantViolation::member_of_not_root(
+                        offender,
+                        memberships,
+                        detail,
+                    ),
                 ));
             }
         }

@@ -122,7 +122,7 @@ impl NodeService {
             .store
             .query_nodes(query)
             .await
-            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+            .map_err(NodeServiceError::from_store)?;
 
         // Apply property filters in-memory if present
         let result_nodes = if let Some(ref property_filters) = filter.property_filters {
@@ -532,7 +532,7 @@ impl NodeService {
             .store
             .get_extends_parent_map()
             .await
-            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+            .map_err(NodeServiceError::from_store)?;
         if parent_map.is_empty() {
             return Ok(nodes);
         }
@@ -620,7 +620,7 @@ impl NodeService {
             .store
             .query_nodes(query)
             .await
-            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+            .map_err(NodeServiceError::from_store)?;
 
         Ok(nodes)
     }
@@ -648,7 +648,7 @@ impl NodeService {
         self.store
             .count_nodes(&query)
             .await
-            .map_err(|e| NodeServiceError::query_failed(e.to_string()))
+            .map_err(NodeServiceError::from_store)
     }
 }
 
@@ -662,7 +662,7 @@ impl NodeService {
         self.store
             .mention_autocomplete(query, limit.map(|l| l as i64))
             .await
-            .map_err(|e| NodeServiceError::query_failed(e.to_string()))
+            .map_err(NodeServiceError::from_store)
     }
 }
 

@@ -93,7 +93,7 @@ impl NodeService {
             .store
             .create_mention(mentioning_node_id, mentioned_node_id)
             .await
-            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+            .map_err(NodeServiceError::from_store)?;
 
         // Emit event if relationship was created (not already existing)
         if let Some(rel_id) = relationship_id {
@@ -149,7 +149,7 @@ impl NodeService {
             .store
             .delete_mention(mentioning_node_id, mentioned_node_id)
             .await
-            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+            .map_err(NodeServiceError::from_store)?;
 
         // Emit event if relationship was deleted (existed). Normalize
         // ids the same way `RelationshipEvent::new` does for the
@@ -352,7 +352,7 @@ impl NodeService {
         self.store
             .get_outgoing_mentions(node_id)
             .await
-            .map_err(|e| NodeServiceError::query_failed(e.to_string()))
+            .map_err(NodeServiceError::from_store)
     }
 
     /// Get all nodes that mention a specific node (incoming references/backlinks)
@@ -384,7 +384,7 @@ impl NodeService {
         self.store
             .get_incoming_mentions(node_id)
             .await
-            .map_err(|e| NodeServiceError::query_failed(e.to_string()))
+            .map_err(NodeServiceError::from_store)
     }
 
     /// Get containers (root or task nodes) that mention the target node (backlinks).
@@ -425,7 +425,7 @@ impl NodeService {
         self.store
             .get_incoming_mention_containers(node_id)
             .await
-            .map_err(|e| NodeServiceError::query_failed(e.to_string()))
+            .map_err(NodeServiceError::from_store)
     }
 
     // ========================================================================
@@ -666,7 +666,7 @@ impl NodeService {
     ) -> Result<Option<crate::models::Node>, NodeServiceError> {
         if let Some(node) = crate::db::SqliteStore::get_node_in_tx(tx.store_tx(), id)
             .await
-            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?
+            .map_err(NodeServiceError::from_store)?
         {
             return Ok(Some(node));
         }
@@ -790,9 +790,7 @@ impl NodeService {
                 .await?
                 .ok_or_else(|| NodeServiceError::node_not_found(target_id))?;
             if target.node_type == "collection" {
-                return Err(NodeServiceError::hierarchy_violation(
-                    crate::db::collection_not_root(Some(target_id)),
-                ));
+                return Err(TreeInvariantViolation::collection_not_root(Some(target_id)).into());
             }
         }
 
@@ -844,10 +842,7 @@ impl NodeService {
                     .add_to_collection(source_id, target_id, &edge_data)
                     .await
                     .map_err(|e| {
-                        NodeServiceError::query_failed(format!(
-                            "Failed to add to collection: {}",
-                            e
-                        ))
+                        NodeServiceError::from_store(e.context("Failed to add to collection"))
                     })?;
 
                 // Emit event if relationship was created (not idempotent hit)
@@ -895,7 +890,7 @@ impl NodeService {
                 .append_child_edge(source_id, target_id)
                 .await
                 .map_err(|e| {
-                    NodeServiceError::query_failed(format!("Failed to append child edge: {}", e))
+                    NodeServiceError::from_store(e.context("Failed to append child edge"))
                 })?;
             self.refresh_for_rootness(target_id, false, None).await;
 
@@ -933,7 +928,7 @@ impl NodeService {
             )
             .await
             .map_err(|e| {
-                NodeServiceError::query_failed(format!("Failed to create relationship: {}", e))
+                NodeServiceError::from_store(e.context("Failed to create relationship"))
             })?;
         if relationship_name == "has_child" {
             self.refresh_for_rootness(target_id, false, None).await;
@@ -1016,7 +1011,7 @@ impl NodeService {
             if relationship_name == "member_of" {
                 let target = crate::db::SqliteStore::get_node_in_tx(tx.store_tx(), target_id)
                     .await
-                    .map_err(|e| NodeServiceError::query_failed(e.to_string()))?
+                    .map_err(NodeServiceError::from_store)?
                     .ok_or_else(|| NodeServiceError::node_not_found(target_id))?;
                 if target.node_type != "collection" {
                     return Err(NodeServiceError::invalid_update(format!(
@@ -1026,7 +1021,7 @@ impl NodeService {
                 }
                 let source = crate::db::SqliteStore::get_node_in_tx(tx.store_tx(), source_id)
                     .await
-                    .map_err(|e| NodeServiceError::query_failed(e.to_string()))?
+                    .map_err(NodeServiceError::from_store)?
                     .ok_or_else(|| NodeServiceError::node_not_found(source_id))?;
                 if source.node_type == "collection" {
                     crate::db::SqliteStore::validate_no_member_of_cycle_in_tx(
@@ -1281,9 +1276,7 @@ impl NodeService {
             &final_edge_data,
         )
         .await
-        .map_err(|e| {
-            NodeServiceError::query_failed(format!("Failed to create relationship: {}", e))
-        })?;
+        .map_err(|e| NodeServiceError::from_store(e.context("Failed to create relationship")))?;
         if relationship_name == "has_child" {
             self.refresh_for_rootness_in_tx(tx, target_id, false, None)
                 .await?;
@@ -1423,7 +1416,7 @@ impl NodeService {
                     let survivor =
                         crate::db::SqliteStore::get_node_in_tx(tx.store_tx(), survivor_id)
                             .await
-                            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?
+                            .map_err(NodeServiceError::from_store)?
                             .ok_or_else(|| NodeServiceError::node_not_found(survivor_id))?;
                     survivor_node_type = Some(survivor.node_type);
                 }
@@ -1449,7 +1442,7 @@ impl NodeService {
                             relationship_type,
                         )
                         .await
-                        .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+                        .map_err(NodeServiceError::from_store)?;
 
                     let collides = existing_edges
                         .iter()
@@ -1503,7 +1496,7 @@ impl NodeService {
                             relationship_type,
                         )
                         .await
-                        .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+                        .map_err(NodeServiceError::from_store)?;
 
                     let mut collides = false;
                     for (_, existing_source_id, existing_source_type) in &existing_edges {
@@ -1551,7 +1544,7 @@ impl NodeService {
         } else {
             crate::db::SqliteStore::get_node_in_tx(tx.store_tx(), source_id)
                 .await
-                .map_err(|e| NodeServiceError::query_failed(e.to_string()))?
+                .map_err(NodeServiceError::from_store)?
                 .map(|n| n.node_type)
         };
         let forward_name = self
@@ -1567,7 +1560,7 @@ impl NodeService {
         if !is_builtin {
             if let Some(source) = crate::db::SqliteStore::get_node_in_tx(tx.store_tx(), source_id)
                 .await
-                .map_err(|e| NodeServiceError::query_failed(e.to_string()))?
+                .map_err(NodeServiceError::from_store)?
             {
                 if source.node_type == "schema" {
                     return Err(NodeServiceError::invalid_update(format!(
@@ -1624,7 +1617,7 @@ impl NodeService {
             // Target end: a required `in` declaration on the target's schema.
             if let Some(target) = crate::db::SqliteStore::get_node_in_tx(tx.store_tx(), target_id)
                 .await
-                .map_err(|e| NodeServiceError::query_failed(e.to_string()))?
+                .map_err(NodeServiceError::from_store)?
             {
                 let declarations = self
                     .required_in_declarations(&target.node_type, relationship_name)
@@ -1637,7 +1630,7 @@ impl NodeService {
                             relationship_name,
                         )
                         .await
-                        .map_err(|e| NodeServiceError::query_failed(e.to_string()))?
+                        .map_err(NodeServiceError::from_store)?
                         .into_iter()
                         .map(|(_, id, node_type)| (id, node_type))
                         .collect();
@@ -1710,7 +1703,7 @@ impl NodeService {
             .store
             .bulk_add_to_collections(memberships)
             .await
-            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+            .map_err(NodeServiceError::from_store)?;
 
         // The domain-event broadcast channel is bounded (128 slots). A large
         // import can create far more `member_of` edges than that; emitting them

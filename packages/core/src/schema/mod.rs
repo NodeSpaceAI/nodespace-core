@@ -3074,7 +3074,7 @@ pub async fn handle_update_schema(
             Box::pin(async move {
                 let current = crate::db::SqliteStore::get_node_in_tx(tx.store_tx(), &schema_id)
                     .await
-                    .map_err(|e| NodeServiceError::query_failed(e.to_string()))?
+                    .map_err(NodeServiceError::from_store)?
                     .ok_or_else(|| NodeServiceError::node_not_found(&schema_id))?;
                 if current.version != expected_version {
                     return Err(NodeServiceError::VersionConflict {

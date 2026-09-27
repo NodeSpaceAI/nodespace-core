@@ -36,7 +36,7 @@ impl NodeService {
         self.store
             .get_children(parent_id)
             .await
-            .map_err(|e| NodeServiceError::query_failed(e.to_string()))
+            .map_err(NodeServiceError::from_store)
     }
 
     /// Returns all root nodes — nodes with no parent edge in the graph.
@@ -48,7 +48,7 @@ impl NodeService {
         self.store
             .get_roots(limit, offset)
             .await
-            .map_err(|e| NodeServiceError::query_failed(e.to_string()))
+            .map_err(NodeServiceError::from_store)
     }
 
     /// Count root nodes without listing them — the O(1)-response-size
@@ -58,7 +58,7 @@ impl NodeService {
         self.store
             .count_roots()
             .await
-            .map_err(|e| NodeServiceError::query_failed(e.to_string()))
+            .map_err(NodeServiceError::from_store)
     }
 
     /// Get all descendants of a node (recursive children)
@@ -90,7 +90,7 @@ impl NodeService {
             .store
             .get_nodes_in_subtree(root_id)
             .await
-            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+            .map_err(NodeServiceError::from_store)?;
 
         Ok(descendants)
     }
@@ -206,7 +206,7 @@ impl NodeService {
             .store
             .get_parent(node_id)
             .await
-            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+            .map_err(NodeServiceError::from_store)?;
 
         Ok(parent)
     }
@@ -232,7 +232,7 @@ impl NodeService {
         self.store
             .get_parent_edge_modified_at(node_id)
             .await
-            .map_err(|e| NodeServiceError::query_failed(e.to_string()))
+            .map_err(NodeServiceError::from_store)
     }
 
     /// Get the root (root ancestor) of a node
@@ -246,7 +246,7 @@ impl NodeService {
                 .store
                 .get_parent_id(&current_id)
                 .await
-                .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+                .map_err(NodeServiceError::from_store)?;
 
             match parent_id {
                 Some(pid) => {
@@ -341,10 +341,15 @@ impl NodeService {
 
         // Check for circular reference - parent_id cannot be a descendant of node_id
         if self.is_descendant(&node.id, parent_id).await? {
-            return Err(NodeServiceError::circular_reference(format!(
-                "Cannot move node {} under its descendant {}",
-                node.id, parent_id
-            )));
+            return Err(TreeInvariantViolation::cycle(
+                &node.id,
+                parent_id,
+                format!(
+                    "Cannot move node {} under its descendant {}",
+                    node.id, parent_id
+                ),
+            )
+            .into());
         }
 
         Ok(())
@@ -412,7 +417,7 @@ impl NodeService {
             .store
             .move_node(node_id, new_parent, insert_after.as_deref())
             .await
-            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+            .map_err(NodeServiceError::from_store)?;
         self.refresh_for_rootness(
             node_id,
             new_parent.is_none(),
@@ -514,7 +519,7 @@ impl NodeService {
             .store
             .move_node(node_id, new_parent, insert_after.as_deref())
             .await
-            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+            .map_err(NodeServiceError::from_store)?;
         self.refresh_for_rootness(
             node_id,
             new_parent.is_none(),
@@ -730,10 +735,15 @@ impl NodeService {
 
             // Cycle guard: the new parent must not be a descendant of any moved child.
             if self.is_descendant(node_id, new_parent_id).await? {
-                return Err(NodeServiceError::circular_reference(format!(
-                    "Cannot move node {} under its descendant {}",
-                    node_id, new_parent_id
-                )));
+                return Err(TreeInvariantViolation::cycle(
+                    node_id,
+                    new_parent_id,
+                    format!(
+                        "Cannot move node {} under its descendant {}",
+                        node_id, new_parent_id
+                    ),
+                )
+                .into());
             }
 
             nodes.push(node);
@@ -766,7 +776,7 @@ impl NodeService {
                         &children_with_versions,
                     )
                     .await
-                    .map_err(|e| NodeServiceError::query_failed(e.to_string()))??;
+                    .map_err(NodeServiceError::from_store)??;
 
                     let mut updated = Vec::with_capacity(nodes.len());
                     for ((node, order), former_parent) in
@@ -884,7 +894,7 @@ impl NodeService {
             .store
             .move_node(child_id, Some(parent_id), insert_after_id)
             .await
-            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+            .map_err(NodeServiceError::from_store)?;
         // `move_node` replaces any existing parent, so this can reparent.
         self.refresh_for_rootness(
             child_id,
@@ -937,7 +947,7 @@ impl NodeService {
             insert_after_id,
         )
         .await
-        .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+        .map_err(NodeServiceError::from_store)?;
 
         self.emit_event(DomainEvent::RelationshipCreated {
             relationship: crate::db::events::RelationshipEvent::new(
@@ -978,7 +988,7 @@ impl NodeService {
             .store
             .bulk_create_has_child(edges)
             .await
-            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+            .map_err(NodeServiceError::from_store)?;
         for (parent, child, order) in &created {
             self.refresh_for_rootness(child, false, None).await;
             self.emit_event(DomainEvent::RelationshipCreated {
@@ -1074,7 +1084,7 @@ impl NodeService {
             .store
             .move_node(node_id, parent_id.as_deref(), insert_after.as_deref())
             .await
-            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+            .map_err(NodeServiceError::from_store)?;
 
         Ok((parent_id, actual_order))
     }

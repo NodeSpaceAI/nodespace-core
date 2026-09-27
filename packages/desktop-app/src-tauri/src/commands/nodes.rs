@@ -153,6 +153,20 @@ pub(crate) fn status_to_command_error(status: tonic::Status) -> CommandError {
         } else {
             None
         };
+    // A tree-invariant refusal (a cycle, a collection given a parent, or a
+    // member moved below a parent) carries `{ rule, node_id, related_ids,
+    // detail }` in the binary `x-tree-invariant-violation-bin` key, under the
+    // same FailedPrecondition gating as the two refusals above.
+    let tree_invariant_payload: Option<serde_json::Value> =
+        if status.code() == tonic::Code::FailedPrecondition {
+            status
+                .metadata()
+                .get_bin("x-tree-invariant-violation-bin")
+                .and_then(|v| v.to_bytes().ok())
+                .and_then(|b| serde_json::from_slice(&b).ok())
+        } else {
+            None
+        };
 
     let code = match status.code() {
         tonic::Code::NotFound => "NODE_NOT_FOUND",
@@ -170,6 +184,11 @@ pub(crate) fn status_to_command_error(status: tonic::Status) -> CommandError {
         tonic::Code::FailedPrecondition if play_rule_rejected_payload.is_some() => {
             "PLAY_RULE_REJECTED"
         }
+        // Distinct so the frontend can name the rule that fired and the nodes
+        // involved instead of logging an opaque write failure.
+        tonic::Code::FailedPrecondition if tree_invariant_payload.is_some() => {
+            "TREE_INVARIANT_VIOLATION"
+        }
         _ => "GRPC_ERROR",
     }
     .to_string();
@@ -181,6 +200,8 @@ pub(crate) fn status_to_command_error(status: tonic::Status) -> CommandError {
             .and_then(|v| v.to_str().ok())
             .and_then(|s| serde_json::from_str(s).ok())
     } else if let Some(payload) = play_rule_rejected_payload {
+        Some(payload)
+    } else if let Some(payload) = tree_invariant_payload {
         Some(payload)
     } else {
         // Present only for a genuine subtree refusal (count metadata parsed above).
@@ -1312,6 +1333,34 @@ mod tests {
         assert_eq!(err.code, "PLAY_RULE_REJECTED");
         let conflict_data = err.conflict_data.expect("conflict_data must be present");
         assert_eq!(conflict_data["message"], message);
+    }
+
+    #[test]
+    fn status_to_command_error_maps_tree_invariant_violation() {
+        // Mirrors the daemon's `OpsError::TreeInvariantViolation` mapping
+        // (FAILED_PRECONDITION + BINARY x-tree-invariant-violation-bin): the
+        // rule and nodes involved reach the frontend as structured data.
+        let mut status =
+            tonic::Status::failed_precondition("member_of_not_root: node 'n1' holds membership");
+        let payload = serde_json::json!({
+            "rule": "member_of_not_root",
+            "node_id": "n1",
+            "related_ids": ["c1"],
+            "detail": "node 'n1' holds collection membership — remove it first",
+        });
+        let json = serde_json::to_string(&payload).unwrap();
+        let val =
+            tonic::metadata::MetadataValue::<tonic::metadata::Binary>::from_bytes(json.as_bytes());
+        status
+            .metadata_mut()
+            .insert_bin("x-tree-invariant-violation-bin", val);
+
+        let err = status_to_command_error(status);
+        assert_eq!(err.code, "TREE_INVARIANT_VIOLATION");
+        let conflict_data = err.conflict_data.expect("conflict_data must be present");
+        assert_eq!(conflict_data["rule"], "member_of_not_root");
+        assert_eq!(conflict_data["node_id"], "n1");
+        assert_eq!(conflict_data["related_ids"], serde_json::json!(["c1"]));
     }
 
     #[test]

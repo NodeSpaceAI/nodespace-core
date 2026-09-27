@@ -34,7 +34,7 @@ impl NodeService {
             .store
             .query_nodes(query)
             .await
-            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+            .map_err(NodeServiceError::from_store)?;
 
         // In-memory filter: NodeQuery doesn't support lifecycle_status yet.
         // Acceptable for desktop (low play counts). If scaling becomes
@@ -133,14 +133,14 @@ impl NodeService {
                 case_insensitive,
             )
             .await
-            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+            .map_err(NodeServiceError::from_store)?;
 
         match conflicting_id {
             Some(id) => self
                 .store
                 .get_node(&id)
                 .await
-                .map_err(|e| NodeServiceError::query_failed(e.to_string())),
+                .map_err(NodeServiceError::from_store),
             None => Ok(None),
         }
     }
@@ -153,7 +153,7 @@ impl NodeService {
         self.store
             .get_schema(node_type)
             .await
-            .map_err(|e| NodeServiceError::query_failed(e.to_string()))
+            .map_err(NodeServiceError::from_store)
     }
 
     /// Get a task node with strong typing
@@ -352,7 +352,7 @@ impl NodeService {
     ) -> Result<TaskVersionCheckedUpdateOutcome, NodeServiceError> {
         let existing = crate::db::SqliteStore::get_node_in_tx(tx.store_tx(), id)
             .await
-            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?
+            .map_err(NodeServiceError::from_store)?
             .ok_or_else(|| NodeServiceError::node_not_found(id))?;
 
         // Sync the indexed `title` column, mirroring the generic update path's guard
@@ -393,7 +393,7 @@ impl NodeService {
             title_update,
         )
         .await
-        .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+        .map_err(NodeServiceError::from_store)?;
 
         let updated_node = match result {
             Ok(node) => node,
@@ -439,7 +439,7 @@ impl NodeService {
         // re-read for the full rationale).
         let final_node = crate::db::SqliteStore::get_node_in_tx(tx.store_tx(), id)
             .await
-            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?
+            .map_err(NodeServiceError::from_store)?
             .ok_or_else(|| NodeServiceError::node_not_found(id))?;
 
         // An invariant rule's action is a generic `update_node` with no
@@ -1179,7 +1179,7 @@ impl NodeService {
             .store
             .get_schema_declarations(schema_id)
             .await
-            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+            .map_err(NodeServiceError::from_store)?;
         for old in &existing {
             let replacement = relationships.iter().find(|r| r.name == old.name);
             let removed = replacement.is_none();
@@ -1191,7 +1191,7 @@ impl NodeService {
                 .store
                 .count_instance_edges_for_declaration(schema_id, &old.name)
                 .await
-                .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+                .map_err(NodeServiceError::from_store)?;
             if live > 0 {
                 let action = if removed { "remove" } else { "retarget" };
                 return Err(NodeServiceError::invalid_update(format!(
@@ -1206,7 +1206,7 @@ impl NodeService {
             .store
             .set_schema_declarations(schema_id, relationships)
             .await
-            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+            .map_err(NodeServiceError::from_store)?;
 
         for (rel_id, out_node, rel) in changes.created {
             let props = serde_json::to_value(&rel).unwrap_or_else(|_| serde_json::json!({}));
@@ -1271,7 +1271,7 @@ impl NodeService {
             .store
             .get_schema_declarations(schema_id)
             .await
-            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+            .map_err(NodeServiceError::from_store)?;
         for old in &existing {
             let replacement = relationships.iter().find(|r| r.name == old.name);
             let removed = replacement.is_none();
@@ -1283,7 +1283,7 @@ impl NodeService {
                 .store
                 .count_instance_edges_for_declaration(schema_id, &old.name)
                 .await
-                .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+                .map_err(NodeServiceError::from_store)?;
             if live > 0 {
                 let action = if removed { "remove" } else { "retarget" };
                 return Err(NodeServiceError::invalid_update(format!(
@@ -1300,7 +1300,7 @@ impl NodeService {
             relationships,
         )
         .await
-        .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+        .map_err(NodeServiceError::from_store)?;
 
         for (rel_id, out_node, rel) in changes.created {
             let props = serde_json::to_value(&rel).unwrap_or_else(|_| serde_json::json!({}));
