@@ -1224,7 +1224,7 @@ impl NodeService {
     ///
     /// # Arguments
     ///
-    /// * `store` - Mutable reference to Arc<SqliteStore> (allows cache updates during seeding)
+    /// * `store` - Mutable reference to Arc<SqliteStore> (allows installing the store notifier)
     ///
     /// # Examples
     ///
@@ -1240,11 +1240,8 @@ impl NodeService {
     /// # }
     /// ```
     ///
-    /// # Cache Population
-    ///
-    /// Takes `&mut Arc<SqliteStore>` to enable cache updates during schema seeding:
-    /// - On first launch: Seeds schemas and updates caches incrementally via `Arc::get_mut()`
-    /// - On subsequent launches: Caches already populated by `SqliteStore::new()`
+    /// Takes `&mut Arc<SqliteStore>` so it can install the store notifier via
+    /// `Arc::get_mut()`, which requires being the store's only owner.
     pub async fn new(store: &mut Arc<SqliteStore>) -> Result<Self, NodeServiceError> {
         // Initialize broadcast channel for domain events (EventEnvelope)
         let (event_tx, _) = broadcast::channel(DOMAIN_EVENT_CHANNEL_CAPACITY);
@@ -1349,9 +1346,6 @@ impl NodeService {
             store_mut.set_notifier(notifier);
         }
 
-        // Seed core schemas if needed
-        // This must happen BEFORE we clone the Arc into Self, so we can use Arc::get_mut()
-        // to update schema caches incrementally during seeding.
         Self::seed_core_schemas_if_needed(store).await?;
 
         let service = Self {
@@ -2093,9 +2087,7 @@ impl NodeService {
     /// missing from the database are created.
     ///
     /// This is idempotent - safe to call multiple times.
-    async fn seed_core_schemas_if_needed(
-        store: &mut Arc<SqliteStore>,
-    ) -> Result<(), NodeServiceError> {
+    async fn seed_core_schemas_if_needed(store: &SqliteStore) -> Result<(), NodeServiceError> {
         use crate::models::core_schemas::get_core_schemas;
 
         let core_schemas = get_core_schemas();
@@ -2126,12 +2118,6 @@ impl NodeService {
             "🌱 Seeding {} missing core schema(s)...",
             missing_schemas.len()
         );
-
-        // Collect schema info for cache updates (before we start creating nodes)
-        let schema_cache_updates: Vec<(String, bool)> = missing_schemas
-            .iter()
-            .map(|s| (s.id.clone(), !s.fields.is_empty()))
-            .collect();
 
         // Universal Graph Architecture: Properties stored in node.properties.
         // Schema nodes go through the normal create path. Relationship
@@ -2166,23 +2152,9 @@ impl NodeService {
                         ))
                     })?;
             }
-        } // ← Arc clone dropped here, enabling Arc::get_mut() below
-
-        // Update schema caches incrementally
-        // We use Arc::get_mut() since we're the only owner at this point (before cloning into Self)
-        let store_mut = Arc::get_mut(store).ok_or_else(|| {
-            NodeServiceError::InitializationError(
-                "Cannot update schema cache: store has multiple Arc references. \
-                 Ensure NodeService::new() is called before cloning the store."
-                    .to_string(),
-            )
-        })?;
-
-        for (type_name, _has_fields) in schema_cache_updates {
-            store_mut.add_to_schema_cache(type_name);
         }
 
-        tracing::info!("✅ Core schemas seeded successfully (caches updated)");
+        tracing::info!("✅ Core schemas seeded successfully");
 
         Ok(())
     }
@@ -10609,11 +10581,8 @@ mod tests {
     /// bucketing at all.
     #[tokio::test]
     async fn bulk_create_hierarchy_rebuckets_an_inherited_field_into_the_ancestors_bucket() {
-        let temp_dir = TempDir::new().unwrap();
-        let db_path = temp_dir.path().join("test.db");
-
-        let mut store = Arc::new(SqliteStore::new(db_path.clone()).await.unwrap());
-        let service = Arc::new(NodeService::new(&mut store).await.unwrap());
+        let (service, _temp) = create_test_service().await;
+        let service = Arc::new(service);
 
         crate::schema::handle_create_schema(
             &service,
@@ -10640,18 +10609,6 @@ mod tests {
         .await
         .expect("bug schema creation failed");
 
-        // `SqliteStore::bulk_create_hierarchy`'s SQL layer gates every row's
-        // `node_type` against a `valid_node_types` cache built once, from the
-        // schema nodes already in the database, when the `SqliteStore` is
-        // constructed — `handle_create_schema` above does not refresh it (a
-        // separate, pre-existing gap, out of this issue's scope: today,
-        // `bulk_create_hierarchy` only ever targets core types seeded at
-        // startup in practice). Reopen against the same file, now that
-        // `ticket`/`bug` are persisted, so the fresh cache picks them up.
-        drop(service);
-        let mut store = Arc::new(SqliteStore::new(db_path).await.unwrap());
-        let service = Arc::new(NodeService::new(&mut store).await.unwrap());
-
         let ids = service
             .bulk_create_hierarchy(vec![(
                 "bug-row-1".to_string(),
@@ -10674,6 +10631,72 @@ mod tests {
             "the inherited `priority` field must move to the `ticket` bucket for a \
              bulk-imported row: {:?}",
             created.properties
+        );
+    }
+
+    /// The store's node-type check reads the schema registry live, so a
+    /// custom extends-chain type registered after the store was opened is
+    /// insertable through `bulk_create_hierarchy` in the same process — no
+    /// reopen needed — while a type no schema declares is still rejected.
+    #[tokio::test]
+    async fn bulk_create_hierarchy_accepts_a_type_created_after_the_store_opened() {
+        let (service, _temp) = create_test_service().await;
+        let service = Arc::new(service);
+
+        let unknown_row = |id: &str| {
+            (
+                id.to_string(),
+                "incident".to_string(),
+                "An incident".to_string(),
+                None,
+                0.0,
+                json!({}),
+            )
+        };
+        let err = service
+            .bulk_create_hierarchy(vec![unknown_row("incident-before")])
+            .await
+            .expect_err("a type with no schema must be rejected");
+        assert!(
+            err.to_string().contains("Invalid node type 'incident'"),
+            "unexpected error: {err}"
+        );
+
+        for schema in [
+            json!({ "name": "Ticket", "fields": [] }),
+            json!({ "name": "Incident", "extends": "ticket", "fields": [] }),
+        ] {
+            crate::schema::handle_create_schema(&service, schema)
+                .await
+                .expect("schema creation failed");
+        }
+
+        let ids = service
+            .bulk_create_hierarchy(vec![
+                unknown_row("incident-root"),
+                (
+                    "incident-child".to_string(),
+                    "incident".to_string(),
+                    "A follow-up".to_string(),
+                    Some("incident-root".to_string()),
+                    1.0,
+                    json!({}),
+                ),
+            ])
+            .await
+            .expect("a type registered after startup must be accepted");
+        assert_eq!(ids, vec!["incident-root", "incident-child"]);
+
+        let child = service
+            .get_node("incident-child")
+            .await
+            .unwrap()
+            .expect("child row must exist");
+        assert_eq!(child.node_type, "incident");
+        let children = service.get_children("incident-root").await.unwrap();
+        assert_eq!(
+            children.iter().map(|n| n.id.as_str()).collect::<Vec<_>>(),
+            vec!["incident-child"]
         );
     }
 

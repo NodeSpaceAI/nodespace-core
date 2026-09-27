@@ -452,7 +452,6 @@ impl SqliteStore {
         properties: Value,
         source: Option<String>,
     ) -> Result<Node> {
-        self.validate_node_type(node_type)?;
         if node_type == "collection" {
             return Err(anyhow::Error::new(
                 super::TreeInvariantViolation::collection_not_root(None),
@@ -483,6 +482,7 @@ impl SqliteStore {
         // and assigns a colliding key. No re-entrancy: nothing below takes the
         // guard again.
         let db = self.write().await;
+        Self::validate_node_type(&db, node_type).await?;
 
         // Get last child order
         let mut rows = db.query(
@@ -1119,8 +1119,6 @@ impl SqliteStore {
         new_properties: Value,
         source: Option<String>,
     ) -> Result<Node> {
-        self.validate_node_type(new_type)?;
-
         let new_properties = if new_properties.is_null() {
             serde_json::json!({})
         } else {
@@ -1130,14 +1128,15 @@ impl SqliteStore {
             serde_json::to_string(&new_properties).context("Failed to serialize properties")?;
         let now = Utc::now().to_rfc3339();
 
-        self.write()
-            .await
-            .execute(
+        let db = self.write().await;
+        Self::validate_node_type(&db, new_type).await?;
+        db.execute(
                 "UPDATE node SET node_type = ?1, properties = ?2, version = version + 1, modified_at = ?3 WHERE id = ?4",
                 libsql::params![new_type.to_string(), props_json, now, node_id.to_string()],
             )
             .await
             .context("Failed to switch node type")?;
+        drop(db);
 
         let node = self
             .get_node(node_id)
@@ -3435,9 +3434,9 @@ impl SqliteStore {
     /// which drops `tx` without calling `commit()` — the entire batch is rolled back atomically.
     /// Callers never observe a partial write.
     ///
-    /// **Validation note:** `validate_node_type` is a pure in-memory check against
-    /// `self.valid_node_types`; it does not touch the database and therefore cannot read
-    /// uncommitted state from `tx`.
+    /// **Validation note:** every row's `node_type` is checked against the schema rows
+    /// read through `tx` itself, so the check sees exactly the schemas this insert
+    /// commits alongside.
     pub async fn bulk_create_hierarchy(&self, nodes: Vec<BulkNodeRow>) -> Result<Vec<String>> {
         if nodes.is_empty() {
             return Ok(Vec::new());
@@ -3450,9 +3449,9 @@ impl SqliteStore {
             .await
             .context("Failed to begin bulk hierarchy transaction")?;
 
-        for (id, node_type, content, parent_id, order, properties, title) in &nodes {
-            self.validate_node_type(node_type)?;
+        Self::validate_node_types(&tx, nodes.iter().map(|row| row.1.as_str())).await?;
 
+        for (id, node_type, content, parent_id, order, properties, title) in &nodes {
             let properties = if properties.is_null() {
                 serde_json::json!({})
             } else {
@@ -3522,9 +3521,9 @@ impl SqliteStore {
 
         let now = Utc::now().to_rfc3339();
 
-        for (id, node_type, content, parent_id, order, properties, title) in &nodes {
-            self.validate_node_type(node_type)?;
+        Self::validate_node_types(tx.conn(), nodes.iter().map(|row| row.1.as_str())).await?;
 
+        for (id, node_type, content, parent_id, order, properties, title) in &nodes {
             let properties = if properties.is_null() {
                 serde_json::json!({})
             } else {
@@ -3573,8 +3572,6 @@ impl SqliteStore {
         order: f64,
         properties: serde_json::Value,
     ) -> Result<String> {
-        self.validate_node_type(&node_type)?;
-
         let properties = if properties.is_null() {
             serde_json::json!({})
         } else {
@@ -3587,6 +3584,7 @@ impl SqliteStore {
         // One guard across the node insert and its parent edge, so no other
         // writer can observe (or transactionally absorb) the half-built pair.
         let db = self.write().await;
+        Self::validate_node_type(&db, &node_type).await?;
         db.execute(
             "INSERT INTO node (id, node_type, content, properties, title, lifecycle_status, version, created_at, modified_at) VALUES (?1, ?2, ?3, ?4, NULL, 'active', 1, ?5, ?6)",
             libsql::params![id.clone(), node_type.clone(), content.clone(), props_json, now.clone(), now.clone()],
