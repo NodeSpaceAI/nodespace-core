@@ -1713,4 +1713,116 @@ mod tests {
             state.degraded_reasons
         );
     }
+
+    /// Seeds a one-field schema, activates a `node_created` rule on it with
+    /// `condition`, then drops the `relationship` table so every
+    /// `resolve_type_chain` call (and so both `resolve_field_owners` and
+    /// `resolve_relationships`) hits the real `Err` arm of its
+    /// `get_extends_parent_map` query.
+    async fn degraded_fixture(
+        condition: &str,
+    ) -> (
+        Arc<NodeService>,
+        tempfile::TempDir,
+        Arc<RwLock<PlaybookLifecycleManager>>,
+        Node,
+    ) {
+        let (svc, tmp) = test_service().await;
+        let schema = Node::new_with_id(
+            "wf_degraded".to_string(),
+            "schema".to_string(),
+            "wf_degraded".to_string(),
+            json!({
+                "isCore": false, "schemaVersion": 1, "description": "wf_degraded",
+                "fields": [{"name": "status", "friendlyName": "Status", "type": "string"}],
+                "relationships": []
+            }),
+        );
+        svc.create_node(schema).await.unwrap();
+
+        let lifecycle = Arc::new(RwLock::new(PlaybookLifecycleManager::new()));
+        {
+            let mut lm = lifecycle.write().unwrap();
+            let play = make_play_node(
+                "pb-degraded",
+                json!([{
+                    "name": "r1",
+                    "trigger": { "type": "graph_event", "on": "node_created", "node_type": "wf_degraded" },
+                    "conditions": [condition],
+                    "actions": []
+                }]),
+            );
+            lm.activate_play(&play).unwrap();
+        }
+
+        svc.store()
+            .write()
+            .await
+            .execute("DROP TABLE relationship", ())
+            .await
+            .expect("dropping the relationship table should succeed");
+
+        let node = make_test_node("wf_degraded", json!({"status": "open"}));
+        (svc, tmp, lifecycle, node)
+    }
+
+    /// A failed extends-chain resolution degrades the response rather than
+    /// aborting it: the `node_created` candidate needs no resolution, so the
+    /// rule is still reported — but the response must say it was built from
+    /// a narrower field set.
+    #[tokio::test]
+    async fn extends_chain_resolution_failure_surfaces_as_a_degraded_reason() {
+        let (svc, _tmp, lifecycle, node) = degraded_fixture("node.status == 'open'").await;
+        let state = get_workflow_state(&lifecycle, &svc, &node).await;
+
+        assert_eq!(
+            state.rules.len(),
+            1,
+            "the node_created candidate needs no resolution and must survive the failure"
+        );
+        assert!(
+            state
+                .degraded_reasons
+                .iter()
+                .any(|r| r
+                    .contains("effective-field/extends-chain resolution for 'wf_degraded' failed")),
+            "expected a degraded_reasons entry naming the failed extends-chain resolution: {:?}",
+            state.degraded_reasons
+        );
+    }
+
+    /// The case consumers are told to guard against: a per-hop resolution
+    /// failure during typo classification yields an `Unresolvable` verdict
+    /// that the same response flags as unreliable, so it must never be
+    /// presented as a confirmed misauthored condition.
+    #[tokio::test]
+    async fn per_hop_resolution_failure_marks_unresolvable_verdict_as_degraded() {
+        let (svc, _tmp, lifecycle, node) = degraded_fixture("node.no_such_field == 'x'").await;
+        let state = get_workflow_state(&lifecycle, &svc, &node).await;
+
+        assert_eq!(state.rules.len(), 1);
+        assert!(
+            matches!(
+                state.rules[0].conditions[0],
+                ConditionState::Unresolvable { .. }
+            ),
+            "expected Unresolvable, got {:?}",
+            state.rules[0].conditions[0]
+        );
+        let walking = |prefix: &str| {
+            state.degraded_reasons.iter().any(|r| {
+                r.contains(prefix) && r.contains("while walking 'node.no_such_field == 'x''")
+            })
+        };
+        assert!(
+            walking("effective-field resolution for 'wf_degraded' failed"),
+            "expected a per-hop field-resolution entry: {:?}",
+            state.degraded_reasons
+        );
+        assert!(
+            walking("effective-relationship resolution for 'wf_degraded' failed"),
+            "expected a per-hop relationship-resolution entry: {:?}",
+            state.degraded_reasons
+        );
+    }
 }
