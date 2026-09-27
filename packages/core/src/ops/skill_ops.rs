@@ -3,6 +3,7 @@
 //! Shared logic for skill search used by the local agent's `search_skills`
 //! tool and the MCP `find_skills` handler exposed to external agents.
 
+use crate::models::SkillNode;
 use crate::services::{flatten_subtree_content, NodeEmbeddingService, NodeService};
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -133,69 +134,6 @@ async fn render_skill_instructions(node_service: &NodeService, skill_id: &str) -
 /// the model once found. This is that delivery path.
 async fn render_schema_description(node_service: &NodeService, schema_id: &str) -> String {
     render_node_subtree(node_service, schema_id).await
-}
-
-/// A skill node's discovery-relevant properties, decoded from whichever shape
-/// `node.properties` is actually in.
-#[derive(Debug, PartialEq)]
-struct SkillProperties {
-    description: String,
-    /// What the skill is *not* for — see [`exclusion_penalized_score`].
-    /// `None` when absent or blank.
-    exclusion: Option<String>,
-    tool_whitelist: Value,
-    scoped_type_ids: Vec<String>,
-}
-
-impl SkillProperties {
-    /// Decode from a skill node's `properties`.
-    ///
-    /// `skill` has a registered core schema (ADR-030), so `NodeService` hoists
-    /// its schema-defined fields under `properties.skill.*` on write (same as
-    /// `task` under `properties.task.*` — see `behaviors/mod.rs`'s
-    /// task-property validation). Reading `node.properties` flat found
-    /// nothing on any seeded skill node, so every skill's tools and
-    /// entity-type guidance silently vanished at the routing gate. Fall back
-    /// to the flat top level for a node that predates hoisting or was
-    /// constructed directly, as every test in this module does.
-    fn from_node_properties(properties: &Value) -> Self {
-        let skill_props = properties
-            .get("skill")
-            .filter(|v| v.is_object())
-            .unwrap_or(properties);
-
-        let description = skill_props
-            .get("description")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-        let exclusion = skill_props
-            .get("exclusion")
-            .and_then(|v| v.as_str())
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(str::to_string);
-        let tool_whitelist = skill_props
-            .get("tool_whitelist")
-            .cloned()
-            .unwrap_or(json!([]));
-        let scoped_type_ids = skill_props
-            .get("node_types")
-            .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        Self {
-            description,
-            exclusion,
-            tool_whitelist,
-            scoped_type_ids,
-        }
-    }
 }
 
 /// Whether `phrase` (already lowercased) appears in `haystack` (already
@@ -447,7 +385,9 @@ fn rerank_with_exclusions(
     let mut scored: Vec<(crate::models::Node, f64)> = pool
         .into_iter()
         .map(|(node, score)| {
-            let Some(exclusion) = SkillProperties::from_node_properties(&node.properties).exclusion
+            let Some(exclusion) = SkillNode::from_node(&node)
+                .ok()
+                .and_then(|skill| skill.exclusion)
             else {
                 return (node, score);
             };
@@ -625,12 +565,21 @@ pub async fn find_skills(
     for (node, confidence) in &skill_results {
         // `exclusion` was spent on ranking in `rerank_with_exclusions`; it is
         // retrieval-only and never reaches the model.
-        let SkillProperties {
+        let SkillNode {
             description,
-            exclusion: _,
             tool_whitelist,
-            scoped_type_ids,
-        } = SkillProperties::from_node_properties(&node.properties);
+            node_types: scoped_type_ids,
+            ..
+        } = match SkillNode::from_node(node) {
+            Ok(skill) => skill,
+            Err(e) => {
+                // `SkillNodeBehavior::validate` rejects this shape on write,
+                // so only a raw store write can produce it. Leave it out
+                // rather than hand the turn a guessed tool set.
+                tracing::warn!(skill_id = %node.id, error = %e, "find_skills: skipping malformed skill node");
+                continue;
+            }
+        };
 
         // Entity types relevant to this skill. The skill's `node_types`
         // property lists the type IDs in scope. When absent: if the query
@@ -1199,33 +1148,6 @@ mod tests {
     }
 
     #[test]
-    fn skill_properties_reads_the_hoisted_shape_node_service_actually_writes() {
-        // The shape every seeded skill node has in the live database: `skill`
-        // is a schema-typed node type (ADR-030), so NodeService hoists its
-        // schema-defined fields under `properties.skill.*` on write, the same
-        // as `task` under `properties.task.*`. A reader expecting flat
-        // `properties.description` finds nothing on a real node.
-        let properties = json!({
-            "skill": {
-                "description": "Modify existing nodes",
-                "exclusion": "Delete records",
-                "tool_whitelist": ["update_node", "resolve_query"],
-                "node_types": ["invoice"],
-            }
-        });
-
-        assert_eq!(
-            SkillProperties::from_node_properties(&properties),
-            SkillProperties {
-                description: "Modify existing nodes".to_string(),
-                exclusion: Some("Delete records".to_string()),
-                tool_whitelist: json!(["update_node", "resolve_query"]),
-                scoped_type_ids: vec!["invoice".to_string()],
-            }
-        );
-    }
-
-    #[test]
     fn exclusion_penalty_is_inert_when_the_query_fits_the_description_better() {
         // The property the margin form exists for: a query closer to what the
         // skill does than to what it excludes keeps its score exactly.
@@ -1239,75 +1161,6 @@ mod tests {
         let adjusted = exclusion_penalized_score(0.855, 0.90);
         assert!((adjusted - 0.81).abs() < 1e-12, "{adjusted} != 0.81");
         assert!(adjusted < 0.855);
-    }
-
-    #[test]
-    fn skill_properties_treats_a_blank_exclusion_as_absent() {
-        let properties = json!({"skill": {"description": "d", "exclusion": "   "}});
-        assert_eq!(
-            SkillProperties::from_node_properties(&properties).exclusion,
-            None
-        );
-    }
-
-    #[test]
-    fn skill_properties_falls_back_to_flat_shape() {
-        // A node with no `skill` namespace key at all (predates hoisting, or
-        // constructed directly the way every other test in this module does)
-        // must still read correctly rather than silently returning defaults.
-        let properties = json!({
-            "description": "Modify existing nodes",
-            "tool_whitelist": ["update_node"],
-        });
-
-        assert_eq!(
-            SkillProperties::from_node_properties(&properties),
-            SkillProperties {
-                description: "Modify existing nodes".to_string(),
-                exclusion: None,
-                tool_whitelist: json!(["update_node"]),
-                scoped_type_ids: vec![],
-            }
-        );
-    }
-
-    #[test]
-    fn skill_properties_falls_back_to_flat_shape_when_skill_key_is_null() {
-        // `properties.get("skill")` returning `Some(&Value::Null)` must not
-        // be treated as "the namespace is present" — a bare `.unwrap_or`
-        // would substitute `Null` instead of falling back, silently
-        // discarding any flat data sitting alongside it. Not reachable
-        // through NodeService's real write path (hoisting always leaves an
-        // object, never `null`), but a node built by hand or through a raw
-        // store write could have this shape.
-        let properties = json!({
-            "skill": null,
-            "description": "Modify existing nodes",
-            "tool_whitelist": ["update_node"],
-        });
-
-        assert_eq!(
-            SkillProperties::from_node_properties(&properties),
-            SkillProperties {
-                description: "Modify existing nodes".to_string(),
-                exclusion: None,
-                tool_whitelist: json!(["update_node"]),
-                scoped_type_ids: vec![],
-            }
-        );
-    }
-
-    #[test]
-    fn skill_properties_missing_entirely_defaults_safely() {
-        assert_eq!(
-            SkillProperties::from_node_properties(&json!({})),
-            SkillProperties {
-                description: String::new(),
-                exclusion: None,
-                tool_whitelist: json!([]),
-                scoped_type_ids: vec![],
-            }
-        );
     }
 
     #[test]

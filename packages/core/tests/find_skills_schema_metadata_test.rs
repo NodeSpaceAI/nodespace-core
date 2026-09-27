@@ -14,7 +14,7 @@
 use anyhow::Result;
 use nodespace_core::{
     db::SqliteStore,
-    models::Node,
+    models::{Node, NodeUpdate, SkillNode},
     ops::skill_ops::{find_skills, FindSkillsInput},
     schema::handle_create_schema,
     services::{embedding_service::NodeEmbeddingService, NodeAccessor, NodeService},
@@ -35,7 +35,12 @@ fn create_test_nlp_engine() -> Arc<EmbeddingService> {
 
 /// Shared-store `NodeService` + `NodeEmbeddingService` pair, mirroring
 /// `embedding_service_test.rs`'s `create_unified_test_env` helper.
-async fn create_test_env() -> Result<(Arc<NodeService>, NodeEmbeddingService, TempDir)> {
+async fn create_test_env() -> Result<(
+    Arc<NodeService>,
+    NodeEmbeddingService,
+    Arc<SqliteStore>,
+    TempDir,
+)> {
     let temp_dir = TempDir::new()?;
     let db_path = temp_dir.path().join("test.db");
     let mut store = Arc::new(SqliteStore::new(db_path).await?);
@@ -47,7 +52,7 @@ async fn create_test_env() -> Result<(Arc<NodeService>, NodeEmbeddingService, Te
     let embedding_service =
         NodeEmbeddingService::new(nlp_engine, store.clone(), node_accessor, behaviors);
 
-    Ok((Arc::new(node_service), embedding_service, temp_dir))
+    Ok((Arc::new(node_service), embedding_service, store, temp_dir))
 }
 
 const FIELD_DESCRIPTION: &str = "The outstanding balance the customer still owes, in the \
@@ -107,16 +112,14 @@ async fn create_fixture_schemas(svc: &Arc<NodeService>) -> Result<()> {
 /// deterministically includes exactly the fixture schema regardless of the
 /// unscoped-fallback / query-naming heuristics `find_skills` also has.
 async fn seed_invoice_skill(service: &NodeService) -> Result<Node> {
-    let mut node = Node::new(
-        "skill".to_string(),
-        "Invoice Billing".to_string(),
-        json!({
-            "description": SKILL_DESCRIPTION,
-            "tool_whitelist": ["create_node", "update_node"],
-            "node_types": ["invoice"],
-            "max_iterations": 2,
-        }),
-    );
+    let mut node = SkillNode::new(
+        "Invoice Billing",
+        SKILL_DESCRIPTION,
+        &["create_node", "update_node"],
+        2,
+    )
+    .with_node_types(&["invoice"])
+    .into_node();
     node.title = Some("Invoice Billing".to_string());
     service.create_node(node.clone()).await?;
     Ok(service
@@ -128,7 +131,7 @@ async fn seed_invoice_skill(service: &NodeService) -> Result<Node> {
 #[tokio::test]
 async fn find_skills_schema_metadata_carries_field_relationship_and_schema_descriptions(
 ) -> Result<()> {
-    let (node_service, embedding_service, _temp_dir) = create_test_env().await?;
+    let (node_service, embedding_service, _store, _temp_dir) = create_test_env().await?;
 
     create_fixture_schemas(&node_service).await?;
     let skill = seed_invoice_skill(&node_service).await?;
@@ -214,5 +217,71 @@ async fn find_skills_schema_metadata_carries_field_relationship_and_schema_descr
         schema_description
     );
 
+    Ok(())
+}
+
+/// A skill whose properties no longer decode is left out of the results
+/// without failing the search: one malformed node must not take skill
+/// retrieval down for every turn. `SkillNodeBehavior::validate` blocks the
+/// shape on the service write path, so it is planted with a raw store write.
+#[tokio::test]
+async fn find_skills_skips_a_malformed_skill_and_keeps_the_rest() -> Result<()> {
+    let (node_service, embedding_service, store, _temp_dir) = create_test_env().await?;
+    create_fixture_schemas(&node_service).await?;
+
+    let valid = seed_invoice_skill(&node_service).await?;
+    let mut malformed = SkillNode::new(
+        "Invoice Payments",
+        "Record a customer's payment against an invoice they owe.",
+        &["update_node"],
+        2,
+    )
+    .into_node();
+    malformed.title = Some("Invoice Payments".to_string());
+    node_service.create_node(malformed.clone()).await?;
+    embedding_service.embed_root_node(&valid.id).await?;
+    embedding_service.embed_root_node(&malformed.id).await?;
+
+    let embedding_service = Arc::new(embedding_service);
+    let search = || {
+        find_skills(
+            &embedding_service,
+            &node_service,
+            FindSkillsInput {
+                query: MATCHING_QUERY.to_string(),
+                limit: Some(3),
+            },
+        )
+    };
+    let ids = |output: &nodespace_core::ops::skill_ops::FindSkillsOutput| -> Vec<String> {
+        output
+            .skills
+            .iter()
+            .filter_map(|s| s["id"].as_str().map(str::to_string))
+            .collect()
+    };
+
+    // Precondition: both skills reach the result set while well-formed, so
+    // the later absence is the skip, not a retrieval miss.
+    let before = ids(&search().await.expect("find_skills should succeed"));
+    assert!(before.contains(&valid.id), "{before:?}");
+    assert!(before.contains(&malformed.id), "{before:?}");
+
+    store
+        .update_node(
+            &malformed.id,
+            NodeUpdate {
+                properties: Some(json!({ "skill": { "tool_whitelist": "update_node" } })),
+                ..Default::default()
+            },
+            None,
+        )
+        .await?;
+
+    let after = ids(&search()
+        .await
+        .expect("a malformed skill must not fail the search"));
+    assert!(after.contains(&valid.id), "{after:?}");
+    assert!(!after.contains(&malformed.id), "{after:?}");
     Ok(())
 }

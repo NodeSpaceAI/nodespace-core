@@ -31,9 +31,6 @@ pub mod skill_pipeline;
 // this prevents.
 pub mod skill_rules;
 
-// Property access helpers for namespaced node properties
-pub mod props;
-
 // Golden-prompt tuning: case files as data, run against the real inference
 // path with no NodeSpace plumbing in between. Driven by the `golden_runner`
 // bin, which stays outside `cargo test` because it loads a ~5GB GGUF.

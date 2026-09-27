@@ -1437,7 +1437,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                     indexed: false,
                     required: Some(false),
                     extensible: None,
-                    default: Some(serde_json::json!(2)),
+                    default: Some(serde_json::json!(crate::models::DEFAULT_SKILL_MAX_ITERATIONS)),
                     description: Some("Maximum ReAct loop iterations for this skill".to_string()),
                     item_type: None,
                     fields: None,

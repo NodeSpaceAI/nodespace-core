@@ -44,6 +44,7 @@ use nodespace_agent::skill_rules::{
     TARGET_TYPE_MUST_EXIST, TITLE_TEMPLATE_PLACEHOLDERS, UNIQUE_FIELD_FLAGS,
 };
 use nodespace_cli::Cli;
+use nodespace_core::models::SkillNode;
 use std::env;
 use std::fmt::Write as _;
 use std::fs;
@@ -452,7 +453,9 @@ fn render_linear_playbook_block() -> String {
          scores a precise match far better than a skill diluted across every intent.\n"
     );
     for skill in &playbook.skills {
-        let description = skill.root_properties["description"].as_str().unwrap_or("");
+        let description = SkillNode::from_properties(&skill.title, &skill.root_properties)
+            .unwrap_or_else(|e| panic!("Playbook skill '{}' must decode: {e}", skill.title))
+            .description;
         let _ = writeln!(out, "**{}** — {}\n", skill.title, description);
     }
     let _ = writeln!(

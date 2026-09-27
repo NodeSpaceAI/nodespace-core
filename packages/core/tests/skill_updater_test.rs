@@ -9,7 +9,7 @@
 mod skill_updater_tests {
     use anyhow::Result;
     use nodespace_core::db::SqliteStore;
-    use nodespace_core::models::Node;
+    use nodespace_core::models::{Node, SkillNode};
     use nodespace_core::ops::skill_updater::{build_node_creation_description, SkillUpdater};
     use nodespace_core::services::NodeService;
     use serde_json::json;
@@ -27,16 +27,13 @@ mod skill_updater_tests {
 
     /// Create the "Node Creation" skill node in the test DB.
     async fn seed_node_creation_skill(service: &NodeService) -> Result<Node> {
-        let mut node = Node::new(
-            "skill".to_string(),
-            "Node Creation".to_string(),
-            json!({
-                "description": "Create new instances of existing node types — add a task, text note, or an entry for a custom type. Use when user wants to add a new record or item.",
-                "tool_whitelist": ["create_node", "get_node"],
-                "max_iterations": 2,
-                "output_format": "text"
-            }),
-        );
+        let mut node = SkillNode::new(
+            "Node Creation",
+            "Create new instances of existing node types — add a task, text note, or an entry for a custom type. Use when user wants to add a new record or item.",
+            &["create_node", "get_node"],
+            2,
+        )
+        .into_node();
         node.title = Some("Node Creation".to_string());
         service.create_node(node.clone()).await?;
         let created = service
@@ -95,17 +92,7 @@ mod skill_updater_tests {
             .await?
             .expect("skill node should still exist");
 
-        let desc = updated_skill
-            .properties
-            .get("description")
-            .or_else(|| {
-                updated_skill
-                    .properties
-                    .get("skill")
-                    .and_then(|s| s.get("description"))
-            })
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
+        let desc = SkillNode::from_node(&updated_skill)?.description;
 
         assert!(
             desc.contains("invoice"),
@@ -153,17 +140,7 @@ mod skill_updater_tests {
             .find(|n| n.content == "Node Creation")
             .expect("Node Creation skill should exist");
 
-        let desc = skill
-            .properties
-            .get("description")
-            .or_else(|| {
-                skill
-                    .properties
-                    .get("skill")
-                    .and_then(|s| s.get("description"))
-            })
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
+        let desc = SkillNode::from_node(&skill)?.description;
 
         // Both schemas must appear, not just one
         assert!(
@@ -217,17 +194,7 @@ mod skill_updater_tests {
             .find(|n| n.content == "Node Creation")
             .expect("Node Creation skill should exist");
 
-        let desc = skill
-            .properties
-            .get("description")
-            .or_else(|| {
-                skill
-                    .properties
-                    .get("skill")
-                    .and_then(|s| s.get("description"))
-            })
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
+        let desc = SkillNode::from_node(&skill)?.description;
 
         assert!(
             !desc.contains("invoice"),

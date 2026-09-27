@@ -60,6 +60,7 @@
 //! prose and have no such reason.
 
 use crate::markdown::{NodeTemplate, SeedTier};
+use crate::models::SkillNode;
 
 /// Build a seed template from a Playbook skill's markdown source
 /// (frontmatter + body, see the module docs).
@@ -73,18 +74,16 @@ pub fn playbook_skill(source: &str) -> NodeTemplate {
         panic!("malformed Playbook skill frontmatter: {e}");
     });
     NodeTemplate {
-        title: title.to_string(),
-        content: None,
-        markdown_content: body.to_string(),
-        root_node_type: "skill".to_string(),
-        root_properties: serde_json::json!({
-            "description": description,
-            "tool_whitelist": ["create_node", "update_node", "search_nodes", "get_node"],
-            "max_iterations": 3,
-        }),
-        child_node_type: None,
-        child_properties: None,
         tier: SeedTier::Starter,
+        ..NodeTemplate::skill(
+            SkillNode::new(
+                title,
+                description,
+                &["create_node", "update_node", "search_nodes", "get_node"],
+                3,
+            ),
+            body,
+        )
     }
 }
 

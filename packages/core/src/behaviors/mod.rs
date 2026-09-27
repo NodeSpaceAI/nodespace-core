@@ -11,7 +11,8 @@
 
 use crate::models::schema::SchemaField;
 use crate::models::{
-    Node, SchemaNode, TaskNode, ValidationError as NodeValidationError, AI_CHAT_PROVIDERS,
+    Node, SchemaNode, SkillNode, TaskNode, ValidationError as NodeValidationError,
+    AI_CHAT_PROVIDERS, DEFAULT_SKILL_MAX_ITERATIONS,
 };
 use crate::services::NodeAccessor;
 use serde_json::Value;
@@ -1963,54 +1964,9 @@ impl NodeBehavior for SkillNodeBehavior {
             ));
         }
 
-        // Validate description is a string if present
-        if let Some(desc) = get_namespaced_prop(&node.properties, "skill", "description") {
-            if !desc.is_string() && !desc.is_null() {
-                return Err(NodeValidationError::InvalidProperties(
-                    "description must be a string".to_string(),
-                ));
-            }
-        }
-
-        if let Some(exclusion) = get_namespaced_prop(&node.properties, "skill", "exclusion") {
-            if !exclusion.is_string() && !exclusion.is_null() {
-                return Err(NodeValidationError::InvalidProperties(
-                    "exclusion must be a string".to_string(),
-                ));
-            }
-        }
-
-        // Validate tool_whitelist is an array of strings if present
-        if let Some(whitelist) = get_namespaced_prop(&node.properties, "skill", "tool_whitelist") {
-            if let Some(arr) = whitelist.as_array() {
-                for item in arr {
-                    if !item.is_string() {
-                        return Err(NodeValidationError::InvalidProperties(
-                            "tool_whitelist items must be strings".to_string(),
-                        ));
-                    }
-                }
-            } else if !whitelist.is_null() {
-                return Err(NodeValidationError::InvalidProperties(
-                    "tool_whitelist must be an array".to_string(),
-                ));
-            }
-        }
-
-        // Validate max_iterations is a positive integer if present
-        if let Some(max_iter) = get_namespaced_prop(&node.properties, "skill", "max_iterations") {
-            if let Some(n) = max_iter.as_i64() {
-                if n < 1 {
-                    return Err(NodeValidationError::InvalidProperties(
-                        "max_iterations must be positive".to_string(),
-                    ));
-                }
-            } else if !max_iter.is_null() {
-                return Err(NodeValidationError::InvalidProperties(
-                    "max_iterations must be an integer".to_string(),
-                ));
-            }
-        }
+        // Field types (description, exclusion, tool_whitelist,
+        // max_iterations, node_types) are the model's to check.
+        SkillNode::from_node(node)?;
 
         Ok(())
     }
@@ -2024,16 +1980,17 @@ impl NodeBehavior for SkillNodeBehavior {
     }
 
     fn default_metadata(&self) -> serde_json::Value {
-        serde_json::json!({
-            "description": "",
-            "tool_whitelist": [],
-            "max_iterations": 2,
-        })
+        SkillNode::new("", "", &[], DEFAULT_SKILL_MAX_ITERATIONS).properties()
     }
 
     /// The description property drives embedding for skill discovery
     fn get_embeddable_content(&self, node: &Node) -> Option<String> {
-        let desc = get_namespaced_prop_str(&node.properties, "skill", "description").unwrap_or("");
+        // A skill that fails to decode was rejected by `validate` on write,
+        // so only an in-memory node can reach here malformed; embed its name.
+        let description = SkillNode::from_node(node)
+            .map(|skill| skill.description)
+            .unwrap_or_default();
+        let desc = description.as_str();
         let name = &node.content;
 
         if desc.is_empty() && name.trim().is_empty() {

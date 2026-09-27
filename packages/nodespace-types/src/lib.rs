@@ -19,6 +19,7 @@ mod node;
 mod person;
 mod project;
 mod schema;
+mod skill;
 mod task;
 
 pub use ai_chat::{AiChatMessage, AiChatNode};
@@ -36,4 +37,5 @@ pub use schema::{
     derive_friendly_name, EdgeField, EnumValue, RelationshipCardinality, RelationshipDirection,
     SchemaField, SchemaNode, SchemaProtectionLevel, SchemaRelationship,
 };
+pub use skill::{SkillNode, DEFAULT_SKILL_MAX_ITERATIONS, SKILL_NODE_TYPE};
 pub use task::{TaskNode, TaskNodeUpdate, TaskPriority, TaskStatus};

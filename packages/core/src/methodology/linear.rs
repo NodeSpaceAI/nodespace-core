@@ -715,10 +715,10 @@ mod tests {
 
         for s in &skills {
             assert_eq!(s.root_node_type, "skill");
+            let skill = crate::models::SkillNode::from_properties(&s.title, &s.root_properties)
+                .expect("playbook skill must decode");
             assert!(
-                s.root_properties["description"]
-                    .as_str()
-                    .is_some_and(|d| !d.is_empty()),
+                !skill.description.is_empty(),
                 "{} needs a description for retrieval",
                 s.title
             );
