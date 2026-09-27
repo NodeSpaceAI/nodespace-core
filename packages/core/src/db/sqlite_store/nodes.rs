@@ -1131,11 +1131,11 @@ impl SqliteStore {
         let db = self.write().await;
         Self::validate_node_type(&db, new_type).await?;
         db.execute(
-                "UPDATE node SET node_type = ?1, properties = ?2, version = version + 1, modified_at = ?3 WHERE id = ?4",
-                libsql::params![new_type.to_string(), props_json, now, node_id.to_string()],
-            )
-            .await
-            .context("Failed to switch node type")?;
+            "UPDATE node SET node_type = ?1, properties = ?2, version = version + 1, modified_at = ?3 WHERE id = ?4",
+            libsql::params![new_type.to_string(), props_json, now, node_id.to_string()],
+        )
+        .await
+        .context("Failed to switch node type")?;
         drop(db);
 
         let node = self

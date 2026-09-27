@@ -615,12 +615,18 @@ impl SqliteStore {
     }
 
     /// [`Self::validate_node_type`] for every distinct type in a batch, so a
-    /// bulk insert pays one lookup per type rather than one per row.
+    /// bulk insert pays one lookup per type rather than one per row. Types are
+    /// checked in first-seen order, so a batch with several unknown types
+    /// always reports the same one.
     async fn validate_node_types<'a>(
         conn: &libsql::Connection,
         node_types: impl IntoIterator<Item = &'a str>,
     ) -> Result<()> {
-        let distinct: HashSet<&str> = node_types.into_iter().collect();
+        let mut seen = HashSet::new();
+        let distinct: Vec<&str> = node_types
+            .into_iter()
+            .filter(|node_type| seen.insert(*node_type))
+            .collect();
         for node_type in distinct {
             Self::validate_node_type(conn, node_type).await?;
         }
