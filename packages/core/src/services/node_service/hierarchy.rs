@@ -506,6 +506,11 @@ impl NodeService {
 
         let insert_after = self.resolve_insert_position(position, new_parent).await?;
 
+        // The checks above read through pooled readers and only fail fast with
+        // a readable error; the guarantees come from the transaction below,
+        // where the store re-checks existence, cycles and membership and the
+        // bump re-checks the version against the state it writes.
+        //
         // The edge write, any sibling re-spread, the rootness refresh and the
         // version bump are one unit of work (ADR-069 §1a). The version check
         // above reads through a pooled reader, so a concurrent writer can
@@ -652,8 +657,7 @@ impl NodeService {
 
         // Use graph-native reordering. ADR-069 §2/S4: the write happens here,
         // but the event is deferred until after the version bump below — see
-        // `reorder_child_write`'s doc comment for why, mirroring the
-        // `move_node` fix.
+        // `reorder_child_write`'s doc comment for why.
         let (parent_id, placement) = self.reorder_child_write(node_id, position).await?;
 
         // Bump the node's version to support OCC
@@ -1059,8 +1063,7 @@ impl NodeService {
     /// out (ADR-069 §2/S4). [`Self::reorder_node`] calls this directly and
     /// defers the emit until after its own version bump, so a consumer is
     /// never told about a reorder before the write that makes it OCC-safe
-    /// has landed — the same ordering fix [`Self::move_node`] has. A
-    /// standalone call to `reorder_child` still emits immediately via the
+    /// has landed. A standalone call to `reorder_child` still emits immediately via the
     /// wrapper above, unchanged from its existing public contract.
     async fn reorder_child_write(
         &self,

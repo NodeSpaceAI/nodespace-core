@@ -203,9 +203,9 @@ pub struct ChildPlacement {
 /// parent it had before the move (`None` if it was a root), read inside the
 /// same transaction as the edge write.
 #[derive(Debug, Clone, PartialEq)]
-pub struct NodeMove {
-    pub former_parent: Option<String>,
-    pub placement: ChildPlacement,
+pub(crate) struct NodeMove {
+    pub(crate) former_parent: Option<String>,
+    pub(crate) placement: ChildPlacement,
 }
 
 /// Finds `?2` among the `has_child` descendants of `?1`. Shared by

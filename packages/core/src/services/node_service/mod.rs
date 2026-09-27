@@ -5730,6 +5730,107 @@ mod tests {
             .unwrap()
     }
 
+    /// The steps `move_node` composes — the store move with its sibling
+    /// re-spread, then the version-checked bump — are one unit of work.
+    /// This runs them in one `with_transaction`, forces the bump to conflict,
+    /// and asserts the edge write and the re-spread rolled back with it and
+    /// no event escaped. Unlike the concurrent test below, it does not
+    /// depend on scheduling.
+    #[tokio::test]
+    async fn test_move_node_bump_conflict_rolls_back_edge_and_respread() {
+        let (service, _temp) = create_test_service().await;
+
+        let old_parent = Node::new("text".to_string(), "old parent".to_string(), json!({}));
+        let old_parent_id = service.create_node(old_parent).await.unwrap();
+        let new_parent = Node::new("text".to_string(), "new parent".to_string(), json!({}));
+        let new_parent_id = service.create_node(new_parent).await.unwrap();
+        let create_child = |parent_id: &str, content: &str| {
+            service.create_node_with_parent(CreateNodeParams {
+                id: None,
+                node_type: "text".to_string(),
+                content: content.to_string(),
+                parent_id: Some(parent_id.to_string()),
+                position: crate::services::InsertPositionOwned::End,
+                properties: json!({}),
+                lifecycle_status: None,
+            })
+        };
+        let first_id = create_child(&new_parent_id, "first").await.unwrap();
+        let second_id = create_child(&new_parent_id, "second").await.unwrap();
+        let moving_id = create_child(&old_parent_id, "moving").await.unwrap();
+        collapse_sibling_gap(&service, &first_id, &second_id).await;
+
+        let edges_before = has_child_edges(&service).await;
+        let version = service.get_node(&moving_id).await.unwrap().unwrap().version;
+        let mut rx = service.subscribe_to_events();
+
+        let service_for_tx = service.clone();
+        let (move_id, move_target, after_id) =
+            (moving_id.clone(), new_parent_id.clone(), first_id.clone());
+        let result: Result<(), NodeServiceError> = service
+            .with_transaction(move |tx| {
+                Box::pin(async move {
+                    let moved = SqliteStore::move_node_in_tx(
+                        tx.store_tx(),
+                        &move_id,
+                        Some(&move_target),
+                        Some(&after_id),
+                    )
+                    .await
+                    .map_err(NodeServiceError::from_store)?;
+                    assert!(
+                        !moved.placement.respread.is_empty(),
+                        "inserting into the collapsed gap must re-spread a sibling"
+                    );
+
+                    // A concurrent writer bumped the node after the move.
+                    service_for_tx
+                        .update_node_with_version_bump_in_tx(tx, &move_id, version - 1)
+                        .await?;
+                    Ok(())
+                })
+            })
+            .await;
+
+        assert!(
+            matches!(result, Err(NodeServiceError::VersionConflict { .. })),
+            "the forced bump conflict must propagate, got {result:?}"
+        );
+        assert_eq!(
+            has_child_edges(&service).await,
+            edges_before,
+            "the edge write and the sibling re-spread must roll back with the failed bump"
+        );
+        assert!(
+            rx.try_recv().is_err(),
+            "no event may escape a rolled-back transaction"
+        );
+    }
+
+    /// Set two siblings' order keys closer than `MIN_GAP`, so inserting
+    /// between them forces a re-spread of their keys.
+    async fn collapse_sibling_gap(service: &NodeService, first_id: &str, second_id: &str) {
+        let (first, second) = (first_id.to_string(), second_id.to_string());
+        service
+            .store()
+            .with_transaction(move |tx| {
+                Box::pin(async move {
+                    for (id, order) in [(first, 1.0), (second, 1.00001)] {
+                        tx.conn()
+                            .execute(
+                                "UPDATE relationship SET properties = json_set(properties, '$.order', ?1) \
+                                 WHERE out_node = ?2 AND relationship_type = 'has_child'",
+                                libsql::params![order, id],
+                            )
+                            .await?;
+                    }
+                    Ok(())
+                })
+            })
+            .await
+            .unwrap();
+    }
+
     /// `move_node` checks the version through a pooled reader before it
     /// writes. A concurrent writer that bumps the node after that check must
     /// fail the move at its in-transaction bump, and the edge write and the
@@ -5737,6 +5838,13 @@ mod tests {
     /// and nothing is announced. The writer holds the write guard with its
     /// bump uncommitted, so the move's pre-check reads the old version and
     /// passes, then queues on the guard behind the writer.
+    ///
+    /// The 200ms wait before releasing the writer is best-effort: the write
+    /// guard exposes no waiter count, so on a badly stalled machine the move
+    /// could reach its pre-check only after the writer commits, fail there,
+    /// and pass this test without reaching the transaction. The rollback
+    /// itself is covered deterministically by
+    /// `test_move_node_bump_conflict_rolls_back_edge_and_respread`.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn test_move_node_version_conflict_after_check_rolls_back_move_and_respread() {
         let (service, _temp) = create_test_service().await;
@@ -5759,28 +5867,7 @@ mod tests {
         let first_id = create_child(&new_parent_id, "first").await.unwrap();
         let second_id = create_child(&new_parent_id, "second").await.unwrap();
         let moving_id = create_child(&old_parent_id, "moving").await.unwrap();
-
-        // Collapse the gap between the two siblings so inserting between them
-        // forces a re-spread of their keys.
-        let (first, second) = (first_id.clone(), second_id.clone());
-        service
-            .store()
-            .with_transaction(move |tx| {
-                Box::pin(async move {
-                    for (id, order) in [(first, 1.0), (second, 1.00001)] {
-                        tx.conn()
-                            .execute(
-                                "UPDATE relationship SET properties = json_set(properties, '$.order', ?1) \
-                                 WHERE out_node = ?2 AND relationship_type = 'has_child'",
-                                libsql::params![order, id],
-                            )
-                            .await?;
-                    }
-                    Ok(())
-                })
-            })
-            .await
-            .unwrap();
+        collapse_sibling_gap(&service, &first_id, &second_id).await;
 
         let edges_before = has_child_edges(&service).await;
         let version = service.get_node(&moving_id).await.unwrap().unwrap().version;
