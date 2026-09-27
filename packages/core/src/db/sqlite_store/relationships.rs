@@ -1509,7 +1509,9 @@ impl SqliteStore {
         // `?`-propagation, so a single dangling link rolled back the WHOLE batch
         // and the import created ZERO cross-references. Pre-filter to pairs whose
         // BOTH endpoints exist; dangling links are skipped (and logged), never
-        // fatal.
+        // fatal. An ai-chat target is dropped the same way: chats are private,
+        // so nothing may reference one (see
+        // `NodeService::refuse_ai_chat_target`, the single-edge counterpart).
         let mut endpoints: std::collections::HashSet<String> = std::collections::HashSet::new();
         for m in &candidate {
             endpoints.insert(m.0.clone());
@@ -1519,10 +1521,11 @@ impl SqliteStore {
         // Chunk the `IN (...)` under SQLite's compiled SQLITE_MAX_VARIABLE_NUMBER (32766).
         const ID_CHUNK: usize = 900;
         let mut existing: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut ai_chats: std::collections::HashSet<String> = std::collections::HashSet::new();
         for chunk in endpoint_ids.chunks(ID_CHUNK) {
             let placeholders: Vec<String> = (1..=chunk.len()).map(|i| format!("?{}", i)).collect();
             let sql = format!(
-                "SELECT id FROM node WHERE id IN ({})",
+                "SELECT id, node_type FROM node WHERE id IN ({})",
                 placeholders.join(", ")
             );
             let params: Vec<libsql::Value> = chunk
@@ -1537,18 +1540,26 @@ impl SqliteStore {
                 .context("Failed to check mention endpoints")?;
             while let Some(row) = rows.next().await? {
                 let id: String = row.get(0)?;
+                let node_type: String = row.get(1)?;
+                if node_type == crate::models::AI_CHAT_NODE_TYPE {
+                    ai_chats.insert(id.clone());
+                }
                 existing.insert(id);
             }
         }
 
         let valid_mentions: Vec<_> = candidate
             .into_iter()
-            .filter(|m| existing.contains(m.0.as_str()) && existing.contains(m.1.as_str()))
+            .filter(|m| {
+                existing.contains(m.0.as_str())
+                    && existing.contains(m.1.as_str())
+                    && !ai_chats.contains(m.1.as_str())
+            })
             .collect();
         let skipped = candidate_len - valid_mentions.len();
         if skipped > 0 {
             tracing::warn!(
-                "bulk_create_mentions: skipped {} mention(s) with a missing endpoint node (dangling [[link]]); keeping {} valid",
+                "bulk_create_mentions: skipped {} mention(s) with a missing or ai-chat target (dangling [[link]] or private chat); keeping {} valid",
                 skipped,
                 valid_mentions.len()
             );

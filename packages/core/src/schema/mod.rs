@@ -394,7 +394,12 @@ async fn schema_is_core(
 /// those genuinely can dangle, which is the case this guard was written for.
 /// `handle_update_schema` passes `None` — the schema it edits already exists,
 /// so a self-reference there resolves through the ordinary lookup.
-async fn validate_relationship_targets_exist(
+///
+/// A relationship may never target `ai-chat`: chats are private, and a
+/// declared link to one is exactly the reference `NodeService` refuses at edge
+/// creation. Rejecting the declaration keeps a provenance-style field from
+/// being modelled at all, rather than failing on its first write.
+async fn validate_relationship_targets(
     node_service: &Arc<NodeService>,
     relationships: &[crate::models::schema::SchemaRelationship],
     pending_schema_id: Option<&str>,
@@ -403,6 +408,13 @@ async fn validate_relationship_targets_exist(
         let Some(target_type) = rel.target_type.as_deref() else {
             continue;
         };
+        if target_type == crate::models::AI_CHAT_NODE_TYPE {
+            return Err(MarkdownError::invalid_params(format!(
+                "Relationship '{}' targets 'ai-chat'. AI chats are private and cannot be \
+                 referenced by any other node, so no relationship may target them.",
+                rel.name
+            )));
+        }
         if pending_schema_id == Some(target_type) {
             continue;
         }
@@ -1004,7 +1016,7 @@ async fn validate_extends_target(
         )));
     }
 
-    // Existence, mirroring `validate_relationship_targets_exist`'s check. A
+    // Existence, mirroring `validate_relationship_targets`'s check. A
     // dangling parent would produce a schema whose effective field set can
     // never resolve.
     let parent_exists = node_service
@@ -1786,7 +1798,7 @@ pub async fn handle_create_schema(
     let pending_schema_id = (!schema_id.is_empty()).then_some(schema_id.as_str());
     reject_reserved_relationship_names(&relationships)?;
     validate_edge_field_declarations(&relationships)?;
-    validate_relationship_targets_exist(node_service, &relationships, pending_schema_id).await?;
+    validate_relationship_targets(node_service, &relationships, pending_schema_id).await?;
     // Cross-domain collision within this SAME schema's own declarations —
     // no extends chain needed to produce the ambiguity ADR-078 exists to
     // prevent, so this runs unconditionally, not just when `extends` is set.
@@ -2899,10 +2911,10 @@ pub async fn handle_update_schema(
         reject_reserved_relationship_names(add_rels)?;
         validate_edge_field_declarations(add_rels)?;
         // Reject a targetType that doesn't exist yet — see
-        // validate_relationship_targets_exist. No pending schema here: the
+        // validate_relationship_targets. No pending schema here: the
         // schema being edited was loaded above, so a relationship targeting
         // it resolves through the ordinary existence lookup.
-        validate_relationship_targets_exist(node_service, add_rels, None).await?;
+        validate_relationship_targets(node_service, add_rels, None).await?;
         relationships_added = add_rels.len();
         relationships.extend(add_rels.clone());
     }

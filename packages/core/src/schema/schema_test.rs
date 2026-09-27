@@ -2725,7 +2725,7 @@ async fn test_create_schema_rejects_additional_constraints_as_unknown_field() {
 //
 // TARGET_TYPE_MUST_EXIST (skill_rules.rs) already tells the model this in
 // prose; these tests cover the structural backstop added to
-// validate_relationship_targets_exist so a relationship pointing at a type
+// validate_relationship_targets so a relationship pointing at a type
 // that doesn't exist fails loudly instead of persisting a dangling reference.
 
 #[tokio::test]
@@ -2754,6 +2754,30 @@ async fn test_create_schema_rejects_relationship_to_nonexistent_target_type() {
         msg.contains("customer"),
         "error should name the missing target type: {msg}"
     );
+}
+
+/// AI chats are private, so no declared relationship may target one — a
+/// provenance-style link back to the producing chat cannot even be modelled.
+#[tokio::test]
+async fn test_create_schema_rejects_relationship_targeting_ai_chat() {
+    let (svc, _tmp) = create_test_service().await;
+
+    let result = handle_create_schema(
+        &svc,
+        json!({
+            "name": "Finding",
+            "fields": [
+                { "name": "summary", "type": "string", "protection": "user", "indexed": false }
+            ],
+            "relationships": [
+                { "name": "source_chat", "targetType": "ai-chat", "direction": "out", "cardinality": "one", "reverseName": "findings", "reverseCardinality": "many" }
+            ]
+        }),
+    )
+    .await;
+
+    let err = result.expect_err("a relationship targeting ai-chat must be rejected");
+    assert!(err.to_string().contains("ai-chat"), "{err}");
 }
 
 #[tokio::test]

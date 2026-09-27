@@ -59,7 +59,7 @@ mod ordered_list_node_test;
 
 pub use ai_chat_node::{
     AiChatCompletedWrite, AiChatMessage, AiChatNode, AiChatPendingDeletion, AiChatResolvedEntity,
-    AI_CHAT_PROVIDERS,
+    AI_CHAT_NODE_TYPE, AI_CHAT_PROVIDERS,
 };
 pub use code_block_node::{CodeBlockNode, CodeBlockValidationError};
 pub use conflict::{ConflictKind, ConflictRecord, ConflictStatus, Resolution};

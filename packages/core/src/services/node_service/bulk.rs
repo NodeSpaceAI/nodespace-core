@@ -744,6 +744,7 @@ impl NodeService {
             // an unextended type `rebucket_and_validate` is a no-op reshuffle,
             // so this changes nothing for the common case.
             Self::ensure_schema_core_status_unchanged(existing, &updated)?;
+            Self::ensure_not_retyped_to_ai_chat(existing, &updated)?;
             self.behaviors.validate_node(&updated).map_err(|e| {
                 NodeServiceError::bulk_operation_failed(format!(
                     "Failed to validate node {}: {}",

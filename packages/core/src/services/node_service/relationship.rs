@@ -31,6 +31,32 @@ impl NodeService {
         }
     }
 
+    /// Refuse any edge whose (stored) target is an `ai-chat` node.
+    ///
+    /// Chats are private by default, so a reference *to* one — a `mentions`
+    /// edge from an `@mention`/`[[wikilink]]`, a provenance link from a node an
+    /// agent created, or any schema-declared relationship — would surface a
+    /// private conversation's existence and title to readers who cannot open
+    /// it. Blocking the edge at creation means there is never a dangling or
+    /// inaccessible chat reference to render. A chat stays free to be an
+    /// edge's *source* (its own `member_of` into the personal collection), and
+    /// a `has_child` onto one is outline placement — a chat nested under a
+    /// page — not a reference, so it is allowed.
+    fn refuse_ai_chat_target(
+        relationship_name: &str,
+        target: &Node,
+    ) -> Result<(), NodeServiceError> {
+        if relationship_name != "has_child" && target.node_type == crate::models::AI_CHAT_NODE_TYPE
+        {
+            return Err(NodeServiceError::invalid_update(format!(
+                "Node '{}' is an ai-chat node; ai-chat nodes cannot be the target of a \
+                 mention or relationship",
+                target.id
+            )));
+        }
+        Ok(())
+    }
+
     /// Create a mention relationship between two existing nodes
     ///
     /// Adds an entry to the relationship table (relationship_type = 'mentions') to track that one node mentions another.
@@ -85,9 +111,11 @@ impl NodeService {
         if !self.node_exists(mentioning_node_id).await? {
             return Err(NodeServiceError::node_not_found(mentioning_node_id));
         }
-        if !self.node_exists(mentioned_node_id).await? {
-            return Err(NodeServiceError::node_not_found(mentioned_node_id));
-        }
+        let mentioned = self
+            .get_node(mentioned_node_id)
+            .await?
+            .ok_or_else(|| NodeServiceError::node_not_found(mentioned_node_id))?;
+        Self::refuse_ai_chat_target("mentions", &mentioned)?;
 
         // Prevent root-level self-references (child mentioning its own root)
         // Get root ID via edge traversal for validation only
@@ -684,6 +712,16 @@ impl NodeService {
                 .await;
         }
 
+        // A declared (custom) relationship runs this same refusal inside
+        // `create_relationship_in_tx`, after its `in` rewrite settles which
+        // end is the stored target. `has_child` is exempt, so it skips the
+        // lookup on the hot outline path.
+        if relationship_name != "has_child" {
+            if let Some(target) = self.get_node(target_id).await? {
+                Self::refuse_ai_chat_target(relationship_name, &target)?;
+            }
+        }
+
         // Built-in type-specific validation. Only a builtin reaches here — a
         // declared (custom) relationship returned early above.
         if relationship_name == "member_of" {
@@ -925,6 +963,10 @@ impl NodeService {
             relationship_name,
             target_id,
         );
+
+        if let Some(target) = Self::get_node_in_tx_or_virtual_date(tx, target_id).await? {
+            Self::refuse_ai_chat_target(relationship_name, &target)?;
+        }
 
         // See `create_relationship` — a declared relationship's instance edge
         // must carry its declaration's reverse name, or the column lands NULL.

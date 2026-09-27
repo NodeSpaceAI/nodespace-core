@@ -2493,7 +2493,7 @@ fn edge_label(edge: &serde_json::Value, type_key: &str) -> String {
 /// lets a legitimately-requested linked pair land as two sequential calls —
 /// but nothing requires the second call to actually declare the relationship
 /// back to the first. `targetType: None` is deliberately unvalidated
-/// (`validate_relationship_targets_exist` in `nodespace-core`'s schema
+/// (`validate_relationship_targets` in `nodespace-core`'s schema
 /// module) because a relationship-free schema is legitimate on its own, so
 /// one or more unlinked types is a silent, valid outcome.
 ///
@@ -3378,7 +3378,7 @@ mod tests {
     /// pair land as two sequential calls — but nothing requires either call
     /// to actually declare the relationship back to the other. `targetType:
     /// None` stays a legitimate, unvalidated choice on its own
-    /// (`validate_relationship_targets_exist`), so this has to be caught
+    /// (`validate_relationship_targets`), so this has to be caught
     /// here, not in the tool layer.
     #[tokio::test]
     async fn unlinked_pair_note_flags_two_schemas_created_without_a_relationship() {
