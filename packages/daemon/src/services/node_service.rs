@@ -552,7 +552,9 @@ impl GrpcNodeService for NodeServiceImpl {
         let this = self.route(&request).await?;
         let req = request.into_inner();
 
-        let Some(template) = resolve_seed_template(&req.node_type, &req.seed_key) else {
+        let Some(template) =
+            resolve_seed_template(&req.node_type, &req.seed_key).map_err(Status::internal)?
+        else {
             return Ok(Response::new(ResetSeedNodeResponse {
                 found: false,
                 config_reset: false,
@@ -2605,21 +2607,38 @@ fn relationship_to_proto(
 fn resolve_seed_template(
     node_type: &str,
     seed_key: &str,
-) -> Option<nodespace_core::markdown::NodeTemplate> {
-    let mut matches =
-        nodespace_agent::prompt_assembler::PromptAssembler::seed_agent_guidance_nodes()
-            .into_iter()
-            .chain(nodespace_agent::skill_pipeline::seed_skill_nodes())
-            .chain(nodespace_agent::skill_pipeline::seed_tool_nodes())
-            .filter(|t| t.root_node_type == node_type && t.title == seed_key);
+) -> Result<Option<nodespace_core::markdown::NodeTemplate>, String> {
+    find_unique_seed_template(compiled_seed_templates(), node_type, seed_key)
+}
+
+/// Every compiled seed template, in the order `seed_agent_nodes` seeds them.
+fn compiled_seed_templates() -> impl Iterator<Item = nodespace_core::markdown::NodeTemplate> {
+    nodespace_agent::prompt_assembler::PromptAssembler::seed_agent_guidance_nodes()
+        .into_iter()
+        .chain(nodespace_agent::skill_pipeline::seed_skill_nodes())
+        .chain(nodespace_agent::skill_pipeline::seed_tool_nodes())
+}
+
+/// Pick the single template matching `(node_type, seed_key)`. More than one
+/// match is a seed-source authoring bug: the caller could not know which
+/// template it got, so this refuses rather than resetting from an arbitrary
+/// one. A runtime error, not a debug assertion, so release builds catch it.
+fn find_unique_seed_template(
+    templates: impl IntoIterator<Item = nodespace_core::markdown::NodeTemplate>,
+    node_type: &str,
+    seed_key: &str,
+) -> Result<Option<nodespace_core::markdown::NodeTemplate>, String> {
+    let mut matches = templates
+        .into_iter()
+        .filter(|t| t.root_node_type == node_type && t.title == seed_key);
 
     let first = matches.next();
-    debug_assert!(
-        matches.next().is_none(),
-        "multiple seed templates share (node_type, title) = ({node_type}, {seed_key}) -- \
-         resolve_seed_template's caller has no way to know which one it got"
-    );
-    first
+    if matches.next().is_some() {
+        return Err(format!(
+            "multiple seed templates share (node_type, title) = ({node_type}, {seed_key})"
+        ));
+    }
+    Ok(first)
 }
 
 pub(crate) fn ops_error_to_status(err: OpsError) -> Status {
@@ -4910,5 +4929,53 @@ mod tests {
             "an inherited field must survive get_node, got {props:?}"
         );
         assert_eq!(props["bug"]["severity"], "high");
+    }
+
+    fn seed_template(node_type: &str, title: &str) -> nodespace_core::markdown::NodeTemplate {
+        nodespace_core::markdown::NodeTemplate {
+            title: title.to_string(),
+            content: None,
+            markdown_content: String::new(),
+            root_node_type: node_type.to_string(),
+            root_properties: serde_json::json!({}),
+            child_node_type: None,
+            child_properties: None,
+            tier: nodespace_core::markdown::SeedTier::System,
+        }
+    }
+
+    #[test]
+    fn find_unique_seed_template_refuses_duplicate_type_and_title() {
+        let templates = vec![seed_template("skill", "Dup"), seed_template("skill", "Dup")];
+        let err = find_unique_seed_template(templates, "skill", "Dup").unwrap_err();
+        assert!(err.contains("(skill, Dup)"), "{err}");
+    }
+
+    #[test]
+    fn find_unique_seed_template_matches_on_type_and_title() {
+        // Same title under another type is not a duplicate.
+        let templates = vec![seed_template("skill", "A"), seed_template("tool", "A")];
+        let found = find_unique_seed_template(templates, "tool", "A")
+            .unwrap()
+            .expect("tool template");
+        assert_eq!(found.root_node_type, "tool");
+        assert!(find_unique_seed_template(vec![], "skill", "A")
+            .unwrap()
+            .is_none());
+    }
+
+    /// Every compiled seed template must be addressable by `(node_type, title)`
+    /// — a duplicate would make `reset_seed_node` fail for that key.
+    #[test]
+    fn compiled_seed_templates_have_unique_type_and_title() {
+        let mut seen = std::collections::HashSet::new();
+        for t in compiled_seed_templates() {
+            assert!(
+                seen.insert((t.root_node_type.clone(), t.title.clone())),
+                "duplicate seed template ({}, {})",
+                t.root_node_type,
+                t.title
+            );
+        }
     }
 }
