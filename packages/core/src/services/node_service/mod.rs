@@ -1547,6 +1547,17 @@ impl NodeService {
     /// Must run after the local person seed (the edge attaches to it) and
     /// before core Plays are seeded (the ai-chat privacy Play's rule depends
     /// on the schema default this stamps).
+    ///
+    /// Not transactional across its three writes (collection node, admin
+    /// edge, schema default) — same posture as `seed_database_settings_if_needed`,
+    /// repair-on-next-open rather than atomicity. One narrow case neither
+    /// repair path covers: a crash between creating the collection node and
+    /// writing either the admin edge or the schema default leaves an orphan
+    /// collection with no admin edge AND no schema-default pointer back to
+    /// it, so the repair path (which looks for the collection via the schema
+    /// default) cannot find it and a second collection is minted on next
+    /// open. Acceptable: the orphan is inert (no admin, never targeted by
+    /// the invariant rule) rather than a privacy exposure.
     async fn seed_personal_ai_chat_collection_if_needed(&self) -> Result<(), NodeServiceError> {
         let local_person_id = self
             .query_nodes_by_type("person", None)
@@ -8038,6 +8049,130 @@ mod tests {
         assert_eq!(
             chat_node.properties["ai-chat"]["personal_collection_id"],
             collection_id
+        );
+    }
+
+    /// Activate the ai-chat privacy Play (already seeded into the database
+    /// by `seed_core_plays_if_needed`, part of `create_test_service`) against
+    /// a lifecycle manager, the same way `create_node`'s invariant dispatch
+    /// reaches it in the real app. No running engine loop is needed —
+    /// invariant dispatch is inline in `create_node`, not routed through the
+    /// engine's async event subscriber — but a lifecycle manager must exist
+    /// and hold the play's parsed rule, or `dispatch_invariant_rules_in_tx`
+    /// no-ops by design (see that function's doc: "No invariant rules can
+    /// exist without an engine to have activated them" — exactly why
+    /// `create_test_service` alone, with no lifecycle wired up, is not
+    /// enough for these two tests).
+    async fn activate_ai_chat_privacy_play(service: &NodeService) {
+        let engine = crate::playbook::PlaybookEngine::new(Arc::new(service.clone()));
+        service.set_playbook_lifecycle(engine.lifecycle().clone());
+        let play_node = service
+            .get_node(crate::playbook::core_plays::AI_CHAT_PRIVACY_PLAY_ID)
+            .await
+            .unwrap()
+            .expect("ai-chat privacy play must already be seeded");
+        let lifecycle = engine.lifecycle();
+        let mut lm = lifecycle.write().unwrap();
+        lm.activate_play(&play_node)
+            .expect("seeded play must parse and activate");
+    }
+
+    /// End-to-end: creating a real `ai-chat` node through the ordinary
+    /// `create_node` path must actually produce a `member_of` edge into the
+    /// personal collection — not just a `personal_collection_id` property
+    /// value (covered separately above). This is the seeded invariant Play's
+    /// entire reason to exist (ADR-061 §1/§3): `create_node` dispatches
+    /// invariant rules synchronously, inside the same transaction, via
+    /// `create_node_in_tx`, once a lifecycle manager holding the play is
+    /// wired up — which is exactly what makes it fail-closed rather than
+    /// fail-open.
+    #[tokio::test]
+    async fn test_creating_an_ai_chat_node_joins_the_personal_collection() {
+        let (service, _temp) = create_test_service().await;
+        activate_ai_chat_privacy_play(&service).await;
+
+        let collection_id = service
+            .query_nodes_by_type("collection", None)
+            .await
+            .unwrap()
+            .remove(0)
+            .id;
+
+        let chat_id = service
+            .create_node(Node::new(
+                "ai-chat".to_string(),
+                "Untitled".to_string(),
+                serde_json::json!({}),
+            ))
+            .await
+            .unwrap();
+
+        let targets = service
+            .get_related_nodes(&chat_id, "member_of", "out")
+            .await
+            .unwrap();
+        assert_eq!(
+            targets.len(),
+            1,
+            "the new ai-chat node must have exactly one member_of edge"
+        );
+        assert_eq!(
+            targets[0].id, collection_id,
+            "the member_of edge must target the personal AI-chat collection"
+        );
+    }
+
+    /// Fail-closed (ADR-060 §1): if the invariant rule's action cannot
+    /// succeed — here, because `personal_collection_id` points at a
+    /// collection id that does not exist, simulating an unreachable
+    /// collection — the whole chat creation must fail, not silently create
+    /// an unrestricted chat. Simulated by corrupting the schema default to
+    /// an id with no backing node, which the schema-default stamping path
+    /// will still apply to the new node exactly as it would a real id.
+    #[tokio::test]
+    async fn test_ai_chat_creation_fails_closed_when_the_collection_is_unreachable() {
+        let (service, _temp) = create_test_service().await;
+        activate_ai_chat_privacy_play(&service).await;
+
+        let mut schema = service.get_schema_node("ai-chat").await.unwrap().unwrap();
+        schema
+            .get_field_mut("personal_collection_id")
+            .unwrap()
+            .default = Some(serde_json::json!("does-not-exist"));
+        let node = schema.into_node();
+        service
+            .store()
+            .update_node(
+                &node.id,
+                NodeUpdate {
+                    properties: Some(node.properties),
+                    ..Default::default()
+                },
+                None,
+            )
+            .await
+            .unwrap();
+
+        let result = service
+            .create_node(Node::new(
+                "ai-chat".to_string(),
+                "Untitled".to_string(),
+                serde_json::json!({}),
+            ))
+            .await;
+
+        assert!(
+            result.is_err(),
+            "chat creation must fail closed when the invariant rule's \
+             add_relationship action cannot succeed, not silently create an \
+             unrestricted chat"
+        );
+
+        let chats = service.query_nodes_by_type("ai-chat", None).await.unwrap();
+        assert!(
+            chats.is_empty(),
+            "no ai-chat node may exist after a failed invariant rule — the \
+             whole transaction must have rolled back"
         );
     }
 
