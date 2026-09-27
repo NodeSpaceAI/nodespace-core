@@ -273,10 +273,12 @@ impl EntityTypeDescriptor {
     /// A [`SchemaNode`] carries only its own declarations, so describing one
     /// alone tells the model a subtype lacks every field and relationship it
     /// inherits — and the model then reads and writes through `NodeService`,
-    /// which sees the merged set. There is deliberately no single-schema
-    /// constructor: every caller must say where the ancestors come from
-    /// ([`Self::from_corpus`], [`Self::resolve`]), so an unmerged description
-    /// cannot be produced by accident.
+    /// which sees the merged set. There is deliberately no constructor that
+    /// takes a schema alone: every caller must say where the ancestors come
+    /// from ([`Self::from_corpus`], [`Self::resolve`]). Passing no ancestors
+    /// (`from_chain(s, [])`) stays possible but is spelled out at the call
+    /// site — reserved for a schema known to extend nothing, or a degraded
+    /// path with no way to read the chain, each saying so beside the call.
     ///
     /// Merged with the same nearest-first, first-declared-wins rule as
     /// `NodeService::resolve_field_owners`/`resolve_relationships`. The title
@@ -1058,6 +1060,35 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["approved_by", "billed_to"],
             "own relationship from the hydrated copy, then the inherited one"
+        );
+    }
+
+    /// Shadowing is per kind: a nearer relationship does not hide an
+    /// ancestor's same-named field from the field list, matching how
+    /// `NodeService::resolve_field_owners` and `resolve_relationships` merge
+    /// each kind independently. (Well-formed chains cannot contain this —
+    /// the collision is rejected at write time — so this pins the merge
+    /// rule, not a shape users produce.)
+    #[test]
+    fn from_chain_shadows_names_within_each_kind_not_across_kinds() {
+        let base = sample_schema();
+        let mut child = sample_schema();
+        child.id = "child_invoice".to_string();
+        child.fields = vec![];
+        child.relationships = vec![SchemaRelationship {
+            name: "reference".to_string(),
+            ..sample_schema().relationships[0].clone()
+        }];
+
+        let d = EntityTypeDescriptor::from_chain(&child, [&base]);
+
+        assert!(d.fields.iter().any(|f| f.name == "reference"));
+        assert_eq!(
+            d.relationships
+                .iter()
+                .map(|r| r.name.as_str())
+                .collect::<Vec<_>>(),
+            ["reference", "billed_to"]
         );
     }
 
