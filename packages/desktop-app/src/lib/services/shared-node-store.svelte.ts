@@ -16,7 +16,7 @@
 
 import { SvelteMap } from 'svelte/reactivity';
 import { structureTree } from '$lib/stores/reactive-structure-tree.svelte';
-import { requiresAtomicBatching } from '$lib/utils/placeholder-detection';
+import { requiresAtomicBatching } from '$lib/utils/atomic-batching';
 import { shouldLogDatabaseErrors, isTestEnvironment } from '$lib/utils/test-environment';
 import { backendAdapter } from './backend-adapter';
 import { isVersionConflict, isSubtreeAccessDenied, isPlayRuleRejected } from '$lib/types/errors';
