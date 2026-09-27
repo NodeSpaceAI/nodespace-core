@@ -28,7 +28,7 @@ version = "0.3.1"
 authors = ["NodeSpace Team"]
 edition = "2021"
 license = "MIT"
-repository = "https://github.com/malibio/nodespace-core"
+repository = "https://github.com/NodeSpaceAI/nodespace-core"
 
 [workspace.dependencies]
 serde = { version = "1.0", features = ["derive"] }
