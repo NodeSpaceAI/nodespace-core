@@ -1746,7 +1746,7 @@ fn def_get_workflow_state() -> ToolDefinition {
             what's still missing before it will. Scoped to this device only: whether a rule has \
             previously fired is not tracked anywhere, so this reports live condition state, not \
             execution history. A non-empty degraded_reasons means a lookup failed and the \
-            result is incomplete — never treat an unresolvable condition in it as a confirmed \
+            result may be incomplete — never treat an unresolvable condition in it as a confirmed \
             typo. Read-only."
             .into(),
         parameters_schema: json!({
