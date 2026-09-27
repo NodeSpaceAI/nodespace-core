@@ -64,6 +64,12 @@ const SKILL_GRAPH_AUTHORED_GUIDANCE: &str =
 /// body pointing at a file that was never written next to it.
 const SKILL_LINEAR_PLAYBOOK: &str = include_str!("../../../skill/references/linear-playbook.md");
 
+/// `packages/skill/references/spec-driven-playbook.md`, embedded for the same
+/// reason as [`SKILL_LINEAR_PLAYBOOK`], generated from
+/// `nodespace_core::methodology::spec_driven`.
+const SKILL_SPEC_DRIVEN_PLAYBOOK: &str =
+    include_str!("../../../skill/references/spec-driven-playbook.md");
+
 /// Default token budget when none is specified by the caller.
 const DEFAULT_TOKEN_BUDGET: u32 = 50_000;
 
@@ -410,6 +416,11 @@ async fn write_skill_md(session_dir: &Path) -> Result<(), ContextError> {
     )
     .await?;
     tokio::fs::write(references.join("linear-playbook.md"), SKILL_LINEAR_PLAYBOOK).await?;
+    tokio::fs::write(
+        references.join("spec-driven-playbook.md"),
+        SKILL_SPEC_DRIVEN_PLAYBOOK,
+    )
+    .await?;
     tokio::fs::write(
         references.join("graph-authored-guidance.md"),
         SKILL_GRAPH_AUTHORED_GUIDANCE,

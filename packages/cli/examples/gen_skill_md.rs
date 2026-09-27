@@ -103,7 +103,15 @@ fn regions() -> Vec<GeneratedRegion> {
             source_note: "packages/core/src/methodology/linear.rs, \
                           packages/core/src/methodology/skills/linear/, \
                           packages/cli/examples/gen_skill_md.rs",
-            render: render_linear_playbook_block,
+            render: || render_playbook_block("linear", "linear"),
+        },
+        GeneratedRegion {
+            id: "spec-driven-playbook",
+            file: "references/spec-driven-playbook.md",
+            source_note: "packages/core/src/methodology/spec_driven.rs, \
+                          packages/core/src/methodology/skills/spec_driven/, \
+                          packages/cli/examples/gen_skill_md.rs",
+            render: || render_playbook_block("spec-driven", "spec_driven"),
         },
     ]
 }
@@ -376,10 +384,11 @@ fn render_builtin_relationships_block() -> String {
 }
 
 // ---------------------------------------------------------------------------
-// Region: linear-playbook
+// Regions: one per methodology playbook
 // ---------------------------------------------------------------------------
 
-/// Renders the Linear-style playbook as the CLI calls that reproduce it.
+/// Renders the playbook `id` as the CLI calls that reproduce it. `skills_dir`
+/// names its skill sources under `packages/core/src/methodology/skills/`.
 ///
 /// The playbook itself is typed Rust in `nodespace_core::methodology`, executed
 /// in-process by the desktop app. An external agent has no access to that, so
@@ -396,10 +405,11 @@ fn render_builtin_relationships_block() -> String {
 /// `playbook create` verb — a Play is an ordinary node whose `rules` property
 /// the engine reads — and inventing one in the docs would send an agent at a
 /// command that does not exist.
-fn render_linear_playbook_block() -> String {
+fn render_playbook_block(id: &str, skills_dir: &str) -> String {
     use nodespace_core::methodology::playbook_by_id;
 
-    let playbook = playbook_by_id("linear").expect("the linear playbook ships with this build");
+    let playbook =
+        playbook_by_id(id).unwrap_or_else(|| panic!("the {id} playbook ships with this build"));
     let mut out = String::new();
 
     let _ = writeln!(out, "## {}\n", playbook.name);
@@ -421,16 +431,26 @@ fn render_linear_playbook_block() -> String {
         );
     }
 
-    let _ = writeln!(out, "### 2. Vocabulary extensions\n");
-    let _ = writeln!(
-        out,
-        "These append values to fields `issue` **inherits** from `task`, so every new value \
-         carries `mapsTo` naming the base value it collapses to when something reading at \
-         `task` scope looks at it. Without that a base-scoped Play or query would meet a \
-         value it has never heard of.\n"
-    );
+    let _ = writeln!(out, "### 2. Schema extensions\n");
+    if playbook
+        .field_value_extensions
+        .iter()
+        .any(|e| !e.adds_field())
+    {
+        let _ = writeln!(
+            out,
+            "A vocabulary extension appends values to a field. When the field is **inherited** \
+             from a base type, every new value carries `mapsTo` naming the base value it \
+             collapses to when something reading at the base scope looks at it. Without that a \
+             base-scoped Play or query would meet a value it has never heard of.\n"
+        );
+    }
     for ext in &playbook.field_value_extensions {
-        let _ = writeln!(out, "Extend `{}.{}`:\n", ext.schema_id, ext.field);
+        if ext.adds_field() {
+            let _ = writeln!(out, "Add `{}` to `{}`:\n", ext.field, ext.schema_id);
+        } else {
+            let _ = writeln!(out, "Extend `{}.{}`:\n", ext.schema_id, ext.field);
+        }
         let _ = writeln!(
             out,
             "```bash\nnodespace schema update --params '{}'\n```\n",
@@ -473,7 +493,8 @@ fn render_linear_playbook_block() -> String {
         out,
         "Create each with `nodespace node create --type skill`, then add its guidance as \
          markdown children. The bodies are long-form prose; read them from \
-         `packages/core/src/methodology/skills/linear/` rather than reproducing them here.\n"
+         `packages/core/src/methodology/skills/{skills_dir}/` rather than reproducing them \
+         here.\n"
     );
 
     let _ = writeln!(out, "### 5. Saved views\n");

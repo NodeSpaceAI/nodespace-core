@@ -79,7 +79,11 @@ pub async fn install_playbook(
     }
 
     for ext in &playbook.field_value_extensions {
-        let label = format!("Extend `{}.{}` vocabulary", ext.schema_id, ext.field);
+        let label = if ext.adds_field() {
+            format!("Add `{}` field to `{}`", ext.field, ext.schema_id)
+        } else {
+            format!("Extend `{}.{}` vocabulary", ext.schema_id, ext.field)
+        };
         if failed {
             steps.push(StepReport::skipped(label));
             continue;
