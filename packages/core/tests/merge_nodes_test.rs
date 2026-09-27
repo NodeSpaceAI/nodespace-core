@@ -752,6 +752,11 @@ async fn merge_refuses_to_file_a_survivor_that_has_a_parent() -> Result<()> {
 
     let violation = tree_violation(&err);
     assert_eq!(violation.rule, TreeInvariantRule::MemberOfNotRoot);
+    assert_eq!(
+        violation.node_id.as_deref(),
+        Some(loser.as_str()),
+        "the refusal names the node holding the membership"
+    );
     assert_eq!(violation.related_ids, vec![coll.clone()]);
     assert!(svc
         .store()
@@ -850,5 +855,91 @@ async fn merge_lets_a_filed_person_survivor_take_a_parent() -> Result<()> {
         svc.store().get_node_memberships(&survivor).await?,
         vec![coll]
     );
+    Ok(())
+}
+
+// --- preview_merge: the same decision, without writing ---
+
+/// The preview reports each side's parent and the one the survivor keeps,
+/// and leaves the tree untouched.
+#[tokio::test]
+async fn preview_merge_reports_the_parent_the_survivor_keeps() -> Result<()> {
+    let (svc, _tmp) = service().await?;
+    let root_a = text(&svc, "Root A", None).await?;
+    let root_b = text(&svc, "Root B", None).await?;
+    let loser = text(&svc, "line", Some(&root_a)).await?;
+    let survivor = text(&svc, "line", Some(&root_b)).await?;
+
+    let preview = svc.preview_merge(&survivor, &loser).await?;
+
+    assert_eq!(preview.survivor_parent_id.as_deref(), Some(root_b.as_str()));
+    assert_eq!(preview.loser_parent_id.as_deref(), Some(root_a.as_str()));
+    assert_eq!(
+        preview.resulting_parent_id.as_deref(),
+        Some(root_b.as_str())
+    );
+    assert_eq!(parent_id(&svc, &loser).await?, Some(root_a));
+    assert_eq!(
+        svc.get_node(&loser).await?.unwrap().lifecycle_status,
+        "active"
+    );
+    Ok(())
+}
+
+/// A root survivor takes the loser's parent, and the preview says so.
+#[tokio::test]
+async fn preview_merge_reports_a_root_survivor_taking_the_losers_parent() -> Result<()> {
+    let (svc, _tmp) = service().await?;
+    let root_a = text(&svc, "Root A", None).await?;
+    let loser = text(&svc, "line", Some(&root_a)).await?;
+    let survivor = text(&svc, "line", None).await?;
+
+    let preview = svc.preview_merge(&survivor, &loser).await?;
+
+    assert_eq!(preview.survivor_parent_id, None);
+    assert_eq!(
+        preview.resulting_parent_id.as_deref(),
+        Some(root_a.as_str())
+    );
+    assert_eq!(parent_id(&svc, &survivor).await?, None);
+    Ok(())
+}
+
+/// A loser inside a root survivor's subtree: the survivor stays a root.
+#[tokio::test]
+async fn preview_merge_reports_a_survivor_staying_a_root() -> Result<()> {
+    let (svc, _tmp) = service().await?;
+    let survivor = text(&svc, "survivor", None).await?;
+    let middle = text(&svc, "middle", Some(&survivor)).await?;
+    let loser = text(&svc, "loser", Some(&middle)).await?;
+
+    let preview = svc.preview_merge(&survivor, &loser).await?;
+
+    assert_eq!(preview.loser_parent_id.as_deref(), Some(middle.as_str()));
+    assert_eq!(preview.resulting_parent_id, None);
+    Ok(())
+}
+
+/// The preview refuses with the same typed violation the merge would.
+#[tokio::test]
+async fn preview_merge_refuses_like_the_merge() -> Result<()> {
+    let (svc, _tmp) = service().await?;
+    let coll = collection(&svc, "Filed").await?;
+    let root_a = text(&svc, "Root A", None).await?;
+    let loser = text(&svc, "line", Some(&root_a)).await?;
+    let survivor = text(&svc, "line", None).await?;
+    svc.store()
+        .add_to_collection(&survivor, &coll, &json!({}))
+        .await?;
+
+    let err = svc
+        .preview_merge(&survivor, &loser)
+        .await
+        .expect_err("a filed node must not gain a parent");
+
+    let violation = tree_violation(&err);
+    assert_eq!(violation.rule, TreeInvariantRule::MemberOfNotRoot);
+    assert_eq!(violation.node_id.as_deref(), Some(survivor.as_str()));
+    assert_eq!(violation.related_ids, vec![coll]);
     Ok(())
 }

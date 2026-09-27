@@ -5,7 +5,8 @@
 //! instead of calling `packages/core` directly.
 
 use nodespace_proto::nodespace::{
-    ConflictsForNodeRequest, ListConflictsRequest, MergeNodesRequest, ResolveConflictRequest,
+    ConflictsForNodeRequest, ListConflictsRequest, MergeNodesRequest, PreviewMergeRequest,
+    ResolveConflictRequest,
 };
 use serde::{Deserialize, Serialize};
 use tauri::State;
@@ -196,5 +197,41 @@ pub async fn merge_nodes(
         properties_merged: resp.properties_merged,
         edges_repointed: resp.edges_repointed,
         edges_dropped: resp.edges_dropped,
+    })
+}
+
+/// Where a merge would leave the survivor in the tree — see
+/// `NodeService::preview_merge`. `None` means a root.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MergePreview {
+    pub survivor_parent_id: Option<String>,
+    pub loser_parent_id: Option<String>,
+    pub resulting_parent_id: Option<String>,
+}
+
+/// Read-only preview of `merge_nodes`: the survivor's resulting parent, or
+/// the `TREE_INVARIANT_VIOLATION` the merge would be refused with. The
+/// Conflicts view calls this before asking the user to confirm.
+#[tauri::command]
+pub async fn preview_merge(
+    client: State<'_, GrpcClient>,
+    survivor_id: String,
+    loser_id: String,
+) -> Result<MergePreview, CommandError> {
+    let mut c = client.client().await;
+    let resp = c
+        .preview_merge(Request::new(PreviewMergeRequest {
+            survivor_id,
+            loser_id,
+        }))
+        .await
+        .map_err(status_to_command_error)?
+        .into_inner();
+
+    Ok(MergePreview {
+        survivor_parent_id: resp.survivor_parent_id,
+        loser_parent_id: resp.loser_parent_id,
+        resulting_parent_id: resp.resulting_parent_id,
     })
 }

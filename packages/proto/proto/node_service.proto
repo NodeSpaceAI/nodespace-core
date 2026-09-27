@@ -167,6 +167,9 @@ service NodeService {
   // User-initiated only (ADR-068 §5.2) — never called automatically at any
   // confidence level. See NodeService::merge_nodes's doc comment.
   rpc MergeNodes(MergeNodesRequest) returns (MergeNodesResponse);
+  // Read-only: where MergeNodes would leave the survivor in the tree, or the
+  // FAILED_PRECONDITION tree-invariant refusal it would return.
+  rpc PreviewMerge(PreviewMergeRequest) returns (PreviewMergeResponse);
 
   // Streaming
   rpc WatchNodes(WatchRequest) returns (stream NodeEvent);
@@ -346,6 +349,19 @@ message MergeNodesResponse {
   uint32 properties_merged = 3;
   uint32 edges_repointed = 4;
   uint32 edges_dropped = 5;
+}
+
+message PreviewMergeRequest {
+  string survivor_id = 1;
+  string loser_id = 2;
+}
+
+// Parents ignore an edge between the survivor and the loser; unset = a root.
+message PreviewMergeResponse {
+  optional string survivor_parent_id = 1;
+  optional string loser_parent_id = 2;
+  // The survivor's parent after the merge.
+  optional string resulting_parent_id = 3;
 }
 
 // GetNode returns NodeResponse (node_id + node_data populated).

@@ -64,13 +64,14 @@ use crate::nodespace::{
     MoveNodeRequest, NodeCollectionsRequest, NodeData, NodeDeleted, NodeEvent, NodeListResponse,
     NodeReference, NodeReferenceListResponse, NodeResponse, NodeSortOrder, NodeTreeResponse,
     OptionalConflictResponse, OptionalNodeResponse, OptionalStringClear, OptionalTimestampClear,
-    QueryNodesSimpleRequest, RelationshipDeletedPayload, RelationshipEdge, RelationshipPayload,
-    RemoveNodeFromCollectionRequest, RenameCollectionRequest, ReorderNodeRequest,
-    ReorderNodeResponse, ResetSeedNodeRequest, ResetSeedNodeResponse, ResolveConflictRequest,
-    SchemaParamsRequest, SchemaResultResponse, SearchRequest, SetLocalPersonIdentityRequest,
-    UpdateNodeRequest, UpdateNodesBatchRequest, UpdateNodesBatchResponse, UpdatePersonNodeRequest,
-    UpdateProjectNodeRequest, UpdateRelationshipPropertiesRequest,
-    UpdateRelationshipPropertiesResponse, UpdateTaskNodeRequest, WatchRequest,
+    PreviewMergeRequest, PreviewMergeResponse, QueryNodesSimpleRequest, RelationshipDeletedPayload,
+    RelationshipEdge, RelationshipPayload, RemoveNodeFromCollectionRequest,
+    RenameCollectionRequest, ReorderNodeRequest, ReorderNodeResponse, ResetSeedNodeRequest,
+    ResetSeedNodeResponse, ResolveConflictRequest, SchemaParamsRequest, SchemaResultResponse,
+    SearchRequest, SetLocalPersonIdentityRequest, UpdateNodeRequest, UpdateNodesBatchRequest,
+    UpdateNodesBatchResponse, UpdatePersonNodeRequest, UpdateProjectNodeRequest,
+    UpdateRelationshipPropertiesRequest, UpdateRelationshipPropertiesResponse,
+    UpdateTaskNodeRequest, WatchRequest,
 };
 
 /// The most rows a paged query RPC will return, whatever the request asks for:
@@ -477,6 +478,26 @@ impl GrpcNodeService for NodeServiceImpl {
             properties_merged: outcome.properties_merged,
             edges_repointed: outcome.edges_repointed,
             edges_dropped: outcome.edges_dropped,
+        }))
+    }
+
+    async fn preview_merge(
+        &self,
+        request: Request<PreviewMergeRequest>,
+    ) -> Result<Response<PreviewMergeResponse>, Status> {
+        let this = self.route(&request).await?;
+        let req = request.into_inner();
+
+        let preview = this
+            .node_service
+            .preview_merge(&req.survivor_id, &req.loser_id)
+            .await
+            .map_err(service_error_to_status)?;
+
+        Ok(Response::new(PreviewMergeResponse {
+            survivor_parent_id: preview.survivor_parent_id,
+            loser_parent_id: preview.loser_parent_id,
+            resulting_parent_id: preview.resulting_parent_id,
         }))
     }
 

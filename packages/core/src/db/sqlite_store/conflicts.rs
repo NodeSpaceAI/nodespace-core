@@ -6,6 +6,30 @@ use super::*;
 use crate::models::conflict::{ConflictKind, ConflictRecord, ConflictStatus, Resolution};
 use std::str::FromStr;
 
+/// Where a merge leaves the survivor in the tree, decided before anything is
+/// written. Both parents ignore an edge between the two nodes themselves.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct MergePlan {
+    /// The survivor's `has_child` parent before the merge.
+    pub survivor_parent: Option<String>,
+    /// The loser's `has_child` parent before the merge.
+    pub loser_parent: Option<String>,
+    /// Whether the survivor takes the loser's parent. When false and the
+    /// loser has a parent, that parent edge is dropped.
+    pub takes_loser_parent: bool,
+}
+
+impl MergePlan {
+    /// The survivor's parent after the merge; `None` means it is a root.
+    pub fn resulting_parent(&self) -> Option<&str> {
+        if self.takes_loser_parent {
+            self.loser_parent.as_deref()
+        } else {
+            self.survivor_parent.as_deref()
+        }
+    }
+}
+
 impl SqliteStore {
     /// Upsert-by-derived-id: insert a new open record, or — if a record with
     /// this exact `id` already exists and is still `open` — bump its
@@ -314,95 +338,12 @@ impl SqliteStore {
     ) -> Result<(u32, Value, Vec<(String, String, String)>, u32)> {
         let conn = tx.conn();
 
-        let mut survivor_rows = conn
-            .query(
-                "SELECT * FROM node WHERE id = ?1",
-                libsql::params![survivor_id.to_string()],
-            )
-            .await
-            .context("Failed to read survivor node")?;
-        let survivor = survivor_rows
-            .next()
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("survivor node '{}' not found", survivor_id))
-            .and_then(|row| Self::row_to_node(&row))?;
-
-        let mut loser_rows = conn
-            .query(
-                "SELECT * FROM node WHERE id = ?1",
-                libsql::params![loser_id.to_string()],
-            )
-            .await
-            .context("Failed to read loser node")?;
-        let loser = loser_rows
-            .next()
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("loser node '{}' not found", loser_id))
-            .and_then(|row| Self::row_to_node(&row))?;
+        let (survivor, loser) = Self::read_merge_pair_in_tx(tx, survivor_id, loser_id).await?;
 
         // --- Step 0: tree invariants, checked before anything is written ---
-        //
-        // Each side's `has_child` parent, ignoring an edge between the two
-        // nodes themselves: that edge becomes a self-edge and is dropped.
-        let survivor_parent = Self::get_parent_id_in_tx(tx, survivor_id)
-            .await?
-            .filter(|p| p != loser_id);
-        let loser_parent = Self::get_parent_id_in_tx(tx, loser_id)
-            .await?
-            .filter(|p| p != survivor_id);
-        // Re-pointing the loser's children onto the survivor closes a cycle
-        // when the survivor sits below one of them.
-        if let Some(survivor_parent) = survivor_parent.as_deref() {
-            if Self::is_ancestor_in_tx(tx, loser_id, survivor_parent).await? {
-                return Err(anyhow::Error::new(super::TreeInvariantViolation::cycle(
-                    survivor_id,
-                    loser_id,
-                    format!(
-                        "survivor '{}' sits inside the subtree of '{}', so merging would make the survivor its own ancestor. Move the survivor out of that subtree first.",
-                        survivor_id, loser_id
-                    ),
-                )));
-            }
-        }
-        // The survivor keeps its own position. The loser's parent edge is
-        // re-pointed only onto a survivor that would otherwise be a root, and
-        // only when that parent is outside the survivor's subtree; taking a
-        // parent from its own subtree would close a cycle.
-        let takes_loser_parent = match (&survivor_parent, &loser_parent) {
-            (None, Some(loser_parent)) => {
-                !Self::is_ancestor_in_tx(tx, survivor_id, loser_parent).await?
-            }
-            _ => false,
-        };
-        let has_parent_after = survivor_parent.is_some() || takes_loser_parent;
-
-        if has_parent_after {
-            if survivor.node_type == "collection" {
-                return Err(anyhow::Error::new(
-                    super::TreeInvariantViolation::collection_not_root(Some(survivor_id)),
-                ));
-            }
-            if !super::relationships::member_may_have_parent(&survivor.node_type) {
-                let memberships =
-                    Self::member_of_targets_in_tx(tx, &[survivor_id, loser_id]).await?;
-                if !memberships.is_empty() {
-                    let detail = format!(
-                        "merging '{}' into '{}' would leave survivor '{}' holding collection membership ({}) while it has a parent — only root nodes may hold collection membership (ADR-059 §2). Remove the node from the collection(s) first, or move it to the root.",
-                        loser_id,
-                        survivor_id,
-                        survivor_id,
-                        memberships.join(", ")
-                    );
-                    return Err(anyhow::Error::new(
-                        super::TreeInvariantViolation::member_of_not_root(
-                            survivor_id,
-                            memberships,
-                            detail,
-                        ),
-                    ));
-                }
-            }
-        }
+        let MergePlan {
+            takes_loser_parent, ..
+        } = Self::plan_merge_in_tx(tx, &survivor, loser_id).await?;
 
         // --- Step 1: property union, survivor wins ties ---
         //
@@ -607,6 +548,143 @@ impl SqliteStore {
             repointed_edges,
             edges_dropped,
         ))
+    }
+
+    /// Step 0 of [`Self::merge_nodes_in_tx`] on its own: where merging
+    /// `loser_id` into `survivor_id` would leave the survivor, or the tree
+    /// invariant the merge would break. Writes nothing.
+    pub(crate) async fn preview_merge_in_tx(
+        tx: &Tx<'_>,
+        survivor_id: &str,
+        loser_id: &str,
+    ) -> Result<MergePlan> {
+        let (survivor, _) = Self::read_merge_pair_in_tx(tx, survivor_id, loser_id).await?;
+        Self::plan_merge_in_tx(tx, &survivor, loser_id).await
+    }
+
+    /// Read both sides of a merge, refusing when either is missing.
+    async fn read_merge_pair_in_tx(
+        tx: &Tx<'_>,
+        survivor_id: &str,
+        loser_id: &str,
+    ) -> Result<(Node, Node)> {
+        let conn = tx.conn();
+        let mut survivor_rows = conn
+            .query(
+                "SELECT * FROM node WHERE id = ?1",
+                libsql::params![survivor_id.to_string()],
+            )
+            .await
+            .context("Failed to read survivor node")?;
+        let survivor = survivor_rows
+            .next()
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("survivor node '{}' not found", survivor_id))
+            .and_then(|row| Self::row_to_node(&row))?;
+
+        let mut loser_rows = conn
+            .query(
+                "SELECT * FROM node WHERE id = ?1",
+                libsql::params![loser_id.to_string()],
+            )
+            .await
+            .context("Failed to read loser node")?;
+        let loser = loser_rows
+            .next()
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("loser node '{}' not found", loser_id))
+            .and_then(|row| Self::row_to_node(&row))?;
+        Ok((survivor, loser))
+    }
+
+    /// Where the merge would leave the survivor in the tree, or the tree
+    /// invariant it would break (step 0 of [`Self::merge_nodes_in_tx`]).
+    /// Writes nothing, so it also serves as a preview of the merge.
+    pub(crate) async fn plan_merge_in_tx(
+        tx: &Tx<'_>,
+        survivor: &Node,
+        loser_id: &str,
+    ) -> Result<MergePlan> {
+        let survivor_id = survivor.id.as_str();
+        // Each side's `has_child` parent, ignoring an edge between the two
+        // nodes themselves: that edge becomes a self-edge and is dropped.
+        let survivor_parent = Self::get_parent_id_in_tx(tx, survivor_id)
+            .await?
+            .filter(|p| p != loser_id);
+        let loser_parent = Self::get_parent_id_in_tx(tx, loser_id)
+            .await?
+            .filter(|p| p != survivor_id);
+        // Re-pointing the loser's children onto the survivor closes a cycle
+        // when the survivor sits below one of them.
+        if let Some(survivor_parent) = survivor_parent.as_deref() {
+            if Self::is_ancestor_in_tx(tx, loser_id, survivor_parent).await? {
+                return Err(anyhow::Error::new(super::TreeInvariantViolation::cycle(
+                    survivor_id,
+                    loser_id,
+                    format!(
+                        "survivor '{}' sits inside the subtree of '{}', so merging would make the survivor its own ancestor. Move the survivor out of that subtree first.",
+                        survivor_id, loser_id
+                    ),
+                )));
+            }
+        }
+        // The survivor keeps its own position. The loser's parent edge is
+        // re-pointed only onto a survivor that would otherwise be a root, and
+        // only when that parent is outside the survivor's subtree; taking a
+        // parent from its own subtree would close a cycle.
+        let takes_loser_parent = match (&survivor_parent, &loser_parent) {
+            (None, Some(loser_parent)) => {
+                !Self::is_ancestor_in_tx(tx, survivor_id, loser_parent).await?
+            }
+            _ => false,
+        };
+        let has_parent_after = survivor_parent.is_some() || takes_loser_parent;
+
+        if has_parent_after {
+            if survivor.node_type == "collection" {
+                return Err(anyhow::Error::new(
+                    super::TreeInvariantViolation::collection_not_root(Some(survivor_id)),
+                ));
+            }
+            if !super::relationships::member_may_have_parent(&survivor.node_type) {
+                // Name the node that holds the membership, so the refusal
+                // points at the membership the user has to remove. When both
+                // do, the survivor is named first; a retry names the loser.
+                let survivor_memberships =
+                    Self::member_of_targets_in_tx(tx, &[survivor_id]).await?;
+                let (holder, memberships) = if survivor_memberships.is_empty() {
+                    (
+                        loser_id,
+                        Self::member_of_targets_in_tx(tx, &[loser_id]).await?,
+                    )
+                } else {
+                    (survivor_id, survivor_memberships)
+                };
+                if !memberships.is_empty() {
+                    let detail = format!(
+                        "merging '{}' into '{}' would leave the merged node holding collection membership ({}) of '{}' while it has a parent — only root nodes may hold collection membership (ADR-059 §2). Remove '{}' from the collection(s) first, or move the merged node to the root.",
+                        loser_id,
+                        survivor_id,
+                        memberships.join(", "),
+                        holder,
+                        holder
+                    );
+                    return Err(anyhow::Error::new(
+                        super::TreeInvariantViolation::member_of_not_root(
+                            holder,
+                            memberships,
+                            detail,
+                        ),
+                    ));
+                }
+            }
+        }
+
+        Ok(MergePlan {
+            survivor_parent,
+            loser_parent,
+            takes_loser_parent,
+        })
     }
 
     /// The collections any of `member_ids` is filed into (`member_of`

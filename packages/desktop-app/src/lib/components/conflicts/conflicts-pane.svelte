@@ -13,8 +13,15 @@
   import {
     conflictsStore,
     type ConflictRecord,
-    type ConflictKind
+    type ConflictKind,
+    type MergePreview
   } from '$lib/stores/conflicts.svelte';
+  import { isTreeInvariantViolation } from '$lib/types/errors';
+  import {
+    describeMergeRefusal,
+    describeSurvivorPosition,
+    type LabelOf
+  } from './merge-messages';
   import { backendAdapter } from '$lib/services/backend-adapter';
   import { getNavigationService } from '$lib/services/navigation-service';
   import { createLogger } from '$lib/utils/logger';
@@ -84,26 +91,94 @@
   }
 
   let mergingConflictId = $state<string | null>(null);
+  /** Why the last merge attempt on a record did not happen, keyed by
+   * conflict id; shown inline in that record's row. */
+  let mergeErrors = $state<Map<string, string>>(new Map());
+
+  function setMergeError(conflictId: string, message: string | null) {
+    const next = new Map(mergeErrors);
+    if (message === null) next.delete(conflictId);
+    else next.set(conflictId, message);
+    mergeErrors = next;
+  }
+
+  /** Resolve every id to a label first, so message builders stay sync. */
+  async function resolveLabels(ids: (string | null)[]): Promise<LabelOf> {
+    await Promise.all(ids.filter((id): id is string => id !== null).map(labelFor));
+    return (id) => participantLabels.get(id) ?? id;
+  }
+
+  /** Turn a failed preview/merge into the inline message for its row. */
+  async function reportMergeFailure(
+    conflictId: string,
+    survivorId: string,
+    loserId: string,
+    error: unknown
+  ) {
+    if (isTreeInvariantViolation(error)) {
+      const violation = error.conflictData;
+      const labelOf = await resolveLabels([
+        violation.node_id,
+        survivorId,
+        loserId,
+        ...violation.related_ids
+      ]);
+      setMergeError(conflictId, describeMergeRefusal(violation, survivorId, loserId, labelOf));
+      return;
+    }
+    log.error('Failed to merge nodes', error);
+    const detail =
+      typeof error === 'object' && error !== null && 'message' in error ? error.message : null;
+    setMergeError(
+      conflictId,
+      typeof detail === 'string' && detail ? `Merge failed: ${detail}` : 'Merge failed.'
+    );
+  }
 
   /** Merge is offered only for a 2-participant record — the shape ADR-068
    * §5.2 defines (a survivor and a loser). `survivorId` is whichever
-   * participant the user clicked "Keep this one" for. */
+   * participant the user clicked "Keep this one" for. The merge is previewed
+   * first, so a refusal is explained before the user confirms and the
+   * confirmation can say where the merged node will live. */
   async function handleMerge(record: ConflictRecord, survivorId: string) {
     const loserId = record.nodeIds.find((id) => id !== survivorId);
     if (!loserId) return;
-    const survivorLabel = participantLabels.get(survivorId) ?? survivorId;
-    const loserLabel = participantLabels.get(loserId) ?? loserId;
-    const confirmed = window.confirm(
-      `Merge "${loserLabel}" into "${survivorLabel}"? ${loserLabel} will be archived; its ` +
-        'properties and relationships move onto the surviving node. This cannot be undone from here.'
-    );
-    if (!confirmed) return;
 
     mergingConflictId = record.id;
+    setMergeError(record.id, null);
     try {
-      await conflictsStore.merge(survivorId, loserId, record.id);
-    } catch (e) {
-      log.error('Failed to merge nodes', e);
+      let preview: MergePreview;
+      try {
+        preview = await conflictsStore.previewMerge(survivorId, loserId);
+      } catch (e) {
+        await reportMergeFailure(record.id, survivorId, loserId, e);
+        return;
+      }
+
+      const labelOf = await resolveLabels([
+        survivorId,
+        loserId,
+        preview.survivorParentId,
+        preview.loserParentId,
+        preview.resultingParentId
+      ]);
+      const survivorLabel = labelOf(survivorId);
+      const loserLabel = labelOf(loserId);
+      const position = describeSurvivorPosition(preview, survivorId, loserId, labelOf);
+      const confirmed = window.confirm(
+        `Merge "${loserLabel}" into "${survivorLabel}"? ${loserLabel} will be archived; its ` +
+          'properties and relationships move onto the surviving node.' +
+          (position ? ` ${position}` : '') +
+          ' This cannot be undone from here.'
+      );
+      if (!confirmed) return;
+
+      try {
+        await conflictsStore.merge(survivorId, loserId, record.id);
+      } catch (e) {
+        // The tree can change between the preview and the merge.
+        await reportMergeFailure(record.id, survivorId, loserId, e);
+      }
     } finally {
       mergingConflictId = null;
     }
@@ -271,6 +346,9 @@
                     </div>
                   {/if}
                 {/if}
+                {#if record.status === 'open' && mergeErrors.has(record.id)}
+                  <p class="conflict-error" role="alert">{mergeErrors.get(record.id)}</p>
+                {/if}
               </li>
             {/each}
           </ul>
@@ -346,6 +424,7 @@
 
   .conflict-row {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     justify-content: space-between;
     gap: 0.75rem;
@@ -407,6 +486,13 @@
 
   .conflict-action:hover {
     background: hsl(var(--accent));
+  }
+
+  .conflict-error {
+    flex-basis: 100%;
+    margin: 0;
+    font-size: 0.8rem;
+    color: hsl(var(--destructive));
   }
 
   .conflict-rename-form {
