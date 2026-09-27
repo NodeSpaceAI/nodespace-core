@@ -2768,10 +2768,10 @@ impl SqliteStore {
     /// Re-spread a parent's `has_child` order keys to `1.0, 2.0, …, n` in their
     /// current `(order, id)` sequence, leaving every other edge property intact.
     ///
-    /// One statement, so it is atomic on its own and can run on whatever
-    /// connection the caller already holds: `move_node`'s writer connection
-    /// (the guard is not re-entrant) or an `_in_tx` caller's transaction. Either
-    /// way the caller's re-read or index arithmetic sees these new keys. The
+    /// Callers run it on their transaction — `move_node`'s own or an `_in_tx`
+    /// caller's — so the re-spread commits or rolls back with the edge write
+    /// that follows, and the caller's re-read or index arithmetic sees these
+    /// new keys. The
     /// `(order, id)` sequence is the one callers must read siblings in for
     /// index `i` to map to key `i + 1`.
     ///
@@ -2923,10 +2923,21 @@ impl SqliteStore {
             self.assert_may_gain_parent(&[node_id.as_str()]).await?;
         }
 
+        // Everything below — sibling read, any re-spread, re-read, and the edge
+        // write — is one transaction. A re-spread is only announced (by the
+        // service, from `ChildPlacement::respread`) once this returns `Ok`, so
+        // it must not outlive a failed edge write: otherwise the store holds
+        // rewritten sibling keys no event ever reports. Same shape as the
+        // create path, whose re-spread runs on the caller's `tx`.
+        let tx = db
+            .transaction()
+            .await
+            .context("Failed to begin move_node transaction")?;
+
         let mut respread = Vec::new();
         let new_order = if let Some(ref parent_id) = new_parent_id {
             // Get ordered siblings excluding the moving node
-            let mut rows = db.query(
+            let mut rows = tx.query(
                 "SELECT out_node, json_extract(properties, '$.order') as ord FROM relationship WHERE in_node = ?1 AND relationship_type = 'has_child' AND out_node != ?2 ORDER BY json_extract(properties, '$.order') ASC",
                 libsql::params![parent_id.clone(), node_id.clone()],
             ).await.context("Failed to get sibling relationships")?;
@@ -2947,13 +2958,13 @@ impl SqliteStore {
                         if (next - prev_order) < FractionalOrderCalculator::MIN_GAP {
                             // The moving node's own key is overwritten below, so
                             // only its siblings' rewritten keys are reported.
-                            respread = Self::respread_children(&db, parent_id)
+                            respread = Self::respread_children(&tx, parent_id)
                                 .await?
                                 .into_iter()
                                 .filter(|(id, _)| id != &node_id)
                                 .collect();
                             // Re-query after rebalancing
-                            let mut rows2 = db.query(
+                            let mut rows2 = tx.query(
                                 "SELECT out_node, json_extract(properties, '$.order') as ord FROM relationship WHERE in_node = ?1 AND relationship_type = 'has_child' AND out_node != ?2 ORDER BY json_extract(properties, '$.order') ASC",
                                 libsql::params![parent_id.clone(), node_id.clone()],
                             ).await.context("Failed to get siblings after rebalancing")?;
@@ -2995,23 +3006,17 @@ impl SqliteStore {
 
         if let Some(ref parent_id) = new_parent_id {
             if is_same_parent_reorder {
-                db.execute(
+                tx.execute(
                     "UPDATE relationship SET properties = json_set(properties, '$.order', ?1), version = version + 1, modified_at = ?2 WHERE in_node = ?3 AND out_node = ?4 AND relationship_type = 'has_child'",
                     libsql::params![new_order, now, parent_id.clone(), node_id.clone()],
                 ).await.context("Failed to update relationship order")?;
             } else {
                 // Cross-parent move: delete the old has_child edge, create the new
-                // one. These MUST be one transaction — if the INSERT fails
-                // (constraint / IO / crash / cancel) after the DELETE committed, the
-                // node is left with NO has_child edge: a silently-orphaned root.
-                // Wrapping in a tx makes it all-or-nothing, matching the atomicity
-                // of `move_children_to_parent_in_tx` / `delete_subtree_atomic`.
+                // one. Both run in the move's transaction — if the INSERT fails
+                // (constraint / IO / crash / cancel) after the DELETE, the node
+                // must not be left with NO has_child edge: a silently-orphaned root.
                 let rel_id = uuid::Uuid::new_v4().to_string();
                 let props = serde_json::json!({"order": new_order}).to_string();
-                let tx = db
-                    .transaction()
-                    .await
-                    .context("Failed to begin move_node reparent transaction")?;
                 tx.execute(
                     "DELETE FROM relationship WHERE out_node = ?1 AND relationship_type = 'has_child'",
                     libsql::params![node_id.clone()],
@@ -3020,19 +3025,20 @@ impl SqliteStore {
                     "INSERT INTO relationship (id, in_node, out_node, relationship_type, reverse_relationship_type, properties, version, created_at, modified_at) VALUES (?1, ?2, ?3, 'has_child', 'child_of', ?4, 1, ?5, ?6)",
                     libsql::params![rel_id, parent_id.clone(), node_id.clone(), props, now.clone(), now],
                 ).await.context("Failed to create new parent relationship")?;
-                tx.commit()
-                    .await
-                    .context("Failed to commit move_node reparent transaction")?;
             }
         } else {
             // Make root: delete parent relationship
-            db.execute(
+            tx.execute(
                 "DELETE FROM relationship WHERE out_node = ?1 AND relationship_type = 'has_child'",
                 libsql::params![node_id.clone()],
             )
             .await
             .context("Failed to delete parent relationship")?;
         }
+
+        tx.commit()
+            .await
+            .context("Failed to commit move_node transaction")?;
 
         Ok(ChildPlacement {
             order: new_order,

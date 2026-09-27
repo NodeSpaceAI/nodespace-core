@@ -314,3 +314,126 @@ async fn moves_that_respread_leave_an_event_only_client_in_store_order() {
         mirror.assert_matches_store(&f).await;
     }
 }
+
+/// Every `has_child` key under the fixture's parent, by child id.
+async fn sibling_keys(f: &Fixture) -> HashMap<String, f64> {
+    let mut rows = f
+        .conn
+        .query(
+            "SELECT out_node, json_extract(properties, '$.order') FROM relationship WHERE in_node = ?1 AND relationship_type = 'has_child'",
+            libsql::params![f.parent.clone()],
+        )
+        .await
+        .unwrap();
+    let mut keys = HashMap::new();
+    while let Some(row) = rows.next().await.unwrap() {
+        keys.insert(row.get::<String>(0).unwrap(), row.get::<f64>(1).unwrap());
+    }
+    keys
+}
+
+/// Move `mover` after the anchor with the anchor → next-sibling gap closed
+/// below `MIN_GAP`, so the move re-spreads the parent's children before its
+/// edge write — which the caller's `fail_move_edge` trigger makes fail. The
+/// re-spread must roll back with it: every sibling keeps its key, and an
+/// event-only client still matches the store.
+async fn assert_failed_move_leaves_siblings_unchanged(f: &Fixture, mover: &str) {
+    let next = f.service.get_children(&f.parent).await.unwrap()[1]
+        .id
+        .clone();
+    f.conn
+        .execute(
+            "UPDATE relationship SET properties = json_set(properties, '$.order', \
+               (SELECT json_extract(properties, '$.order') + 0.00001 FROM relationship \
+                WHERE out_node = ?1 AND relationship_type = 'has_child')) \
+             WHERE out_node = ?2 AND relationship_type = 'has_child'",
+            libsql::params![f.anchor.clone(), next],
+        )
+        .await
+        .unwrap();
+
+    let before = sibling_keys(f).await;
+    let mut mirror = EventMirror::new(f).await;
+    let version = f.service.get_node(mover).await.unwrap().unwrap().version;
+    let result = f
+        .service
+        .move_node(
+            mover,
+            version,
+            Some(&f.parent),
+            InsertPosition::After(&f.anchor),
+        )
+        .await;
+    assert!(
+        result.is_err(),
+        "the injected edge-write failure must fail the move"
+    );
+    assert_eq!(
+        sibling_keys(f).await,
+        before,
+        "a failed move left rewritten sibling keys"
+    );
+    mirror.assert_matches_store(f).await;
+}
+
+#[tokio::test]
+async fn failed_same_parent_move_rolls_back_its_respread() {
+    let f = fixture().await;
+    let mover = f
+        .service
+        .create_node_with_parent(params("mover", Some(&f.parent), InsertPositionOwned::End))
+        .await
+        .unwrap();
+    // The re-spread rewrites `order` only; the reorder's own UPDATE also bumps
+    // the edge's version, so this fails that UPDATE and nothing before it.
+    f.conn
+        .execute(
+            &format!(
+                "CREATE TRIGGER fail_move_edge BEFORE UPDATE ON relationship \
+                 WHEN NEW.out_node = '{mover}' AND NEW.version <> OLD.version \
+                 BEGIN SELECT RAISE(ABORT, 'injected move failure'); END"
+            ),
+            (),
+        )
+        .await
+        .unwrap();
+    assert_failed_move_leaves_siblings_unchanged(&f, &mover).await;
+}
+
+#[tokio::test]
+async fn failed_cross_parent_move_rolls_back_its_respread() {
+    let f = fixture().await;
+    let other = f
+        .service
+        .create_node_with_parent(params("other", None, InsertPositionOwned::End))
+        .await
+        .unwrap();
+    let mover = f
+        .service
+        .create_node_with_parent(params("mover", Some(&other), InsertPositionOwned::End))
+        .await
+        .unwrap();
+    f.conn
+        .execute(
+            &format!(
+                "CREATE TRIGGER fail_move_edge BEFORE INSERT ON relationship \
+                 WHEN NEW.out_node = '{mover}' \
+                 BEGIN SELECT RAISE(ABORT, 'injected move failure'); END"
+            ),
+            (),
+        )
+        .await
+        .unwrap();
+    assert_failed_move_leaves_siblings_unchanged(&f, &mover).await;
+
+    // The old edge's DELETE rolled back with the rest: still under `other`.
+    let children: Vec<String> = f
+        .service
+        .get_children(&other)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|n| n.id)
+        .collect();
+    assert_eq!(children, vec![mover]);
+}
