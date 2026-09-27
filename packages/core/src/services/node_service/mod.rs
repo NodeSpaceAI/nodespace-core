@@ -1378,8 +1378,17 @@ impl NodeService {
         // edge. Must run AFTER the local person seed — the owner edge attaches to it.
         service.seed_database_settings_if_needed().await?;
 
+        // ADR-061 §1: seed the personal AI-chat collection and its admin
+        // membership edge. Must run AFTER the local person seed (the edge
+        // attaches to it) and BEFORE core plays (the ai-chat privacy play's
+        // invariant rule binds to the `personal_collection_id` default this
+        // step stamps onto the `ai-chat` schema).
+        service.seed_personal_ai_chat_collection_if_needed().await?;
+
         // ADR-079: Plays that ship with the product. After the core schemas,
-        // which a play node's own type and its rules' `task` trigger depend on.
+        // which a play node's own type and its rules' `task` trigger depend on,
+        // and after the personal AI-chat collection (ADR-061 §1), which the
+        // ai-chat privacy play's invariant rule references.
         crate::playbook::core_plays::seed_core_plays_if_needed(&service).await?;
 
         Ok(service)
@@ -1498,6 +1507,240 @@ impl NodeService {
             owner = %local_person_id,
             "🌱 Seeded DatabaseSettingsNode singleton with owner has_role edge (ADR-037)"
         );
+        Ok(())
+    }
+
+    /// ADR-061 §1: seed the personal AI-chat collection — a `collection`
+    /// node with `restrictedToMembers = true` and exactly one `member_of`
+    /// edge, at `admin`, from the local PersonNode. Every `ai-chat` node's
+    /// transactional membership write (the seeded invariant Play in
+    /// `playbook::core_plays`) targets this collection, so it must exist
+    /// before any chat is created.
+    ///
+    /// The node id is **random** (`Node::new`'s default `Uuid::new_v4`), not
+    /// derived from the username or any other symbolic value — ADR-061 §1 is
+    /// explicit that a guessable or name-derived id would collide across
+    /// installs that later sync into one tenant. Identity comes from the
+    /// person `member_of` admin edge, not from the id, so a fixed anchor like
+    /// [`DATABASE_SETTINGS_NODE_ID`] is not available here; idempotency is
+    /// instead judged by walking the local PersonNode's `member_of` out-edges
+    /// for one already landing on a `restrictedToMembers` collection at
+    /// `admin` — the same edge-existence posture
+    /// `seed_database_settings_if_needed` uses, for the same reason: a partial
+    /// prior failure (collection created, edge write failed) must be
+    /// detected and repaired rather than read back as "already seeded".
+    ///
+    /// Also stamps the freshly minted collection id onto the `ai-chat`
+    /// schema's `personal_collection_id` field default, so every `ai-chat`
+    /// node created afterward picks it up via ordinary schema-default
+    /// stamping (`apply_schema_defaults_with_fields`) and the seeded
+    /// invariant rule can bind to it as `{trigger.node.personal_collection_id}`
+    /// — a same-graph-scope binding, not a literal node id, which invariant
+    /// eligibility validation would otherwise reject
+    /// (`InvariantOutOfScopeTarget`). Schema fields are read live from the
+    /// store on every write (`resolve_field_owners` → `get_schema_node`), so
+    /// this patch takes effect immediately with no separate cache to
+    /// invalidate. That stamped default is also this function's own repair
+    /// anchor (see below) — once seeded once, it is the one stable pointer
+    /// to a collection whose random id nothing else can reconstruct.
+    ///
+    /// Must run after the local person seed (the edge attaches to it) and
+    /// before core Plays are seeded (the ai-chat privacy Play's rule depends
+    /// on the schema default this stamps).
+    ///
+    /// Not transactional across its three writes (collection node, admin
+    /// edge, schema default) — same posture as `seed_database_settings_if_needed`,
+    /// repair-on-next-open rather than atomicity. One narrow case neither
+    /// repair path covers: a crash between creating the collection node and
+    /// writing either the admin edge or the schema default leaves an orphan
+    /// collection with no admin edge AND no schema-default pointer back to
+    /// it, so the repair path (which looks for the collection via the schema
+    /// default) cannot find it and a second collection is minted on next
+    /// open. Acceptable: the orphan is inert (no admin, never targeted by
+    /// the invariant rule) rather than a privacy exposure.
+    async fn seed_personal_ai_chat_collection_if_needed(&self) -> Result<(), NodeServiceError> {
+        let local_person_id = self
+            .query_nodes_by_type("person", None)
+            .await?
+            .into_iter()
+            .next()
+            .ok_or_else(|| {
+                NodeServiceError::InitializationError(
+                    "cannot seed personal AI-chat collection: no local PersonNode".to_string(),
+                )
+            })?
+            .id;
+
+        let existing_admin_collection = self
+            .get_related_nodes_with_edges(&local_person_id, "member_of", "out")
+            .await?
+            .into_iter()
+            .find(|(node, edge)| {
+                node.node_type == "collection"
+                    && node
+                        .properties
+                        .get("collection")
+                        .and_then(|c| c.get("restrictedToMembers"))
+                        .and_then(|v| v.as_bool())
+                        == Some(true)
+                    && edge.get("permission").and_then(|v| v.as_str()) == Some("admin")
+            })
+            .map(|(node, _edge)| node.id);
+
+        // A missing admin edge does not necessarily mean nothing was ever
+        // seeded — the edge write may simply have failed after the
+        // collection node itself was already created and the schema default
+        // already stamped (the same partial-failure shape
+        // `seed_database_settings_if_needed` guards against for its owner
+        // edge). The stamped `ai-chat` schema default is the one stable
+        // pointer back to that collection's random id in that case, so it is
+        // checked before falling back to minting a brand new collection —
+        // otherwise a repair would silently orphan the original and leave
+        // two personal collections behind.
+        let collection_id = match existing_admin_collection {
+            Some(id) => id,
+            None => {
+                let schema_default = self
+                    .get_schema_node("ai-chat")
+                    .await?
+                    .and_then(|schema| schema.get_field("personal_collection_id").cloned())
+                    .and_then(|field| field.default)
+                    .and_then(|v| v.as_str().map(|s| s.to_string()));
+
+                let orphaned_collection = match schema_default {
+                    Some(id) => self
+                        .get_node(&id)
+                        .await?
+                        .filter(|n| n.node_type == "collection"),
+                    None => None,
+                };
+
+                match orphaned_collection {
+                    Some(node) => {
+                        self.create_relationship(
+                            &local_person_id,
+                            "member_of",
+                            &node.id,
+                            serde_json::json!({"permission": "admin"}),
+                        )
+                        .await?;
+
+                        tracing::info!(
+                            node_id = %node.id,
+                            admin = %local_person_id,
+                            "🔧 Repaired missing admin member_of edge on personal AI-chat collection (ADR-061 §1)"
+                        );
+
+                        node.id
+                    }
+                    None => {
+                        let collection = Node::new(
+                            "collection".to_string(),
+                            "AI Chats".to_string(),
+                            serde_json::json!({
+                                "collection": { "restrictedToMembers": true }
+                            }),
+                        );
+                        let collection_id = self.create_node(collection).await?;
+
+                        self.create_relationship(
+                            &local_person_id,
+                            "member_of",
+                            &collection_id,
+                            serde_json::json!({"permission": "admin"}),
+                        )
+                        .await?;
+
+                        tracing::info!(
+                            node_id = %collection_id,
+                            admin = %local_person_id,
+                            "🌱 Seeded personal AI-chat collection with admin member_of edge (ADR-061 §1)"
+                        );
+
+                        collection_id
+                    }
+                }
+            }
+        };
+
+        self.set_ai_chat_personal_collection_default(&collection_id)
+            .await?;
+
+        Ok(())
+    }
+
+    /// Patch the `ai-chat` schema's `personal_collection_id` field default to
+    /// `collection_id`, creating the field on first run.
+    ///
+    /// This is a seed-time internal write, not a user-facing schema edit —
+    /// deliberately bypasses `handle_update_schema` (built for user-driven
+    /// edits under ADR-063 namespace rules, with rename/remove machinery that
+    /// has no bearing here) and writes the schema node directly, the same way
+    /// `seed_core_schemas_if_needed` does for the schemas themselves.
+    async fn set_ai_chat_personal_collection_default(
+        &self,
+        collection_id: &str,
+    ) -> Result<(), NodeServiceError> {
+        let mut schema = self.get_schema_node("ai-chat").await?.ok_or_else(|| {
+            NodeServiceError::InitializationError(
+                "cannot stamp personal_collection_id default: 'ai-chat' schema not seeded"
+                    .to_string(),
+            )
+        })?;
+
+        let default_value = serde_json::json!(collection_id);
+        match schema
+            .fields
+            .iter_mut()
+            .find(|f| f.name == "personal_collection_id")
+        {
+            Some(field) => {
+                if field.default.as_ref() == Some(&default_value) {
+                    return Ok(());
+                }
+                field.default = Some(default_value);
+            }
+            None => {
+                schema.fields.push(crate::models::SchemaField {
+                    name: "personal_collection_id".to_string(),
+                    friendly_name: "Personal collection".to_string(),
+                    field_type: "text".to_string(),
+                    local_only: false,
+                    protection: crate::models::schema::SchemaProtectionLevel::Core,
+                    core_values: None,
+                    user_values: None,
+                    indexed: false,
+                    required: Some(false),
+                    extensible: None,
+                    default: Some(default_value),
+                    description: Some(
+                        "Id of this install's private AI-chat collection (ADR-061 §1); \
+                         the seeded privacy Play's invariant rule targets this to give \
+                         every ai-chat node a member_of edge into it at creation."
+                            .to_string(),
+                    ),
+                    item_type: None,
+                    fields: None,
+                    item_fields: None,
+                    unique: None,
+                    unique_case_insensitive: None,
+                });
+            }
+        }
+
+        let node = schema.into_node();
+        self.store
+            .update_node(
+                &node.id,
+                NodeUpdate {
+                    properties: Some(node.properties),
+                    ..Default::default()
+                },
+                None,
+            )
+            .await
+            .map_err(NodeServiceError::from_store)?;
+
         Ok(())
     }
 
@@ -7593,6 +7836,344 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(settings.len(), 1);
+    }
+
+    // --- Personal AI-chat collection seeding tests (ADR-061 §1) ---
+
+    #[tokio::test]
+    async fn test_seed_personal_ai_chat_collection() {
+        let (service, _temp) = create_test_service().await;
+
+        let collections = service
+            .query_nodes_by_type("collection", None)
+            .await
+            .unwrap();
+        assert_eq!(
+            collections.len(),
+            1,
+            "a fresh install must seed exactly one personal AI-chat collection"
+        );
+        let collection = &collections[0];
+        assert_eq!(
+            collection.properties["collection"]["restrictedToMembers"],
+            true
+        );
+
+        let people = service.query_nodes_by_type("person", None).await.unwrap();
+        assert_eq!(people.len(), 1);
+        let person_id = people[0].id.clone();
+
+        let targets = service
+            .get_related_nodes(&person_id, "member_of", "out")
+            .await
+            .unwrap();
+        assert_eq!(
+            targets.len(),
+            1,
+            "exactly one member_of edge to the personal collection must be seeded"
+        );
+        assert_eq!(targets[0].id, collection.id);
+
+        let edge = service
+            .store()
+            .get_relationship_record(&person_id, &collection.id, "member_of")
+            .await
+            .unwrap()
+            .expect("admin member_of edge exists");
+        assert_eq!(edge.properties["permission"], "admin");
+    }
+
+    /// The collection's id is random per install (ADR-061 §1) — this pins
+    /// that it is NOT the deterministic, name-derived id
+    /// `CollectionService::create_collection` would produce for the same
+    /// content, which would be guessable and could collide across installs
+    /// syncing into one tenant.
+    #[tokio::test]
+    async fn test_personal_ai_chat_collection_id_is_not_deterministic() {
+        let (service, _temp) = create_test_service().await;
+
+        let collections = service
+            .query_nodes_by_type("collection", None)
+            .await
+            .unwrap();
+        let collection = &collections[0];
+
+        let deterministic_id =
+            crate::services::collection_service::deterministic_collection_id(&collection.content);
+        assert_ne!(
+            collection.id, deterministic_id,
+            "the personal collection id must be random, not name-derived"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_reopening_database_does_not_duplicate_personal_collection() {
+        let (service, _temp) = create_test_service().await;
+
+        let first_run = service
+            .query_nodes_by_type("collection", None)
+            .await
+            .unwrap();
+        assert_eq!(first_run.len(), 1);
+        let collection_id = first_run[0].id.clone();
+
+        // Re-run the seeding step directly, as a fresh app open would.
+        service
+            .seed_personal_ai_chat_collection_if_needed()
+            .await
+            .unwrap();
+
+        let second_run = service
+            .query_nodes_by_type("collection", None)
+            .await
+            .unwrap();
+        assert_eq!(
+            second_run.len(),
+            1,
+            "re-seeding must not create a second personal collection"
+        );
+        assert_eq!(second_run[0].id, collection_id);
+
+        let person_id = service
+            .query_nodes_by_type("person", None)
+            .await
+            .unwrap()
+            .remove(0)
+            .id;
+        let targets = service
+            .get_related_nodes(&person_id, "member_of", "out")
+            .await
+            .unwrap();
+        assert_eq!(
+            targets.len(),
+            1,
+            "re-seeding must not duplicate the admin member_of edge"
+        );
+    }
+
+    /// ADR-069 §1a/S5-style regression: mirrors
+    /// `test_seed_database_settings_repairs_missing_owner_edge` — the
+    /// idempotency guard must check the admin EDGE's existence, not merely
+    /// the collection node's, so a partial prior failure (collection
+    /// created, edge write failed) is detected and repaired rather than
+    /// permanently read back as "already seeded".
+    #[tokio::test]
+    async fn test_seed_personal_ai_chat_collection_repairs_missing_admin_edge() {
+        let (service, _temp) = create_test_service().await;
+
+        let collection_id = service
+            .query_nodes_by_type("collection", None)
+            .await
+            .unwrap()
+            .remove(0)
+            .id;
+        let person_id = service
+            .query_nodes_by_type("person", None)
+            .await
+            .unwrap()
+            .remove(0)
+            .id;
+
+        service
+            .store()
+            .delete_generic_relationship(&person_id, &collection_id, "member_of")
+            .await
+            .unwrap();
+        assert!(
+            service
+                .store()
+                .get_relationship_record(&person_id, &collection_id, "member_of")
+                .await
+                .unwrap()
+                .is_none(),
+            "precondition: admin edge must be gone before the repair runs"
+        );
+
+        service
+            .seed_personal_ai_chat_collection_if_needed()
+            .await
+            .unwrap();
+
+        let repaired_edge = service
+            .store()
+            .get_relationship_record(&person_id, &collection_id, "member_of")
+            .await
+            .unwrap();
+        assert!(
+            repaired_edge.is_some(),
+            "the missing admin edge must be repaired, not silently left missing \
+             just because the collection node already existed"
+        );
+
+        let collections = service
+            .query_nodes_by_type("collection", None)
+            .await
+            .unwrap();
+        assert_eq!(
+            collections.len(),
+            1,
+            "the repair must not have duplicated the collection via a second create"
+        );
+    }
+
+    /// The seeded `ai-chat` schema field default must carry the actual
+    /// collection id, and — being an ordinary schema default — must be
+    /// stamped onto a freshly created `ai-chat` node exactly the way any
+    /// other default field is.
+    #[tokio::test]
+    async fn test_ai_chat_schema_default_points_at_personal_collection() {
+        let (service, _temp) = create_test_service().await;
+
+        let collection_id = service
+            .query_nodes_by_type("collection", None)
+            .await
+            .unwrap()
+            .remove(0)
+            .id;
+
+        let schema = service.get_schema_node("ai-chat").await.unwrap().unwrap();
+        let field = schema
+            .get_field("personal_collection_id")
+            .expect("ai-chat schema must declare personal_collection_id");
+        assert_eq!(field.default, Some(serde_json::json!(collection_id)));
+
+        let chat = service
+            .create_node(Node::new(
+                "ai-chat".to_string(),
+                "Untitled".to_string(),
+                serde_json::json!({}),
+            ))
+            .await
+            .unwrap();
+        let chat_node = service.get_node(&chat).await.unwrap().unwrap();
+        assert_eq!(
+            chat_node.properties["ai-chat"]["personal_collection_id"],
+            collection_id
+        );
+    }
+
+    /// Activate the ai-chat privacy Play (already seeded into the database
+    /// by `seed_core_plays_if_needed`, part of `create_test_service`) against
+    /// a lifecycle manager, the same way `create_node`'s invariant dispatch
+    /// reaches it in the real app. No running engine loop is needed —
+    /// invariant dispatch is inline in `create_node`, not routed through the
+    /// engine's async event subscriber — but a lifecycle manager must exist
+    /// and hold the play's parsed rule, or `dispatch_invariant_rules_in_tx`
+    /// no-ops by design (see that function's doc: "No invariant rules can
+    /// exist without an engine to have activated them" — exactly why
+    /// `create_test_service` alone, with no lifecycle wired up, is not
+    /// enough for these two tests).
+    async fn activate_ai_chat_privacy_play(service: &NodeService) {
+        let engine = crate::playbook::PlaybookEngine::new(Arc::new(service.clone()));
+        service.set_playbook_lifecycle(engine.lifecycle().clone());
+        let play_node = service
+            .get_node(crate::playbook::core_plays::AI_CHAT_PRIVACY_PLAY_ID)
+            .await
+            .unwrap()
+            .expect("ai-chat privacy play must already be seeded");
+        let lifecycle = engine.lifecycle();
+        let mut lm = lifecycle.write().unwrap();
+        lm.activate_play(&play_node)
+            .expect("seeded play must parse and activate");
+    }
+
+    /// End-to-end: creating a real `ai-chat` node through the ordinary
+    /// `create_node` path must actually produce a `member_of` edge into the
+    /// personal collection — not just a `personal_collection_id` property
+    /// value (covered separately above). This is the seeded invariant Play's
+    /// entire reason to exist (ADR-061 §1/§3): `create_node` dispatches
+    /// invariant rules synchronously, inside the same transaction, via
+    /// `create_node_in_tx`, once a lifecycle manager holding the play is
+    /// wired up — which is exactly what makes it fail-closed rather than
+    /// fail-open.
+    #[tokio::test]
+    async fn test_creating_an_ai_chat_node_joins_the_personal_collection() {
+        let (service, _temp) = create_test_service().await;
+        activate_ai_chat_privacy_play(&service).await;
+
+        let collection_id = service
+            .query_nodes_by_type("collection", None)
+            .await
+            .unwrap()
+            .remove(0)
+            .id;
+
+        let chat_id = service
+            .create_node(Node::new(
+                "ai-chat".to_string(),
+                "Untitled".to_string(),
+                serde_json::json!({}),
+            ))
+            .await
+            .unwrap();
+
+        let targets = service
+            .get_related_nodes(&chat_id, "member_of", "out")
+            .await
+            .unwrap();
+        assert_eq!(
+            targets.len(),
+            1,
+            "the new ai-chat node must have exactly one member_of edge"
+        );
+        assert_eq!(
+            targets[0].id, collection_id,
+            "the member_of edge must target the personal AI-chat collection"
+        );
+    }
+
+    /// Fail-closed (ADR-060 §1): if the invariant rule's action cannot
+    /// succeed — here, because `personal_collection_id` points at a
+    /// collection id that does not exist, simulating an unreachable
+    /// collection — the whole chat creation must fail, not silently create
+    /// an unrestricted chat. Simulated by corrupting the schema default to
+    /// an id with no backing node, which the schema-default stamping path
+    /// will still apply to the new node exactly as it would a real id.
+    #[tokio::test]
+    async fn test_ai_chat_creation_fails_closed_when_the_collection_is_unreachable() {
+        let (service, _temp) = create_test_service().await;
+        activate_ai_chat_privacy_play(&service).await;
+
+        let mut schema = service.get_schema_node("ai-chat").await.unwrap().unwrap();
+        schema
+            .get_field_mut("personal_collection_id")
+            .unwrap()
+            .default = Some(serde_json::json!("does-not-exist"));
+        let node = schema.into_node();
+        service
+            .store()
+            .update_node(
+                &node.id,
+                NodeUpdate {
+                    properties: Some(node.properties),
+                    ..Default::default()
+                },
+                None,
+            )
+            .await
+            .unwrap();
+
+        let result = service
+            .create_node(Node::new(
+                "ai-chat".to_string(),
+                "Untitled".to_string(),
+                serde_json::json!({}),
+            ))
+            .await;
+
+        assert!(
+            result.is_err(),
+            "chat creation must fail closed when the invariant rule's \
+             add_relationship action cannot succeed, not silently create an \
+             unrestricted chat"
+        );
+
+        let chats = service.query_nodes_by_type("ai-chat", None).await.unwrap();
+        assert!(
+            chats.is_empty(),
+            "no ai-chat node may exist after a failed invariant rule — the \
+             whole transaction must have rolled back"
+        );
     }
 
     // --- get_local_person / set_local_person_identity (ADR-037) ---

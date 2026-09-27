@@ -1312,11 +1312,12 @@ mod collection_service_tests {
         // Get all collections with member counts
         let collections_with_counts = collection_service.get_all_collections_with_counts().await?;
 
-        // Should have 3 collections
+        // 4, not 3: every fresh install also seeds one "AI Chats" personal
+        // collection (ADR-061 §1), alongside collection-a/collection-b/empty-collection.
         assert_eq!(
             collections_with_counts.len(),
-            3,
-            "Should have 3 collections"
+            4,
+            "Should have 3 test collections plus the seeded AI Chats collection"
         );
 
         // Verify member counts
@@ -1373,7 +1374,13 @@ mod collection_service_tests {
 
         let collections = collection_service.get_all_collections_with_counts().await?;
 
-        assert_eq!(collections.len(), 3, "should have 3 collections total");
+        // 4, not 3: every fresh install also seeds one "AI Chats" personal
+        // collection (ADR-061 §1), alongside the test's own three.
+        assert_eq!(
+            collections.len(),
+            4,
+            "should have 3 test collections plus the seeded AI Chats collection"
+        );
 
         let find = |name: &str| -> Option<Vec<String>> {
             collections
@@ -1437,7 +1444,13 @@ mod collection_service_tests {
 
         let collections = collection_service.get_all_collections_with_counts().await?;
 
-        assert_eq!(collections.len(), 3, "should have 3 collections total");
+        // 4, not 3: every fresh install also seeds one "AI Chats" personal
+        // collection (ADR-061 §1), alongside the test's own three.
+        assert_eq!(
+            collections.len(),
+            4,
+            "should have 3 test collections plus the seeded AI Chats collection"
+        );
 
         let find_parents = |name: &str| -> Option<Vec<String>> {
             collections
