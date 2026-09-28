@@ -1093,8 +1093,9 @@ fn words_match_modulo_plural(a: &str, b: &str) -> bool {
 ///
 /// Structural backstop for the restraint policy: nothing in the tool surface
 /// stops the model from calling `create_schema` again within one skill
-/// invocation (Schema Creation's `max_iterations: 3` permits it, and
-/// `stage2_tools` does not enforce call counts), and a model that invents a
+/// invocation (no per-skill cap applies — only the global `MAX_TOOL_ITERATIONS`
+/// round cap, and one round may carry several calls — and `stage2_tools` does
+/// not enforce call counts), and a model that invents a
 /// related type the user never asked for leaves the graph holding a type
 /// nobody wanted.
 ///
@@ -2333,8 +2334,6 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
             ));
         }
 
-        let effective_max_iterations = MAX_TOOL_ITERATIONS;
-
         tracing::info!(
             tools_count = tools.len(),
             tool_names = %tools.iter().map(|t| t.name.as_str()).collect::<Vec<_>>().join(", "),
@@ -2389,8 +2388,10 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
         // of the extra turn from everything that reads this figure.
         let mut total_usage = routed.usage;
 
-        // ReAct loop: iterate up to effective_max_iterations (skill-specific or global fallback)
-        for iteration in 0..effective_max_iterations {
+        // ReAct loop: iterate up to the global MAX_TOOL_ITERATIONS cap. A skill
+        // node's `max_iterations` property is for external (ACP) agents; the
+        // local agent ignores it.
+        for iteration in 0..MAX_TOOL_ITERATIONS {
             if cancel.is_cancelled() {
                 return Err(InferenceError::Engine("cancelled".into()));
             }
@@ -2651,7 +2652,7 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                     && already_clarified
                     && !tools.is_empty()
                     && !response_text.trim().is_empty()
-                    && iteration + 1 < effective_max_iterations
+                    && iteration + 1 < MAX_TOOL_ITERATIONS
                 {
                     clarify_nudged = true;
                     let (preview, preview_truncated) = char_preview(&response_text, 120);
@@ -3234,9 +3235,10 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                                 // the prose rule already says "only the types
                                 // asked for", but nothing stops a second
                                 // create_schema call within the same skill
-                                // invocation from actually executing — Schema
-                                // Creation's max_iterations permits up to three
-                                // create_schema calls per turn. Refuse one for a
+                                // invocation from actually executing — only the
+                                // global MAX_TOOL_ITERATIONS round cap applies, and
+                                // one round may carry several create_schema
+                                // calls. Refuse one for a
                                 // type the user never named, rather than letting
                                 // the model invent a related type as a side
                                 // effect. A type the user DID name is allowed
@@ -3455,7 +3457,7 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
 
             // If this was the last allowed iteration, do one final inference
             // WITHOUT tools so the model must produce a text response.
-            if iteration == effective_max_iterations - 1 {
+            if iteration == MAX_TOOL_ITERATIONS - 1 {
                 tracing::info!(
                     "Agent loop: max iterations reached, running final inference without tools"
                 );
@@ -3575,7 +3577,7 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
 
         // Reached via either `break` above: the duplicate-call guard, or the
         // consecutive-parse-failure guard. The max-iteration path
-        // (iteration == effective_max_iterations - 1) always returns early and
+        // (iteration == MAX_TOOL_ITERATIONS - 1) always returns early and
         // never falls through here. Run one final text-only inference so the
         // session always produces a response from the tool results already in
         // history.
@@ -6775,9 +6777,9 @@ mod tests {
 
         let agent_loop = LocalAgentLoop::new(engine, Arc::new(executor));
         let mut session = new_session();
-        // Loosen the iteration cap since this turn legitimately needs 4 tool
-        // rounds (2 searches + 2 invocations) plus a text round. MAX_TOOL_ITERATIONS
-        // is 5, so we're at the boundary on purpose.
+        // This turn legitimately needs 4 tool rounds (2 searches + 2
+        // invocations) plus a text round. MAX_TOOL_ITERATIONS is 5, so we're at
+        // the boundary on purpose.
         let result = agent_loop
             .run_turn(
                 &mut session,
