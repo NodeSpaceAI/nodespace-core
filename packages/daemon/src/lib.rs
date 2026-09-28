@@ -160,10 +160,10 @@ pub use nodespace_proto::{
 pub use db_routing::{DbManagerLayer, DATABASE_ID_HEADER};
 pub use router::{build_base_router, BaseServices};
 pub use services::{
-    build_database_services, build_shared_services, AgentSessionHandler, DatabaseManager,
-    DatabaseServiceImpl, DatabaseServices, EmbeddingsServiceImpl, ImportServiceImpl,
-    LocalAgentServiceImpl, McpConfig, NodeServiceImpl, SettingsServiceImpl, SharedContext,
-    SharedLocalAgent, SharedServices, SubtreeGateFactory,
+    build_database_services, build_shared_services, shared_model_load_in_flight,
+    AgentSessionHandler, DatabaseManager, DatabaseServiceImpl, DatabaseServices,
+    EmbeddingsServiceImpl, ImportServiceImpl, LocalAgentServiceImpl, McpConfig, NodeServiceImpl,
+    SettingsServiceImpl, SharedContext, SharedLocalAgent, SharedServices, SubtreeGateFactory,
 };
 // The `nodespace` CLI's `mcp` subcommand (a separate process from the
 // daemon) reads/writes these directly against `~/.nodespace/daemon.toml` --

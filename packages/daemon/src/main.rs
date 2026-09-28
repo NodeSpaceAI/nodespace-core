@@ -45,8 +45,8 @@ use nodespace_agent::local_agent::otlp_tracer;
 use nodespace_daemon::tray::layer::TrayMetricsLayer;
 use nodespace_daemon::{
     build_base_router, build_shared_services, create_dir_owner_only, incompatible_database,
-    resolve_db_path, tray, BaseServices, DatabaseManager, DatabaseServiceImpl, DatabaseServices,
-    DbManagerLayer, SharedContext,
+    resolve_db_path, shared_model_load_in_flight, tray, BaseServices, DatabaseManager,
+    DatabaseServiceImpl, DatabaseServices, DbManagerLayer, SharedContext,
 };
 use nodespace_nlp_engine::EmbeddingService;
 use tokio::sync::watch;
@@ -480,6 +480,7 @@ fn main() -> Result<()> {
                 "nodespaced (headless) failed to start"
             );
         }
+        exit_if_model_load_in_flight(&result);
         return result;
     }
 
@@ -513,16 +514,46 @@ fn main() -> Result<()> {
         std::process::exit(0);
     });
 
-    incompatible_database::stop_cleanly_on_incompatible_database(
+    let result = incompatible_database::stop_cleanly_on_incompatible_database(
         runtime
             .block_on(grpc_handle)
-            .context("gRPC task panicked")?
-            .context("gRPC server returned an error"),
-    )?;
+            .context("gRPC task panicked")
+            .and_then(|served| served.context("gRPC server returned an error")),
+    );
     defused.store(true, Ordering::SeqCst);
 
-    tracing::info!("nodespaced shutdown complete");
-    Ok(())
+    if result.is_ok() {
+        tracing::info!("nodespaced shutdown complete");
+    }
+    exit_if_model_load_in_flight(&result);
+    result
+}
+
+/// Ends the process now, once graceful shutdown has finished, if the shared
+/// embedding model is still loading (see [`shared_model_load_in_flight`]).
+///
+/// Returning from `main` drops the runtime, which joins every in-flight
+/// blocking task, so a load still running would hold the process open until
+/// it finished. `_exit` rather than `std::process::exit`: `exit` runs atexit
+/// hooks and C++ static destructors, which would tear down llama.cpp's Metal
+/// device while the loading thread is still using it. The exit status and the
+/// `Error: …` line match what returning `result` from `main` would produce.
+fn exit_if_model_load_in_flight(result: &Result<()>) {
+    if !shared_model_load_in_flight() {
+        return;
+    }
+    tracing::info!("Embedding model still loading at shutdown — exiting without waiting for it");
+    let code = match result {
+        Ok(()) => 0,
+        Err(e) => {
+            eprintln!("Error: {e:?}");
+            1
+        }
+    };
+    let _ = std::io::Write::flush(&mut std::io::stdout());
+    let _ = std::io::Write::flush(&mut std::io::stderr());
+    // SAFETY: `_exit` only terminates the process; nothing runs after it.
+    unsafe { libc::_exit(code) }
 }
 
 /// Awaits `task` -- the gRPC server's own `JoinHandle` -- and tells the tray
@@ -1162,7 +1193,7 @@ fn edition() -> &'static str {
 /// anywhere in shutdown had no bound at all and no forced exit to fall back
 /// on. That gap was real, not theoretical: it is exactly how a `nodespaced`
 /// with no client ever attached turned out to require `SIGKILL` after
-/// `SIGTERM`/`SIGINT` — see [`headless`]'s own doc comment for how that hang
+/// `SIGTERM`/`SIGINT` — see [`tray_mode`]'s own doc comment for how that hang
 /// was actually root-caused (a *different* bug, in `main`'s tray-mode
 /// default, not in the drain logic here). This wiring stays regardless,
 /// as real protection for this path against a future stall in either
@@ -1370,7 +1401,7 @@ impl tokio::io::AsyncWrite for NamedPipeConn {
 /// Wrapped by the same two watchdogs [`serve_grpc`] uses (see
 /// [`watch_for_shutdown_signal`] and [`drain_and_release_gpu`]) rather than
 /// calling the drain steps directly, for the same reason the Unix headless
-/// loop is: see [`headless`]'s own doc comment for the root cause this
+/// loop is: see [`tray_mode`]'s own doc comment for the root cause this
 /// closes off. (Not a cross-reference to the Unix `serve_headless` --
 /// `#[cfg(unix)]` items like it don't exist in a Windows build, so an
 /// intra-doc link to one here would silently resolve to nothing useful.)
