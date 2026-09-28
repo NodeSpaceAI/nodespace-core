@@ -67,6 +67,14 @@ pub enum ConditionResult {
         /// Index of the first failing condition.
         condition_index: usize,
     },
+    /// A graph lookup the conditions depend on failed, so the verdict is
+    /// unknown — neither `Pass` nor `Fail`. Kept apart from `Fail` because a
+    /// failed lookup would otherwise read as an absent path, and a negative
+    /// condition (`!has(node.epic)`) matches an absent path.
+    Unresolved {
+        /// Why the lookup failed.
+        reason: String,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -902,7 +910,8 @@ fn cel_add_days(date_str: Arc<String>, n: i64) -> Result<Value, ExecutionError> 
 /// compatible with the Phase 3 behavior).
 ///
 /// Missing path errors (NoSuchKey, UndeclaredReference) evaluate to `false`
-/// per the spec — the condition fails but the play remains active.
+/// per the spec — the condition fails but the play remains active. A graph
+/// lookup that fails while resolving a path is `Unresolved`, not `false`.
 pub async fn evaluate_conditions(
     conditions: &[CompiledCondition],
     node: &Node,
@@ -952,9 +961,13 @@ pub async fn evaluate_conditions_at_scope(
 
         // Resolve paths that need graph traversal (multi-hop)
         if !all_paths.is_empty() || !all_collections.is_empty() {
-            resolver
+            match resolver
                 .enrich_context(node, &all_paths, &all_collections)
                 .await
+            {
+                Ok(resolved) => resolved,
+                Err(reason) => return ConditionResult::Unresolved { reason },
+            }
         } else {
             HashMap::new()
         }

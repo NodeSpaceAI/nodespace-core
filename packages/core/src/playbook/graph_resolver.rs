@@ -19,7 +19,6 @@ use crate::services::NodeService;
 use cel_interpreter::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tracing::warn;
 
 /// Resolved value from a graph traversal.
 #[derive(Debug, Clone)]
@@ -32,6 +31,12 @@ pub enum ResolvedValue {
     Scalar(serde_json::Value),
     /// Path could not be resolved (missing relationship or property)
     Missing,
+    /// A lookup the walk depended on failed (a locked database, an unreadable
+    /// schema), so whether the path resolves is unknown. Never cached, and
+    /// never folded into `Missing`: a negative condition (`!has(node.epic)`)
+    /// reads `Missing` as "no epic" and would fire on an infrastructure error.
+    /// Condition evaluation reports it as `ConditionResult::Unresolved`.
+    Unresolved(String),
 }
 
 /// Resolves dot-paths against the live data graph.
@@ -111,32 +116,34 @@ impl GraphResolver {
         }
     }
 
-    /// `node_type`'s own chain, nearest-first. A resolver failure degrades
-    /// to the type alone — the node's own bucket — rather than failing the
-    /// walk, the same posture as every other lookup failure here. Like
-    /// `node_value`'s `None`, that can only under-match: a field is missed,
-    /// never invented.
-    async fn chain_of(&mut self, node_type: &str) -> Vec<String> {
+    /// `node_type`'s own chain, nearest-first.
+    ///
+    /// A resolver failure is an error, not the type alone: reading only the
+    /// node's own bucket misses every inherited field, and a missed field is
+    /// exactly what a negative condition reads as "absent".
+    async fn chain_of(&mut self, node_type: &str) -> Result<Vec<String>, String> {
         if let Some(chain) = self.chains.get(node_type) {
-            return chain.clone();
+            return Ok(chain.clone());
         }
-        let chain = match self.node_service.resolve_type_chain(node_type).await {
-            Ok(chain) => chain,
-            Err(e) => {
-                warn!("chain_of: failed to resolve the extends chain of '{node_type}': {e}");
-                return vec![node_type.to_string()];
-            }
-        };
+        let chain = self
+            .node_service
+            .resolve_type_chain(node_type)
+            .await
+            .map_err(|e| format!("failed to resolve the extends chain of '{node_type}': {e}"))?;
         self.chains.insert(node_type.to_string(), chain.clone());
-        chain
+        Ok(chain)
     }
 
     /// Read `node`'s property `key` across its own chain, so an inherited
     /// field resolves from its declaring ancestor's bucket.
-    async fn node_property(&mut self, node: &Node, key: &str) -> Option<serde_json::Value> {
-        let chain = self.chain_of(&node.node_type).await;
+    async fn node_property(
+        &mut self,
+        node: &Node,
+        key: &str,
+    ) -> Result<Option<serde_json::Value>, String> {
+        let chain = self.chain_of(&node.node_type).await?;
         let chain: Vec<&str> = chain.iter().map(String::as_str).collect();
-        get_node_property_at_scope(node, key, &chain)
+        Ok(get_node_property_at_scope(node, key, &chain))
     }
 
     /// A traversed node's CEL value (ADR-078).
@@ -147,44 +154,42 @@ impl GraphResolver {
     /// the reading type names no base to project it to, and filtering it by
     /// another type's fields would hide every field it has.
     ///
-    /// `None` when the scope cannot be built; the path is then absent and the
-    /// condition reading it does not match, rather than reading a raw bucket
-    /// that misses inherited fields.
-    async fn node_value(&mut self, node: &Node) -> Option<Value> {
+    /// `Err` when the scope cannot be built, rather than reading a raw bucket
+    /// that misses inherited fields or leaving the path absent — absent is
+    /// what a negative condition matches on.
+    async fn node_value(&mut self, node: &Node) -> Result<Value, String> {
         if !self.node_scopes.contains_key(&node.node_type) {
-            let chain = self.chain_of(&node.node_type).await;
+            let chain = self.chain_of(&node.node_type).await?;
             let read_at = match &self.reading_type {
                 Some(reading_type) if chain.contains(reading_type) => reading_type.clone(),
                 _ => node.node_type.clone(),
             };
-            let scope = match CelScope::resolve(&self.node_service, &read_at, node).await {
-                Ok(scope) => scope,
-                Err(e) => {
-                    warn!(
-                        "node_value: failed to build the '{read_at}' scope for a '{}' node: {e}",
+            let scope = CelScope::resolve(&self.node_service, &read_at, node)
+                .await
+                .map_err(|e| {
+                    format!(
+                        "failed to build the '{read_at}' scope for a '{}' node: {e}",
                         node.node_type
-                    );
-                    return None;
-                }
-            };
+                    )
+                })?;
             self.node_scopes.insert(node.node_type.clone(), scope);
         }
         let scope = self
             .node_scopes
             .get(&node.node_type)
             .and_then(Option::as_ref);
-        Some(scoped_node_value(node, scope))
+        Ok(scoped_node_value(node, scope))
     }
 
-    /// [`Self::node_value`] for every node, or `None` if any one cannot be
+    /// [`Self::node_value`] for every node, or `Err` if any one cannot be
     /// read: a collection missing an item would make `.all(...)` vacuously
     /// true of the rest.
-    async fn node_values(&mut self, nodes: &[Node]) -> Option<Vec<Value>> {
+    async fn node_values(&mut self, nodes: &[Node]) -> Result<Vec<Value>, String> {
         let mut list = Vec::with_capacity(nodes.len());
         for node in nodes {
             list.push(self.node_value(node).await?);
         }
-        Some(list)
+        Ok(list)
     }
 
     /// Resolve a dot-path starting from a root node.
@@ -201,6 +206,9 @@ impl GraphResolver {
     /// direction is resolved per segment inside `fetch_related_nodes`.
     ///
     /// Uses the segment cache: if a prefix has already been resolved, starts from there.
+    ///
+    /// A failed lookup anywhere in the walk yields `Unresolved`, never
+    /// `Missing`, and is not cached — see [`ResolvedValue::Unresolved`].
     pub async fn resolve_path(&mut self, root_node: &Node, segments: &[String]) -> ResolvedValue {
         if segments.is_empty() {
             return ResolvedValue::Node(root_node.clone());
@@ -238,6 +246,10 @@ impl GraphResolver {
                         let result = ResolvedValue::Missing;
                         self.cache.insert(cache_key(segments), result.clone());
                         return result;
+                    }
+                    // Never inserted — the arm exists for exhaustiveness.
+                    ResolvedValue::Unresolved(reason) => {
+                        return ResolvedValue::Unresolved(reason.clone());
                     }
                 }
             }
@@ -282,7 +294,11 @@ impl GraphResolver {
             }
 
             // Try as a property first (check node.properties)
-            if let Some(prop_val) = self.node_property(&current_node, segment).await {
+            let prop = match self.node_property(&current_node, segment).await {
+                Ok(prop) => prop,
+                Err(reason) => return ResolvedValue::Unresolved(reason),
+            };
+            if let Some(prop_val) = prop {
                 let result = ResolvedValue::Scalar(prop_val);
                 self.cache
                     .insert(cache_key(&segments[..=i]), result.clone());
@@ -331,22 +347,32 @@ impl GraphResolver {
             // past this segment stays unsupported by this simple dot-path
             // walk, same as the existing N>=2 case already enforced -- this
             // only changes the TERMINAL-segment shape.
-            let ambiguous_match_count = matches!(&related, Ok(nodes) if nodes.len() <= 1);
-            if ambiguous_match_count
-                && self
+            //
+            // A fetch error is not a statement about the path: whether "no
+            // epic" or "the epic lookup failed", `Missing` would let
+            // `!has(node.epic)` fire. Report it as `Unresolved` instead.
+            let related = match related {
+                Ok(nodes) => nodes,
+                Err(e) => {
+                    return ResolvedValue::Unresolved(format!(
+                        "failed to fetch related nodes for {}.{}: {}",
+                        current_node.id, segment, e
+                    ));
+                }
+            };
+            let declared_many = if related.len() <= 1 {
+                match self
                     .is_declared_many_relationship(&current_node, segment)
                     .await
-            {
-                let result = match related {
-                    Ok(nodes) => ResolvedValue::Collection(nodes),
-                    Err(e) => {
-                        warn!(
-                            "Failed to fetch related nodes for {}.{}: {}",
-                            current_node.id, segment, e
-                        );
-                        ResolvedValue::Missing
-                    }
-                };
+                {
+                    Ok(many) => many,
+                    Err(reason) => return ResolvedValue::Unresolved(reason),
+                }
+            } else {
+                false
+            };
+            if declared_many {
+                let result = ResolvedValue::Collection(related);
                 self.cache
                     .insert(cache_key(&segments[..=i]), result.clone());
                 if is_last {
@@ -360,14 +386,14 @@ impl GraphResolver {
             }
 
             match related {
-                Ok(nodes) if nodes.is_empty() => {
+                nodes if nodes.is_empty() => {
                     let result = ResolvedValue::Missing;
                     self.cache
                         .insert(cache_key(&segments[..=i]), result.clone());
                     self.cache.insert(cache_key(segments), result.clone());
                     return result;
                 }
-                Ok(nodes) if nodes.len() == 1 => {
+                nodes if nodes.len() == 1 => {
                     let node = nodes.into_iter().next().unwrap();
                     self.cache.insert(
                         cache_key(&segments[..=i]),
@@ -380,7 +406,7 @@ impl GraphResolver {
                     }
                     current_node = node;
                 }
-                Ok(nodes) => {
+                nodes => {
                     // Multiple related nodes — this is a collection
                     let result = ResolvedValue::Collection(nodes);
                     self.cache
@@ -394,15 +420,6 @@ impl GraphResolver {
                     self.cache.insert(cache_key(segments), missing.clone());
                     return missing;
                 }
-                Err(e) => {
-                    warn!(
-                        "Failed to fetch related nodes for {}.{}: {}",
-                        current_node.id, segment, e
-                    );
-                    let result = ResolvedValue::Missing;
-                    self.cache.insert(cache_key(segments), result.clone());
-                    return result;
-                }
             }
         }
 
@@ -410,21 +427,25 @@ impl GraphResolver {
     }
 
     /// Resolve a collection path and return the collection nodes.
+    ///
+    /// `Err` when the walk was [`ResolvedValue::Unresolved`]: an empty list
+    /// there would read as "no children", which a negative condition matches.
     pub async fn resolve_collection(
         &mut self,
         root_node: &Node,
         collection: &ExtractedPath,
-    ) -> Vec<Node> {
+    ) -> Result<Vec<Node>, String> {
         // The collection path is like ["node", "tasks"] — skip "node" (the root)
         let segments = &collection.segments;
         if segments.len() < 2 {
-            return vec![];
+            return Ok(vec![]);
         }
 
         match self.resolve_path(root_node, &segments[1..]).await {
-            ResolvedValue::Collection(nodes) => nodes,
-            ResolvedValue::Node(n) => vec![n],
-            _ => vec![],
+            ResolvedValue::Collection(nodes) => Ok(nodes),
+            ResolvedValue::Node(n) => Ok(vec![n]),
+            ResolvedValue::Unresolved(reason) => Err(reason),
+            ResolvedValue::Scalar(_) | ResolvedValue::Missing => Ok(vec![]),
         }
     }
 
@@ -463,8 +484,8 @@ impl GraphResolver {
             Err(OpsError::InvalidParams(_)) => return Ok(vec![]),
             // Anything else is infrastructure failing (an unreadable schema, a
             // locked database), not a statement about this path. Propagate it
-            // so it is logged and the condition is not quietly false — the same
-            // treatment the `get_related_nodes` call below already gets.
+            // so the walk is `Unresolved` rather than quietly `Missing` — the
+            // same treatment the `get_related_nodes` call below already gets.
             Err(e) => return Err(e.to_string()),
         };
 
@@ -590,29 +611,25 @@ impl GraphResolver {
     /// outcome is identical regardless of declared cardinality, so callers
     /// skip this lookup there). Distinguishes "no such relationship" from "a
     /// declared many-relationship with zero or one current matches", which
-    /// the raw row count alone can't tell apart. Any lookup failure (schema
-    /// not found, service error) conservatively resolves to `false` -- i.e.
-    /// today's existing row-count-only behavior -- rather than guessing; it
-    /// is logged rather than swallowed, since it is a genuine infrastructure
-    /// failure indistinguishable, if silent, from the ordinary "not declared
-    /// many" case.
-    async fn is_declared_many_relationship(&self, node: &Node, segment: &str) -> bool {
+    /// the raw row count alone can't tell apart. A lookup failure (schema
+    /// not found, service error) is an `Err`, not `false`: falling back to
+    /// the row count would turn a declared many-relationship with zero
+    /// current matches into `Missing`, which a negative condition matches.
+    async fn is_declared_many_relationship(
+        &self,
+        node: &Node,
+        segment: &str,
+    ) -> Result<bool, String> {
         let node_type = &node.node_type;
 
         // Forward first: `node_type`'s own (or inherited) relationship set.
-        match self.node_service.resolve_relationships(node_type).await {
-            Ok((rels, _owners)) => {
-                if let Some(r) = rels.iter().find(|r| r.name == segment) {
-                    return r.cardinality == crate::models::schema::RelationshipCardinality::Many;
-                }
-            }
-            Err(e) => {
-                warn!(
-                    "is_declared_many_relationship: failed to resolve forward relationships for {}: {}",
-                    node_type, e
-                );
-                return false;
-            }
+        let (rels, _owners) = self
+            .node_service
+            .resolve_relationships(node_type)
+            .await
+            .map_err(|e| format!("failed to resolve forward relationships for {node_type}: {e}"))?;
+        if let Some(r) = rels.iter().find(|r| r.name == segment) {
+            return Ok(r.cardinality == crate::models::schema::RelationshipCardinality::Many);
         }
 
         // Inbound: some other schema's relationship targets `node_type` (or
@@ -621,57 +638,39 @@ impl GraphResolver {
         // its own forward `name` walked inbound. `get_inbound_relationships`
         // already expands the `extends` chain internally, so a single call
         // covers inheritance too -- no separate per-scope loop needed.
-        let inbound = match self.node_service.get_inbound_relationships(node_type).await {
-            Ok(inbound) => inbound,
-            Err(e) => {
-                warn!(
-                    "is_declared_many_relationship: failed to resolve inbound relationships for {}: {}",
-                    node_type, e
-                );
-                return false;
-            }
-        };
+        let inbound = self
+            .node_service
+            .get_inbound_relationships(node_type)
+            .await
+            .map_err(|e| format!("failed to resolve inbound relationships for {node_type}: {e}"))?;
 
         for (_source_type, rel) in &inbound {
-            if rel.reverse_name != segment {
-                continue;
-            }
-            match self.inbound_candidate_applies(node, rel).await {
-                Ok(true) => {
-                    return rel.reverse_cardinality
-                        == crate::models::schema::RelationshipCardinality::Many
-                }
-                Ok(false) => continue,
-                Err(()) => return false,
+            if rel.reverse_name == segment && self.inbound_candidate_applies(node, rel).await? {
+                return Ok(
+                    rel.reverse_cardinality == crate::models::schema::RelationshipCardinality::Many
+                );
             }
         }
         for (_source_type, rel) in &inbound {
-            if rel.name != segment {
-                continue;
-            }
-            match self.inbound_candidate_applies(node, rel).await {
-                Ok(true) => {
-                    return rel.reverse_cardinality
-                        == crate::models::schema::RelationshipCardinality::Many
-                }
-                Ok(false) => continue,
-                Err(()) => return false,
+            if rel.name == segment && self.inbound_candidate_applies(node, rel).await? {
+                return Ok(
+                    rel.reverse_cardinality == crate::models::schema::RelationshipCardinality::Many
+                );
             }
         }
-        false
+        Ok(false)
     }
 
     /// Whether an inbound relationship candidate (already known to name the
     /// segment being resolved, by either `reverse_name` or `name`) actually
     /// applies -- shared by both of
     /// [`is_declared_many_relationship`](Self::is_declared_many_relationship)'s
-    /// passes. `Err(())` means the underlying lookup failed and has already
-    /// been logged; the caller should treat it the same as "not declared".
+    /// passes. `Err` means the underlying lookup failed.
     async fn inbound_candidate_applies(
         &self,
         node: &Node,
         rel: &crate::models::schema::SchemaRelationship,
-    ) -> Result<bool, ()> {
+    ) -> Result<bool, String> {
         // Never a real data relationship -- see is_declared_many_relationship's
         // doc comment above.
         if crate::models::schema::is_type_system_relationship(&rel.name) {
@@ -681,32 +680,33 @@ impl GraphResolver {
             return Ok(true);
         }
         // Untyped: only counts if it actually reaches THIS node.
-        match self
-            .node_service
+        self.node_service
             .get_related_nodes(&node.id, &rel.name, "in")
             .await
-        {
-            Ok(nodes) => Ok(!nodes.is_empty()),
-            Err(e) => {
-                warn!(
-                    "is_declared_many_relationship: failed to probe untyped relationship '{}' for {}: {}",
+            .map(|nodes| !nodes.is_empty())
+            .map_err(|e| {
+                format!(
+                    "failed to probe untyped relationship '{}' for {}: {}",
                     rel.name, node.id, e
-                );
-                Err(())
-            }
-        }
+                )
+            })
     }
 
     /// Build an enriched CEL context with graph-resolved paths.
     ///
     /// Takes the base node and extracted paths, resolves each path against
     /// the graph, and injects the resolved values as nested CEL Maps.
+    ///
+    /// `Err` when any path's walk failed on a lookup error. A missing key is
+    /// how a path reads as absent, so no partial context is returned: the
+    /// failed path would be absent from it, and a negative condition over it
+    /// would match.
     pub async fn enrich_context(
         &mut self,
         root_node: &Node,
         paths: &[ExtractedPath],
         collections: &[CollectionPath],
-    ) -> HashMap<Vec<String>, Value> {
+    ) -> Result<HashMap<Vec<String>, Value>, String> {
         let mut resolved_values: HashMap<Vec<String>, Value> = HashMap::new();
 
         // Resolve flat paths (skip "node" root — those beyond property-level)
@@ -727,7 +727,7 @@ impl GraphResolver {
             if path.segments.len() == 2
                 && self
                     .node_property(root_node, &path.segments[1])
-                    .await
+                    .await?
                     .is_some()
             {
                 continue;
@@ -737,9 +737,8 @@ impl GraphResolver {
             let segments = &path.segments[1..];
             match self.resolve_path(root_node, segments).await {
                 ResolvedValue::Node(n) => {
-                    if let Some(value) = self.node_value(&n).await {
-                        resolved_values.insert(path.segments.clone(), value);
-                    }
+                    let value = self.node_value(&n).await?;
+                    resolved_values.insert(path.segments.clone(), value);
                 }
                 ResolvedValue::Scalar(v) => {
                     // A field of a traversed node reads through that node's
@@ -748,15 +747,18 @@ impl GraphResolver {
                     // and `node.child_of` agree about the same node.
                     if segments.len() > 1 {
                         let (owner_path, field) = segments.split_at(segments.len() - 1);
-                        if let ResolvedValue::Node(owner) =
-                            self.resolve_path(root_node, owner_path).await
-                        {
-                            if let Some(Value::Map(owner)) = self.node_value(&owner).await {
-                                if let Some(value) = owner.map.get(&key(&field[0])) {
-                                    resolved_values.insert(path.segments.clone(), value.clone());
+                        match self.resolve_path(root_node, owner_path).await {
+                            ResolvedValue::Node(owner) => {
+                                if let Value::Map(owner) = self.node_value(&owner).await? {
+                                    if let Some(value) = owner.map.get(&key(&field[0])) {
+                                        resolved_values
+                                            .insert(path.segments.clone(), value.clone());
+                                    }
                                 }
+                                continue;
                             }
-                            continue;
+                            ResolvedValue::Unresolved(reason) => return Err(reason),
+                            _ => {}
                         }
                     }
                     // Defensive: a scalar is only ever reached through a node,
@@ -764,13 +766,13 @@ impl GraphResolver {
                     resolved_values.insert(path.segments.clone(), json_to_cel(&v));
                 }
                 ResolvedValue::Collection(nodes) => {
-                    if let Some(list) = self.node_values(&nodes).await {
-                        resolved_values.insert(path.segments.clone(), Value::List(list.into()));
-                    }
+                    let list = self.node_values(&nodes).await?;
+                    resolved_values.insert(path.segments.clone(), Value::List(list.into()));
                 }
                 ResolvedValue::Missing => {
                     // Missing path → will evaluate to false via NoSuchKey in CEL
                 }
+                ResolvedValue::Unresolved(reason) => return Err(reason),
             }
         }
 
@@ -779,7 +781,7 @@ impl GraphResolver {
             if coll.collection.root != "node" {
                 continue;
             }
-            let nodes = self.resolve_collection(root_node, &coll.collection).await;
+            let nodes = self.resolve_collection(root_node, &coll.collection).await?;
             // Load-bearing: an empty collection leaves the key ABSENT rather
             // than injecting an empty list.
             //
@@ -791,14 +793,12 @@ impl GraphResolver {
             // a real empty list, it would return vacuously true, and a childless
             // parent would auto-complete itself (ADR-079 §4).
             if !nodes.is_empty() {
-                if let Some(list) = self.node_values(&nodes).await {
-                    resolved_values
-                        .insert(coll.collection.segments.clone(), Value::List(list.into()));
-                }
+                let list = self.node_values(&nodes).await?;
+                resolved_values.insert(coll.collection.segments.clone(), Value::List(list.into()));
             }
         }
 
-        resolved_values
+        Ok(resolved_values)
     }
 }
 
@@ -1549,6 +1549,97 @@ mod tests {
             }
         }
 
+        /// A failed related-node fetch is `Unresolved`, never `Missing`, and a
+        /// negative condition over it neither passes nor fails. Before this,
+        /// the error folded into `Missing` and `!has(node.story)` fired on a
+        /// locked or broken database exactly as on a genuinely unlinked issue.
+        /// Forces a real failure by dropping the `relationship` table, as
+        /// `a_resolver_db_error_is_propagated_not_folded_into_none` does.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn a_failed_fetch_is_unresolved_not_missing() {
+            use crate::db::events::DomainEvent;
+            use crate::playbook::cel::{
+                evaluate_conditions_at_scope, CompiledCondition, ConditionResult,
+            };
+
+            let (svc, _tmp) = create_test_service().await;
+            create_schema(&svc, "gr_story_err", json!([])).await;
+            create_schema(
+                &svc,
+                "gr_issue_err",
+                json!([{
+                    "name": "story",
+                    "targetType": "gr_story_err",
+                    "direction": "out",
+                    "cardinality": "one",
+                    "reverseName": "issues",
+                    "reverseCardinality": "many"
+                }]),
+            )
+            .await;
+            let issue = make_node("gr-ie1", "gr_issue_err", json!({"status": "open"}));
+            svc.create_node(issue.clone()).await.unwrap();
+
+            let conditions = vec![CompiledCondition::compile("!has(node.story)").unwrap()];
+            let event = DomainEvent::NodeCreated {
+                node_type: "gr_issue_err".to_string(),
+                node_id: issue.id.clone(),
+            };
+
+            // Control: with the database healthy, an unlinked issue matches.
+            let mut resolver = GraphResolver::new(Arc::clone(&svc));
+            let healthy = evaluate_conditions_at_scope(
+                &conditions,
+                &issue,
+                &event,
+                Some(&mut resolver),
+                None,
+            )
+            .await;
+            assert!(
+                matches!(healthy, ConditionResult::Pass),
+                "an issue with no story must match !has(node.story), got {healthy:?}"
+            );
+
+            // Warm the extends-chain cache while the database is healthy. The
+            // chain lookup also reads the `relationship` table, so without this
+            // it would fail first and the fetch below would never run.
+            let mut resolver = GraphResolver::new(Arc::clone(&svc));
+            assert!(matches!(
+                resolver.resolve_path(&issue, &["status".to_string()]).await,
+                ResolvedValue::Scalar(_)
+            ));
+
+            svc.store()
+                .write()
+                .await
+                .execute("DROP TABLE relationship", ())
+                .await
+                .expect("dropping the relationship table should succeed");
+
+            let result = resolver.resolve_path(&issue, &["story".to_string()]).await;
+            match &result {
+                ResolvedValue::Unresolved(reason) => assert!(
+                    reason.contains("failed to fetch related nodes"),
+                    "expected the related-node fetch to be what failed: {reason}"
+                ),
+                other => panic!("a failed fetch must be Unresolved, got {other:?}"),
+            }
+
+            let broken = evaluate_conditions_at_scope(
+                &conditions,
+                &issue,
+                &event,
+                Some(&mut resolver),
+                None,
+            )
+            .await;
+            assert!(
+                matches!(broken, ConditionResult::Unresolved { .. }),
+                "a failed fetch must not let !has(node.story) fire, got {broken:?}"
+            );
+        }
+
         /// Regression test: resolve_path/resolve_collection/enrich_context must
         /// work on a single-threaded runtime. The old `block_in_place` bridge
         /// would panic here; this proves the fix, not just its absence.
@@ -1597,7 +1688,7 @@ mod tests {
                 ],
                 root: "node".to_string(),
             }];
-            let enriched = resolver.enrich_context(&issue, &paths, &[]).await;
+            let enriched = resolver.enrich_context(&issue, &paths, &[]).await.unwrap();
             let key = vec![
                 "node".to_string(),
                 "story".to_string(),
@@ -1930,7 +2021,7 @@ mod tests {
                 root: "node".to_string(),
             }];
 
-            let result = resolver.enrich_context(&source, &paths, &[]).await;
+            let result = resolver.enrich_context(&source, &paths, &[]).await.unwrap();
             // Should have resolved node.target.status
             let key = vec![
                 "node".to_string(),
@@ -2038,7 +2129,7 @@ mod tests {
                 root: "node".to_string(),
             }];
 
-            let result = resolver.enrich_context(&task, &paths, &[]).await;
+            let result = resolver.enrich_context(&task, &paths, &[]).await.unwrap();
 
             let key = vec![
                 "node".to_string(),
@@ -2122,7 +2213,8 @@ mod tests {
 
             let result = resolver
                 .enrich_context(&root, &[internal_path, normal_path], &[])
-                .await;
+                .await
+                .unwrap();
 
             let internal_key = vec![
                 "node".to_string(),
@@ -2189,7 +2281,10 @@ mod tests {
                 root: "node".to_string(),
             };
 
-            let nodes = resolver.resolve_collection(&parent, &collection_path).await;
+            let nodes = resolver
+                .resolve_collection(&parent, &collection_path)
+                .await
+                .unwrap();
             assert_eq!(nodes.len(), 2, "should resolve 2 collection nodes");
             let ids: Vec<&str> = nodes.iter().map(|n| n.id.as_str()).collect();
             assert!(ids.contains(&"gr-i9a"));
@@ -2246,7 +2341,10 @@ mod tests {
                 }],
             }];
 
-            let result = resolver.enrich_context(&parent, &[], &collections).await;
+            let result = resolver
+                .enrich_context(&parent, &[], &collections)
+                .await
+                .unwrap();
 
             let key = vec!["node".to_string(), "tasks".to_string()];
             assert!(
@@ -2626,7 +2724,7 @@ mod tests {
                 root: "node".to_string(),
             }];
 
-            let result = resolver.enrich_context(&ticket, &paths, &[]).await;
+            let result = resolver.enrich_context(&ticket, &paths, &[]).await.unwrap();
 
             let key = vec!["node".to_string(), "assignee".to_string()];
             assert!(

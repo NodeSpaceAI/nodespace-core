@@ -51,6 +51,11 @@ pub enum ConditionState {
     /// looks like. Distinct from `NotYetMet` so a hand-authoring agent isn't
     /// told to "wait" for something that can never happen.
     Unresolvable { condition: String, reason: String },
+    /// A graph lookup the condition depends on failed (a locked database, an
+    /// unreadable schema), so whether it holds is unknown right now. Distinct
+    /// from both `NotYetMet` and `Unresolvable`: the failure says nothing
+    /// about the graph or the Play's authoring, and a re-run may succeed.
+    Unknown { condition: String, reason: String },
 }
 
 /// One rule's evaluated state within a `get-workflow-state` response.
@@ -96,7 +101,8 @@ pub struct WorkflowState {
     /// comes back with an empty `degraded_reasons`.
     ///
     /// Covers *resolution failures* (an `Err` from a live schema/
-    /// extends-chain call) AND one specific class of staleness in the
+    /// extends-chain call, or a graph read that left a condition `Unknown`)
+    /// AND one specific class of staleness in the
     /// graph-event candidate path: `lookup_rules`'s ancestor fan-out
     /// (`PlaybookLifecycleManager::ancestor_keys`) reads `ancestor_cache`
     /// directly rather than resolving live, and a failed cache refresh that
@@ -481,7 +487,7 @@ pub async fn get_workflow_state(
 }
 
 /// Evaluate a single condition and classify its result as satisfied, not-yet-met,
-/// or unresolvable.
+/// unresolvable, or unknown.
 ///
 /// Reuses `cel::evaluate_conditions_at_scope` (a one-condition slice) for the actual
 /// evaluation so this can never silently diverge from live-trigger semantics
@@ -516,6 +522,16 @@ async fn evaluate_one_condition(
                 },
             }
         }
+        ConditionResult::Unresolved { reason } => {
+            degraded.push(format!(
+                "condition '{}' could not be evaluated: {reason}",
+                condition.source
+            ));
+            ConditionState::Unknown {
+                condition: condition.source.clone(),
+                reason,
+            }
+        }
     }
 }
 
@@ -538,6 +554,12 @@ const CORE_FIELDS: &[&str] = &["id", "node_type", "content", "version", "lifecyc
 ///
 /// Returns `None` when extraction finds nothing conclusive, so the caller
 /// falls back to the conservative `NotYetMet` classification.
+///
+/// Only reached after evaluation returned a clean `Fail`: a lookup failure
+/// during evaluation is already reported `Unknown`. The per-hop failures
+/// recorded into `degraded` here therefore cover a lookup that fails between
+/// that evaluation and this walk — a narrow window, but the verdict must
+/// still not be presented as authoritative when it happens.
 async fn classify_failure(
     condition: &cel::CompiledCondition,
     node: &Node,
@@ -1791,37 +1813,27 @@ mod tests {
         );
     }
 
-    /// The case consumers are told to guard against: a per-hop resolution
-    /// failure during typo classification yields an `Unresolvable` verdict
-    /// that the same response flags as unreliable, so it must never be
-    /// presented as a confirmed misauthored condition.
+    /// The case consumers are told to guard against: a lookup failure must
+    /// never be presented as a confirmed misauthored condition. The failed
+    /// lookup surfaces during evaluation itself, so the condition is reported
+    /// `Unknown` — not `Unresolvable`, and not `NotYetMet` — with a degraded
+    /// reason naming it.
     #[tokio::test]
-    async fn per_hop_resolution_failure_marks_unresolvable_verdict_as_degraded() {
+    async fn a_lookup_failure_reports_the_condition_unknown_not_unresolvable() {
         let (svc, _tmp, lifecycle, node) = degraded_fixture("node.no_such_field == 'x'").await;
         let state = get_workflow_state(&lifecycle, &svc, &node).await;
 
         assert_eq!(state.rules.len(), 1);
         assert!(
-            matches!(
-                state.rules[0].conditions[0],
-                ConditionState::Unresolvable { .. }
-            ),
-            "expected Unresolvable, got {:?}",
+            matches!(state.rules[0].conditions[0], ConditionState::Unknown { .. }),
+            "expected Unknown, got {:?}",
             state.rules[0].conditions[0]
         );
-        let walking = |prefix: &str| {
-            state.degraded_reasons.iter().any(|r| {
-                r.contains(prefix) && r.contains("while walking 'node.no_such_field == 'x''")
-            })
-        };
+        assert!(!state.rules[0].all_conditions_satisfied);
         assert!(
-            walking("effective-field resolution for 'wf_degraded' failed"),
-            "expected a per-hop field-resolution entry: {:?}",
-            state.degraded_reasons
-        );
-        assert!(
-            walking("effective-relationship resolution for 'wf_degraded' failed"),
-            "expected a per-hop relationship-resolution entry: {:?}",
+            state.degraded_reasons.iter().any(|r| r
+                .contains("condition 'node.no_such_field == 'x'' could not be evaluated")),
+            "expected a degraded_reasons entry naming the unevaluated condition: {:?}",
             state.degraded_reasons
         );
     }
