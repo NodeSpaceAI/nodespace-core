@@ -125,7 +125,9 @@ const MAX_BACKUP_NAME_ATTEMPTS: u32 = 1000;
 /// Returns `Ok(None)` when there is nothing at `database` at all — someone
 /// already moved it aside by hand — so the reset can still go on to start the
 /// daemon fresh instead of stranding the user behind a banner that can never
-/// clear. Leftover sidecars at that path are still moved aside.
+/// clear. Leftover sidecars at that path are still moved aside, but with no
+/// database file there is no backup database to name, so the result is `None`
+/// then too.
 fn move_database_aside(database: &Path, stamp: &str) -> Result<Option<PathBuf>> {
     let present = match std::fs::symlink_metadata(database) {
         Ok(metadata) if metadata.is_file() => true,
@@ -184,12 +186,16 @@ fn move_database_aside(database: &Path, stamp: &str) -> Result<Option<PathBuf>> 
             moved_sidecars.push((from, to));
         }
     }
-    if present {
-        if let Err(e) = std::fs::rename(database, &backup) {
-            restore(&moved_sidecars);
-            return Err(e)
-                .with_context(|| format!("move {} to {}", database.display(), backup.display()));
+    if !present {
+        for (from, to) in &moved_sidecars {
+            tracing::info!(from = %from.display(), to = %to.display(), "moved orphaned database sidecar aside");
         }
+        return Ok(None);
+    }
+    if let Err(e) = std::fs::rename(database, &backup) {
+        restore(&moved_sidecars);
+        return Err(e)
+            .with_context(|| format!("move {} to {}", database.display(), backup.display()));
     }
     Ok(Some(backup))
 }
@@ -249,7 +255,10 @@ async fn reset(app: &AppHandle) -> Result<ResetIncompatibleDatabaseResult> {
 
     let socket_path = crate::services::grpc_client::resolve_socket_path();
     if daemon_setup::check_daemon_socket(socket_path.as_path()).await != DaemonStatus::NotRunning {
-        bail!("the NodeSpace background service is running, so its database is in use");
+        bail!(
+            "the NodeSpace background service is running or starting, so its database may be \
+             in use; try again once it has stopped"
+        );
     }
 
     let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S").to_string();
@@ -364,14 +373,15 @@ mod tests {
         let db = dir.path().join("nodespace.db");
         write(&sidecar(&db, "-wal"), "wal");
 
-        let backup = move_database_aside(&db, "s").unwrap().unwrap();
+        assert_eq!(
+            move_database_aside(&db, "s").unwrap(),
+            None,
+            "with no database file there is no backup database to name"
+        );
 
         assert!(!sidecar(&db, "-wal").exists());
-        assert_eq!(
-            std::fs::read_to_string(sidecar(&backup, "-wal")).unwrap(),
-            "wal"
-        );
-        assert!(!backup.exists(), "there was no database file to move");
+        let moved = dir.path().join("nodespace.db.incompatible-s-wal");
+        assert_eq!(std::fs::read_to_string(moved).unwrap(), "wal");
     }
 
     #[test]
