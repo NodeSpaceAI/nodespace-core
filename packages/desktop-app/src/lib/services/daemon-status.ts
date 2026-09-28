@@ -7,6 +7,9 @@
  *     whichever comes first)
  *   - an `unreachable` flag for the existing "background service is not
  *     running" banner/retry button
+ *   - an `incompatibleDatabase` flag for the case the daemon is down on
+ *     purpose: it refused a database another version of NodeSpace created,
+ *     which only moving that database aside can fix
  *   - a set of "on reconnect" callbacks that daemon-dependent stores
  *     (schemas, collections, children-tree) register to retry their load
  *     once the daemon transitions to healthy
@@ -53,6 +56,30 @@ export interface DaemonStatusState {
   connecting: boolean;
   /** True once a `not_running` status has been observed. */
   unreachable: boolean;
+  /**
+   * True once an `incompatible_database` status has been observed: the daemon
+   * refused its database because a different version of NodeSpace created it,
+   * and stopped rather than retry. Retrying cannot help; see
+   * {@link resetIncompatibleDatabase}.
+   */
+  incompatibleDatabase: boolean;
+}
+
+/** The daemon's record of the database it refused. */
+export interface IncompatibleDatabase {
+  /** Absolute path of the refused database file. */
+  databasePath: string;
+  /** Which tables differ and how — for support, not the headline. */
+  detail: string;
+  /** When the daemon refused it, RFC 3339. */
+  detectedAt: string;
+}
+
+export interface ResetIncompatibleDatabaseResult {
+  /** Where the refused database was moved to; `null` if it was already gone. */
+  backupPath: string | null;
+  /** Daemon status after restarting on a fresh database. */
+  status: string;
 }
 
 /**
@@ -63,7 +90,10 @@ export interface DaemonStatusState {
  * shared core caring how the status arrived.
  */
 export interface DaemonStatusSource {
-  /** Pull the current status once. Resolves to `"healthy"`, `"starting"`, or `"not_running"`. */
+  /**
+   * Pull the current status once. Resolves to `"healthy"`, `"starting"`,
+   * `"not_running"`, or `"incompatible_database"`.
+   */
   getCurrent(): Promise<string>;
   /** Subscribe to pushed status changes. Returns an unsubscribe function. */
   subscribe(callback: (status: string) => void): () => void;
@@ -77,7 +107,11 @@ export interface DaemonStatusSource {
   probeChannel?(): Promise<boolean>;
 }
 
-const _status = writable<DaemonStatusState>({ connecting: true, unreachable: false });
+const _status = writable<DaemonStatusState>({
+  connecting: true,
+  unreachable: false,
+  incompatibleDatabase: false
+});
 
 const reconnectListeners = new Set<() => void>();
 
@@ -87,6 +121,16 @@ let activeSource: DaemonStatusSource | null = null;
 let steadyStatePoll: ReturnType<typeof setInterval> | null = null;
 /** Guards against overlapping polls if a `getCurrent` probe runs long. */
 let pollInFlight = false;
+/**
+ * True while {@link resetIncompatibleDatabase} is moving the database aside and
+ * restarting the daemon. Statuses observed meanwhile (a poll landing while the
+ * daemon is still loading reports `not_running`) describe a restart in
+ * progress, not a new failure, so they are held back and the reset's own final
+ * status is applied instead. Without this the incompatible-database banner —
+ * and its in-progress state — would be swapped for the generic not-running
+ * banner mid-reset.
+ */
+let resetInFlight = false;
 
 /**
  * Register a callback to run whenever the daemon transitions to healthy
@@ -115,8 +159,13 @@ function fireReconnectListeners(): void {
 
 /** Apply a status string to shared state and fan out reconnect callbacks. Transport-agnostic. */
 function applyStatus(payload: string): void {
+  if (resetInFlight) return;
   const healthy = payload === 'healthy';
-  _status.set({ connecting: false, unreachable: payload === 'not_running' });
+  _status.set({
+    connecting: false,
+    unreachable: payload === 'not_running',
+    incompatibleDatabase: payload === 'incompatible_database'
+  });
 
   if (healthy && !lastHealthy) {
     lastHealthy = true;
@@ -236,6 +285,7 @@ export function stopDaemonStatusListener(): void {
     steadyStatePoll = null;
   }
   pollInFlight = false;
+  resetInFlight = false;
   started = false;
   lastHealthy = false;
   activeSource = null;
@@ -251,4 +301,33 @@ export async function refreshDaemonStatus(): Promise<void> {
   if (!activeSource) return;
   const payload = await activeSource.getCurrent();
   applyStatus(payload);
+}
+
+/**
+ * The database the daemon refused as incompatible, or `null` when there is no
+ * standing refusal (or outside Tauri).
+ */
+export async function getIncompatibleDatabase(): Promise<IncompatibleDatabase | null> {
+  if (!isTauri()) return null;
+  return (await invoke<IncompatibleDatabase | null>('get_incompatible_database')) ?? null;
+}
+
+/**
+ * Move the refused database aside (renamed beside itself with a timestamp —
+ * nothing is deleted) and restart the daemon on a fresh one. Applies the
+ * resulting status through the shared contract, so a healthy restart fires
+ * `onDaemonReconnect` listeners exactly as any other recovery would.
+ *
+ * Rejects with the backend's message when nothing was moved.
+ */
+export async function resetIncompatibleDatabase(): Promise<ResetIncompatibleDatabaseResult> {
+  resetInFlight = true;
+  let result: ResetIncompatibleDatabaseResult;
+  try {
+    result = await invoke<ResetIncompatibleDatabaseResult>('reset_incompatible_database');
+  } finally {
+    resetInFlight = false;
+  }
+  applyStatus(result.status);
+  return result;
 }

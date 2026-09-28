@@ -10,11 +10,27 @@
 //! [`create_schema`] is idempotent (every statement is `IF NOT EXISTS`), so
 //! opening a database this build already created is a no-op.
 //!
+//! That same `IF NOT EXISTS` is also why a database some *other* build created
+//! is refused rather than opened: an existing table is never altered, so a
+//! column this build's DDL adds never appears in it, and the first index or
+//! query naming that column fails. Before any DDL runs, [`create_schema`]
+//! compares the columns of every table that already exists against the columns
+//! this build's DDL defines, and returns a [`SchemaMismatch`] when they differ.
+//! That is a shape check, not a version check — nothing on disk records a
+//! version — and it carries nothing forward: the only resolution it offers is
+//! moving the database aside and starting fresh. It compares column *names*
+//! only: a change to a column's type or constraints, or to an index or trigger
+//! body, is not detected, since `IF NOT EXISTS` leaves an existing index or
+//! trigger as it was.
+//!
 //! Connection-level PRAGMAs (`journal_mode`, `foreign_keys`, `synchronous`,
 //! `busy_timeout`) are deliberately absent: they are per-connection session
 //! settings rather than persisted schema state, and SQLite forbids changing
 //! `synchronous` inside a transaction. `SqliteStore` sets them on every
 //! connection it opens.
+
+use std::collections::BTreeSet;
+use std::fmt;
 
 use anyhow::{Context, Result};
 
@@ -181,7 +197,23 @@ CREATE INDEX IF NOT EXISTS idx_conflict_participant_node ON conflict_participant
 ///   whole sequence means every other connection sees either none of this
 ///   schema or all of it — never a table with some of its indexes (or, on
 ///   a from-scratch table, some of its columns) missing.
-async fn create_schema_body(conn: &libsql::Connection) -> Result<()> {
+async fn create_schema_body(conn: &libsql::Connection, expected: &[ExpectedTable]) -> Result<()> {
+    // Refuse a database whose existing tables have a different shape before
+    // touching it: the DDL below would otherwise fail part-way on the first
+    // index or trigger naming a column the old table lacks, with an error that
+    // says nothing about why.
+    let mismatches = find_shape_mismatches(conn, expected).await?;
+    if !mismatches.is_empty() {
+        return Err(anyhow::Error::new(SchemaMismatch { tables: mismatches }));
+    }
+
+    execute_schema_sql(conn).await?;
+
+    create_schema_objects(conn).await
+}
+
+/// Run every `CREATE TABLE`/`CREATE INDEX` in [`SCHEMA_SQL`] on `conn`.
+async fn execute_schema_sql(conn: &libsql::Connection) -> Result<()> {
     // Naive `;`-splitting is safe ONLY because SCHEMA_SQL is plain CREATE
     // TABLE/INDEX statements with no semicolons inside string literals,
     // comments, or multi-statement bodies. Triggers and virtual tables are
@@ -208,7 +240,12 @@ async fn create_schema_body(conn: &libsql::Connection) -> Result<()> {
             .await
             .with_context(|| format!("Failed to execute DDL: {}", &stmt[..stmt.len().min(80)]))?;
     }
+    Ok(())
+}
 
+/// The virtual tables, triggers and closing `ANALYZE` that [`SCHEMA_SQL`]
+/// cannot carry.
+async fn create_schema_objects(conn: &libsql::Connection) -> Result<()> {
     // FTS5 index over `node.title`. It answers "which node *is* X?" (one short
     // row per nameable node, whose text is that node's own name), and it is the
     // only full-text index: general search's keyword half matches documents by
@@ -418,12 +455,23 @@ async fn create_schema_body(conn: &libsql::Connection) -> Result<()> {
 /// it would make every subsequent write on the connection fail with "cannot
 /// start a transaction within a transaction" for the rest of the process's
 /// life.
+///
+/// Returns an error whose root cause is a [`SchemaMismatch`] when the database
+/// already holds tables whose columns differ from this build's DDL; nothing is
+/// written in that case. Callers that need to tell that apart from any other
+/// failure use [`SchemaMismatch::find_in`].
 pub async fn create_schema(conn: &libsql::Connection) -> Result<()> {
+    // Derived before the transaction opens: it is served from a process-wide
+    // cache after the first call, and the first call opens a separate
+    // in-memory database, which has no business happening under this
+    // connection's write lock.
+    let expected = expected_shape().await?;
+
     conn.execute("BEGIN IMMEDIATE", ())
         .await
         .context("Failed to begin schema-creation transaction")?;
 
-    if let Err(e) = create_schema_body(conn).await {
+    if let Err(e) = create_schema_body(conn, expected).await {
         // Best-effort: if the rollback itself fails, the original DDL error
         // is what the caller needs to see, not the rollback's.
         let _ = conn.execute("ROLLBACK", ()).await;
@@ -446,4 +494,365 @@ pub async fn create_schema(conn: &libsql::Connection) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// One table this build's DDL defines, with its columns in declaration order.
+#[derive(Debug)]
+struct ExpectedTable {
+    name: String,
+    columns: Vec<String>,
+}
+
+/// The tables and columns [`SCHEMA_SQL`] defines, derived by running it on a
+/// throwaway in-memory database and reading the result back — so the check
+/// can never drift from the DDL, as a hand-kept column list would. Computed
+/// once per process.
+///
+/// Only [`SCHEMA_SQL`]'s ordinary tables are covered, not the FTS5 and vec0
+/// virtual tables `create_schema_objects` adds.
+async fn expected_shape() -> Result<&'static [ExpectedTable]> {
+    static EXPECTED: tokio::sync::OnceCell<Vec<ExpectedTable>> = tokio::sync::OnceCell::const_new();
+    let tables = EXPECTED
+        .get_or_try_init(|| async {
+            let db = libsql::Builder::new_local(":memory:")
+                .build()
+                .await
+                .context("Failed to open in-memory database for the schema shape")?;
+            let conn = db
+                .connect()
+                .context("Failed to connect to in-memory database for the schema shape")?;
+            execute_schema_sql(&conn).await?;
+            let mut tables = Vec::new();
+            for name in ordinary_tables(&conn).await? {
+                let columns = table_columns(&conn, &name).await?;
+                tables.push(ExpectedTable { name, columns });
+            }
+            Ok::<_, anyhow::Error>(tables)
+        })
+        .await?;
+    Ok(tables)
+}
+
+/// Every table on `conn` other than SQLite's own internal ones.
+async fn ordinary_tables(conn: &libsql::Connection) -> Result<Vec<String>> {
+    let mut rows = conn
+        .query(
+            "SELECT name FROM sqlite_master \
+             WHERE type = 'table' \
+               AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\' \
+             ORDER BY name",
+            (),
+        )
+        .await
+        .context("Failed to list tables")?;
+    let mut names = Vec::new();
+    while let Some(row) = rows.next().await.context("Failed to read table list")? {
+        names.push(row.get::<String>(0).context("Failed to read table name")?);
+    }
+    Ok(names)
+}
+
+/// The columns of `table`, in declaration order. Empty when the table does not
+/// exist.
+async fn table_columns(conn: &libsql::Connection, table: &str) -> Result<Vec<String>> {
+    let mut rows = conn
+        .query(
+            "SELECT name FROM pragma_table_info(?1) ORDER BY cid",
+            libsql::params![table],
+        )
+        .await
+        .with_context(|| format!("Failed to read the columns of table {table}"))?;
+    let mut columns = Vec::new();
+    while let Some(row) = rows
+        .next()
+        .await
+        .with_context(|| format!("Failed to read the columns of table {table}"))?
+    {
+        columns.push(row.get::<String>(0).context("Failed to read column name")?);
+    }
+    Ok(columns)
+}
+
+/// Compare each table [`SCHEMA_SQL`] defines that already exists on `conn`
+/// against its expected columns. A table that does not exist yet is not a
+/// mismatch — the DDL creates it.
+async fn find_shape_mismatches(
+    conn: &libsql::Connection,
+    expected: &[ExpectedTable],
+) -> Result<Vec<TableShapeMismatch>> {
+    let mut mismatches = Vec::new();
+    for table in expected {
+        let actual = table_columns(conn, &table.name).await?;
+        if actual.is_empty() {
+            continue;
+        }
+        let actual_set: BTreeSet<&str> = actual.iter().map(String::as_str).collect();
+        let expected_set: BTreeSet<&str> = table.columns.iter().map(String::as_str).collect();
+        let missing_columns: Vec<String> = table
+            .columns
+            .iter()
+            .filter(|c| !actual_set.contains(c.as_str()))
+            .cloned()
+            .collect();
+        let unexpected_columns: Vec<String> = actual
+            .iter()
+            .filter(|c| !expected_set.contains(c.as_str()))
+            .cloned()
+            .collect();
+        if !missing_columns.is_empty() || !unexpected_columns.is_empty() {
+            mismatches.push(TableShapeMismatch {
+                table: table.name.clone(),
+                missing_columns,
+                unexpected_columns,
+            });
+        }
+    }
+    Ok(mismatches)
+}
+
+/// How one existing table differs from the shape this build's DDL defines.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TableShapeMismatch {
+    pub table: String,
+    /// Columns this build defines that the existing table lacks.
+    pub missing_columns: Vec<String>,
+    /// Columns the existing table has that this build does not define.
+    pub unexpected_columns: Vec<String>,
+}
+
+/// The database was created by a different build of NodeSpace: at least one
+/// of its existing tables has columns other than the ones this build's DDL
+/// defines.
+///
+/// There is no migration path by design (see the module docs). The database
+/// can only be moved aside and replaced with a fresh one, so callers treat
+/// this as a stop condition rather than a transient failure worth retrying.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SchemaMismatch {
+    /// Every mismatched table, in [`SCHEMA_SQL`]'s table-name order.
+    pub tables: Vec<TableShapeMismatch>,
+}
+
+impl SchemaMismatch {
+    /// The `SchemaMismatch` anywhere in `err`'s cause chain, if there is one.
+    /// Callers wrap [`create_schema`]'s error in their own context on the way
+    /// up, so the mismatch is rarely the outermost error.
+    pub fn find_in(err: &anyhow::Error) -> Option<&SchemaMismatch> {
+        err.chain()
+            .find_map(|cause| cause.downcast_ref::<SchemaMismatch>())
+    }
+}
+
+impl fmt::Display for SchemaMismatch {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "this database was created by a different version of NodeSpace and its tables \
+             do not match this version's schema"
+        )?;
+        let mut details = Vec::new();
+        for table in &self.tables {
+            let mut parts = Vec::new();
+            if !table.missing_columns.is_empty() {
+                parts.push(format!("missing {}", table.missing_columns.join(", ")));
+            }
+            if !table.unexpected_columns.is_empty() {
+                parts.push(format!(
+                    "unexpected {}",
+                    table.unexpected_columns.join(", ")
+                ));
+            }
+            details.push(format!("{}: {}", table.table, parts.join("; ")));
+        }
+        if !details.is_empty() {
+            write!(f, " ({})", details.join("; "))?;
+        }
+        write!(
+            f,
+            ". NodeSpace does not migrate databases between versions: move this database \
+             aside and start with a fresh one"
+        )
+    }
+}
+
+impl std::error::Error for SchemaMismatch {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `relationship` exactly as it stood before `reverse_relationship_type`
+    /// was added — the shape a database created by an earlier release carries.
+    const RELATIONSHIP_WITHOUT_REVERSE_TYPE: &str = "CREATE TABLE relationship (
+        id                TEXT    PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+        in_node           TEXT    NOT NULL REFERENCES node(id) ON DELETE CASCADE,
+        out_node          TEXT    NOT NULL REFERENCES node(id) ON DELETE CASCADE,
+        relationship_type TEXT    NOT NULL,
+        properties        TEXT    NOT NULL DEFAULT '{}',
+        version           INTEGER NOT NULL DEFAULT 1,
+        created_at        TEXT    NOT NULL,
+        modified_at       TEXT    NOT NULL
+    ) STRICT";
+
+    async fn open(path: &std::path::Path) -> libsql::Connection {
+        crate::db::ensure_sqlite_vec_registered().await;
+        let db = libsql::Builder::new_local(path).build().await.unwrap();
+        db.connect().unwrap()
+    }
+
+    /// Build a database with the full current schema, then rebuild
+    /// `relationship` without `reverse_relationship_type` — an old-shape
+    /// database, carrying a row so the rebuild is not trivially empty.
+    async fn old_shape_database(path: &std::path::Path) {
+        let conn = open(path).await;
+        create_schema(&conn).await.unwrap();
+        conn.execute_batch(&format!(
+            "INSERT INTO node (id, node_type, created_at, modified_at) VALUES ('a', 'text', 't', 't');
+             INSERT INTO node (id, node_type, created_at, modified_at) VALUES ('b', 'text', 't', 't');
+             DROP TABLE relationship;
+             {RELATIONSHIP_WITHOUT_REVERSE_TYPE};
+             INSERT INTO relationship (in_node, out_node, relationship_type, created_at, modified_at)
+                 VALUES ('a', 'b', 'has_child', 't', 't');"
+        ))
+        .await
+        .unwrap();
+    }
+
+    async fn count(conn: &libsql::Connection, sql: &str) -> i64 {
+        let mut rows = conn.query(sql, ()).await.unwrap();
+        rows.next().await.unwrap().unwrap().get::<i64>(0).unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_database_missing_a_column_is_refused_with_a_schema_mismatch() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("old.db");
+        old_shape_database(&path).await;
+
+        let conn = open(&path).await;
+        let err = create_schema(&conn)
+            .await
+            .expect_err("an old-shape database must be refused");
+        let mismatch = SchemaMismatch::find_in(&err)
+            .unwrap_or_else(|| panic!("expected a SchemaMismatch, got: {err:#}"));
+        assert_eq!(
+            mismatch.tables,
+            vec![TableShapeMismatch {
+                table: "relationship".to_string(),
+                missing_columns: vec!["reverse_relationship_type".to_string()],
+                unexpected_columns: vec![],
+            }]
+        );
+        let message = err.to_string();
+        assert!(
+            message.contains("relationship: missing reverse_relationship_type"),
+            "the message must name the table and column: {message}"
+        );
+
+        // Refused, not half-applied: the transaction rolled back, so the index
+        // naming the missing column was never created, the row is intact, and
+        // the connection is not left inside an open transaction.
+        assert_eq!(
+            count(
+                &conn,
+                "SELECT count(*) FROM sqlite_master WHERE name = 'idx_rel_reverse'"
+            )
+            .await,
+            0
+        );
+        assert_eq!(count(&conn, "SELECT count(*) FROM relationship").await, 1);
+        assert!(conn.is_autocommit(), "the refusal must roll back");
+    }
+
+    #[tokio::test]
+    async fn a_database_with_an_extra_column_is_refused_with_a_schema_mismatch() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("extra.db");
+        let conn = open(&path).await;
+        create_schema(&conn).await.unwrap();
+        conn.execute("ALTER TABLE conflict ADD COLUMN retired_field TEXT", ())
+            .await
+            .unwrap();
+
+        let err = create_schema(&conn).await.unwrap_err();
+        let mismatch = SchemaMismatch::find_in(&err).expect("a SchemaMismatch");
+        assert_eq!(
+            mismatch.tables,
+            vec![TableShapeMismatch {
+                table: "conflict".to_string(),
+                missing_columns: vec![],
+                unexpected_columns: vec!["retired_field".to_string()],
+            }]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_fresh_database_and_a_reopened_one_pass_the_shape_check() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("fresh.db");
+        let conn = open(&path).await;
+        create_schema(&conn).await.expect("fresh database");
+        drop(conn);
+        let conn = open(&path).await;
+        create_schema(&conn)
+            .await
+            .expect("reopening a current-shape database");
+    }
+
+    /// A table this build adds that an older database never had is created,
+    /// not reported: `IF NOT EXISTS` DDL handles a missing table on its own.
+    #[tokio::test]
+    async fn a_missing_table_is_created_rather_than_reported() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("partial.db");
+        let conn = open(&path).await;
+        create_schema(&conn).await.unwrap();
+        conn.execute("DROP TABLE conflict_participant", ())
+            .await
+            .unwrap();
+
+        create_schema(&conn)
+            .await
+            .expect("a missing table is not a mismatch");
+        assert_eq!(
+            count(
+                &conn,
+                "SELECT count(*) FROM sqlite_master WHERE name = 'conflict_participant'"
+            )
+            .await,
+            1
+        );
+    }
+
+    /// The expected shape is read back from the DDL, so every ordinary table
+    /// in it is covered and none of the virtual tables' internals leak in.
+    #[tokio::test]
+    async fn the_expected_shape_covers_every_ordinary_table_in_the_ddl() {
+        let names: Vec<&str> = expected_shape()
+            .await
+            .unwrap()
+            .iter()
+            .map(|t| t.name.as_str())
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                "conflict",
+                "conflict_participant",
+                "embedding",
+                "node",
+                "relationship"
+            ]
+        );
+        let relationship = expected_shape()
+            .await
+            .unwrap()
+            .iter()
+            .find(|t| t.name == "relationship")
+            .unwrap();
+        assert!(relationship
+            .columns
+            .iter()
+            .any(|c| c == "reverse_relationship_type"));
+    }
 }

@@ -565,6 +565,11 @@ pub async fn ensure_daemon_running(app: &AppHandle) -> Result<DaemonStatus> {
     // guaranteed here, and does not need to be.
     rotate_daemon_logs(&log_dir);
 
+    // A marker from an earlier refusal must not end the wait below before this
+    // start has had its own chance; the daemon writes it again if the database
+    // is still incompatible.
+    crate::incompatible_database::clear_stale_marker();
+
     // Register and/or start the daemon user service.
     #[cfg(target_os = "macos")]
     {
@@ -598,7 +603,12 @@ pub async fn ensure_daemon_running(app: &AppHandle) -> Result<DaemonStatus> {
 
     // The daemon loads the embedding model before binding the socket (~9s on M2 Pro).
     // 30s covers cold-start model load on slower machines.
-    let status = wait_for_daemon(&socket_path, Duration::from_secs(30)).await;
+    let status = wait_for_daemon_or_refusal(
+        &socket_path,
+        Duration::from_secs(30),
+        crate::incompatible_database::refusal_recorded,
+    )
+    .await;
     Ok(status)
 }
 
@@ -744,12 +754,31 @@ pub async fn check_daemon_socket(socket_path: &Path) -> DaemonStatus {
 /// `pub` (not `pub(crate)`) so the readiness integration test — which lives
 /// in `tests/`, a separate crate — can drive it against a real daemon.
 pub async fn wait_for_daemon(socket_path: &Path, max_wait: Duration) -> DaemonStatus {
+    wait_for_daemon_or_refusal(socket_path, max_wait, || false).await
+}
+
+/// [`wait_for_daemon`], but also stop as soon as `refused()` reports that the
+/// daemon has stopped on purpose — it refused an incompatible database and
+/// exited, so it will never become healthy and the full wait would only delay
+/// telling the user why.
+pub async fn wait_for_daemon_or_refusal(
+    socket_path: &Path,
+    max_wait: Duration,
+    refused: impl Fn() -> bool,
+) -> DaemonStatus {
     let deadline = tokio::time::Instant::now() + max_wait;
     loop {
         let status = check_daemon_socket(socket_path).await;
         if status == DaemonStatus::Healthy {
             tracing::info!("nodespaced is up and healthy");
             return DaemonStatus::Healthy;
+        }
+        if refused() {
+            tracing::warn!(
+                "nodespaced refused its database: it was created by a different version \
+                 of NodeSpace"
+            );
+            return status;
         }
         if tokio::time::Instant::now() >= deadline {
             tracing::warn!("nodespaced did not respond within {:?}", max_wait);
@@ -1777,7 +1806,7 @@ async fn check_and_rotate_live_logs(app: &AppHandle) -> Result<()> {
         if status == DaemonStatus::Healthy {
             "healthy"
         } else {
-            "not_running"
+            crate::incompatible_database::daemon_down_status()
         },
         None,
     );
@@ -3250,5 +3279,43 @@ mod log_rotation_watcher_tests {
             "the in-flight check must complete, and the loop must exit afterward without \
              starting a second one"
         );
+    }
+}
+
+#[cfg(all(test, unix))]
+mod wait_for_daemon_or_refusal_tests {
+    use super::{wait_for_daemon_or_refusal, DaemonStatus};
+    use std::time::{Duration, Instant};
+
+    /// A daemon that recorded a refusal has stopped on purpose; the wait must
+    /// end at once rather than run out its full timeout before the user is
+    /// told why.
+    #[tokio::test]
+    async fn stops_waiting_as_soon_as_a_refusal_is_recorded() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("absent.sock");
+        let started = Instant::now();
+
+        let status = wait_for_daemon_or_refusal(&socket, Duration::from_secs(30), || true).await;
+
+        assert_eq!(status, DaemonStatus::NotRunning);
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "a recorded refusal must end the wait immediately, took {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[tokio::test]
+    async fn without_a_refusal_it_waits_out_the_timeout() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("absent.sock");
+        let started = Instant::now();
+
+        let status =
+            wait_for_daemon_or_refusal(&socket, Duration::from_millis(600), || false).await;
+
+        assert_eq!(status, DaemonStatus::NotRunning);
+        assert!(started.elapsed() >= Duration::from_millis(600));
     }
 }

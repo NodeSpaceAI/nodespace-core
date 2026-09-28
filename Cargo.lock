@@ -3565,6 +3565,7 @@ dependencies = [
  "nodespace-core",
  "nodespace-nlp-engine",
  "nodespace-proto",
+ "nodespace-types",
  "prost 0.13.5",
  "serde",
  "serde_json",

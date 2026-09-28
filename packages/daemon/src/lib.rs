@@ -6,6 +6,7 @@
 //! re-exports them alongside the service implementations.
 
 pub mod db_routing;
+pub mod incompatible_database;
 pub mod router;
 pub mod services;
 pub mod tray;

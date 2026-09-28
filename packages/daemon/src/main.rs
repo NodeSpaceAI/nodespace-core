@@ -44,9 +44,9 @@ use anyhow::{Context, Result};
 use nodespace_agent::local_agent::otlp_tracer;
 use nodespace_daemon::tray::layer::TrayMetricsLayer;
 use nodespace_daemon::{
-    build_base_router, build_shared_services, create_dir_owner_only, resolve_db_path, tray,
-    BaseServices, DatabaseManager, DatabaseServiceImpl, DatabaseServices, DbManagerLayer,
-    SharedContext,
+    build_base_router, build_shared_services, create_dir_owner_only, incompatible_database,
+    resolve_db_path, tray, BaseServices, DatabaseManager, DatabaseServiceImpl, DatabaseServices,
+    DbManagerLayer, SharedContext,
 };
 use nodespace_nlp_engine::EmbeddingService;
 use tokio::sync::watch;
@@ -98,7 +98,14 @@ async fn open_default_database(
     let default_id = manager
         .ensure_default_registered("Default".to_string(), db_path.to_path_buf())
         .await?;
-    let bundle = manager.get_or_open(&default_id).await?;
+    let marker = incompatible_database::marker_path(is_pro_build())?;
+    let bundle = incompatible_database::open_default_or_record_refusal(
+        &manager,
+        &default_id,
+        db_path,
+        &marker,
+    )
+    .await?;
     // Log the path the registry actually resolved the default to — not the
     // boot-time `db_path`, which the registry can and does override.
     if let Some(served) = manager.default_database_path().await {
@@ -460,7 +467,9 @@ fn main() -> Result<()> {
         .context("build tokio runtime")?;
 
     if headless() {
-        let result = runtime.block_on(async { serve_headless().await });
+        let result = incompatible_database::stop_cleanly_on_incompatible_database(
+            runtime.block_on(async { serve_headless().await }),
+        );
         if let Err(ref e) = result {
             // Log this immediately, loudly, and with the full context chain --
             // don't rely solely on the process's final `Result` print, which
@@ -505,10 +514,12 @@ fn main() -> Result<()> {
         std::process::exit(0);
     });
 
-    runtime
-        .block_on(grpc_handle)
-        .context("gRPC task panicked")?
-        .context("gRPC server returned an error")?;
+    incompatible_database::stop_cleanly_on_incompatible_database(
+        runtime
+            .block_on(grpc_handle)
+            .context("gRPC task panicked")?
+            .context("gRPC server returned an error"),
+    )?;
     defused.store(true, Ordering::SeqCst);
 
     tracing::info!("nodespaced shutdown complete");
