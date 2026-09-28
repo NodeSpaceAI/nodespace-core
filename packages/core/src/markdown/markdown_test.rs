@@ -3400,6 +3400,22 @@ mod list_round_trip_tests {
             round_trip("Intro\n- a\n- b\nwrapped\n- c"),
             "Intro\n\n- a\n- b\nwrapped\n- c"
         );
+        // An indented continuation line is trimmed — same CommonMark meaning.
+        assert_eq!(
+            round_trip("Intro\n- a\n- b\n  wrapped\n- c"),
+            "Intro\n\n- a\n- b\nwrapped\n- c"
+        );
+    }
+
+    #[test]
+    fn continuation_paragraph_does_not_capture_the_next_item() {
+        // `- b` stays a sibling of `- a` under Intro, not a child of a's
+        // continuation paragraph. (The continuation itself renders as a
+        // nested item — a documented limit of the renderer.)
+        assert_eq!(
+            round_trip("Intro\n- a\n\n  more about a\n  continues here\n- b"),
+            "Intro\n\n- a\n  - more about a\ncontinues here\n- b"
+        );
     }
 
     #[test]

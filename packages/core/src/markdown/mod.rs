@@ -502,8 +502,10 @@ pub fn prepare_nodes_from_markdown(
     // Track indentation-based hierarchy (node_id, indent_level)
     let mut indent_stack: Vec<(String, usize)> = Vec::new();
 
-    // Track last text paragraph for bullet/ordered-list hierarchy
-    let mut last_text_node: Option<(String, usize)> = None;
+    // Paragraphs that can introduce a bullet/ordered list, innermost last,
+    // each with its indent: a list item's indented continuation paragraph
+    // sits above the paragraph that introduced the list itself.
+    let mut text_stack: Vec<(String, usize)> = Vec::new();
 
     // Track last content node for code-block/quote-block hierarchy
     let mut last_content_node: Option<String> = None;
@@ -650,6 +652,16 @@ pub fn prepare_nodes_from_markdown(
             }
         }
 
+        // A paragraph indented deeper than this line (a list item's
+        // continuation) cannot introduce what follows at a shallower indent.
+        while text_stack
+            .last()
+            .is_some_and(|(_, text_indent)| *text_indent > indent_level)
+        {
+            text_stack.pop();
+        }
+        let last_text_id = text_stack.last().map(|(id, _)| id.clone());
+
         // Determine parent based on hierarchy rules
         let parent_id = if node_type == "horizontal-line" {
             // Horizontal rules are document-level dividers — always place at root level
@@ -663,19 +675,13 @@ pub fn prepare_nodes_from_markdown(
                 indent_stack
                     .last()
                     .map(|(id, _)| id.clone())
-                    .or_else(|| last_text_node.as_ref().map(|(id, _)| id.clone()))
+                    .or(last_text_id)
                     .or_else(|| context.current_parent_id())
             } else {
-                last_text_node
-                    .as_ref()
-                    .map(|(id, _)| id.clone())
-                    .or_else(|| context.current_parent_id())
+                last_text_id.or_else(|| context.current_parent_id())
             }
         } else if node_type == "ordered-list" {
-            last_text_node
-                .as_ref()
-                .map(|(id, _)| id.clone())
-                .or_else(|| context.current_parent_id())
+            last_text_id.or_else(|| context.current_parent_id())
         } else if let Some(h_level) = heading_level {
             context.pop_headings_for_level(h_level);
             indent_stack
@@ -718,9 +724,17 @@ pub fn prepare_nodes_from_markdown(
         }
 
         if node_type == "text" && !is_bullet {
-            last_text_node = Some((node_id.clone(), indent_level));
+            // Already popped to this indent: a same-indent paragraph replaces
+            // its predecessor, a deeper one stacks above it.
+            if text_stack
+                .last()
+                .is_some_and(|(_, text_indent)| *text_indent == indent_level)
+            {
+                text_stack.pop();
+            }
+            text_stack.push((node_id.clone(), indent_level));
         } else if node_type != "text" {
-            last_text_node = None;
+            text_stack.clear();
         }
 
         if node_type == "header" || (node_type == "text" && !is_bullet) {
