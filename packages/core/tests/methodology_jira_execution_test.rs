@@ -530,32 +530,29 @@ async fn a_cardinality_eviction_dispatches_its_removal() -> Result<()> {
     h.service
         .create_node(Node::new(
             "play".to_string(),
-            "Keep work in a scheduled epic".to_string(),
+            "Keep work in an in-progress epic".to_string(),
             json!({ "rules": [{
-                "name": "reject-leaving-a-scheduled-epic",
+                "name": "reject-leaving-an-in-progress-epic",
                 "class": "invariant",
                 "trigger": {
                     "type": "graph_event",
                     "on": "relationship_removed",
                     "node_type": "epic",
                 },
-                // The epic's own field: an own-scope condition reads only the
-                // node's own bucket, so an inherited field like `status`
-                // (stored under `task`) is not visible here.
-                "conditions": ["has(node.target_date)"],
+                "conditions": ["node.status == 'in_progress'"],
                 "actions": [{
                     "action_type": "reject",
-                    "params": { "message": "scheduled epics keep their issues" },
+                    "params": { "message": "in-progress epics keep their issues" },
                 }],
             }] }),
         ))
         .await?;
     tokio::time::sleep(Duration::from_millis(80)).await;
-    assert!(h.set(&epic, json!({ "target_date": "2026-09-30" })).await?);
+    assert!(h.set(&epic, json!({ "status": "in_progress" })).await?);
 
     assert!(
         !h.link(&other, "issues", &story).await,
-        "moving an issue out of a scheduled epic must be rejected via its eviction"
+        "moving an issue out of an in-progress epic must be rejected via its eviction"
     );
     assert_eq!(h.containers_of(&story, "epic").await?, vec![epic.clone()]);
     assert!(
