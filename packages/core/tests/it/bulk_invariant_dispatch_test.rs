@@ -384,7 +384,7 @@ async fn sync_tagged_bulk_create_does_not_run_invariant_rules() -> Result<()> {
 /// The sync replay runs `bulk_create`/`bulk_update` inside its own
 /// `begin_batch_emit` guard. Their transactions must hand their committed
 /// events to that batch — delivered when the guard drops, not before, and
-/// not lost.
+/// not lost. A create stays a create, however many updates follow it.
 #[tokio::test]
 async fn bulk_writes_inside_a_batch_emit_guard_deliver_their_events_on_drop() -> Result<()> {
     let (service, _tmp) = create_test_service().await?;
@@ -417,11 +417,11 @@ async fn bulk_writes_inside_a_batch_emit_guard_deliver_their_events_on_drop() ->
     assert_eq!(
         events.len(),
         1,
-        "the batch keeps one event per node, last write wins — got {events:?}"
+        "the batch keeps one event per node — got {events:?}"
     );
     assert!(
-        matches!(&events[0], DomainEvent::NodeUpdated { node_id, .. } if node_id == &id),
-        "expected the node's NodeUpdated, got {events:?}"
+        matches!(&events[0], DomainEvent::NodeCreated { node_id, .. } if node_id == &id),
+        "expected the node's NodeCreated, which the update it was followed by must not replace, got {events:?}"
     );
     Ok(())
 }

@@ -494,12 +494,47 @@ impl Emitter {
 }
 
 /// One open `begin_batch_emit` batch: the guard's `token`, the emitter that
-/// opened it, and its events keyed by node id, each with the sequence number
-/// it was published at (see [`BatchState::offer`]).
+/// opened it, and its events keyed by node id and origin (see
+/// [`BatchState::offer`]).
 struct OpenBatch {
     token: u64,
     owner: Emitter,
-    events: HashMap<String, (u64, crate::db::events::EventEnvelope)>,
+    events: HashMap<BatchKey, HeldEvent>,
+}
+
+/// What a batch holds events under: the node, the client the write came
+/// from, and the play that made it, if any. Writes that differ in either
+/// never merge, so one writer's changes are never relabelled with another's
+/// metadata — a sync-applied create must not reach the playbook engine's
+/// local-origin gate (ADR-073) as a local one, and a user's edit must not
+/// carry a play's chain depth, nor a play's write lose it.
+#[derive(PartialEq, Eq, Hash)]
+struct BatchKey {
+    node_id: String,
+    source_client_id: Option<String>,
+    source_playbook_id: Option<String>,
+}
+
+impl BatchKey {
+    fn new(node_id: String, envelope: &crate::db::events::EventEnvelope) -> Self {
+        let metadata = &envelope.metadata;
+        BatchKey {
+            node_id,
+            source_client_id: metadata.source_client_id.clone(),
+            source_playbook_id: metadata
+                .playbook_context
+                .as_ref()
+                .map(|context| context.source_playbook_id.clone()),
+        }
+    }
+}
+
+/// A batch's merged event for one [`BatchKey`], with the sequence number of
+/// the latest write merged into it, which orders both merges and the flush
+/// (see [`BatchState::offer`]).
+struct HeldEvent {
+    seq: u64,
+    envelope: crate::db::events::EventEnvelope,
 }
 
 /// The open `begin_batch_emit` batches, shared by every clone of a
@@ -549,9 +584,13 @@ impl BatchState {
 
     /// Offer a node-keyed `envelope` published at `seq` by `emitter` to an
     /// open batch: the most recent batch `emitter` opened itself, else the
-    /// most recently opened batch of all. The batch keeps, per node, the
-    /// envelope with the highest `seq`. Returns the envelope when no batch
-    /// is open, for the caller to broadcast.
+    /// most recently opened batch of all. The batch holds one envelope per
+    /// [`BatchKey`], merging each new one with the held one in `seq` order
+    /// (see [`coalesce_envelopes`]). A write published late whose `seq` falls
+    /// between two already merged is treated as the earlier of the pair, so
+    /// a key it shares takes its `old_value` rather than the first write's.
+    /// Returns the envelope when no batch is open, for the caller to
+    /// broadcast.
     fn offer(
         &mut self,
         emitter: Emitter,
@@ -567,16 +606,20 @@ impl BatchState {
         let Some(index) = index else {
             return Some(envelope);
         };
-        match self.batches[index].events.entry(node_id) {
-            std::collections::hash_map::Entry::Occupied(mut held) => {
-                if held.get().0 <= seq {
-                    held.insert((seq, envelope));
-                }
-            }
-            std::collections::hash_map::Entry::Vacant(slot) => {
-                slot.insert((seq, envelope));
-            }
-        }
+        let key = BatchKey::new(node_id, &envelope);
+        let events = &mut self.batches[index].events;
+        let merged = match events.remove(&key) {
+            Some(held) if held.seq > seq => HeldEvent {
+                seq: held.seq,
+                envelope: coalesce_envelopes(envelope, held.envelope),
+            },
+            Some(held) => HeldEvent {
+                seq,
+                envelope: coalesce_envelopes(held.envelope, envelope),
+            },
+            None => HeldEvent { seq, envelope },
+        };
+        events.insert(key, merged);
         None
     }
 
@@ -625,7 +668,8 @@ fn push_forward_allowed(
 /// RAII guard returned by `NodeService::begin_batch_emit`.
 ///
 /// While this guard is live, domain events emitted by the store notifier are
-/// coalesced per node (last-write-wins) instead of broadcast individually.
+/// coalesced per node (see [`coalesce_envelopes`]) instead of broadcast
+/// individually.
 /// On `Drop` the accumulated events are flushed to the broadcast channel —
 /// at most one event per node. A guard flushes only its own batch, whatever
 /// other guards are open or drop around it.
@@ -647,8 +691,12 @@ impl Drop for BatchEmitGuard {
             .unwrap_or_else(|e| e.into_inner())
             .close(self.token);
         if let Some(batch) = batch {
+            let mut held: Vec<HeldEvent> = batch.events.into_values().collect();
+            // Latest write last, so a subscriber that applies each event's
+            // node snapshot in turn ends on the newest one.
+            held.sort_by_key(|event| event.seq);
             flush_envelopes(
-                batch.events.into_values().map(|(_, envelope)| envelope),
+                held.into_iter().map(|event| event.envelope),
                 &self.tx,
                 &self.push_tx,
                 &self.push_excluded_origin,
@@ -666,6 +714,83 @@ fn envelope_node_id(envelope: &crate::db::events::EventEnvelope) -> Option<Strin
         DomainEvent::NodeDeleted { id, .. } => Some(id.clone()),
         _ => None,
     }
+}
+
+/// Merge two events for one node, `earlier` then `later`, into the single
+/// event a batch flushes for it, without dropping what a subscriber keys on:
+///
+/// - A create followed by updates stays a `NodeCreated`, so a subscriber
+///   still sees the node as new (ADR-060 §7 re-checks `node_created`
+///   invariants on it). It takes the later event's type, and subscribers
+///   read the node's current state by fetching it, as for any create.
+/// - Two updates become one carrying the later committed node and every key
+///   either changed: each key's first `old_value` and last `new_value`, with
+///   a key whose value ended where it started left out. The play write id is
+///   the exception: the merged update changed it only if the later one did,
+///   since `chain_depth_of_write` reads it as "the write that produced this
+///   node was a play write", and a user edit after a play write was not.
+/// - Anything else — a delete, or a create after a delete — is the later
+///   event alone, since it states what the node now is.
+///
+/// Both events come from one writer (see [`BatchKey`]); the metadata is the
+/// later event's.
+fn coalesce_envelopes(
+    earlier: crate::db::events::EventEnvelope,
+    later: crate::db::events::EventEnvelope,
+) -> crate::db::events::EventEnvelope {
+    let event = match (earlier.event, later.event) {
+        (DomainEvent::NodeCreated { node_id, .. }, DomainEvent::NodeUpdated { node_type, .. }) => {
+            DomainEvent::NodeCreated { node_id, node_type }
+        }
+        (
+            DomainEvent::NodeUpdated {
+                changed_properties: earlier_changes,
+                ..
+            },
+            DomainEvent::NodeUpdated {
+                node_id,
+                node_type,
+                node,
+                changed_properties: later_changes,
+            },
+        ) => DomainEvent::NodeUpdated {
+            node_id,
+            node_type,
+            node,
+            changed_properties: merge_property_changes(earlier_changes, later_changes),
+        },
+        (_, later_event) => later_event,
+    };
+    crate::db::events::EventEnvelope {
+        event,
+        metadata: later.metadata,
+    }
+}
+
+/// The net change of two consecutive diffs, in first-changed order: each
+/// key's first `old_value` and last `new_value`, dropping a key whose value
+/// ended where it started. The play write id counts only if `later`
+/// changed it (see [`coalesce_envelopes`]).
+fn merge_property_changes(
+    earlier: Vec<crate::db::events::PropertyChange>,
+    later: Vec<crate::db::events::PropertyChange>,
+) -> Vec<crate::db::events::PropertyChange> {
+    use crate::db::events::PLAYBOOK_WRITE_ID_PROPERTY;
+    let later_is_play_write = later
+        .iter()
+        .any(|change| change.key == PLAYBOOK_WRITE_ID_PROPERTY);
+    let mut merged = earlier;
+    if !later_is_play_write {
+        merged.retain(|change| change.key != PLAYBOOK_WRITE_ID_PROPERTY);
+    }
+    for change in later {
+        match merged.iter_mut().find(|held| held.key == change.key) {
+            Some(held) => held.new_value = change.new_value,
+            None => merged.push(change),
+        }
+    }
+    merged.retain(|change| change.old_value != change.new_value);
+    merged
 }
 
 /// Send every buffered envelope, in order, mirroring to the push channel the
@@ -2936,7 +3061,7 @@ impl NodeService {
     /// Begin batched event emission for bulk operations.
     ///
     /// While the returned `BatchEmitGuard` is live, domain events from the store
-    /// notifier are coalesced per node (last-write-wins) instead of being broadcast
+    /// notifier are coalesced per node (see [`coalesce_envelopes`]) instead of being broadcast
     /// individually. When the guard drops, one event per modified node is flushed to
     /// the broadcast channel.
     ///
@@ -2971,7 +3096,7 @@ impl NodeService {
     /// and execution_context as metadata.
     ///
     /// For a write made OUTSIDE any transaction: when a `BatchEmitGuard` is
-    /// open, a node-keyed event is buffered (last-write-wins per node_id; see
+    /// open, a node-keyed event is buffered (coalesced per node_id; see
     /// [`BatchState::route`]) instead of broadcast immediately. Code inside
     /// [`Self::with_transaction`] must use [`Self::emit_event_in_tx`]
     /// instead, so the event waits for the commit.
@@ -8626,6 +8751,363 @@ mod tests {
             }
         }
         assert_eq!(node_types, vec!["later".to_string()]);
+    }
+
+    /// Drain every node-keyed event the receiver holds.
+    fn drain_node_events(
+        rx: &mut broadcast::Receiver<crate::db::events::EventEnvelope>,
+    ) -> Vec<DomainEvent> {
+        let mut events = Vec::new();
+        while let Ok(envelope) = rx.try_recv() {
+            if envelope_node_id(&envelope).is_some() {
+                events.push(envelope.event);
+            }
+        }
+        events
+    }
+
+    fn change(
+        key: &str,
+        old: Option<Value>,
+        new: Option<Value>,
+    ) -> crate::db::events::PropertyChange {
+        crate::db::events::PropertyChange {
+            key: key.to_string(),
+            old_value: old,
+            new_value: new,
+        }
+    }
+
+    fn updated(node: &Node, changes: Vec<crate::db::events::PropertyChange>) -> DomainEvent {
+        DomainEvent::NodeUpdated {
+            node_id: node.id.clone(),
+            node_type: node.node_type.clone(),
+            node: node.clone(),
+            changed_properties: changes,
+        }
+    }
+
+    /// A node created and then updated inside one batch reaches subscribers
+    /// as its `NodeCreated`, so create-keyed subscribers (ADR-060 §7's
+    /// `node_created` invariant repair) still see it as new.
+    #[tokio::test]
+    async fn batch_keeps_a_create_followed_by_updates_as_node_created() {
+        let (service, _temp) = create_test_service().await;
+        let mut rx = service.subscribe_to_events();
+
+        let guard = service.begin_batch_emit();
+        let id = service
+            .create_node(Node::new("text".to_string(), "new".to_string(), json!({})))
+            .await
+            .unwrap();
+        let update = crate::models::NodeUpdate::new().with_content("edited".to_string());
+        service.update_node_unchecked(&id, update).await.unwrap();
+        drop(guard);
+
+        let events = drain_node_events(&mut rx);
+        assert_eq!(events.len(), 1, "one event per node, got {events:?}");
+        match &events[0] {
+            DomainEvent::NodeCreated { node_id, node_type } => {
+                assert_eq!(node_id, &id);
+                assert_eq!(node_type, "text");
+            }
+            other => panic!("expected NodeCreated, got {other:?}"),
+        }
+    }
+
+    /// Two updates to one node inside a batch flush as one `NodeUpdated`
+    /// carrying the later node and the net change of every key either
+    /// touched; a key that ended where it started is left out.
+    #[tokio::test]
+    async fn batch_merges_changed_properties_across_updates() {
+        let (service, _temp) = create_test_service().await;
+        let mut rx = service.subscribe_to_events();
+        let first = Node::new("task".to_string(), "v1".to_string(), json!({}));
+        let mut second = first.clone();
+        second.content = "v2".to_string();
+
+        let guard = service.begin_batch_emit();
+        service.emit_event(updated(
+            &first,
+            vec![
+                change("task.status", Some(json!("open")), Some(json!("done"))),
+                change("task.priority", Some(json!(1)), Some(json!(2))),
+            ],
+        ));
+        service.emit_event(updated(
+            &second,
+            vec![
+                change("task.priority", Some(json!(2)), Some(json!(1))),
+                change("task.due", None, Some(json!("2026-10-01"))),
+                change("task.status", Some(json!("done")), Some(json!("closed"))),
+            ],
+        ));
+        drop(guard);
+
+        let events = drain_node_events(&mut rx);
+        assert_eq!(events.len(), 1, "one event per node, got {events:?}");
+        match &events[0] {
+            DomainEvent::NodeUpdated {
+                node,
+                changed_properties,
+                ..
+            } => {
+                assert_eq!(node.content, "v2", "the later committed node");
+                assert_eq!(
+                    changed_properties,
+                    &vec![
+                        change("task.status", Some(json!("open")), Some(json!("closed"))),
+                        change("task.due", None, Some(json!("2026-10-01"))),
+                    ]
+                );
+            }
+            other => panic!("expected NodeUpdated, got {other:?}"),
+        }
+    }
+
+    /// Net property changes of two consecutive diffs, including the cases a
+    /// round trip cancels and the play write id's later-write-only rule.
+    #[test]
+    fn merge_property_changes_nets_each_key() {
+        use crate::db::events::PLAYBOOK_WRITE_ID_PROPERTY as WRITE_ID;
+        let v = || Some(json!("v"));
+        let w = || Some(json!("w"));
+        let cases: Vec<(&str, Vec<_>, Vec<_>, Vec<_>)> = vec![
+            (
+                "remove then re-add",
+                vec![change("k", v(), None)],
+                vec![change("k", None, v())],
+                vec![],
+            ),
+            (
+                "add then remove",
+                vec![change("k", None, v())],
+                vec![change("k", v(), None)],
+                vec![],
+            ),
+            (
+                "chained",
+                vec![change("k", v(), w())],
+                vec![change("k", w(), None)],
+                vec![change("k", v(), None)],
+            ),
+            (
+                "user edit after play write",
+                vec![change(WRITE_ID, v(), w()), change("k", None, v())],
+                vec![change("j", None, v())],
+                vec![change("k", None, v()), change("j", None, v())],
+            ),
+            (
+                "play write after user edit",
+                vec![change("k", None, v())],
+                vec![change(WRITE_ID, v(), w())],
+                vec![change("k", None, v()), change(WRITE_ID, v(), w())],
+            ),
+            (
+                "two play writes",
+                vec![change(WRITE_ID, None, v())],
+                vec![change(WRITE_ID, v(), w())],
+                vec![change(WRITE_ID, None, w())],
+            ),
+        ];
+        for (name, earlier, later, expected) in cases {
+            assert_eq!(merge_property_changes(earlier, later), expected, "{name}");
+        }
+    }
+
+    /// Writes to one node from different origins never merge: a sync-applied
+    /// create followed by a local update flushes as the sync create and the
+    /// local update, each under its own origin, in commit order.
+    #[tokio::test]
+    async fn batch_keeps_writes_from_different_origins_apart() {
+        let (service, _temp) = create_test_service().await;
+        let sync = service.with_client(crate::db::events::SYNC_SERVICE_CLIENT_ID);
+        let mut rx = service.subscribe_to_events();
+        let node = Node::new("text".to_string(), "synced".to_string(), json!({}));
+
+        let guard = service.begin_batch_emit();
+        sync.emit_event(DomainEvent::NodeCreated {
+            node_id: node.id.clone(),
+            node_type: "text".to_string(),
+        });
+        service.emit_event(updated(
+            &node,
+            vec![change("text.k", None, Some(json!("local")))],
+        ));
+        drop(guard);
+
+        let mut flushed = Vec::new();
+        while let Ok(envelope) = rx.try_recv() {
+            flushed.push(envelope);
+        }
+        assert_eq!(flushed.len(), 2, "one event per origin, got {flushed:?}");
+        assert!(matches!(flushed[0].event, DomainEvent::NodeCreated { .. }));
+        assert_eq!(
+            flushed[0].metadata.source_client_id.as_deref(),
+            Some(crate::db::events::SYNC_SERVICE_CLIENT_ID)
+        );
+        assert!(matches!(flushed[1].event, DomainEvent::NodeUpdated { .. }));
+        assert_ne!(
+            flushed[1].metadata.source_client_id.as_deref(),
+            Some(crate::db::events::SYNC_SERVICE_CLIENT_ID)
+        );
+    }
+
+    /// Interleaved writes from two origins flush with the one holding the
+    /// newest write last, so a subscriber applying each event's node
+    /// snapshot ends on the newest state.
+    #[tokio::test]
+    async fn batch_flushes_the_newest_write_last_across_origins() {
+        let (service, _temp) = create_test_service().await;
+        let sync = service.with_client(crate::db::events::SYNC_SERVICE_CLIENT_ID);
+        let mut rx = service.subscribe_to_events();
+        let v1 = Node::new("text".to_string(), "v1".to_string(), json!({}));
+        let mut v2 = v1.clone();
+        v2.content = "v2".to_string();
+        let mut v3 = v1.clone();
+        v3.content = "v3".to_string();
+
+        let guard = service.begin_batch_emit();
+        service.emit_event(updated(&v1, vec![]));
+        sync.emit_event(updated(&v2, vec![]));
+        service.emit_event(updated(&v3, vec![]));
+        drop(guard);
+
+        let contents: Vec<_> = drain_node_events(&mut rx)
+            .into_iter()
+            .map(|event| match event {
+                DomainEvent::NodeUpdated { node, .. } => node.content,
+                other => panic!("expected NodeUpdated, got {other:?}"),
+            })
+            .collect();
+        assert_eq!(contents, vec!["v2".to_string(), "v3".to_string()]);
+    }
+
+    /// A play's write and a user's edit to one node never merge, even from
+    /// one client: each keeps its own playbook context.
+    #[tokio::test]
+    async fn batch_keeps_play_writes_apart_from_other_writes() {
+        let (service, _temp) = create_test_service().await;
+        let play = service.scoped_for_playbook(crate::db::events::PlaybookExecutionContext {
+            originating_event_id: "origin".to_string(),
+            depth: 3,
+            source_playbook_id: "play-1".to_string(),
+        });
+        let mut rx = service.subscribe_to_events();
+        let node = Node::new("text".to_string(), "n".to_string(), json!({}));
+
+        let guard = service.begin_batch_emit();
+        play.emit_event(updated(&node, vec![change("text.a", None, Some(json!(1)))]));
+        service.emit_event(updated(&node, vec![change("text.b", None, Some(json!(2)))]));
+        drop(guard);
+
+        let mut flushed = Vec::new();
+        while let Ok(envelope) = rx.try_recv() {
+            flushed.push(envelope);
+        }
+        assert_eq!(flushed.len(), 2, "one event per writer, got {flushed:?}");
+        assert_eq!(
+            flushed[0]
+                .metadata
+                .playbook_context
+                .as_ref()
+                .map(|context| context.depth),
+            Some(3)
+        );
+        assert!(flushed[1].metadata.playbook_context.is_none());
+    }
+
+    /// A delete ends the node, so a batch that created or updated it and
+    /// then deleted it flushes the `NodeDeleted` alone.
+    #[tokio::test]
+    async fn batch_flushes_a_delete_after_other_events_as_the_delete() {
+        let (service, _temp) = create_test_service().await;
+        let mut rx = service.subscribe_to_events();
+        let node = Node::new("text".to_string(), "gone".to_string(), json!({}));
+
+        let guard = service.begin_batch_emit();
+        service.emit_event(DomainEvent::NodeCreated {
+            node_id: node.id.clone(),
+            node_type: "text".to_string(),
+        });
+        service.emit_event(updated(&node, vec![]));
+        service.emit_event(DomainEvent::NodeDeleted {
+            id: node.id.clone(),
+            node_type: "text".to_string(),
+        });
+        drop(guard);
+
+        let events = drain_node_events(&mut rx);
+        assert!(
+            matches!(events.as_slice(), [DomainEvent::NodeDeleted { id, .. }] if id == &node.id),
+            "expected the delete alone, got {events:?}"
+        );
+    }
+
+    /// Two updates whose transactions publish in the opposite order to their
+    /// commits still merge in commit order: the earlier commit's `old_value`
+    /// and the later commit's `new_value`.
+    #[tokio::test]
+    async fn batch_merges_out_of_order_publications_in_commit_order() {
+        let (service, _temp) = create_test_service().await;
+        let mut rx = service.subscribe_to_events();
+        let node = Node::new("task".to_string(), "t".to_string(), json!({}));
+        let guard = service.begin_batch_emit();
+
+        let commit = |event: DomainEvent| {
+            let svc = service.clone();
+            tokio::spawn(async move {
+                let svc_in = svc.clone();
+                svc.run_transaction(move |tx| {
+                    Box::pin(async move {
+                        svc_in.emit_event_in_tx(tx, event);
+                        Ok(())
+                    })
+                })
+                .await
+                .map(|((), committed, _)| committed)
+            })
+        };
+        let earlier = commit(updated(
+            &node,
+            vec![change(
+                "task.status",
+                Some(json!("open")),
+                Some(json!("done")),
+            )],
+        ))
+        .await
+        .unwrap()
+        .unwrap();
+        let later = commit(updated(
+            &node,
+            vec![change(
+                "task.status",
+                Some(json!("done")),
+                Some(json!("closed")),
+            )],
+        ))
+        .await
+        .unwrap()
+        .unwrap();
+        service.publish_committed(later);
+        service.publish_committed(earlier);
+        drop(guard);
+
+        let events = drain_node_events(&mut rx);
+        match events.as_slice() {
+            [DomainEvent::NodeUpdated {
+                changed_properties, ..
+            }] => assert_eq!(
+                changed_properties,
+                &vec![change(
+                    "task.status",
+                    Some(json!("open")),
+                    Some(json!("closed"))
+                )]
+            ),
+            other => panic!("expected one NodeUpdated, got {other:?}"),
+        }
     }
 
     /// The batch importer assigns collection membership via
