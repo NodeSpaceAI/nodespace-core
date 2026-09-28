@@ -74,9 +74,8 @@ describe("the development builds' wrapper", () => {
       TMPDIR: "/private/var/folders/ab/T/",
     }).split("|");
     expect(cache).toBe(join(tools, "sccache-cache"));
-    // Beside the gate's own socket, in the private per-user temp directory, but not it.
-    expect(dirname(socket)).toBe("/private/var/folders/ab/T");
-    expect(socket).not.toBe(join("/private/var/folders/ab/T", basename(sccacheServerUds(process.getuid?.() ?? 0))));
+    // Beside the gate's own socket, in the private per-user temp directory.
+    expect(dirname(socket)).toBe(dirname(join("/private/var/folders/ab/T", basename(sccacheServerUds(0)))));
     expect(ignoreIoErrors).toBe("1");
     expect(args).toBe("rustc --crate-name x");
   });
@@ -86,6 +85,14 @@ describe("the development builds' wrapper", () => {
     const socketOf = (checkout: string) => runWrapper(devRustcWrapper(tools, checkout), ["rustc"]).split("|")[1];
     expect(socketOf("/repo/wt-a")).not.toBe(socketOf("/repo/wt-b"));
     expect(socketOf("/repo/wt-a")).toBe(socketOf("/repo/wt-a"));
+  });
+
+  test("with a TMPDIR too deep for a unix socket, it compiles uncached rather than failing the build", () => {
+    const tools = fakeTools();
+    const deep = `/private/var/folders/${"x".repeat(90)}/T/`;
+    expect(runWrapper(devRustcWrapper(tools, "/repo/wt-a"), ["echo", "compiled", "directly"], { TMPDIR: deep })).toBe(
+      "compiled directly"
+    );
   });
 
   test("with sccache gone, it runs the compiler itself rather than failing the build", () => {

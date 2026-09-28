@@ -85,11 +85,11 @@ function realpathOrSelf(path: string): string {
 // Gate builds go through the repository's own sccache (scripts/setup-rust-
 // tooling.ts), configured here so the gate doesn't depend on the checkout's
 // generated `.cargo/config.toml`; these variables take precedence over it.
-// The settings are the ones that file's wrapper hands development builds
-// (devRustcWrapper, ./gate-sccache.ts), so both reach one server and one cache
-// in the shared `.tools/`. Its own private unix socket (sccacheServerUds)
-// keeps it apart both from any sccache a developer runs themselves and from
-// another OS user's.
+// It shares its cache directory in `.tools/` with development builds
+// (devRustcWrapper, ./gate-sccache.ts) but not its server: sccache compiles
+// in the server process, so each checkout's builds keep a server of their
+// own, and this gate's private unix socket (sccacheServerUds) keeps it apart
+// from every development server and from another OS user's gate.
 const sccache = join(realpathOrSelf(TOOLS_DIR), "bin", "sccache");
 if (existsSync(sccache)) {
   process.env.RUSTC_WRAPPER = sccache;
