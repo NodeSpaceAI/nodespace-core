@@ -484,8 +484,8 @@ impl GraphResolver {
             Err(OpsError::InvalidParams(_)) => return Ok(vec![]),
             // Anything else is infrastructure failing (an unreadable schema, a
             // locked database), not a statement about this path. Propagate it
-            // so it is logged and the condition is not quietly false — the same
-            // treatment the `get_related_nodes` call below already gets.
+            // so the walk is `Unresolved` rather than quietly `Missing` — the
+            // same treatment the `get_related_nodes` call below already gets.
             Err(e) => return Err(e.to_string()),
         };
 
@@ -747,15 +747,18 @@ impl GraphResolver {
                     // and `node.child_of` agree about the same node.
                     if segments.len() > 1 {
                         let (owner_path, field) = segments.split_at(segments.len() - 1);
-                        if let ResolvedValue::Node(owner) =
-                            self.resolve_path(root_node, owner_path).await
-                        {
-                            if let Value::Map(owner) = self.node_value(&owner).await? {
-                                if let Some(value) = owner.map.get(&key(&field[0])) {
-                                    resolved_values.insert(path.segments.clone(), value.clone());
+                        match self.resolve_path(root_node, owner_path).await {
+                            ResolvedValue::Node(owner) => {
+                                if let Value::Map(owner) = self.node_value(&owner).await? {
+                                    if let Some(value) = owner.map.get(&key(&field[0])) {
+                                        resolved_values
+                                            .insert(path.segments.clone(), value.clone());
+                                    }
                                 }
+                                continue;
                             }
-                            continue;
+                            ResolvedValue::Unresolved(reason) => return Err(reason),
+                            _ => {}
                         }
                     }
                     // Defensive: a scalar is only ever reached through a node,
@@ -1598,6 +1601,15 @@ mod tests {
                 "an issue with no story must match !has(node.story), got {healthy:?}"
             );
 
+            // Warm the extends-chain cache while the database is healthy. The
+            // chain lookup also reads the `relationship` table, so without this
+            // it would fail first and the fetch below would never run.
+            let mut resolver = GraphResolver::new(Arc::clone(&svc));
+            assert!(matches!(
+                resolver.resolve_path(&issue, &["status".to_string()]).await,
+                ResolvedValue::Scalar(_)
+            ));
+
             svc.store()
                 .write()
                 .await
@@ -1605,14 +1617,15 @@ mod tests {
                 .await
                 .expect("dropping the relationship table should succeed");
 
-            let mut resolver = GraphResolver::new(Arc::clone(&svc));
             let result = resolver.resolve_path(&issue, &["story".to_string()]).await;
-            assert!(
-                matches!(result, ResolvedValue::Unresolved(_)),
-                "a failed fetch must be Unresolved, got {result:?}"
-            );
+            match &result {
+                ResolvedValue::Unresolved(reason) => assert!(
+                    reason.contains("failed to fetch related nodes"),
+                    "expected the related-node fetch to be what failed: {reason}"
+                ),
+                other => panic!("a failed fetch must be Unresolved, got {other:?}"),
+            }
 
-            let mut resolver = GraphResolver::new(Arc::clone(&svc));
             let broken = evaluate_conditions_at_scope(
                 &conditions,
                 &issue,

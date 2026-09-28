@@ -1091,8 +1091,8 @@ message GetWorkflowStateResponse {
   // JSON-encoded nodespace_core::playbook::WorkflowState — node_id,
   // node_type, scope (always ["local"] today, per ADR-073), a
   // fired_state_note explaining that no fired-execution history is tracked,
-  // and each candidate rule's per-condition
-  // satisfied/not_yet_met/unresolvable/unknown state. Error responses use the gRPC Status channel, not this field.
+  // and each candidate rule's per-condition state
+  // (satisfied/not_yet_met/unresolvable/unknown). Error responses use the gRPC Status channel, not this field.
   string result_json = 1;
 }
 

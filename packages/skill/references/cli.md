@@ -355,7 +355,7 @@ Evaluates every active Play rule whose trigger could apply to the node's type ag
 - **unresolvable** — the condition references something that is neither a declared field nor a declared relationship on the node's schema at all. Almost certainly a typo in how the Play was authored — no future graph state will make it resolve, so report it plainly rather than telling the user to wait.
 - **unknown** — a lookup the condition depends on failed while it was evaluated (its `reason` says which), so whether it holds is not known. Not a typo and not a wait: re-run, and report it as unevaluated if it persists.
 
-A non-empty `degraded_reasons` in the output means a schema lookup failed while the result was built: it may be missing rules and may report a real field or relationship as **unresolvable**. Re-run once; if `degraded_reasons` is still non-empty, report the result as incomplete rather than calling any condition a typo.
+A non-empty `degraded_reasons` in the output means a schema or graph lookup failed while the result was built: it may be missing rules, may report a real field or relationship as **unresolvable**, and names each condition it reported as **unknown**. Re-run once; if `degraded_reasons` is still non-empty, report the result as incomplete rather than calling any condition a typo.
 
 Scoped to this device only: whether a rule has already fired is not tracked anywhere in the system, so this reports live condition state, never an execution history.
 

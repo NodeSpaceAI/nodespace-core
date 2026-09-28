@@ -101,7 +101,8 @@ pub struct WorkflowState {
     /// comes back with an empty `degraded_reasons`.
     ///
     /// Covers *resolution failures* (an `Err` from a live schema/
-    /// extends-chain call) AND one specific class of staleness in the
+    /// extends-chain call, or a graph read that left a condition `Unknown`)
+    /// AND one specific class of staleness in the
     /// graph-event candidate path: `lookup_rules`'s ancestor fan-out
     /// (`PlaybookLifecycleManager::ancestor_keys`) reads `ancestor_cache`
     /// directly rather than resolving live, and a failed cache refresh that
@@ -486,7 +487,7 @@ pub async fn get_workflow_state(
 }
 
 /// Evaluate a single condition and classify its result as satisfied, not-yet-met,
-/// or unresolvable.
+/// unresolvable, or unknown.
 ///
 /// Reuses `cel::evaluate_conditions_at_scope` (a one-condition slice) for the actual
 /// evaluation so this can never silently diverge from live-trigger semantics
@@ -553,6 +554,12 @@ const CORE_FIELDS: &[&str] = &["id", "node_type", "content", "version", "lifecyc
 ///
 /// Returns `None` when extraction finds nothing conclusive, so the caller
 /// falls back to the conservative `NotYetMet` classification.
+///
+/// Only reached after evaluation returned a clean `Fail`: a lookup failure
+/// during evaluation is already reported `Unknown`. The per-hop failures
+/// recorded into `degraded` here therefore cover a lookup that fails between
+/// that evaluation and this walk — a narrow window, but the verdict must
+/// still not be presented as authoritative when it happens.
 async fn classify_failure(
     condition: &cel::CompiledCondition,
     node: &Node,
