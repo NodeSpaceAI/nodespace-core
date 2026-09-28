@@ -37,8 +37,6 @@ import { isActiveTextSelection } from './text-selection';
 import { mapViewPositionToEditPosition } from './view-edit-mapper';
 import { renderedOffsetTo, extractRenderedText } from './rendered-text-offset';
 
-export { renderedOffsetTo } from './rendered-text-offset';
-
 /** Source content + tree depth for one node, resolved from the store/viewer. */
 export interface CopyNodeInfo {
   /** The node's source markdown (with syntax). */

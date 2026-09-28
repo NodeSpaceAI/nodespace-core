@@ -884,9 +884,16 @@
         // outside the view element).
         let viewPosition = findViewOffsetFromClick(viewElement!, e.clientX, e.clientY);
         if (viewPosition === null) {
-          const clickX = e.pageX;
-          const clickY = e.pageY;
-          const mockElement = createMockElementForView(viewElement!, viewText);
+          // getBoundingClientRect (both the view element's and the mock's) is
+          // always viewport-relative, so the click coordinates compared
+          // against it must be too — clientX/clientY, matching the native
+          // path above, not pageX/pageY (which include scroll offset).
+          const clickX = e.clientX;
+          const clickY = e.clientY;
+          const mockElement = createMockElementForView(viewElement!, viewText, {
+            x: clickX,
+            y: clickY
+          });
           const mockRect = mockElement.getBoundingClientRect();
           const fallbackResult = findCharacterFromClick(mockElement, clickX, clickY, {
             left: mockRect.left,

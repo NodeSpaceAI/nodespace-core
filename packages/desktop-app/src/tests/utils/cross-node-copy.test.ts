@@ -8,11 +8,8 @@
  */
 
 import { describe, it, expect, afterEach } from 'vitest';
-import {
-  buildCrossNodeCopy,
-  renderedOffsetTo,
-  type CopyNodeInfo
-} from '../../lib/utils/cross-node-copy';
+import { buildCrossNodeCopy, type CopyNodeInfo } from '../../lib/utils/cross-node-copy';
+import { renderedOffsetTo } from '../../lib/utils/rendered-text-offset';
 
 interface NodeFixture {
   id: string;

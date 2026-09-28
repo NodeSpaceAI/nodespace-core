@@ -116,7 +116,15 @@ export function findCharacterFromClick(
   if (bestMatchSpan) {
     const bestRect = bestMatchSpan.getBoundingClientRect();
     const bestCenterX = bestRect.left - mockRect.left + bestRect.width / 2;
-    const maxIndex = mockElement.textContent?.length ?? 0;
+    // The bound on the +1 adjustment below must be the true content length,
+    // not the number of spans actually built: createMockElementForView may
+    // only render a windowed slice of a long content string, with each
+    // span's data-position carrying its true (window-shifted) index rather
+    // than a 0-based count of rendered spans. The last span in document
+    // order always has the highest data-position, so it gives the true
+    // upper bound regardless of windowing.
+    const lastSpan = allSpans[allSpans.length - 1] as HTMLElement;
+    const maxIndex = parseInt(lastSpan.dataset.position || '0') + 1;
 
     // If click is to the right of the character's center, position cursor after it
     // but ensure we don't exceed content bounds
@@ -260,16 +268,24 @@ export function findViewOffsetFromClick(
   const duration = performance.now() - startTime;
   performanceMonitor.recordMeasurement(duration);
 
+  // Use performance monitor for consistent logging
+  if (performanceMonitor.shouldWarnAboutPerformance()) {
+    const stats = performanceMonitor.getStats();
+    log.warn(
+      `Cursor positioning performance degrading: avg=${stats.average.toFixed(2)}ms, recent=${stats.recent.toFixed(2)}ms, max=${stats.max.toFixed(2)}ms`
+    );
+  }
+
   return offset;
 }
 
 /**
  * Hard cap on how many character spans `createMockElementForView` will ever
- * build. The native path (`findViewOffsetFromClick`) never pays this cost —
- * this only bounds the degraded fallback used when native caret hit-testing
- * is unavailable, trading exact positioning beyond the cap for a bounded,
- * predictable cost instead of one span per character of arbitrarily long
- * content.
+ * build in one call. The native path (`findViewOffsetFromClick`) never pays
+ * this cost — this only bounds the degraded fallback used when native caret
+ * hit-testing is unavailable, trading exact positioning beyond the window for
+ * a bounded, predictable cost instead of one span per character of
+ * arbitrarily long content.
  */
 export const MAX_MOCK_ELEMENT_CHARS = 4000;
 
@@ -281,11 +297,17 @@ export const MAX_MOCK_ELEMENT_CHARS = 4000;
  *
  * @param viewElement - The view div element to mirror
  * @param content - The view content to wrap in character spans
+ * @param clickPoint - Where the click landed (page coordinates), used only to
+ *   center the span window when `content` exceeds `MAX_MOCK_ELEMENT_CHARS`.
+ *   Every span's `data-position` is still the character's true index into
+ *   `content`, regardless of windowing, so callers never need to adjust the
+ *   index `findCharacterFromClick` returns.
  * @returns Mock div element with character spans (caller must remove!)
  */
 export function createMockElementForView(
   viewElement: HTMLDivElement,
-  content: string
+  content: string,
+  clickPoint?: { x: number; y: number }
 ): HTMLDivElement {
   const mockElement = document.createElement('div');
 
@@ -323,18 +345,42 @@ export function createMockElementForView(
 
   // Wrap each character in span with data-position attribute
   // This allows findCharacterFromClick to map coordinates → position
-  // Capped: this fallback only runs when native caret hit-testing is
-  // unavailable, so beyond the cap positioning is approximate rather than
-  // building one span per character of arbitrarily long content.
+  //
+  // Windowed: this fallback only runs when native caret hit-testing is
+  // unavailable, so beyond MAX_MOCK_ELEMENT_CHARS this builds spans only for
+  // a window of content, not the whole thing. A flat prefix would silently
+  // snap every click past the cap to the same spot; instead the window is
+  // centered on an estimate of the click's target character, using the real
+  // (already-rendered) view element's height — true layout, unlike the mock
+  // — to convert the click's vertical position into a proportional estimate
+  // of where in `content` it landed. Each span keeps its true index into the
+  // full `content` string via `data-position`, so the window is purely an
+  // implementation detail: findCharacterFromClick's returned index is always
+  // a real content offset, never a window-relative one.
+  let windowStart = 0;
+  let windowedContent = content;
   if (content.length > MAX_MOCK_ELEMENT_CHARS) {
+    if (clickPoint && viewRect.height > 0) {
+      const relativeY = clickPoint.y - viewRect.top;
+      const fraction = Math.min(1, Math.max(0, relativeY / viewRect.height));
+      const estimatedIndex = Math.round(fraction * content.length);
+      windowStart = Math.max(
+        0,
+        Math.min(
+          content.length - MAX_MOCK_ELEMENT_CHARS,
+          estimatedIndex - Math.floor(MAX_MOCK_ELEMENT_CHARS / 2)
+        )
+      );
+    }
+    windowedContent = content.slice(windowStart, windowStart + MAX_MOCK_ELEMENT_CHARS);
     log.warn(
-      `createMockElementForView: content length ${content.length} exceeds cap ${MAX_MOCK_ELEMENT_CHARS}; positioning beyond the cap will be approximate`
+      `createMockElementForView: content length ${content.length} exceeds cap ${MAX_MOCK_ELEMENT_CHARS}; positioning outside the [${windowStart}, ${windowStart + windowedContent.length}) window will be approximate`
     );
   }
-  const cappedContent = content.slice(0, MAX_MOCK_ELEMENT_CHARS);
 
-  cappedContent.split('').forEach((char, index) => {
-    if (char === '\n') {
+  windowedContent.split('').forEach((charInWindow, indexInWindow) => {
+    const index = windowStart + indexInWindow;
+    if (charInWindow === '\n') {
       // Handle newlines: add span + <br> (matches view rendering)
       const span = document.createElement('span');
       span.dataset.position = String(index);
@@ -345,7 +391,7 @@ export function createMockElementForView(
       // Regular character
       const span = document.createElement('span');
       span.dataset.position = String(index);
-      span.textContent = char;
+      span.textContent = charInWindow;
       mockElement.appendChild(span);
     }
   });

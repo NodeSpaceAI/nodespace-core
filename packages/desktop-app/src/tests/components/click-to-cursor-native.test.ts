@@ -181,6 +181,7 @@ describe('findViewOffsetFromClick (native caret hit-testing)', () => {
 
 describe('createMockElementForView: bounded span creation (fallback path)', () => {
   afterEach(() => {
+    vi.restoreAllMocks();
     document.body.innerHTML = '';
   });
 
@@ -216,6 +217,94 @@ describe('createMockElementForView: bounded span creation (fallback path)', () =
     mockElement.remove();
     viewDiv.remove();
     createElementSpy.mockRestore();
+  });
+
+  it('windows the capped fallback around the click point instead of always keeping a prefix', () => {
+    const viewDiv = document.createElement('div');
+    document.body.appendChild(viewDiv);
+    const content = 'a'.repeat(50_000);
+
+    // Happy-DOM has no real layout, so getBoundingClientRect defaults to all
+    // zeros; stub the view element's rect the way it would actually appear —
+    // this is the TRUE rendered geometry the window-centering estimate reads
+    // from, unlike the mock's own (irrelevant here) geometry.
+    vi.spyOn(viewDiv, 'getBoundingClientRect').mockReturnValue({
+      left: 0,
+      top: 0,
+      right: 500,
+      bottom: 1000,
+      width: 500,
+      height: 1000,
+      x: 0,
+      y: 0,
+      toJSON: () => ({})
+    } as DOMRect);
+
+    // A click at the very bottom of the element should window around the end
+    // of `content`, not the start.
+    const mockElement = createMockElementForView(viewDiv, content, { x: 0, y: 1000 });
+    const spans = mockElement.querySelectorAll('[data-position]');
+    const positions = Array.from(spans).map((s) => Number((s as HTMLElement).dataset.position));
+
+    expect(spans.length).toBe(MAX_MOCK_ELEMENT_CHARS);
+    // Windowed at the true end of content, not clamped to the first 4000 chars.
+    expect(Math.min(...positions)).toBe(content.length - MAX_MOCK_ELEMENT_CHARS);
+    expect(Math.max(...positions)).toBe(content.length - 1);
+
+    mockElement.remove();
+    viewDiv.remove();
+  });
+
+  it('windows the capped fallback around a middle click point', () => {
+    const viewDiv = document.createElement('div');
+    document.body.appendChild(viewDiv);
+    const content = 'a'.repeat(50_000);
+
+    vi.spyOn(viewDiv, 'getBoundingClientRect').mockReturnValue({
+      left: 0,
+      top: 0,
+      right: 500,
+      bottom: 1000,
+      width: 500,
+      height: 1000,
+      x: 0,
+      y: 0,
+      toJSON: () => ({})
+    } as DOMRect);
+
+    // A click at the vertical midpoint should window around roughly the
+    // midpoint of `content`, not the start.
+    const mockElement = createMockElementForView(viewDiv, content, { x: 0, y: 500 });
+    const spans = mockElement.querySelectorAll('[data-position]');
+    const positions = Array.from(spans).map((s) => Number((s as HTMLElement).dataset.position));
+    const windowStart = Math.min(...positions);
+
+    expect(spans.length).toBe(MAX_MOCK_ELEMENT_CHARS);
+    // Roughly centered on content.length / 2 = 25,000 (within one window width).
+    expect(windowStart).toBeGreaterThan(0);
+    expect(windowStart).toBeLessThan(content.length - MAX_MOCK_ELEMENT_CHARS);
+    expect(Math.abs(windowStart + MAX_MOCK_ELEMENT_CHARS / 2 - content.length / 2)).toBeLessThan(
+      MAX_MOCK_ELEMENT_CHARS
+    );
+
+    mockElement.remove();
+    viewDiv.remove();
+  });
+
+  it('without a click point, windows from the start (unchanged existing behavior)', () => {
+    const viewDiv = document.createElement('div');
+    document.body.appendChild(viewDiv);
+    const content = 'a'.repeat(50_000);
+
+    const mockElement = createMockElementForView(viewDiv, content);
+    const spans = mockElement.querySelectorAll('[data-position]');
+    const positions = Array.from(spans).map((s) => Number((s as HTMLElement).dataset.position));
+
+    expect(Math.min(...positions)).toBe(0);
+    expect(Math.max(...positions)).toBe(MAX_MOCK_ELEMENT_CHARS - 1);
+
+    mockElement.remove();
+    viewDiv.remove();
   });
 
   it('caps span creation for long multi-line content too', () => {
