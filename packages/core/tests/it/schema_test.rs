@@ -89,6 +89,7 @@ async fn fresh_database_gets_the_complete_current_schema() {
         "idx_task_priority",
         "idx_task_status_due_date",
         "idx_project_status",
+        "idx_project_priority",
         "idx_rel_type",
         "idx_rel_in",
         "idx_rel_out",

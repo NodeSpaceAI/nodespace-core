@@ -91,7 +91,7 @@ impl Priority {
     /// scale, so they sort after every core value. Since the rank alone cannot
     /// separate two user values, callers must break that tie on the value
     /// string to keep the ordering total; see `QueryService::resolve_order_field`
-    /// and `compare_json_values`, which both do exactly that.
+    /// and `QueryService::compare_priority_values`, which both do exactly that.
     ///
     /// Kept in sync with `core_values` by
     /// `test_priority_variants_match_core_values_bidirectionally`

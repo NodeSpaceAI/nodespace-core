@@ -648,11 +648,12 @@ impl QueryService {
     /// Build one ORDER BY term, ranking priority instead of sorting it as text
     ///
     /// Deliberately separate from [`Self::resolve_field`]. `priority` on the
-    /// [`Priority::NODE_TYPES`] types is a string enum whose alphabetical order (`high, highest, low, lowest,
-    /// medium`) is meaningless, so ordering by it needs a rank expression —
-    /// but `resolve_field`'s output must stay byte-for-byte identical to the
-    /// expression `idx_task_priority` is built on, or equality filters silently
-    /// stop using that index. Wrapping the CASE in there would trade a working
+    /// [`Priority::NODE_TYPES`] types is a string enum whose alphabetical
+    /// order (`high, highest, low, lowest, medium`) is meaningless, so
+    /// ordering by it needs a rank expression — but `resolve_field`'s output
+    /// must stay byte-for-byte identical to the expression each type's
+    /// priority index (`idx_task_priority`, `idx_project_priority`) is built
+    /// on, or equality filters silently stop using it. Wrapping the CASE in there would trade a working
     /// filter index for a working sort. So the rank lives here, on the ordering
     /// path only, and `resolve_field` is left alone.
     ///
@@ -663,7 +664,7 @@ impl QueryService {
     /// [`Self::compare_priority_values`] does in Rust.
     ///
     /// The trade this makes: a CASE is not an indexed expression, so the sort
-    /// itself no longer uses `idx_task_priority` and SQLite builds a transient
+    /// itself no longer uses the priority index and SQLite builds a transient
     /// B-tree for it. Equality *filters* on priority still hit the index, which
     /// is what keeping `resolve_field` untouched buys, and sorting a result set
     /// is the cheaper half. Revisit if priority sorts ever run over row counts
