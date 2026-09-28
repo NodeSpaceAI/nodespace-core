@@ -42,7 +42,7 @@ import { join, resolve } from "node:path";
 import { $ } from "bun";
 import { acquireGateLock, DISABLE_ENV_VAR, MACHINE_LOCK_PATH, MACHINE_SLOT_WHAT, registerLockRelease } from "./gate-lock";
 import { SCCACHE_CACHE_SIZE, sccacheServerUds } from "./gate-sccache";
-import { createLogDir, killActiveStages, runStage, TIERS, type StageSpec } from "./gate-stage";
+import { createLogDir, GATE_INFRA_EXIT, killActiveStages, runStage, TIERS, type StageSpec } from "./gate-stage";
 import { TOOLS_DIR } from "./setup-rust-tooling";
 import { freeGiBFromDf } from "./gate-output";
 
@@ -100,7 +100,15 @@ if (existsSync(sccache)) {
   process.env.SCCACHE_SERVER_UDS = sccacheServerUds(process.getuid?.() ?? 0);
 }
 
-const logDir = createLogDir(mode);
+// A disk too full or read-only for the stage logs is this machine's fault.
+const logDir = (() => {
+  try {
+    return createLogDir(mode);
+  } catch (err) {
+    console.error(`\n✗ Could not create the stage log directory: ${err instanceof Error ? err.message : String(err)}\n`);
+    return process.exit(GATE_INFRA_EXIT);
+  }
+})();
 
 /** Set by the first failing stage; see run(). */
 let failed = false;
@@ -116,12 +124,15 @@ async function run(stage: StageSpec) {
   // during its grace period would outlive the gate and the machine slot.
   if (failed) return new Promise<never>(() => {});
   let passed: boolean;
+  // A stage that can't even start (e.g. its log can't be opened) is this
+  // machine's fault, not the code's — decided by this stage alone, so a
+  // sibling lane's failure can't relabel a real one.
+  let couldNotRun = false;
   try {
     passed = await runStage(stage, logDir);
   } catch (err) {
-    // A stage that can't even start (e.g. its log can't be opened) fails the
-    // gate like any other, so the other lane is still stopped.
     console.error(`\n${stage.label} could not run: ${err instanceof Error ? err.message : String(err)}`);
+    couldNotRun = true;
     passed = false;
   }
   if (passed) return;
@@ -136,13 +147,13 @@ async function run(stage: StageSpec) {
     console.error("  Fix it (bun run quality:fix fixes most lint), or if this is a WIP Handoff Commit");
     console.error("  (see CLAUDE.md), bypass with: git push --no-verify\n");
   }
-  process.exit(1);
+  process.exit(couldNotRun ? GATE_INFRA_EXIT : 1);
 }
 
 // A merge gate always takes the machine slot; refuse the opt-out before any work.
 if (merge && process.env[DISABLE_ENV_VAR]) {
   console.error(`\n✗ ${DISABLE_ENV_VAR} is set; the merge gate always takes the machine slot. Unset it and re-run.\n`);
-  process.exit(1);
+  process.exit(GATE_INFRA_EXIT);
 }
 
 console.log(
@@ -197,12 +208,12 @@ if (free !== null && free < MIN_FREE_GIB) {
       "  Each worktree's target/ holds its own build output. Free space by removing finished\n" +
       "  worktrees, or with `cargo clean` in worktrees that aren't building, then re-run.\n"
   );
-  process.exit(1);
+  process.exit(GATE_INFRA_EXIT);
 }
 // A missing nextest otherwise surfaces as a bare "command not found".
 if (!existsSync(join(TOOLS_DIR, "bin", "cargo-nextest"))) {
   console.error(`\n✗ ${TOOLS_DIR}/bin/cargo-nextest is missing — run \`bun install\`, which installs it (scripts/setup-rust-tooling.ts).\n`);
-  process.exit(1);
+  process.exit(GATE_INFRA_EXIT);
 }
 
 // Held until this process exits: registerLockRelease() covers Ctrl-C and every
@@ -221,7 +232,7 @@ const machineSlot = await acquireGateLock({
 });
 if (!machineSlot.held) {
   console.error("\n✗ Could not take the machine slot (see above), so this gate would share the machine. Re-run when it is free.\n");
-  process.exit(1);
+  process.exit(GATE_INFRA_EXIT);
 }
 registerLockRelease(machineSlot);
 

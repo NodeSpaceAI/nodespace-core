@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 // Machine-wide advisory locks that serialize the heavy work on this machine:
-// merges (MERGE_LOCK_PATH) and the CPU-heavy runs themselves
+// the gate checkout (MERGE_LOCK_PATH) and the CPU-heavy runs themselves
 // (MACHINE_LOCK_PATH) — a merge gate for its whole run, or `bun run
 // test:changed` while it builds and runs the Rust tier.
 //
@@ -90,10 +90,12 @@ export const SHARED_LOCK_DIR =
   process.platform === "darwin" ? "/Users/Shared/nodespace-gate" : join(tmpdir(), "nodespace-gate");
 
 /**
- * The merge lock, for `bun run merge` (scripts/merge-pr.ts). It serializes
- * merges and guards the one shared gate checkout they test in, and is held
- * from before the rebase until the merge lands. Per-user: each account merges
- * from its own gate checkout.
+ * The gate-checkout lock, for `bun run merge` (scripts/merge-pr.ts): this
+ * account's one gate checkout, held while a merge-queue round or a --dry-run
+ * uses it. Merges themselves are serialized team-wide by the merge queue's
+ * lock on origin (scripts/merge-queue.ts), which a round takes first; a
+ * --dry-run takes only this one. Per-user: each account has its own gate
+ * checkout.
  */
 export const MERGE_LOCK_PATH = join(tmpdir(), "nodespace-merge.lock");
 
@@ -244,6 +246,12 @@ export interface AcquireOptions {
   what?: string;
   /** Queue ahead of every non-urgent waiter (the merge gate). */
   urgent?: boolean;
+  /**
+   * For a caller that only wants the lock if it's free soon and will retry
+   * later (a merge-queue waiter): no "running anyway" warning on timeout,
+   * since it won't run anyway.
+   */
+  quietTimeout?: boolean;
   /**
    * Every account on the machine uses this lock (the machine slot): create
    * its directory and queue world-writable, so any account can take, reclaim
@@ -664,7 +672,7 @@ export async function acquireGateLock(options: AcquireOptions): Promise<GateLock
       const waitedMs = now() - startedWaitingAt;
       if (waitedMs >= maxWaitMs) {
         leaveQueue();
-        console.warn(formatTimeoutWarning(lastSeen, maxWaitMs));
+        if (!options.quietTimeout) console.warn(formatTimeoutWarning(lastSeen, maxWaitMs));
         return { held: false, release: () => {} };
       }
       const current = readHolder(lockPath);
@@ -739,7 +747,7 @@ export async function acquireGateLock(options: AcquireOptions): Promise<GateLock
       const waitedMs = now() - startedWaitingAt;
       if (waitedMs >= maxWaitMs) {
         leaveQueue();
-        console.warn(formatTimeoutWarning(lastSeen, maxWaitMs));
+        if (!options.quietTimeout) console.warn(formatTimeoutWarning(lastSeen, maxWaitMs));
         return { held: false, release: () => {} };
       }
       status(
@@ -774,7 +782,7 @@ export async function acquireGateLock(options: AcquireOptions): Promise<GateLock
     const waitedMs = now() - startedWaitingAt;
     if (waitedMs >= maxWaitMs) {
       leaveQueue();
-      console.warn(formatTimeoutWarning(lastSeen, maxWaitMs));
+      if (!options.quietTimeout) console.warn(formatTimeoutWarning(lastSeen, maxWaitMs));
       return { held: false, release: () => {} };
     }
 

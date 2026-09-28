@@ -25,6 +25,14 @@ import { exitStatusLine, stageLogName, tail } from "./gate-output";
 
 const MINUTE = 60_000;
 
+/**
+ * The merge gate's exit code when this machine couldn't run it at all — too
+ * little disk, no machine slot, missing tools, a stage that couldn't start —
+ * as opposed to 1, the code under test failing. The merge queue must never
+ * blame a PR for its machine: on this code it ejects nobody and backs off.
+ */
+export const GATE_INFRA_EXIT = 3;
+
 /** How long a stage gets after SIGTERM to exit before its tree is SIGKILLed. */
 const KILL_GRACE_MS = 10_000;
 

@@ -1,47 +1,102 @@
 #!/usr/bin/env bun
-// `bun run merge <PR#>` — runs the full pre-merge gate on a PR rebased onto
-// current main, then squash-merges exactly the commit that passed.
+// `bun run merge <PR#>` — queues a PR in the team-wide merge queue
+// (./merge-queue.ts) and waits for it to land or be ejected. Whichever
+// machine takes the queue's lock runs the next round, for every queued PR.
 //
 // Why merge time and not push time (ADR-047): most pushes are WIP or
 // review-fix pushes, and running the full pyramid on each paid for it several
 // times per PR. It also tested the wrong thing — the branch on its own base,
 // not what lands. Two branches can each pass alone and still break main
-// together. So a push only lints, and the full pyramid runs once, here, on
-// the rebased result.
+// together. So a push only lints, and the full pyramid runs here, on exactly
+// what lands.
 //
-// Two things keep a merge cheap and correct:
+// A round:
 //
-// - One persistent gate checkout (`.claude/worktrees/_gate`). Every merge on
-//   this machine tests there, so its target/ stays warm and each merge
-//   recompiles only the crates that changed since the last one — instead of
-//   a PR's own worktree, which may never have compiled Rust at all. The PR's
-//   worktree is never touched; the gate checkout does the rebase and pushes
-//   the result.
-// - The merge lock is held from before the rebase until after the merge.
-//   Merges therefore land strictly one at a time, and each one rebases onto
-//   the main the previous one produced — so none is invalidated by another
-//   landing while its gate runs. The gate then takes the machine slot
-//   (gate-lock.ts) — ahead of any queued test:changed Rust run — so no other
-//   heavy run shares the machine with its compiles and tests.
+// - Stacks every queued PR, in queue order, onto current main in one
+//   persistent gate checkout (`.claude/worktrees/_gate`), whose target/ stays
+//   warm so a round recompiles only what changed since the last. A PR that
+//   conflicts with main or with a PR ahead of it is ejected, with a PR
+//   comment, and the stack carries on without it.
+// - Runs the full gate once on the top of the stack.
+// - On a pass, lands the PRs in order. After the batch, main's tree is exactly
+//   the tree that was tested. (As in any batching queue, the intermediate
+//   commits between PRs of one batch aren't tested on their own.)
+// - On a failure, retests the first half of the batch alone, and so on down
+//   to one PR, which is ejected with the gate's output — so every PR that
+//   passes lands, and a batch of N costs about log2(N) extra runs to find the
+//   one that broke it.
 //
-// It tests the PR as pushed: commit and push first.
+// main moves only through a queue landing, so a round is never invalidated by
+// another merge. Landing still checks, before every PR, that main hasn't
+// moved outside the queue (a release's version bump is pushed straight to
+// main), that the PR's head hasn't moved and that this process still holds
+// the lock — and stops at the first that fails. Whatever it didn't land stays
+// queued for the next round, which tests it afresh.
 //
-//   bun run merge <PR#>             gate, then merge
-//   bun run merge <PR#> --dry-run   gate only; no push or merge
+// It tests the PR as pushed: commit and push first. A PR leaves the queue when
+// it lands, when it's ejected, or when the `bun run merge` that queued it
+// stops waiting (Ctrl-C, or MAX_WAIT_MS).
+//
+//   bun run merge <PR#>             queue, then wait for it to land
+//   bun run merge <PR#> --dry-run   gate this PR alone on current main; no queue, push or merge
 
 import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { $ } from "bun";
-import { acquireGateLock, DISABLE_ENV_VAR, MERGE_LOCK_PATH, registerLockRelease } from "./gate-lock";
+import {
+  acquireGateLock,
+  DISABLE_ENV_VAR,
+  formatDuration,
+  isPidAlive,
+  MERGE_LOCK_PATH,
+  readHolder,
+  registerLockRelease,
+  statusLogger,
+} from "./gate-lock";
+import {
+  bisectBatch,
+  changesDependencies,
+  changesGate,
+  describeLock,
+  fenced,
+  gateVerdict,
+  HEARTBEAT_MS,
+  type Lander,
+  landStack,
+  lockInfoHere,
+  MergeQueue,
+  StaleWatch,
+  stripAnsi,
+} from "./merge-queue";
 
-/** How many times main may move under us before giving up. */
-export const MAX_ATTEMPTS = 3;
+/** How long `bun run merge` waits for its PR before giving up its place. */
+const MAX_WAIT_MS = 3 * 60 * 60 * 1000;
+
+/** How often a waiting merge looks at the queue. */
+const POLL_MS = 15 * 1000;
+
+/**
+ * The longest a waiter backs off after rounds that got nowhere (a broken gate
+ * checkout, a machine out of disk): long enough not to hammer origin and
+ * GitHub, short enough that a healthy machine soon takes the round instead.
+ */
+const MAX_BACKOFF_MS = 4 * 60 * 1000;
 
 /** Merge attempts, 3s apart, while GitHub catches up with a push. */
 const MERGE_TRIES = 10;
 
-/** How long a merge waits for earlier merges on this machine. */
-const MERGE_WAIT_CAP_MS = 2 * 60 * 60 * 1000;
+/**
+ * How long a waiter or --dry-run waits for this machine's gate checkout. A
+ * waiter takes it before the queue's lock, so the wait never holds up another
+ * machine; it's held only by a round or a --dry-run here.
+ */
+const GATE_CHECKOUT_WAIT_MS = 60 * 60 * 1000;
+
+/** How long a waiter tries for this machine's gate checkout before sitting the round out. */
+const WAITER_CHECKOUT_WAIT_MS = 5 * 1000;
+
+/** Lines of gate output quoted in an ejected PR's comment. */
+const EJECT_TAIL_LINES = 40;
 
 /** The persistent gate checkout, relative to the main repository root. */
 export const GATE_CHECKOUT = join(".claude", "worktrees", "_gate");
@@ -82,10 +137,13 @@ export function isPrBranch(localBranch: string, prBranch: string): boolean {
 
 interface PullRequest {
   headRefName: string;
-  /** Read from origin itself once this merge's turn comes — not from the API. */
-  headRefOid: string;
   state: string;
   baseRefName: string;
+  isDraft: boolean;
+  /** MERGEABLE, CONFLICTING, or UNKNOWN while GitHub computes it. */
+  mergeable: string;
+  /** A PR from a fork: its branch isn't origin's to push to or land from. */
+  isCrossRepository: boolean;
 }
 
 /** How replaying a PR's commits onto main went. */
@@ -98,7 +156,7 @@ export type ReplayResult =
  * Cherry-pick `commits` onto the checkout in `cwd`. On any failure no
  * cherry-pick is left in progress, and a conflict restores HEAD; a change
  * that was already in the checkout before the pick is not this function's to
- * discard (the gate resets its checkout at the start of every attempt).
+ * discard (the gate resets its checkout at the start of every round).
  *
  * `--keep-redundant-commits` rather than `--empty=drop`: the latter needs Git
  * 2.45, and on older git the whole command is a usage error. A commit that
@@ -142,26 +200,27 @@ async function git(cwd: string, ...args: string[]): Promise<string> {
 }
 
 /**
- * The PR branch's head as the remote has it right now. GitHub's API can lag a
- * fresh push by a few seconds, so reading the head from it — once, at startup
- * — let a push followed at once by `bun run merge` capture the old commit,
- * wait out the whole merge queue, then refuse on finding the new one.
+ * The PR branch's head as the remote has it right now, or null when it isn't
+ * there. GitHub's API can lag a fresh push by a few seconds, so the head is
+ * read from origin itself, when it's needed — never from the API, never once
+ * at startup.
  */
-async function remoteHead(cwd: string, branch: string): Promise<string> {
+async function remoteHead(cwd: string, branch: string): Promise<string | null> {
+  return (await readRemoteHead(cwd, branch)).sha;
+}
+
+/** remoteHead, telling "origin couldn't be asked" (`reachable: false`) from "no such branch". */
+async function readRemoteHead(cwd: string, branch: string): Promise<{ reachable: boolean; sha: string | null }> {
   const ref = `refs/heads/${branch}`;
-  let output = "";
-  try {
-    output = await git(cwd, "ls-remote", "origin", ref);
-  } catch (err) {
-    fail(`Could not reach origin to read ${branch}'s head: ${err instanceof Error ? err.message : String(err)}`);
-  }
+  const out = await $`git ${NO_HOOKS} ls-remote origin ${ref}`.cwd(cwd).quiet().nothrow();
+  if (out.exitCode !== 0) return { reachable: false, sha: null };
   // ls-remote matches refs by suffix; take only the exact branch.
-  const sha = output
+  const sha = out.stdout
+    .toString()
     .split("\n")
     .map((line) => line.split(/\s+/))
     .find(([, name]) => name === ref)?.[0];
-  if (sha === undefined || !/^[0-9a-f]{40}$/.test(sha)) fail(`${branch} was not found on origin.`);
-  return sha;
+  return { reachable: true, sha: sha !== undefined && /^[0-9a-f]{40}$/.test(sha) ? sha : null };
 }
 
 function fail(message: string): never {
@@ -169,11 +228,16 @@ function fail(message: string): never {
   process.exit(1);
 }
 
+async function viewPr(pr: number): Promise<PullRequest | null> {
+  const out = await $`gh pr view ${pr} --json headRefName,state,baseRefName,isDraft,mergeable,isCrossRepository`.quiet().nothrow();
+  return out.exitCode === 0 ? (JSON.parse(out.stdout.toString()) as PullRequest) : null;
+}
+
 /**
  * The gate checkout, created on first use. Detached, so it never holds a
- * branch another worktree might want. Each merge runs `bun install` there
- * after checking out the PR — a no-op when nothing changed, and it picks up
- * a changed lockfile when something did.
+ * branch another worktree might want. Each round runs `bun install` there
+ * once the stack is built — a no-op when nothing changed, and it picks up a
+ * changed lockfile when something did.
  */
 async function prepareGateCheckout(repoRoot: string): Promise<string> {
   const path = join(repoRoot, GATE_CHECKOUT);
@@ -184,6 +248,375 @@ async function prepareGateCheckout(repoRoot: string): Promise<string> {
   return path;
 }
 
+/** A PR as a round sees it. */
+export interface QueuedPr {
+  pr: number;
+  headRefName: string;
+  /** The PR branch's head on origin when the round read it. */
+  head: string;
+}
+
+/** One PR replayed onto the stack below it. */
+export interface StackEntry extends QueuedPr {
+  /** The PR's own commits, as replayed. */
+  commits: string[];
+  /** The tree of main plus this PR and every PR below it. */
+  tree: string;
+}
+
+export interface StackResult {
+  stack: StackEntry[];
+  ejected: { pr: number; reason: string }[];
+}
+
+/**
+ * Resets the gate checkout at `cwd` to `mainSha` — a clean slate, with no
+ * leftovers from the previous round. Not `clean -x`: target/ and
+ * node_modules/ are the warm state this checkout exists to keep. Ignored build
+ * output the gate itself produces or reads is removed, though: a file a PR
+ * deleted could survive there and mask a failure.
+ */
+async function resetGateCheckout(cwd: string, mainSha: string): Promise<void> {
+  await git(cwd, "checkout", "--quiet", "--force", "--detach", mainSha);
+  await git(cwd, "clean", "-fdq");
+  await git(cwd, "clean", "-fdqX", "--", ...STALE_OUTPUT_PATHS);
+}
+
+/**
+ * Replays each PR's commits, in order, onto `mainSha` and the PRs below it,
+ * in the checkout at `cwd` (already reset to `mainSha`). A PR that conflicts
+ * with main or with a PR below it — or that adds nothing beyond them — is
+ * left out with the reason, and the stack carries on without it. The checkout
+ * ends at the top of the stack.
+ *
+ * Replaying rather than checking out each PR's own base: that detour rewrote
+ * every file main had changed since the PR branched, then rewrote it back, and
+ * cargo, which judges staleness by modification time, recompiled all of them
+ * on a checkout that exists to stay warm. Starting from main touches only the
+ * files the PRs change.
+ */
+export async function buildStack(cwd: string, mainSha: string, prs: QueuedPr[]): Promise<StackResult> {
+  const stack: StackEntry[] = [];
+  const ejected: { pr: number; reason: string }[] = [];
+  for (const item of prs) {
+    const below = await git(cwd, "rev-parse", "HEAD");
+    // The commit set rebase would replay: linear (merge commits dropped,
+    // their changes arriving through the commits around them), in graph
+    // order, and skipping any commit whose patch main already has.
+    const commits = (
+      await git(cwd, "rev-list", "--reverse", "--topo-order", "--no-merges", "--cherry-pick", "--right-only", `${mainSha}...${item.head}`)
+    )
+      .split("\n")
+      .filter((c) => c !== "");
+    if (commits.length === 0) {
+      ejected.push({ pr: item.pr, reason: "it has no commits of its own beyond main." });
+      continue;
+    }
+    const replay = await replayCommits(cwd, commits);
+    if (replay.kind === "conflict") {
+      const ahead = stack.length > 0 ? ` or with ${stack.map((e) => `#${e.pr}`).join(", ")}, queued ahead of it,` : "";
+      ejected.push({
+        pr: item.pr,
+        reason: `it conflicts with main${ahead} in: ${replay.paths.join(", ")}. Rebase onto origin/main, push, and re-run \`bun run merge ${item.pr}\`.`,
+      });
+      continue;
+    }
+    if (replay.kind === "error") {
+      ejected.push({ pr: item.pr, reason: `replaying it onto main failed, and not on a conflict:\n${replay.message}` });
+      continue;
+    }
+    // Commits that became empty are kept, so a PR the stack already contains
+    // replays "successfully" onto the same tree. Leave it out rather than
+    // squash-merge an empty diff.
+    const tree = await git(cwd, "rev-parse", "HEAD^{tree}");
+    if (tree === (await git(cwd, "rev-parse", `${below}^{tree}`))) {
+      await git(cwd, "reset", "--quiet", "--hard", below);
+      ejected.push({ pr: item.pr, reason: "it has no changes beyond main: main already contains everything it does." });
+      continue;
+    }
+    stack.push({ ...item, commits, tree });
+  }
+  return { stack, ejected };
+}
+
+/**
+ * Runs the full gate in `cwd` (a stack on `mainSha`), streaming its output
+ * through and keeping the tail for an ejected PR's comment.
+ *
+ * The verdict keeps the two failure domains apart: `failed` is the code under
+ * test, `infra` is this machine (the gate's own GATE_INFRA_EXIT: too little
+ * disk, no machine slot). An infra failure must never cost a PR its place.
+ *
+ * A `bun install` that fails twice is tested against main: if main installs,
+ * the stack broke it — through package.json, bun.lock, or any of the scripts
+ * install runs — and it's a failure to bisect; if main fails too, it's the
+ * registry, the network or this machine. That leaves the checkout at main,
+ * which the next round resets anyway.
+ */
+async function runGate(cwd: string, mainSha: string): Promise<{ verdict: "passed" | "failed" | "infra"; tail: string }> {
+  const changed = (await git(cwd, "diff", "--name-only", mainSha, "HEAD")).split("\n");
+  let install = await $`bun install`.cwd(cwd).quiet().nothrow();
+  if (install.exitCode !== 0) install = await $`bun install`.cwd(cwd).quiet().nothrow();
+  if (install.exitCode !== 0) {
+    const output = `${install.stdout}${install.stderr}`.trim().split("\n").slice(-EJECT_TAIL_LINES).join("\n");
+    let stackAtFault = changesDependencies(changed);
+    if (!stackAtFault) {
+      await git(cwd, "checkout", "--quiet", "--force", "--detach", mainSha);
+      stackAtFault = (await $`bun install`.cwd(cwd).quiet().nothrow()).exitCode === 0;
+    }
+    return { verdict: stackAtFault ? "failed" : "infra", tail: `bun install failed:\n${output}` };
+  }
+  const proc = Bun.spawn(["bun", "run", "scripts/test-gate.ts", "--mode=merge"], {
+    cwd,
+    stdout: "pipe",
+    stderr: "pipe",
+    stdin: "ignore",
+  });
+  const lines: string[] = [];
+  const pump = async (stream: typeof proc.stdout, out: { write(text: string): unknown }) => {
+    const decoder = new TextDecoder();
+    let partial = "";
+    for await (const chunk of stream) {
+      const text = decoder.decode(chunk, { stream: true });
+      out.write(text);
+      // Whole lines only: a line split across two chunks is kept as one.
+      const parts = (partial + text).split("\n");
+      partial = parts.pop() ?? "";
+      lines.push(...parts);
+      if (lines.length > EJECT_TAIL_LINES * 2) lines.splice(0, lines.length - EJECT_TAIL_LINES);
+    }
+    if (partial !== "") lines.push(partial);
+  };
+  await Promise.all([pump(proc.stdout, process.stdout), pump(proc.stderr, process.stderr), proc.exited]);
+  return { verdict: gateVerdict(proc.exitCode, changesGate(changed)), tail: lines.slice(-EJECT_TAIL_LINES).join("\n").trim() };
+}
+
+/** Takes `pr` out of the queue and says why on the PR, where its author will see it. */
+async function eject(queue: MergeQueue, pr: number, reason: string): Promise<void> {
+  console.log(`\n✗ #${pr} left the queue: ${reason.split("\n")[0]}`);
+  await queue.dequeue(pr);
+  await $`gh pr comment ${pr} --body ${`**Merge queue:** #${pr} was taken out of the queue — ${reason}`}`.quiet().nothrow();
+}
+
+/** The Lander (./merge-queue.ts) for the real gate checkout, origin and GitHub. */
+function realLander(gate: string, queue: MergeQueue, repo: string, confirmHolding: () => Promise<boolean>): Lander {
+  return {
+    confirmHolding,
+    isQueued: (pr) => queue.isQueued(pr),
+    main: async () => {
+      await git(gate, "fetch", "--quiet", "origin", "main");
+      const sha = await git(gate, "rev-parse", "origin/main");
+      return { sha, tree: await git(gate, "rev-parse", `${sha}^{tree}`) };
+    },
+    headOf: (branch) => remoteHead(gate, branch),
+    replayOnto: async (mainSha, commits) => {
+      await git(gate, "checkout", "--quiet", "--force", "--detach", mainSha);
+      if ((await replayCommits(gate, commits)).kind !== "ok") return null;
+      return { tree: await git(gate, "rev-parse", "HEAD^{tree}"), tip: await git(gate, "rev-parse", "HEAD") };
+    },
+    // The gate ran the full pyramid on this tree, lint included, so the
+    // pre-push hook would only repeat part of it.
+    push: async (branch, head, tip) =>
+      (await $`git ${NO_HOOKS} push --quiet --no-verify --force-with-lease=${branch}:${head} origin ${tip}:refs/heads/${branch}`.cwd(gate).quiet().nothrow())
+        .exitCode === 0,
+    // --match-head-commit: GitHub refuses the merge if the PR's head is no
+    // longer the commit just pushed. Right after a force-push GitHub can
+    // briefly still report the old head, so retry for a few seconds.
+    merge: async (pr, tip) => {
+      let reason = "";
+      for (let tries = 1; tries <= MERGE_TRIES; tries++) {
+        const out = await $`gh pr merge ${pr} --squash --match-head-commit ${tip}`.quiet().nothrow();
+        if (out.exitCode === 0) return { ok: true };
+        reason = `${out.stderr}${out.stdout}`.trim() || `gh pr merge exited with code ${out.exitCode}`;
+        await Bun.sleep(3000);
+      }
+      // Only the PR's own state makes a refusal definite. A merge that went
+      // through with its response lost is a landing; a 5xx, a rate limit or
+      // "base branch was modified" says nothing about the PR.
+      const now = await viewPr(pr);
+      if (now?.state === "MERGED") return { ok: true };
+      if (now !== null && (now.isDraft || now.state === "CLOSED" || now.mergeable === "CONFLICTING")) {
+        const why = now.isDraft ? "it's a draft" : now.state === "CLOSED" ? "it was closed" : "it conflicts with main";
+        return { ok: false, reason: `${why} (${reason})`, definite: true };
+      }
+      return { ok: false, reason, definite: false };
+    },
+    landed: async (pr, branch) => {
+      console.log(`✓ #${pr} landed.`);
+      await queue.dequeue(pr);
+      // Through the API rather than `gh pr merge --delete-branch`, which also
+      // tries to delete the local branch — checked out in the PR's worktree.
+      await $`gh api -X DELETE repos/${repo}/git/refs/heads/${branch}`.quiet().nothrow();
+    },
+    eject: (pr, reason) => eject(queue, pr, reason),
+  };
+}
+
+/** Releases the queue's lock if this process holds it — for a signal mid-round. */
+let releaseHeldLock: (() => Promise<void>) | null = null;
+
+/**
+ * Runs one round while holding the queue's lock at `lockSha` and this
+ * machine's gate checkout: every queued PR, stacked, gated, then landed or
+ * bisected. Releases the queue's lock when done. Never throws: an error ends
+ * the round (logged), and the queue's lock is released for the next one.
+ * Returns whether the queue moved — something landed or was ejected — so a
+ * waiter can back off from rounds that get nowhere.
+ */
+async function runRound(queue: MergeQueue, lockSha: string, repoRoot: string, repo: string): Promise<boolean> {
+  let moved = false;
+  let current = lockSha;
+  let holding = true;
+  let prs: number[] = [];
+  // Renewals are chained, never concurrent: a renewal still in flight when
+  // the round releases the lock would otherwise re-take it for a process
+  // that is done, and every waiter would sit out the stale window.
+  let renewals: Promise<boolean> = Promise.resolve(true);
+  const renew = (): Promise<boolean> => {
+    renewals = renewals
+      .then(async () => {
+        if (!holding) return false;
+        const result = await queue.renew(current, lockInfoHere(prs));
+        if (result.status === "renewed") current = result.sha;
+        if (result.status === "lost") holding = false;
+        return result.status === "renewed";
+      })
+      .catch(() => false);
+    return renewals;
+  };
+  const release = async () => {
+    await renewals;
+    if (holding) await queue.release(current);
+    holding = false;
+  };
+  releaseHeldLock = release;
+  const heartbeat = setInterval(() => void renew(), HEARTBEAT_MS);
+
+  try {
+    const gate = await prepareGateCheckout(repoRoot);
+
+    // Every queued PR that can still land, as origin has it now. Only a
+    // definite answer changes the queue: a PR GitHub can't be asked about
+    // right now just sits this round out.
+    let candidates: QueuedPr[] = [];
+    for (const pr of await queue.queued()) {
+      const info = await viewPr(pr);
+      if (info === null) continue;
+      if (info.state !== "OPEN") {
+        await queue.dequeue(pr);
+        moved = true;
+        continue;
+      }
+      if (info.isDraft) {
+        await eject(queue, pr, "it's a draft, which GitHub won't merge. Mark it ready for review and re-run `bun run merge`.");
+        moved = true;
+        continue;
+      }
+      if (info.baseRefName !== "main") {
+        await eject(queue, pr, `it targets ${info.baseRefName}; the queue merges into main only.`);
+        moved = true;
+        continue;
+      }
+      if (info.isCrossRepository) {
+        await eject(queue, pr, "it comes from a fork; the queue lands branches on origin only.");
+        moved = true;
+        continue;
+      }
+      const head = await readRemoteHead(gate, info.headRefName);
+      if (!head.reachable) continue;
+      if (head.sha === null) {
+        await eject(queue, pr, `its branch ${info.headRefName} isn't on origin.`);
+        moved = true;
+        continue;
+      }
+      candidates.push({ pr, headRefName: info.headRefName, head: head.sha });
+    }
+
+    while (candidates.length > 0 && holding) {
+      await git(gate, "fetch", "--quiet", "origin", "main", ...candidates.map((c) => c.headRefName));
+      const mainSha = await git(gate, "rev-parse", "origin/main");
+      const baseTree = await git(gate, "rev-parse", `${mainSha}^{tree}`);
+      await resetGateCheckout(gate, mainSha);
+      const { stack, ejected } = await buildStack(gate, mainSha, candidates);
+      for (const { pr, reason } of ejected) await eject(queue, pr, reason);
+      if (ejected.length > 0) moved = true;
+      if (stack.length === 0) return moved;
+
+      prs = stack.map((e) => e.pr);
+      await renew();
+      console.log(`\n▶ Merge gate on ${prs.map((p) => `#${p}`).join(", ")} (stacked on ${mainSha.slice(0, 8)}) in ${gate}`);
+      const result = await runGate(gate, mainSha);
+      if (!holding) {
+        console.error("\n✗ This machine lost the queue's lock during the gate (another machine took it over); nothing landed.");
+        return moved;
+      }
+      if (result.verdict === "infra") {
+        console.error("\n✗ This machine couldn't run the gate (see above); no PR is blamed. Releasing the queue for another round.");
+        return moved;
+      }
+      if (result.verdict === "passed") {
+        const outcome = await landStack(stack, baseTree, realLander(gate, queue, repo, renew));
+        if (outcome.stopped !== undefined) {
+          const rest = stack.filter((e) => !outcome.landed.includes(e.pr) && e.pr !== outcome.ejected).map((e) => `#${e.pr}`);
+          console.log(`\n⚠ Stopped landing: ${outcome.stopped}.${rest.length > 0 ? ` ${rest.join(", ")} stay queued for the next round.` : ""}`);
+          if (outcome.landed.length > 0) console.log("  main holds part of a tested batch; the next round tests the rest on top of it.");
+        }
+        return moved || outcome.landed.length > 0 || outcome.ejected !== undefined;
+      }
+      if (stack.length === 1) {
+        await eject(
+          queue,
+          stack[0].pr,
+          `the merge gate failed on it, rebased onto main. Reproduce with \`git rebase origin/main\` and \`bun run test:changed\`, fix, push, and re-run \`bun run merge ${stack[0].pr}\`.\n\n${fenced(stripAnsi(result.tail))}`
+        );
+        return true;
+      }
+      candidates = bisectBatch(stack).map(({ pr, headRefName, head }) => ({ pr, headRefName, head }));
+      console.log(`\n⟳ The batch failed; retesting ${candidates.map((c) => `#${c.pr}`).join(", ")} on their own.`);
+    }
+  } catch (err) {
+    console.error(`\n✗ The round stopped on an error: ${err instanceof Error ? err.message : String(err)}`);
+  } finally {
+    clearInterval(heartbeat);
+    await release();
+    releaseHeldLock = null;
+  }
+  return moved;
+}
+
+/** `--dry-run`: gates this one PR on current main in the gate checkout. */
+async function dryRun(pr: number, info: PullRequest, repoRoot: string): Promise<void> {
+  const checkout = await acquireGateLock({ lockPath: MERGE_LOCK_PATH, what: "gate checkout", maxWaitMs: GATE_CHECKOUT_WAIT_MS });
+  if (!checkout.held) fail("This machine's gate checkout stayed busy. Re-run when it is free.");
+  registerLockRelease(checkout);
+  const gate = await prepareGateCheckout(repoRoot);
+  const head = await remoteHead(gate, info.headRefName);
+  if (head === null) fail(`${info.headRefName} was not found on origin.`);
+  await git(gate, "fetch", "--quiet", "origin", "main", info.headRefName);
+  const mainSha = await git(gate, "rev-parse", "origin/main");
+  await resetGateCheckout(gate, mainSha);
+  const { stack, ejected } = await buildStack(gate, mainSha, [{ pr, headRefName: info.headRefName, head }]);
+  if (stack.length === 0) fail(`PR #${pr} can't be gated: ${ejected[0]?.reason ?? "nothing to test."}`);
+  console.log(`\n▶ Merge gate on #${pr} (stacked on ${mainSha.slice(0, 8)}) in ${gate}`);
+  const result = await runGate(gate, mainSha);
+  if (result.verdict === "infra") fail("This machine couldn't run the gate (see above).");
+  if (result.verdict === "failed") fail(`The merge gate failed on #${pr}, rebased onto main.`);
+  console.log(`\n✓ Dry run: the merge gate passed on #${pr}. Nothing queued, pushed or merged.\n`);
+}
+
+/**
+ * Whether `pr` has merged, asking a few times: GitHub's API can still say
+ * OPEN for a few seconds after a merge, and a waiter that saw its PR leave
+ * the queue mustn't report a fresh landing as a failure.
+ */
+async function hasMerged(pr: number): Promise<boolean> {
+  for (let tries = 1; tries <= 5; tries++) {
+    if ((await viewPr(pr))?.state === "MERGED") return true;
+    await Bun.sleep(3000);
+  }
+  return false;
+}
+
 async function main(): Promise<void> {
   let args: MergeArgs;
   try {
@@ -191,23 +624,24 @@ async function main(): Promise<void> {
   } catch (err) {
     fail(err instanceof Error ? err.message : String(err));
   }
-  const { pr, dryRun } = args;
+  const { pr } = args;
 
   const here = process.cwd();
   const repo = (await $`gh repo view --json nameWithOwner --jq .nameWithOwner`.quiet().text()).trim();
-  const info = JSON.parse(
-    await $`gh pr view ${pr} --json headRefName,state,baseRefName`.quiet().text()
-  ) as PullRequest;
+  const info = await viewPr(pr);
+  if (info === null) fail(`Could not read PR #${pr}.`);
   if (info.state !== "OPEN") fail(`PR #${pr} is ${info.state.toLowerCase()}, not open.`);
+  if (info.isDraft) fail(`PR #${pr} is a draft, which GitHub won't merge. Mark it ready for review first.`);
   if (info.baseRefName !== "main") fail(`PR #${pr} targets ${info.baseRefName}; this command merges into main only.`);
 
   // Unpushed work in the caller's checkout is not what gets tested. Say so
   // rather than let a green gate imply it covered local commits.
   // EnterWorktree names the local branch `worktree-<name>` for remote <name>.
   const localBranch = await git(here, "rev-parse", "--abbrev-ref", "HEAD");
+  const pushedHead = await remoteHead(here, info.headRefName);
+  if (pushedHead === null) fail(`${info.headRefName} was not found on origin.`);
   if (isPrBranch(localBranch, info.headRefName)) {
     const localHead = await git(here, "rev-parse", "HEAD");
-    const pushedHead = await remoteHead(here, info.headRefName);
     if (localHead !== pushedHead) {
       fail(
         `This checkout's HEAD (${localHead.slice(0, 8)}) differs from PR #${pr}'s pushed head (${pushedHead.slice(0, 8)}).\n` +
@@ -219,159 +653,111 @@ async function main(): Promise<void> {
     }
   }
 
-  // The merge lock, held from here until this process exits: through the
-  // rebase, the gate, and the merge itself. Two merges share one gate
-  // checkout, so an unserialized one could check its PR out under another's
-  // running tests — and that other merge would then land a tree it never
-  // tested. So the lock's usual degrade-and-continue is refused here, as is
-  // the no-lock opt-out. Merges wait on each other only, so the cap is long.
-  if (process.env[DISABLE_ENV_VAR]) fail(`${DISABLE_ENV_VAR} is set; a merge always takes the merge lock. Unset it and re-run.`);
-  const lock = await acquireGateLock({ lockPath: MERGE_LOCK_PATH, what: "merge", maxWaitMs: MERGE_WAIT_CAP_MS });
-  if (!lock.held) fail("Could not take the merge lock (see above), so this merge would not be serialized. Re-run when the other merge finishes.");
-  registerLockRelease(lock);
-
+  // The gate checkout must never be shared, so the machine-local lock on it
+  // can't be opted out of.
+  if (process.env[DISABLE_ENV_VAR]) fail(`${DISABLE_ENV_VAR} is set; a merge always takes its locks. Unset it and re-run.`);
   const repoRoot = resolve(dirname(await git(here, "rev-parse", "--path-format=absolute", "--git-common-dir")));
-  const gate = await prepareGateCheckout(repoRoot);
 
-  // Read the head now that this merge's turn has come, not at startup: the
-  // queue wait can be long, and a push just before it may not have been
-  // visible yet. A merge tests the PR as pushed when its turn comes — so a
-  // fix pushed while it waited is what gets tested and landed. This is the
-  // commit the gate tests and the merge must match; a push during the gate
-  // itself is still refused below.
-  info.headRefOid = await remoteHead(gate, info.headRefName);
+  if (args.dryRun) return dryRun(pr, info, repoRoot);
 
-  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-    await git(gate, "fetch", "--quiet", "origin", "main", info.headRefName);
-    const prHead = await git(gate, "rev-parse", `origin/${info.headRefName}`);
-    if (prHead !== info.headRefOid) {
-      fail(`PR #${pr}'s head moved to ${prHead.slice(0, 8)} while this ran. Re-run to test the new head.`);
-    }
-    const mainSha = await git(gate, "rev-parse", "origin/main");
+  const queue = new MergeQueue(here);
 
-    // A clean slate every time, starting from current main: no leftovers from
-    // the previous merge. Not `clean -x`: target/ and node_modules/ are the
-    // warm state this checkout exists to keep.
-    await git(gate, "checkout", "--quiet", "--force", "--detach", mainSha);
-    await git(gate, "clean", "-fdq");
-    // Ignored build output the gate itself produces or reads, which a
-    // previous merge may have left: a file a PR deleted could survive there
-    // and mask a failure. Removed so this merge rebuilds it from its own tree.
-    await git(gate, "clean", "-fdqX", "--", ...STALE_OUTPUT_PATHS);
+  // Stopping waiting gives up the PR's place: a queued PR nobody is waiting on
+  // would otherwise land later, unannounced. Registered before the PR is
+  // queued, so no Ctrl-C can leave it queued behind.
+  let settled = false;
+  const giveUp = async (signal: "SIGINT" | "SIGTERM" | "SIGHUP") => {
+    // Mid-round, the lock goes too, rather than make every waiter sit out the
+    // stale window.
+    await releaseHeldLock?.();
+    if (!settled) await queue.dequeue(pr);
+    process.kill(process.pid, signal);
+  };
+  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.once(signal, () => void giveUp(signal));
 
-    // Replay the PR's commits onto main — what a rebase does — without first
-    // checking out the PR's own, older base. That detour rewrote every file
-    // main had changed since the PR branched, then rewrote it back, and cargo,
-    // which judges staleness by modification time, recompiled all of them on
-    // a checkout that exists to stay warm. Starting from main touches only the
-    // files the PR changes.
-    const base = await git(gate, "merge-base", prHead, mainSha);
-    if (base === mainSha) {
-      // `--force`, matching the `mainSha` checkout above: this checkout is
-      // reset and rebuilt every run, so there is never a local change here
-      // worth preserving, and a plain `checkout` would refuse on one instead.
-      await git(gate, "checkout", "--quiet", "--force", "--detach", prHead);
-    } else {
-      console.log(`\n▶ Rebasing PR #${pr} onto origin/main (${mainSha.slice(0, 8)})`);
-      // The commit set rebase would replay: linear (merge commits dropped,
-      // their changes arriving through the commits around them), in graph
-      // order, and skipping any commit whose patch main already has.
-      const commits = (
-        await git(
-          gate,
-          "rev-list",
-          "--reverse",
-          "--topo-order",
-          "--no-merges",
-          "--cherry-pick",
-          "--right-only",
-          `${mainSha}...${prHead}`
-        )
-      )
-        .split("\n")
-        .filter((c) => c !== "");
-      if (commits.length === 0) fail(`PR #${pr} has no commits of its own beyond main.`);
-      const replay = await replayCommits(gate, commits);
-      if (replay.kind === "conflict") {
-        fail(
-          `The rebase onto main conflicts in: ${replay.paths.join(", ")}.\n` +
-            "  Resolve it in your worktree (git rebase origin/main), push, and re-run."
+  await queue.enqueue(pr, pushedHead);
+  console.log(`\n▶ #${pr} queued. Whichever machine holds the queue's lock gates and lands it.`);
+
+  const started = Date.now();
+  const watch = new StaleWatch();
+  let idleRounds = 0;
+  const status = statusLogger((m) => console.log(m), Date.now);
+  for (;;) {
+    // One poll. Any error in it — a failed ls-remote, a gh hiccup — is
+    // retried at the next poll rather than ending the wait.
+    try {
+      if ((await viewPr(pr))?.state === "MERGED") {
+        settled = true;
+        console.log(
+          `\n✓ PR #${pr} merged.\n` +
+            "  Next: ExitWorktree({action: \"remove\", discard_changes: true}), then from the primary checkout\n" +
+            "  `git pull origin main` and `bun run gh:status <issue#> \"Done\"`.\n"
         );
+        return;
       }
-      if (replay.kind === "error") {
-        fail(`Replaying PR #${pr} onto main failed, and not on a conflict:\n${replay.message}`);
+      if (!(await queue.isQueued(pr))) {
+        settled = true;
+        if (await hasMerged(pr)) {
+          console.log(`\n✓ PR #${pr} merged.\n`);
+          return;
+        }
+        fail(`PR #${pr} left the queue without landing — the reason is in a comment on the PR.`);
       }
-      // Commits that became empty are kept, so a PR main already fully
-      // contains replays "successfully" onto main's own tree. Stop here
-      // rather than spend a full gate run and squash-merge an empty diff.
-      if ((await git(gate, "rev-parse", "HEAD^{tree}")) === (await git(gate, "rev-parse", `${mainSha}^{tree}`))) {
-        fail(`PR #${pr} has no changes beyond main: main already contains everything it does.`);
+      if (Date.now() - started > MAX_WAIT_MS) {
+        await queue.dequeue(pr);
+        settled = true;
+        fail(`PR #${pr} didn't land within ${formatDuration(MAX_WAIT_MS)}; it has left the queue. Re-run when the queue is shorter.`);
       }
-    }
-    const tested = await git(gate, "rev-parse", "HEAD");
 
-    await $`bun install`.cwd(gate).quiet();
-    console.log(`\n▶ Full pre-merge gate on ${tested.slice(0, 8)} in ${gate} (attempt ${attempt} of ${MAX_ATTEMPTS})`);
-    const result = await $`bun run scripts/test-gate.ts --mode=merge`.cwd(gate).nothrow();
-    if (result.exitCode !== 0) {
-      fail(
-        `The merge gate failed on ${tested.slice(0, 8)}` +
-          (tested === info.headRefOid
-            ? ". Fix it, push, and re-run."
-            : " — the PR rebased onto main. Reproduce with `git rebase origin/main` in your worktree, fix, push, and re-run.")
+      const sha = await queue.lockSha();
+      const stale = watch.observe(sha);
+      // This machine's gate checkout first, then the queue's lock. A local
+      // --dry-run holding the checkout makes this machine sit the round out
+      // — without waiting on it, so this waiter keeps watching its PR — rather
+      // than hold up every machine while it waits.
+      const local = readHolder(MERGE_LOCK_PATH);
+      const checkoutBusy = local.state === "held" && isPidAlive(local.holder.pid);
+      if ((sha === null || stale) && !checkoutBusy) {
+        // The read above is only a hint — two waiters here can both see it
+        // free — so the loser waits a few seconds, not a whole round.
+        const checkout = await acquireGateLock({ lockPath: MERGE_LOCK_PATH, what: "gate checkout", maxWaitMs: WAITER_CHECKOUT_WAIT_MS, quietTimeout: true });
+        let ran = false;
+        let moved = false;
+        try {
+          if (checkout.held) {
+            if (stale) {
+              const holder = await queue.lockInfo(sha as string);
+              console.log(`\n⚠ The queue's lock hasn't moved in 10 minutes${holder ? ` (${describeLock(holder)})` : ""}; taking it over.`);
+            }
+            const held = await queue.tryAcquire(lockInfoHere(), sha ?? "");
+            if (held !== null) {
+              ran = true;
+              moved = await runRound(queue, held, repoRoot, repo);
+            }
+          }
+        } finally {
+          checkout.release();
+        }
+        if (ran) {
+          // A round that got nowhere (this machine can't run the gate, say)
+          // backs off before trying again, so it neither hammers origin and
+          // GitHub nor keeps a healthy machine from taking the round.
+          idleRounds = moved ? 0 : idleRounds + 1;
+          if (idleRounds > 0) await Bun.sleep(Math.min(POLL_MS * 2 ** idleRounds, MAX_BACKOFF_MS));
+          continue;
+        }
+      }
+      const holder = sha === null ? null : await queue.lockInfo(sha);
+      const queued = await queue.queued();
+      status(
+        `${sha ?? ""}:${queued.length}`,
+        `  queued (#${pr}, ${queued.length} in the queue${holder ? `; running: ${describeLock(holder)}` : ""}) — waited ${formatDuration(Date.now() - started)}`
       );
+    } catch (err) {
+      console.log(`  (couldn't read the queue: ${err instanceof Error ? err.message : String(err)} — retrying)`);
     }
-
-    // Another machine can still merge while this gate ran (the lock is
-    // per-machine): what passed would no longer be what lands.
-    await git(gate, "fetch", "--quiet", "origin", "main");
-    if ((await git(gate, "rev-parse", "origin/main")) !== mainSha) {
-      console.log("\n⟳ main moved while the gate ran — rebasing and testing again.");
-      continue;
-    }
-
-    if (dryRun) {
-      console.log(`\n✓ Dry run: the merge gate passed on ${tested.slice(0, 8)}. Nothing pushed or merged.\n`);
-      return;
-    }
-
-    if (tested !== info.headRefOid) {
-      // The gate just ran the full pyramid on exactly this commit, lint
-      // included, so the pre-push hook would only repeat part of it.
-      console.log(`\n▶ Pushing the rebased branch (${tested.slice(0, 8)})`);
-      await $`git push --quiet --no-verify --force-with-lease=${info.headRefName}:${info.headRefOid} origin HEAD:${info.headRefName}`.cwd(gate);
-    }
-
-    // --match-head-commit: GitHub refuses the merge if the PR's head is no
-    // longer the commit that passed. The branch is deleted through the API
-    // rather than --delete-branch, which also tries to delete the local
-    // branch — checked out in the PR's worktree.
-    // Right after a force-push GitHub can briefly still report the old head,
-    // and --match-head-commit then refuses. Retry for a few seconds rather
-    // than make the caller re-run a gate that already passed.
-    // Attempts that are retried stay quiet; only a final refusal is shown.
-    for (let tries = 1; ; tries++) {
-      const merged = await $`gh pr merge ${pr} --squash --match-head-commit ${tested}`.quiet().nothrow();
-      if (merged.exitCode === 0) break;
-      if (tries === 1) console.log("  waiting for GitHub to show the pushed commit as the PR head…");
-      if (tries === MERGE_TRIES) {
-        console.error(`${merged.stdout.toString()}${merged.stderr.toString()}`.trim());
-        fail(
-          `GitHub refused the merge of ${tested.slice(0, 8)} (see above), though the gate passed on it;\n` +
-            `  once GitHub shows that commit as the PR head, merge with: gh pr merge ${pr} --squash --match-head-commit ${tested}`
-        );
-      }
-      await Bun.sleep(3000);
-    }
-    await $`gh api -X DELETE repos/${repo}/git/refs/heads/${info.headRefName}`.quiet().nothrow();
-    console.log(
-      `\n✓ PR #${pr} merged.\n` +
-        "  Next: ExitWorktree({action: \"remove\", discard_changes: true}), then from the primary checkout\n" +
-        "  `git pull origin main` and `bun run gh:status <issue#> \"Done\"`.\n"
-    );
-    return;
+    await Bun.sleep(POLL_MS);
   }
-  fail(`main kept moving during ${MAX_ATTEMPTS} gate runs. Re-run when it settles.`);
 }
 
 if (import.meta.main) {

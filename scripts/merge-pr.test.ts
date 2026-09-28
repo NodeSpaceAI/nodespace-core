@@ -11,7 +11,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { $ } from "bun";
-import { isPrBranch, parseArgs, replayCommits } from "./merge-pr";
+import { buildStack, isPrBranch, parseArgs, replayCommits } from "./merge-pr";
 
 describe("replayCommits", () => {
   const repos: string[] = [];
@@ -164,4 +164,65 @@ describe("parseArgs", () => {
       expect(() => parseArgs(argv)).toThrow("usage: bun run merge <PR#>");
     }
   );
+});
+
+describe("buildStack", () => {
+  let cwd: string;
+  afterEach(() => {
+    rmSync(cwd, { recursive: true, force: true });
+  });
+
+  async function git(...args: string[]): Promise<string> {
+    return (await $`git ${args}`.cwd(cwd).quiet().text()).trim();
+  }
+
+  /** A branch off `from` with one commit writing `file`; returns its head. */
+  async function branch(name: string, from: string, file: string, content: string): Promise<string> {
+    await git("checkout", "--quiet", "-b", name, from);
+    writeFileSync(join(cwd, file), content);
+    await git("add", file);
+    await git("commit", "--quiet", "-m", name);
+    return git("rev-parse", "HEAD");
+  }
+
+  test("stacks PRs in order, and leaves out one that conflicts with a PR ahead of it or adds nothing", async () => {
+    cwd = mkdtempSync(join(tmpdir(), "merge-pr-stack-"));
+    await git("init", "--quiet", "-b", "main");
+    await git("config", "user.email", "test@example.com");
+    await git("config", "user.name", "Test");
+    await git("config", "commit.gpgsign", "false");
+    writeFileSync(join(cwd, "base.txt"), "base\n");
+    await git("add", "base.txt");
+    await git("commit", "--quiet", "-m", "base");
+    const base = await git("rev-parse", "HEAD");
+    const main = await branch("main-change", base, "main.txt", "main\n");
+
+    const pr1 = await branch("pr1", base, "a.txt", "one\n");
+    const pr2 = await branch("pr2", base, "a.txt", "two\n"); // conflicts with #1, not with main
+    const pr3 = await branch("pr3", base, "b.txt", "three\n");
+    const pr4 = await branch("pr4", base, "main.txt", "main\n"); // main already has its patch
+    const pr5 = await branch("pr5", base, "b.txt", "three\n"); // #3, queued ahead, already did it
+
+    await git("checkout", "--quiet", "--detach", main);
+    const item = (pr: number, head: string) => ({ pr, headRefName: `pr${pr}`, head });
+    const { stack, ejected } = await buildStack(cwd, main, [item(1, pr1), item(2, pr2), item(3, pr3), item(4, pr4), item(5, pr5)]);
+
+    expect(stack.map((e) => e.pr)).toEqual([1, 3]);
+    expect(ejected.map((e) => e.pr)).toEqual([2, 4, 5]);
+    expect(ejected[0].reason).toContain("#1");
+    expect(ejected[0].reason).toContain("a.txt");
+    expect(ejected[1].reason).toContain("no commits of its own beyond main");
+    expect(ejected[2].reason).toContain("no changes beyond main");
+
+    // The checkout is the top of the stack, clean, with both PRs on main.
+    expect(await git("rev-parse", "HEAD^{tree}")).toBe(stack[1].tree);
+    expect(await git("status", "--porcelain")).toBe("");
+    expect(readFileSync(join(cwd, "a.txt"), "utf8")).toBe("one\n");
+    expect(readFileSync(join(cwd, "b.txt"), "utf8")).toBe("three\n");
+    expect(readFileSync(join(cwd, "main.txt"), "utf8")).toBe("main\n");
+    // Each entry's tree is main plus it and everything below it.
+    await git("checkout", "--quiet", "--detach", main);
+    await git("cherry-pick", ...stack[0].commits);
+    expect(await git("rev-parse", "HEAD^{tree}")).toBe(stack[0].tree);
+  });
 });
