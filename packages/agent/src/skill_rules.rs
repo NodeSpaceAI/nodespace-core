@@ -19,6 +19,13 @@
 //! `packages/cli/examples/gen_skill_md.rs` renders the prose form into the
 //! shipped skill content; a checked-in copy is verified against that output
 //! so the file cannot silently go stale.
+//!
+//! The two forms of a [`SchemaRule`] are still two hand-written strings — they
+//! differ on purpose, since each names its own surface's verbs
+//! (`update_schema` vs. `schema update`) and some rules genuinely diverge
+//! (see [`ADD_ENUM_VALUES`]). What ties them is [`SchemaRule::anchors`] plus
+//! a JSON-example check: a wording fix that drops a fact or changes an
+//! example in one form fails the tests until the other form follows.
 
 /// A schema-authoring convention (field naming, enums, relationships,
 /// title templates, request-scoping).
@@ -29,6 +36,12 @@ pub struct SchemaRule {
     /// Flowing markdown prose form for SKILL.md, including its own
     /// **Bold lead.** phrase.
     pub prose: &'static str,
+    /// The rule's load-bearing facts — the names, values and phrases both
+    /// forms must carry. Each must appear, case-insensitively, in both
+    /// `imperative` and `prose`. When you reword one form, a missing anchor
+    /// means the other form (or this list, if the fact itself changed) needs
+    /// the same edit.
+    pub anchors: &'static [&'static str],
 }
 
 /// A generic interaction habit repeated across multiple skills/CLI verbs
@@ -50,30 +63,35 @@ pub const ONE_SCHEMA_PER_REQUEST: SchemaRule = SchemaRule {
     id: "one-schema-per-request",
     imperative: "ONLY THE TYPES ASKED FOR: Create exactly the types the user named — no more — then stop and report them. Do NOT proactively invent or create related types the user did not ask for (e.g. asked for \"ADR\", do not also create \"Ticket\" or \"Sprint\"), and do NOT follow up with update_schema to wire relationships unless the user explicitly asked for them. This is a rule about restraint, NOT about call count: when the user does ask for several types, create all of them (see CREATING TWO LINKED TYPES for the ordering).",
     prose: "**Only the types asked for.** Create exactly the types asked for — no more — then stop and report them. Don't proactively create related types the user didn't ask for (e.g. asked for \"ADR\" — don't also create \"Ticket\" or \"Sprint\"), and don't follow up with `schema update` to wire relationships unless explicitly asked. This is a rule about restraint, not about call count: when the user does ask for several types, create all of them — see *Creating two linked types* for the order.",
+    anchors: &["no more", "ADR", "Ticket", "Sprint", "restraint", "create all of them"],
 };
 
 pub const CREATING_TWO_LINKED_TYPES: SchemaRule = SchemaRule {
     id: "creating-two-linked-types",
     imperative: "CREATING TWO LINKED TYPES: When the user asks for a linked pair (e.g. \"Customer and Invoice, linked\"), that is TWO create_schema calls, not one. A relationship's targetType must ALREADY exist, or be the type this very call is creating (self-reference) — pointing at a type you merely intend to create next is rejected. So create the target type FIRST, then the referencing type, declaring the relationship on the REFERENCING side: create Customer (no relationship), then create Invoice with {\"name\": \"billed_to\", \"targetType\": \"customer\", \"direction\": \"out\", \"cardinality\": \"one\", \"reverseName\": \"invoices\", \"reverseCardinality\": \"many\"}. The required reverseName gives Customer its \"invoices\" accessor for free — one stored edge, readable from both ends, no update_schema follow-up. Declaring invoices -> invoice on Customer first is rejected, because invoice does not exist yet. Do NOT omit the relationship here: the user asked for the types to be linked, and omitting it silently delivers two unlinked types.",
     prose: "**Creating two linked types.** When the user asks for a pair (e.g. \"Customer and Invoice, linked\"), that is two `schema create` calls, not one. A relationship's `targetType` must already exist, or be the type the same call is creating — pointing at a type you only intend to create next is rejected. So create the target type first, then the referencing type, declaring the relationship on the *referencing* side: create `Customer`, then create `Invoice` with `{\"name\":\"billed_to\",\"targetType\":\"customer\",\"direction\":\"out\",\"cardinality\":\"one\",\"reverseName\":\"invoices\",\"reverseCardinality\":\"many\"}`. The required `reverseName` gives the Customer end its `invoices` accessor for free — one stored edge, readable from both ends, no `schema update` follow-up. Declaring `invoices → invoice` on `Customer` first is rejected: the target doesn't exist yet. Don't omit the relationship here — the user asked for the types to be linked, and omitting it silently delivers two unlinked types.",
+    anchors: &["Customer and Invoice", "not one", "already exist", "referencing", "invoices", "one stored edge, readable from both ends", "two unlinked types"],
 };
 
 pub const SCHEMA_ALREADY_EXISTS: SchemaRule = SchemaRule {
     id: "schema-already-exists",
     imperative: "SUCCESS: After create_schema returns a schema object (with fields, type_id, etc.), that type was created — do NOT call create_schema again FOR THAT SAME TYPE to re-verify or retry it. If the user asked for other types too (see CREATING TWO LINKED TYPES), go straight on to the next one; only once every type asked for exists do you stop and report. If create_schema returns an error saying the schema already exists, stop and tell the user the type already exists and they can create instances with create_node.",
     prose: "If `create` reports the schema already exists, stop and tell the user — they can create instances with `node create` against the existing type.",
+    anchors: &["already exists", "stop and tell the user", "create instances"],
 };
 
 pub const SCHEMA_VALIDATION_ERROR_RETRY: SchemaRule = SchemaRule {
     id: "schema-validation-error-retry",
     imperative: "VALIDATION ERROR: If create_schema returns an error other than \"already exists\" (e.g. a title_template placeholder missing from fields, an invalid field type), the error names the specific problem — fix exactly that and call create_schema again in this same turn with the corrected payload. Do NOT ask the user to clarify and do NOT give up after one rejection; a validation error is fixable from the error message alone.",
     prose: "If `create` rejects the schema with a validation error (not \"already exists\") — for example a `title_template` placeholder missing from `fields`, or an invalid field type — the error names the specific problem. Fix exactly that and retry immediately with the corrected payload; don't ask the user to clarify and don't give up after one rejection.",
+    anchors: &["already exists", "placeholder missing from", "invalid field type", "names the specific problem", "corrected payload", "give up after one rejection"],
 };
 
 pub const EDIT_DONT_RECREATE: SchemaRule = SchemaRule {
     id: "edit-dont-recreate",
     imperative: "EDITING A SCHEMA — call update_schema: When the user wants to add a field, remove a field, rename a field, add a value to an existing enum field, or change a relationship on an existing schema, call update_schema with the schema_id and only the fields that need changing. Do NOT re-create the whole schema. Use add_fields, remove_fields, rename_fields, add_field_values, or update the description/title_template as needed.",
     prose: "**Editing:** to add, remove, or rename a field, add a value to an existing enum field, or change a relationship on an existing schema, use `schema update` with only the fields that need changing (`add_fields`/`remove_fields`/`rename_fields`/`add_field_values`, or an updated `description`/`title_template`). Don't re-create the whole schema for a small change.",
+    anchors: &["add a value to an existing enum field", "change a relationship", "add_fields", "remove_fields", "rename_fields", "add_field_values", "title_template", "re-create the whole schema"],
 };
 
 pub const RENAME_VS_RELABEL: SchemaRule = SchemaRule {
@@ -85,6 +103,7 @@ pub const RENAME_VS_RELABEL: SchemaRule = SchemaRule {
     // schema description cannot: which of the two the user actually means.
     imperative: "RENAME VS RELABEL: rename_fields can rename a field's storage key OR relabel its display name (see the tool schema for the 'from'/'to'/'friendlyName' shape of each). A user asking to call a field something else on screen almost always means the display label, not a storage rename — do not conflate the two.",
     prose: "**Rename vs. relabel:** `rename_fields` can rename a field's storage key or relabel its display name only — see the tool schema for the `from`/`to`/`friendlyName` shape of each. A user asking to relabel what a field is called on screen almost always means the display label, not a storage rename.",
+    anchors: &["rename_fields", "storage key", "display name", "friendlyName", "display label, not a storage rename"],
 };
 
 /// Adding a value to an existing enum is a different write path from adding a
@@ -111,6 +130,7 @@ pub const ADD_ENUM_VALUES: SchemaRule = SchemaRule {
     id: "add-enum-values",
     imperative: "ADDING A VALUE TO AN EXISTING ENUM \u{2014} use add_field_values, NOT add_fields: When the user wants a new choice on a field that already exists (a \"backlog\" status on task, a new priority level), call update_schema with add_field_values: `{\"schema_id\": \"task\", \"add_field_values\": [{\"field\": \"status\", \"values\": [{\"value\": \"backlog\", \"label\": \"Backlog\"}]}]}`. This appends to the EXISTING field's vocabulary. Do NOT use add_fields \u{2014} that declares a NEW field, which is the wrong operation and leaves the original field unchanged. Do NOT try to redeclare the field with a fuller coreValues list either; that is rejected. ELIGIBILITY: only a field with extensible: true AND type enum can be extended. Do NOT try to pre-verify this before calling \u{2014} no tool on this surface reports a field's extensible flag (get_node's available_properties lists a field's type and allowed_values, not whether it is extensible). Just make the call: a rejection names the exact reason, and nothing is partially applied. New values land in user_values; core_values is never touched. COLLISIONS: the whole call is rejected if the field does not exist, is not extensible, is not an enum, or if any value string already exists in core_values or user_values \u{2014} nothing is merged or overwritten. The check is on the value string, never the label: two values may share a label, so a rejection naming a colliding value means choose a different value string, not a different label.",
     prose: "**Adding a value to an existing enum.** To give a field that already exists a new choice \u{2014} a `backlog` status on `task`, another priority level \u{2014} use `add_field_values`, not `add_fields`:\n\n```bash\nnodespace schema update --params '{\"schema_id\":\"task\",\"add_field_values\":[{\"field\":\"status\",\"values\":[{\"value\":\"backlog\",\"label\":\"Backlog\"}]}]}'\n```\n\n`add_fields` is the wrong tool here: it declares a *new* field and leaves the original one's vocabulary untouched. Redeclaring the existing field with a fuller `coreValues` list is rejected outright, so extending in place is the only route.\n\nOnly a field declared `extensible: true` **and** typed `enum` can be extended \u{2014} `nodespace schema get <schema_id>` shows both, so check before calling rather than discovering it through a rejection. Added values land in `user_values`; `core_values` is never written.\n\nThe operation is all-or-nothing: it is rejected if the field doesn't exist, isn't extensible, isn't an enum, or if any value string already exists on `core_values` or `user_values` \u{2014} nothing is merged or overwritten. Collision is checked on the `value` string and never on `label` (two values may legitimately share a label), so a rejection naming a colliding value means pick a different `value`, not a different `label`.",
+    anchors: &["add_field_values", "add_fields", "backlog", "coreValues", "extensible: true", "enum", "user_values", "core_values", "nothing is merged or overwritten", "label"],
 };
 
 /// The recognition trigger matters more than the conclusion here: an agent
@@ -124,12 +144,14 @@ pub const DELETE_A_SCHEMA: SchemaRule = SchemaRule {
     id: "delete-a-schema",
     imperative: "DELETING A SCHEMA \u{2014} the capability exists, use it: When the user asks to remove, drop, undo or clean up a node type \u{2014} including a throwaway type you created yourself this session \u{2014} delete it. Do NOT report deletion as unsupported and do NOT propose stripping the schema to an empty shell as a workaround. PREREQUISITE: a schema carrying relationship declarations cannot be deleted; call update_schema with remove_relationships first, on THIS type for the relationships it declares AND on every other type that declares a relationship targeting it, then delete the schema node. This is the mirror of the targetType rule: a relationship's target must EXIST to declare it, and must be ABSENT to delete the type it points at. The rejection names the remaining declaration count \u{2014} act on it rather than giving up. remove_relationships removes only the type's OWN declarations: a relationship a type inherits via extends is listed in its definition but belongs to the ancestor, and naming it on the child is rejected with that ancestor's name \u{2014} it does not block deleting the child. Only declarations BETWEEN SCHEMAS block the delete: edges between ordinary nodes are instance data and do not count, so do not go hunting for those. EXCEPTION for extends: remove_relationships never clears it (rejected outright \u{2014} the dedicated extends parameter on update_schema is the only way to change it, and it only re-targets, never clears). A schema that itself extends a parent needs no prerequisite step at all \u{2014} delete it directly, its own extends declaration goes with it. A schema OTHER schemas still extend stays blocked until those children are deleted or re-targeted onto a different parent via extends. Deleting the type does NOT delete its existing instances \u{2014} they remain as nodes; delete those separately with delete_node if the user wants them gone too.",
     prose: "**Deleting a schema.** A node type can be removed \u{2014} `nodespace schema delete <schema_id>`. Reach for it whenever the user asks to remove, drop, undo or clean up a type, including a throwaway type created earlier in the session; never report deletion as unsupported, and never propose stripping a schema to an empty shell as a substitute. Core types (`task`, `text`, `date`, `person`, \u{2026}) are the exception: they cannot be deleted, and the attempt is rejected with `schema_is_core`.\n\nRelationship declarations are the one prerequisite: a schema that still declares relationships, or is still targeted by another type's declaration, is rejected with `schema_has_declarations` and the remaining count. Clear them with `schema update` first, then delete:\n\n```bash\n# 1. Drop the relationships this type declares\nnodespace schema update --params '{\"schema_id\":\"adr\",\"remove_relationships\":[\"decided_by\",\"supersedes\"]}'\n# 2. Drop declarations on OTHER types that target it (`schema list --json` shows them)\nnodespace schema update --params '{\"schema_id\":\"ticket\",\"remove_relationships\":[\"related_adr\"]}'\n# 3. Delete the schema\nnodespace schema delete adr\n```\n\nThis is the mirror of the `targetType` rule above: a relationship's target must **exist** before the relationship can be declared, and must be **absent** before the type it points at can be deleted.\n\n`schema get` on a type that `extends` another lists the relationships it inherits alongside its own. `remove_relationships` only removes the type's **own** declarations: naming an inherited one is rejected with the ancestor that declares it, and naming one the type doesn't have is rejected with the list of names it does declare. An inherited relationship doesn't block deleting the child, so step 1 for a child type covers only the names it declares itself.\n\nTwo scoping notes. Only declarations *between schemas* block the delete \u{2014} relationship edges between ordinary nodes are instance data and are not counted, so there is no need to unpick those first. And deleting the type does not delete its instances: they remain as nodes of that type, so remove them with `node delete` separately if the user wants them gone too.\n\n**Exception for `extends`:** it is never cleared through `remove_relationships` \u{2014} that call is rejected outright, since the only way to change an `extends` edge is the dedicated `extends` field on `schema update` (re-targeting it, never clearing it). So the sequence above does not apply to `extends` itself: a schema that extends a parent needs no prerequisite step \u{2014} deleting it deletes its own `extends` declaration right along with it. A schema OTHER schemas still extend stays blocked with the same `schema_has_declarations` rejection until those children are deleted, or re-targeted onto a different parent: `nodespace schema update --params '{\"schema_id\":\"<child>\",\"extends\":\"<new-parent>\"}'`.",
+    anchors: &["remove, drop, undo or clean up", "unsupported", "empty shell", "remove_relationships", "mirror of the", "instance data", "extends", "re-target", "instances"],
 };
 
 pub const NO_NAME_TITLE_FIELD: SchemaRule = SchemaRule {
     id: "no-name-title-field",
     imperative: "Do NOT add a 'name' or 'title' field — every node already has a built-in content/title field.",
     prose: "define only type-specific fields — don't add a `name` or `title` field; every node already has a built-in content/title field.",
+    anchors: &["built-in content/title field"],
 };
 
 /// Measured on its own (isolated daemon, live model) to have ZERO effect on
@@ -145,24 +167,28 @@ pub const FIELDS_FROM_REQUEST_ONLY: SchemaRule = SchemaRule {
     id: "fields-from-request-only",
     imperative: "FIELD SOURCE: derive every field from what the user's OWN request describes wanting to track — never from another schema shown in EXISTING SCHEMAS. That block lists types that already exist so you don't recreate them; it is not a shape to copy fields from for a new, different type. A new type about releases does not inherit fields from an unrelated ticket or adr schema just because one is listed there.",
     prose: "**Field source:** derive every field from what the user's own request describes wanting to track — never from another schema shown in the entity-types context. That listing exists so you don't recreate a type that already exists; it is not a shape to copy fields from for a new, unrelated type.",
+    anchors: &["own request describes wanting to track", "so you don't recreate", "not a shape to copy fields from"],
 };
 
 pub const NAME_PLACEHOLDER_EXCEPTION: SchemaRule = SchemaRule {
     id: "name-placeholder-exception",
     imperative: "EXCEPTION: if you use a 'name' placeholder in title_template (e.g. \"{name} ({status})\"), you MUST define 'name' as a text field so title generation works.",
     prose: "Exception: if `title_template` uses a `{name}` placeholder, `name` must be defined as a field (any placeholder in `title_template` must have a matching field).",
+    anchors: &["title_template", "{name}"],
 };
 
 pub const ENUM_FORMAT: SchemaRule = SchemaRule {
     id: "enum-format",
     imperative: "ENUMS: Use lowercase values with readable labels, e.g. `{\"value\": \"in_progress\", \"label\": \"In Progress\"}`.",
     prose: "**Enums:** lowercase values with readable labels — `{\"value\":\"in_progress\",\"label\":\"In Progress\"}`.",
+    anchors: &["lowercase values with readable labels"],
 };
 
 pub const RELATIONSHIP_VS_FIELD: SchemaRule = SchemaRule {
     id: "relationship-vs-field",
     imperative: "RELATIONSHIPS: Use relationships (not fields) when a field references another node type. RECOGNITION IS THE HARD PART: a field naming a person, team, project, or any other entity is a reference even when it reads naturally as text — a plain string has no integrity (\"M. Alibio\" and \"m alibio\" are different values to a query engine), no reverse lookup, and no rename path (renaming a person means rewriting every node that names them). Examples, from how a request is phrased: \"who signed off\" -> decided_by (targetType: person), not a deciders: array field. \"who it's assigned to\" -> assignee (targetType: person), not an assignee: text field. \"which project it affects\" -> affects_project (targetType: project). FALSE FRIENDS — field names that read as plain attributes but are usually references: deciders, assignee, owner, author, reviewer, reported_by, members. Before defaulting one of these to a text field, check whether the target type already exists in EXISTING SCHEMAS. ESCAPE HATCH: free text is fine for a one-off external party who will never be a node in this graph — use a relationship when the party is, or could become, a first-class entity here.",
     prose: "**Relationships vs. fields:** use a relationship (not a field) when a value references another node type.",
+    anchors: &["references another node type"],
 };
 
 /// The write-cost argument against collections was, in practice, the argument
@@ -174,12 +200,14 @@ pub const GROUPING_IS_COLLECTIONS: SchemaRule = SchemaRule {
     id: "grouping-is-collections",
     imperative: "GROUPING FIELDS: Do NOT declare a tags, categories, topics, labels, areas or groups field. NodeSpace already has one mechanism for tagging and grouping — collections — and a flat label and a nested path (\"docs:rust\") are that same mechanism at two depths. COST: a collection is not more expensive to write than an array element. Both are one argument on the create call: node create --collection docs:rust, repeatable for several collections, with every missing path segment created for you and no lookup first. So there is no cheap-versus-thorough tradeoff to weigh. What differs is durability: an array value renders in no UI, must be edited on every member to rename, cannot nest, and is invisible to collection queries; a collection does all four. member_of is structural, so joining one needs no schema change and no relationship declaration. ESCAPE HATCH: if the user explicitly asks for a plain tags field, give them one without arguing.",
     prose: "**Grouping is collections, not an array field.** Don't declare a `tags`, `categories`, `topics`, `labels`, `areas` or `groups` field — collections already are the tagging and grouping mechanism, with a flat label and a nested path (`docs:rust`) as the same mechanism at two depths. They also cost the same to write: `node create --collection docs:rust` is one argument, repeatable, with missing path segments created for you and no lookup first — exactly the cost of setting one array element. What differs is what you get. An array value renders in no UI, has to be edited on every member to rename, cannot nest, and is invisible to collection queries; a collection does all four, and `member_of` is structural so joining one needs no schema change. If the user explicitly asks for a plain tags field, give them one without arguing.",
+    anchors: &["tags", "categories", "topics", "labels", "areas", "groups", "two depths", "node create --collection docs:rust", "repeatable", "missing path segment", "no lookup first", "renders in no UI", "to rename", "cannot nest", "invisible to collection queries", "member_of", "no schema change", "explicitly asks for a plain tags field", "without arguing"],
 };
 
 pub const TARGET_TYPE_MUST_EXIST: SchemaRule = SchemaRule {
     id: "target-type-must-exist",
     imperative: "The targetType MUST be an existing schema ID from the EXISTING SCHEMAS list in the system prompt, or the schema ID of the type you are creating in this same call — do NOT invent types that aren't listed. If the target type doesn't exist yet: when the user asked for both types, create the target type first and declare the relationship on the type created second (see CREATING TWO LINKED TYPES); only when the target is a type the user never asked for, omit the relationship entirely. reverseName and reverseCardinality are REQUIRED on every relationship — a declaration missing either is rejected. One edge is stored and read from BOTH ends, so name it from both: reverseName is what the edge is called read from the target (plural where that end may hold many — \"invoices\", not \"Invoice (Customer)\"), and reverseCardinality is \"one\" or \"many\", saying how many sources may point at one target. Examples:\n- ADR supersedes adr (one), read back as superseded_by: `{\"name\": \"supersedes\", \"targetType\": \"adr\", \"direction\": \"out\", \"cardinality\": \"one\", \"reverseName\": \"superseded_by\", \"reverseCardinality\": \"one\"}`\n- Ticket has_task task (many), read back as ticket: `{\"name\": \"has_task\", \"targetType\": \"task\", \"direction\": \"out\", \"cardinality\": \"many\", \"reverseName\": \"ticket\", \"reverseCardinality\": \"one\"}`\n- ADR decided_by person, readable back as the person's decisions: `{\"name\": \"decided_by\", \"targetType\": \"person\", \"direction\": \"out\", \"cardinality\": \"one\", \"reverseName\": \"decisions\", \"reverseCardinality\": \"many\"}`\n\nSELF-REFERENCE: a type may point at itself in the same schema create call — use its own schema ID (the snake_case form of the name), no second call needed. The required reverseName is what names the other direction, so never declare a second relationship for it: one stored edge, readable from both ends. Example, on `schema create` for ADR: `{\"name\": \"supersedes\", \"targetType\": \"adr\", \"direction\": \"out\", \"cardinality\": \"one\", \"reverseName\": \"superseded_by\", \"reverseCardinality\": \"one\"}`. Same for `blocks`/`blocked_by` on a task or `parent`/`child` on a category.",
     prose: "`targetType` must be an existing schema ID, or the schema ID of the type being created in the same call. If it doesn't exist yet and the user asked for both types, create the target type first and declare the relationship on the type created second (see *Creating two linked types*); omit the relationship only when the target is a type the user never asked for. `reverseName` and `reverseCardinality` are **required** on every relationship — a declaration missing either is rejected. One edge is stored and read from both ends, so name it from both: `reverseName` is what the edge is called read from the target (plural where that end may hold many — `invoices`, not `Invoice (Customer)`), and `reverseCardinality` is `one` or `many`, saying how many sources may point at one target. Examples: `{\"name\":\"supersedes\",\"targetType\":\"adr\",\"direction\":\"out\",\"cardinality\":\"one\",\"reverseName\":\"superseded_by\",\"reverseCardinality\":\"one\"}`, `{\"name\":\"has_task\",\"targetType\":\"task\",\"direction\":\"out\",\"cardinality\":\"many\",\"reverseName\":\"ticket\",\"reverseCardinality\":\"one\"}`, `{\"name\":\"decided_by\",\"targetType\":\"person\",\"direction\":\"out\",\"cardinality\":\"one\",\"reverseName\":\"decisions\",\"reverseCardinality\":\"many\"}`.\n\n**Self-referential relationships:** a type may point at itself in the same `schema create` call — give its own schema ID (the snake_case form of the name); no follow-up `schema update` is needed. The required `reverseName` is what names the other direction, so never declare a second relationship for it — one stored edge, readable from both ends: `{\"name\":\"supersedes\",\"targetType\":\"adr\",\"direction\":\"out\",\"cardinality\":\"one\",\"reverseName\":\"superseded_by\",\"reverseCardinality\":\"one\"}`. The same shape covers `blocks`/`blocked_by` on a task and `parent`/`child` on a category.",
+    anchors: &["existing schema ID", "same call", "create the target type first", "never asked for", "reverseName", "reverseCardinality", "rejected", "invoices", "Invoice (Customer)", "snake_case", "never declare a second relationship", "blocked_by", "parent"],
 };
 
 /// The rejected-shape warning is the single most important sentence in this
@@ -207,14 +235,16 @@ pub const TARGET_TYPE_MUST_EXIST: SchemaRule = SchemaRule {
 /// duplicating ADD_ENUM_VALUES's full mechanics.
 pub const EXTENDS_SCHEMA_COMPOSITION: SchemaRule = SchemaRule {
     id: "extends-schema-composition",
-    imperative: "SPECIALIZING AN EXISTING TYPE \u{2014} use extends, NOT a hand-copied field list: When the user wants a new type that IS a more specific version of one that already exists (\"an Issue type that's a Task with a severity field\"), declare extends as a FIRST-CLASS KEY in create_schema's params \u{2014} NOT as an entry in the relationships array. Correct: `{\"name\": \"Issue\", \"extends\": \"task\", \"fields\": [{\"name\": \"severity\", \"type\": \"enum\", \"coreValues\": [...]}]}`. WRONG \u{2014} and REJECTED \u{2014} `{\"relationships\": [{\"name\": \"extends\", \"targetType\": \"task\", ...}]}`: do NOT infer extends's shape from how every other relationship is declared, it is not one. update_schema takes the same top-level `extends` key to set or re-point a parent after creation; there is no way to clear one once set. RULES: additive only \u{2014} the extending schema cannot redeclare a field the parent already has, not even with a different enum vocabulary; this is a hard rejection, not a merge. Single parent only \u{2014} a schema extends at most one other schema. An instance of the extending schema gets THAT schema's own id as its real node_type (creating an issue produces node_type: \"issue\", NOT \"task\") \u{2014} this is the mechanism's whole point, the base type does not persist. QUERY SCOPE IS PROJECTED, not flat: querying node_type: \"task\" returns tasks AND every extending instance (issue, etc.), but each result shows ONLY task's fields \u{2014} an issue in that result list carries status but NOT severity. To see severity, query node_type: \"issue\" directly. Do not query the base type and then look for a subtype-only field \u{2014} it will not be there. RICHER VOCABULARY ON AN INHERITED ENUM: to give an inherited enum field (e.g. an issue's inherited task.status) more values, use update_schema's add_field_values exactly as usual but ALSO include \"mapsTo\" on each new value, naming which existing value it collapses to at the parent's scope: `{\"schema_id\": \"issue\", \"add_field_values\": [{\"field\": \"status\", \"values\": [{\"value\": \"backlog\", \"label\": \"Backlog\", \"mapsTo\": \"todo\"}]}]}`. Never create a differently-named field (e.g. issue_status) for this \u{2014} that is not an extension of status at all and breaks the point of extending it. NAMESPACE EXCEPTION: fields declared directly on the extending schema's own fields list are stored bare, with NO namespace prefix required \u{2014} this is a genuine exception to the usual custom:/org:/plugin: prefix rule for extending a type you don't own, because these fields live in their own bucket, never colliding with the parent's.",
+    imperative: "SPECIALIZING AN EXISTING TYPE \u{2014} use extends, NOT a hand-copied field list: When the user wants a new type that IS a more specific version of one that already exists (\"an Issue type that's a Task with a severity field\"), declare extends as a FIRST-CLASS KEY in create_schema's params \u{2014} NOT as an entry in the relationships array. Correct: `{\"name\": \"Issue\", \"extends\": \"task\", \"fields\": [{\"name\": \"severity\", \"type\": \"enum\", \"coreValues\": [{\"value\": \"low\", \"label\": \"Low\"}, {\"value\": \"high\", \"label\": \"High\"}]}]}`. WRONG \u{2014} and REJECTED \u{2014} `{\"relationships\": [{\"name\": \"extends\", \"targetType\": \"task\", ...}]}`: do NOT infer extends's shape from how every other relationship is declared, it is not one. update_schema takes the same top-level `extends` key to set or re-point a parent after creation; there is no way to clear one once set. RULES: additive only \u{2014} the extending schema cannot redeclare a field the parent already has, not even with a different enum vocabulary; this is a hard rejection, not a merge. Single parent only \u{2014} a schema extends at most one other schema. An instance of the extending schema gets THAT schema's own id as its real node_type (creating an issue produces node_type: \"issue\", NOT \"task\") \u{2014} this is the mechanism's whole point, the base type does not persist. QUERY SCOPE IS PROJECTED, not flat: querying node_type: \"task\" returns tasks AND every extending instance (issue, etc.), but each result shows ONLY task's fields \u{2014} an issue in that result list carries status but NOT severity. To see severity, query node_type: \"issue\" directly. Do not query the base type and then look for a subtype-only field \u{2014} it will not be there. RICHER VOCABULARY ON AN INHERITED ENUM: to give an inherited enum field (e.g. an issue's inherited task.status) more values, use update_schema's add_field_values exactly as usual but ALSO include \"mapsTo\" on each new value, naming which existing value it collapses to at the parent's scope: `{\"schema_id\": \"issue\", \"add_field_values\": [{\"field\": \"status\", \"values\": [{\"value\": \"backlog\", \"label\": \"Backlog\", \"mapsTo\": \"todo\"}]}]}`. Never create a differently-named field (e.g. issue_status) for this \u{2014} that is not an extension of status at all and breaks the point of extending it. NAMESPACE EXCEPTION: fields declared directly on the extending schema's own fields list are stored bare, with NO namespace prefix required \u{2014} this is a genuine exception to the usual custom:/org:/plugin: prefix rule for extending a type you don't own, because these fields live in their own bucket, never colliding with the parent's.",
     prose: "**Specializing an existing type: `extends`.** When a new type IS a more specific version of one that already exists (\"an Issue type that's a Task with a severity field\"), reach for `extends` rather than hand-copying the base type's fields into a new, unrelated schema \u{2014} a hand-copied list loses real subtype identity, automatic inheritance of the base type's future changes, and compatibility with Plays/queries already written against the base type.\n\n`extends` is a **first-class key in the schema definition**, taking the parent's schema id \u{2014} never a hand-written entry in `relationships`:\n\n```json\n{\"name\": \"Issue\", \"extends\": \"task\", \"fields\": [{\"name\": \"severity\", \"type\": \"enum\", \"coreValues\": [{\"value\": \"low\", \"label\": \"Low\"}, {\"value\": \"high\", \"label\": \"High\"}]}]}\n```\n\nThis is the single most important thing to get right: every other relationship is declared with `direction`/`cardinality`/`reverseName` inside `relationships`, so it's tempting to infer `extends` follows the same shape \u{2014} `{\"relationships\": [{\"name\": \"extends\", \"targetType\": \"task\", ...}]}` is exactly that inference, and `create`/`update` reject it outright. `schema update` takes the same top-level `extends` key to set or re-point a parent after creation; there is no way to clear one once set, only re-target it.\n\nComposition is **additive only**: the extending schema cannot redeclare a field its parent already has, even with a different enum vocabulary \u{2014} that's a hard rejection, not a merge. And **single parent only** \u{2014} a schema extends at most one other schema.\n\nAn instance of the extending schema gets that schema's own id as its real `node_type` \u{2014} creating an `issue` produces `node_type: \"issue\"`, never `\"task\"`. This is the mechanism's whole point: the base type does not persist as the created node's type.\n\n**Querying is scope-projected, not flat.** A query for `node_type: \"task\"` returns `task` rows *and* every extending instance, but each result is projected to `task`'s own field set — an `issue` in those results carries `status` but not `severity`. To see a subtype's own fields, query that subtype directly (`node_type: \"issue\"`). Querying the base type and then looking for an extension field on the result finds nothing; it isn't a bug, it's the wrong scope.\n\n**Giving an inherited enum field a richer vocabulary** uses `add_field_values` exactly as usual, with one addition: every newly appended value must carry `mapsTo`, naming which pre-existing value it collapses to at the parent's scope.\n\n```bash\nnodespace schema update --params '{\"schema_id\":\"issue\",\"add_field_values\":[{\"field\":\"status\",\"values\":[{\"value\":\"backlog\",\"label\":\"Backlog\",\"mapsTo\":\"todo\"}]}]}'\n```\n\nNever declare a new, differently-named field (`issue_status`) for this — that isn't an extension of `status` at all, and it's exactly what `mapsTo` exists to make unnecessary: a base-scoped Play or query watching `task.status` keeps matching an `issue` node's `backlog` value as `todo`, unmodified.\n\n**Namespace exception:** fields declared directly on the extending schema's own `fields` list are stored bare — no `custom:`/`org:`/`plugin:` prefix required, unlike the usual rule for extending a type you don't own. They live in their own bucket and never collide with the parent's fields.",
+    anchors: &["first-class key", "relationships", "no way to clear one once set", "additive only", "single parent only", "node_type: \"issue\"", "projected", "mapsTo", "issue_status", "custom:", "org:", "plugin:", "stored bare"],
 };
 
 pub const ENUM_EDGE_FIELDS: SchemaRule = SchemaRule {
     id: "enum-edge-fields",
     imperative: "EDGE FIELDS: A relationship may carry attributes on the edge itself via edgeFields — use them for facts about the CONNECTION rather than about either node (an access level on a membership, a billing date on an invoice link). When an edge field has a fixed vocabulary, declare it as an enum with coreValues, exactly like a node field: `{\"name\": \"access\", \"type\": \"enum\", \"coreValues\": [{\"value\": \"owner\", \"label\": \"Owner\"}, {\"value\": \"editor\", \"label\": \"Editor\"}, {\"value\": \"viewer\", \"label\": \"Viewer\"}]}`. RULES: coreValues is REQUIRED on an enum edge field and REJECTED on any other type; a default MUST be one of the declared values; values must be unique. Edge enums are closed — there is no userValues or extensible on an edge field. Creating or editing an edge validates the value against the declared set, so an undeclared value is rejected rather than stored. LIMITS: only relationships YOU declare can carry edgeFields — the built-in structural names (member_of, has_child, mentions, has_role) are reserved and rejected as declarations, so you cannot attach an edge field to them. `required` and `default` on an edge field are recorded but NOT enforced when an edge is written: an omitted enum key is stored absent, not filled in from default. Do not rely on a default to supply a value.",
     prose: "**Edge fields.** A relationship can carry attributes on the edge itself via `edgeFields` — facts about the *connection*, not about either node (an access level on a membership, a billing date on an invoice link). Give an edge field a fixed vocabulary by declaring it as an enum with `coreValues`, the same shape a node field uses:\n\n```json\n{\"name\": \"access\", \"type\": \"enum\",\n \"coreValues\": [{\"value\": \"owner\", \"label\": \"Owner\"},\n                {\"value\": \"editor\", \"label\": \"Editor\"},\n                {\"value\": \"viewer\", \"label\": \"Viewer\"}]}\n```\n\n`coreValues` is required on an enum edge field and rejected on any other type; a `default` must be one of the declared values; values must be unique. Edge enums are closed — no `userValues`/`extensible` half. Creating or editing an edge validates the value against the declared set (including via `--edge-data`), and the relationships UI renders a picker instead of a free-text box.\n\nTwo limits worth knowing. Only relationships you declare can carry `edgeFields`: the built-in structural names (`member_of`, `has_child`, `mentions`, `has_role`) are reserved and rejected as declarations, so an edge field cannot be attached to them. And `required`/`default` on an edge field are recorded but not enforced at write time — an omitted enum key is stored absent rather than filled in from `default`, so don't rely on a default to supply a value.",
+    anchors: &["edgeFields", "connection", "coreValues", "rejected on any other type", "must be one of the declared values", "unique", "closed", "userValues", "extensible", "member_of", "has_child", "mentions", "has_role", "reserved", "not enforced", "stored absent"],
 };
 
 /// The premise this rule leads with is not decoration: without it, "identity
@@ -244,12 +274,14 @@ pub const TITLE_TEMPLATE_PLACEHOLDERS: SchemaRule = SchemaRule {
     id: "title-template-placeholders",
     imperative: "TITLE TEMPLATE: content is a node's name for entity types (Customer, Person, Invoice) \u{2014} for a node created without a parent, NodeSpace surfaces it as the title automatically. Only markdown primitives (text, header, quote-block, code-block, etc.) use content as a prose body instead of a name. Set title_template ONLY to ASSEMBLE a title from two or more fields, e.g. Person: first_name + last_name -> title_template: \"{first_name} {last_name}\". Use {field_name} placeholders; every placeholder MUST be defined as a field in the fields array. SINGLE-FIELD IDENTITY: if one field already holds the whole identity (e.g. a Customer's company name), put that value directly in content, do NOT set title_template, and do NOT add a separate field (e.g. company_name) that duplicates content.",
     prose: "**Title template:** `content` is a node's name for entity types (`Customer`, `Person`, `Invoice`) \u{2014} for a node created without a parent, NodeSpace surfaces it as the title automatically. Only markdown primitives (`text`, `header`, `quote-block`, `code-block`, etc.) use `content` as a prose body instead of a name. Three cases:\n- **Single-field identity** \u{2014} e.g. `Customer`: one field's value is the whole title. Put it directly in `content`; don't set `title_template`, and don't add a separate field (e.g. `company_name`) that duplicates it.\n- **Composed identity** \u{2014} e.g. `Person` (`first_name` + `last_name`): no single field holds the full title, so assemble one with `title_template: \"{first_name} {last_name}\"`, using `{field_name}` placeholders \u{2014} every placeholder must be a defined field.\n- **Markdown primitive** \u{2014} `text`, `header`, etc.: `content` is prose, not a name; `title_template` doesn't apply.\n\nUse `title_template` only to assemble a title from two or more fields. If one field already holds the whole identity, that value belongs in `content` alone.",
+    anchors: &["Customer", "Person", "Invoice", "surfaces it as the title automatically", "markdown primitives", "single-field identity", "two or more fields", "{first_name} {last_name}", "{field_name}", "company_name"],
 };
 
 pub const UNIQUE_FIELD_FLAGS: SchemaRule = SchemaRule {
     id: "unique-field-flags",
     imperative: "UNIQUE FIELDS: Set \"unique\": true on a field when the user's request implies each instance should have a distinct value for it (e.g. \"each ticket should have a unique key\" -> flag key unique). Use \"uniqueCaseInsensitive\": true instead of \"unique\" when case shouldn't matter (e.g. email, username). ADVISORY ONLY: this does NOT prevent duplicates from being created — it only lets the system suggest a likely existing match (e.g. surface the existing node) when a new value collides. Never tell the user a unique flag will block or reject a duplicate; describe it as a duplicate warning/suggestion, not an enforced constraint. Example: {\"name\": \"key\", \"type\": \"text\", \"uniqueCaseInsensitive\": true}.",
     prose: "**Unique fields:** set `\"unique\": true` on a field when the user's request implies each instance should have a distinct value for it (e.g. \"each ticket should have a unique key\" → flag `key` unique). Use `\"uniqueCaseInsensitive\": true` instead when case shouldn't matter — email and username are the common case. This is advisory only: it does not prevent duplicates from being created, it only lets the system surface a likely existing match when a new value collides. Never describe it to the user as blocking or rejecting duplicates — it's a suggestion, not an enforced constraint. Example: `{\"name\":\"key\",\"type\":\"text\",\"uniqueCaseInsensitive\":true}`.",
+    anchors: &["\"unique\": true", "\"uniqueCaseInsensitive\": true", "each ticket should have a unique key", "email", "username", "advisory only", "does not prevent duplicates from being created", "not an enforced constraint"],
 };
 
 /// All schema-authoring rules, in the order they should be rendered.
@@ -470,6 +502,105 @@ mod tests {
                 !r.skill_md_key_phrase.is_empty(),
                 "{} skill_md_key_phrase is empty",
                 r.id
+            );
+        }
+    }
+
+    /// Both forms of every schema rule carry each of its anchors. The prose
+    /// form is rendered verbatim into the shipped skill (and held there by
+    /// `checked_in_skill_md_is_up_to_date`), so this is the one check that
+    /// ties the in-app agent's wording to what external agents read.
+    #[test]
+    fn schema_rule_forms_share_their_anchors() {
+        let mut drift = Vec::new();
+        for r in SCHEMA_RULES {
+            assert!(!r.anchors.is_empty(), "{} declares no anchors", r.id);
+            let imperative = r.imperative.to_lowercase();
+            let prose = r.prose.to_lowercase();
+            for anchor in r.anchors {
+                let needle = anchor.to_lowercase();
+                for (form, text) in [("imperative", &imperative), ("prose", &prose)] {
+                    if !text.contains(&needle) {
+                        drift.push(format!("{}: {form} is missing {anchor:?}", r.id));
+                    }
+                }
+            }
+        }
+        assert!(
+            drift.is_empty(),
+            "schema rule forms have drifted apart — carry the change into the \
+             other form, or update `anchors` if the fact itself changed:\n{}",
+            drift.join("\n")
+        );
+    }
+
+    /// Rules whose prose walks through complete CLI commands the imperative
+    /// form has no counterpart for: the local agent issues those steps as
+    /// tool calls it is told about in words, not as copied payloads. Only the
+    /// prose-side examples are exempt — an example added to the imperative
+    /// form must still appear in the prose.
+    const PROSE_ONLY_EXAMPLES: &[&str] = &["delete-a-schema"];
+
+    /// Every JSON object embedded in `text`, including nested ones, parsed so
+    /// that formatting differences between the forms (`"a": 1` vs `"a":1`)
+    /// don't count as drift. Anything that doesn't parse is skipped: that is
+    /// placeholder braces such as `{name}`, and also the deliberately elided
+    /// rejected shape both forms of `EXTENDS_SCHEMA_COMPOSITION` show
+    /// (`{"relationships": [{"name": "extends", ...}]}`), which is an
+    /// illustration of what not to send rather than a payload to copy.
+    fn json_examples(text: &str) -> Vec<serde_json::Value> {
+        let mut found = Vec::new();
+        for (i, _) in text.match_indices('{') {
+            let Some(raw) = crate::local_agent::tools::extract_json_object(&text[i..]) else {
+                continue;
+            };
+            if let Ok(value @ serde_json::Value::Object(_)) = serde_json::from_str(raw) {
+                if !found.contains(&value) {
+                    found.push(value);
+                }
+            }
+        }
+        found
+    }
+
+    /// Both forms of a schema rule show the same JSON examples. An example is
+    /// a wire shape an agent copies verbatim, so an edit to one form's
+    /// example that the other form doesn't follow teaches the two surfaces
+    /// different payloads.
+    #[test]
+    fn schema_rule_forms_share_their_json_examples() {
+        let mut drift = Vec::new();
+        for r in SCHEMA_RULES {
+            let prose_only_allowed = PROSE_ONLY_EXAMPLES.contains(&r.id);
+            let imperative = json_examples(r.imperative);
+            let prose = json_examples(r.prose);
+            for example in &imperative {
+                if !prose.contains(example) {
+                    drift.push(format!(
+                        "{}: only the imperative form shows {example}",
+                        r.id
+                    ));
+                }
+            }
+            for example in &prose {
+                if !prose_only_allowed && !imperative.contains(example) {
+                    drift.push(format!("{}: only the prose form shows {example}", r.id));
+                }
+            }
+        }
+        assert!(
+            drift.is_empty(),
+            "schema rule examples differ between forms:\n{}",
+            drift.join("\n")
+        );
+    }
+
+    #[test]
+    fn prose_only_examples_names_real_rules() {
+        for id in PROSE_ONLY_EXAMPLES {
+            assert!(
+                SCHEMA_RULES.iter().any(|r| r.id == *id),
+                "PROSE_ONLY_EXAMPLES names {id:?}, which is not in SCHEMA_RULES"
             );
         }
     }
