@@ -3339,42 +3339,43 @@ impl SqliteStore {
         Ok(affected)
     }
 
-    /// The value write validation will see for each of `fields`, on every
-    /// instance of `type_id` and of every subtype extending it — returned as
-    /// `(field name, value)` pairs, one per node holding a non-null value.
+    /// The value write validation will see for each of `fields` — declared by
+    /// `owner` — on every instance of `scan_root` and of every subtype
+    /// extending it, returned as `(field name, value)` pairs, one per node
+    /// holding a non-null value. `owner` is `scan_root` itself or one of its
+    /// ancestors.
     ///
-    /// The row set is the one [`Self::rename_schema_field_in_tx`] migrates:
-    /// under ADR-078's per-owner buckets a subtype instance stores the fields
-    /// `type_id` declares under the `type_id` key, so rows whose own
-    /// `node_type` is a subtype count too. Each value is resolved the way
-    /// `NodeService::validate_node_with_fields` merges buckets — walking from
-    /// the row's own type up the `extends` chain to `type_id`, nearest bucket
-    /// holding the name wins, even when it holds null. A leftover value in a
-    /// subtype's own bucket therefore shadows the `type_id` one here exactly
-    /// as it does on write.
+    /// Under ADR-078's per-owner buckets an instance stores the fields `owner`
+    /// declares under the `owner` key, whatever its own `node_type`. Each
+    /// value is resolved the way `NodeService::validate_node_with_fields`
+    /// merges buckets — walking from the row's own type up the `extends`
+    /// chain to `owner`, nearest bucket holding the name wins, even when it
+    /// holds null. A leftover value in a nearer bucket therefore shadows the
+    /// `owner` one here exactly as it does on write.
     ///
     /// Run on the caller's `tx`: it sees that transaction's own writes (a
-    /// rename's just-migrated rows), and no other instance write can land
-    /// between this read and the caller's commit under the store's single
-    /// writer guard.
+    /// rename's just-migrated rows, a just-rewritten `extends` edge), and no
+    /// other instance write can land between this read and the caller's
+    /// commit under the store's single writer guard.
     pub(crate) async fn get_effective_field_values_in_tx(
         tx: &Tx<'_>,
-        type_id: &str,
+        scan_root: &str,
+        owner: &str,
         fields: &[String],
     ) -> Result<Vec<(String, Value)>> {
-        let subtypes = Self::get_subtype_closure_in_tx(tx, type_id).await?;
+        let subtypes = Self::get_subtype_closure_in_tx(tx, scan_root).await?;
         let parents = Self::get_extends_parent_map_in_tx(tx).await?;
-        // Each subtype's chain up to and including `type_id`, nearest first.
-        // Every subtype is in `type_id`'s descendant closure, so its ancestor
-        // chain reaches `type_id`; scopes above it never win, since
-        // `type_id`'s own bucket is consulted first.
+        // Each subtype's chain up to and including `owner`, nearest first.
+        // `owner` is on `scan_root`'s chain, so every subtype's chain reaches
+        // it; scopes above it never win, since `owner`'s own bucket is
+        // consulted first.
         let lookup = |t: &str| parents.get(t).cloned();
         let chains: std::collections::HashMap<&str, Vec<String>> = subtypes
             .iter()
             .map(|subtype| {
                 let mut chain =
                     crate::schema::extends_chain::resolve_ancestor_chain(subtype, &lookup);
-                if let Some(end) = chain.iter().position(|t| t == type_id) {
+                if let Some(end) = chain.iter().position(|t| t == owner) {
                     chain.truncate(end + 1);
                 }
                 (subtype.as_str(), chain)

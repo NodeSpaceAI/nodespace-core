@@ -7283,3 +7283,49 @@ async fn test_rename_over_a_leftover_value_the_migration_replaces_succeeds() {
         .await
         .expect("the node stays editable");
 }
+
+#[tokio::test]
+async fn test_extends_retarget_onto_a_leftover_bucket_rejected() {
+    let (svc, _tmp) = create_test_service().await;
+    handle_create_schema(&svc, json!({ "name": "Alpha", "fields": [] }))
+        .await
+        .unwrap();
+    create_ticket_with_string_points(&svc).await;
+    handle_create_schema(
+        &svc,
+        json!({ "name": "Bug", "extends": "ticket", "fields": [] }),
+    )
+    .await
+    .expect("Bug extends Ticket");
+    let bug_id = create_node_with_points(&svc, "bug", json!("large")).await;
+
+    // Moving Bug off Ticket leaves its `ticket` bucket behind, out of scope —
+    // so Ticket's own type change no longer sees the bug node.
+    handle_update_schema(&svc, json!({ "schema_id": "bug", "extends": "alpha" }))
+        .await
+        .expect("re-target to Alpha");
+    handle_update_schema(
+        &svc,
+        json!({
+            "schema_id": "ticket",
+            "remove_fields": ["points"],
+            "add_fields": [number_points()]
+        }),
+    )
+    .await
+    .expect("no Ticket instance holds a conflicting value any more");
+
+    // Moving back brings the leftover string under a `number` declaration.
+    let result =
+        handle_update_schema(&svc, json!({ "schema_id": "bug", "extends": "ticket" })).await;
+    expect_conflict(result, "number", 1);
+
+    assert_eq!(
+        persisted_extends_target(&svc, "bug").await.as_deref(),
+        Some("alpha"),
+        "the refused re-target left the edge where it was"
+    );
+    edit_content(&svc, &bug_id)
+        .await
+        .expect("the node stays editable");
+}

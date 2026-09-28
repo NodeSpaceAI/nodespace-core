@@ -771,28 +771,30 @@ impl NodeService {
         ))
     }
 
-    /// Refuse to declare `fields` on `schema_id` while existing instances — of
-    /// the type and of every subtype extending it — hold a value under one of
-    /// those names that the declaration rejects.
+    /// Refuse to bring `fields`, declared by `owner`, into force on the
+    /// instances of `scan_root` (and of every subtype extending it) while one
+    /// of them holds a value under one of those names that the declaration
+    /// rejects. `owner` is `scan_root` itself or one of its ancestors.
     ///
     /// Declaring a name doesn't touch the values already stored under it:
-    /// `remove_fields` drops only the declaration, and a rename moves only
-    /// the rows holding its source name. Re-adding a name with a different
-    /// type, as an enum whose values exclude a stored one, or renaming onto a
-    /// name with leftover values would otherwise leave every such node
-    /// failing [`Self::validate_node_with_fields`] on any later write,
-    /// including a content-only one. Values are resolved the way that
-    /// validator resolves them and judged by the same
-    /// [`Self::check_field_value`], so the two can't disagree.
-    ///
-    /// Not covered: re-targeting `extends` onto a parent a node's type was
-    /// retyped away from, which can bring a dormant bucket back into scope.
+    /// `remove_fields` drops only the declaration, a rename moves only the
+    /// rows holding its source name, and an `extends` re-target brings the
+    /// new parent's buckets into scope as they are — including a bucket left
+    /// from an earlier parent or a retype. Re-adding a name with a different
+    /// type, as an enum whose values exclude a stored one, renaming onto a
+    /// name with leftover values, or re-parenting onto such a bucket would
+    /// otherwise leave every such node failing
+    /// [`Self::validate_node_with_fields`] on any later write, including a
+    /// content-only one. Values are resolved the way that validator resolves
+    /// them and judged by the same [`Self::check_field_value`], so the two
+    /// can't disagree.
     ///
     /// Refusing is preferred over clearing the values: that would be a silent
     /// destructive write across every instance.
     pub(crate) async fn reject_incompatible_instance_values(
         tx: &NodeServiceTx<'_>,
-        schema_id: &str,
+        scan_root: &str,
+        owner: &str,
         fields: &[crate::models::schema::SchemaField],
     ) -> Result<(), NodeServiceError> {
         if fields.is_empty() {
@@ -801,7 +803,8 @@ impl NodeService {
         let names: Vec<String> = fields.iter().map(|f| f.name.clone()).collect();
         let stored = crate::db::SqliteStore::get_effective_field_values_in_tx(
             tx.store_tx(),
-            schema_id,
+            scan_root,
+            owner,
             &names,
         )
         .await
@@ -823,10 +826,18 @@ impl NodeService {
                     "nodes hold"
                 };
                 return Err(NodeServiceError::invalid_update(format!(
-                    "Cannot declare field '{}' as type '{}' on schema '{}': {} existing {} a \
-                     value under that name the declaration rejects (e.g. {}). Clear those \
-                     values (set '{}' to null) or convert them to fit, then retry.",
-                    field.name, field.field_type, schema_id, conflicts, nodes, example, field.name
+                    "Cannot apply field '{}' as type '{}' (declared by schema '{}') to '{}' \
+                     instances: {} existing {} a value under that name the declaration rejects \
+                     (e.g. {}). Clear those values (set '{}' to null) or convert them to fit, \
+                     then retry.",
+                    field.name,
+                    field.field_type,
+                    owner,
+                    scan_root,
+                    conflicts,
+                    nodes,
+                    example,
+                    field.name
                 )));
             }
         }
@@ -918,7 +929,8 @@ impl NodeService {
                         .filter(|f| f.name == to)
                         .cloned()
                         .collect();
-                    Self::reject_incompatible_instance_values(tx, &type_id, &renamed).await?;
+                    Self::reject_incompatible_instance_values(tx, &type_id, &type_id, &renamed)
+                        .await?;
 
                     // Declarations live in the relationship table, not in
                     // properties — the rebuilt properties carry fields only.

@@ -3166,6 +3166,34 @@ pub async fn handle_update_schema(
     let relationships_for_tx = relationships.clone();
     let description_for_tx = params.description.clone();
     let added_fields_for_tx = params.add_fields.clone().unwrap_or_default();
+    // An `extends` re-target brings every field the new parent chain declares
+    // into force on this schema's instances, read from each declaring
+    // schema's bucket — grouped by that schema for the instance-value check
+    // below. Only when the parent actually changes.
+    let mut inherited_by_owner: Vec<(String, Vec<SchemaField>)> = Vec::new();
+    if let Some(new_parent) = params.extends.as_deref().map(str::trim) {
+        if declared_extends_parent(&schema.relationships).as_deref() != Some(new_parent) {
+            let (parent_fields, owners, _) = node_service
+                .resolve_field_owners(new_parent)
+                .await
+                .map_err(|e| {
+                    MarkdownError::internal_error(format!(
+                        "Failed to resolve fields of '{}': {}",
+                        new_parent, e
+                    ))
+                })?;
+            for field in parent_fields {
+                let owner = owners
+                    .get(&field.name)
+                    .cloned()
+                    .unwrap_or_else(|| new_parent.to_string());
+                match inherited_by_owner.iter_mut().find(|(o, _)| *o == owner) {
+                    Some((_, fields)) => fields.push(field),
+                    None => inherited_by_owner.push((owner, vec![field])),
+                }
+            }
+        }
+    }
     let node_service_for_tx = Arc::clone(node_service);
     node_service
         .with_transaction(move |tx| {
@@ -3175,6 +3203,7 @@ pub async fn handle_update_schema(
             let description = description_for_tx.clone();
             let properties = properties.clone();
             let added_fields = added_fields_for_tx.clone();
+            let inherited_by_owner = inherited_by_owner.clone();
             Box::pin(async move {
                 let current = crate::db::SqliteStore::get_node_in_tx(tx.store_tx(), &schema_id)
                     .await
@@ -3195,12 +3224,26 @@ pub async fn handle_update_schema(
                 // otherwise leave those nodes failing validation on every
                 // later write. Checked under the write guard, against the
                 // state this write commits over.
-                NodeService::reject_incompatible_instance_values(tx, &schema_id, &added_fields)
-                    .await?;
+                NodeService::reject_incompatible_instance_values(
+                    tx,
+                    &schema_id,
+                    &schema_id,
+                    &added_fields,
+                )
+                .await?;
 
                 if relationships_added > 0 || relationships_removed > 0 {
                     node_service
                         .set_schema_relationships_in_tx(tx, &schema_id, &relationships)
+                        .await?;
+                }
+
+                // The same check for a re-target's newly inherited fields,
+                // after the new edge is written so each instance's chain
+                // resolves through it. A bucket left from an earlier parent,
+                // or from a retype, comes back into scope here unchanged.
+                for (owner, fields) in &inherited_by_owner {
+                    NodeService::reject_incompatible_instance_values(tx, &schema_id, owner, fields)
                         .await?;
                 }
 
