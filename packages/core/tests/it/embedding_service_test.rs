@@ -1869,7 +1869,7 @@ async fn test_node_accessor_get_nodes_batch() -> Result<()> {
 // string, which has no defined similarity to real content and reliably
 // returns zero matches. This is the CLI/gRPC-side counterpart to the
 // agent-tool regression coverage in
-// `packages/agent/tests/search_nodes_enumerate.rs`.
+// `packages/agent/tests/it/search_nodes_enumerate.rs`.
 
 fn empty_search_input(
     query: &str,

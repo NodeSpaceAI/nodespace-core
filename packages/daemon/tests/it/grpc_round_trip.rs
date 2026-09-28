@@ -95,7 +95,7 @@ async fn spawn_test_daemon() -> (
 
 /// Like `spawn_test_daemon`, but wires a real (uninitialized — no model file
 /// loaded, matching `create_test_nlp_engine` in
-/// `packages/core/tests/embedding_service_test.rs`) `NodeEmbeddingService` so
+/// `packages/core/tests/it/embedding_service_test.rs`) `NodeEmbeddingService` so
 /// `search_nodes` doesn't short-circuit on `Status::unavailable` before
 /// reaching `search_ops::search_semantic`. Also returns the underlying
 /// `CoreNodeService` handle so tests can create nodes out-of-band (i.e.

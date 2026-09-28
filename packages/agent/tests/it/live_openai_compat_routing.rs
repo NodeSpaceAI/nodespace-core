@@ -80,7 +80,7 @@
 //! Ignored by default — it needs a real server. Run explicitly:
 //!
 //! ```text
-//! cargo test -p nodespace-agent --test live_openai_compat_routing -- --ignored --nocapture
+//! cargo test -p nodespace-agent --test it live_openai_compat_routing:: -- --ignored --nocapture
 //! ```
 
 use nodespace_agent::agent_types::{

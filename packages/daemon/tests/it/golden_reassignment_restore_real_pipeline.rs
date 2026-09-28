@@ -21,7 +21,7 @@
 //! The model test is ignored by default — it loads the 5GB locked native GGUF.
 //! Run it explicitly:
 //! ```text
-//! cargo test -p nodespace-daemon --test golden_reassignment_restore_real_pipeline -- --ignored --nocapture --test-threads=1
+//! cargo test -p nodespace-daemon --test it golden_reassignment_restore_real_pipeline:: -- --ignored --nocapture --test-threads=1
 //! ```
 
 use std::sync::Arc;

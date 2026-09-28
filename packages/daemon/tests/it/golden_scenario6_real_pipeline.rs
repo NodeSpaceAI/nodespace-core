@@ -3,7 +3,7 @@
 //! node_history_from_messages}`) against the confirmed golden sequence for
 //! agent-matrix scenario 6.
 //!
-//! `packages/agent/tests/golden_scenario6_sequence.rs` established, with
+//! `packages/agent/tests/it/golden_scenario6_sequence.rs` established, with
 //! hand-authored terse "Fact: ..." history strings, that turn 3 of the
 //! sequence reliably calls `resolve_query` when given turn 1's and turn 2's
 //! actual outputs summarized as terse facts (CONFIRMED 3/3 in both the
@@ -22,7 +22,7 @@
 //!
 //! Ignored by default — loads the 5GB locked native GGUF. Run explicitly:
 //! ```text
-//! cargo test -p nodespace-daemon --test golden_scenario6_real_pipeline -- --ignored --nocapture --test-threads=1
+//! cargo test -p nodespace-daemon --test it golden_scenario6_real_pipeline:: -- --ignored --nocapture --test-threads=1
 //! ```
 
 use std::sync::Arc;

@@ -98,7 +98,7 @@
 //! constant:
 //!
 //! ```text
-//! UPDATE_GOLDEN=1 cargo test -p nodespace-agent --test prompt_assembly_snapshot
+//! UPDATE_GOLDEN=1 cargo test -p nodespace-agent --test it prompt_assembly_snapshot::
 //! ```
 //!
 //! Then read the `git diff` on the golden files under `tests/golden/
@@ -565,7 +565,7 @@ mod golden {
                 "golden file missing or unreadable at {} ({e}).\n\n\
                  Goldens are never auto-created. If `{section}`'s assembled output is new \
                  or its change is deliberate, generate it explicitly:\n\n  \
-                 UPDATE_GOLDEN=1 cargo test -p nodespace-agent --test prompt_assembly_snapshot\n\n\
+                 UPDATE_GOLDEN=1 cargo test -p nodespace-agent --test it prompt_assembly_snapshot::\n\n\
                  then review the new file with `git diff` before committing it.",
                 file.display()
             )

@@ -33,7 +33,7 @@
 //! failing) when the locked model is not downloaded. Run explicitly:
 //!
 //! ```text
-//! cargo test -p nodespace-agent --test live_stage1_compound_intent -- --ignored --nocapture
+//! cargo test -p nodespace-agent --test it live_stage1_compound_intent:: -- --ignored --nocapture
 //! ```
 //!
 //! **A single run is still not decision-grade** (see #1862's standing lesson

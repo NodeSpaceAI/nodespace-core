@@ -1790,7 +1790,7 @@ mod playbook_tests {
     // Unit-level coverage of the pure filter function. The real safety
     // property — that a sync-originated event never reaches trigger
     // evaluation inside a running engine — is verified end-to-end in
-    // `packages/core/tests/playbook_engine_integration_test.rs`, which drives
+    // `packages/core/tests/it/playbook_engine_integration_test.rs`, which drives
     // a real `PlaybookEngine::start()` against a real broadcast channel.
 
     #[test]

@@ -2907,7 +2907,7 @@ async fn load_chat_messages(node_service: &Arc<NodeService>, node_id: &str) -> V
 ///
 /// This is the terse-history replacement for an assistant turn's own prose.
 /// Confirmed on the golden scenario-6 sequence
-/// (`packages/agent/tests/golden_scenario6_sequence.rs`): history rendered as
+/// (`packages/agent/tests/it/golden_scenario6_sequence.rs`): history rendered as
 /// short declarative facts ("Fact: a schema with id 'X' was created, with
 /// fields Y (type) and Z (type).") keeps later turns emitting well-formed
 /// tool calls; the model's own narrative reply to the same turn (paragraphs,

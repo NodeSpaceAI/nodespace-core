@@ -1,5 +1,5 @@
 //! Seeds a search corpus directly into a `SqliteStore`, matching the exact
-//! methodology `packages/core/tests/search_result_scaling_test.rs` uses for
+//! methodology `packages/core/tests/it/search_result_scaling_test.rs` uses for
 //! its own in-process benchmark (synthetic 768-dim vectors, no real
 //! embedding model involved in seeding) — so a corpus built here is a
 //! controlled, apples-to-apples match against that prior FLAT in-process

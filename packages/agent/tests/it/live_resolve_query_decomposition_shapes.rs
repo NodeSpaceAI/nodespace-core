@@ -28,7 +28,7 @@
 //!
 //! Run:
 //! ```text
-//! cargo test -p nodespace-agent --test live_resolve_query_decomposition_shapes \
+//! cargo test -p nodespace-agent --test it live_resolve_query_decomposition_shapes:: \
 //!   -- --ignored --nocapture --test-threads=1
 //! ```
 

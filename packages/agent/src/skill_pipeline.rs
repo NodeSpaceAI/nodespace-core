@@ -754,7 +754,7 @@ mod tests {
     /// [`SCHEMA_RULES_NOT_IN_PROMPT`] with a reason.
     ///
     /// This is a distinct guard from
-    /// `packages/cli/tests/skill_md_generation.rs`'s
+    /// `packages/cli/tests/it/skill_md_generation.rs`'s
     /// `every_schema_rule_reaches_the_skill`, which only checks that
     /// `rule.prose` reaches the shipped `SKILL.md` — the external shell
     /// agent's surface. Neither that test nor the `prompt_assembly_snapshot`
@@ -845,7 +845,7 @@ mod tests {
     /// where the model replied that the schema "does not currently support
     /// logging replacement costs" and persisted zero properties). Storage
     /// accepts undeclared keys (proved by
-    /// `core/tests/create_node_property_persistence_test.rs`), so this gap was
+    /// `core/tests/it/create_node_property_persistence_test.rs`), so this gap was
     /// purely in what the model was told.
     #[test]
     fn node_creation_guidance_covers_values_with_no_matching_field() {

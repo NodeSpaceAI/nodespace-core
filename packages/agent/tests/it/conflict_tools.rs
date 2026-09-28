@@ -34,7 +34,7 @@ async fn make_executor() -> (GraphToolExecutor, Arc<NodeService>, TempDir) {
 /// the same folded email trips the create-path `detect_unique_field_collisions`
 /// hook and journals an open `UniqueFieldCollision` record naming both — no
 /// explicit `create_schema` call needed. Mirrors
-/// `packages/core/tests/person_duplicate_convergence_test.rs`'s fixture.
+/// `packages/core/tests/it/person_duplicate_convergence_test.rs`'s fixture.
 ///
 /// `email_local_part` must be distinct per call within a test — the field is
 /// unique across every active `person` node in the store, so reusing a value

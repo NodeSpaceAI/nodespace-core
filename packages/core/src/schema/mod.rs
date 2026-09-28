@@ -1268,7 +1268,7 @@ pub async fn resolve_effective_fields(
         // descendant's own fields still resolve, and schema deletion with a
         // live extends chain is explicitly out of scope (ADR-078).
         //
-        // Not covered by packages/core/tests/schema_chain_blindness_guard_test.rs's
+        // Not covered by packages/core/tests/it/schema_chain_blindness_guard_test.rs's
         // structural guard: this `if let Some(schema) = schema { ... }`
         // self-referential reshadow of `schema` is invisible to that
         // scanner by design (its third documented false-negative class —
@@ -2105,7 +2105,7 @@ pub async fn handle_create_schema(
     // `Ok(None)` too, and the retry runs into the primary-key violation that
     // the exists-check exists to prevent. One raw row read tells them apart.
     //
-    // Not covered by packages/core/tests/schema_chain_blindness_guard_test.rs's
+    // Not covered by packages/core/tests/it/schema_chain_blindness_guard_test.rs's
     // structural guard: this `let persisted = match persisted { ... }`
     // self-referential reshadow is invisible to that scanner by design
     // (its third documented false-negative class — see that file's module

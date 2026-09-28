@@ -12,7 +12,7 @@
 //! overhead and nothing else.
 //!
 //! Run with:
-//!   cargo test -p nodespace-agent --test routing_latency -- --nocapture
+//!   cargo test -p nodespace-agent --test it routing_latency:: -- --nocapture
 //!
 //! Skips gracefully when the locked model is not downloaded.
 

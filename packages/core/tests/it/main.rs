@@ -1,0 +1,60 @@
+//! The crate's integration tests, as one test binary.
+//!
+//! Every `tests/*.rs` file used to be its own binary, each linking the whole
+//! dependency graph: ~100 links per gate run, and nextest starting each one to
+//! list its tests. One binary per crate links once. nextest still runs every
+//! test in its own process, so isolation between tests is unchanged. Add a
+//! test file here as a module; run one file's tests with
+//! `cargo test -p nodespace-core --test it <module>::`.
+
+mod ai_chat_reference_test;
+mod bulk_invariant_dispatch_test;
+mod collection_membership_test;
+mod collection_name_convergence_test;
+mod concurrent_schema_creation_test;
+mod conflict_reconciliation_test;
+mod core_task_link_relationships_test;
+mod create_node_property_persistence_test;
+mod create_schema_result_reflects_persisted_state_test;
+mod embedding_service_test;
+mod entity_resolution_test;
+mod entity_type_descriptor_extends_chain_test;
+mod event_emission_test;
+mod extends_subtype_identity_test;
+mod find_skills_schema_discovery_test;
+mod find_skills_schema_metadata_test;
+mod mentioning_containers_test;
+mod merge_nodes_test;
+mod methodology_jira_execution_test;
+mod methodology_linear_execution_test;
+mod methodology_linear_install_test;
+mod methodology_spec_driven_execution_test;
+mod move_node_ordering_test;
+mod node_completeness_extends_chain_test;
+mod node_ops_extends_chain_test;
+mod object_field_type_validation_test;
+mod object_valued_property_roundtrip_test;
+mod parent_task_completion_play_test;
+mod person_duplicate_convergence_test;
+mod person_seed_test;
+mod playbook_engine_integration_test;
+mod playbook_invariant_integration_test;
+mod query_service_test;
+mod reimport_store_primitives_test;
+mod rel_ops_forward_name_extends_chain_test;
+mod relationship_editing_test;
+mod relationship_extends_chain_test;
+mod relationship_in_name_normalization_test;
+mod relationship_reverse_name_traversal_test;
+mod reverse_relationship_name_test;
+mod scalar_field_type_validation_test;
+mod schema_chain_blindness_guard_test;
+mod schema_hydration_test;
+mod schema_relationship_declarations_test;
+mod schema_test;
+mod search_result_scaling_test;
+mod sibling_order_rebalance_test;
+mod skill_updater_test;
+mod store_concurrency_test;
+mod unique_field_extends_chain_test;
+mod update_node_transaction_test;

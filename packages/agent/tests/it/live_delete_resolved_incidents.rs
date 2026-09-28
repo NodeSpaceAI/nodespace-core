@@ -18,7 +18,7 @@
 //!
 //! Ignored by default — loads the 5GB locked GGUF and the embedding model:
 //! ```text
-//! cargo test --release -p nodespace-agent --test live_delete_resolved_incidents -- --ignored --nocapture --test-threads=1
+//! cargo test --release -p nodespace-agent --test it live_delete_resolved_incidents:: -- --ignored --nocapture --test-threads=1
 //! ```
 
 use std::sync::Arc;

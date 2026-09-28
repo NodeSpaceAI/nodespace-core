@@ -1,7 +1,7 @@
 /**
  * The cross-language half of the `[decision ...]` marker contract.
  *
- * `packages/agent/tests/decision_marker_golden.rs` emits real
+ * `packages/agent/tests/it/decision_marker_golden.rs` emits real
  * `DecisionRecord`s through the real tracing layer and commits the captured
  * log lines to the golden file this test reads. Here those same lines go
  * through the real `formatTurnLogLines` scrape and the real `parseTurnOutput`
@@ -26,7 +26,7 @@
  * Rust emission and this test fails, because its input is the Rust output.
  *
  * If it fails after a deliberate emission change: regenerate the golden with
- * `UPDATE_GOLDEN=1 cargo test -p nodespace-agent --test decision_marker_golden`,
+ * `UPDATE_GOLDEN=1 cargo test -p nodespace-agent --test it decision_marker_golden::`,
  * then update the expectations below to match the new contract.
  */
 

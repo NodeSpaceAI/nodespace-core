@@ -2497,7 +2497,7 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
             // chat template replays verbatim into the next prompt. The model then
             // copies the shape it reads there: measured at 8 of 8 malformed
             // retries from a malformed prior call, against 8 of 8 clean retries
-            // from a clean one (`nlp-engine/tests/toolcall_json_shape.rs`). So a
+            // from a clean one (`nlp-engine/tests/it/toolcall_json_shape.rs`). So a
             // single malformation was self-sustaining — repaired for the tool on
             // every attempt, yet re-taught to the model on every attempt.
             // Repairing the record itself is what breaks that loop.
@@ -8536,7 +8536,7 @@ mod tests {
         let engine = Arc::new(MockEngine::tool_then_text(
             "create_schema",
             // Exactly the wire shape measured from gemma-4-e4b on a retry after
-            // a rejected call (see nlp-engine/tests/toolcall_json_shape.rs).
+            // a rejected call (see nlp-engine/tests/it/toolcall_json_shape.rs).
             r#"{"name":"Venue","fields":[{"\"name\"":"capacity","\"type\"":"number"}]}"#,
             "Created the Venue type.",
         ));

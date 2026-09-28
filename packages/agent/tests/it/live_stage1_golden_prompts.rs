@@ -20,7 +20,7 @@
 //! standard NodeSpace catalog path. Run explicitly:
 //!
 //! ```text
-//! cargo test -p nodespace-agent --test live_stage1_golden_prompts -- --ignored --nocapture
+//! cargo test -p nodespace-agent --test it live_stage1_golden_prompts:: -- --ignored --nocapture
 //! ```
 
 use std::sync::Arc;

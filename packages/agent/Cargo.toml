@@ -83,7 +83,3 @@ minijinja = "2"
 # subscriber and never filters, so `env-filter` would pull in `matchers`,
 # `regex-automata` and `thread_local` for a dev-dependency that never uses them.
 tracing-subscriber = "0.3"
-
-[[test]]
-name = "search_skills_latency"
-path = "tests/search_skills_latency.rs"

@@ -15,7 +15,7 @@
 //! NodeSpace catalog path. Run explicitly:
 //!
 //! ```text
-//! cargo test -p nodespace-core --test find_skills_schema_discovery_test -- --ignored --nocapture
+//! cargo test -p nodespace-core --test it find_skills_schema_discovery_test:: -- --ignored --nocapture
 //! ```
 
 use nodespace_core::db::SqliteStore;

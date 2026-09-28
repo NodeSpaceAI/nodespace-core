@@ -89,7 +89,7 @@ const PROTOCOL_VERSION: &str = "2024-11-05";
 
 /// The one tool this server exposes. `pub` so `packages/skill/SKILL.md`'s
 /// Preflight Check (Branch 2, the MCP passthrough) can be tested against this
-/// value directly (`packages/cli/tests/skill_md_generation.rs`) rather than a
+/// value directly (`packages/cli/tests/it/skill_md_generation.rs`) rather than a
 /// second, hand-typed copy that could silently drift from a future rename.
 pub const TOOL_NAME: &str = "nodespace";
 

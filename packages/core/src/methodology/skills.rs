@@ -82,7 +82,7 @@
 //!
 //! Then measure it rather than argue about it: add the skill's own-intent
 //! queries and the general queries it must not take to
-//! `packages/agent/tests/live_skill_retrieval_stability.rs` (see
+//! `packages/agent/tests/it/live_skill_retrieval_stability.rs` (see
 //! `linear_playbook_skills_win_their_own_intents` and
 //! `linear_playbook_skills_do_not_displace_built_ins`), which rank the real
 //! registry with the locked embedding model. The Linear skills' first drafts

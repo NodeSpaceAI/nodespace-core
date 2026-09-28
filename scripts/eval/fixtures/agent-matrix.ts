@@ -771,7 +771,7 @@ const GROUPS: MatrixScenario[][] = [
       // updated exactly once, the write was not rejected, and the sign-off
       // value actually reached storage rather than an update carrying only an
       // id. `scenario_6_ideal_update_is_accepted_and_persists_the_state_change`
-      // in packages/agent/tests/matrix_scenario_winnability.rs verifies against
+      // in packages/agent/tests/it/matrix_scenario_winnability.rs verifies against
       // a live backend that this ideal call is accepted and reports a persisted
       // property, so the assertion is satisfiable.
       //
@@ -968,7 +968,7 @@ const GROUPS: MatrixScenario[][] = [
       // unambiguous retrieval verb. A type-filtered read is verified against a
       // live backend by
       // `scenario_8e_ideal_cross_type_read_is_accepted_and_discriminates` in
-      // packages/agent/tests/matrix_scenario_winnability.rs — it returns the
+      // packages/agent/tests/it/matrix_scenario_winnability.rs — it returns the
       // decision and NOT the planning cycle, so the read this asks for is both
       // legal and correctly discriminating.
       //
@@ -1320,7 +1320,7 @@ const GROUPS: MatrixScenario[][] = [
       //
       // The ideal call is verified end to end against a live backend by
       // `scenario_11d_ideal_traversal_is_accepted_and_finds_the_link` in
-      // packages/agent/tests/matrix_scenario_winnability.rs — the traversal is
+      // packages/agent/tests/it/matrix_scenario_winnability.rs — the traversal is
       // accepted and returns the linked records, so a correct model CAN pass,
       // which is the minimum bar for the scenario to measure anything.
       prompt: "Which records point at that rendering decision right now?",
@@ -1391,7 +1391,7 @@ const GROUPS: MatrixScenario[][] = [
   //     what it actually establishes — deliberately narrower than this group's
   //     first draft assumed.
   //   - `scenario_12_ideal_comparative_chain_is_accepted_and_the_read_carries_the_values`
-  //     (agent/tests/matrix_scenario_winnability.rs) proves against a live
+  //     (agent/tests/it/matrix_scenario_winnability.rs) proves against a live
   //     backend that a model which DOES read gets all three instances with
   //     their estimates, and that the write on the winner persists.
   //
@@ -1629,7 +1629,7 @@ const GROUPS: MatrixScenario[][] = [
       // ideal `search_nodes` + `update_node` pair is proved acceptable against a
       // live backend by
       // `scenario_13_ideal_lookup_then_write_is_accepted` in
-      // agent/tests/matrix_scenario_winnability.rs.
+      // agent/tests/it/matrix_scenario_winnability.rs.
       prompt: "The incident Rowan was on call for — mark it resolved",
       // DIAGNOSTIC, and the one place a SUBSEQUENCE is honest. Both prior
       // attempts had to drop `toolSequence` because a direct write was a
