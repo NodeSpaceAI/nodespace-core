@@ -122,7 +122,7 @@ At least one of `--content` or `--property` is required.
 nodespace node set-status <task-id> in_progress
 ```
 
-Dedicated verb for task status transitions. Status must be one of: `open`, `in_progress`, `done`, `cancelled` — invalid values are rejected before the update is sent.
+Dedicated verb for task status transitions. Status must be one of the values the `task` schema's `status` field declares — the four built-ins (`open`, `in_progress`, `done`, `cancelled`) plus any added via `schema update`'s `add_field_values` (see "Adding a value to an existing enum" under Schema inspection and management). Validated against that live vocabulary; an invalid value is rejected with the current list.
 
 **Output:** Updated node JSON.
 

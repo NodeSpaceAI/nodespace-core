@@ -313,15 +313,12 @@ async fn update(client: &mut NodeClient, args: UpdateArgs, json: bool) -> Result
 }
 
 async fn set_status(client: &mut NodeClient, args: SetStatusArgs, json: bool) -> Result<()> {
-    const VALID_STATUSES: &[&str] = &["open", "in_progress", "done", "cancelled"];
-    if !VALID_STATUSES.contains(&args.status.as_str()) {
-        anyhow::bail!(
-            "invalid status '{}'; must be one of: {}",
-            args.status,
-            VALID_STATUSES.join(", ")
-        );
-    }
-
+    // No client-side vocabulary check: `task.status` is `extensible: true`
+    // (schema update's `add_field_values`), so the daemon's live schema —
+    // not a list baked into this binary — is the only source of truth for
+    // which values are valid. An invalid value comes back from the RPC
+    // below as an InvalidArgument status naming the value and the current
+    // list (`NodeService::validate_task_status`).
     let properties = json!({ "status": args.status }).to_string();
 
     let response = client
