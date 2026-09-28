@@ -126,20 +126,27 @@ pub fn stage1_skill_names(titles: impl IntoIterator<Item = String>) -> Vec<Strin
 }
 
 /// Put to Stage 2 when it replies in prose, with no tool call, in an intent
-/// that is already clarified (see [`session_already_clarified`]). `System`-role, like the other records the
-/// history carries, because it states a fact of the conversation rather than
-/// something the user said.
+/// that is already clarified (see [`session_already_clarified`]). `System`-role,
+/// like the other records the history carries, because it states a fact of the
+/// conversation rather than something the user said.
 ///
-/// It asserts only what both branches of that rule guarantee: every earlier
-/// turn of the intent ended without a write. It must not claim a clarifying
-/// question was asked and answered — true for a composed clarification, false
-/// for two plain non-writing turns, which a chat that only reads reaches on its
-/// third message ("thanks" after two lookups). So acting is conditional on the
-/// message asking for something; a message that does not gets a short answer.
-const ALREADY_CLARIFIED_NUDGE: &str = "Your earlier replies to this request have not changed \
-     anything. Do not ask the user another question. If their latest message asks for something \
-     to be done, act on the most reasonable reading of it by calling the tool that fits; \
-     otherwise answer briefly.";
+/// The claim that a clarifying question was answered is deliberately stronger
+/// than the rule can prove. It holds for a composed clarification, but the
+/// other branch — two turns that did not write — also covers a chat that only
+/// reads, which reaches it on its third message ("thanks" after two lookups)
+/// without anything having been asked.
+///
+/// Wordings that claimed only what both branches guarantee (nothing earlier
+/// wrote) were measured and rejected. With content in the graph, the model met
+/// every one of them — act by default, "all the detail you will get", "take
+/// everything said as the complete request", "may already have answered" — by
+/// listing what it found and asking which, and the fall-through this nudge
+/// exists for failed every time. This wording passed the same state every time.
+/// Its cost in the read-only branch was measured too: the "thanks" turn made no
+/// tool call. Rewording it needs the same populated-graph measurement.
+pub(crate) const ALREADY_CLARIFIED_NUDGE: &str = "The user has already answered a clarifying question \
+     about this request, and a request gets only one. Do not ask them anything further. Act on \
+     the most reasonable reading of what they said by calling the tool that fits it.";
 
 /// Opening phrase of a routing clarification.
 ///
@@ -1406,8 +1413,9 @@ pub fn stage1_query_from_turns(prior_turns: &[&str], user_message: &str) -> Stri
 /// An intent clarified only in prose can ask twice. And a chat that only reads
 /// never closes its intent, so from its third non-writing turn a tool-free
 /// reply is re-prompted once (with a nudge that assumes a clarification was
-/// asked) and an ambiguous request falls through to retrieval instead of being
-/// clarified, until something is written.
+/// asked — see [`ALREADY_CLARIFIED_NUDGE`] for why, and what that costs) and an
+/// ambiguous request falls through to retrieval instead of being clarified,
+/// until something is written.
 ///
 /// A prose reply never closes the intent either, so it cannot erase a composed
 /// clarification before it — which reading every non-composed reply as a
@@ -2645,16 +2653,17 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
             );
 
             if tool_calls.is_empty() {
-                // The user already answered a clarification in this intent, and
-                // the model is replying without acting — asking again in its
-                // own words, since `route_clarify` is off the surface. Counting
-                // that reply (see `session_already_clarified`) stops the NEXT
-                // turn from clarifying; it does nothing for this one. So put
-                // it back once, with the contract stated, before accepting
-                // prose. Keyed on structure alone — no call this turn, and an
-                // intent already clarified (a composed clarification, or two
-                // turns that did not write) — never on the reply's wording. The prose is dropped rather than kept as history:
-                // the model re-reading its own question is what to avoid.
+                // The intent is already clarified — nothing earlier in it wrote
+                // — and the model is replying without acting, possibly asking
+                // again in its own words, since `route_clarify` is off the
+                // surface. Counting that reply (see `session_already_clarified`)
+                // stops the NEXT turn from clarifying; it does nothing for this
+                // one. So put it back once, with the contract stated, before
+                // accepting prose. Keyed on structure alone — no call this turn,
+                // and an intent already clarified (a composed clarification, or
+                // two turns that did not write) — never on the reply's wording.
+                // The prose is dropped rather than kept as history: the model
+                // re-reading its own question is what to avoid.
                 if !clarify_nudged
                     && !any_real_tool_calls
                     && already_clarified
