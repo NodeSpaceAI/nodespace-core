@@ -215,10 +215,13 @@ impl NodeService {
                         crate::db::SqliteStore::create_node_in_tx(tx.store_tx(), node)
                             .await
                             .map_err(NodeServiceError::from_store)?;
-                        service.emit_event(DomainEvent::NodeCreated {
-                            node_id: node.id.clone(),
-                            node_type: node.node_type.clone(),
-                        });
+                        service.emit_event_in_tx(
+                            tx,
+                            DomainEvent::NodeCreated {
+                                node_id: node.id.clone(),
+                                node_type: node.node_type.clone(),
+                            },
+                        );
                         if !rules_by_type.contains_key(&node.node_type) {
                             let rules = service.invariant_rules_for_creation(&node.node_type);
                             rules_by_type.insert(node.node_type.clone(), rules);
@@ -311,10 +314,13 @@ impl NodeService {
             .map_err(NodeServiceError::from_store)?;
 
         for (id, node_type) in ids.iter().zip(node_types) {
-            self.emit_event(DomainEvent::NodeCreated {
-                node_id: id.clone(),
-                node_type,
-            });
+            self.emit_event_in_tx(
+                tx,
+                DomainEvent::NodeCreated {
+                    node_id: id.clone(),
+                    node_type,
+                },
+            );
         }
 
         for node in &to_dispatch {
@@ -925,12 +931,15 @@ impl NodeService {
                         ))
                     })?;
                 for (id, node, changed_properties) in &pending_events {
-                    service.emit_event(DomainEvent::NodeUpdated {
-                        node_id: id.clone(),
-                        node_type: node.node_type.clone(),
-                        node: node.clone(),
-                        changed_properties: changed_properties.clone(),
-                    });
+                    service.emit_event_in_tx(
+                        tx,
+                        DomainEvent::NodeUpdated {
+                            node_id: id.clone(),
+                            node_type: node.node_type.clone(),
+                            node: node.clone(),
+                            changed_properties: changed_properties.clone(),
+                        },
+                    );
                 }
                 for (_, node, changed_properties) in &pending_events {
                     service

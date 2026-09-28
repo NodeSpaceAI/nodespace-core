@@ -468,51 +468,132 @@ pub struct CreateNodeParams {
 /// small ids).
 const DOMAIN_EVENT_CHANNEL_CAPACITY: usize = 4096;
 
-/// Internal state shared between the store notifier closure and `BatchEmitGuard`.
+tokio::task_local! {
+    /// Set while a [`NodeService::with_transaction`] closure runs, so
+    /// [`NodeService::emit_event`] can refuse, in debug builds, to broadcast
+    /// from inside a transaction — such code must use `emit_event_in_tx`.
+    static IN_TRANSACTION: ();
+}
+
+/// The task — or, outside any tokio task, the thread — that emits an event
+/// or opens a batch. A batch belongs to the emitter that opened it, so each
+/// emitter's events join its own batch (see [`BatchState::offer`]).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Emitter {
+    Task(tokio::task::Id),
+    Thread(std::thread::ThreadId),
+}
+
+impl Emitter {
+    fn current() -> Self {
+        match tokio::task::try_id() {
+            Some(id) => Emitter::Task(id),
+            None => Emitter::Thread(std::thread::current().id()),
+        }
+    }
+}
+
+/// One open `begin_batch_emit` batch: the guard's `token`, the emitter that
+/// opened it, and its events keyed by node id, each with the sequence number
+/// it was published at (see [`BatchState::offer`]).
+struct OpenBatch {
+    token: u64,
+    owner: Emitter,
+    events: HashMap<String, (u64, crate::db::events::EventEnvelope)>,
+}
+
+/// The open `begin_batch_emit` batches, shared by every clone of a
+/// `NodeService` and by its store notifier. With none open, every event
+/// broadcasts as it arrives.
 ///
-/// `Immediate` — every event is broadcast as it arrives (default).
-/// `Batching` — events accumulate in the map; last-write-wins per node_id.
-/// `Transactional` — events accumulate in emission order for the duration of
-/// a `NodeService::with_transaction` call (ADR-069 §2); flushed in order on
-/// commit, discarded outright on rollback. A `Vec`, not a coalescing map:
-/// in-transaction order is semantically required (e.g. `move_node` must
-/// flush its new-parent-edge event before its old-parent-removal event), and
-/// relationship events — which are not node-keyed — must buffer here too,
-/// unlike `Batching`, which relationship events bypass entirely (see
-/// `emit_event`'s match below).
-///
-/// `parked` is a `begin_batch_emit` batch that was open when the
-/// transaction began, or opened while it ran. It lives inside the slot, not
-/// in the transaction's stack frame, because the batch's guard may drop
-/// before the transaction ends — the guard then flushes it from here — and
-/// the transaction must restore it afterwards only if it is still open.
-pub(crate) enum BatchState {
-    Immediate,
-    Batching(HashMap<String, crate::db::events::EventEnvelope>),
-    Transactional {
-        buf: Vec<crate::db::events::EventEnvelope>,
-        parked: Option<HashMap<String, crate::db::events::EventEnvelope>>,
-    },
+/// Transactions do not live here: a transaction's events are buffered on its
+/// own [`NodeServiceTx`] and only reach this state once committed, so an
+/// event from code outside a transaction can never be buffered into — or
+/// discarded with — someone else's transaction (ADR-069 §2).
+#[derive(Default)]
+pub(crate) struct BatchState {
+    batches: Vec<OpenBatch>,
+    next_token: u64,
+    next_seq: u64,
 }
 
 impl BatchState {
-    /// End an active transaction: return its buffered events and put back
-    /// the batch it parked, if that batch's guard has not dropped meanwhile.
-    fn end_transaction(&mut self) -> Vec<crate::db::events::EventEnvelope> {
-        match std::mem::replace(self, BatchState::Immediate) {
-            BatchState::Transactional { buf, parked } => {
-                if let Some(batch) = parked {
-                    *self = BatchState::Batching(batch);
+    /// The next publication sequence number. A transaction reserves its
+    /// number while it still holds the store's write guard, so between
+    /// transactions numbers follow commit order even when two committed
+    /// transactions publish in the opposite order. A non-transactional
+    /// write takes its number only when its event is routed, after it has
+    /// released the write guard, so a transaction committing in that window
+    /// can be numbered ahead of it.
+    fn next_seq(&mut self) -> u64 {
+        self.next_seq += 1;
+        self.next_seq
+    }
+
+    fn open(&mut self, owner: Emitter) -> u64 {
+        self.next_token += 1;
+        let token = self.next_token;
+        self.batches.push(OpenBatch {
+            token,
+            owner,
+            events: HashMap::new(),
+        });
+        token
+    }
+
+    /// Remove and return the batch `token` names, if it is still open.
+    fn close(&mut self, token: u64) -> Option<OpenBatch> {
+        let index = self.batches.iter().position(|b| b.token == token)?;
+        Some(self.batches.remove(index))
+    }
+
+    /// Offer a node-keyed `envelope` published at `seq` by `emitter` to an
+    /// open batch: the most recent batch `emitter` opened itself, else the
+    /// most recently opened batch of all. The batch keeps, per node, the
+    /// envelope with the highest `seq`. Returns the envelope when no batch
+    /// is open, for the caller to broadcast.
+    fn offer(
+        &mut self,
+        emitter: Emitter,
+        node_id: String,
+        seq: u64,
+        envelope: crate::db::events::EventEnvelope,
+    ) -> Option<crate::db::events::EventEnvelope> {
+        let index = self
+            .batches
+            .iter()
+            .rposition(|b| b.owner == emitter)
+            .or_else(|| self.batches.len().checked_sub(1));
+        let Some(index) = index else {
+            return Some(envelope);
+        };
+        match self.batches[index].events.entry(node_id) {
+            std::collections::hash_map::Entry::Occupied(mut held) => {
+                if held.get().0 <= seq {
+                    held.insert((seq, envelope));
                 }
-                buf
             }
-            other => {
-                // Only a transaction ends a transaction, and nothing else
-                // replaces `Transactional` while one runs.
-                debug_assert!(false, "end_transaction called outside a transaction");
-                *self = other;
-                Vec::new()
+            std::collections::hash_map::Entry::Vacant(slot) => {
+                slot.insert((seq, envelope));
             }
+        }
+        None
+    }
+
+    /// Route one event emitted now, outside any transaction: into an open
+    /// batch when it is node-keyed and one is open, otherwise returned for
+    /// the caller to broadcast. Relationship events are not node-keyed and
+    /// always broadcast.
+    fn route(
+        &mut self,
+        envelope: crate::db::events::EventEnvelope,
+    ) -> Option<crate::db::events::EventEnvelope> {
+        match envelope_node_id(&envelope) {
+            Some(id) if !self.batches.is_empty() => {
+                let seq = self.next_seq();
+                self.offer(Emitter::current(), id, seq, envelope)
+            }
+            _ => Some(envelope),
         }
     }
 }
@@ -546,9 +627,11 @@ fn push_forward_allowed(
 /// While this guard is live, domain events emitted by the store notifier are
 /// coalesced per node (last-write-wins) instead of broadcast individually.
 /// On `Drop` the accumulated events are flushed to the broadcast channel —
-/// at most one event per node.
+/// at most one event per node. A guard flushes only its own batch, whatever
+/// other guards are open or drop around it.
 pub struct BatchEmitGuard {
     state: Arc<Mutex<BatchState>>,
+    token: u64,
     tx: broadcast::Sender<crate::db::events::EventEnvelope>,
     /// Origin-filtered mirror of `tx`; see `NodeService::push_event_tx`.
     push_tx: broadcast::Sender<crate::db::events::EventEnvelope>,
@@ -558,35 +641,24 @@ pub struct BatchEmitGuard {
 
 impl Drop for BatchEmitGuard {
     fn drop(&mut self) {
-        let mut lock = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        // This guard's batch is either the slot itself or parked under a
-        // transaction running in another task. In the second case the
-        // transaction keeps the slot; only the parked batch is taken, so the
-        // transaction ends with nothing to restore.
-        let buf = match &mut *lock {
-            BatchState::Batching(_) => match std::mem::replace(&mut *lock, BatchState::Immediate) {
-                BatchState::Batching(buf) => Some(buf),
-                _ => None,
-            },
-            BatchState::Transactional { parked, .. } => parked.take(),
-            BatchState::Immediate => None,
-        };
-        drop(lock);
-        if let Some(buf) = buf {
-            for envelope in buf.into_values() {
-                // Mirror to the push channel unless this envelope's origin is
-                // excluded. Clone only when forwarding to avoid an extra copy.
-                if push_forward_allowed(&self.push_excluded_origin, &envelope) {
-                    let _ = self.push_tx.send(envelope.clone());
-                }
-                let _ = self.tx.send(envelope);
-            }
+        let batch = self
+            .state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .close(self.token);
+        if let Some(batch) = batch {
+            flush_envelopes(
+                batch.events.into_values().map(|(_, envelope)| envelope),
+                &self.tx,
+                &self.push_tx,
+                &self.push_excluded_origin,
+            );
         }
     }
 }
 
-/// The node a `Batching` buffer keys `envelope` under, or `None` for a
-/// relationship event, which a batch never holds (see `emit_event`).
+/// The node a batch keys `envelope` under, or `None` for a relationship
+/// event, which a batch never holds (see [`BatchState::route`]).
 fn envelope_node_id(envelope: &crate::db::events::EventEnvelope) -> Option<String> {
     match &envelope.event {
         DomainEvent::NodeCreated { node_id, .. } => Some(node_id.clone()),
@@ -600,7 +672,7 @@ fn envelope_node_id(envelope: &crate::db::events::EventEnvelope) -> Option<Strin
 /// same way immediate emission and `BatchEmitGuard::drop` do. Shared by both
 /// so the mirror/send logic exists in exactly one place.
 fn flush_envelopes(
-    envelopes: Vec<crate::db::events::EventEnvelope>,
+    envelopes: impl IntoIterator<Item = crate::db::events::EventEnvelope>,
     tx: &broadcast::Sender<crate::db::events::EventEnvelope>,
     push_tx: &broadcast::Sender<crate::db::events::EventEnvelope>,
     push_excluded_origin: &RwLock<Option<String>>,
@@ -616,14 +688,28 @@ fn flush_envelopes(
 /// A `NodeService`-level unit of work in progress (ADR-069 §1b). Wraps the
 /// store's own [`Tx`] plus this transaction's event buffer, and is the only
 /// way an `_in_tx` `NodeService` method may reach either. It exposes
-/// `store_tx()` for calling store `_in_tx` methods and, indirectly,
-/// `emit_event` for buffering domain events (see `BatchState::Transactional`)
+/// `store_tx()` for calling store `_in_tx` methods and `buffer_event` (via
+/// [`NodeService::emit_event_in_tx`]) for this transaction's domain events
 /// — it does not expose `self.store` or anything that could open a second
 /// transaction, the same "unrepresentable by construction" discipline `Tx`
 /// itself applies one layer down.
+///
+/// The event buffer is a `Vec`, not a coalescing map: in-transaction order
+/// is semantically required (e.g. `move_node` must flush its
+/// new-parent-edge event before its old-parent-removal event), and
+/// relationship events buffer here too. It is published in order on commit
+/// and discarded on rollback (ADR-069 §2).
 pub(crate) struct NodeServiceTx<'t> {
     store_tx: &'t Tx<'t>,
+    events: Mutex<Vec<crate::db::events::EventEnvelope>>,
     deferred_embedding_refreshes: Mutex<Vec<DeferredEmbeddingRefresh>>,
+}
+
+/// A committed transaction's events, not yet published: in emission order,
+/// with the sequence number reserved at commit (see [`BatchState::next_seq`]).
+struct CommittedEvents {
+    events: Vec<crate::db::events::EventEnvelope>,
+    seq: u64,
 }
 
 /// The embedding half of a rootness refresh made inside a transaction, run by
@@ -641,6 +727,15 @@ impl<'t> NodeServiceTx<'t> {
     /// opens its own transaction — see the type's own doc comment.
     pub(crate) fn store_tx(&self) -> &Tx<'t> {
         self.store_tx
+    }
+
+    /// Buffer an event for publication if, and only if, this transaction
+    /// commits.
+    pub(crate) fn buffer_event(&self, envelope: crate::db::events::EventEnvelope) {
+        self.events
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(envelope);
     }
 
     /// Record a rootness change whose embedding refresh must wait for commit.
@@ -664,45 +759,26 @@ impl<'t> NodeServiceTx<'t> {
 impl NodeService {
     /// Run `f` inside one `NodeService`-level transaction (ADR-069 §1b):
     /// opens one store-level transaction via `self.store.with_transaction`,
-    /// switches event emission to `BatchState::Transactional` for the
-    /// closure's duration, and on success flushes the buffered events in
-    /// order — on failure discards them, since an event is a statement about
-    /// committed state (ADR-069 §2) and nothing in the buffer committed.
+    /// hands `f` a [`NodeServiceTx`] that buffers the transaction's events,
+    /// and on success publishes the buffered events in order — on failure
+    /// discards them, since an event is a statement about committed state
+    /// (ADR-069 §2) and nothing in the buffer committed.
     ///
     /// Methods composed inside `f` must be their `_in_tx` variants, taking
-    /// `&NodeServiceTx`. Calling a non-`_in_tx` method (which opens its own
-    /// `with_transaction`) from inside `f` deadlocks, for the same reason
-    /// calling a non-`_in_tx` store method from inside a store transaction
-    /// does: the write guard is already held.
+    /// `&NodeServiceTx`, and must emit through [`Self::emit_event_in_tx`].
+    /// Calling a non-`_in_tx` method (which opens its own `with_transaction`)
+    /// from inside `f` deadlocks, for the same reason calling a non-`_in_tx`
+    /// store method from inside a store transaction does: the write guard is
+    /// already held.
     ///
-    /// `batch_state` is a single service-wide slot (`Arc<Mutex<BatchState>>`,
-    /// shared by every clone of this `NodeService`) — it can hold exactly one
-    /// transaction's buffer at a time, so two calls to this method must never
-    /// both be "active" concurrently, not just never literally nested on the
-    /// same call stack. The check-and-set into `Transactional`, and the
-    /// transition back out of it, therefore both happen INSIDE the closure
-    /// passed to `self.store.with_transaction` — i.e. only once that call's
-    /// own `self.write().await` has actually acquired the store's single
-    /// writer guard, and completed before that guard is released. A second,
-    /// unrelated concurrent caller's own `self.write().await` blocks until
-    /// this one's guard is released, so it can only reach ITS check once
-    /// this one has provably already left `Transactional` — closing the check-then-set race a version of this method once
-    /// had when the transition happened BEFORE requesting the write guard:
-    /// two concurrent callers could each observe `Immediate`, one would then
-    /// overwrite the other's in-flight buffer with a fresh empty one, and
-    /// events emitted after that point would be appended to (and eventually
-    /// flushed or discarded as) the wrong caller's transaction — not merely a
-    /// debug-assertion trip, but a real risk of misattributed events.
-    ///
-    /// A `begin_batch_emit` batch — in this task or another — may be open
-    /// when the transaction starts, or be opened while it runs. Either way
-    /// the batch is parked inside the slot (see `BatchState`) for the
-    /// transaction's duration. If its guard drops meanwhile, the guard
-    /// flushes it from there and the transaction ends with the slot
-    /// `Immediate`; otherwise the transaction restores it. On commit the
-    /// transaction's events join a batch that is still open, under the
-    /// rules `emit_event` applies to it, or broadcast now if none is; on
-    /// rollback they are discarded without touching the batch.
+    /// The buffer belongs to this call's `NodeServiceTx`, so nothing emitted
+    /// outside `f` — a concurrent non-transactional write notifying after it
+    /// released the write guard, say — can land in it. On commit the events
+    /// are published as [`Self::emit_event`] would publish them, except that
+    /// a node-keyed event joining an open batch carries the sequence number
+    /// reserved while the write guard was still held, so a batch keeps the
+    /// later commit's event for a node even when two transactions publish
+    /// in the opposite order to their commits.
     pub(crate) async fn with_transaction<T, F>(&self, f: F) -> Result<T, NodeServiceError>
     where
         F: for<'t> FnOnce(
@@ -713,92 +789,63 @@ impl NodeService {
             + 'static,
         T: Send,
     {
-        let batch_state = Arc::clone(&self.batch_state);
+        let (value, committed, deferred) = self.run_transaction(f).await?;
+        self.publish_committed(committed);
+        for refresh in deferred {
+            self.refresh_embedding_for_rootness(
+                &refresh.node_id,
+                refresh.is_root,
+                refresh.former_parent.as_deref(),
+            )
+            .await;
+        }
+        Ok(value)
+    }
 
-        let result: Result<
-            (
-                T,
-                Vec<crate::db::events::EventEnvelope>,
-                Vec<DeferredEmbeddingRefresh>,
-            ),
-            NodeServiceError,
-        > = self
-            .store
+    /// The transaction half of [`Self::with_transaction`]: runs and commits
+    /// `f`, returning its value, its events (unpublished) and its deferred
+    /// embedding refreshes (not yet run).
+    async fn run_transaction<T, F>(
+        &self,
+        f: F,
+    ) -> Result<(T, CommittedEvents, Vec<DeferredEmbeddingRefresh>), NodeServiceError>
+    where
+        F: for<'t> FnOnce(
+                &'t NodeServiceTx<'t>,
+            )
+                -> Pin<Box<dyn Future<Output = Result<T, NodeServiceError>> + Send + 't>>
+            + Send
+            + 'static,
+        T: Send,
+    {
+        let batch_state = Arc::clone(&self.batch_state);
+        self.store
             .with_transaction(move |store_tx| {
                 Box::pin(async move {
-                    // Reaching this point means the write guard above is
-                    // held for the rest of this closure — see this method's
-                    // doc for why the check-and-set must live here rather
-                    // than before requesting it.
-                    // An open `begin_batch_emit` batch (a sync replay batching
-                    // a page through `bulk_create`/`bulk_update`, from this
-                    // task or another) is parked inside the slot for the
-                    // transaction's duration — see `BatchState`.
-                    {
-                        let mut state = batch_state.lock().unwrap_or_else(|e| e.into_inner());
-                        let parked = match std::mem::replace(&mut *state, BatchState::Immediate) {
-                            BatchState::Immediate => None,
-                            BatchState::Batching(batch) => Some(batch),
-                            BatchState::Transactional { parked, .. } => {
-                                // Unreachable: the write guard serializes
-                                // transactions.
-                                debug_assert!(
-                                    false,
-                                    "with_transaction called while a transaction is already active"
-                                );
-                                parked
-                            }
-                        };
-                        *state = BatchState::Transactional {
-                            buf: Vec::new(),
-                            parked,
-                        };
-                    }
-
-                    // If `f` itself panics, end the transaction on unwind —
-                    // scoped to this closure so the reset happens while the
-                    // write guard is still held, same as the success/error
-                    // paths below, rather than racing a caller that acquires
-                    // the guard next.
-                    struct ResetOnDrop<'a>(&'a Mutex<BatchState>, bool);
-                    impl Drop for ResetOnDrop<'_> {
-                        fn drop(&mut self) {
-                            if !self.1 {
-                                self.0
-                                    .lock()
-                                    .unwrap_or_else(|e| e.into_inner())
-                                    .end_transaction();
-                            }
-                        }
-                    }
-                    let mut reset_guard = ResetOnDrop(&batch_state, false);
-
                     let ns_tx = NodeServiceTx {
                         store_tx,
+                        events: Mutex::new(Vec::new()),
                         deferred_embedding_refreshes: Mutex::new(Vec::new()),
                     };
-                    let inner_result = f(&ns_tx).await;
-                    let deferred = std::mem::take(
-                        &mut *ns_tx
-                            .deferred_embedding_refreshes
-                            .lock()
-                            .unwrap_or_else(|e| e.into_inner()),
-                    );
-
-                    // Restore the outer state — capturing the buffer — before
-                    // this closure returns, so `self.store.with_transaction`
-                    // never releases the write guard while `batch_state`
-                    // still claims `Transactional`.
-                    let prev = batch_state
+                    let value = IN_TRANSACTION
+                        .scope((), f(&ns_tx))
+                        .await
+                        .map_err(|e| anyhow::anyhow!(NodeServiceTxError(e)))?;
+                    // Reserved here, while the write guard that serializes
+                    // commits is held, so sequence order is commit order.
+                    let seq = batch_state
                         .lock()
                         .unwrap_or_else(|e| e.into_inner())
-                        .end_transaction();
-                    reset_guard.1 = true;
-
-                    match inner_result {
-                        Ok(value) => Ok((value, prev, deferred)),
-                        Err(e) => Err(anyhow::anyhow!(NodeServiceTxError(e))),
-                    }
+                        .next_seq();
+                    let committed = CommittedEvents {
+                        events: ns_tx.events.into_inner().unwrap_or_else(|e| e.into_inner()),
+                        seq,
+                    };
+                    let deferred = ns_tx
+                        .deferred_embedding_refreshes
+                        .into_inner()
+                        .unwrap_or_else(|e| e.into_inner());
+                    Ok((value, committed, deferred))
                 })
             })
             .await
@@ -809,74 +856,30 @@ impl NodeService {
                 // `TransactionFailed`'s reserved scope (ADR-069 §2a): the
                 // failure originates from the seam, not from business logic.
                 Err(e) => NodeServiceError::transaction_failed(e.to_string()),
-            });
+            })
+    }
 
-        // Commit (or rollback) already happened inside `self.store.with_transaction`
-        // by the time we get here, and the buffer was already captured —
-        // pre-commit, inside the closure above — so `batch_state` already
-        // holds whatever it held before the transaction (or `Immediate`, if
-        // a parked batch's guard dropped meanwhile) regardless of which
-        // branch this takes. This only decides what to do with the captured buffer:
-        // flush in order on success, discard on failure, per ADR-069 §2 (an
-        // event is a statement about committed state).
-        // The deferred embedding refreshes likewise run only after a commit.
-        match result {
-            Ok((value, buf, deferred)) => {
-                {
-                    // Committed: hand the events to a still-open batch if
-                    // there is one — in the slot, or parked under a
-                    // transaction that began since — node-keyed
-                    // last-write-wins, relationship events straight through,
-                    // exactly as `emit_event` treats an event emitted under
-                    // `Batching`; otherwise broadcast them now.
-                    let mut state = self.batch_state.lock().unwrap_or_else(|e| e.into_inner());
-                    let open_batch = match &mut *state {
-                        BatchState::Batching(batch) => Some(batch),
-                        BatchState::Transactional {
-                            parked: Some(batch),
-                            ..
-                        } => Some(batch),
-                        _ => None,
-                    };
-                    if let Some(batch) = open_batch {
-                        let mut unkeyed = Vec::new();
-                        for envelope in buf {
-                            match envelope_node_id(&envelope) {
-                                Some(id) => {
-                                    batch.insert(id, envelope);
-                                }
-                                None => unkeyed.push(envelope),
-                            }
-                        }
-                        drop(state);
-                        flush_envelopes(
-                            unkeyed,
-                            &self.event_tx,
-                            &self.push_event_tx,
-                            &self.push_excluded_origin,
-                        );
-                    } else {
-                        drop(state);
-                        flush_envelopes(
-                            buf,
-                            &self.event_tx,
-                            &self.push_event_tx,
-                            &self.push_excluded_origin,
-                        );
-                    }
-                }
-                for refresh in deferred {
-                    self.refresh_embedding_for_rootness(
-                        &refresh.node_id,
-                        refresh.is_root,
-                        refresh.former_parent.as_deref(),
-                    )
-                    .await;
-                }
-                Ok(value)
-            }
-            Err(e) => Err(e),
-        }
+    /// Publish a committed transaction's events: node-keyed ones into an
+    /// open batch at the transaction's sequence number (see
+    /// [`BatchState::offer`]), everything else broadcast now, in order.
+    fn publish_committed(&self, committed: CommittedEvents) {
+        let emitter = Emitter::current();
+        let mut state = self.batch_state.lock().unwrap_or_else(|e| e.into_inner());
+        let broadcast: Vec<_> = committed
+            .events
+            .into_iter()
+            .filter_map(|envelope| match envelope_node_id(&envelope) {
+                Some(id) => state.offer(emitter, id, committed.seq, envelope),
+                None => Some(envelope),
+            })
+            .collect();
+        drop(state);
+        flush_envelopes(
+            broadcast,
+            &self.event_tx,
+            &self.push_event_tx,
+            &self.push_excluded_origin,
+        );
     }
 }
 
@@ -1205,9 +1208,10 @@ pub struct NodeService {
 
     /// Shared batch state for coalescing events during bulk operations.
     ///
-    /// When `BatchState::Batching`, the store notifier accumulates events instead
-    /// of broadcasting immediately. `begin_batch_emit()` activates batching and
-    /// returns a `BatchEmitGuard` that flushes on drop.
+    /// While a `BatchEmitGuard` is open, the store notifier and `emit_event`
+    /// accumulate node events in its batch instead of broadcasting immediately.
+    /// `begin_batch_emit()` opens a batch and returns the guard that flushes it
+    /// on drop.
     pub(crate) batch_state: Arc<Mutex<BatchState>>,
 
     /// Optional client identifier for event source tracking
@@ -1376,8 +1380,8 @@ impl NodeService {
         let (push_event_tx, _) = broadcast::channel(DOMAIN_EVENT_CHANNEL_CAPACITY);
         let push_excluded_origin: Arc<RwLock<Option<String>>> = Arc::new(RwLock::new(None));
 
-        // Shared batch state — Immediate by default; swapped to Batching during bulk ops.
-        let batch_state: Arc<Mutex<BatchState>> = Arc::new(Mutex::new(BatchState::Immediate));
+        // Shared batch state — no batch open by default; see `begin_batch_emit`.
+        let batch_state: Arc<Mutex<BatchState>> = Arc::default();
 
         // Register store-level notifier for automatic domain event emission
         // This callback converts StoreChange notifications to EventEnvelopes.
@@ -1432,32 +1436,16 @@ impl NodeService {
                     },
                 };
 
-                // In batch mode, accumulate last-write-wins per node. In
-                // transactional mode, accumulate in order (ADR-069 §2) — but
-                // this path is store-`notify`-driven, and every `_in_tx`
+                // Only non-transactional store writes notify — every `_in_tx`
                 // store method deliberately skips `notify` (see e.g.
-                // `create_node_in_tx`'s doc comment), so in practice this
-                // arm is unreached today. Handled anyway so the match stays
-                // exhaustive and correct if a future in-tx store method ever
-                // does call `notify`.
-                // In immediate mode (default), broadcast directly.
-                let mut state = batch_state_ref.lock().unwrap_or_else(|e| e.into_inner());
-                match &mut *state {
-                    BatchState::Immediate => {
-                        // Mirror to the push channel unless this envelope's origin
-                        // is excluded. Clone only when forwarding.
-                        if push_forward_allowed(&push_excluded_origin_ref, &envelope) {
-                            let _ = push_tx.send(envelope.clone());
-                        }
-                        let _ = tx.send(envelope);
-                    }
-                    BatchState::Batching(buf) => {
-                        // Batched events flush (and mirror) in BatchEmitGuard::drop.
-                        buf.insert(change.node.id.clone(), envelope);
-                    }
-                    BatchState::Transactional { buf, .. } => {
-                        buf.push(envelope);
-                    }
+                // `create_node_in_tx`'s doc comment) — so this routes exactly
+                // as `emit_event` does: into an open batch, else broadcast.
+                let unbatched = batch_state_ref
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .route(envelope);
+                if let Some(envelope) = unbatched {
+                    flush_envelopes([envelope], &tx, &push_tx, &push_excluded_origin_ref);
                 }
             });
 
@@ -2957,31 +2945,19 @@ impl NodeService {
     /// and ai-chat turn completions should NOT use this — they rely on immediate
     /// emission.
     ///
+    /// Any number of guards may be open at once, in one task or several.
+    /// Each has its own batch: an event joins the most recent batch opened
+    /// by the task that emits it, or — from a task with none — the most
+    /// recently opened batch of all, and each guard flushes only its own.
     pub fn begin_batch_emit(&self) -> BatchEmitGuard {
-        let mut state = self.batch_state.lock().unwrap_or_else(|e| e.into_inner());
-        // Nested batch guards are not supported: the outer buffer's events
-        // would be silently discarded when the inner guard replaces it. A
-        // transaction running in another task is fine: the batch is parked
-        // under it (see `BatchState`) rather than replacing its buffer.
-        match &mut *state {
-            BatchState::Transactional { parked, .. } => {
-                debug_assert!(
-                    parked.is_none(),
-                    "begin_batch_emit called while a batch is already active"
-                );
-                *parked = Some(HashMap::new());
-            }
-            other => {
-                debug_assert!(
-                    matches!(other, BatchState::Immediate),
-                    "begin_batch_emit called while a batch is already active"
-                );
-                *other = BatchState::Batching(HashMap::new());
-            }
-        }
-        drop(state);
+        let token = self
+            .batch_state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .open(Emitter::current());
         BatchEmitGuard {
             state: Arc::clone(&self.batch_state),
+            token,
             tx: self.event_tx.clone(),
             push_tx: self.push_event_tx.clone(),
             push_excluded_origin: Arc::clone(&self.push_excluded_origin),
@@ -2994,41 +2970,46 @@ impl NodeService {
     /// Wraps the event in an EventEnvelope with this instance's client_id
     /// and execution_context as metadata.
     ///
-    /// Routes through `batch_state`: when a `BatchEmitGuard` is active, the event
-    /// is buffered (last-write-wins per node_id) instead of broadcast immediately.
+    /// For a write made OUTSIDE any transaction: when a `BatchEmitGuard` is
+    /// open, a node-keyed event is buffered (last-write-wins per node_id; see
+    /// [`BatchState::route`]) instead of broadcast immediately. Code inside
+    /// [`Self::with_transaction`] must use [`Self::emit_event_in_tx`]
+    /// instead, so the event waits for the commit.
     pub(crate) fn emit_event(&self, event: DomainEvent) {
-        use crate::db::events::{EventEnvelope, EventMetadata};
-        let envelope = EventEnvelope {
+        debug_assert!(
+            IN_TRANSACTION.try_with(|_| ()).is_err(),
+            "emit_event called inside a transaction; use emit_event_in_tx"
+        );
+        let envelope = self.envelope(event);
+        let unbatched = self
+            .batch_state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .route(envelope);
+        if let Some(envelope) = unbatched {
+            flush_envelopes(
+                [envelope],
+                &self.event_tx,
+                &self.push_event_tx,
+                &self.push_excluded_origin,
+            );
+        }
+    }
+
+    /// Emit a domain event for a write made inside `tx`: buffered on `tx`
+    /// and published only if it commits (ADR-069 §2).
+    pub(crate) fn emit_event_in_tx(&self, tx: &NodeServiceTx<'_>, event: DomainEvent) {
+        tx.buffer_event(self.envelope(event));
+    }
+
+    /// Wrap `event` with this instance's client id and execution context.
+    fn envelope(&self, event: DomainEvent) -> crate::db::events::EventEnvelope {
+        crate::db::events::EventEnvelope {
             event,
-            metadata: EventMetadata {
+            metadata: crate::db::events::EventMetadata {
                 source_client_id: self.client_id.clone(),
                 playbook_context: self.execution_context.clone(),
             },
-        };
-        // Relationship events are not node-keyed; always broadcast immediately.
-        let node_id = envelope_node_id(&envelope);
-        let mut state = self.batch_state.lock().unwrap_or_else(|e| e.into_inner());
-        match (&mut *state, node_id) {
-            (BatchState::Batching(buf), Some(id)) => {
-                // Batched events flush (and mirror) in BatchEmitGuard::drop.
-                buf.insert(id, envelope);
-            }
-            // Matches regardless of node-id extraction, unlike `Batching`'s
-            // arm above: a transaction buffer must hold node-keyed AND
-            // relationship events in one ordered sequence (ADR-069 §2), so
-            // relationship events cannot fall through to the immediate arm
-            // below the way they do for `Batching`.
-            (BatchState::Transactional { buf, .. }, _) => {
-                buf.push(envelope);
-            }
-            _ => {
-                // Mirror to the push channel unless this envelope's origin is
-                // excluded. Clone only when forwarding.
-                if push_forward_allowed(&self.push_excluded_origin, &envelope) {
-                    let _ = self.push_event_tx.send(envelope.clone());
-                }
-                let _ = self.event_tx.send(envelope);
-            }
         }
     }
 }
@@ -8200,11 +8181,12 @@ mod tests {
     }
 
     /// Start a transaction on another task that signals `started` once it
-    /// holds the slot, waits for `proceed`, then emits one event for
-    /// `node_id` and commits.
+    /// holds the write guard, waits for `proceed`, then emits one event for
+    /// `node_id` and commits — or, when `commit` is false, rolls back.
     fn spawn_paused_transaction(
         service: &NodeService,
         node_id: &'static str,
+        commit: bool,
     ) -> (
         Arc<tokio::sync::Notify>,
         Arc<tokio::sync::Notify>,
@@ -8216,15 +8198,22 @@ mod tests {
         let svc = service.clone();
         let task = tokio::spawn(async move {
             let svc_in = svc.clone();
-            svc.with_transaction(move |_tx| {
+            svc.with_transaction(move |tx| {
                 Box::pin(async move {
                     started_in.notify_one();
                     proceed_in.notified().await;
-                    svc_in.emit_event(DomainEvent::NodeCreated {
-                        node_id: node_id.to_string(),
-                        node_type: "text".to_string(),
-                    });
-                    Ok(())
+                    svc_in.emit_event_in_tx(
+                        tx,
+                        DomainEvent::NodeCreated {
+                            node_id: node_id.to_string(),
+                            node_type: "text".to_string(),
+                        },
+                    );
+                    if commit {
+                        Ok(())
+                    } else {
+                        Err(NodeServiceError::invalid_update("roll back"))
+                    }
                 })
             })
             .await
@@ -8244,21 +8233,28 @@ mod tests {
         ids
     }
 
-    /// A batch guard dropped while another task's transaction has its batch
-    /// parked flushes the batch then, and the transaction ends with the slot
-    /// back to `Immediate` — not a restored, ownerless batch that would
-    /// swallow every later event.
+    fn emit_created(service: &NodeService, node_id: &str) {
+        service.emit_event(DomainEvent::NodeCreated {
+            node_id: node_id.to_string(),
+            node_type: "text".to_string(),
+        });
+    }
+
+    fn no_batch_open(service: &NodeService) -> bool {
+        service.batch_state.lock().unwrap().batches.is_empty()
+    }
+
+    /// A batch guard dropped while another task's transaction runs flushes
+    /// its batch then, and nothing is left open afterwards to swallow later
+    /// events.
     #[tokio::test]
     async fn batch_guard_dropped_during_a_transaction_leaves_the_slot_immediate() {
         let (service, _temp) = create_test_service().await;
         let mut rx = service.subscribe_to_events();
 
         let guard = service.begin_batch_emit();
-        service.emit_event(DomainEvent::NodeCreated {
-            node_id: "batched".to_string(),
-            node_type: "text".to_string(),
-        });
-        let (started, proceed, task) = spawn_paused_transaction(&service, "in-tx");
+        emit_created(&service, "batched");
+        let (started, proceed, task) = spawn_paused_transaction(&service, "in-tx", true);
         started.notified().await;
 
         drop(guard);
@@ -8267,15 +8263,9 @@ mod tests {
         proceed.notify_one();
         task.await.unwrap().unwrap();
         assert_eq!(received_node_ids(&mut rx), vec!["in-tx".to_string()]);
-        assert!(matches!(
-            *service.batch_state.lock().unwrap(),
-            BatchState::Immediate
-        ));
+        assert!(no_batch_open(&service));
 
-        service.emit_event(DomainEvent::NodeCreated {
-            node_id: "after".to_string(),
-            node_type: "text".to_string(),
-        });
+        emit_created(&service, "after");
         assert_eq!(
             received_node_ids(&mut rx),
             vec!["after".to_string()],
@@ -8283,15 +8273,14 @@ mod tests {
         );
     }
 
-    /// A batch opened while another task's transaction runs is parked under
-    /// it rather than replacing its buffer: the transaction's committed
-    /// events join the batch, and the batch delivers everything on drop.
+    /// A batch opened while another task's transaction runs receives that
+    /// transaction's committed events, and delivers everything on drop.
     #[tokio::test]
     async fn batch_opened_during_a_transaction_receives_its_committed_events() {
         let (service, _temp) = create_test_service().await;
         let mut rx = service.subscribe_to_events();
 
-        let (started, proceed, task) = spawn_paused_transaction(&service, "in-tx");
+        let (started, proceed, task) = spawn_paused_transaction(&service, "in-tx", true);
         started.notified().await;
         let guard = service.begin_batch_emit();
 
@@ -8302,19 +8291,159 @@ mod tests {
             "the transaction's events wait for the batch it found open"
         );
 
-        service.emit_event(DomainEvent::NodeCreated {
-            node_id: "batched".to_string(),
-            node_type: "text".to_string(),
-        });
+        emit_created(&service, "batched");
         drop(guard);
 
         let mut ids = received_node_ids(&mut rx);
         ids.sort();
         assert_eq!(ids, vec!["batched".to_string(), "in-tx".to_string()]);
-        assert!(matches!(
-            *service.batch_state.lock().unwrap(),
-            BatchState::Immediate
-        ));
+        assert!(no_batch_open(&service));
+    }
+
+    /// An event from a write made outside any transaction is never buffered
+    /// into another task's transaction, so that transaction rolling back
+    /// cannot discard it. `notified-late` stands in for the window a
+    /// non-`_in_tx` write notifies in (after releasing the write guard,
+    /// while another task's transaction holds it); the `create_node` queued
+    /// behind the transaction checks the real write path end to end.
+    #[tokio::test]
+    async fn a_rolled_back_transaction_never_takes_another_writers_event() {
+        let (service, _temp) = create_test_service().await;
+        let mut rx = service.subscribe_to_events();
+
+        let (started, proceed, task) = spawn_paused_transaction(&service, "in-tx", false);
+        started.notified().await;
+
+        emit_created(&service, "notified-late");
+        let node = Node::new("text".to_string(), "plain".to_string(), json!({}));
+        let plain_id = node.id.clone();
+        let writer = service.clone();
+        let plain = tokio::spawn(async move { writer.create_node(node).await });
+
+        proceed.notify_one();
+        assert!(task.await.unwrap().is_err(), "the transaction rolls back");
+        plain.await.unwrap().unwrap();
+
+        assert_eq!(
+            received_node_ids(&mut rx),
+            vec!["notified-late".to_string(), plain_id],
+            "both committed writes are announced, the rolled-back one is not"
+        );
+    }
+
+    /// Broadcasting from inside a transaction would announce uncommitted
+    /// state, so debug builds refuse it outright.
+    #[cfg(debug_assertions)]
+    #[tokio::test]
+    #[should_panic(expected = "use emit_event_in_tx")]
+    async fn emit_event_inside_a_transaction_is_refused() {
+        let (service, _temp) = create_test_service().await;
+        let svc = service.clone();
+        let _ = service
+            .with_transaction(move |_tx| {
+                Box::pin(async move {
+                    emit_created(&svc, "too-early");
+                    Ok(())
+                })
+            })
+            .await;
+    }
+
+    /// Two batch guards open at once — on different tasks, or nested on one
+    /// — each deliver exactly the events of the task that opened them, in
+    /// either drop order.
+    #[tokio::test]
+    async fn concurrent_batch_guards_each_deliver_only_their_own_events() {
+        for drop_mine_first in [true, false] {
+            let (service, _temp) = create_test_service().await;
+            let mut rx = service.subscribe_to_events();
+
+            let mine = service.begin_batch_emit();
+            emit_created(&service, "mine-1");
+            let svc = service.clone();
+            let theirs = tokio::spawn(async move {
+                let guard = svc.begin_batch_emit();
+                emit_created(&svc, "theirs");
+                guard
+            })
+            .await
+            .unwrap();
+            emit_created(&service, "mine-2");
+
+            let nested = service.begin_batch_emit();
+            emit_created(&service, "nested");
+            drop(nested);
+            assert_eq!(received_node_ids(&mut rx), vec!["nested".to_string()]);
+
+            let mut delivered = Vec::new();
+            if drop_mine_first {
+                drop(mine);
+                delivered.push(received_node_ids(&mut rx));
+                drop(theirs);
+                delivered.push(received_node_ids(&mut rx));
+            } else {
+                drop(theirs);
+                delivered.push(received_node_ids(&mut rx));
+                drop(mine);
+                delivered.push(received_node_ids(&mut rx));
+            }
+            for ids in &mut delivered {
+                ids.sort();
+            }
+            let mine_ids = vec!["mine-1".to_string(), "mine-2".to_string()];
+            let theirs_ids = vec!["theirs".to_string()];
+            let expected = if drop_mine_first {
+                vec![mine_ids, theirs_ids]
+            } else {
+                vec![theirs_ids, mine_ids]
+            };
+            assert_eq!(delivered, expected, "drop_mine_first = {drop_mine_first}");
+            assert!(no_batch_open(&service));
+        }
+    }
+
+    /// Two transactions on different tasks commit inside one open batch and
+    /// then publish in the opposite order to their commits: the batch still
+    /// holds the later commit's event for the node both touched.
+    #[tokio::test]
+    async fn batch_keeps_the_later_commit_when_commits_publish_out_of_order() {
+        let (service, _temp) = create_test_service().await;
+        let mut rx = service.subscribe_to_events();
+        let guard = service.begin_batch_emit();
+
+        let commit = |node_type: &'static str| {
+            let svc = service.clone();
+            tokio::spawn(async move {
+                let svc_in = svc.clone();
+                svc.run_transaction(move |tx| {
+                    Box::pin(async move {
+                        svc_in.emit_event_in_tx(
+                            tx,
+                            DomainEvent::NodeCreated {
+                                node_id: "shared".to_string(),
+                                node_type: node_type.to_string(),
+                            },
+                        );
+                        Ok(())
+                    })
+                })
+                .await
+                .map(|((), committed, _)| committed)
+            })
+        };
+        let earlier = commit("earlier").await.unwrap().unwrap();
+        let later = commit("later").await.unwrap().unwrap();
+        service.publish_committed(later);
+        service.publish_committed(earlier);
+        drop(guard);
+
+        let mut node_types = Vec::new();
+        while let Ok(envelope) = rx.try_recv() {
+            if let DomainEvent::NodeCreated { node_type, .. } = envelope.event {
+                node_types.push(node_type);
+            }
+        }
+        assert_eq!(node_types, vec!["later".to_string()]);
     }
 
     /// The batch importer assigns collection membership via

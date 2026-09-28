@@ -529,7 +529,7 @@ impl NodeService {
                     None => None,
                 };
 
-                service.emit_move_events(&node_id, new_parent.as_deref(), &moved);
+                service.emit_move_events(tx, &node_id, new_parent.as_deref(), &moved);
                 Ok((updated_node, new_parent.map(|_| moved.placement)))
             })
         })
@@ -576,23 +576,27 @@ impl NodeService {
     /// rather than leaving a stale edge there.
     fn emit_move_events(
         &self,
+        tx: &NodeServiceTx<'_>,
         node_id: &str,
         new_parent: Option<&str>,
         moved: &crate::db::NodeMove,
     ) {
         if let Some(parent_id) = new_parent {
-            self.emit_respread_events(parent_id, &moved.placement.respread);
-            self.emit_event(DomainEvent::RelationshipUpdated {
-                relationship: crate::db::events::RelationshipEvent::new(
-                    format!("relationship:{}:{}", parent_id, node_id),
-                    parent_id,
-                    node_id,
-                    "has_child",
-                    serde_json::json!({"order": moved.placement.order}),
-                ),
-            });
+            self.emit_respread_events(tx, parent_id, &moved.placement.respread);
+            self.emit_event_in_tx(
+                tx,
+                DomainEvent::RelationshipUpdated {
+                    relationship: crate::db::events::RelationshipEvent::new(
+                        format!("relationship:{}:{}", parent_id, node_id),
+                        parent_id,
+                        node_id,
+                        "has_child",
+                        serde_json::json!({"order": moved.placement.order}),
+                    ),
+                },
+            );
         }
-        self.emit_former_parent_deleted(node_id, new_parent, moved);
+        self.emit_former_parent_deleted(tx, node_id, new_parent, moved);
     }
 
     /// Emit `RelationshipDeleted` for the `has_child` edge a committed move
@@ -600,18 +604,22 @@ impl NodeService {
     /// first-time attach replaced no edge and emit nothing.
     fn emit_former_parent_deleted(
         &self,
+        tx: &NodeServiceTx<'_>,
         node_id: &str,
         new_parent: Option<&str>,
         moved: &crate::db::NodeMove,
     ) {
         if let Some(old_id) = moved.former_parent.as_deref() {
             if new_parent != Some(old_id) {
-                self.emit_event(DomainEvent::RelationshipDeleted {
-                    id: format!("relationship:{}:{}", old_id, node_id),
-                    from_id: crate::db::events::node_thing(old_id),
-                    to_id: crate::db::events::node_thing(node_id),
-                    relationship_type: "has_child".to_string(),
-                });
+                self.emit_event_in_tx(
+                    tx,
+                    DomainEvent::RelationshipDeleted {
+                        id: format!("relationship:{}:{}", old_id, node_id),
+                        from_id: crate::db::events::node_thing(old_id),
+                        to_id: crate::db::events::node_thing(node_id),
+                        relationship_type: "has_child".to_string(),
+                    },
+                );
             }
         }
     }
@@ -701,7 +709,7 @@ impl NodeService {
                     return Err(root_reorder_violation(&node_id));
                 };
 
-                service.emit_reorder_event(&node_id, &parent_id, &placement);
+                service.emit_reorder_event(tx, &node_id, &parent_id, &placement);
                 Ok(())
             })
         })
@@ -852,15 +860,18 @@ impl NodeService {
                             .update_node_with_version_bump_in_tx(tx, &node.id, node.version)
                             .await?;
 
-                        service.emit_event(crate::db::events::DomainEvent::RelationshipUpdated {
-                            relationship: crate::db::events::RelationshipEvent::new(
-                                format!("relationship:{}:{}", new_parent_id, node.id),
-                                &new_parent_id,
-                                &node.id,
-                                "has_child",
-                                serde_json::json!({"order": order}),
-                            ),
-                        });
+                        service.emit_event_in_tx(
+                            tx,
+                            crate::db::events::DomainEvent::RelationshipUpdated {
+                                relationship: crate::db::events::RelationshipEvent::new(
+                                    format!("relationship:{}:{}", new_parent_id, node.id),
+                                    &new_parent_id,
+                                    &node.id,
+                                    "has_child",
+                                    serde_json::json!({"order": order}),
+                                ),
+                            },
+                        );
 
                         updated.push((updated_node, *order));
                     }
@@ -961,19 +972,22 @@ impl NodeService {
                     .move_in_tx(tx, &child_id, Some(&parent_id), insert_after.as_deref())
                     .await?;
 
-                service.emit_respread_events(&parent_id, &moved.placement.respread);
-                service.emit_event(DomainEvent::RelationshipCreated {
-                    relationship: crate::db::events::RelationshipEvent::new(
-                        format!("relationship:{}:{}", parent_id, child_id),
-                        &parent_id,
-                        &child_id,
-                        "has_child",
-                        serde_json::json!({"order": moved.placement.order}),
-                    ),
-                });
+                service.emit_respread_events(tx, &parent_id, &moved.placement.respread);
+                service.emit_event_in_tx(
+                    tx,
+                    DomainEvent::RelationshipCreated {
+                        relationship: crate::db::events::RelationshipEvent::new(
+                            format!("relationship:{}:{}", parent_id, child_id),
+                            &parent_id,
+                            &child_id,
+                            "has_child",
+                            serde_json::json!({"order": moved.placement.order}),
+                        ),
+                    },
+                );
                 // A reparent also announces the edge it replaced, after the new
                 // one, exactly as `move_node` does.
-                service.emit_former_parent_deleted(&child_id, Some(&parent_id), &moved);
+                service.emit_former_parent_deleted(tx, &child_id, Some(&parent_id), &moved);
                 Ok(())
             })
         })
@@ -1014,16 +1028,19 @@ impl NodeService {
         .await
         .map_err(NodeServiceError::from_store)?;
 
-        self.emit_respread_events(parent_id, &placement.respread);
-        self.emit_event(DomainEvent::RelationshipCreated {
-            relationship: crate::db::events::RelationshipEvent::new(
-                format!("relationship:{}:{}", parent_id, child_id),
-                parent_id,
-                child_id,
-                "has_child",
-                serde_json::json!({"order": placement.order}),
-            ),
-        });
+        self.emit_respread_events(tx, parent_id, &placement.respread);
+        self.emit_event_in_tx(
+            tx,
+            DomainEvent::RelationshipCreated {
+                relationship: crate::db::events::RelationshipEvent::new(
+                    format!("relationship:{}:{}", parent_id, child_id),
+                    parent_id,
+                    child_id,
+                    "has_child",
+                    serde_json::json!({"order": placement.order}),
+                ),
+            },
+        );
 
         Ok(placement)
     }
@@ -1137,20 +1154,24 @@ impl NodeService {
     /// re-spread siblings first, then the reordered edge.
     fn emit_reorder_event(
         &self,
+        tx: &NodeServiceTx<'_>,
         node_id: &str,
         parent_id: &str,
         placement: &crate::db::ChildPlacement,
     ) {
-        self.emit_respread_events(parent_id, &placement.respread);
-        self.emit_event(DomainEvent::RelationshipUpdated {
-            relationship: crate::db::events::RelationshipEvent::new(
-                format!("relationship:{}:{}", parent_id, node_id),
-                parent_id,
-                node_id,
-                "has_child",
-                serde_json::json!({"order": placement.order}),
-            ),
-        });
+        self.emit_respread_events(tx, parent_id, &placement.respread);
+        self.emit_event_in_tx(
+            tx,
+            DomainEvent::RelationshipUpdated {
+                relationship: crate::db::events::RelationshipEvent::new(
+                    format!("relationship:{}:{}", parent_id, node_id),
+                    parent_id,
+                    node_id,
+                    "has_child",
+                    serde_json::json!({"order": placement.order}),
+                ),
+            },
+        );
     }
 
     /// Emit a `RelationshipUpdated` for each sibling whose order key a
@@ -1159,17 +1180,25 @@ impl NodeService {
     /// Callers emit these BEFORE the written edge's own event, so a client
     /// applying events in order has every sibling on the re-spread keys by
     /// the time the new key arrives.
-    fn emit_respread_events(&self, parent_id: &str, respread: &[(String, f64)]) {
+    fn emit_respread_events(
+        &self,
+        tx: &NodeServiceTx<'_>,
+        parent_id: &str,
+        respread: &[(String, f64)],
+    ) {
         for (child_id, order) in respread {
-            self.emit_event(DomainEvent::RelationshipUpdated {
-                relationship: crate::db::events::RelationshipEvent::new(
-                    format!("relationship:{}:{}", parent_id, child_id),
-                    parent_id,
-                    child_id,
-                    "has_child",
-                    serde_json::json!({"order": order}),
-                ),
-            });
+            self.emit_event_in_tx(
+                tx,
+                DomainEvent::RelationshipUpdated {
+                    relationship: crate::db::events::RelationshipEvent::new(
+                        format!("relationship:{}:{}", parent_id, child_id),
+                        parent_id,
+                        child_id,
+                        "has_child",
+                        serde_json::json!({"order": order}),
+                    ),
+                },
+            );
         }
     }
 

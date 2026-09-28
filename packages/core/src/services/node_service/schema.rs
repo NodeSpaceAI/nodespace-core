@@ -413,14 +413,17 @@ impl NodeService {
         let changed_properties =
             compute_property_changes(&existing.properties, &updated_node.properties);
 
-        // Buffered, not broadcast yet (`BatchState::Transactional`) — only
+        // Buffered on `tx`, not broadcast yet — only
         // flushed if this whole transaction commits.
-        self.emit_event(DomainEvent::NodeUpdated {
-            node_id: updated_node.id.clone(),
-            node_type: updated_node.node_type.clone(),
-            node: updated_node.clone(),
-            changed_properties: changed_properties.clone(),
-        });
+        self.emit_event_in_tx(
+            tx,
+            DomainEvent::NodeUpdated {
+                node_id: updated_node.id.clone(),
+                node_type: updated_node.node_type.clone(),
+                node: updated_node.clone(),
+                changed_properties: changed_properties.clone(),
+            },
+        );
 
         // ADR-060 §2: synchronous invariant-rule dispatch for property_changed
         // triggers, inside this same transaction — the exact gap this issue
@@ -1459,27 +1462,36 @@ impl NodeService {
 
         for (rel_id, out_node, rel) in changes.created {
             let props = serde_json::to_value(&rel).unwrap_or_else(|_| serde_json::json!({}));
-            self.emit_event(DomainEvent::RelationshipCreated {
-                relationship: crate::db::events::RelationshipEvent::new(
-                    rel_id, schema_id, &out_node, &rel.name, props,
-                ),
-            });
+            self.emit_event_in_tx(
+                tx,
+                DomainEvent::RelationshipCreated {
+                    relationship: crate::db::events::RelationshipEvent::new(
+                        rel_id, schema_id, &out_node, &rel.name, props,
+                    ),
+                },
+            );
         }
         for (rel_id, out_node, rel) in changes.updated {
             let props = serde_json::to_value(&rel).unwrap_or_else(|_| serde_json::json!({}));
-            self.emit_event(DomainEvent::RelationshipUpdated {
-                relationship: crate::db::events::RelationshipEvent::new(
-                    rel_id, schema_id, &out_node, &rel.name, props,
-                ),
-            });
+            self.emit_event_in_tx(
+                tx,
+                DomainEvent::RelationshipUpdated {
+                    relationship: crate::db::events::RelationshipEvent::new(
+                        rel_id, schema_id, &out_node, &rel.name, props,
+                    ),
+                },
+            );
         }
         for (rel_id, out_node, name) in changes.deleted {
-            self.emit_event(DomainEvent::RelationshipDeleted {
-                id: rel_id,
-                from_id: crate::db::events::node_thing(schema_id),
-                to_id: crate::db::events::node_thing(&out_node),
-                relationship_type: name,
-            });
+            self.emit_event_in_tx(
+                tx,
+                DomainEvent::RelationshipDeleted {
+                    id: rel_id,
+                    from_id: crate::db::events::node_thing(schema_id),
+                    to_id: crate::db::events::node_thing(&out_node),
+                    relationship_type: name,
+                },
+            );
         }
 
         Ok(())
