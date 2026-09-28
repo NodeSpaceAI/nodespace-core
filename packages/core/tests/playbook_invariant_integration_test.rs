@@ -21,9 +21,12 @@
 //! - Reactive rules are unaffected by any of the above.
 
 use anyhow::Result;
-use nodespace_core::db::events::{DomainEvent, SYNC_SERVICE_CLIENT_ID};
+use nodespace_core::db::events::{
+    DomainEvent, PLAYBOOK_CHAIN_DEPTH_PROPERTY, PLAYBOOK_WRITE_ID_PROPERTY, SYNC_SERVICE_CLIENT_ID,
+};
 use nodespace_core::db::SqliteStore;
 use nodespace_core::models::{Node, NodeUpdate, TaskNodeUpdate, TaskPriority, TaskStatus};
+use nodespace_core::playbook::types::MAX_CHAIN_DEPTH;
 use nodespace_core::services::{NodeService, NodeServiceError};
 use nodespace_core::PlaybookEngine;
 use serde_json::json;
@@ -2524,6 +2527,170 @@ async fn reactive_task_update_rule_still_fires_asynchronously_post_commit() -> R
     })
     .await;
     assert!(fired, "reactive rule must eventually fire post-commit");
+
+    shutdown_engine(shutdown_tx, task).await;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Chain-depth provenance (ADR-060 §5)
+// ---------------------------------------------------------------------------
+//
+// A write continues a play chain only when it changed the per-write id every
+// play write stamps. A user's edit leaves a play's old stamp in place, so it
+// must start a fresh chain instead of continuing from that stale depth.
+
+/// A user's edit to a node a play last stamped at `MAX_CHAIN_DEPTH` fires
+/// the node's reactive rule as a fresh chain. Continuing from the stale stamp
+/// would read the edit as a cycle, skip the rule and disable the play.
+#[tokio::test]
+async fn user_edit_to_a_node_stamped_at_max_depth_still_fires_the_reactive_rule() -> Result<()> {
+    let (service, _tmp) = create_test_service().await?;
+
+    let (_engine, shutdown_tx, task) = spawn_engine(&service).await;
+    create_play(
+        &service,
+        "reactive-on-stamped-task-play",
+        json!([{
+            "name": "prioritize-on-status-change",
+            "trigger": { "type": "graph_event", "on": "property_changed", "node_type": "task", "property_key": "task.status" },
+            "conditions": [],
+            "actions": [{
+                "action_type": "update_node",
+                "params": {
+                    "node_id": "{trigger.node.id}",
+                    "properties": { "priority": "high" }
+                }
+            }]
+        }]),
+    )
+    .await?;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // As a play at the end of a long chain leaves it.
+    let node = Node::new(
+        "task".to_string(),
+        "Stamped by a play".to_string(),
+        json!({
+            "status": "open",
+            (PLAYBOOK_CHAIN_DEPTH_PROPERTY): MAX_CHAIN_DEPTH,
+            (PLAYBOOK_WRITE_ID_PROPERTY): "earlier-play-write",
+        }),
+    );
+    let node_id = node.id.clone();
+    service.create_node(node).await?;
+    let version = service.get_node(&node_id).await?.unwrap().version;
+
+    service
+        .update_task_node(
+            &node_id,
+            version,
+            TaskNodeUpdate::new().with_status(TaskStatus::InProgress),
+        )
+        .await?;
+
+    let fired = wait_until(|| {
+        let service = Arc::clone(&service);
+        let node_id = node_id.clone();
+        async move {
+            service
+                .get_node(&node_id)
+                .await
+                .ok()
+                .flatten()
+                .is_some_and(|n| user_field(&n, "task", "priority") == Some(&json!("high")))
+        }
+    })
+    .await;
+    assert!(
+        fired,
+        "a user's edit must start a fresh chain, not continue from the play's stale stamp"
+    );
+
+    shutdown_engine(shutdown_tx, task).await;
+    Ok(())
+}
+
+/// Sync repair continues the chain a received play write carried, and stops
+/// at the limit. A received create carrying only a depth stamp, with no write
+/// id, was not written by a play and is repaired as a fresh chain.
+#[tokio::test]
+async fn sync_repair_continues_only_a_play_written_chain() -> Result<()> {
+    let (service, _tmp) = create_test_service().await?;
+    create_schema(
+        &service,
+        "iv_chain_task",
+        json!([
+            { "name": "status", "type": "string" },
+            { "name": "approved", "type": "boolean" }
+        ]),
+    )
+    .await?;
+    let (_engine, shutdown_tx, task) = spawn_engine(&service).await;
+    create_play(
+        &service,
+        "chain-repair-play",
+        stamp_approved_invariant_rule("iv_chain_task"),
+    )
+    .await?;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let sync_service = service.with_client(SYNC_SERVICE_CLIENT_ID);
+
+    // A play write at the end of a chain: one more hop would pass the limit.
+    let at_limit = Node::new(
+        "iv_chain_task".to_string(),
+        "play write at the limit".to_string(),
+        json!({
+            "status": "pending",
+            (PLAYBOOK_CHAIN_DEPTH_PROPERTY): MAX_CHAIN_DEPTH,
+            (PLAYBOOK_WRITE_ID_PROPERTY): "remote-play-write",
+        }),
+    );
+    let at_limit_id = at_limit.id.clone();
+    sync_service.create_node(at_limit).await?;
+
+    // Created after `at_limit`, so once it is repaired the engine has
+    // finished with `at_limit` too.
+    let depth_only = Node::new(
+        "iv_chain_task".to_string(),
+        "depth stamp without a write id".to_string(),
+        json!({
+            "status": "pending",
+            (PLAYBOOK_CHAIN_DEPTH_PROPERTY): MAX_CHAIN_DEPTH,
+        }),
+    );
+    let depth_only_id = depth_only.id.clone();
+    sync_service.create_node(depth_only).await?;
+
+    let repaired = wait_until(|| {
+        let service = Arc::clone(&service);
+        let id = depth_only_id.clone();
+        async move {
+            matches!(
+                service.get_node(&id).await,
+                Ok(Some(n)) if user_field(&n, "iv_chain_task", "approved") == Some(&json!(true))
+            )
+        }
+    })
+    .await;
+    assert!(
+        repaired,
+        "a depth stamp with no write id must not count as a play hop"
+    );
+    let repaired_node = service.get_node(&depth_only_id).await?.unwrap();
+    assert_eq!(
+        repaired_node.properties[PLAYBOOK_CHAIN_DEPTH_PROPERTY],
+        json!(1),
+        "the repair starts a fresh chain"
+    );
+
+    let at_limit_node = service.get_node(&at_limit_id).await?.unwrap();
+    assert_eq!(
+        user_field(&at_limit_node, "iv_chain_task", "approved"),
+        None,
+        "a repair one hop past the limit of a play-written chain must be skipped"
+    );
 
     shutdown_engine(shutdown_tx, task).await;
     Ok(())
