@@ -100,14 +100,28 @@ fn matches_filter(line: &str, filter: Option<&str>) -> bool {
 }
 
 /// Count how many lines in `path` satisfy `filter`, streaming the file
-/// forward one line at a time (`BufReader::lines`) instead of reading it
-/// whole. Memory use is bounded by a single line's length regardless of the
-/// file's total size.
+/// forward one line at a time instead of reading it whole. Memory use is
+/// bounded by a single line's length regardless of the file's total size.
+///
+/// Decodes each raw line lossily (`String::from_utf8_lossy`), matching
+/// [`tail_matching_lines_with_chunk`]'s own decoding, rather than
+/// `BufRead::lines()` (which would hard-error the whole command on the first
+/// invalid UTF-8 byte anywhere in the file). A long-lived, never-rotated
+/// headless log — exactly the case this command exists to serve — is exactly
+/// the kind of file likely to eventually contain one.
 fn count_matching_lines(path: &Path, filter: Option<&str>) -> std::io::Result<usize> {
-    let reader = BufReader::new(File::open(path)?);
+    let mut reader = BufReader::new(File::open(path)?);
     let mut count = 0usize;
-    for line in reader.lines() {
-        if matches_filter(&line?, filter) {
+    let mut buf: Vec<u8> = Vec::new();
+    loop {
+        buf.clear();
+        if reader.read_until(b'\n', &mut buf)? == 0 {
+            break;
+        }
+        if buf.last() == Some(&b'\n') {
+            buf.pop();
+        }
+        if matches_filter(&String::from_utf8_lossy(&buf), filter) {
             count += 1;
         }
     }
@@ -391,6 +405,32 @@ mod tests {
         let (expected_total, _) = naive_tail(body, Some("ERROR"), usize::MAX);
         let got = count_matching_lines(&path, Some("ERROR")).expect("must succeed");
         assert_eq!(got, expected_total);
+    }
+
+    /// A long-lived, never-rotated headless log (exactly this command's
+    /// target case) can end up with a stray invalid-UTF-8 byte somewhere in
+    /// it. Both passes must tolerate that (lossy decoding) rather than
+    /// hard-erroring the whole command over one bad byte, and must still
+    /// find every valid line around it.
+    #[test]
+    fn count_and_tail_tolerate_invalid_utf8_instead_of_erroring() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("nodespaced.log");
+        let mut f = File::create(&path).expect("create log file");
+        f.write_all(b"good line one\n").unwrap();
+        f.write_all(&[b'b', b'a', b'd', 0xFF, 0xFE, b'\n']).unwrap();
+        f.write_all(b"good line two\n").unwrap();
+        drop(f);
+
+        let total =
+            count_matching_lines(&path, None).expect("must not error on invalid UTF-8 bytes");
+        assert_eq!(total, 3);
+
+        let shown =
+            tail_matching_lines(&path, None, 10).expect("must not error on invalid UTF-8 bytes");
+        assert_eq!(shown.len(), 3);
+        assert_eq!(shown[0], "good line one");
+        assert_eq!(shown[2], "good line two");
     }
 
     /// The end-to-end case the fix exists for: a large (50MB-class) log file

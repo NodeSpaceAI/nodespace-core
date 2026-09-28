@@ -70,8 +70,11 @@ fn report_skill_removal(w: &mut impl std::io::Write, installer: Result<skill::In
         let _ = writeln!(w, "No installed NodeSpace skills found.");
         return;
     }
+    // "removed" (not "skill removed") to match `commands::skill::uninstall`'s
+    // own wording exactly — `nodespace skill uninstall` and this code path
+    // now report the same underlying outcome and should read identically.
     for agent in &outcome.installed {
-        let _ = writeln!(w, "✓ {agent}: skill removed");
+        let _ = writeln!(w, "✓ {agent}: removed");
     }
     for skipped in &outcome.skipped {
         let _ = writeln!(w, "⚠ {}: {}", skipped.agent, skipped.reason);
@@ -218,11 +221,8 @@ mod tests {
         report_skill_removal(&mut buf, Ok(installer));
         let out = String::from_utf8(buf).unwrap();
 
-        assert!(
-            out.contains("✓ claude-code: skill removed"),
-            "got: {out}"
-        );
-        assert!(out.contains("✓ codex: skill removed"), "got: {out}");
+        assert!(out.contains("✓ claude-code: removed"), "got: {out}");
+        assert!(out.contains("✓ codex: removed"), "got: {out}");
         assert!(
             out.contains("⚠ opencode: not installed, nothing to remove"),
             "got: {out}"
