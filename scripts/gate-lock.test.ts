@@ -11,12 +11,16 @@
 // DOM-free on purpose: this file runs under `bun test scripts/`, which
 // bypasses the Happy-DOM vitest config (see CLAUDE.md).
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   acquireGateLock,
+  currentUser,
   DISABLE_ENV_VAR,
+  ensureDir,
+  SHARED_LOCK_DIR,
+  sharedDirHint,
   MACHINE_LOCK_PATH,
   MERGE_LOCK_PATH,
   errorCode,
@@ -73,7 +77,7 @@ describe("errorCode", () => {
 });
 
 function holderFile(overrides: Partial<LockHolder> = {}): LockHolder {
-  return { pid: 999_001, startedAt: 1000, host: HOST, cwd: "/tmp/other-worktree", ...overrides };
+  return { pid: 999_001, startedAt: 1000, host: HOST, user: "other-account", cwd: "/tmp/other-worktree", ...overrides };
 }
 
 /** Puts a lockfile in place as if another gate had acquired it. */
@@ -192,7 +196,7 @@ describe("formatDuration", () => {
 describe("waiting output", () => {
   test("names the holder's pid and worktree, how long it has held, and how long we have waited", () => {
     const line = formatWaitingLine(holderFile({ pid: 4242, startedAt: 1_000_000 }), 1_252_000, 30_000);
-    expect(line).toContain("pid 4242 in other-worktree");
+    expect(line).toContain("pid 4242 (other-account) in other-worktree");
     expect(line).toContain("holding 4m12s");
     expect(line).toContain("waited 30s");
   });
@@ -745,5 +749,144 @@ describe("the merge lock and the machine slot", () => {
     plantLock({ pid: process.pid });
     first.release();
     expect(parseHolder(readFileSync(lockPath, "utf8"))?.pid).toBe(process.pid);
+  });
+});
+
+describe("the machine slot is shared by every account on the machine", () => {
+  test("lives outside the per-user temp directory on macOS", () => {
+    expect(MACHINE_LOCK_PATH.startsWith(SHARED_LOCK_DIR)).toBe(true);
+    if (process.platform === "darwin") {
+      // tmpdir() is per-user on macOS; a slot there is one slot per account.
+      expect(MACHINE_LOCK_PATH.startsWith(tmpdir())).toBe(false);
+    }
+  });
+
+  test.each([
+    ["022", 0o022],
+    ["077", 0o077],
+  ])(
+    "under umask %s, a shared lock's directory and queue are world-writable and not sticky, and its records readable by all",
+    async (_label, umask) => {
+      // Stands in for a second uid: what lets another account take, reclaim
+      // and sweep here is the directory mode, and what lets it tell a live
+      // lock from garbage is the file mode — so those are what this pins.
+      const sharedLock = join(dir, "shared", "machine.lock");
+      const previous = process.umask(umask);
+      try {
+        const lock = await acquireGateLock(harness({ lockPath: sharedLock, shared: true }).options);
+        expect(lock.held).toBe(true);
+        for (const path of [join(dir, "shared"), queueDir(sharedLock)]) {
+          expect(statSync(path).mode & 0o7777).toBe(0o777);
+        }
+        expect(statSync(sharedLock).mode & 0o777).toBe(0o644);
+
+        // A second waiter queues behind it; its ticket is inspected mid-wait.
+        const ticketModes: number[] = [];
+        let clock = 0;
+        const waiter = await acquireGateLock(
+          harness({
+            lockPath: sharedLock,
+            shared: true,
+            pid: 999_002,
+            isAlive: () => true,
+            maxWaitMs: 5,
+            now: () => clock,
+            sleep: async () => {
+              clock += 10;
+              const q = queueDir(sharedLock);
+              for (const name of readdirSync(q)) ticketModes.push(statSync(join(q, name)).mode & 0o777);
+            },
+          }).options
+        );
+        expect(waiter.held).toBe(false);
+        expect(ticketModes.length).toBeGreaterThan(0);
+        expect(ticketModes.every((m) => m === 0o644)).toBe(true);
+        lock.release();
+      } finally {
+        process.umask(previous);
+      }
+    }
+  );
+
+  test("a lock that isn't shared keeps the umask's mode", async () => {
+    const previous = process.umask(0o022);
+    try {
+      const lock = await acquireGateLock(harness().options);
+      expect(statSync(queueDir(lockPath)).mode & 0o7777).toBe(0o755);
+      lock.release();
+    } finally {
+      process.umask(previous);
+    }
+  });
+
+  test("its owner repairs a shared directory left at the umask's mode", () => {
+    // A creator killed between mkdir and chmod leaves it 0755, which would lock
+    // every other account out for good.
+    const existing = join(dir, "existing");
+    mkdirSync(existing, { mode: 0o755 });
+    ensureDir(existing, true);
+    expect(statSync(existing).mode & 0o7777).toBe(0o777);
+  });
+
+  test.skipIf(process.getuid?.() === 0)("a lock this account can't read is waited on, never reaped", async () => {
+    plantLock();
+    chmodSync(lockPath, 0o000);
+    let clock = 0;
+    const lock = await acquireGateLock(
+      harness({
+        maxWaitMs: 50,
+        now: () => clock,
+        sleep: async () => {
+          clock += 10;
+        },
+      }).options
+    );
+    expect(lock.held).toBe(false);
+    expect(existsSync(lockPath)).toBe(true);
+    expect(readHolder(lockPath)).toEqual({ state: "forbidden" });
+  });
+
+  test("garbage this account can't remove is waited on with a sleep per poll, not spun on", async () => {
+    // A directory at the lock path reads as garbage and can't be unlinked —
+    // the same position as another account's file in a sticky directory,
+    // which one uid can't set up.
+    mkdirSync(lockPath);
+    let clock = 0;
+    let sleeps = 0;
+    const { options, logged } = harness({
+      maxWaitMs: 50,
+      now: () => clock,
+      sleep: async () => {
+        sleeps += 1;
+        clock += 10;
+      },
+    });
+    const lock = await acquireGateLock(options);
+    expect(lock.held).toBe(false);
+    expect(sleeps).toBe(5);
+    expect(existsSync(lockPath)).toBe(true);
+    expect(logged.join("\n")).toContain(`waiting on ${lockPath}`);
+  });
+
+  test("the shared-directory hint names only a directory that needs fixing", () => {
+    const healthy = join(dir, "healthy");
+    const broken = join(dir, "broken");
+    ensureDir(healthy, true);
+    mkdirSync(broken, { mode: 0o755 });
+    expect(sharedDirHint(healthy)).toBe("");
+    expect(sharedDirHint(broken)).toContain(`chmod 777 ${broken}`);
+  });
+
+  test("a stale lock left by another account's dead process is reclaimed", async () => {
+    plantLock({ user: "other-account" });
+    const lock = await acquireGateLock(harness({ isAlive: () => false }).options);
+    expect(lock.held).toBe(true);
+    expect(parseHolder(readFileSync(lockPath, "utf8"))).toMatchObject({ pid: process.pid, user: currentUser() });
+    lock.release();
+  });
+
+  test("a holder record without an account is still a claim — the account only labels it", () => {
+    const { user: _user, ...withoutUser } = holderFile();
+    expect(parseHolder(JSON.stringify(withoutUser))).toMatchObject({ pid: withoutUser.pid, user: "?" });
   });
 });

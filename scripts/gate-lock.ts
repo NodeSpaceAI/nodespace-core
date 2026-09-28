@@ -38,9 +38,9 @@
 // went ahead of it — and then run unserialized anyway, the exact contention
 // the lock exists to prevent.
 
-import { linkSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, linkSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
-import { hostname, tmpdir } from "node:os";
+import { hostname, tmpdir, userInfo } from "node:os";
 import { basename, dirname, join } from "node:path";
 
 /**
@@ -66,16 +66,34 @@ export const DEFAULT_POLL_INTERVAL_MS = 2000;
 /** Escape hatch for someone who knowingly wants parallel gates. */
 export const DISABLE_ENV_VAR = "NODESPACE_GATE_NO_LOCK";
 
-// Where the locks live. Machine-wide on purpose: worktrees of the same repo
-// are the thing being coordinated, but so are separate clones — the resource
-// under contention is the CPU, which is per-machine, not per-repo. On macOS
-// `tmpdir()` is per-user (/var/folders/...), which is the right scope in
-// practice: one developer's runs are what collide.
+// Where the locks live. Worktrees of the same repo are the thing being
+// coordinated, but so are separate clones and separate macOS accounts — the
+// resource under contention is the CPU, which is per-machine, not per-repo or
+// per-user.
+
+/**
+ * The directory every account on this machine shares for the machine slot.
+ *
+ * Not `tmpdir()`: on macOS that is per-user (/var/folders/...), so two
+ * accounts on one Mac each got their own slot, and one account's Rust tier
+ * ran beside another's merge gate (load average ~175, a gate killed for low
+ * memory). Not `/tmp` either: its sticky bit stops one user unlinking
+ * another's lock, ticket or staging file, so reclaiming a dead holder and
+ * sweeping its litter would fail with EPERM. `/Users/Shared` is itself
+ * sticky, which is why the lock lives one level down, in a directory created
+ * world-writable and not sticky (see ensureDir).
+ *
+ * Elsewhere `tmpdir()` is the machine's shared temp directory or the machine
+ * has one developer account; a subdirectory keeps the files together.
+ */
+export const SHARED_LOCK_DIR =
+  process.platform === "darwin" ? "/Users/Shared/nodespace-gate" : join(tmpdir(), "nodespace-gate");
 
 /**
  * The merge lock, for `bun run merge` (scripts/merge-pr.ts). It serializes
  * merges and guards the one shared gate checkout they test in, and is held
- * from before the rebase until the merge lands.
+ * from before the rebase until the merge lands. Per-user: each account merges
+ * from its own gate checkout.
  */
 export const MERGE_LOCK_PATH = join(tmpdir(), "nodespace-merge.lock");
 
@@ -85,12 +103,10 @@ export const MERGE_LOCK_PATH = join(tmpdir(), "nodespace-merge.lock");
  * Rust test run overlaps its tests — a compile beside a timed test run slows
  * it several-fold even under `nice`. `bun run test:changed` takes it only
  * around its Rust tier. Locks are only ever taken in the order merge →
- * machine, so the two can't deadlock.
- *
- * The file keeps the name of the compile slot it replaced, so gates still
- * running from branches cut before the change queue on the same file.
+ * machine, so the two can't deadlock. Shared by every account on the machine
+ * (SHARED_LOCK_DIR); callers pass `shared: true`.
  */
-export const MACHINE_LOCK_PATH = join(tmpdir(), "nodespace-compile.lock");
+export const MACHINE_LOCK_PATH = join(SHARED_LOCK_DIR, "machine.lock");
 
 /** What the machine slot serializes, for its waiting messages. */
 export const MACHINE_SLOT_WHAT = "heavy run (merge gate or test:changed Rust tier)";
@@ -101,6 +117,8 @@ export interface LockHolder {
   startedAt: number;
   /** Machine that wrote the lock — see isForeignHost(). */
   host: string;
+  /** Account that holds it, so a waiter can tell another account's run from its own. */
+  user: string;
   /** Working directory of the holder, so the waiting line can name the worktree. */
   cwd: string;
 }
@@ -129,11 +147,13 @@ export function parseHolder(raw: string): LockHolder | null {
     return null;
   }
   if (!parsed || typeof parsed !== "object") return null;
-  const { pid, startedAt, host, cwd } = parsed as Record<string, unknown>;
+  const { pid, startedAt, host, user, cwd } = parsed as Record<string, unknown>;
   if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 0) return null;
   if (typeof startedAt !== "number" || !Number.isFinite(startedAt)) return null;
   if (typeof host !== "string" || typeof cwd !== "string") return null;
-  return { pid, startedAt, host, cwd };
+  // `user` only labels the waiting line, so it never decides whether a record
+  // is interpretable — that would let a display field get a live lock reaped.
+  return { pid, startedAt, host, user: typeof user === "string" ? user : "?", cwd };
 }
 
 /**
@@ -170,9 +190,22 @@ export function formatDuration(ms: number): string {
   return minutes > 0 ? `${minutes}m${String(seconds).padStart(2, "0")}s` : `${seconds}s`;
 }
 
-/** Who holds the lock and for how long, e.g. "pid 123 in issue-45-foo, holding 3m05s". */
+/**
+ * Who holds the lock and for how long, e.g. "pid 123 (alice) in
+ * issue-45-foo, holding 3m05s". Built from the lock's own contents only: the
+ * holder's worktree may be in another account's home, unreadable to us.
+ */
 function describeHolder(holder: LockHolder, now: number): string {
-  return `pid ${holder.pid} in ${basename(holder.cwd)}, holding ${formatDuration(now - holder.startedAt)}`;
+  return `pid ${holder.pid} (${holder.user}) in ${basename(holder.cwd)}, holding ${formatDuration(now - holder.startedAt)}`;
+}
+
+/** This process's account name, or its uid where the name can't be looked up. */
+export function currentUser(): string {
+  try {
+    return userInfo().username;
+  } catch {
+    return `uid ${process.getuid?.() ?? "?"}`;
+  }
 }
 
 export function formatWaitingLine(holder: LockHolder, now: number, waitedMs: number): string {
@@ -211,6 +244,12 @@ export interface AcquireOptions {
   what?: string;
   /** Queue ahead of every non-urgent waiter (the merge gate). */
   urgent?: boolean;
+  /**
+   * Every account on the machine uses this lock (the machine slot): create
+   * its directory and queue world-writable, so any account can take, reclaim
+   * and sweep them. See SHARED_LOCK_DIR.
+   */
+  shared?: boolean;
 }
 
 /** Returned by acquireGateLock; call release() exactly once when the gate is done. */
@@ -284,10 +323,21 @@ function sweepOrphanedStaging(lockPath: string, now: number): void {
   }
 }
 
+/**
+ * Writes a lock or ticket record, readable by every account whatever the
+ * writer's umask. Under umask 077 it would be 0600, and another account
+ * reading a shared lock it can't open must not mistake it for garbage.
+ * writeFileSync's `mode` is itself masked by the umask, hence the chmod.
+ */
+function writeRecord(path: string, holder: LockHolder): void {
+  writeFileSync(path, serializeHolder(holder));
+  chmodSync(path, 0o644);
+}
+
 function tryCreateLock(lockPath: string, holder: LockHolder): boolean {
   // Same directory as the lock: link(2) cannot cross filesystems.
   const staging = `${lockPath}.${process.pid}.${randomUUID()}`;
-  writeFileSync(staging, serializeHolder(holder));
+  writeRecord(staging, holder);
   try {
     linkSync(staging, lockPath);
     return true;
@@ -310,6 +360,7 @@ function tryCreateLock(lockPath: string, holder: LockHolder): boolean {
 export type LockRead =
   | { state: "absent" }
   | { state: "unreadable" }
+  | { state: "forbidden" }
   | { state: "held"; holder: LockHolder };
 
 /**
@@ -322,30 +373,44 @@ export type LockRead =
  * meantime), while an unreadable one is genuine garbage to reap. Folding both
  * into `null` also makes the logs lie — reporting a corrupt lockfile when the
  * file had simply been released.
+ *
+ * `forbidden` — a lock we lack permission to read — is neither: it is someone
+ * else's claim, most likely another account's, and is waited on, never
+ * reaped. Deleting a lock needs positive evidence that it is garbage.
  */
 export function readHolder(lockPath: string): LockRead {
   let raw: string;
   try {
     raw = readFileSync(lockPath, "utf8");
   } catch (err) {
-    if (errorCode(err) === "ENOENT") return { state: "absent" };
+    const code = errorCode(err);
+    if (code === "ENOENT") return { state: "absent" };
+    if (code === "EACCES" || code === "EPERM") return { state: "forbidden" };
     return { state: "unreadable" };
   }
   const holder = parseHolder(raw);
   return holder === null ? { state: "unreadable" } : { state: "held", holder };
 }
 
-function removeLock(lockPath: string): void {
+/**
+ * Unlinks the lock. False only when it is still there and we could not
+ * remove it — a directory this account may not unlink in — so a reaping
+ * waiter waits instead of spinning on create → EEXIST → reap.
+ */
+function removeLock(lockPath: string): boolean {
   try {
     unlinkSync(lockPath);
-  } catch {
+    return true;
+  } catch (err) {
     // Already gone — someone reaped it, or we never held it. Either way
     // there is nothing to undo.
+    return errorCode(err) === "ENOENT";
   }
 }
 
 /**
  * Removes the lock only if the file still names `claimantPid` as its holder.
+ * False when the lock it should have removed is still there (see removeLock).
  *
  * Serves both callers that remove a lock, because both need the same
  * predicate — "is this still the claim I think it is?" — differing only in
@@ -369,16 +434,17 @@ function removeLock(lockPath: string): void {
  * this function, so no waiter can replace its lock underneath it. That
  * argument depends on every reap being gated on liveness — which is why the
  * `absent` case in the acquire loop retries instead of unlinking, and why only
- * `unreadable` and dead-pid locks are reaped.
+ * `unreadable` and dead-pid locks are reaped — never a `forbidden` one.
  */
-function removeLockIfHeldBy(lockPath: string, claimantPid: number): void {
+function removeLockIfHeldBy(lockPath: string, claimantPid: number): boolean {
   const current = readHolder(lockPath);
   // "held by someone else" is the one case we must not touch. An absent lock
   // has nothing to remove, and an unreadable one cannot be anyone's claim —
   // because tryCreateLock publishes whole files, so a partially-written lock
   // is not a state this module can produce.
-  if (current.state === "held" && current.holder.pid !== claimantPid) return;
-  removeLock(lockPath);
+  if (current.state === "forbidden") return false;
+  if (current.state === "held" && current.holder.pid !== claimantPid) return true;
+  return removeLock(lockPath);
 }
 
 /** The FIFO queue of waiting gates, beside the lock. */
@@ -399,20 +465,58 @@ export function ticketName(startedWaitingAt: number, pid: number, urgent = false
 }
 
 /**
- * Files this waiter's ticket. Written under a staging name and renamed into
- * place so no reader ever sees a partial ticket; rename is fine here (unlike
- * for the lock itself) because every ticket name is unique to its waiter.
+ * Creates `dir` if missing. Not recursive: a lock location whose parent
+ * doesn't exist is an unusable one — the caller degrades, it doesn't build it.
+ *
+ * A shared directory is chmod'ed 0777 by whoever creates it, because mkdir
+ * applies the umask (0755 by default, which would leave every other account
+ * unable to create or unlink anything in it). Only the creator may chmod, so
+ * an existing directory is left as its creator made it.
  */
-function fileTicket(dir: string, name: string, holder: LockHolder): void {
-  // Not recursive: the queue lives beside the lock, and a lock location that
-  // doesn't exist is an unusable one — the caller degrades, it doesn't build it.
+export function ensureDir(dir: string, shared: boolean): void {
   try {
     mkdirSync(dir);
   } catch (err) {
     if (errorCode(err) !== "EEXIST") throw err;
+    // A creator killed between mkdir and chmod (or two accounts racing the
+    // first creation) leaves it at the umask's mode, which locks every other
+    // account out for good. The owner repairs it on its next run.
+    if (shared) repairSharedDir(dir);
+    return;
   }
+  if (shared) chmodSync(dir, 0o777);
+}
+
+function repairSharedDir(dir: string): void {
+  try {
+    const { uid, mode } = statSync(dir);
+    if (uid === process.getuid?.() && (mode & 0o7777) !== 0o777) chmodSync(dir, 0o777);
+  } catch {
+    // Best-effort: an unusable directory surfaces as the caller's EACCES.
+  }
+}
+
+/** How to fix a shared lock directory another account can't write, for the warning. */
+export function sharedDirHint(dir: string): string {
+  try {
+    const { uid, mode } = statSync(dir);
+    if ((mode & 0o7777) === 0o777) return "";
+    const octal = (mode & 0o7777).toString(8);
+    return `\n  ${dir} is mode ${octal}, owned by uid ${uid}; every account needs it 777.` + `\n  Its owner fixes it with: chmod 777 ${dir}`;
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * Files this waiter's ticket. Written under a staging name and renamed into
+ * place so no reader ever sees a partial ticket; rename is fine here (unlike
+ * for the lock itself) because every ticket name is unique to its waiter.
+ */
+function fileTicket(dir: string, name: string, holder: LockHolder, shared: boolean): void {
+  ensureDir(dir, shared);
   const staging = join(dir, `.${name}.${randomUUID()}`);
-  writeFileSync(staging, serializeHolder(holder));
+  writeRecord(staging, holder);
   renameSync(staging, join(dir, name));
 }
 
@@ -526,17 +630,21 @@ export async function acquireGateLock(options: AcquireOptions): Promise<GateLock
 
   const startedWaitingAt = now();
   const pid = options.pid ?? process.pid;
-  const holder: LockHolder = { pid, startedAt: startedWaitingAt, host, cwd: process.cwd() };
+  const holder: LockHolder = { pid, startedAt: startedWaitingAt, host, user: currentUser(), cwd: process.cwd() };
   let announced = false;
   let lastSeen: LockHolder | null = null;
 
   const queue = queueDir(lockPath);
   const ticket = ticketName(startedWaitingAt, pid, options.urgent ?? false);
+  const shared = options.shared ?? false;
   try {
-    fileTicket(queue, ticket, holder);
+    if (shared) ensureDir(dirname(lockPath), true);
+    fileTicket(queue, ticket, holder, shared);
   } catch (err) {
+    const hint = shared && errorCode(err) === "EACCES" ? sharedDirHint(dirname(lockPath)) + sharedDirHint(queue) : "";
     console.warn(
       `\n⚠ Could not join the gate queue (${err instanceof Error ? err.message : String(err)}).` +
+        hint +
         "\n  Running unserialized — concurrent gates on this machine may contend.\n"
     );
     return { held: false, release: () => {} };
@@ -618,9 +726,28 @@ export async function acquireGateLock(options: AcquireOptions): Promise<GateLock
     // Genuine garbage: a hand-edited file, or one truncated by something
     // outside this module. Nobody can own it, so it must not be allowed to
     // wedge every future run on the machine.
-    if (current.state === "unreadable") {
+    if (current.state === "unreadable" && removeLock(lockPath)) {
       log("  reclaiming an unreadable gate lock.");
-      removeLock(lockPath);
+      continue;
+    }
+
+    // Someone else's claim we can't read, or garbage we can't remove —
+    // waited on like a live holder, bounded by maxWaitMs like a foreign-host
+    // one. Nothing here can tell whether its holder is gone, so the line
+    // names the file for a person to judge.
+    if (current.state === "unreadable" || current.state === "forbidden") {
+      const waitedMs = now() - startedWaitingAt;
+      if (waitedMs >= maxWaitMs) {
+        leaveQueue();
+        console.warn(formatTimeoutWarning(lastSeen, maxWaitMs));
+        return { held: false, release: () => {} };
+      }
+      status(
+        `waiting:${current.state}`,
+        `  waiting on ${lockPath}, which this account can't read or remove — if no run holds it, delete it by hand` +
+          ` — waited ${formatDuration(waitedMs)}`
+      );
+      await sleep(pollIntervalMs);
       continue;
     }
 
@@ -631,16 +758,16 @@ export async function acquireGateLock(options: AcquireOptions): Promise<GateLock
     // wedge future runs. A foreign-host lock is never reaped (its pid means
     // nothing here) but is still bounded by maxWaitMs below, so it cannot
     // wedge us either.
-    if (!isForeignHost(holderNow, host) && !isAlive(holderNow.pid)) {
+    // Re-read immediately before unlinking, and only remove the file if it
+    // still names the dead holder we judged. Two waiters can reach this
+    // point on the same corpse; without the re-check, the second would
+    // unlink a lock the first had already reaped and legitimately retaken.
+    // Then loop rather than acquire directly: another waiter may have won
+    // the race to recreate it, and tryCreateLock is the only thing allowed
+    // to decide who holds it. A corpse we can't remove falls through to the
+    // wait below instead of spinning.
+    if (!isForeignHost(holderNow, host) && !isAlive(holderNow.pid) && removeLockIfHeldBy(lockPath, holderNow.pid)) {
       log(`  reclaiming a stale gate lock (pid ${holderNow.pid} is gone).`);
-      // Re-read immediately before unlinking, and only remove the file if it
-      // still names the dead holder we judged. Two waiters can reach this
-      // point on the same corpse; without the re-check, the second would
-      // unlink a lock the first had already reaped and legitimately retaken.
-      removeLockIfHeldBy(lockPath, holderNow.pid);
-      // Loop rather than acquire directly: another waiter may have won the
-      // race to recreate it, and tryCreateLock is the only thing allowed to
-      // decide who holds it.
       continue;
     }
 
@@ -656,7 +783,15 @@ export async function acquireGateLock(options: AcquireOptions): Promise<GateLock
       log("   (gates are serialized so they don't starve each other of CPU; see ADR-047)");
       announced = true;
     }
-    status(`waiting:${holderNow.pid}`, formatWaitingLine(holderNow, now(), waitedMs));
+    // A local holder that is gone but whose lock we couldn't remove is not a
+    // busy slot: say so, and name the file, rather than report it as holding.
+    const corpse = !isForeignHost(holderNow, host) && !isAlive(holderNow.pid);
+    status(
+      `waiting:${holderNow.pid}`,
+      corpse
+        ? `  waiting on ${lockPath}: pid ${holderNow.pid} (${holderNow.user}) is gone but this account can't remove its lock — delete it by hand — waited ${formatDuration(waitedMs)}`
+        : formatWaitingLine(holderNow, now(), waitedMs)
+    );
     await sleep(pollIntervalMs);
   }
 }
