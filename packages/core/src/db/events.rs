@@ -100,6 +100,13 @@ pub(crate) fn node_thing(id: &str) -> String {
     }
 }
 
+/// Inverse of [`node_thing`]: strip a leading `node:` prefix, for a caller
+/// that needs the bare id a lookup like `NodeService::get_node` expects.
+/// Pass-through for an id that was never prefixed.
+pub(crate) fn bare_node_id(id: &str) -> &str {
+    id.strip_prefix("node:").unwrap_or(id)
+}
+
 /// Describes a single property change for play trigger matching
 ///
 /// Computed by diffing pre-mutation and post-mutation node properties.

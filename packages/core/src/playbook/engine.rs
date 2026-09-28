@@ -465,8 +465,39 @@ impl PlaybookEngine {
             return;
         }
 
-        // Trigger matching for non-lifecycle, locally-originated events
-        let keys = trigger_keys_for_event(&envelope.event);
+        // Trigger matching for non-lifecycle, locally-originated events.
+        //
+        // A relationship event carries no node type inline the way
+        // NodeCreated/NodeUpdated do (see `relationship_source_id`'s doc), so
+        // matching one needs its source node fetched first, here, to resolve
+        // that type before `TriggerKey` construction. This is the one place
+        // that fetch happens: `lifecycle.lookup_rules` below (the trigger
+        // index itself, ADR-078) stays a pure in-memory hash lookup either
+        // way, and a matched relationship event reuses this same fetch as its
+        // `trigger_node` below rather than fetching the source node twice.
+        let relationship_source = match relationship_source_id(&envelope.event) {
+            Some(id) => match self.node_service.get_node(id).await {
+                Ok(Some(node)) => Some(node),
+                Ok(None) => {
+                    debug!(
+                        "Relationship source node {} not found (deleted before processing?), \
+                         skipping trigger matching for this event",
+                        id
+                    );
+                    None
+                }
+                Err(e) => {
+                    error!("Failed to fetch relationship source node {}: {}", id, e);
+                    None
+                }
+            },
+            None => None,
+        };
+
+        let keys = trigger_keys_for_event(
+            &envelope.event,
+            relationship_source.as_ref().map(|n| n.node_type.as_str()),
+        );
         if keys.is_empty() {
             return;
         }
@@ -509,24 +540,30 @@ impl PlaybookEngine {
                 .collect::<Vec<_>>()
         );
 
-        // Pre-fetch the trigger node
-        let trigger_node_id = match trigger_node_id(&envelope.event) {
-            Some(id) => id,
-            None => return,
-        };
+        // The trigger node for a relationship event is the source node
+        // already fetched above to resolve its type; for every other event
+        // it's fetched here for the first time.
+        let trigger_node = if let Some(node) = relationship_source {
+            node
+        } else {
+            let trigger_node_id = match trigger_node_id(&envelope.event) {
+                Some(id) => id,
+                None => return,
+            };
 
-        let trigger_node = match self.node_service.get_node(trigger_node_id).await {
-            Ok(Some(node)) => node,
-            Ok(None) => {
-                debug!(
-                    "Trigger node {} not found (deleted before processing?), skipping",
-                    trigger_node_id
-                );
-                return;
-            }
-            Err(e) => {
-                error!("Failed to fetch trigger node {}: {}", trigger_node_id, e);
-                return;
+            match self.node_service.get_node(trigger_node_id).await {
+                Ok(Some(node)) => node,
+                Ok(None) => {
+                    debug!(
+                        "Trigger node {} not found (deleted before processing?), skipping",
+                        trigger_node_id
+                    );
+                    return;
+                }
+                Err(e) => {
+                    error!("Failed to fetch trigger node {}: {}", trigger_node_id, e);
+                    return;
+                }
             }
         };
 
@@ -1428,12 +1465,33 @@ pub(crate) fn exceeds_max_chain_depth(depth: u8) -> bool {
 /// Extract the trigger node ID from a domain event.
 ///
 /// Returns the node_id for events that can trigger play rules.
-/// Returns `None` for events that don't carry a node_id relevant to triggers
-/// (e.g., RelationshipCreated — those need source node lookup, deferred to Phase 2+).
+/// Returns `None` for events that don't carry a node_id directly — a
+/// relationship event's trigger node is its source node, resolved instead
+/// via [`relationship_source_id`] plus a lookup, since `handle_event` needs
+/// that lookup earlier anyway (to resolve the source's type for `TriggerKey`
+/// matching) and reuses it here rather than fetching the same node twice.
 pub(crate) fn trigger_node_id(event: &DomainEvent) -> Option<&str> {
     match event {
         DomainEvent::NodeCreated { node_id, .. } => Some(node_id.as_str()),
         DomainEvent::NodeUpdated { node_id, .. } => Some(node_id.as_str()),
+        _ => None,
+    }
+}
+
+/// The bare id of a relationship event's forward source node — the node
+/// `relationship_added`/`relationship_removed` triggers match against (docs:
+/// "the source node matches `node_type`") — or `None` for any other event
+/// variant. `from_id` is stored in the `node:<id>`-prefixed form every
+/// `RelationshipEvent`/`RelationshipDeleted` carries (`db::events::node_thing`);
+/// `bare_node_id` strips it back to the form `NodeService::get_node` expects.
+pub(crate) fn relationship_source_id(event: &DomainEvent) -> Option<&str> {
+    match event {
+        DomainEvent::RelationshipCreated { relationship } => {
+            Some(crate::db::events::bare_node_id(&relationship.from_id))
+        }
+        DomainEvent::RelationshipDeleted { from_id, .. } => {
+            Some(crate::db::events::bare_node_id(from_id))
+        }
         _ => None,
     }
 }

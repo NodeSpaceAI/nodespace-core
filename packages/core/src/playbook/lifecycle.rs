@@ -367,14 +367,36 @@ fn trigger_keys_for_graph_event(
                 property_key: property_key.map(|s| s.to_string()),
             }]
         }
-        GraphEventType::RelationshipAdded => vec![TriggerKey::RelationshipEvent {
-            event: RelEventType::RelationshipAdded,
-            source_node_type: node_type.to_string(),
-        }],
-        GraphEventType::RelationshipRemoved => vec![TriggerKey::RelationshipEvent {
-            event: RelEventType::RelationshipRemoved,
-            source_node_type: node_type.to_string(),
-        }],
+        GraphEventType::RelationshipAdded => {
+            vec![relationship_trigger_key(
+                RelEventType::RelationshipAdded,
+                node_type,
+            )]
+        }
+        GraphEventType::RelationshipRemoved => {
+            vec![relationship_trigger_key(
+                RelEventType::RelationshipRemoved,
+                node_type,
+            )]
+        }
+    }
+}
+
+/// Build a `RelationshipEvent` trigger key for `source_node_type`.
+///
+/// The one spelling both sides of relationship-trigger matching go through:
+/// [`trigger_keys_for_graph_event`] above (authoring — indexing a play's
+/// `relationship_added`/`relationship_removed` trigger) and
+/// [`trigger_keys_for_event`] below plus
+/// `NodeService::dispatch_invariant_rules_for_relationship_in_tx` (matching —
+/// an incoming `RelationshipCreated`/`RelationshipDeleted` event, for the
+/// reactive and invariant paths respectively). Routing all three through this
+/// one function is what keeps them from silently drifting into different key
+/// shapes for the same trigger.
+pub fn relationship_trigger_key(event: RelEventType, source_node_type: &str) -> TriggerKey {
+    TriggerKey::RelationshipEvent {
+        event,
+        source_node_type: source_node_type.to_string(),
     }
 }
 
@@ -450,7 +472,21 @@ fn play_has_paths_through_schema(play: &ParsedPlay, schema_node_type: &str) -> b
 ///
 /// Given event details, produces the set of TriggerKeys to look up in the index.
 /// For `PropertyChanged`, returns both exact-key and wildcard-key lookups.
-pub fn trigger_keys_for_event(event: &crate::db::events::DomainEvent) -> Vec<TriggerKey> {
+///
+/// `relationship_source_node_type` is the resolved type of a
+/// `RelationshipCreated`/`RelationshipDeleted` event's source node — unlike
+/// `NodeCreated`/`NodeUpdated`, a relationship event carries no node type
+/// inline, so this function cannot derive one itself without I/O. Resolving
+/// it is the caller's job (the async event subscriber in `engine.rs`, which
+/// already has store access and only pays for the extra lookup on an actual
+/// relationship event); `None` means the caller couldn't resolve it (e.g. the
+/// source node was deleted before the event was processed), and both
+/// relationship arms below correctly produce no keys in that case. Every
+/// other event variant ignores the parameter.
+pub fn trigger_keys_for_event(
+    event: &crate::db::events::DomainEvent,
+    relationship_source_node_type: Option<&str>,
+) -> Vec<TriggerKey> {
     use crate::db::events::DomainEvent;
 
     match event {
@@ -494,15 +530,18 @@ pub fn trigger_keys_for_event(event: &crate::db::events::DomainEvent) -> Vec<Tri
             // (handled separately for play lifecycle)
             vec![]
         }
-        DomainEvent::RelationshipCreated { .. } => {
-            // TODO(phase2): Relationship events don't carry source_node_type.
-            // The EventSubscriber will need to fetch the source node to determine its
-            // type, then perform TriggerKey::RelationshipEvent lookup. Until then,
-            // relationship_added/relationship_removed triggers are indexed but not matched.
-            vec![]
-        }
+        DomainEvent::RelationshipCreated { .. } => relationship_source_node_type
+            .map(|t| vec![relationship_trigger_key(RelEventType::RelationshipAdded, t)])
+            .unwrap_or_default(),
         DomainEvent::RelationshipUpdated { .. } => vec![], // No play triggers for updates
-        DomainEvent::RelationshipDeleted { .. } => vec![], // TODO(phase2): same as RelationshipCreated above
+        DomainEvent::RelationshipDeleted { .. } => relationship_source_node_type
+            .map(|t| {
+                vec![relationship_trigger_key(
+                    RelEventType::RelationshipRemoved,
+                    t,
+                )]
+            })
+            .unwrap_or_default(),
         // Infrastructure-failure signal, not a content change — no play trigger keys.
         DomainEvent::BackgroundImportFailed { .. } => vec![],
     }
@@ -987,7 +1026,7 @@ mod tests {
             node_type: "task".to_string(),
             node_id: "n1".to_string(),
         };
-        let keys = trigger_keys_for_event(&event);
+        let keys = trigger_keys_for_event(&event, None);
         assert_eq!(keys.len(), 1);
         assert!(matches!(
             &keys[0],
@@ -1023,9 +1062,76 @@ mod tests {
                 new_value: Some(json!("done")),
             }],
         };
-        let keys = trigger_keys_for_event(&event);
+        let keys = trigger_keys_for_event(&event, None);
         // Should have exact key + wildcard
         assert_eq!(keys.len(), 2);
+    }
+
+    #[test]
+    fn trigger_keys_for_relationship_created_with_resolved_source_type() {
+        let event = crate::db::events::DomainEvent::RelationshipCreated {
+            relationship: crate::db::events::RelationshipEvent::new(
+                "relationship:1".to_string(),
+                "src",
+                "dst",
+                "mentions",
+                json!({}),
+            ),
+        };
+        let keys = trigger_keys_for_event(&event, Some("story"));
+        assert_eq!(
+            keys,
+            vec![TriggerKey::RelationshipEvent {
+                event: RelEventType::RelationshipAdded,
+                source_node_type: "story".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn trigger_keys_for_relationship_created_without_resolved_source_type_is_empty() {
+        // The caller couldn't resolve the source node's type (e.g. it was
+        // deleted before the event was processed) -- no keys, not a panic or
+        // a guess.
+        let event = crate::db::events::DomainEvent::RelationshipCreated {
+            relationship: crate::db::events::RelationshipEvent::new(
+                "relationship:1".to_string(),
+                "src",
+                "dst",
+                "mentions",
+                json!({}),
+            ),
+        };
+        assert!(trigger_keys_for_event(&event, None).is_empty());
+    }
+
+    #[test]
+    fn trigger_keys_for_relationship_deleted_with_resolved_source_type() {
+        let event = crate::db::events::DomainEvent::RelationshipDeleted {
+            id: "relationship:1".to_string(),
+            from_id: "node:src".to_string(),
+            to_id: "node:dst".to_string(),
+            relationship_type: "mentions".to_string(),
+        };
+        let keys = trigger_keys_for_event(&event, Some("story"));
+        assert_eq!(
+            keys,
+            vec![TriggerKey::RelationshipEvent {
+                event: RelEventType::RelationshipRemoved,
+                source_node_type: "story".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn trigger_keys_for_relationship_deleted_without_resolved_source_type_is_empty() {
+        let event = crate::db::events::DomainEvent::RelationshipDeleted {
+            id: "relationship:1".to_string(),
+            from_id: "node:src".to_string(),
+            to_id: "node:dst".to_string(),
+            relationship_type: "mentions".to_string(),
+        };
+        assert!(trigger_keys_for_event(&event, None).is_empty());
     }
 
     // ========================================================================

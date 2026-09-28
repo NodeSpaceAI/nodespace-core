@@ -1156,3 +1156,365 @@ async fn recompute_does_not_fire_from_a_contributing_items_own_change() -> Resul
     shutdown_engine(shutdown_tx, task).await;
     Ok(())
 }
+
+// -----------------------------------------------------------------------
+// Relationship triggers (`relationship_added` / `relationship_removed`)
+//
+// `trigger_keys_for_event` used to return no keys at all for
+// `RelationshipCreated`/`RelationshipDeleted`, so a Reactive rule on either
+// trigger validated, saved, and showed as active, but could never fire: the
+// engine's `handle_event` bailed out before ever reaching `lookup_rules`.
+// These tests drive the full running engine (not just `TriggerKey`
+// construction) against real relationship writes to prove that gap is
+// closed. `create_mention`/`delete_mention` (the `mentions` builtin) stand
+// in for "any relationship write" here since, unlike a declared relationship,
+// they need no schema relationship declaration to exercise the source node
+// as the trigger's `node_type` -- the trigger key is keyed on the source
+// node's type only (docs: relationship triggers match on the source node,
+// with a `relationship_type` filter deferred to v2), so which relationship
+// type carries the event is incidental to what's under test here.
+// -----------------------------------------------------------------------
+
+/// A Reactive rule on `relationship_added` fires when a matching relationship
+/// is created, with `trigger.node` bound to the relationship's SOURCE node
+/// (the mentioning node, not the mentioned one) -- per the trigger's
+/// documented semantics ("a relationship was added where the source node
+/// matches `node_type`").
+#[tokio::test]
+async fn relationship_added_rule_fires_on_matching_relationship_create() -> Result<()> {
+    let (service, _tmp) = create_test_service().await?;
+
+    create_schema(
+        &service,
+        "pbrel_add_task",
+        json!([{ "name": "notified", "type": "string" }]),
+    )
+    .await?;
+
+    let (_engine, shutdown_tx, task) = spawn_engine(&service).await;
+
+    create_play(
+        &service,
+        "notify-on-relationship-added",
+        json!([{
+            "name": "mark-notified",
+            "trigger": {
+                "type": "graph_event",
+                "on": "relationship_added",
+                "node_type": "pbrel_add_task"
+            },
+            "conditions": [],
+            "actions": [{
+                "action_type": "update_node",
+                "params": {
+                    "node_id": "{trigger.node.id}",
+                    "properties": { "notified": "yes" }
+                }
+            }]
+        }]),
+    )
+    .await?;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let source = Node::new(
+        "pbrel_add_task".to_string(),
+        "mentioning node".to_string(),
+        json!({ "notified": "no" }),
+    );
+    let source_id = source.id.clone();
+    service.create_node(source).await?;
+
+    let target = Node::new(
+        "pbrel_add_task".to_string(),
+        "mentioned node".to_string(),
+        json!({ "notified": "no" }),
+    );
+    let target_id = target.id.clone();
+    service.create_node(target).await?;
+
+    service.create_mention(&source_id, &target_id).await?;
+
+    let fired = wait_until(|| {
+        let service = Arc::clone(&service);
+        let id = source_id.clone();
+        async move {
+            matches!(
+                service.get_node(&id).await,
+                Ok(Some(n)) if user_field(&n, "pbrel_add_task", "notified").and_then(|v| v.as_str()) == Some("yes")
+            )
+        }
+    })
+    .await;
+    assert!(
+        fired,
+        "relationship_added rule must fire against the relationship's \
+         source node when a matching relationship is created"
+    );
+
+    let target_untouched = service
+        .get_node(&target_id)
+        .await?
+        .expect("target node must still exist");
+    assert_eq!(
+        user_field(&target_untouched, "pbrel_add_task", "notified").and_then(|v| v.as_str()),
+        Some("no"),
+        "the rule's trigger.node is the SOURCE node -- the target/mentioned \
+         node must be left untouched"
+    );
+
+    shutdown_engine(shutdown_tx, task).await;
+    Ok(())
+}
+
+/// The `relationship_removed` twin of the test above: a Reactive rule fires
+/// when a matching relationship is deleted.
+#[tokio::test]
+async fn relationship_removed_rule_fires_on_matching_relationship_delete() -> Result<()> {
+    let (service, _tmp) = create_test_service().await?;
+
+    create_schema(
+        &service,
+        "pbrel_remove_task",
+        json!([{ "name": "notified", "type": "string" }]),
+    )
+    .await?;
+
+    let source = Node::new(
+        "pbrel_remove_task".to_string(),
+        "mentioning node".to_string(),
+        json!({ "notified": "no" }),
+    );
+    let source_id = source.id.clone();
+    service.create_node(source).await?;
+
+    let target = Node::new(
+        "pbrel_remove_task".to_string(),
+        "mentioned node".to_string(),
+        json!({ "notified": "no" }),
+    );
+    let target_id = target.id.clone();
+    service.create_node(target).await?;
+
+    // Created before the engine/play exist, so this initial mention cannot
+    // itself be mistaken for what fires the rule below.
+    service.create_mention(&source_id, &target_id).await?;
+
+    let (_engine, shutdown_tx, task) = spawn_engine(&service).await;
+
+    create_play(
+        &service,
+        "notify-on-relationship-removed",
+        json!([{
+            "name": "mark-notified",
+            "trigger": {
+                "type": "graph_event",
+                "on": "relationship_removed",
+                "node_type": "pbrel_remove_task"
+            },
+            "conditions": [],
+            "actions": [{
+                "action_type": "update_node",
+                "params": {
+                    "node_id": "{trigger.node.id}",
+                    "properties": { "notified": "removed" }
+                }
+            }]
+        }]),
+    )
+    .await?;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    service.delete_mention(&source_id, &target_id).await?;
+
+    let fired = wait_until(|| {
+        let service = Arc::clone(&service);
+        let id = source_id.clone();
+        async move {
+            matches!(
+                service.get_node(&id).await,
+                Ok(Some(n)) if user_field(&n, "pbrel_remove_task", "notified").and_then(|v| v.as_str()) == Some("removed")
+            )
+        }
+    })
+    .await;
+    assert!(
+        fired,
+        "relationship_removed rule must fire against the relationship's \
+         source node when a matching relationship is deleted"
+    );
+
+    shutdown_engine(shutdown_tx, task).await;
+    Ok(())
+}
+
+/// ADR-078 subtype matching applies to relationship triggers exactly as it
+/// already does to node triggers: a rule registered on a base type must fire
+/// for a relationship whose source node is an extending subtype, via the
+/// cached ancestor closure `lookup_rules` fans out to.
+#[tokio::test]
+async fn relationship_added_rule_on_base_type_fires_for_subtype_source_node() -> Result<()> {
+    let (service, _tmp) = create_test_service().await?;
+
+    nodespace_core::schema::handle_create_schema(
+        &service,
+        json!({
+            "name": "pbrel_sub_base",
+            "fields": [{ "name": "notified", "type": "string", "protection": "user", "indexed": false }]
+        }),
+    )
+    .await?;
+    nodespace_core::schema::handle_create_schema(
+        &service,
+        json!({ "name": "pbrel_sub_child", "extends": "pbrel_sub_base", "fields": [] }),
+    )
+    .await?;
+
+    let (_engine, shutdown_tx, task) = spawn_engine(&service).await;
+
+    create_play(
+        &service,
+        "notify-on-relationship-added-base-scope",
+        json!([{
+            "name": "mark-notified",
+            "trigger": {
+                "type": "graph_event",
+                "on": "relationship_added",
+                // Registered on the BASE type -- never redeclared on the subtype.
+                "node_type": "pbrel_sub_base"
+            },
+            "conditions": [],
+            "actions": [{
+                "action_type": "update_node",
+                "params": {
+                    "node_id": "{trigger.node.id}",
+                    "properties": { "notified": "yes" }
+                }
+            }]
+        }]),
+    )
+    .await?;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // The relationship's source node is an instance of the SUBTYPE.
+    let source = Node::new(
+        "pbrel_sub_child".to_string(),
+        "subtype mentioning node".to_string(),
+        json!({}),
+    );
+    let source_id = source.id.clone();
+    service.create_node(source).await?;
+
+    let target = Node::new(
+        "pbrel_sub_base".to_string(),
+        "mentioned node".to_string(),
+        json!({}),
+    );
+    let target_id = target.id.clone();
+    service.create_node(target).await?;
+
+    service.create_mention(&source_id, &target_id).await?;
+
+    let fired = wait_until(|| {
+        let service = Arc::clone(&service);
+        let id = source_id.clone();
+        async move {
+            matches!(
+                service.get_node(&id).await,
+                Ok(Some(n)) if user_field(&n, "pbrel_sub_base", "notified").and_then(|v| v.as_str()) == Some("yes")
+            )
+        }
+    })
+    .await;
+    assert!(
+        fired,
+        "a relationship_added rule registered on a base type must fire for \
+         a relationship whose source node is an extending subtype"
+    );
+
+    shutdown_engine(shutdown_tx, task).await;
+    Ok(())
+}
+
+/// Negative case: a relationship whose source node's type is unrelated to
+/// the rule's registered `node_type` (no shared ancestry) must not fire it.
+#[tokio::test]
+async fn relationship_added_rule_does_not_fire_for_non_matching_source_type() -> Result<()> {
+    let (service, _tmp) = create_test_service().await?;
+
+    create_schema(
+        &service,
+        "pbrel_registered_task",
+        json!([{ "name": "notified", "type": "string" }]),
+    )
+    .await?;
+    create_schema(
+        &service,
+        "pbrel_unrelated_task",
+        json!([{ "name": "notified", "type": "string" }]),
+    )
+    .await?;
+
+    let (_engine, shutdown_tx, task) = spawn_engine(&service).await;
+
+    create_play(
+        &service,
+        "notify-on-relationship-added-non-matching",
+        json!([{
+            "name": "mark-notified",
+            "trigger": {
+                "type": "graph_event",
+                "on": "relationship_added",
+                "node_type": "pbrel_registered_task"
+            },
+            "conditions": [],
+            "actions": [{
+                "action_type": "update_node",
+                "params": {
+                    "node_id": "{trigger.node.id}",
+                    "properties": { "notified": "yes" }
+                }
+            }]
+        }]),
+    )
+    .await?;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Source node's type (`pbrel_unrelated_task`) is unrelated to the play's
+    // registered `node_type` (`pbrel_registered_task`) -- no shared ancestry.
+    let source = Node::new(
+        "pbrel_unrelated_task".to_string(),
+        "unrelated mentioning node".to_string(),
+        json!({ "notified": "no" }),
+    );
+    let source_id = source.id.clone();
+    service.create_node(source).await?;
+
+    let target = Node::new(
+        "pbrel_registered_task".to_string(),
+        "mentioned node".to_string(),
+        json!({ "notified": "no" }),
+    );
+    let target_id = target.id.clone();
+    service.create_node(target).await?;
+
+    service.create_mention(&source_id, &target_id).await?;
+
+    // Give the rule a real chance to (wrongly) fire before asserting it
+    // didn't -- 500ms is generous relative to how fast the positive tests
+    // above observe a real trigger fire.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let after = service
+        .get_node(&source_id)
+        .await?
+        .expect("source node must still exist");
+    assert_eq!(
+        user_field(&after, "pbrel_unrelated_task", "notified").and_then(|v| v.as_str()),
+        Some("no"),
+        "a rule registered on an unrelated node_type must not fire for this \
+         relationship's source node"
+    );
+
+    shutdown_engine(shutdown_tx, task).await;
+    Ok(())
+}
