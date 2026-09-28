@@ -793,8 +793,11 @@ function flattenChildrenTree(tree: NodeWithChildren): Node[] {
 
   while (queue.length > 0) {
     const current = queue.shift()!;
-    // Same idiom shared-node-store.svelte.ts's loadChildrenTree flatten uses:
-    // drop the nested `children` key, keep the rest as the wire-shaped Node.
+    // Same destructure-and-cast idiom shared-node-store.svelte.ts's
+    // loadChildrenTree flatten uses (drop the nested `children` key, keep
+    // the rest as the wire-shaped Node) — traversal order here is
+    // breadth-first via an explicit queue, not loadChildrenTree's
+    // depth-first recursion.
     const { children, ...nodeFields } = current;
     allNodes.push(nodeFields as Node);
     if (children && children.length > 0) {
