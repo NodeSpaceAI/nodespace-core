@@ -115,7 +115,18 @@ function validateVersion(version: string): boolean {
 }
 
 /**
- * Generate release notes
+ * Generate the fixed part of the release notes: the version heading, the
+ * downloads table, and the installation blurb.
+ *
+ * This used to also contain a hand-written "### What's New" section, frozen
+ * at the moment it was written (v0.1.4-alpha's table-nodes/SurrealDB-3.x/
+ * Intel-Mac feature list) and never updated again -- every release that
+ * didn't pass --notes/--notes-file shipped that same stale text to the
+ * public GitHub Releases page regardless of what actually changed. There is
+ * no reliable way to hand-maintain a changelog fragment that a script only
+ * touches once; the actual change list now comes from GitHub itself via
+ * `--generate-notes` (see buildReleaseCreateArgs), which derives it from
+ * real merged-PR history each time, so it can never go stale here.
  */
 function generateReleaseNotes(version: string): string {
   const v = version.replace(/^v/, "");
@@ -129,39 +140,40 @@ function generateReleaseNotes(version: string): string {
 | Windows | \`NodeSpace_${v}_x64-setup.exe\` | Windows installer |
 | Windows | \`NodeSpace_${v}_x64.msi\` | Windows MSI package |
 
-### What's New in v0.1.4-alpha
-
-#### New Node Types
-- **Table nodes** — create structured tables inside your graph
-- **Horizontal line nodes** — visual separators for organizing content
-- **Checkbox nodes** — document-local checklist items distinct from tasks
-
-#### Rich Content Rendering
-- **Syntax highlighting** for code blocks with theme-aware colors
-- **Mermaid diagram rendering** — inline SVG diagrams in notes
-
-#### App Configuration & Database Management
-- New configuration UI for managing databases
-- Hot-swappable database connections — switch databases without restarting
-
-#### Smart Navigation
-- Non-root node links now scroll to the target node
-- Fixed task node viewer opening from nested links
-
-#### Performance & Stability
-- ~1000x faster node updates in embedded SurrealDB
-- **SurrealDB 3.x upgrade**
-- Fixed Metal GPU crashes on app quit (macOS)
-- Fixed CREATE operation race condition on rapid typing
-
-#### Backlinks
-- Immediate backlinks reactivity when creating @mentions
-- Backlinks panel component with full test coverage
-
 ### Installation
 
 Download the appropriate file for your platform from the assets below.
 `;
+}
+
+/**
+ * Build the argument list for `gh release create`.
+ *
+ * Pulled out of createRelease() so the notes-source decision -- an
+ * operator-supplied --notes/--notes-file vs. GitHub's own generated
+ * "What's Changed" list -- can be unit tested without invoking `gh` or
+ * touching the network.
+ */
+function buildReleaseCreateArgs(config: ReleaseConfig): string[] {
+  const version = config.version.startsWith("v") ? config.version : `v${config.version}`;
+  const title = config.title || `NodeSpace ${version}`;
+  const notes = config.notes || generateReleaseNotes(version);
+
+  const args = ["gh", "release", "create", version, "--title", title, "--notes", notes];
+
+  if (!config.notes) {
+    // No explicit --notes/--notes-file: let GitHub's release-notes API
+    // supply the real "What's Changed" list (merged PRs + contributors
+    // since the previous tag). `--notes` and `--generate-notes` combine --
+    // gh prepends the downloads table above to GitHub's generated notes
+    // rather than replacing it.
+    args.push("--generate-notes");
+  }
+
+  if (config.draft) args.push("--draft");
+  if (config.prerelease) args.push("--prerelease");
+
+  return args;
 }
 
 /**
@@ -177,21 +189,13 @@ Download the appropriate file for your platform from the assets below.
  */
 async function createRelease(config: ReleaseConfig): Promise<void> {
   const version = config.version.startsWith("v") ? config.version : `v${config.version}`;
-  const title = config.title || `NodeSpace ${version}`;
-  const notes = config.notes || generateReleaseNotes(version);
 
   console.log(`\n🚀 Creating release ${version}...\n`);
 
-  // Build gh release create command
-  const args = ["gh", "release", "create", version, "--title", title, "--notes", notes];
+  const args = buildReleaseCreateArgs(config);
 
   if (config.draft) {
-    args.push("--draft");
     console.log("📝 Creating as draft (builds start when you publish it)");
-  }
-
-  if (config.prerelease) {
-    args.push("--prerelease");
   }
 
   const result = Bun.spawnSync(args, {
@@ -540,4 +544,12 @@ if (import.meta.main) {
   main();
 }
 
-export { createRelease, listReleases, watchWorkflow, updateVersion, failingBenchmarks };
+export {
+  createRelease,
+  listReleases,
+  watchWorkflow,
+  updateVersion,
+  failingBenchmarks,
+  generateReleaseNotes,
+  buildReleaseCreateArgs
+};
