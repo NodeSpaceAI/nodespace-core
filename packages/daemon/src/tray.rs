@@ -14,7 +14,7 @@
 //! worker tokio runtime and signals back via [`TrayController::shutdown`].
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
@@ -781,6 +781,11 @@ impl TrayState {
 /// assertable in tests without actually spawning a process.
 fn build_ui_command(path: &Path, database: Option<&DatabaseId>) -> Command {
     let mut command = Command::new(path);
+    // The app outlives any one generation of the daemon's log, which
+    // `stdio_log_rotation` swaps out from under our own stdio. An inherited
+    // fd would keep writing into the rotated — and eventually unlinked —
+    // file, so the app gets the same null stdio a Finder/Dock launch gives it.
+    command.stdout(Stdio::null()).stderr(Stdio::null());
     if let Some(id) = database {
         // Only set when the user picked a specific database, so a plain
         // "Open NodeSpace" still honours whatever the app last remembered.

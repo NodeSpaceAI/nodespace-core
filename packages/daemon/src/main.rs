@@ -455,6 +455,12 @@ fn main() -> Result<()> {
         )
         .init();
 
+    // Keep the log behind our own stdout/stderr bounded however we were
+    // started — a headless `brew services`/systemd install has no supervisor
+    // to rotate it between restarts.
+    #[cfg(unix)]
+    nodespace_daemon::stdio_log_rotation::spawn();
+
     // Initialise OTLP tracing when NODESPACE_MLFLOW_URL is set (dev only).
     // Keep the provider alive for the duration of main so the background
     // exporter thread is not torn down prematurely.

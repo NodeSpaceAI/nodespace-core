@@ -494,6 +494,7 @@ pub fn run() {
 
                 let app_handle = app.handle().clone();
                 let session_token = shutdown_token_for_setup.child_token();
+                #[cfg(windows)]
                 let log_rotation_token = shutdown_token_for_setup.child_token();
 
                 tauri::async_runtime::spawn(async move {
@@ -535,14 +536,14 @@ pub fn run() {
                         }
                     }
 
-                    // Periodically re-check the live daemon log files for the rest of
-                    // this app session and restart nodespaced to rotate them once they
-                    // cross the size threshold — `ensure_daemon_running` above only
-                    // checks once, at this (re)spawn, which a long-running session under
-                    // launchd's KeepAlive/systemd's Restart=on-failure never repeats on
-                    // its own. Independent of daemon-startup success above: even a daemon
-                    // that isn't healthy yet may become so later, and the watcher's own
-                    // health check gates whether it ever acts.
+                    // Windows only: periodically re-check the live daemon log files for
+                    // the rest of this app session and restart nodespaced to rotate them
+                    // once they cross the size threshold — `ensure_daemon_running` above
+                    // only checks once, at this (re)spawn. On macOS/Linux the daemon
+                    // rotates its own stdio log. Independent of daemon-startup success
+                    // above: even a daemon that isn't healthy yet may become so later,
+                    // and the watcher's own health check gates whether it ever acts.
+                    #[cfg(windows)]
                     daemon_setup::spawn_log_rotation_watcher(
                         app_handle.clone(),
                         log_rotation_token,
