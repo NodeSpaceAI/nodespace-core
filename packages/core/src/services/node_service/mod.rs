@@ -7873,6 +7873,93 @@ mod tests {
         );
     }
 
+    /// A `create_parent_edge` that reparents announces the replaced edge the
+    /// way `move_node` does: `RelationshipCreated` for the new parent, then
+    /// `RelationshipDeleted` for the former one. A first-time attach and a
+    /// same-parent reorder replace no edge and emit no delete, and a
+    /// sync-origin delete stays off the push channel.
+    #[tokio::test]
+    async fn create_parent_edge_reparent_emits_former_parent_delete() {
+        let (mut service, _temp) = create_test_service().await;
+        service.set_push_excluded_origin("sync-service");
+
+        let sync = service.with_client("sync-service");
+        let mut ids = Vec::new();
+        for content in ["parent a", "parent b", "child", "sibling"] {
+            ids.push(
+                sync.create_node(Node::new(
+                    "text".to_string(),
+                    content.to_string(),
+                    json!({}),
+                ))
+                .await
+                .unwrap(),
+            );
+        }
+        let [parent_a, parent_b, child, sibling] = ids.try_into().unwrap();
+
+        let mut ui_rx = service.subscribe_to_events();
+        let mut push_rx = service.subscribe_for_push();
+
+        // Only the has_child edge events for `child`, in emission order.
+        let child_edge_events = |rx: &mut broadcast::Receiver<crate::db::events::EventEnvelope>| {
+            let mut seen = Vec::new();
+            while let Ok(env) = rx.try_recv() {
+                match env.event {
+                    DomainEvent::RelationshipCreated { relationship }
+                        if relationship.to_id.ends_with(&child) =>
+                    {
+                        seen.push(format!("created:{}", relationship.from_id));
+                    }
+                    DomainEvent::RelationshipDeleted { from_id, to_id, .. }
+                        if to_id.ends_with(&child) =>
+                    {
+                        seen.push(format!("deleted:{}", from_id));
+                    }
+                    _ => {}
+                }
+            }
+            seen
+        };
+
+        // First-time attach, then a same-parent reorder: no delete.
+        sync.create_parent_edge(&sibling, &parent_a, InsertPosition::End)
+            .await
+            .unwrap();
+        sync.create_parent_edge(&child, &parent_a, InsertPosition::End)
+            .await
+            .unwrap();
+        sync.create_parent_edge(&child, &parent_a, InsertPosition::Beginning)
+            .await
+            .unwrap();
+        let attach = child_edge_events(&mut ui_rx);
+        assert!(
+            attach.iter().all(|e| e.starts_with("created:")),
+            "first-time attach and same-parent reorder must emit no delete, got {attach:?}"
+        );
+        assert_eq!(attach.len(), 2, "one created per call, got {attach:?}");
+
+        // Reparent: created for the new parent, then deleted for the old one.
+        sync.create_parent_edge(&child, &parent_b, InsertPosition::End)
+            .await
+            .unwrap();
+        let reparent = child_edge_events(&mut ui_rx);
+        assert_eq!(reparent.len(), 2, "got {reparent:?}");
+        assert!(
+            reparent[0].starts_with("created:") && reparent[0].ends_with(&parent_b),
+            "new-parent edge must come first, got {reparent:?}"
+        );
+        assert!(
+            reparent[1].starts_with("deleted:") && reparent[1].ends_with(&parent_a),
+            "former-parent edge delete must follow, got {reparent:?}"
+        );
+
+        assert!(
+            child_edge_events(&mut push_rx).is_empty(),
+            "sync-origin edge events, the delete included, must not reach the push channel"
+        );
+    }
+
     /// Batched flush (BatchEmitGuard::drop) honours the origin filter: an
     /// excluded-origin bulk flush reaches the UI channel but not the push
     /// channel.
