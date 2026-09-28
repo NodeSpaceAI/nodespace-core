@@ -1121,7 +1121,7 @@ mod tests {
             PropertyChange, PLAYBOOK_CHAIN_DEPTH_PROPERTY, PLAYBOOK_WRITE_ID_PROPERTY,
         };
 
-        let bookkeeping = |key: &str| PropertyChange {
+        let change = |key: &str| PropertyChange {
             key: key.to_string(),
             old_value: Some(json!("old")),
             new_value: Some(json!("new")),
@@ -1146,14 +1146,14 @@ mod tests {
         };
 
         let only_bookkeeping = event(vec![
-            bookkeeping(PLAYBOOK_WRITE_ID_PROPERTY),
-            bookkeeping(PLAYBOOK_CHAIN_DEPTH_PROPERTY),
+            change(PLAYBOOK_WRITE_ID_PROPERTY),
+            change(PLAYBOOK_CHAIN_DEPTH_PROPERTY),
         ]);
         assert!(trigger_keys_for_event(&only_bookkeeping, None).is_empty());
 
         let with_a_field = event(vec![
-            bookkeeping(PLAYBOOK_WRITE_ID_PROPERTY),
-            bookkeeping("task.status"),
+            change(PLAYBOOK_WRITE_ID_PROPERTY),
+            change("task.status"),
         ]);
         // Exact `task.status` + wildcard; nothing for the write id.
         assert_eq!(trigger_keys_for_event(&with_a_field, None).len(), 2);

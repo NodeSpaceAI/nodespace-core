@@ -5100,13 +5100,17 @@ mod tests {
                 // The store's own diff of this write must show the write id
                 // changing: that is what a receiving device reads to tell a
                 // play hop from a user's edit.
-                let envelope = loop {
-                    let envelope = events.recv().await.unwrap();
+                let envelope = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                    loop {
+                        let envelope = events.recv().await.unwrap();
                     if matches!(&envelope.event, DomainEvent::NodeUpdated { node_id, .. } if node_id == "node:target-2")
                     {
                         break envelope;
                     }
-                };
+                    }
+                })
+                .await
+                .expect("the play update must emit a NodeUpdated event");
                 assert_eq!(
                     chain_depth_of_write(&envelope.event, &json!({}), MAX_CHAIN_DEPTH),
                     Some(3),
