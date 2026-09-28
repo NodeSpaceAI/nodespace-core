@@ -304,6 +304,15 @@ impl NodeService {
             match condition_result {
                 crate::playbook::cel::ConditionResult::Pass => {}
                 crate::playbook::cel::ConditionResult::Fail { .. } => continue,
+                // Fail closed, as for the scope failure above: an invariant
+                // whose conditions can't be read must not be skipped as unmet.
+                crate::playbook::cel::ConditionResult::Unresolved { reason } => {
+                    return Err(NodeServiceError::invariant_rule_failed(
+                        rule_ref.play_id.clone(),
+                        rule_ref.rule.name.clone(),
+                        format!("resolving the rule's condition paths failed: {reason}"),
+                    ));
+                }
             }
 
             // Invariant rules are non-chaining depth-1 by save-time

@@ -766,12 +766,21 @@ impl PlaybookEngine {
             )
             .await;
 
-            let still_violates = matches!(
-                condition_result,
-                crate::playbook::cel::ConditionResult::Pass
-            );
-            if !still_violates {
-                continue;
+            match condition_result {
+                crate::playbook::cel::ConditionResult::Pass => {}
+                crate::playbook::cel::ConditionResult::Fail { .. } => continue,
+                crate::playbook::cel::ConditionResult::Unresolved { reason } => {
+                    // Unknown is not "still violates": skip, as for the scope
+                    // failure above, rather than repair on a wrong read.
+                    warn!(
+                        node_id = %node.id,
+                        play_id = %rule_ref.play_id,
+                        rule = %rule_ref.rule.name,
+                        error = %reason,
+                        "Repair-and-log: failed to resolve a condition path for rule; skipping"
+                    );
+                    continue;
+                }
             }
 
             info!(
@@ -1378,6 +1387,22 @@ pub(crate) async fn rule_processor_loop(
                     debug!(
                         "Rule '{}' (play {}) skipped: condition[{}] evaluated to false",
                         rule_ref.rule.name, rule_ref.play_id, condition_index,
+                    );
+                    continue;
+                }
+                crate::playbook::cel::ConditionResult::Unresolved { reason } => {
+                    // Same posture as the scope-resolution failure above: a
+                    // failed graph lookup says nothing about the conditions,
+                    // so neither fire nor disable -- skip this event and let
+                    // the next matching one re-evaluate.
+                    warn!(
+                        play_id = %rule_ref.play_id,
+                        rule = %rule_ref.rule.name,
+                        rule_index = rule_ref.rule_index,
+                        trigger_node_id = %work_item.trigger_node.id,
+                        error_type = "condition_resolution_failed",
+                        error = %reason,
+                        "Failed to resolve a condition path for rule; skipping this rule for this event"
                     );
                     continue;
                 }

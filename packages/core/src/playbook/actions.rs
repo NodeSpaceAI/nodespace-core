@@ -730,6 +730,9 @@ impl BindingContext {
                                         segments.last().unwrap_or(&"")
                                     ))
                                 }
+                                crate::playbook::graph_resolver::ResolvedValue::Unresolved(
+                                    reason,
+                                ) => Err(format!("graph traversal failed: {reason}")),
                             }
                         } else {
                             Err(format!(
