@@ -392,17 +392,25 @@ export function readHolder(lockPath: string): LockRead {
   return holder === null ? { state: "unreadable" } : { state: "held", holder };
 }
 
-function removeLock(lockPath: string): void {
+/**
+ * Unlinks the lock. False only when it is still there and we could not
+ * remove it — a directory this account may not unlink in — so a reaping
+ * waiter waits instead of spinning on create → EEXIST → reap.
+ */
+function removeLock(lockPath: string): boolean {
   try {
     unlinkSync(lockPath);
-  } catch {
+    return true;
+  } catch (err) {
     // Already gone — someone reaped it, or we never held it. Either way
     // there is nothing to undo.
+    return errorCode(err) === "ENOENT";
   }
 }
 
 /**
  * Removes the lock only if the file still names `claimantPid` as its holder.
+ * False when the lock it should have removed is still there (see removeLock).
  *
  * Serves both callers that remove a lock, because both need the same
  * predicate — "is this still the claim I think it is?" — differing only in
@@ -428,15 +436,15 @@ function removeLock(lockPath: string): void {
  * `absent` case in the acquire loop retries instead of unlinking, and why only
  * `unreadable` and dead-pid locks are reaped — never a `forbidden` one.
  */
-function removeLockIfHeldBy(lockPath: string, claimantPid: number): void {
+function removeLockIfHeldBy(lockPath: string, claimantPid: number): boolean {
   const current = readHolder(lockPath);
   // "held by someone else" is the one case we must not touch. An absent lock
   // has nothing to remove, and an unreadable one cannot be anyone's claim —
   // because tryCreateLock publishes whole files, so a partially-written lock
   // is not a state this module can produce.
-  if (current.state === "forbidden") return;
-  if (current.state === "held" && current.holder.pid !== claimantPid) return;
-  removeLock(lockPath);
+  if (current.state === "forbidden") return false;
+  if (current.state === "held" && current.holder.pid !== claimantPid) return true;
+  return removeLock(lockPath);
 }
 
 /** The FIFO queue of waiting gates, beside the lock. */
@@ -492,6 +500,7 @@ function repairSharedDir(dir: string): void {
 export function sharedDirHint(dir: string): string {
   try {
     const { uid, mode } = statSync(dir);
+    if ((mode & 0o7777) === 0o777) return "";
     const octal = (mode & 0o7777).toString(8);
     return `\n  ${dir} is mode ${octal}, owned by uid ${uid}; every account needs it 777.` + `\n  Its owner fixes it with: chmod 777 ${dir}`;
   } catch {
@@ -717,22 +726,27 @@ export async function acquireGateLock(options: AcquireOptions): Promise<GateLock
     // Genuine garbage: a hand-edited file, or one truncated by something
     // outside this module. Nobody can own it, so it must not be allowed to
     // wedge every future run on the machine.
-    if (current.state === "unreadable") {
+    if (current.state === "unreadable" && removeLock(lockPath)) {
       log("  reclaiming an unreadable gate lock.");
-      removeLock(lockPath);
       continue;
     }
 
-    // Someone else's claim we can't read — waited on like a live holder,
-    // bounded by maxWaitMs like a foreign-host one.
-    if (current.state === "forbidden") {
+    // Someone else's claim we can't read, or garbage we can't remove —
+    // waited on like a live holder, bounded by maxWaitMs like a foreign-host
+    // one. Nothing here can tell whether its holder is gone, so the line
+    // names the file for a person to judge.
+    if (current.state === "unreadable" || current.state === "forbidden") {
       const waitedMs = now() - startedWaitingAt;
       if (waitedMs >= maxWaitMs) {
         leaveQueue();
         console.warn(formatTimeoutWarning(lastSeen, maxWaitMs));
         return { held: false, release: () => {} };
       }
-      status("waiting:forbidden", `  waiting (a lock this account can't read) — waited ${formatDuration(waitedMs)}`);
+      status(
+        `waiting:${current.state}`,
+        `  waiting on ${lockPath}, which this account can't read or remove — if no run holds it, delete it by hand` +
+          ` — waited ${formatDuration(waitedMs)}`
+      );
       await sleep(pollIntervalMs);
       continue;
     }
@@ -744,16 +758,16 @@ export async function acquireGateLock(options: AcquireOptions): Promise<GateLock
     // wedge future runs. A foreign-host lock is never reaped (its pid means
     // nothing here) but is still bounded by maxWaitMs below, so it cannot
     // wedge us either.
-    if (!isForeignHost(holderNow, host) && !isAlive(holderNow.pid)) {
+    // Re-read immediately before unlinking, and only remove the file if it
+    // still names the dead holder we judged. Two waiters can reach this
+    // point on the same corpse; without the re-check, the second would
+    // unlink a lock the first had already reaped and legitimately retaken.
+    // Then loop rather than acquire directly: another waiter may have won
+    // the race to recreate it, and tryCreateLock is the only thing allowed
+    // to decide who holds it. A corpse we can't remove falls through to the
+    // wait below instead of spinning.
+    if (!isForeignHost(holderNow, host) && !isAlive(holderNow.pid) && removeLockIfHeldBy(lockPath, holderNow.pid)) {
       log(`  reclaiming a stale gate lock (pid ${holderNow.pid} is gone).`);
-      // Re-read immediately before unlinking, and only remove the file if it
-      // still names the dead holder we judged. Two waiters can reach this
-      // point on the same corpse; without the re-check, the second would
-      // unlink a lock the first had already reaped and legitimately retaken.
-      removeLockIfHeldBy(lockPath, holderNow.pid);
-      // Loop rather than acquire directly: another waiter may have won the
-      // race to recreate it, and tryCreateLock is the only thing allowed to
-      // decide who holds it.
       continue;
     }
 

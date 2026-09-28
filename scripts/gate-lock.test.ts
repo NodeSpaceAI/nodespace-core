@@ -20,6 +20,7 @@ import {
   DISABLE_ENV_VAR,
   ensureDir,
   SHARED_LOCK_DIR,
+  sharedDirHint,
   MACHINE_LOCK_PATH,
   MERGE_LOCK_PATH,
   errorCode,
@@ -827,7 +828,7 @@ describe("the machine slot is shared by every account on the machine", () => {
     expect(statSync(existing).mode & 0o7777).toBe(0o777);
   });
 
-  test("a lock this account can't read is waited on, never reaped", async () => {
+  test.skipIf(process.getuid?.() === 0)("a lock this account can't read is waited on, never reaped", async () => {
     plantLock();
     chmodSync(lockPath, 0o000);
     let clock = 0;
@@ -843,6 +844,37 @@ describe("the machine slot is shared by every account on the machine", () => {
     expect(lock.held).toBe(false);
     expect(existsSync(lockPath)).toBe(true);
     expect(readHolder(lockPath)).toEqual({ state: "forbidden" });
+  });
+
+  test("garbage this account can't remove is waited on with a sleep per poll, not spun on", async () => {
+    // A directory at the lock path reads as garbage and can't be unlinked —
+    // the same position as another account's file in a sticky directory,
+    // which one uid can't set up.
+    mkdirSync(lockPath);
+    let clock = 0;
+    let sleeps = 0;
+    const { options, logged } = harness({
+      maxWaitMs: 50,
+      now: () => clock,
+      sleep: async () => {
+        sleeps += 1;
+        clock += 10;
+      },
+    });
+    const lock = await acquireGateLock(options);
+    expect(lock.held).toBe(false);
+    expect(sleeps).toBe(5);
+    expect(existsSync(lockPath)).toBe(true);
+    expect(logged.join("\n")).toContain(`waiting on ${lockPath}`);
+  });
+
+  test("the shared-directory hint names only a directory that needs fixing", () => {
+    const healthy = join(dir, "healthy");
+    const broken = join(dir, "broken");
+    ensureDir(healthy, true);
+    mkdirSync(broken, { mode: 0o755 });
+    expect(sharedDirHint(healthy)).toBe("");
+    expect(sharedDirHint(broken)).toContain(`chmod 777 ${broken}`);
   });
 
   test("a stale lock left by another account's dead process is reclaimed", async () => {
