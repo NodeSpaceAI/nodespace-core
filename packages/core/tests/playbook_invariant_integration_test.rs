@@ -1216,6 +1216,129 @@ async fn reject_rule_on_a_subtype_reads_an_inherited_field() -> Result<()> {
     Ok(())
 }
 
+/// A `relationship_added` reject rule registered on a subtype reads a field
+/// the edge's source inherits (ADR-078): relationship dispatch evaluates at the
+/// rule's scope through the same shared execution core as `node_created`.
+///
+/// `status` lives in `iv_rel_ticket`'s bucket on an `iv_rel_bug`, so an
+/// own-bucket read would see nothing and let the done bug's edge through.
+#[tokio::test]
+async fn relationship_reject_rule_on_a_subtype_reads_an_inherited_field() -> Result<()> {
+    let (service, _tmp) = create_test_service().await?;
+    nodespace_core::schema::handle_create_schema(
+        &service,
+        json!({ "name": "iv_rel_target", "fields": [] }),
+    )
+    .await?;
+    nodespace_core::schema::handle_create_schema(
+        &service,
+        json!({
+            "name": "iv_rel_ticket",
+            "fields": [{ "name": "status", "type": "string", "protection": "user", "indexed": false }]
+        }),
+    )
+    .await?;
+    nodespace_core::schema::handle_create_schema(
+        &service,
+        json!({
+            "name": "iv_rel_bug",
+            "extends": "iv_rel_ticket",
+            "fields": [],
+            "relationships": [{
+                "name": "blocks",
+                "targetType": "iv_rel_target",
+                "direction": "out",
+                "cardinality": "many",
+                "reverseName": "blocked_by",
+                "reverseCardinality": "many"
+            }]
+        }),
+    )
+    .await?;
+
+    let engine = PlaybookEngine::new(Arc::clone(&service));
+    service.set_playbook_lifecycle(engine.lifecycle().clone());
+    let play_node = Node::new(
+        "play".to_string(),
+        "reject-inherited-relationship-play".to_string(),
+        json!({ "rules": [{
+            "name": "reject-rule",
+            "class": "invariant",
+            "trigger": {
+                "type": "graph_event",
+                "on": "relationship_added",
+                "node_type": "iv_rel_bug",
+            },
+            "conditions": ["node.status == 'done'"],
+            "actions": [{
+                "action_type": "reject",
+                "params": { "message": "a done bug cannot block anything" }
+            }]
+        }] }),
+    );
+    {
+        let lifecycle = engine.lifecycle();
+        let mut lm = lifecycle.write().unwrap();
+        lm.activate_play(&play_node)
+            .expect("play must parse and activate");
+    }
+
+    let target = service
+        .create_node(Node::new(
+            "iv_rel_target".to_string(),
+            "target".to_string(),
+            json!({}),
+        ))
+        .await?;
+    let open = service
+        .create_node(Node::new(
+            "iv_rel_bug".to_string(),
+            "open bug".to_string(),
+            json!({ "status": "open" }),
+        ))
+        .await?;
+    let done = service
+        .create_node(Node::new(
+            "iv_rel_bug".to_string(),
+            "done bug".to_string(),
+            json!({ "status": "done" }),
+        ))
+        .await?;
+
+    let stored = service
+        .get_node(&done)
+        .await?
+        .expect("the done bug must exist");
+    assert_eq!(
+        user_field(&stored, "iv_rel_ticket", "status"),
+        Some(&json!("done")),
+        "precondition: the inherited field lives in the ancestor's bucket, got {}",
+        stored.properties
+    );
+
+    service
+        .create_relationship(&open, "blocks", &target, json!({}))
+        .await?;
+    let err = service
+        .create_relationship(&done, "blocks", &target, json!({}))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, NodeServiceError::PlayRuleRejected { .. }),
+        "a done bug's edge must be rejected by the rule, got {err:?}"
+    );
+
+    let blockers: Vec<String> = service
+        .get_related_nodes(&target, "blocks", "in")
+        .await?
+        .into_iter()
+        .map(|n| n.id)
+        .collect();
+    assert_eq!(blockers, vec![open], "only the open bug's edge may land");
+
+    Ok(())
+}
+
 /// A reject rule registered on a BASE type, fired by a subtype, reads the
 /// subtype at the base's scope (ADR-078): an extended value is translated
 /// through `maps_to` before the condition sees it.
