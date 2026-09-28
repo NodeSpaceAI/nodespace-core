@@ -1380,34 +1380,34 @@ pub fn stage1_query_from_turns(prior_turns: &[&str], user_message: &str) -> Stri
 /// the agent has changed something, whatever the user says next starts a
 /// fresh intent and the mechanism re-arms. A turn that only read does not
 /// close the intent (see [`AgentTurnResult::outcome`]).
+///
+/// Counted from `session.prior_turns`, the structural record of how each
+/// earlier turn ended, never from reply text. Every earlier turn has been
+/// replied to: the message that started this turn is the reply.
+///
+/// A composed clarification counts on its own. A turn that did not write
+/// (`Replied`) counts only as the second such turn in the intent. The model
+/// can ask in its own words, and that question carries no marker a text match
+/// could find; structurally, reading and then replying looks the same whether
+/// the reply showed what was found or asked about it. One such turn is as
+/// likely an answer ("hi" → "Hello!") as a question, so counting it alone would
+/// suppress the first genuine clarification of any chat that opened with
+/// conversation or a lookup, and re-prompt its next plain reply. Two in one
+/// intent is the loop the contract exists to stop. The cost is that an intent
+/// clarified only in prose can ask twice.
+///
+/// A prose reply never closes the intent either, so it cannot erase a composed
+/// clarification before it — which reading every non-composed reply as a
+/// resolution did.
 fn session_already_clarified(session: &AgentSession) -> bool {
-    !answered_clarifications(session).is_empty()
-}
-
-/// The text of every clarification in the current intent — the intent scoping
-/// of [`session_already_clarified`], exposed for callers that need to know
-/// WHAT was asked, not only that something was.
-///
-/// Read from `session.prior_turns`, the structural record of how each earlier
-/// turn ended, never from reply text. Every earlier turn has been replied to:
-/// the message that started this turn is the reply.
-///
-/// A prose reply counts as a clarification here. The model can ask in its own
-/// words instead of through `route_clarify`, and that question carries no
-/// marker a text match could find; reading the prose for one would mean
-/// judging free text for intent, which ADR-038 built `route_clarify` to avoid.
-/// What is exact is that such a turn did not act, so it neither resolves the
-/// intent nor escapes the count — including when it searched before asking.
-/// That also keeps a prose question from erasing a composed clarification
-/// before it — which is what reading every non-composed reply as a resolution
-/// did. The cost is on the other side: a reply that only read or needed no
-/// tool keeps the intent open, so a conversation that has only read counts
-/// its first reply as the clarification, and a later ambiguous request in it
-/// falls through to retrieval instead of being clarified.
-fn answered_clarifications(session: &AgentSession) -> Vec<&str> {
-    current_intent(session)
-        .map(|t| t.response.as_str())
-        .collect()
+    let mut replied = 0;
+    for turn in current_intent(session) {
+        if turn.outcome == AiChatTurnOutcome::Clarified {
+            return true;
+        }
+        replied += 1;
+    }
+    replied >= 2
 }
 
 /// The clarifications in the current intent that the module composed — the
@@ -2088,10 +2088,7 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
             .messages
             .push(ChatMessage::text(Role::User, user_message.to_string()));
 
-        let answered_clarifications: Vec<String> = answered_clarifications(session)
-            .into_iter()
-            .map(str::to_owned)
-            .collect();
+        let already_clarified = session_already_clarified(session);
         let composed_clarifications: Vec<String> = composed_clarifications(session)
             .into_iter()
             .map(str::to_owned)
@@ -2638,7 +2635,7 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                 // The user already answered a clarification in this intent, and
                 // the model is replying without acting — asking again in its
                 // own words, since `route_clarify` is off the surface. Counting
-                // that reply (see `answered_clarifications`) stops the NEXT
+                // that reply (see `session_already_clarified`) stops the NEXT
                 // turn from clarifying; it does nothing for this one. So put
                 // it back once, with the contract stated, before accepting
                 // prose. Keyed on structure alone — no call this turn, an
@@ -2647,7 +2644,7 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                 // the model re-reading its own question is what to avoid.
                 if !clarify_nudged
                     && !any_real_tool_calls
-                    && !answered_clarifications.is_empty()
+                    && already_clarified
                     && !tools.is_empty()
                     && !response_text.trim().is_empty()
                     && iteration + 1 < effective_max_iterations
@@ -12828,35 +12825,40 @@ mod tests {
 
     /// The shape the routing eval actually produced: Stage 2 searched and then
     /// asked in prose, twice, before the scored turn. A search is not acting,
-    /// so the first such turn stays on record as the intent's clarification
-    /// and the next prose reply is put back, rather than each search closing
-    /// the intent and leaving nothing on record.
+    /// so both turns stay in the intent and the third turn's prose reply is put
+    /// back, rather than each search closing the intent and leaving nothing on
+    /// record.
     #[tokio::test]
-    async fn a_search_then_prose_question_keeps_the_intent_open() {
+    async fn two_search_then_prose_turns_count_as_the_intents_clarification() {
         let mut session = new_session();
 
-        let (first, _) = run_routed_turn(
-            &mut session,
-            vec![
-                tool_round("tc_1", "search_nodes", r#"{"query":"contacts"}"#),
-                text_round("I found two trackers. Which one holds your contacts?"),
-            ],
-        )
-        .await;
-        assert!(first
-            .tool_calls_made
-            .iter()
-            .any(|r| r.name == "search_nodes"));
-        assert_eq!(
-            session.prior_turns.last().map(|t| t.outcome),
-            Some(AiChatTurnOutcome::Replied)
-        );
+        for question in [
+            "I found two trackers. Which one holds your contacts?",
+            "Which of those two do you mean?",
+        ] {
+            let (turn, _) = run_routed_turn(
+                &mut session,
+                vec![
+                    tool_round("tc_1", "search_nodes", r#"{"query":"contacts"}"#),
+                    text_round(question),
+                ],
+            )
+            .await;
+            assert!(turn
+                .tool_calls_made
+                .iter()
+                .any(|r| r.name == "search_nodes"));
+            assert_eq!(
+                session.prior_turns.last().map(|t| t.outcome),
+                Some(AiChatTurnOutcome::Replied)
+            );
+        }
         assert!(
             session_already_clarified(&session),
-            "a search followed by a question must stay on record"
+            "two search-then-ask turns must stay on record"
         );
 
-        let (second, _) = run_routed_turn(
+        let (third, _) = run_routed_turn(
             &mut session,
             vec![
                 text_round("Could you tell me which list they are in?"),
@@ -12870,9 +12872,27 @@ mod tests {
                 .messages
                 .iter()
                 .any(|m| m.role == Role::System && m.content == ALREADY_CLARIFIED_NUDGE),
-            "the prose reply after it must be put back"
+            "the prose reply after them must be put back"
         );
-        assert_eq!(second.response, "Here are your contacts.");
+        assert_eq!(third.response, "Here are your contacts.");
+    }
+
+    /// "hi" → "Hello!" is one turn that did not write. It is not a
+    /// clarification on record, so the next plain reply stands as is.
+    #[tokio::test]
+    async fn one_earlier_reply_does_not_put_a_plain_reply_back() {
+        let mut session = new_session();
+        seed_turn(&mut session, AiChatTurnOutcome::Replied, "Hello!");
+
+        let (result, generations) =
+            run_routed_turn(&mut session, vec![text_round("I can search your notes.")]).await;
+
+        assert_eq!(result.response, "I can search your notes.");
+        assert_eq!(generations, 2, "Stage 1 and one Stage-2 generation only");
+        assert!(!session
+            .messages
+            .iter()
+            .any(|m| m.content == ALREADY_CLARIFIED_NUDGE));
     }
 
     /// A reply with no answered clarification on record is an ordinary
@@ -12968,16 +12988,18 @@ mod tests {
             "Could you say a bit more about what you want to see?",
         );
         assert!(
-            answered_clarifications(&session).contains(&composed.as_str()),
-            "the composed clarification must still be counted: {:?}",
-            answered_clarifications(&session)
+            composed_clarifications(&session).contains(&composed.as_str()),
+            "the composed clarification must still be in the intent: {:?}",
+            composed_clarifications(&session)
         );
+        assert!(session_already_clarified(&session));
     }
 
     /// A clarification asked in prose carries no text a guard could match; it
-    /// is counted because the turn did not act.
+    /// is counted because the turn did not act. One such turn is as likely an
+    /// answer as a question, so it takes a second to count.
     #[test]
-    fn a_prose_reply_counts_as_the_intents_clarification() {
+    fn two_prose_replies_count_as_the_intents_clarification() {
         let mut session = new_session();
         seed_turn(&mut session, AiChatTurnOutcome::Acted, "Created the task.");
         assert!(!session_already_clarified(&session));
@@ -12988,8 +13010,18 @@ mod tests {
             "Do you mean your clients or your vendors?",
         );
         assert!(
+            !session_already_clarified(&session),
+            "one reply may have been an answer; it must not cost the intent its clarification"
+        );
+
+        seed_turn(
+            &mut session,
+            AiChatTurnOutcome::Replied,
+            "Which list are they in?",
+        );
+        assert!(
             session_already_clarified(&session),
-            "a turn that replied without acting must count against the intent"
+            "a second reply without acting is the loop the contract stops"
         );
     }
 
