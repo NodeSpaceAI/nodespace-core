@@ -129,9 +129,17 @@ pub fn stage1_skill_names(titles: impl IntoIterator<Item = String>) -> Vec<Strin
 /// that is already clarified (see [`session_already_clarified`]). `System`-role, like the other records the
 /// history carries, because it states a fact of the conversation rather than
 /// something the user said.
-const ALREADY_CLARIFIED_NUDGE: &str = "The user has already answered a clarifying question \
-     about this request, and a request gets only one. Do not ask them anything further. Act on \
-     the most reasonable reading of what they said by calling the tool that fits it.";
+///
+/// It asserts only what both branches of that rule guarantee: every earlier
+/// turn of the intent ended without a write. It must not claim a clarifying
+/// question was asked and answered — true for a composed clarification, false
+/// for two plain non-writing turns, which a chat that only reads reaches on its
+/// third message ("thanks" after two lookups). So acting is conditional on the
+/// message asking for something; a message that does not gets a short answer.
+const ALREADY_CLARIFIED_NUDGE: &str = "Your earlier replies to this request have not changed \
+     anything. Do not ask the user another question. If their latest message asks for something \
+     to be done, act on the most reasonable reading of it by calling the tool that fits; \
+     otherwise answer briefly.";
 
 /// Opening phrase of a routing clarification.
 ///

@@ -1,6 +1,12 @@
 /**
  * Skill-routing eval — routing accuracy through the two-gate pipeline (ADR-036).
  *
+ * Scored in NodeSpace's own working domain — feature specs and their sign-off
+ * state, architecture decisions, planning cycles, incidents, and tasks tied to
+ * the work that constrains them — the same domain as the agent matrix
+ * (agent-matrix.ts). Routing decisions are judged on this fixture, so its
+ * domain is the one those decisions are measured in.
+ *
  *   Stage 1: model picks one of route_query / route_clarify / route_multi
  *   Stage 2: model judges whether the retrieved skill fits the intent
  *
@@ -93,7 +99,7 @@ const FIXTURES: RoutingScenario[] = [
   {
     id: "direct-schema-create",
     scenario: "Direct: create schema (explicit phrasing)",
-    prompt: "Create an invoice tracking database",
+    prompt: "Create a database for tracking our feature specs",
     expected: { kind: "skill", skill: "Schema Creation" },
   },
   {
@@ -105,15 +111,16 @@ const FIXTURES: RoutingScenario[] = [
   {
     id: "direct-node-create",
     scenario: "Direct: create instance (existing type)",
-    prompt: "Create a new task called 'Review Q3 report'",
+    prompt: "Create a new task called 'Review the sync protocol spec'",
     expected: { kind: "skill", skill: "Node Creation" },
   },
 
   // ── Indirect phrasing → correct skill (LOAD-BEARING) ─────────────────────
   {
     id: "indirect-schema-money-owed",
-    scenario: "Indirect: 'keep tabs on who owes me money' → Schema Creation",
-    prompt: "keep tabs on who owes me money",
+    scenario:
+      "Indirect: 'start keeping track of the decisions behind each feature' → Schema Creation",
+    prompt: "start keeping track of the decisions behind each feature",
     expected: { kind: "skill", skill: "Schema Creation" },
     loadBearing: true,
     mutating: true,
@@ -121,8 +128,8 @@ const FIXTURES: RoutingScenario[] = [
   {
     id: "indirect-schema-freelance",
     scenario:
-      "Indirect: 'start tracking my freelance projects' → Schema Creation",
-    prompt: "start tracking my freelance projects",
+      "Indirect: 'start tracking our planning cycles' → Schema Creation",
+    prompt: "start tracking our planning cycles",
     expected: { kind: "skill", skill: "Schema Creation" },
     loadBearing: true,
     mutating: true,
@@ -130,8 +137,8 @@ const FIXTURES: RoutingScenario[] = [
   {
     id: "indirect-schema-expenses",
     scenario:
-      "Indirect: 'I need a way to log my business expenses' → Schema Creation",
-    prompt: "I need a way to log my business expenses",
+      "Indirect: 'I need a way to log production incidents' → Schema Creation",
+    prompt: "I need a way to log production incidents",
     expected: { kind: "skill", skill: "Schema Creation" },
     loadBearing: true,
     mutating: true,
@@ -139,7 +146,7 @@ const FIXTURES: RoutingScenario[] = [
   {
     id: "indirect-search-remember",
     scenario: "Indirect: 'what did I write about X?' → Research & Search",
-    prompt: "what did I write about machine learning last month?",
+    prompt: "what did I write about the caching layer last month?",
     expected: { kind: "search" },
     loadBearing: true,
   },
@@ -148,10 +155,10 @@ const FIXTURES: RoutingScenario[] = [
   {
     id: "instance-not-schema-invoice",
     scenario:
-      "Instance vs schema: 'add an invoice for $500' → Node Creation, not Schema Creation",
-    // Context: invoice schema already exists (set up in prior turn)
-    priorTurns: ["Create an invoice tracking database"],
-    prompt: "Add an invoice for $500 due next Friday",
+      "Instance vs schema: 'add a spec for offline sync' → Node Creation, not Schema Creation",
+    // Context: spec schema already exists (set up in prior turn)
+    priorTurns: ["Create a database for tracking our feature specs"],
+    prompt: "Add a spec for offline sync that's due for sign-off next Friday",
     expected: { kind: "skill", skill: "Node Creation" },
     loadBearing: true,
     adversarial: true, // should NOT route to Schema Creation
@@ -161,16 +168,16 @@ const FIXTURES: RoutingScenario[] = [
   {
     id: "ambiguous-client-contacts",
     scenario:
-      "Ambiguous: 'organize my client contacts' → clarify (schema vs collection)",
-    prompt: "organize my client contacts",
+      "Ambiguous: 'organize my design docs' → clarify (schema vs collection)",
+    prompt: "organize my design docs",
     expected: { kind: "clarify" },
     loadBearing: true,
   },
   {
     id: "ambiguous-manage-projects",
     scenario:
-      "Ambiguous: 'help me manage my projects' → clarify (schema vs search vs task)",
-    prompt: "help me manage my projects",
+      "Ambiguous: 'help me manage our roadmap' → clarify (schema vs search vs task)",
+    prompt: "help me manage our roadmap",
     expected: { kind: "clarify" },
   },
 
@@ -210,8 +217,8 @@ const FIXTURES: RoutingScenario[] = [
     // route_clarify is suppressed (`clarify_suppressed`) into retrieval. The
     // label tests that contract, not the prompt's standalone clarity.
     priorTurns: [
-      "organize my client contacts",
-      // Simulate user clarifying: they want to search existing contacts
+      "organize my design docs",
+      // Simulate user clarifying: they want to search existing docs
       "I just want to search what I already have",
     ],
     prompt: "just show me what I have",
@@ -224,7 +231,7 @@ const FIXTURES: RoutingScenario[] = [
     id: "mutating-gate-borderline-schema",
     scenario:
       "Mutating gate: borderline schema request — gated harder than read-only",
-    prompt: "maybe set up some kind of tracking for vendors",
+    prompt: "maybe set up some kind of tracking for tech debt",
     expected: { kind: "clarify" }, // borderline → must clarify before schema creation
     mutating: true,
     loadBearing: true,
@@ -233,7 +240,7 @@ const FIXTURES: RoutingScenario[] = [
   {
     id: "readonly-gate-permissive",
     scenario: "Read-only gate: borderline search — lower bar, may proceed",
-    prompt: "show me stuff about my customers",
+    prompt: "show me stuff about our release process",
     expected: { kind: "search" }, // read-only: proceed with search, don't block
   },
 
@@ -242,14 +249,14 @@ const FIXTURES: RoutingScenario[] = [
     id: "multi-task-and-search",
     scenario: "Compound: create a task AND search notes → route_multi",
     prompt:
-      "Add a task to renew my passport, and also pull up my notes on the Lisbon trip",
+      "Add a task to rotate the staging API keys, and also pull up my notes on the auth redesign",
     expected: { kind: "multi" },
   },
   {
     id: "multi-schema-and-search",
     scenario: "Compound: set up tracking AND search notes → route_multi",
     prompt:
-      "Set up a way to track my vinyl records, then separately find what I wrote about turntables last year",
+      "Set up a way to track our API deprecations, then separately find what I wrote about rate limiting last year",
     expected: { kind: "multi" },
   },
 
@@ -259,7 +266,7 @@ const FIXTURES: RoutingScenario[] = [
     scenario:
       "Single intent at length: one task with several details → Node Creation, not multi",
     prompt:
-      "Create a task to call the dentist tomorrow morning about moving my cleaning appointment, make it high priority, and note on it that they close at noon on Fridays",
+      "Create a task to move the notifications service onto the new queue tomorrow morning, make it high priority, and note on it that the old queue shuts down at noon on Friday",
     expected: { kind: "skill", skill: "Node Creation" },
     singleIntentAtLength: true,
   },
@@ -268,7 +275,7 @@ const FIXTURES: RoutingScenario[] = [
     scenario:
       "Single intent at length: one search naming several topics → search, not multi",
     prompt:
-      "Find the notes I wrote after the team offsite, the ones covering the budget, the hiring plan, and the move to the new office",
+      "Find the notes I wrote after the architecture review, the ones covering the storage layer, the sync protocol, and the move to the new build system",
     expected: { kind: "search" },
     singleIntentAtLength: true,
   },
