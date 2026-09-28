@@ -296,7 +296,7 @@ const RESOLVE_QUERY_MATCH_LIMIT: usize = 10;
 /// bare JSON.
 ///
 /// `pub` so the decomposition measurement harness
-/// (`tests/live_resolve_query_decomposition_shapes.rs`) can classify raw model
+/// (`tests/it/live_resolve_query_decomposition_shapes.rs`) can classify raw model
 /// output through the *same* extraction production uses. That harness exists to
 /// describe production's behavior, which it can only do by sharing this code —
 /// a re-implementation there would be a second thing to keep in step, and the
@@ -337,7 +337,7 @@ pub fn extract_json_object(text: &str) -> Option<&str> {
 /// output so the object parses as JSON.
 ///
 /// The malformation, measured (33 decompositions over the corpus in
-/// `tests/live_resolve_query_decomposition_shapes.rs`, 3/3 reps identical on
+/// `tests/it/live_resolve_query_decomposition_shapes.rs`, 3/3 reps identical on
 /// the request that triggers it):
 ///
 /// ```text
@@ -2915,7 +2915,7 @@ impl GraphToolExecutor {
         // tool-call parse boundary; this is a nested sub-call parsed locally.
         //
         // That gap was measured rather than assumed — 33 decompositions across
-        // the corpus in `tests/live_resolve_query_decomposition_shapes.rs` — and
+        // the corpus in `tests/it/live_resolve_query_decomposition_shapes.rs` — and
         // every one of the four came back inert here: across the 21 filters
         // that were classifiable, zero over-quoted keys, zero leaked
         // special-token keys, zero `deny_unknown_fields` drops, and zero

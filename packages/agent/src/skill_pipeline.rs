@@ -517,7 +517,7 @@ STRUCTURED PROPERTY QUERIES: To filter by property values (status, due_date, etc
                 // outranked Node Deletion on "remove the closed tickets",
                 // silently withholding delete_node; "keep it" / "stay" is what
                 // holds deletion requests on Node Deletion. Guarded in
-                // `tests/live_skill_retrieval_stability.rs` by
+                // `tests/it/live_skill_retrieval_stability.rs` by
                 // `completion_state_updates_route_graph_editing`,
                 // `control_conflict_requests_still_route_conflict_journal`,
                 // and `control_deletion_requests_are_not_outranked_by_graph_editing`.
@@ -553,7 +553,7 @@ STRUCTURED PROPERTY QUERIES: To filter by property values (status, due_date, etc
             // remove records.") also lowered "mark the outage report done"
             // or "record that we decided to use Postgres" by 0.02–0.035;
             // bare verbs aimed at "them" lowered nothing but deletions.
-            // Guarded in `tests/live_skill_retrieval_stability.rs` by
+            // Guarded in `tests/it/live_skill_retrieval_stability.rs` by
             // `remove_requests_mentioning_a_state_route_node_deletion`,
             // `removing_a_field_still_reaches_graph_editing`, and
             // `graph_editing_exclusion_leaves_completion_state_scores_unchanged`.
@@ -645,7 +645,7 @@ STRUCTURED PROPERTY QUERIES: To filter by property values (status, due_date, etc
                 // candidate, the deletion was silently withheld. Rewording
                 // the description alone never fixed it — the title "Conflict
                 // Resolution" carried the pull by itself. Guarded in
-                // `tests/live_skill_retrieval_stability.rs` by
+                // `tests/it/live_skill_retrieval_stability.rs` by
                 // `deletion_requests_mentioning_resolved_route_node_deletion`
                 // and `control_conflict_requests_still_route_conflict_journal`.
                 "List, inspect, or dismiss conflicts between colliding nodes recorded in the conflict journal: two records that claim the same identity, duplicates, or sync collisions.",
@@ -1285,7 +1285,7 @@ mod tests {
     /// to behave very differently. So each one is a measured decision with its
     /// own live guard, and adding one to another skill must be deliberate:
     /// extend this list together with a test in
-    /// `tests/live_skill_retrieval_stability.rs` showing it leaves that
+    /// `tests/it/live_skill_retrieval_stability.rs` showing it leaves that
     /// skill's intended requests unchanged.
     #[test]
     fn only_measured_skills_carry_an_exclusion() {

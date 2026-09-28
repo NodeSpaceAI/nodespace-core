@@ -2234,7 +2234,7 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
         // `session.routing_disabled` is set once, by the caller, from a cached
         // routing-probe verdict for this session's model (see
         // `local_agent::routing_probe`). The matrix in
-        // `tests/live_openai_compat_routing.rs` found injecting this block
+        // `tests/it/live_openai_compat_routing.rs` found injecting this block
         // suppresses tool-calling outright on some served models, independent
         // of the block's content — so a model probed unsafe skips injection
         // entirely rather than receiving a "safer" smaller block; there is no
@@ -11654,7 +11654,7 @@ mod tests {
 
     // -----------------------------------------------------------------------
     // `session.routing_disabled` (Option C from ADR-038): the
-    // routing-reliability matrix in `tests/live_openai_compat_routing.rs`
+    // routing-reliability matrix in `tests/it/live_openai_compat_routing.rs`
     // found Stage-2 candidate injection suppresses tool-calling outright on
     // some served models. A cached per-model probe verdict sets this flag;
     // these tests cover what the loop does with it.

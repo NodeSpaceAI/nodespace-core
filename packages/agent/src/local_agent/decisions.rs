@@ -593,7 +593,7 @@ mod tests {
     /// The log shape is a contract: `routed_skill_names` records that the first
     /// scraper written against its format silently matched nothing because the
     /// shape was assumed rather than asserted. The cross-language half of this
-    /// contract is pinned by `tests/decision_marker_golden.rs`; these assert
+    /// contract is pinned by `tests/it/decision_marker_golden.rs`; these assert
     /// the encoding itself.
     #[test]
     fn payload_field_is_a_json_object_carrying_all_three_values() {

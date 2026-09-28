@@ -111,7 +111,20 @@ let failed = false;
  * waits for the exit rather than reporting a second failure.
  */
 async function run(stage: StageSpec) {
-  if (await runStage(stage, logDir)) return;
+  // Once the gate is failing, a lane whose stage just finished starts nothing
+  // new: the kill below only reaches stages already running, and one started
+  // during its grace period would outlive the gate and the machine slot.
+  if (failed) return new Promise<never>(() => {});
+  let passed: boolean;
+  try {
+    passed = await runStage(stage, logDir);
+  } catch (err) {
+    // A stage that can't even start (e.g. its log can't be opened) fails the
+    // gate like any other, so the other lane is still stopped.
+    console.error(`\n${stage.label} could not run: ${err instanceof Error ? err.message : String(err)}`);
+    passed = false;
+  }
+  if (passed) return;
   if (failed) return new Promise<never>(() => {});
   failed = true;
   await killActiveStages();

@@ -1,6 +1,6 @@
 //! One-time routing-reliability probe for served (OpenAI-compatible) models.
 //!
-//! `tests/live_openai_compat_routing.rs` established, against a local Ollama,
+//! `tests/it/live_openai_compat_routing.rs` established, against a local Ollama,
 //! that Stage-2 candidate injection is safe on most served models but not
 //! all: it is a **per-model property**, not a native-vs-served split — the
 //! locked native model and most measured served models route cleanly, while

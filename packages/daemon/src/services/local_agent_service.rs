@@ -1945,7 +1945,7 @@ impl LocalAgentServiceImpl {
                 .await;
 
             // Routing-reliability probe (Option C): the matrix in
-            // `tests/live_openai_compat_routing.rs` found Stage-2 candidate
+            // `tests/it/live_openai_compat_routing.rs` found Stage-2 candidate
             // injection suppresses tool-calling on some served models,
             // independent of the block's content, and that this is a
             // per-model property rather than a native-vs-served split. Run

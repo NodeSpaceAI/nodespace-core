@@ -644,7 +644,7 @@ mod tests {
     ///
     /// This asserts SHAPE only, which is exactly its limitation — it cannot
     /// see whether the actions achieve anything. `rollover_moves_a_task_...`
-    /// in `tests/methodology_linear_execution_test.rs` runs them and counts
+    /// in `tests/it/methodology_linear_execution_test.rs` runs them and counts
     /// the edges, and is what actually pins the behavior.
     #[test]
     fn rollover_adds_to_the_successor_then_removes_from_the_ending_cycle() {

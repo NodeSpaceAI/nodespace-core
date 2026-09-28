@@ -6824,7 +6824,7 @@ async fn concurrent_friendly_name_update_cannot_revert_a_committed_rename() {
 // ============================================================================
 //
 // The direct-target `extends` / declaration cases live in
-// tests/schema_relationship_declarations_test.rs.
+// tests/it/schema_relationship_declarations_test.rs.
 
 async fn delete_by_id(
     svc: &Arc<NodeService>,

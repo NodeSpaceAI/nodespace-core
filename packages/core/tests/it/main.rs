@@ -5,7 +5,9 @@
 //! list its tests. One binary per crate links once. nextest still runs every
 //! test in its own process, so isolation between tests is unchanged. Add a
 //! test file here as a module; run one file's tests with
-//! `cargo test -p nodespace-core --test it <module>::`.
+//! `.tools/bin/cargo-nextest nextest run -p nodespace-core --test it <module>::`.
+//! Prefer nextest over a plain `cargo test` for anything but a single test:
+//! `cargo test` runs the whole binary's tests as threads of one process.
 
 mod ai_chat_reference_test;
 mod bulk_invariant_dispatch_test;

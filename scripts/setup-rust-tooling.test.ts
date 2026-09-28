@@ -4,8 +4,12 @@
 //
 // DOM-free on purpose: this file runs under `bun test scripts/`, which
 // bypasses the Happy-DOM vitest config (see CLAUDE.md).
-import { describe, expect, test } from "bun:test";
-import { needsInstall, NEXTEST, primaryRootFromCommonDir, releaseFor, SCCACHE, sha256Hex } from "./setup-rust-tooling";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { GENERATED_MARKER } from "./gate-sccache";
+import { needsInstall, NEXTEST, primaryRootFromCommonDir, releaseFor, SCCACHE, setUpDevCache, sha256Hex } from "./setup-rust-tooling";
 
 describe("release pins", () => {
   test("every pinned release has a full SHA-256 and a versioned URL", () => {
@@ -58,5 +62,38 @@ describe("needsInstall", () => {
   test("leaves an up-to-date tool alone, trailing newline or not", () => {
     expect(needsInstall(true, "0.9.146", "0.9.146")).toBe(false);
     expect(needsInstall(true, "0.9.146\n", "0.9.146")).toBe(false);
+  });
+});
+
+describe("setUpDevCache", () => {
+  let checkout: string;
+  beforeEach(() => {
+    checkout = mkdtempSync(join(tmpdir(), "setup-dev-cache-test-"));
+  });
+  afterEach(() => {
+    rmSync(checkout, { recursive: true, force: true });
+  });
+
+  test("writes an executable wrapper into the checkout and a config naming it", () => {
+    expect(setUpDevCache(checkout, "/repo/.tools")).toBe(true);
+    const wrapper = join(checkout, ".cargo", "rustc-wrapper");
+    expect(statSync(wrapper).mode & 0o111).not.toBe(0);
+    expect(readFileSync(join(checkout, ".cargo", "config.toml"), "utf8")).toContain(`rustc-wrapper = "${wrapper}"`);
+  });
+
+  test("rewrites its own config on the next install", () => {
+    setUpDevCache(checkout, "/repo/.tools");
+    setUpDevCache(checkout, "/elsewhere/.tools");
+    expect(readFileSync(join(checkout, ".cargo", "rustc-wrapper"), "utf8")).toContain("/elsewhere/.tools/bin/sccache");
+  });
+
+  test("leaves a hand-written config alone and writes no wrapper", () => {
+    mkdirSync(join(checkout, ".cargo"));
+    const handWritten = '[build]\nrustc-wrapper = "my-own"\n';
+    writeFileSync(join(checkout, ".cargo", "config.toml"), handWritten);
+    expect(setUpDevCache(checkout, "/repo/.tools")).toBe(false);
+    expect(readFileSync(join(checkout, ".cargo", "config.toml"), "utf8")).toBe(handWritten);
+    expect(readFileSync(join(checkout, ".cargo", "config.toml"), "utf8")).not.toContain(GENERATED_MARKER);
+    expect(existsSync(join(checkout, ".cargo", "rustc-wrapper"))).toBe(false);
   });
 });

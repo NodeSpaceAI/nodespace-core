@@ -7,9 +7,9 @@
 //   packages/core/src/db/sqlite_store/mod.rs.
 // - sccache is the compiler cache in front of every cargo build on the
 //   machine: the gate's (scripts/test-gate.ts), and development builds, which
-//   reach it through a generated, gitignored `.cargo/config.toml` in each
-//   checkout whose rustc wrapper (in `.tools/bin`) hands sccache the gate's
-//   settings — one server, one cache (see ./gate-sccache.ts). What it shares
+//   reach it through a generated, gitignored `.cargo/config.toml` and rustc
+//   wrapper in each checkout: the gate's cache, each checkout's own server
+//   (see ./gate-sccache.ts). What it shares
 //   across checkouts is llama.cpp's C/C++ build (measured: 97% hits, ~50s off
 //   a fresh worktree's first build). Rust crates hit only within one target
 //   dir — rustc's arguments carry the checkout's own target path, so every
@@ -184,20 +184,24 @@ function writeIfChanged(path: string, content: string, mode: number): void {
 }
 
 /**
- * Points this checkout's cargo builds at the shared sccache: the wrapper in
- * the primary's `.tools/bin`, and a `.cargo/config.toml` naming it. A config
- * file this script didn't write is left alone, with a warning.
+ * Points this checkout's cargo builds at the shared sccache: a rustc wrapper
+ * and a `.cargo/config.toml` naming it, both in the checkout's own gitignored
+ * `.cargo/`. The wrapper lives there rather than in the shared `.tools/` so a
+ * `.tools/` removed by a clean leaves it in place to fall back to a plain
+ * compile. A config file this script didn't write is left alone, with a
+ * warning. Returns whether the checkout is set up.
  */
-function setUpDevCache(checkoutRoot: string, primaryTools: string): void {
-  const wrapper = join(primaryTools, "bin", "rustc-wrapper");
-  writeIfChanged(wrapper, devRustcWrapper(primaryTools), 0o755);
+export function setUpDevCache(checkoutRoot: string, primaryTools: string): boolean {
   const config = join(checkoutRoot, ".cargo", "config.toml");
   if (existsSync(config) && !readFileSync(config, "utf8").includes(GENERATED_MARKER)) {
     console.warn(`⚠ ${config} wasn't written by bun install; development builds won't share the compiler cache.`);
-    return;
+    return false;
   }
   mkdirSync(dirname(config), { recursive: true });
+  const wrapper = join(checkoutRoot, ".cargo", "rustc-wrapper");
+  writeIfChanged(wrapper, devRustcWrapper(primaryTools, checkoutRoot), 0o755);
   writeIfChanged(config, devCargoConfig(wrapper), 0o644);
+  return true;
 }
 
 async function main(): Promise<void> {
