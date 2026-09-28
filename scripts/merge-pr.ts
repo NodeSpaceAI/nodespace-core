@@ -46,6 +46,9 @@ const MERGE_WAIT_CAP_MS = 2 * 60 * 60 * 1000;
 /** The persistent gate checkout, relative to the main repository root. */
 export const GATE_CHECKOUT = join(".claude", "worktrees", "_gate");
 
+/** git options that disable repo hooks; see `git()` for why the gate needs them. */
+const NO_HOOKS = ["-c", "core.hooksPath=/dev/null"];
+
 /**
  * Ignored, generated paths cleared before every merge gate. target/ and
  * node_modules/ are deliberately absent — they are the warm state the gate
@@ -108,24 +111,34 @@ export type ReplayResult =
  * git's own message, so an environment problem never reads as a conflict.
  */
 export async function replayCommits(cwd: string, commits: string[]): Promise<ReplayResult> {
-  const pick = await $`git cherry-pick --keep-redundant-commits ${commits}`.cwd(cwd).quiet().nothrow();
+  const pick = await $`git ${NO_HOOKS} cherry-pick --keep-redundant-commits ${commits}`.cwd(cwd).quiet().nothrow();
   if (pick.exitCode === 0) return { kind: "ok" };
 
   const unmerged = (await $`git diff --name-only --diff-filter=U`.cwd(cwd).quiet().nothrow().text())
     .split("\n")
     .filter((p) => p !== "");
-  await $`git cherry-pick --abort`.cwd(cwd).quiet().nothrow();
+  await $`git ${NO_HOOKS} cherry-pick --abort`.cwd(cwd).quiet().nothrow();
   // Clear any sequencer state an abort left behind, or every later merge
   // would fail with "cherry-pick already in progress".
-  await $`git cherry-pick --quit`.cwd(cwd).quiet().nothrow();
+  await $`git ${NO_HOOKS} cherry-pick --quit`.cwd(cwd).quiet().nothrow();
   if (unmerged.length > 0) return { kind: "conflict", paths: unmerged };
   const message = `${pick.stderr.toString()}${pick.stdout.toString()}`.trim();
   return { kind: "error", message: message || `git cherry-pick exited with code ${pick.exitCode}` };
 }
 
-/** Runs git in `cwd` and returns its trimmed stdout. */
+/**
+ * Runs git in `cwd` with hooks disabled and returns its trimmed stdout.
+ *
+ * The repo's post-checkout hook runs `bun install`, which rewrites bun.lock
+ * whenever the checked-out lockfile differs from what the installed Bun would
+ * write. Fired by the gate's own checkouts, that left bun.lock dirty, and the
+ * replay then refused to cherry-pick any PR commit touching it. The gate runs
+ * its own `bun install` once the tree is final, so the hook adds nothing here.
+ * Every git command the gate runs goes without hooks, for the same reason; the
+ * few that bypass this helper pass `NO_HOOKS` themselves.
+ */
 async function git(cwd: string, ...args: string[]): Promise<string> {
-  return (await $`git ${args}`.cwd(cwd).quiet().text()).trim();
+  return (await $`git ${NO_HOOKS} ${args}`.cwd(cwd).quiet().text()).trim();
 }
 
 /**
@@ -166,7 +179,7 @@ async function prepareGateCheckout(repoRoot: string): Promise<string> {
   const path = join(repoRoot, GATE_CHECKOUT);
   if (!existsSync(path)) {
     console.log(`\n▶ Creating the persistent gate checkout at ${path}`);
-    await $`git worktree add --detach ${path} origin/main`.cwd(repoRoot).quiet();
+    await $`git ${NO_HOOKS} worktree add --detach ${path} origin/main`.cwd(repoRoot).quiet();
   }
   return path;
 }
@@ -254,18 +267,9 @@ async function main(): Promise<void> {
     // files the PR changes.
     const base = await git(gate, "merge-base", prHead, mainSha);
     if (base === mainSha) {
-      // `--force`, matching the `mainSha` checkout above: this checkout can
-      // still land on a tracked file whose content differs from what's on
-      // disk (observed with `bun.lock`) even right after that reset and a
-      // `clean -fdq` — some other tool with a handle on this shared,
-      // concurrently-used checkout (a `bun install` from another merge, a
-      // build script) can leave an unstaged modification behind between the
-      // two commands, and a plain `checkout` refuses to overwrite it rather
-      // than silently discarding it. `--force` is the correct choice here,
-      // not a bug to route around some other way: this checkout exists
-      // solely to be blown away and rebuilt every run (see the comment on
-      // the `mainSha` checkout above), so there is never a legitimate local
-      // change here worth preserving.
+      // `--force`, matching the `mainSha` checkout above: this checkout is
+      // reset and rebuilt every run, so there is never a local change here
+      // worth preserving, and a plain `checkout` would refuse on one instead.
       await git(gate, "checkout", "--quiet", "--force", "--detach", prHead);
     } else {
       console.log(`\n▶ Rebasing PR #${pr} onto origin/main (${mainSha.slice(0, 8)})`);

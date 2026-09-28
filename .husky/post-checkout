@@ -2,8 +2,8 @@
 # note below).
 #
 # Git checks out the base commit to start a rebase, which fires this hook. The
-# install that follows rewrites bun.lock — the committed lockfile carries a
-# `configVersion` key that older Bun releases strip — so the tree is dirty
+# install that follows rewrites bun.lock whenever the base commit's lockfile
+# differs from what the installed Bun would write, leaving the tree dirty
 # before the first commit is replayed, and the rebase stops with "cannot
 # rebase: You have unstaged changes". Retrying re-runs the hook and re-dirties
 # the tree, so the rebase cannot make progress without disabling hooks
