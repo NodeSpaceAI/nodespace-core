@@ -1,7 +1,8 @@
 //! tonic `ImportService` implementation backed by `nodespace-core`.
 //!
 //! Preserves the two-phase pipeline from `commands/import.rs`:
-//!   Phase 1 — file reads, markdown parsing, link resolution (sync, fast)
+//!   Phase 1 — file reads (`tokio::fs`), markdown parsing and link resolution
+//!             (CPU-bound, on the blocking pool), in bounded chunks
 //!   Phase 2 — DB writes, collection assignment, mention creation (async background)
 //!
 //! Progress events are streamed back to the caller via a tokio channel that
@@ -25,6 +26,24 @@ use crate::nodespace::{
 };
 
 const CHANNEL_BUFFER: usize = 64;
+
+/// Maximum files accepted by one `ImportMarkdownFiles` call.
+///
+/// Every file of a batch import is parsed into memory and written in one bulk
+/// insert, so the batch size bounds both the daemon's peak memory and how long
+/// that single write holds the store. The cap is deliberately far above real
+/// usage — the project's own docs import is a few hundred files and large
+/// personal vaults run to low thousands — so it only rejects absurd requests
+/// (a mistaken import of a home directory or a dependency tree) with an
+/// actionable error rather than a daemon that stalls or runs out of memory.
+pub(crate) const MAX_IMPORT_FILES: usize = 5_000;
+
+/// Files read and parsed together in phase 1 of a batch import. Raw file
+/// contents are held only per chunk and dropped once parsed, and each chunk's
+/// CPU-bound parse runs in a single blocking-pool task. The parsed nodes of
+/// every file are still kept until the single phase-2 insert, so peak memory
+/// grows with the whole import — [`MAX_IMPORT_FILES`] is what bounds it.
+const PHASE1_CHUNK_SIZE: usize = 32;
 
 /// Stable namespace for deriving deterministic import root ids from a document's
 /// identity key (its base-directory-relative path). Re-importing the same file
@@ -96,6 +115,9 @@ impl GrpcImportService for ImportServiceImpl {
     ) -> Result<Response<Self::ImportMarkdownFilesStream>, Status> {
         let this = self.route(&request).await?;
         let req = request.into_inner();
+        if let Some(status) = oversized_batch_error(req.file_paths.len()) {
+            return Err(status);
+        }
         let opts = req.options.unwrap_or_default();
         let node_service = Arc::clone(&this.node_service);
 
@@ -153,27 +175,9 @@ async fn import_single_file(
     path: &Path,
     opts: &ImportOptions,
 ) -> LocalFileImportResult {
-    if !path.exists() {
-        return LocalFileImportResult::error(
-            path.to_string_lossy().to_string(),
-            "File does not exist",
-        );
-    }
-    if !path.is_file() {
-        return LocalFileImportResult::error(
-            path.to_string_lossy().to_string(),
-            "Path is not a file",
-        );
-    }
-
-    let content = match std::fs::read_to_string(path) {
+    let content = match read_import_file(path).await {
         Ok(c) => c,
-        Err(e) => {
-            return LocalFileImportResult::error(
-                path.to_string_lossy().to_string(),
-                &format!("Failed to read file: {}", e),
-            );
-        }
+        Err(msg) => return LocalFileImportResult::error(path.to_string_lossy().to_string(), &msg),
     };
 
     let (collection, is_archived) = if opts.auto_collection_routing {
@@ -285,7 +289,7 @@ async fn run_batch_import(
     };
 
     // ========================================================================
-    // PHASE 1: Parse all files (sync, in-memory)
+    // PHASE 1: Read, parse and link-resolve every file (in memory)
     // ========================================================================
 
     send_progress(
@@ -299,151 +303,119 @@ async fn run_batch_import(
     )
     .await;
 
-    let mut file_contents: Vec<FileReadResult> = Vec::new();
+    let mut prepared_files: Vec<PreparedFileImport> = Vec::new();
     let mut failed_results: Vec<LocalFileImportResult> = Vec::new();
+    let mut parsed_count = 0usize;
 
-    for (index, file_path) in file_paths.iter().enumerate() {
-        let path = PathBuf::from(file_path);
-        let filename = path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or(file_path)
-            .to_string();
+    // Read and parse in bounded chunks: reads go through `tokio::fs` so they
+    // never park a runtime worker, and each chunk's raw contents are dropped as
+    // soon as they are parsed. Link resolution below still runs once over every
+    // prepared file, so cross-file links resolve regardless of chunk boundaries.
+    for (chunk_index, chunk) in file_paths.chunks(PHASE1_CHUNK_SIZE).enumerate() {
+        let mut chunk_reads: Vec<FileReadResult> = Vec::with_capacity(chunk.len());
 
-        send_progress(
-            &tx,
-            2,
-            "reading",
-            &format!("Reading: {}", filename),
-            index + 1,
-            total_files,
-            vec![],
-        )
-        .await;
+        for (offset, file_path) in chunk.iter().enumerate() {
+            let path = PathBuf::from(file_path);
+            let filename = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or(file_path)
+                .to_string();
 
-        if !path.exists() || !path.is_file() {
-            failed_results.push(LocalFileImportResult::error(
-                file_path.clone(),
-                "File does not exist or is not a file",
-            ));
+            send_progress(
+                &tx,
+                2,
+                "reading",
+                &format!("Reading: {}", filename),
+                chunk_index * PHASE1_CHUNK_SIZE + offset + 1,
+                total_files,
+                vec![],
+            )
+            .await;
+
+            let content = match read_import_file(&path).await {
+                Ok(content) => content,
+                Err(msg) => {
+                    failed_results.push(LocalFileImportResult::error(file_path.clone(), &msg));
+                    continue;
+                }
+            };
+
+            let (collection_path, is_archived) = if opts.auto_collection_routing {
+                let meta = derive_collection_metadata(&path, &base_dir);
+                (Some(meta.collection), meta.is_archived)
+            } else if !opts.collection.is_empty() {
+                (Some(opts.collection.clone()), false)
+            } else {
+                (None, false)
+            };
+            let relative_path = path
+                .strip_prefix(&base_dir)
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .to_string();
+            chunk_reads.push(FileReadResult {
+                path,
+                content,
+                relative_path,
+                collection_path,
+                is_archived,
+            });
+        }
+
+        if chunk_reads.is_empty() {
             continue;
         }
 
-        let (collection_path, is_archived) = if opts.auto_collection_routing {
-            let meta = derive_collection_metadata(&path, &base_dir);
-            (Some(meta.collection), meta.is_archived)
-        } else if !opts.collection.is_empty() {
-            (Some(opts.collection.clone()), false)
-        } else {
-            (None, false)
-        };
-
-        match std::fs::read_to_string(&path) {
-            Ok(content) => {
-                let relative_path = path
-                    .strip_prefix(&base_dir)
-                    .unwrap_or(&path)
-                    .to_string_lossy()
-                    .to_string();
-                file_contents.push(FileReadResult {
-                    path,
-                    content,
-                    relative_path,
-                    collection_path,
-                    is_archived,
-                });
-            }
-            Err(e) => {
-                failed_results.push(LocalFileImportResult::error(
-                    file_path.clone(),
-                    &format!("Failed to read file: {}", e),
-                ));
-            }
-        }
-    }
-
-    // Parse phase
-    let mut prepared_files: Vec<PreparedFileImport> = Vec::new();
-
-    for (index, file_read) in file_contents.iter().enumerate() {
-        let filename = file_read
-            .path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or(&file_read.relative_path)
-            .to_string();
-
-        send_progress(
-            &tx,
-            3,
-            "parsing",
-            &format!("Parsing: {}", filename),
-            index + 1,
-            file_contents.len(),
-            vec![],
-        )
+        // Markdown parsing is CPU-bound and scales with file size, so it runs on
+        // the blocking pool rather than an async worker shared with other RPCs.
+        let chunk_files: Vec<String> = chunk_reads
+            .iter()
+            .map(|f| f.path.to_string_lossy().to_string())
+            .collect();
+        let use_filename_as_title = opts.use_filename_as_title;
+        let parsed = tokio::task::spawn_blocking(move || {
+            chunk_reads
+                .into_iter()
+                .map(|file_read| prepare_file_import(file_read, use_filename_as_title))
+                .collect::<Vec<_>>()
+        })
         .await;
 
-        let title = if opts.use_filename_as_title {
-            file_read
-                .path
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .map(|s| s.to_string())
-                .unwrap_or_else(|| "Untitled".to_string())
-        } else {
-            file_read
-                .content
-                .lines()
-                .find(|l| !l.trim().is_empty())
-                .map(|s| s.to_string())
-                .unwrap_or_else(|| "Untitled".to_string())
-        };
-
-        let root_id = deterministic_root_id(&file_read.relative_path);
-
-        let root_content = if title.starts_with('#') {
-            title.clone()
-        } else {
-            format!("# {}", title)
-        };
-
-        let content_for_children = {
-            let first_line = file_read.content.lines().find(|l| !l.trim().is_empty());
-            if first_line == Some(&title) {
-                let lines: Vec<&str> = file_read.content.lines().collect();
-                let first_idx = lines.iter().position(|l| !l.trim().is_empty()).unwrap_or(0);
-                lines[first_idx + 1..].join("\n")
-            } else {
-                file_read.content.clone()
+        match parsed {
+            Ok(outcomes) => {
+                for (filename, outcome) in outcomes {
+                    parsed_count += 1;
+                    send_progress(
+                        &tx,
+                        3,
+                        "parsing",
+                        &format!("Parsed: {}", filename),
+                        parsed_count,
+                        total_files,
+                        vec![],
+                    )
+                    .await;
+                    match outcome {
+                        Ok(prepared) => prepared_files.push(prepared),
+                        Err(failed) => failed_results.push(failed),
+                    }
+                }
             }
-        };
-
-        match prepare_nodes_from_markdown(&content_for_children, Some(root_id.clone())) {
-            Ok(children) => {
-                prepared_files.push(PreparedFileImport {
-                    file_path: file_read.path.clone(),
-                    root_id,
-                    root_content,
-                    is_archived: file_read.is_archived,
-                    collection_path: file_read.collection_path.clone(),
-                    children,
-                });
-            }
-            Err(e) => {
-                failed_results.push(LocalFileImportResult::error(
-                    file_read.path.to_string_lossy().to_string(),
-                    &format!("Failed to parse markdown: {:?}", e),
-                ));
+            Err(join_err) => {
+                // A parser panic takes the whole chunk with it; report each of
+                // its files as failed instead of silently dropping them.
+                tracing::error!("Markdown parse task aborted: {join_err}");
+                parsed_count += chunk_files.len();
+                failed_results.extend(chunk_files.into_iter().map(|f| {
+                    LocalFileImportResult::error(
+                        f,
+                        &format!("Failed to parse markdown: parser aborted ({join_err})"),
+                    )
+                }));
             }
         }
     }
-
-    // Build file→UUID map for link transformation
-    let file_to_uuid_map: HashMap<PathBuf, String> = prepared_files
-        .iter()
-        .map(|f| (f.file_path.clone(), f.root_id.clone()))
-        .collect();
 
     send_progress(
         &tx,
@@ -456,16 +428,21 @@ async fn run_batch_import(
     )
     .await;
 
-    let mut all_mentions: Vec<(String, String)> = Vec::new();
-    for prepared in &mut prepared_files {
-        let result = transform_links_in_nodes_with_mentions(
-            &mut prepared.children,
-            &file_to_uuid_map,
-            Some(&prepared.file_path),
-            &prepared.root_id,
-        );
-        all_mentions.extend(result.mentions);
-    }
+    // Resolve links across the whole import (one global file→root-id index),
+    // off the async workers: it rewrites every node's content.
+    let (prepared_files, all_mentions) =
+        match tokio::task::spawn_blocking(move || resolve_import_links(prepared_files)).await {
+            Ok(resolved) => resolved,
+            Err(join_err) => {
+                tracing::error!("Import link resolution aborted: {join_err}");
+                let _ = tx
+                    .send(Err(Status::internal(format!(
+                        "import link resolution aborted unexpectedly: {join_err}"
+                    ))))
+                    .await;
+                return;
+            }
+        };
 
     // Collect unique collection paths
     let unique_collections: Vec<String> = prepared_files
@@ -856,6 +833,124 @@ fn apply_phase2_error(results: &mut [LocalFileImportResult], error: &Option<Stri
     }
 }
 
+/// The rejection for a batch import larger than [`MAX_IMPORT_FILES`], checked
+/// before any work starts; `None` when the batch is within the limit.
+fn oversized_batch_error(file_count: usize) -> Option<Status> {
+    (file_count > MAX_IMPORT_FILES).then(|| {
+        Status::invalid_argument(format!(
+            "Import batch exceeds maximum of {MAX_IMPORT_FILES} files (got {file_count}); \
+             import sub-folders separately or narrow the selection with exclude patterns"
+        ))
+    })
+}
+
+/// Read one import source through `tokio::fs`, so the read runs on the blocking
+/// pool instead of parking an async worker. Errors are user-facing messages.
+async fn read_import_file(path: &Path) -> Result<String, String> {
+    match tokio::fs::metadata(path).await {
+        Ok(meta) if meta.is_file() => {}
+        Ok(_) => return Err("Path is not a file".to_string()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Err("File does not exist".to_string());
+        }
+        Err(e) => return Err(format!("Failed to read file: {e}")),
+    }
+    tokio::fs::read_to_string(path)
+        .await
+        .map_err(|e| format!("Failed to read file: {e}"))
+}
+
+/// Parse one read file into its import root and child nodes. Synchronous and
+/// CPU-bound — call from the blocking pool. Returns the display filename with
+/// the outcome so the caller can report progress.
+fn prepare_file_import(
+    file_read: FileReadResult,
+    use_filename_as_title: bool,
+) -> (String, Result<PreparedFileImport, LocalFileImportResult>) {
+    let filename = file_read
+        .path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(&file_read.relative_path)
+        .to_string();
+
+    let title = if use_filename_as_title {
+        file_read
+            .path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "Untitled".to_string())
+    } else {
+        file_read
+            .content
+            .lines()
+            .find(|l| !l.trim().is_empty())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "Untitled".to_string())
+    };
+
+    let root_id = deterministic_root_id(&file_read.relative_path);
+
+    let root_content = if title.starts_with('#') {
+        title.clone()
+    } else {
+        format!("# {}", title)
+    };
+
+    let content_for_children = {
+        let first_line = file_read.content.lines().find(|l| !l.trim().is_empty());
+        if first_line == Some(&title) {
+            let lines: Vec<&str> = file_read.content.lines().collect();
+            let first_idx = lines.iter().position(|l| !l.trim().is_empty()).unwrap_or(0);
+            lines[first_idx + 1..].join("\n")
+        } else {
+            file_read.content
+        }
+    };
+
+    let outcome = match prepare_nodes_from_markdown(&content_for_children, Some(root_id.clone())) {
+        Ok(children) => Ok(PreparedFileImport {
+            file_path: file_read.path,
+            root_id,
+            root_content,
+            is_archived: file_read.is_archived,
+            collection_path: file_read.collection_path,
+            children,
+        }),
+        Err(e) => Err(LocalFileImportResult::error(
+            file_read.path.to_string_lossy().to_string(),
+            &format!("Failed to parse markdown: {:?}", e),
+        )),
+    };
+    (filename, outcome)
+}
+
+/// Rewrite links between imported files to `nodespace://` references and
+/// collect the resulting mentions. The file→root-id index spans every prepared
+/// file of the import, so links resolve across the whole batch. Synchronous and
+/// CPU-bound — call from the blocking pool.
+fn resolve_import_links(
+    mut prepared_files: Vec<PreparedFileImport>,
+) -> (Vec<PreparedFileImport>, Vec<(String, String)>) {
+    let file_to_uuid_map: HashMap<PathBuf, String> = prepared_files
+        .iter()
+        .map(|f| (f.file_path.clone(), f.root_id.clone()))
+        .collect();
+
+    let mut all_mentions: Vec<(String, String)> = Vec::new();
+    for prepared in &mut prepared_files {
+        let result = transform_links_in_nodes_with_mentions(
+            &mut prepared.children,
+            &file_to_uuid_map,
+            Some(&prepared.file_path),
+            &prepared.root_id,
+        );
+        all_mentions.extend(result.mentions);
+    }
+    (prepared_files, all_mentions)
+}
+
 // ---------------------------------------------------------------------------
 // Shared helpers
 // ---------------------------------------------------------------------------
@@ -1158,8 +1253,14 @@ async fn import_markdown_content(
         }
     };
 
-    let prepared_nodes = prepare_nodes_from_markdown(&content_for_children, None)
-        .map_err(|e| format!("Failed to parse markdown: {:?}", e))?;
+    // Parsing is CPU-bound and scales with file size; keep it off the async
+    // workers shared with other RPCs.
+    let prepared_nodes = tokio::task::spawn_blocking(move || {
+        prepare_nodes_from_markdown(&content_for_children, None)
+    })
+    .await
+    .map_err(|e| format!("Failed to parse markdown: parser aborted ({e})"))?
+    .map_err(|e| format!("Failed to parse markdown: {:?}", e))?;
 
     // Idempotent re-import: the root id is deterministic, so an existing node
     // means this document was imported before. `--replace` refreshes it;
@@ -1308,16 +1409,22 @@ mod tests {
         node_service: Arc<CoreNodeService>,
         files: Vec<String>,
         opts: ImportOptions,
-    ) {
+    ) -> ImportProgressEvent {
         let (tx, mut rx) = mpsc::channel::<Result<ImportProgressEvent, Status>>(CHANNEL_BUFFER);
-        run_batch_import(node_service, files, opts, tx).await;
-        while let Some(event) = rx.recv().await {
-            if let Ok(e) = event {
-                if e.step == 9 {
-                    break;
+        // Drain concurrently: a large import emits more progress events than
+        // the channel buffers, so the producer must not wait on this reader.
+        let drain = tokio::spawn(async move {
+            while let Some(event) = rx.recv().await {
+                match event {
+                    Ok(e) if e.step == 9 => return e,
+                    Ok(_) => {}
+                    Err(status) => panic!("import stream failed: {status}"),
                 }
             }
-        }
+            panic!("import stream ended without a completion event");
+        });
+        run_batch_import(node_service, files, opts, tx).await;
+        drain.await.unwrap()
     }
 
     fn test_context() -> SharedContext {
@@ -1400,6 +1507,104 @@ mod tests {
         assert_eq!(
             svc.import_markdown(req).await.unwrap_err().code(),
             tonic::Code::NotFound
+        );
+    }
+
+    #[test]
+    fn batch_size_cap_accepts_the_limit_and_rejects_beyond_it() {
+        assert!(oversized_batch_error(0).is_none());
+        assert!(oversized_batch_error(MAX_IMPORT_FILES).is_none());
+        let err = oversized_batch_error(MAX_IMPORT_FILES + 1).expect("over the limit");
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+        assert!(
+            err.message()
+                .contains(&format!("maximum of {MAX_IMPORT_FILES} files")),
+            "error names the limit: {}",
+            err.message()
+        );
+        assert!(
+            err.message()
+                .contains(&format!("got {}", MAX_IMPORT_FILES + 1)),
+            "error names the requested size: {}",
+            err.message()
+        );
+    }
+
+    /// The cap is enforced at the RPC boundary, before any file is touched.
+    #[tokio::test]
+    async fn import_markdown_files_rejects_oversized_batch() {
+        let (ns, _dir) = new_service_and_dir().await;
+        let svc = ImportServiceImpl::new(Arc::new(ns));
+        let request = Request::new(ImportMarkdownFilesRequest {
+            file_paths: vec!["/nonexistent.md".to_string(); MAX_IMPORT_FILES + 1],
+            options: None,
+        });
+        match svc.import_markdown_files(request).await {
+            Ok(_) => panic!("an oversized batch must be rejected"),
+            Err(status) => assert_eq!(status.code(), tonic::Code::InvalidArgument),
+        }
+    }
+
+    /// A batch spanning many phase-1 chunks imports every file, and links whose
+    /// source and target land in different chunks still resolve to mentions.
+    #[tokio::test]
+    async fn large_batch_import_resolves_links_across_chunks() {
+        const FILES: usize = 300;
+        const LINK_STRIDE: usize = 97;
+        const { assert!(FILES > PHASE1_CHUNK_SIZE * 4 && LINK_STRIDE > PHASE1_CHUNK_SIZE) };
+
+        let (ns, dir) = new_service_and_dir().await;
+        let ns = Arc::new(ns);
+        let src = dir.path().join("vault");
+        std::fs::create_dir_all(&src).unwrap();
+        let name = |i: usize| format!("note-{i:03}.md");
+        let mut files = Vec::with_capacity(FILES + 1);
+        for i in 0..FILES {
+            let target = name((i + LINK_STRIDE) % FILES);
+            std::fs::write(
+                src.join(name(i)),
+                format!("# Note {i}\n\nSee [the next note](./{target}) for more.\n"),
+            )
+            .unwrap();
+            files.push(src.join(name(i)).to_str().unwrap().to_string());
+        }
+        // A missing file fails on its own without failing the rest of the batch.
+        let missing = src.join("missing.md").to_str().unwrap().to_string();
+        files.push(missing.clone());
+
+        let opts = ImportOptions {
+            base_directory: src.to_str().unwrap().to_string(),
+            ..Default::default()
+        };
+        let done = run_batch_and_wait(Arc::clone(&ns), files, opts).await;
+
+        assert_eq!(done.results.len(), FILES + 1);
+        let failed: Vec<_> = done.results.iter().filter(|r| !r.success).collect();
+        assert_eq!(failed.len(), 1, "only the missing file fails: {failed:?}");
+        assert_eq!(failed[0].file_path, missing);
+        assert_eq!(failed[0].error, "File does not exist");
+
+        for i in 0..FILES {
+            let root = deterministic_root_id(&name(i));
+            assert!(
+                ns.get_node(&root).await.unwrap().is_some(),
+                "note {i} imported"
+            );
+            let inbound = ns.get_mentioned_by(&root).await.unwrap();
+            assert_eq!(inbound.len(), 1, "note {i} is linked from exactly one note");
+        }
+
+        // The link text itself is rewritten to the target's root id.
+        let first_children = ns
+            .get_descendants(&deterministic_root_id(&name(0)))
+            .await
+            .unwrap();
+        let target_root = deterministic_root_id(&name(LINK_STRIDE));
+        assert!(
+            first_children
+                .iter()
+                .any(|n| n.content.contains(&format!("nodespace://{target_root}"))),
+            "note 0 links to note {LINK_STRIDE} across chunk boundaries",
         );
     }
 
