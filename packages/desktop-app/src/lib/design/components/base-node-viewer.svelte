@@ -643,11 +643,11 @@
 
     // Set cursor position using FocusManager (single source of truth)
     // For inherited type nodes (Enter key on typed node), use focusNodeFromInheritedType
-    // which sets pattern state to 'inherited' (cannot revert to text).
+    // which sets pattern state to 'inherited' (reverts to text only if the plugin's canRevert allows).
     // This is different from pattern-detected type conversions which CAN revert.
     if (newNodeCursorPosition !== undefined && !focusOriginalNode) {
       if (nodeType !== 'text') {
-        // Non-text inherited nodes: Use inherited-type signal (pattern state = 'inherited', cannot revert)
+        // Non-text inherited nodes: Use inherited-type signal (pattern state = 'inherited')
         focusManager.focusNodeFromInheritedType(newNodeId, newNodeCursorPosition, paneId);
       } else {
         // Text nodes: Use regular editing node

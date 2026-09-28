@@ -16,7 +16,8 @@
  * - `revert`: Regex to check if pattern was deleted (triggers reversion)
  *
  * Example: Header plugin has canRevert: true (# Hello → #Hello reverts to text)
- * Example: Task plugin has canRevert: false (checkbox syntax is removed from content)
+ * Example: Checkbox plugin has canRevert: true ("- [ ] a" → "- [ a" reverts to text), so
+ * Enter must carry its prefix into the new sibling (prefix-inheritance splitting)
  *
  * Architecture:
  * - Single source of truth for pattern lifecycle state
@@ -120,9 +121,6 @@ export class PatternState {
    * Both 'pattern' and 'inherited' source nodes can revert when their
    * syntax is deleted (e.g., "# Hello" → "#Hello" reverts to text),
    * but ONLY if the plugin's pattern.canRevert is true.
-   *
-   * Task nodes have canRevert: false because the checkbox syntax is
-   * removed from content (cleanContent pattern).
    */
   get canRevert(): boolean {
     const source = this._creationSource;

@@ -5,6 +5,7 @@
  * - Headers: "# ", "## ", "### ", etc.
  * - Ordered lists: "1. "
  * - Quote blocks: "> "
+ * - Checkboxes: "- [ ] "
  *
  * Behavior:
  * - Cursor at start or within prefix: Create empty node with prefix, preserve original

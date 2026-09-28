@@ -248,7 +248,7 @@ export class TextareaController {
        * Creation source for pattern state
        * - 'user': User created node (patterns can be detected)
        * - 'pattern': Node created via pattern detection (can revert to text)
-       * - 'inherited': Node inherits type from parent (cannot revert)
+       * - 'inherited': Node inherits type from parent (reverts only if the plugin's canRevert allows)
        * If not provided, inferred from focusManager for backward compatibility
        */
       creationSource?: NodeCreationSource
@@ -280,7 +280,7 @@ export class TextareaController {
       const isInheritedType = cursorType === 'inherited-type';
 
       // Determine creation source:
-      // - 'inherited': Enter key on typed node (cannot revert)
+      // - 'inherited': Enter key on typed node (reverts only if the plugin's canRevert allows)
       // - 'pattern': Pattern detection conversion (can revert)
       // - 'user': Default (patterns can be detected)
       let effectiveSource: NodeCreationSource;
@@ -1148,7 +1148,7 @@ export function createTextareaController(
    * Controls how pattern detection behaves for this node:
    * - 'user': User-created node, patterns can be detected and can revert
    * - 'pattern': Created via pattern detection, can revert to text
-   * - 'inherited': Inherited type from parent (Enter key), cannot revert
+   * - 'inherited': Inherited type from parent (Enter key), reverts only if the plugin's canRevert allows
    * If not provided, inferred from focusManager for backward compatibility
    */
   creationSource?: NodeCreationSource

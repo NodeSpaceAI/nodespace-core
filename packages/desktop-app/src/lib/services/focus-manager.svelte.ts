@@ -151,7 +151,7 @@ export const focusManager = {
    *
    * Called when Enter key creates a new node that inherits its type from the parent.
    * Unlike focusNodeFromTypeConversion, this sets cursor type to 'inherited-type'
-   * which signals TextareaController to use 'inherited' creation source (cannot revert).
+   * which signals TextareaController to use 'inherited' creation source.
    */
   focusNodeFromInheritedType(nodeId: string, cursorPosition: number, paneId: string): void {
     _editingNodeId = nodeId;

@@ -81,7 +81,7 @@ export interface CursorPositionNodeTypeConversion {
 
 /**
  * For nodes created via Enter key that inherit parent type
- * These nodes have a type-locked pattern state (cannot revert to text)
+ * These nodes get an 'inherited' pattern state (reverts to text only if the plugin's canRevert allows)
  */
 export interface CursorPositionInheritedType {
   type: 'inherited-type';

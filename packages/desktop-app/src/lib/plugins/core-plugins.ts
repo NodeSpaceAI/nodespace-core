@@ -204,7 +204,7 @@ export const checkboxNodePlugin: PluginDefinition = {
     revert: /^-[ \[]?$|^- \[[ xX]?\]?$/, // partially-deleted prefix (e.g. "- [" or "- [ ]") → revert to text
     onEnter: 'inherit',
     prefixToInherit: '- [ ] ',
-    splittingStrategy: 'simple-split',
+    splittingStrategy: 'prefix-inheritance',
     cursorPlacement: 'start',
     extractMetadata: () => ({})
   },

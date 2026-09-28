@@ -22,6 +22,7 @@ import {
   registerExternalPlugin
 } from '$lib/plugins/core-plugins';
 import type { NodeViewerComponent, NodeReferenceComponent } from '$lib/plugins/types';
+import { patternSplitter } from '$lib/patterns/splitter';
 
 describe('Core Plugins Integration', () => {
   let registry: PluginRegistry;
@@ -626,6 +627,40 @@ describe('Core Plugins Integration', () => {
           `canHaveChildren parity failed for '${nodeType}': frontend=${frontendValue} rust=${rustValue}`
         ).toBe(rustValue);
       }
+    });
+  });
+  // Enter on a revertible prefixed node must carry the prefix into the new sibling.
+  // Without it, the sibling's first keystroke fails the pattern and canRevert turns
+  // it back into text — the node type appears to "reset" on Enter.
+  describe('Enter inherits the node prefix', () => {
+    it('every plugin declaring prefixToInherit uses the prefix-inheritance strategy', () => {
+      for (const plugin of corePlugins) {
+        if (plugin.pattern?.prefixToInherit === undefined) continue;
+        expect(
+          plugin.pattern.splittingStrategy,
+          `'${plugin.id}' declares prefixToInherit but would drop it on Enter`
+        ).toBe('prefix-inheritance');
+      }
+    });
+
+    it('splitting a checkbox at the end gives the new sibling an empty checkbox prefix', () => {
+      registerCorePlugins(registry);
+      const content = '- [x] Hey there';
+
+      const result = patternSplitter.split(content, content.length);
+
+      expect(result.beforeContent).toBe(content);
+      expect(result.afterContent).toBe('- [ ] ');
+      expect(result.newNodeCursorPosition).toBe(6);
+    });
+
+    it('Enter on an empty checkbox creates another empty checkbox', () => {
+      registerCorePlugins(registry);
+
+      const result = patternSplitter.split('- [ ] ', 6);
+
+      expect(result.beforeContent).toBe('- [ ] ');
+      expect(result.afterContent).toBe('- [ ] ');
     });
   });
 });

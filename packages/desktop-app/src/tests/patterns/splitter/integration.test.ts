@@ -55,11 +55,12 @@ describe('PatternSplitter Integration', () => {
       cursorPlacement: 'start'
     };
 
-    const taskPattern: PatternTemplate = {
-      regex: /^- \[/,
-      nodeType: 'task',
-      priority: 5,
-      splittingStrategy: 'simple-split',
+    const checkboxPattern: PatternTemplate = {
+      regex: /^- \[[ xX]\] /,
+      nodeType: 'checkbox',
+      priority: 10,
+      splittingStrategy: 'prefix-inheritance',
+      prefixToInherit: '- [ ] ',
       cursorPlacement: 'start'
     };
 
@@ -67,7 +68,7 @@ describe('PatternSplitter Integration', () => {
     registry.register(orderedListPattern);
     registry.register(quotePattern);
     registry.register(textPattern);
-    registry.register(taskPattern);
+    registry.register(checkboxPattern);
   });
 
   afterEach(() => {
@@ -191,16 +192,16 @@ describe('PatternSplitter Integration', () => {
     });
   });
 
-  describe('Task Node Splitting', () => {
-    it('should split task node with simple split strategy', () => {
-      const content = '- [ ] Buy groceries';
-      const position = 9; // - [ ] Buy| groceries
+  describe('Checkbox Node Splitting', () => {
+    it('should split checkbox and inherit an unchecked prefix', () => {
+      const content = '- [x] Buy groceries';
+      const position = 9; // - [x] Buy| groceries
 
-      const result = splitter.split(content, position, 'task');
+      const result = splitter.split(content, position, 'checkbox');
 
-      expect(result.beforeContent).toBe('- [ ] Buy');
-      expect(result.afterContent).toBe(' groceries');
-      expect(result.newNodeCursorPosition).toBe(0);
+      expect(result.beforeContent).toBe('- [x] Buy');
+      expect(result.afterContent).toBe('- [ ]  groceries');
+      expect(result.newNodeCursorPosition).toBe(6);
     });
   });
 
