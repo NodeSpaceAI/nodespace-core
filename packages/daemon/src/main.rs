@@ -42,11 +42,12 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use nodespace_agent::local_agent::otlp_tracer;
+use nodespace_core::db::schema::SchemaMismatch;
 use nodespace_daemon::tray::layer::TrayMetricsLayer;
 use nodespace_daemon::{
-    build_base_router, build_shared_services, create_dir_owner_only, resolve_db_path, tray,
-    BaseServices, DatabaseManager, DatabaseServiceImpl, DatabaseServices, DbManagerLayer,
-    SharedContext,
+    build_base_router, build_shared_services, create_dir_owner_only, incompatible_database,
+    resolve_db_path, tray, BaseServices, DatabaseManager, DatabaseServiceImpl, DatabaseServices,
+    DbManagerLayer, SharedContext,
 };
 use nodespace_nlp_engine::EmbeddingService;
 use tokio::sync::watch;
@@ -98,7 +99,30 @@ async fn open_default_database(
     let default_id = manager
         .ensure_default_registered("Default".to_string(), db_path.to_path_buf())
         .await?;
-    let bundle = manager.get_or_open(&default_id).await?;
+    let marker = incompatible_database::marker_path()?;
+    let bundle = match manager.get_or_open(&default_id).await {
+        Ok(bundle) => bundle,
+        Err(e) => {
+            if let Some(mismatch) = SchemaMismatch::find_in(&e) {
+                let refused = manager
+                    .default_database_path()
+                    .await
+                    .unwrap_or_else(|| db_path.to_path_buf());
+                if let Err(record_err) =
+                    incompatible_database::record(&marker, &refused, mismatch).await
+                {
+                    // The refusal itself is still what gets reported below;
+                    // without the marker the app only loses the explanation.
+                    tracing::warn!(
+                        error = format!("{record_err:#}"),
+                        "could not write the incompatible-database marker"
+                    );
+                }
+            }
+            return Err(e);
+        }
+    };
+    incompatible_database::clear(&marker).await;
     // Log the path the registry actually resolved the default to — not the
     // boot-time `db_path`, which the registry can and does override.
     if let Some(served) = manager.default_database_path().await {
@@ -460,7 +484,9 @@ fn main() -> Result<()> {
         .context("build tokio runtime")?;
 
     if headless() {
-        let result = runtime.block_on(async { serve_headless().await });
+        let result = stop_cleanly_on_incompatible_database(
+            runtime.block_on(async { serve_headless().await }),
+        );
         if let Err(ref e) = result {
             // Log this immediately, loudly, and with the full context chain --
             // don't rely solely on the process's final `Result` print, which
@@ -505,14 +531,40 @@ fn main() -> Result<()> {
         std::process::exit(0);
     });
 
-    runtime
-        .block_on(grpc_handle)
-        .context("gRPC task panicked")?
-        .context("gRPC server returned an error")?;
+    stop_cleanly_on_incompatible_database(
+        runtime
+            .block_on(grpc_handle)
+            .context("gRPC task panicked")?
+            .context("gRPC server returned an error"),
+    )?;
     defused.store(true, Ordering::SeqCst);
 
     tracing::info!("nodespaced shutdown complete");
     Ok(())
+}
+
+/// Turn a refused, incompatible default database into a clean exit.
+///
+/// Every other startup failure keeps its non-zero status, and with it the
+/// service manager's restart — it might be transient. This one cannot be: the
+/// database file is identical on every attempt, and launchd's conditional
+/// `KeepAlive` / systemd's `Restart=on-failure` would otherwise respawn the
+/// daemon into the same refusal every few seconds, forever. Exiting `0` is
+/// what those two treat as a deliberate stop. The marker
+/// `open_default_database` wrote is how the desktop app learns why.
+fn stop_cleanly_on_incompatible_database(result: Result<()>) -> Result<()> {
+    match result {
+        Err(e) if incompatible_database::is_incompatible_database(&e) => {
+            tracing::error!(
+                error = format!("{e:#}"),
+                "nodespaced cannot open its database: it was created by a different \
+                 version of NodeSpace. Stopping without a restart; the NodeSpace app \
+                 offers to move the database aside and start fresh."
+            );
+            Ok(())
+        }
+        other => other,
+    }
 }
 
 /// Awaits `task` -- the gRPC server's own `JoinHandle` -- and tells the tray

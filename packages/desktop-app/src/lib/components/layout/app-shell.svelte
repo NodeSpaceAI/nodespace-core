@@ -4,6 +4,7 @@
   import { invoke } from '@tauri-apps/api/core';
   import NavigationSidebar from './navigation-sidebar.svelte';
   import PaneManager from './pane-manager.svelte';
+  import IncompatibleDatabaseBanner from './incompatible-database-banner.svelte';
   import StatusBar from '$lib/components/status-bar.svelte';
   import { statusBar } from '$lib/stores/status-bar.svelte';
   import ThemeProvider from '$lib/design/components/theme-provider.svelte';
@@ -60,6 +61,7 @@
   // store into local $state (ADR-049).
   const daemonConnecting = $derived($daemonStatus.connecting);
   const daemonUnreachable = $derived($daemonStatus.unreachable);
+  const daemonIncompatibleDatabase = $derived($daemonStatus.incompatibleDatabase);
 
   // First-launch onboarding wizard.
   let showOnboarding = $state(false);
@@ -652,7 +654,9 @@
 <ThemeProvider>
   <NodeServiceContext>
     <div class="app-container">
-      {#if daemonUnreachable}
+      {#if daemonIncompatibleDatabase}
+        <IncompatibleDatabaseBanner />
+      {:else if daemonUnreachable}
         <div class="daemon-error-banner" role="alert">
           <span>
             NodeSpace background service is not running. Some features may be unavailable.

@@ -123,6 +123,40 @@ pub const fn ui_pid_relative(is_debug: bool, is_pro: bool) -> &'static str {
     }
 }
 
+/// Every incompatible-database marker filename, in the same build-variant
+/// order as [`DAEMON_SOCKET_NAMES`].
+///
+/// The daemon writes this marker into the `.nodespace/` state directory when
+/// it refuses to open its default database because the file was created by a
+/// different version with a different table shape, and then exits cleanly so
+/// the service manager does not respawn it into the same failure. The desktop
+/// app reads it to tell a user *why* the daemon is not running, and removes it
+/// once the database has been moved aside. The daemon removes it itself on the
+/// next successful open. Scoped by build variant for the same reason the
+/// socket is: a dev build and a release build can disagree about the schema,
+/// so one variant's refusal says nothing about another's.
+pub const INCOMPATIBLE_DATABASE_NAMES: [&str; 4] = [
+    "incompatible-database.json",
+    "incompatible-database-pro.json",
+    "incompatible-database-dev.json",
+    "incompatible-database-dev-pro.json",
+];
+
+/// The incompatible-database marker filename for one build variant. See
+/// [`daemon_socket_name`] for the parameter contract — identical here.
+///
+/// A filename rather than a home-relative path: the daemon resolves its state
+/// directory through `NODESPACE_HOME` (so an isolated run never writes into
+/// the real one), and each side joins this name onto its own state directory.
+pub const fn incompatible_database_name(is_debug: bool, is_pro: bool) -> &'static str {
+    match (is_debug, is_pro) {
+        (false, false) => INCOMPATIBLE_DATABASE_NAMES[0],
+        (false, true) => INCOMPATIBLE_DATABASE_NAMES[1],
+        (true, false) => INCOMPATIBLE_DATABASE_NAMES[2],
+        (true, true) => INCOMPATIBLE_DATABASE_NAMES[3],
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -194,5 +228,16 @@ mod tests {
                 daemon_socket_name(is_debug, is_pro)
             );
         }
+    }
+
+    #[test]
+    fn every_variant_gets_a_distinct_incompatible_database_marker() {
+        let mut names: Vec<&str> = [(false, false), (false, true), (true, false), (true, true)]
+            .iter()
+            .map(|&(d, p)| incompatible_database_name(d, p))
+            .collect();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names.len(), 4, "build variants must not share a marker");
     }
 }

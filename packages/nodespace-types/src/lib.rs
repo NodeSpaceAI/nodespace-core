@@ -15,6 +15,7 @@
 mod ai_chat;
 mod convert;
 mod helpers;
+mod incompatible_database;
 mod node;
 mod person;
 mod project;
@@ -29,6 +30,7 @@ pub use convert::{
     node_to_typed_value, nodes_to_typed_values, promoted_fields,
 };
 pub use helpers::{is_valid_lifecycle_status, LIFECYCLE_STATUSES};
+pub use incompatible_database::IncompatibleDatabase;
 pub use node::{
     DeleteResult, Node, NodeQuery, NodeReference, NodeUpdate, OrderBy, ValidationError,
 };

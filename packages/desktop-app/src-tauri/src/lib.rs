@@ -25,6 +25,10 @@ pub mod watcher;
 #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
 pub mod daemon_setup;
 
+// A database the daemon refused as incompatible: explanation and move-aside
+#[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+pub mod incompatible_database;
+
 // First-launch skill installer
 pub mod skill_setup;
 
@@ -82,8 +86,9 @@ fn frontend_log(line: String) {
 
 /// Report the current daemon health to the frontend.
 ///
-/// Returns "healthy", "starting", or "not_running". The frontend uses this
-/// to decide whether to show an error state.
+/// Returns "healthy", "starting", "not_running", or "incompatible_database"
+/// (not running because it refused a database another version created). The
+/// frontend uses this to decide which error state to show.
 #[tauri::command]
 async fn check_daemon_status() -> String {
     daemon_status_body().await
@@ -106,7 +111,9 @@ pub async fn daemon_status_body() -> String {
         return match check_daemon_socket(socket_path.as_path()).await {
             DaemonStatus::Healthy => "healthy".to_string(),
             DaemonStatus::Starting => "starting".to_string(),
-            DaemonStatus::NotRunning => "not_running".to_string(),
+            DaemonStatus::NotRunning => {
+                crate::incompatible_database::daemon_down_status().to_string()
+            }
         };
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
@@ -512,7 +519,7 @@ pub fn run() {
                                 window_routing::emit_routed(
                                     &app_handle,
                                     "daemon-status",
-                                    "not_running",
+                                    incompatible_database::daemon_down_status(),
                                     None,
                                 );
                             }
@@ -521,7 +528,7 @@ pub fn run() {
                                 window_routing::emit_routed(
                                     &app_handle,
                                     "daemon-status",
-                                    "not_running",
+                                    incompatible_database::daemon_down_status(),
                                     None,
                                 );
                             }
@@ -648,7 +655,7 @@ pub fn run() {
                             window_routing::emit_routed(
                                 &app_handle,
                                 "daemon-status",
-                                "not_running",
+                                incompatible_database::daemon_down_status(),
                                 None,
                             );
                         }
@@ -694,6 +701,8 @@ pub fn run() {
             frontend_log_enabled,
             frontend_log,
             check_daemon_status,
+            incompatible_database::get_incompatible_database,
+            incompatible_database::reset_incompatible_database,
             take_pending_tray_database_selection,
             window_routing::pin_window_database,
             update_check::check_for_update_command,

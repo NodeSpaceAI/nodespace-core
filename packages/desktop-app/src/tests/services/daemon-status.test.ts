@@ -17,12 +17,14 @@ const mockIsTauri = vi.fn(() => true);
 // Defaults to a promise that never resolves, so the initial pull in
 // startDaemonStatusListener() doesn't race the push-driven assertions below
 // (tests that care about the pull path set this explicitly).
-// Typed as string | boolean because it stands in for two different commands:
-// the status commands answer with a status string, while
-// `probe_and_recover_channel` answers with a boolean. Inferring the type from
-// this default alone would narrow it to `string` and reject the boolean the
-// probe tests legitimately return.
-const mockInvoke = vi.fn((_cmd: string): Promise<string | boolean> => new Promise(() => {}));
+// Typed as a union because it stands in for several different commands: the
+// status commands answer with a status string, `probe_and_recover_channel`
+// with a boolean, and the incompatible-database commands with a record (or
+// null). Inferring the type from this default alone would narrow it to
+// `string` and reject what the other commands legitimately return.
+const mockInvoke = vi.fn(
+  (_cmd: string): Promise<string | boolean | object | null> => new Promise(() => {})
+);
 import { mockTauriCore } from '../helpers/mock-tauri-core';
 
 vi.mock('@tauri-apps/api/core', () =>
@@ -126,6 +128,79 @@ describe('daemon-status service', () => {
 
     emitDaemonStatus('healthy');
     expect(get(daemonStatus).unreachable).toBe(false);
+  });
+
+  it('marks an incompatible database distinctly from a generic not_running', async () => {
+    const { daemonStatus, startDaemonStatusListener } = await import('$lib/services/daemon-status');
+    startDaemonStatusListener();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    emitDaemonStatus('incompatible_database');
+
+    expect(get(daemonStatus)).toEqual({
+      connecting: false,
+      unreachable: false,
+      incompatibleDatabase: true
+    });
+
+    emitDaemonStatus('not_running');
+    expect(get(daemonStatus).incompatibleDatabase).toBe(false);
+    expect(get(daemonStatus).unreachable).toBe(true);
+  });
+
+  it('resetIncompatibleDatabase applies the restarted status and fires reconnect listeners', async () => {
+    const { daemonStatus, startDaemonStatusListener, onDaemonReconnect, resetIncompatibleDatabase } =
+      await import('$lib/services/daemon-status');
+    startDaemonStatusListener();
+    await Promise.resolve();
+    await Promise.resolve();
+    emitDaemonStatus('incompatible_database');
+
+    const callback = vi.fn();
+    onDaemonReconnect(callback);
+    const result = { backupPath: '/x/nodespace.db.incompatible-20260928-101500', status: 'healthy' };
+    mockInvoke.mockResolvedValue(result);
+
+    await expect(resetIncompatibleDatabase()).resolves.toEqual(result);
+
+    expect(mockInvoke).toHaveBeenCalledWith('reset_incompatible_database');
+    expect(get(daemonStatus).incompatibleDatabase).toBe(false);
+    expect(callback).toHaveBeenCalledTimes(1);
+  });
+
+  it('resetIncompatibleDatabase leaves the state alone when the backend refuses', async () => {
+    const { daemonStatus, startDaemonStatusListener, resetIncompatibleDatabase } = await import(
+      '$lib/services/daemon-status'
+    );
+    startDaemonStatusListener();
+    await Promise.resolve();
+    await Promise.resolve();
+    emitDaemonStatus('incompatible_database');
+
+    mockInvoke.mockRejectedValue('there is no incompatible database to reset');
+
+    await expect(resetIncompatibleDatabase()).rejects.toBe(
+      'there is no incompatible database to reset'
+    );
+    expect(get(daemonStatus).incompatibleDatabase).toBe(true);
+  });
+
+  it('getIncompatibleDatabase returns the record, and null outside Tauri', async () => {
+    const { getIncompatibleDatabase } = await import('$lib/services/daemon-status');
+    const record = {
+      databasePath: '/x/nodespace.db',
+      detail: 'relationship: missing reverse_relationship_type',
+      detectedAt: '2026-09-28T10:00:00Z'
+    };
+    mockInvoke.mockResolvedValue(record);
+    await expect(getIncompatibleDatabase()).resolves.toEqual(record);
+    expect(mockInvoke).toHaveBeenCalledWith('get_incompatible_database');
+
+    mockInvoke.mockClear();
+    mockIsTauri.mockReturnValue(false);
+    await expect(getIncompatibleDatabase()).resolves.toBeNull();
+    expect(mockInvoke).not.toHaveBeenCalled();
   });
 
   it('fires onDaemonReconnect callbacks when the daemon transitions to healthy', async () => {
