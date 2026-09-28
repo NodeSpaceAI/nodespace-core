@@ -365,9 +365,12 @@ const MAX_AGGREGATION_DEPTH: usize = 20;
 
 /// Recursively collect content from a node's children for embedding aggregation.
 ///
-/// Performs a breadth-first traversal via `NodeAccessor::get_children()`, collecting
-/// each child's `get_parent_contribution()` output. Limits depth to prevent
-/// runaway traversal on deeply nested trees.
+/// Performs a pre-order (document-order) depth-first traversal via
+/// `NodeAccessor::get_children()`, collecting each child's
+/// `get_parent_contribution()` output in the order a human reads the
+/// document top to bottom: a child's own contribution comes first, followed
+/// by the full contents of its subtree, before its next sibling is visited.
+/// Limits depth to prevent runaway traversal on deeply nested trees.
 ///
 /// Never spans an access boundary (ADR-059 §7). A descendant whose access
 /// differs from `node`'s is a defect: it is logged, and it and its subtree are
@@ -392,41 +395,52 @@ async fn aggregate_children_content(
         }
     };
     let mut parts = Vec::new();
-    let mut stack: Vec<(String, usize)> = vec![(node.id.clone(), 0)];
 
-    while let Some((parent_id, depth)) = stack.pop() {
-        if depth >= MAX_AGGREGATION_DEPTH {
+    // Stack of (node, depth) entries not yet visited. Seeded with `node`'s
+    // direct children pushed in REVERSE sibling order, so popping (LIFO)
+    // visits them first-child-first. Each pop immediately records that
+    // node's contribution, then pushes ITS OWN children (again reversed)
+    // before any sibling further down the stack is reached — draining a
+    // child's whole subtree before moving to its next sibling, i.e.
+    // pre-order / document order, not level-by-level.
+    let root_children = match accessor.get_children(&node.id).await {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!("Failed to get children for {}: {}", node.id, e);
+            Vec::new()
+        }
+    };
+    let mut stack: Vec<(Node, usize)> = root_children.into_iter().rev().map(|c| (c, 1)).collect();
+
+    while let Some((child, depth)) = stack.pop() {
+        if boundaries.contains(&child.id) {
+            tracing::error!(
+                root_id = %node.id,
+                descendant_id = %child.id,
+                "ADR-059 §7 defect: descendant's access differs from its embedding root's; \
+                 excluded from the root's embedding and embedded as its own root"
+            );
             continue;
         }
-        let children = match accessor.get_children(&parent_id).await {
+        // Use behavior to get the contribution this child makes to its parent's embedding
+        let behavior: Arc<dyn NodeBehavior> = registry
+            .get(&child.node_type)
+            .unwrap_or_else(|| Arc::new(CustomNodeBehavior::new(&child.node_type)));
+        if let Some(contribution) = behavior.get_parent_contribution(&child) {
+            parts.push(contribution);
+        }
+        // Recurse into this child's own children (depth-first) before its siblings
+        if depth >= MAX_AGGREGATION_DEPTH || !behavior.can_have_children() {
+            continue;
+        }
+        let grandchildren = match accessor.get_children(&child.id).await {
             Ok(c) => c,
             Err(e) => {
-                tracing::warn!("Failed to get children for {}: {}", parent_id, e);
+                tracing::warn!("Failed to get children for {}: {}", child.id, e);
                 continue;
             }
         };
-        for child in children {
-            if boundaries.contains(&child.id) {
-                tracing::error!(
-                    root_id = %node.id,
-                    descendant_id = %child.id,
-                    "ADR-059 §7 defect: descendant's access differs from its embedding root's; \
-                     excluded from the root's embedding and embedded as its own root"
-                );
-                continue;
-            }
-            // Use behavior to get the contribution this child makes to its parent's embedding
-            let behavior: Arc<dyn NodeBehavior> = registry
-                .get(&child.node_type)
-                .unwrap_or_else(|| Arc::new(CustomNodeBehavior::new(&child.node_type)));
-            if let Some(contribution) = behavior.get_parent_contribution(&child) {
-                parts.push(contribution);
-            }
-            // Recurse into children if the child type can have children
-            if behavior.can_have_children() {
-                stack.push((child.id.clone(), depth + 1));
-            }
-        }
+        stack.extend(grandchildren.into_iter().rev().map(|gc| (gc, depth + 1)));
     }
 
     if parts.is_empty() {
@@ -5718,5 +5732,122 @@ mod tests {
         }));
         assert!(behavior.get_embeddable_content(&node).is_none());
         assert!(behavior.get_parent_contribution(&node).is_none());
+    }
+
+    // --- aggregate_children_content: traversal order regression ---
+
+    /// Minimal `NodeAccessor` test double. `with_children` registers a
+    /// parent's children in the exact sibling order `get_children` should
+    /// return them (already sorted by fractional order at the real
+    /// accessor), so this mock never has to reorder anything itself.
+    struct MockNodeAccessor {
+        children: HashMap<String, Vec<Node>>,
+    }
+
+    impl MockNodeAccessor {
+        fn new() -> Self {
+            Self {
+                children: HashMap::new(),
+            }
+        }
+
+        fn with_children(mut self, parent_id: &str, children: Vec<Node>) -> Self {
+            self.children.insert(parent_id.to_string(), children);
+            self
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl NodeAccessor for MockNodeAccessor {
+        async fn get_node(
+            &self,
+            _id: &str,
+        ) -> Result<Option<Node>, crate::services::error::NodeServiceError> {
+            Ok(None)
+        }
+
+        async fn get_children(
+            &self,
+            parent_id: &str,
+        ) -> Result<Vec<Node>, crate::services::error::NodeServiceError> {
+            Ok(self.children.get(parent_id).cloned().unwrap_or_default())
+        }
+
+        async fn get_nodes(
+            &self,
+            _ids: &[&str],
+        ) -> Result<Vec<Node>, crate::services::error::NodeServiceError> {
+            Ok(Vec::new())
+        }
+
+        async fn access_boundaries_under(
+            &self,
+            _root_id: &str,
+        ) -> Result<HashSet<String>, crate::services::error::NodeServiceError> {
+            Ok(HashSet::new())
+        }
+    }
+
+    /// Regression test: aggregation must read in natural top-to-bottom
+    /// document order (pre-order depth-first), not breadth-first / level
+    /// order. For `root -> [A -> [A1, A2], B -> [B1]]`, the correct order is
+    /// exactly `A, A1, A2, B, B1` — a child's whole subtree before its next
+    /// sibling. The bug this guards against produced `A, B, B1, A1, A2`
+    /// (later siblings' subtrees popped off the stack before earlier
+    /// siblings' own children were reached).
+    #[tokio::test]
+    async fn test_aggregate_children_content_preorder_document_order() {
+        let root = Node::new_with_id(
+            "root".to_string(),
+            "text".to_string(),
+            "Root".to_string(),
+            json!({}),
+        );
+        let a = Node::new_with_id(
+            "a".to_string(),
+            "text".to_string(),
+            "A".to_string(),
+            json!({}),
+        );
+        let a1 = Node::new_with_id(
+            "a1".to_string(),
+            "text".to_string(),
+            "A1".to_string(),
+            json!({}),
+        );
+        let a2 = Node::new_with_id(
+            "a2".to_string(),
+            "text".to_string(),
+            "A2".to_string(),
+            json!({}),
+        );
+        let b = Node::new_with_id(
+            "b".to_string(),
+            "text".to_string(),
+            "B".to_string(),
+            json!({}),
+        );
+        let b1 = Node::new_with_id(
+            "b1".to_string(),
+            "text".to_string(),
+            "B1".to_string(),
+            json!({}),
+        );
+
+        let accessor = MockNodeAccessor::new()
+            .with_children("root", vec![a, b])
+            .with_children("a", vec![a1, a2])
+            .with_children("b", vec![b1]);
+
+        let registry = NodeBehaviorRegistry::new();
+
+        let result = aggregate_children_content(&root, &accessor, &registry)
+            .await
+            .expect("expected aggregated content for a tree with content-bearing children");
+
+        assert_eq!(
+            result, "A\n\nA1\n\nA2\n\nB\n\nB1",
+            "aggregated content must read in document order (pre-order DFS), not breadth-first"
+        );
     }
 }
