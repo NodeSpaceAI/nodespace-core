@@ -132,7 +132,9 @@ impl NodeService {
             changed_properties: changed_properties.to_vec(),
         };
 
-        let keys = crate::playbook::lifecycle::trigger_keys_for_event(&event);
+        // `event` is always `NodeUpdated` here, which ignores the
+        // relationship-source parameter — see `trigger_keys_for_event`'s doc.
+        let keys = crate::playbook::lifecycle::trigger_keys_for_event(&event, None);
         let matched = {
             let lm = lifecycle.read().unwrap_or_else(|e| e.into_inner());
             lm.lookup_rules(&keys)
@@ -182,10 +184,8 @@ impl NodeService {
             DomainEvent::RelationshipDeleted { .. } => RelEventType::RelationshipRemoved,
             _ => return Ok(()),
         };
-        let key = TriggerKey::RelationshipEvent {
-            event: rel_event,
-            source_node_type: source.node_type.clone(),
-        };
+        let key =
+            crate::playbook::lifecycle::relationship_trigger_key(rel_event, &source.node_type);
 
         let matched = {
             let lm = lifecycle.read().unwrap_or_else(|e| e.into_inner());

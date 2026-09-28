@@ -685,7 +685,7 @@ mod playbook_tests {
             node_type: "invoice".to_string(),
         };
 
-        let keys = trigger_keys_for_event(&event);
+        let keys = trigger_keys_for_event(&event, None);
         assert_eq!(keys.len(), 1);
         assert_eq!(
             keys[0],
@@ -717,7 +717,7 @@ mod playbook_tests {
             ],
         };
 
-        let keys = trigger_keys_for_event(&event);
+        let keys = trigger_keys_for_event(&event, None);
         // 2 exact property keys + 1 wildcard = 3
         assert_eq!(keys.len(), 3);
 
@@ -747,7 +747,7 @@ mod playbook_tests {
             changed_properties: vec![],
         };
 
-        let keys = trigger_keys_for_event(&event);
+        let keys = trigger_keys_for_event(&event, None);
         // No property changes → no trigger keys
         assert!(keys.is_empty());
     }
@@ -759,7 +759,7 @@ mod playbook_tests {
             node_type: "invoice".to_string(),
         };
 
-        let keys = trigger_keys_for_event(&event);
+        let keys = trigger_keys_for_event(&event, None);
         assert!(keys.is_empty());
     }
 
@@ -999,6 +999,60 @@ mod playbook_tests {
         assert_eq!(rules.len(), 1);
     }
 
+    /// `has_relationship_triggers` is the O(1) in-memory guard `handle_event`
+    /// checks before paying for a relationship event's source-node fetch —
+    /// it must track the trigger index through activation, deactivation, and
+    /// a play with no relationship trigger at all.
+    #[test]
+    fn has_relationship_triggers_tracks_activation_and_deactivation() {
+        let mut mgr = PlaybookLifecycleManager::new();
+        assert!(
+            !mgr.has_relationship_triggers(),
+            "a fresh manager has no relationship triggers"
+        );
+
+        let node_only = make_play_node(
+            "pb-node-only",
+            json!([{
+                "name": "on created",
+                "trigger": { "type": "graph_event", "on": "node_created", "node_type": "task" },
+                "conditions": [],
+                "actions": []
+            }]),
+        );
+        mgr.activate_play(&node_only).unwrap();
+        assert!(
+            !mgr.has_relationship_triggers(),
+            "a node_created-only play must not set the flag"
+        );
+
+        let with_relationship = make_play_node(
+            "pb-with-relationship",
+            json!([{
+                "name": "on relationship added",
+                "trigger": {
+                    "type": "graph_event",
+                    "on": "relationship_added",
+                    "node_type": "story"
+                },
+                "conditions": [],
+                "actions": []
+            }]),
+        );
+        mgr.activate_play(&with_relationship).unwrap();
+        assert!(
+            mgr.has_relationship_triggers(),
+            "activating a play with a relationship_added trigger must set the flag"
+        );
+
+        mgr.deactivate_play("pb-with-relationship");
+        assert!(
+            !mgr.has_relationship_triggers(),
+            "deactivating the only play with a relationship trigger must clear the flag \
+             (the node_created-only play must not keep it set)"
+        );
+    }
+
     // -----------------------------------------------------------------------
     // Mixed trigger type tests
     // -----------------------------------------------------------------------
@@ -1142,6 +1196,46 @@ mod playbook_tests {
             },
         };
         assert_eq!(super::super::engine::trigger_node_id(&event), None);
+    }
+
+    #[test]
+    fn test_relationship_source_id_created_strips_node_prefix() {
+        let event = DomainEvent::RelationshipCreated {
+            relationship: crate::db::events::RelationshipEvent {
+                id: "rel:1".to_string(),
+                from_id: "node:a".to_string(),
+                to_id: "node:b".to_string(),
+                relationship_type: "has_child".to_string(),
+                properties: json!({}),
+            },
+        };
+        assert_eq!(
+            super::super::engine::relationship_source_id(&event),
+            Some("a")
+        );
+    }
+
+    #[test]
+    fn test_relationship_source_id_deleted_strips_node_prefix() {
+        let event = DomainEvent::RelationshipDeleted {
+            id: "rel:1".to_string(),
+            from_id: "node:a".to_string(),
+            to_id: "node:b".to_string(),
+            relationship_type: "has_child".to_string(),
+        };
+        assert_eq!(
+            super::super::engine::relationship_source_id(&event),
+            Some("a")
+        );
+    }
+
+    #[test]
+    fn test_relationship_source_id_node_created_returns_none() {
+        let event = DomainEvent::NodeCreated {
+            node_id: "node:abc".to_string(),
+            node_type: "invoice".to_string(),
+        };
+        assert_eq!(super::super::engine::relationship_source_id(&event), None);
     }
 
     #[test]

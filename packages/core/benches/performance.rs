@@ -1039,7 +1039,7 @@ fn bench_event_to_rule_matching(c: &mut Criterion) {
             &count,
             |b, _| {
                 b.iter(|| {
-                    let keys = trigger_keys_for_event(&event);
+                    let keys = trigger_keys_for_event(&event, None);
                     black_box(lm.lookup_rules(&keys));
                 });
             },
@@ -1062,7 +1062,7 @@ fn bench_event_to_rule_matching(c: &mut Criterion) {
             &count,
             |b, _| {
                 b.iter(|| {
-                    let keys = trigger_keys_for_event(&property_event);
+                    let keys = trigger_keys_for_event(&property_event, None);
                     black_box(lm.lookup_rules(&keys));
                 });
             },
@@ -1079,7 +1079,7 @@ fn bench_event_to_rule_matching(c: &mut Criterion) {
             &count,
             |b, _| {
                 b.iter(|| {
-                    let keys = trigger_keys_for_event(&unmatched_event);
+                    let keys = trigger_keys_for_event(&unmatched_event, None);
                     black_box(lm.lookup_rules(&keys));
                 });
             },
