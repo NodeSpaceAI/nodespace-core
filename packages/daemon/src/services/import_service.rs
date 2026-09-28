@@ -1253,7 +1253,7 @@ async fn import_markdown_content(
             .collect();
 
         let created_ids = node_service
-            .bulk_create_hierarchy_root_notify(nodes_for_bulk)
+            .bulk_create_hierarchy(nodes_for_bulk)
             .await
             .map_err(|e| format!("Failed to bulk create nodes: {}", e))?;
 

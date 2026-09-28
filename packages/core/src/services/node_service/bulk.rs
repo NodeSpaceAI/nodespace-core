@@ -162,26 +162,168 @@ impl NodeService {
             }
         }
 
-        // Call store trait to execute batch insert in transaction.
-        // Thread this instance's client_id/execution_context through, same as
-        // single-row create_node — otherwise every event this batch emits
-        // loses its source_client_id, which the play engine's ADR-073
-        // local-origin gate (and any other source_client_id-based consumer)
-        // depends on for every write path, batched or not.
-        let created_nodes = self
-            .store
-            .batch_create_nodes(
-                nodes,
-                self.client_id.clone(),
-                self.execution_context.clone(),
+        // Collection-name collisions are suggest-don't-block (ADR-065): detect
+        // them before the write and journal them after commit, the same
+        // timing single-node `create_node` keeps. A collision can be with a
+        // collection already stored or with an earlier row of this batch —
+        // a sync page carrying two devices' same-named collections is exactly
+        // the case this journal exists for.
+        let mut collisions: Vec<(String, String)> = Vec::new();
+        let mut batch_collections: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+        // Within the batch, match the way `get_collection_by_name` matches a
+        // stored row — this row's lowercased content against an earlier
+        // active collection's lowercased title — so a batch detects exactly
+        // what the same rows created one at a time would have.
+        for node in nodes.iter().filter(|n| n.node_type == "collection") {
+            let name = node.content.to_lowercase();
+            let stored = self
+                .store
+                .get_collection_by_name(&node.content)
+                .await
+                .map_err(|e| {
+                    NodeServiceError::query_failed(format!(
+                        "Failed to check collection name collision: {}",
+                        e
+                    ))
+                })?
+                .map(|existing| existing.id);
+            if let Some(existing) = stored.or_else(|| batch_collections.get(&name).cloned()) {
+                collisions.push((node.id.clone(), existing));
+            }
+            if let (true, Some(title)) = (node.lifecycle_status == "active", &node.title) {
+                batch_collections
+                    .entry(title.to_lowercase())
+                    .or_insert_with(|| node.id.clone());
+            }
+        }
+
+        // Insert every row, then run invariant-rule dispatch (ADR-060 §1) for
+        // each, all in one transaction: a rejected row rolls back the whole
+        // batch, which is also what makes the all-or-nothing contract above
+        // hold. Events carry this instance's client_id/execution_context
+        // (via `emit_event`), which the ADR-073 local-origin gate depends on.
+        let service = self.clone();
+        let ids = self
+            .with_transaction(move |tx| {
+                Box::pin(async move {
+                    let mut rules_by_type: std::collections::HashMap<
+                        String,
+                        Vec<crate::playbook::types::OrderedRuleRef>,
+                    > = std::collections::HashMap::new();
+                    for node in &nodes {
+                        crate::db::SqliteStore::create_node_in_tx(tx.store_tx(), node)
+                            .await
+                            .map_err(NodeServiceError::from_store)?;
+                        service.emit_event(DomainEvent::NodeCreated {
+                            node_id: node.id.clone(),
+                            node_type: node.node_type.clone(),
+                        });
+                        if !rules_by_type.contains_key(&node.node_type) {
+                            let rules = service.invariant_rules_for_creation(&node.node_type);
+                            rules_by_type.insert(node.node_type.clone(), rules);
+                        }
+                    }
+                    for node in &nodes {
+                        let matched = rules_by_type[&node.node_type].clone();
+                        service
+                            .run_creation_invariant_rules_in_tx(tx, node, matched)
+                            .await?;
+                    }
+                    Ok(nodes.into_iter().map(|n| n.id).collect::<Vec<_>>())
+                })
+            })
+            .await?;
+
+        for (new_id, existing_id) in collisions {
+            // Best-effort: the batch is already durably committed.
+            self.store
+                .mark_collection_name_collision(&new_id, &existing_id)
+                .await;
+        }
+
+        Ok(ids)
+    }
+
+    /// Insert prepared hierarchy rows on `tx`, buffer one `NodeCreated` per
+    /// row, then run invariant-rule dispatch (ADR-060 §1) for every inserted
+    /// node, looking each distinct type's rules up once. The shared
+    /// insert-and-dispatch step of every bulk hierarchy create: a rejected
+    /// row fails the caller's transaction, rolling back every row of the
+    /// batch along with any invariant action's own writes.
+    ///
+    /// Dispatch runs after the whole batch is inserted, so an invariant
+    /// action — which runs on `tx` — sees every row and edge of the batch.
+    /// A rule's conditions do not: they are evaluated through pooled reads,
+    /// which cannot see this transaction's uncommitted rows, the same limit
+    /// every single-node dispatch has.
+    async fn insert_bulk_hierarchy_rows_in_tx(
+        &self,
+        tx: &NodeServiceTx<'_>,
+        rows: Vec<crate::db::BulkNodeRow>,
+    ) -> Result<Vec<String>, NodeServiceError> {
+        let mut rules_by_type: std::collections::HashMap<
+            String,
+            Vec<crate::playbook::types::OrderedRuleRef>,
+        > = std::collections::HashMap::new();
+        for (_, node_type, ..) in &rows {
+            if !rules_by_type.contains_key(node_type) {
+                let rules = self.invariant_rules_for_creation(node_type);
+                rules_by_type.insert(node_type.clone(), rules);
+            }
+        }
+
+        // Only rows a rule can run for need a `Node` built — a batch whose
+        // types carry no invariant rule copies nothing.
+        let to_dispatch: Vec<Node> = rows
+            .iter()
+            .filter(|(_, node_type, ..)| !rules_by_type[node_type].is_empty())
+            .map(
+                |(id, node_type, content, _parent, _order, properties, title)| Node {
+                    id: id.clone(),
+                    node_type: node_type.clone(),
+                    content: content.clone(),
+                    version: 1,
+                    properties: if properties.is_null() {
+                        serde_json::json!({})
+                    } else {
+                        properties.clone()
+                    },
+                    mentions: vec![],
+                    mentioned_in: vec![],
+                    created_at: chrono::Utc::now(),
+                    modified_at: chrono::Utc::now(),
+                    title: title.clone(),
+                    lifecycle_status: "active".to_string(),
+                },
             )
+            .collect();
+
+        let node_types: Vec<String> = rows
+            .iter()
+            .map(|(_, node_type, ..)| node_type.clone())
+            .collect();
+
+        let ids = self
+            .store
+            .bulk_create_hierarchy_in_tx(tx.store_tx(), rows)
             .await
             .map_err(NodeServiceError::from_store)?;
 
-        // NOTE: NodeCreated events are now automatically emitted by store notifier
+        for (id, node_type) in ids.iter().zip(node_types) {
+            self.emit_event(DomainEvent::NodeCreated {
+                node_id: id.clone(),
+                node_type,
+            });
+        }
 
-        // Extract IDs for return (maintaining backward compatibility)
-        Ok(created_nodes.into_iter().map(|n| n.id).collect())
+        for node in &to_dispatch {
+            let matched = rules_by_type[&node.node_type].clone();
+            self.run_creation_invariant_rules_in_tx(tx, node, matched)
+                .await?;
+        }
+
+        Ok(ids)
     }
 
     /// Bulk create nodes with hierarchy in a single transaction
@@ -228,12 +370,17 @@ impl NodeService {
             None
         };
 
-        // Delegate to store for atomic batch insert
+        // Titles are derived before the transaction opens — they read
+        // schemas, and the write guard need not be held for that. The insert
+        // and its invariant-rule dispatch share one transaction, so a
+        // rejected row fails the whole import.
+        let rows = self.with_titles(nodes_normalized).await?;
+        let service = self.clone();
         let result = self
-            .store
-            .bulk_create_hierarchy(self.with_titles(nodes_normalized).await?)
-            .await
-            .map_err(NodeServiceError::from_store)?;
+            .with_transaction(move |tx| {
+                Box::pin(async move { service.insert_bulk_hierarchy_rows_in_tx(tx, rows).await })
+            })
+            .await?;
 
         // Queue root for embedding regeneration once
         // All nodes share the same root, so we only need one queue operation
@@ -245,9 +392,8 @@ impl NodeService {
         Ok(result)
     }
 
-    /// Shared preamble for [`Self::bulk_create_hierarchy`],
-    /// [`Self::bulk_create_hierarchy_in_tx`], and
-    /// [`Self::bulk_create_hierarchy_root_notify`]: resolves each unique
+    /// Shared preamble for [`Self::bulk_create_hierarchy`] and
+    /// [`Self::bulk_create_hierarchy_in_tx`]: resolves each unique
     /// node type's `extends` chain (ADR-078) once, normalizes flat
     /// properties to namespaced format, re-buckets each node's properties
     /// by declaring owner, and validates every node against behaviors and
@@ -402,7 +548,8 @@ impl NodeService {
     /// node's description subtree, which is not itself embedded — a future
     /// caller that needs it should queue after `with_transaction` commits.
     /// Emits one `NodeCreated` event per inserted node, buffered the same
-    /// way `create_node_in_tx` buffers its own.
+    /// way `create_node_in_tx` buffers its own, and runs invariant-rule
+    /// dispatch for each on `tx`.
     pub(crate) async fn bulk_create_hierarchy_in_tx(
         &self,
         tx: &NodeServiceTx<'_>,
@@ -419,74 +566,8 @@ impl NodeService {
             return Ok(Vec::new());
         };
 
-        let node_types: Vec<String> = nodes_normalized
-            .iter()
-            .map(|(_, node_type, ..)| node_type.clone())
-            .collect();
-
-        let result = self
-            .store
-            .bulk_create_hierarchy_in_tx(tx.store_tx(), self.with_titles(nodes_normalized).await?)
-            .await
-            .map_err(NodeServiceError::from_store)?;
-
-        for (id, node_type) in result.iter().zip(node_types.iter()) {
-            self.emit_event(DomainEvent::NodeCreated {
-                node_id: id.clone(),
-                node_type: node_type.clone(),
-            });
-        }
-
-        Ok(result)
-    }
-
-    /// Bulk create nodes with root-only notification (for large imports)
-    ///
-    /// Same as `bulk_create_hierarchy` but only emits domain events for the root node,
-    /// making it more efficient for bulk import scenarios where per-node notifications
-    /// would overwhelm the system.
-    pub async fn bulk_create_hierarchy_root_notify(
-        &self,
-        nodes: Vec<(
-            String,
-            String,
-            String,
-            Option<String>,
-            f64,
-            serde_json::Value,
-        )>,
-    ) -> Result<Vec<String>, NodeServiceError> {
-        // Shares its preamble with `bulk_create_hierarchy`/`_in_tx` — see
-        // `prepare_bulk_hierarchy_nodes` for the chain-aware
-        // validation/re-bucketing sequence (ADR-078). Previously duplicated
-        // ~60 lines of that logic inline, which had drifted to a schema-cache
-        // implementation with the same wrong-bucket and malformed-schema
-        // gaps `prepare_bulk_hierarchy_nodes` now closes.
-        let Some(nodes_normalized) = self.prepare_bulk_hierarchy_nodes(nodes).await? else {
-            return Ok(Vec::new());
-        };
-
-        // Find the embedding root once (see `bulk_create_hierarchy`)
-        let root_id = if let Some((_, _, _, Some(first_parent), _, _)) = nodes_normalized.first() {
-            self.get_embedding_root_id(first_parent).await.ok()
-        } else {
-            None
-        };
-
-        // Delegate to store - use root-only notify variant
-        let result = self
-            .store
-            .bulk_create_hierarchy_root_notify(self.with_titles(nodes_normalized).await?, vec![])
-            .await
-            .map_err(NodeServiceError::from_store)?;
-
-        // Queue root for embedding regeneration once
-        #[cfg(feature = "nlp")]
-        if let Some(root_id) = root_id {
-            self.queue_root_for_embedding(&root_id).await;
-        }
-
-        Ok(result)
+        let rows = self.with_titles(nodes_normalized).await?;
+        self.insert_bulk_hierarchy_rows_in_tx(tx, rows).await
     }
 
     /// Bulk create nodes with trusted input (skips schema validation)
@@ -506,6 +587,19 @@ impl NodeService {
     ///
     /// Since the parser is trusted, we skip the expensive schema lookup and
     /// validation, but still normalize properties to the correct storage format.
+    ///
+    /// # Invariant rules still run
+    ///
+    /// "Trusted" covers the parser's output *shape* — known types, well-formed
+    /// properties — which is what schema validation checks. It says nothing
+    /// about the product rules a user has authored as ADR-060 invariant rules
+    /// (a `reject` on a type, a derived property it must carry), and the
+    /// daemon's directory import — a real user-facing write — goes through
+    /// here. So invariant-rule dispatch runs exactly as on every other create:
+    /// in the insert's own transaction, a rejected row failing the whole
+    /// import. Skipping it would leave the rule unevaluated for good, since
+    /// the reactive engine never runs invariant rules. Its cost is one rule
+    /// lookup per distinct node type when no invariant rule matches.
     ///
     /// # Arguments
     ///
@@ -576,18 +670,17 @@ impl NodeService {
             })
             .collect();
 
-        // Coalesce per-node Created events into one per root node.
-        // Without the guard, bulk_create_hierarchy fires one store notification per
-        // inserted node, flooding WatchNodes subscribers on large imports.
-        let _batch = self.begin_batch_emit();
-
-        // Delegate to store (fires one notification per inserted node at the store
-        // layer; the batch guard above coalesces them into a single flush on drop).
+        // One transaction for the insert and its invariant-rule dispatch. Its
+        // event buffer holds one Created event per node and flushes them
+        // together after commit, so a large import reaches WatchNodes
+        // subscribers as a single burst rather than one event at a time.
+        let rows = self.with_titles(nodes_normalized).await?;
+        let service = self.clone();
         let result = self
-            .store
-            .bulk_create_hierarchy_root_notify(self.with_titles(nodes_normalized).await?, vec![])
-            .await
-            .map_err(NodeServiceError::from_store)?;
+            .with_transaction(move |tx| {
+                Box::pin(async move { service.insert_bulk_hierarchy_rows_in_tx(tx, rows).await })
+            })
+            .await?;
 
         // Create stale embedding markers in bulk (single transaction)
         if !root_ids.is_empty() {
@@ -800,30 +893,54 @@ impl NodeService {
                     lifecycle_status: update.lifecycle_status.clone(),
                 },
             ));
+            // The node as the store will hold it once this update lands —
+            // what an invariant rule's condition must read, the same as the
+            // single-node update path's store-returned node.
+            updated.version = existing.version + 1;
+            updated.modified_at = chrono::Utc::now();
+            if let Some(title) = &update.title {
+                updated.title = title.clone();
+            }
+            if let Some(status) = &update.lifecycle_status {
+                updated.lifecycle_status = status.clone();
+            }
             pending_events.push((id.clone(), updated, changed_properties));
         }
 
-        // Step 3: All validations passed — perform the atomic bulk update.
-        self.store.bulk_update(merged_updates).await.map_err(|e| {
-            NodeServiceError::bulk_operation_failed(format!(
-                "Failed to execute bulk update transaction: {}",
-                e
-            ))
-        })?;
-
-        // Emit one NodeUpdated event per node (store.bulk_update runs a
-        // single SQL transaction with no per-row notify), now carrying the real
-        // changed_properties so property-change automation fires.
-        for (id, node, changed_properties) in pending_events {
-            self.emit_event(DomainEvent::NodeUpdated {
-                node_id: id,
-                node_type: node.node_type.clone(),
-                node,
-                changed_properties,
-            });
-        }
-
-        Ok(())
+        // Step 3: All validations passed — perform the bulk update, then emit
+        // one NodeUpdated per node carrying the real changed_properties, then
+        // run invariant-rule dispatch (ADR-060 §2) keyed on those changes, all
+        // in one transaction. A rejected node rolls back the whole batch and
+        // its buffered events, and its error is returned as-is — a
+        // `PlayRuleRejected` exactly as single-node `update_node` returns it.
+        let service = self.clone();
+        self.with_transaction(move |tx| {
+            Box::pin(async move {
+                crate::db::SqliteStore::bulk_update_in_tx(tx.store_tx(), merged_updates)
+                    .await
+                    .map_err(|e| {
+                        NodeServiceError::bulk_operation_failed(format!(
+                            "Failed to execute bulk update transaction: {}",
+                            e
+                        ))
+                    })?;
+                for (id, node, changed_properties) in &pending_events {
+                    service.emit_event(DomainEvent::NodeUpdated {
+                        node_id: id.clone(),
+                        node_type: node.node_type.clone(),
+                        node: node.clone(),
+                        changed_properties: changed_properties.clone(),
+                    });
+                }
+                for (_, node, changed_properties) in &pending_events {
+                    service
+                        .dispatch_invariant_rules_for_update_in_tx(tx, node, changed_properties)
+                        .await?;
+                }
+                Ok(())
+            })
+        })
+        .await
     }
 
     /// Bulk delete multiple nodes in a transaction
