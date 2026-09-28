@@ -1446,7 +1446,7 @@ impl NodeService {
                 final_edge_data,
             ),
         };
-        self.emit_event(created.clone());
+        self.emit_event_in_tx(tx, created.clone());
 
         // Now that the new edge is durably inserted (above), evict whatever
         // cardinality-one replace gathered earlier — see the gathering
@@ -1920,7 +1920,7 @@ impl NodeService {
             to_id: crate::db::events::node_thing(target_id),
             relationship_type: relationship_name.to_string(),
         };
-        self.emit_event(deleted.clone());
+        self.emit_event_in_tx(tx, deleted.clone());
 
         Ok(dispatch_source.map(|source| PendingRelationshipDispatch {
             source,

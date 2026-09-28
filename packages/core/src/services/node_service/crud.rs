@@ -227,9 +227,8 @@ impl NodeService {
     /// validation/normalization/title/insert pipeline to
     /// [`Self::insert_node_in_tx_no_invariant_dispatch`] (the insert lands on
     /// `tx.store_tx()` instead of opening its own transaction, and the
-    /// `NodeCreated` event is buffered via `self.emit_event` — routed to the
-    /// transaction buffer by `BatchState::Transactional`, see
-    /// `NodeService::with_transaction` — instead of relying on the store
+    /// `NodeCreated` event is buffered on the transaction via
+    /// `self.emit_event_in_tx` — see `NodeService::with_transaction` — instead of relying on the store
     /// notifier, since `create_node_in_tx` the store method deliberately does
     /// not call `notify`), then additionally runs invariant-rule dispatch
     /// (ADR-060 §1) — the one thing that method does NOT do, by design.
@@ -364,10 +363,13 @@ impl NodeService {
             .await
             .map_err(|e| NodeServiceError::query_failed(format!("Failed to insert node: {}", e)))?;
 
-        self.emit_event(DomainEvent::NodeCreated {
-            node_id: node.id.clone(),
-            node_type: node.node_type.clone(),
-        });
+        self.emit_event_in_tx(
+            tx,
+            DomainEvent::NodeCreated {
+                node_id: node.id.clone(),
+                node_type: node.node_type.clone(),
+            },
+        );
 
         Ok(node)
     }
@@ -1123,12 +1125,15 @@ impl NodeService {
         // "exactly one version bump per call" statement).
         updated.version += 1;
 
-        self.emit_event(DomainEvent::NodeUpdated {
-            node_id: id.to_string(),
-            node_type: updated.node_type.clone(),
-            node: updated,
-            changed_properties: vec![],
-        });
+        self.emit_event_in_tx(
+            tx,
+            DomainEvent::NodeUpdated {
+                node_id: id.to_string(),
+                node_type: updated.node_type.clone(),
+                node: updated,
+                changed_properties: vec![],
+            },
+        );
 
         Ok(())
     }
@@ -1252,12 +1257,15 @@ impl NodeService {
             NodeServiceError::version_conflict(id, existing.version, actual_version)
         })?;
 
-        self.emit_event(DomainEvent::NodeUpdated {
-            node_id: node.id.clone(),
-            node_type: node.node_type.clone(),
-            node: node.clone(),
-            changed_properties: vec![],
-        });
+        self.emit_event_in_tx(
+            tx,
+            DomainEvent::NodeUpdated {
+                node_id: node.id.clone(),
+                node_type: node.node_type.clone(),
+                node: node.clone(),
+                changed_properties: vec![],
+            },
+        );
 
         Ok(node)
     }
@@ -1541,15 +1549,18 @@ impl NodeService {
         let changed_properties =
             compute_property_changes(&existing.properties, &updated_node.properties);
 
-        // Buffered, not broadcast yet (`BatchState::Transactional`) — only
+        // Buffered on `tx`, not broadcast yet — only
         // flushed if this whole transaction commits. See this method's own
         // doc for why emitting before dispatch below is safe.
-        self.emit_event(DomainEvent::NodeUpdated {
-            node_id: updated_node.id.clone(),
-            node_type: updated_node.node_type.clone(),
-            node: updated_node.clone(),
-            changed_properties: changed_properties.clone(),
-        });
+        self.emit_event_in_tx(
+            tx,
+            DomainEvent::NodeUpdated {
+                node_id: updated_node.id.clone(),
+                node_type: updated_node.node_type.clone(),
+                node: updated_node.clone(),
+                changed_properties: changed_properties.clone(),
+            },
+        );
 
         // ADR-060 §2: synchronous invariant-rule dispatch for
         // property_changed triggers, inside this same transaction. A
@@ -2151,12 +2162,15 @@ impl NodeService {
             NodeServiceError::version_conflict(node_id, expected_version, actual_version)
         })?;
 
-        self.emit_event(DomainEvent::NodeUpdated {
-            node_id: updated_node.id.clone(),
-            node_type: updated_node.node_type.clone(),
-            node: updated_node.clone(),
-            changed_properties: vec![],
-        });
+        self.emit_event_in_tx(
+            tx,
+            DomainEvent::NodeUpdated {
+                node_id: updated_node.id.clone(),
+                node_type: updated_node.node_type.clone(),
+                node: updated_node.clone(),
+                changed_properties: vec![],
+            },
+        );
 
         Ok(updated_node)
     }
