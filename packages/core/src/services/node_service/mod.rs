@@ -680,14 +680,13 @@ impl NodeService {
     /// transaction's buffer at a time, so two calls to this method must never
     /// both be "active" concurrently, not just never literally nested on the
     /// same call stack. The check-and-set into `Transactional`, and the
-    /// reset back to `Immediate`, therefore both happen INSIDE the closure
+    /// transition back out of it, therefore both happen INSIDE the closure
     /// passed to `self.store.with_transaction` — i.e. only once that call's
     /// own `self.write().await` has actually acquired the store's single
     /// writer guard, and completed before that guard is released. A second,
     /// unrelated concurrent caller's own `self.write().await` blocks until
     /// this one's guard is released, so it can only reach ITS check once
-    /// `batch_state` has provably already been reset to `Immediate` by this
-    /// one — closing the check-then-set race a version of this method once
+    /// this one has provably already left `Transactional` — closing the check-then-set race a version of this method once
     /// had when the transition happened BEFORE requesting the write guard:
     /// two concurrent callers could each observe `Immediate`, one would then
     /// overwrite the other's in-flight buffer with a fresh empty one, and
@@ -695,12 +694,15 @@ impl NodeService {
     /// flushed or discarded as) the wrong caller's transaction — not merely a
     /// debug-assertion trip, but a real risk of misattributed events.
     ///
-    /// A transaction may run inside a caller's `begin_batch_emit` guard (the
-    /// reverse — a batch opened inside a transaction — is still unsupported).
-    /// The batch's buffer is set aside while the transaction buffers its own
-    /// events, then restored; on commit the transaction's events join the
-    /// batch under the rules `emit_event` applies to it, and on rollback
-    /// they are discarded without touching it.
+    /// A `begin_batch_emit` batch — in this task or another — may be open
+    /// when the transaction starts, or be opened while it runs. Either way
+    /// the batch is parked inside the slot (see `BatchState`) for the
+    /// transaction's duration. If its guard drops meanwhile, the guard
+    /// flushes it from there and the transaction ends with the slot
+    /// `Immediate`; otherwise the transaction restores it. On commit the
+    /// transaction's events join a batch that is still open, under the
+    /// rules `emit_event` applies to it, or broadcast now if none is; on
+    /// rollback they are discarded without touching the batch.
     pub(crate) async fn with_transaction<T, F>(&self, f: F) -> Result<T, NodeServiceError>
     where
         F: for<'t> FnOnce(
