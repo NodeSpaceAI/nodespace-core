@@ -39,9 +39,10 @@ const CHANNEL_BUFFER: usize = 64;
 pub(crate) const MAX_IMPORT_FILES: usize = 5_000;
 
 /// Files read and parsed together in phase 1 of a batch import. Raw file
-/// contents are held only for their own chunk and dropped once parsed, so a
-/// large import never keeps every source file in memory at once, and each
-/// chunk's CPU-bound parse runs in a single blocking-pool task.
+/// contents are held only per chunk and dropped once parsed, and each chunk's
+/// CPU-bound parse runs in a single blocking-pool task. The parsed nodes of
+/// every file are still kept until the single phase-2 insert, so peak memory
+/// grows with the whole import — [`MAX_IMPORT_FILES`] is what bounds it.
 const PHASE1_CHUNK_SIZE: usize = 32;
 
 /// Stable namespace for deriving deterministic import root ids from a document's
@@ -1509,9 +1510,6 @@ mod tests {
         );
     }
 
-    /// A document's root id is a pure function of its base-directory-relative
-    /// path: the same path always yields the same (valid) id, different paths
-    /// yield different ids. This determinism is what makes re-import idempotent.
     #[test]
     fn batch_size_cap_accepts_the_limit_and_rejects_beyond_it() {
         assert!(oversized_batch_error(0).is_none());
@@ -1610,6 +1608,9 @@ mod tests {
         );
     }
 
+    /// A document's root id is a pure function of its base-directory-relative
+    /// path: the same path always yields the same (valid) id, different paths
+    /// yield different ids. This determinism is what makes re-import idempotent.
     #[test]
     fn deterministic_root_id_is_stable_and_path_sensitive() {
         assert_eq!(
