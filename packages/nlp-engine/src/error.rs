@@ -27,14 +27,8 @@ pub enum EmbeddingError {
     #[error("IO error: {0}")]
     IoError(#[from] std::io::Error),
 
-    #[error("Model file not found at path: {0}")]
-    ModelNotFound(String),
-
     #[error("Model integrity verification failed: {0}")]
     IntegrityError(String),
-
-    #[error("Device initialization failed: {0}")]
-    DeviceError(String),
 }
 
 pub type Result<T> = std::result::Result<T, EmbeddingError>;
