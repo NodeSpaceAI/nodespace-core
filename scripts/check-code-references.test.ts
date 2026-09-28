@@ -127,6 +127,18 @@ describe("countReferences — doc-path patterns", () => {
     const result = countReferences(["scripts"], fixtureDir);
     expect(result.docPathReferences).toBe(0);
   });
+
+  test("matches the old pre-move docs/<section>/ shape", () => {
+    writeFixture("scripts/a.ts", "// Based on docs/architecture/development/process/ documentation\n");
+    const result = countReferences(["scripts"], fixtureDir);
+    expect(result.docPathReferences).toBe(1);
+  });
+
+  test("does not match a generic docs/*.md fixture path", () => {
+    writeFixture("scripts/a.ts", '// See [architecture](./docs/architecture.md) for details\n');
+    const result = countReferences(["scripts"], fixtureDir);
+    expect(result.docPathReferences).toBe(0);
+  });
 });
 
 describe("countReferences — file discovery", () => {

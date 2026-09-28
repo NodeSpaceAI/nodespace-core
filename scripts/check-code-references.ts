@@ -84,7 +84,14 @@ const ISSUE_NUMBER_PATTERNS: RegExp[] = [
   // `color: #888;` CSS.
   /(?<![\w&#]|Invoice |['"](?=#\d{3,5}['"]))#\d{3,5}\b(?!;)/,
 ];
-const DOC_PATH_PATTERN = /nodespace-docs\//;
+// Also catches the pre-nodespace-docs shape, an in-repo `docs/<section>/`
+// path (e.g. `docs/architecture/development/process/`), which predates the
+// docs move and no longer exists in this repo. Scoped to the sibling repo's
+// actual top-level sections (architecture/components/decisions/development)
+// rather than a bare `docs\//`, which would also match unrelated generic
+// paths already in the codebase (markdown-fixture paths like
+// `docs/architecture.md` or `docs/intro.md`, and external doc-site URLs).
+const DOC_PATH_PATTERN = /nodespace-docs\/|\bdocs\/(?:architecture|components|decisions|development)\//;
 
 // Ratchet baselines. See the file-level comment: lower on paydown, never raise.
 export const BASELINES = {
