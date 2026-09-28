@@ -137,13 +137,21 @@ pub fn stage1_skill_names(titles: impl IntoIterator<Item = String>) -> Vec<Strin
 /// without anything having been asked.
 ///
 /// Wordings that claimed only what both branches guarantee (nothing earlier
-/// wrote) were measured and rejected. With content in the graph, the model met
-/// every one of them — act by default, "all the detail you will get", "take
-/// everything said as the complete request", "may already have answered" — by
-/// listing what it found and asking which, and the fall-through this nudge
-/// exists for failed every time. This wording passed the same state every time.
-/// Its cost in the read-only branch was measured too: the "thanks" turn made no
-/// tool call. Rewording it needs the same populated-graph measurement.
+/// wrote) were measured and rejected, because the fall-through this nudge
+/// exists for broke under each:
+/// - Making action conditional on the message asking for something failed
+///   even on an empty graph: the model read a broad request as one it could
+///   only ask about.
+/// - Acting by default passed on an empty graph but was unreliable once
+///   earlier scenarios had left content behind.
+/// - "All the detail you will get", "take everything said as the complete
+///   request" and "may already have answered" each passed on an empty graph and
+///   failed every time with content in it: the model listed what it found and
+///   asked which.
+///
+/// This wording passed both states every time. Its cost in the read-only branch
+/// was measured too: the "thanks" turn made no tool call. Rewording it needs the
+/// same measurement on a graph that already has content.
 pub(crate) const ALREADY_CLARIFIED_NUDGE: &str =
     "The user has already answered a clarifying question \
      about this request, and a request gets only one. Do not ask them anything further. Act on \

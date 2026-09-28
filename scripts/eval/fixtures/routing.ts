@@ -32,9 +32,11 @@
  * from this fixture against that, not against 0%. Pinned against the scenario
  * list by fixtures/routing.test.ts, and printed with every run's summary.
  *
- * Scenario wording must stay independent of packages/agent/src/agent_guidance.rs;
- * `guidance_is_not_contaminated_by_eval_prompts` parses the `prompt:` literals
- * out of this file and fails the build if guidance reproduces one.
+ * Scenario wording must stay independent of every model-facing text the agent
+ * sends — guidance, seeded prompt and skill nodes, tool descriptions, and the
+ * agent loop's injected messages. `guidance_is_not_contaminated_by_eval_prompts`
+ * (packages/agent/src/agent_guidance.rs) parses the `prompt:` literals out of
+ * this file and fails the build if any of that text reproduces one.
  */
 
 import type { EvalFixture, Scenario, TurnRecord, Verdict } from "../types.ts";
