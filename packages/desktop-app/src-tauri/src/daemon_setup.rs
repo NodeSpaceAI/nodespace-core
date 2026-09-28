@@ -3281,3 +3281,41 @@ mod log_rotation_watcher_tests {
         );
     }
 }
+
+#[cfg(all(test, unix))]
+mod wait_for_daemon_or_refusal_tests {
+    use super::{wait_for_daemon_or_refusal, DaemonStatus};
+    use std::time::{Duration, Instant};
+
+    /// A daemon that recorded a refusal has stopped on purpose; the wait must
+    /// end at once rather than run out its full timeout before the user is
+    /// told why.
+    #[tokio::test]
+    async fn stops_waiting_as_soon_as_a_refusal_is_recorded() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("absent.sock");
+        let started = Instant::now();
+
+        let status = wait_for_daemon_or_refusal(&socket, Duration::from_secs(30), || true).await;
+
+        assert_eq!(status, DaemonStatus::NotRunning);
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "a recorded refusal must end the wait immediately, took {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[tokio::test]
+    async fn without_a_refusal_it_waits_out_the_timeout() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("absent.sock");
+        let started = Instant::now();
+
+        let status =
+            wait_for_daemon_or_refusal(&socket, Duration::from_millis(600), || false).await;
+
+        assert_eq!(status, DaemonStatus::NotRunning);
+        assert!(started.elapsed() >= Duration::from_millis(600));
+    }
+}

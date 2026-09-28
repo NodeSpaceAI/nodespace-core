@@ -109,6 +109,10 @@ pub fn refusal_recorded() -> bool {
     marker_path().is_some_and(|marker| marker.exists())
 }
 
+/// How many same-second backup names [`move_database_aside`] tries before
+/// giving up. Far beyond any real collision; bounds the search regardless.
+const MAX_BACKUP_NAME_ATTEMPTS: u32 = 1000;
+
 /// Rename `database` and its SQLite sidecars (`-wal`, `-shm`) to
 /// `<name>.incompatible-<stamp>` beside it, and return the new database path.
 ///
@@ -117,14 +121,28 @@ pub fn refusal_recorded() -> bool {
 /// fresh database created at the original path can never pick up the old
 /// one's write-ahead log. If the database itself then fails to move, the
 /// sidecars are moved back.
-fn move_database_aside(database: &Path, stamp: &str) -> Result<PathBuf> {
-    let metadata = std::fs::symlink_metadata(database)
-        .with_context(|| format!("{} is not there to move aside", database.display()))?;
-    if !metadata.is_file() {
-        bail!(
+///
+/// Returns `Ok(None)` when there is nothing at `database` at all — someone
+/// already moved it aside by hand — so the reset can still go on to start the
+/// daemon fresh instead of stranding the user behind a banner that can never
+/// clear. Leftover sidecars at that path are still moved aside.
+fn move_database_aside(database: &Path, stamp: &str) -> Result<Option<PathBuf>> {
+    let present = match std::fs::symlink_metadata(database) {
+        Ok(metadata) if metadata.is_file() => true,
+        Ok(_) => bail!(
             "{} is not a regular file; not moving it",
             database.display()
-        );
+        ),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+        Err(e) => {
+            return Err(e).with_context(|| format!("inspect {}", database.display()));
+        }
+    };
+    let sidecars_present = ["-wal", "-shm"]
+        .iter()
+        .any(|suffix| sidecar(database, suffix).exists());
+    if !present && !sidecars_present {
+        return Ok(None);
     }
     let name = database
         .file_name()
@@ -132,7 +150,7 @@ fn move_database_aside(database: &Path, stamp: &str) -> Result<PathBuf> {
         .to_string_lossy()
         .into_owned();
 
-    let backup = (0..)
+    let backup = (0..MAX_BACKUP_NAME_ATTEMPTS)
         .map(|n| {
             let suffix = if n == 0 {
                 String::new()
@@ -146,7 +164,12 @@ fn move_database_aside(database: &Path, stamp: &str) -> Result<PathBuf> {
                 && !sidecar(candidate, "-wal").exists()
                 && !sidecar(candidate, "-shm").exists()
         })
-        .expect("an unbounded range always yields a free name");
+        .with_context(|| {
+            format!(
+                "no free backup name beside {} after {MAX_BACKUP_NAME_ATTEMPTS} attempts",
+                database.display()
+            )
+        })?;
 
     let mut moved_sidecars = Vec::new();
     for suffix in ["-wal", "-shm"] {
@@ -161,12 +184,14 @@ fn move_database_aside(database: &Path, stamp: &str) -> Result<PathBuf> {
             moved_sidecars.push((from, to));
         }
     }
-    if let Err(e) = std::fs::rename(database, &backup) {
-        restore(&moved_sidecars);
-        return Err(e)
-            .with_context(|| format!("move {} to {}", database.display(), backup.display()));
+    if present {
+        if let Err(e) = std::fs::rename(database, &backup) {
+            restore(&moved_sidecars);
+            return Err(e)
+                .with_context(|| format!("move {} to {}", database.display(), backup.display()));
+        }
     }
-    Ok(backup)
+    Ok(Some(backup))
 }
 
 fn sidecar(database: &Path, suffix: &str) -> PathBuf {
@@ -198,8 +223,9 @@ pub async fn get_incompatible_database() -> Option<IncompatibleDatabase> {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ResetIncompatibleDatabaseResult {
-    /// Where the refused database now lives.
-    pub backup_path: String,
+    /// Where the refused database now lives, or `None` when it was already
+    /// gone (moved by hand) and there was nothing to move.
+    pub backup_path: Option<String>,
     /// The daemon's status after restarting on a fresh database — the same
     /// strings `check_daemon_status` reports.
     pub status: String,
@@ -207,9 +233,9 @@ pub struct ResetIncompatibleDatabaseResult {
 
 /// Move the refused database aside and start the daemon on a fresh one.
 ///
-/// Refuses when there is no recorded refusal, or when the daemon is running:
-/// either way the file at that path is not the one the daemon refused, or is
-/// in use.
+/// Refuses when there is no recorded refusal, or when the daemon is up or
+/// coming up (anything but not-running): then the file at that path may be
+/// open, or may no longer be the one the daemon refused.
 #[tauri::command]
 pub async fn reset_incompatible_database(
     app: AppHandle,
@@ -222,20 +248,28 @@ async fn reset(app: &AppHandle) -> Result<ResetIncompatibleDatabaseResult> {
     let record = read_marker(&marker).context("there is no incompatible database to reset")?;
 
     let socket_path = crate::services::grpc_client::resolve_socket_path();
-    if daemon_setup::check_daemon_socket(socket_path.as_path()).await == DaemonStatus::Healthy {
+    if daemon_setup::check_daemon_socket(socket_path.as_path()).await != DaemonStatus::NotRunning {
         bail!("the NodeSpace background service is running, so its database is in use");
     }
 
     let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S").to_string();
     let backup = move_database_aside(Path::new(&record.database_path), &stamp)?;
-    tracing::info!(
-        from = %record.database_path,
-        to = %backup.display(),
-        "moved incompatible database aside; starting fresh"
-    );
+    match &backup {
+        Some(backup) => tracing::info!(
+            from = %record.database_path,
+            to = %backup.display(),
+            "moved incompatible database aside; starting fresh"
+        ),
+        None => tracing::info!(
+            path = %record.database_path,
+            "incompatible database is already gone; starting fresh"
+        ),
+    }
     remove_marker(&marker)?;
 
-    window_routing::emit_routed(app, "daemon-status", "starting", None);
+    // No interim "starting" emit: the frontend keeps the banner (and its
+    // in-progress state) up until this command returns, then applies the
+    // final status below.
     let status = match daemon_setup::ensure_daemon_running(app).await {
         Ok(DaemonStatus::Healthy) => "healthy",
         Ok(_) => daemon_down_status(),
@@ -247,7 +281,7 @@ async fn reset(app: &AppHandle) -> Result<ResetIncompatibleDatabaseResult> {
     window_routing::emit_routed(app, "daemon-status", status, None);
 
     Ok(ResetIncompatibleDatabaseResult {
-        backup_path: backup.display().to_string(),
+        backup_path: backup.map(|b| b.display().to_string()),
         status: status.to_string(),
     })
 }
@@ -268,7 +302,9 @@ mod tests {
         write(&sidecar(&db, "-wal"), "wal");
         write(&sidecar(&db, "-shm"), "shm");
 
-        let backup = move_database_aside(&db, "20260928-101500").unwrap();
+        let backup = move_database_aside(&db, "20260928-101500")
+            .unwrap()
+            .unwrap();
 
         assert_eq!(
             backup,
@@ -296,19 +332,51 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("nodespace.db");
         write(&db, "first");
-        let first = move_database_aside(&db, "20260928-101500").unwrap();
+        let first = move_database_aside(&db, "20260928-101500")
+            .unwrap()
+            .unwrap();
         write(&db, "second");
-        let second = move_database_aside(&db, "20260928-101500").unwrap();
+        let second = move_database_aside(&db, "20260928-101500")
+            .unwrap()
+            .unwrap();
 
         assert_ne!(first, second);
         assert_eq!(std::fs::read_to_string(&first).unwrap(), "first");
         assert_eq!(std::fs::read_to_string(&second).unwrap(), "second");
     }
 
+    /// A database the user already moved by hand is not an error: the reset
+    /// must still go on to start fresh, or the banner could never clear.
+    #[test]
+    fn an_already_missing_database_is_nothing_to_move_not_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(
+            move_database_aside(&dir.path().join("missing.db"), "s").unwrap(),
+            None
+        );
+    }
+
+    /// Sidecars left behind without their database still move aside, so a
+    /// fresh database at that path never opens onto a stale WAL.
+    #[test]
+    fn orphaned_sidecars_are_moved_aside_even_without_the_database() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("nodespace.db");
+        write(&sidecar(&db, "-wal"), "wal");
+
+        let backup = move_database_aside(&db, "s").unwrap().unwrap();
+
+        assert!(!sidecar(&db, "-wal").exists());
+        assert_eq!(
+            std::fs::read_to_string(sidecar(&backup, "-wal")).unwrap(),
+            "wal"
+        );
+        assert!(!backup.exists(), "there was no database file to move");
+    }
+
     #[test]
     fn refuses_to_move_anything_but_a_regular_file() {
         let dir = tempfile::tempdir().unwrap();
-        assert!(move_database_aside(&dir.path().join("missing.db"), "s").is_err());
         let not_a_file = dir.path().join("dir.db");
         std::fs::create_dir(&not_a_file).unwrap();
         assert!(move_database_aside(&not_a_file, "s").is_err());

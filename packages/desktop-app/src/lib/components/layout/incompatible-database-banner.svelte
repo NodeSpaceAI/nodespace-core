@@ -37,7 +37,11 @@
     error = null;
     try {
       const result = await resetIncompatibleDatabase();
-      log.info(`Moved the incompatible database aside to ${result.backupPath}`);
+      log.info(
+        result.backupPath
+          ? `Moved the incompatible database aside to ${result.backupPath}`
+          : 'The incompatible database was already gone; started fresh'
+      );
       // A healthy status unmounts this banner. Anything else keeps it up with
       // the confirm step closed, reflecting whatever the daemon reports now.
       confirming = false;

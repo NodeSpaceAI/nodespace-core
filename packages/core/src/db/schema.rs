@@ -18,7 +18,10 @@
 //! this build's DDL defines, and returns a [`SchemaMismatch`] when they differ.
 //! That is a shape check, not a version check — nothing on disk records a
 //! version — and it carries nothing forward: the only resolution it offers is
-//! moving the database aside and starting fresh.
+//! moving the database aside and starting fresh. It compares column *names*
+//! only: a change to a column's type or constraints, or to an index or trigger
+//! body, is not detected, since `IF NOT EXISTS` leaves an existing index or
+//! trigger as it was.
 //!
 //! Connection-level PRAGMAs (`journal_mode`, `foreign_keys`, `synchronous`,
 //! `busy_timeout`) are deliberately absent: they are per-connection session

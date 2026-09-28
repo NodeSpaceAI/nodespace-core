@@ -76,8 +76,8 @@ export interface IncompatibleDatabase {
 }
 
 export interface ResetIncompatibleDatabaseResult {
-  /** Where the refused database was moved to. */
-  backupPath: string;
+  /** Where the refused database was moved to; `null` if it was already gone. */
+  backupPath: string | null;
   /** Daemon status after restarting on a fresh database. */
   status: string;
 }
@@ -121,6 +121,16 @@ let activeSource: DaemonStatusSource | null = null;
 let steadyStatePoll: ReturnType<typeof setInterval> | null = null;
 /** Guards against overlapping polls if a `getCurrent` probe runs long. */
 let pollInFlight = false;
+/**
+ * True while {@link resetIncompatibleDatabase} is moving the database aside and
+ * restarting the daemon. Statuses observed meanwhile (a poll landing while the
+ * daemon is still loading reports `not_running`) describe a restart in
+ * progress, not a new failure, so they are held back and the reset's own final
+ * status is applied instead. Without this the incompatible-database banner —
+ * and its in-progress state — would be swapped for the generic not-running
+ * banner mid-reset.
+ */
+let resetInFlight = false;
 
 /**
  * Register a callback to run whenever the daemon transitions to healthy
@@ -149,6 +159,7 @@ function fireReconnectListeners(): void {
 
 /** Apply a status string to shared state and fan out reconnect callbacks. Transport-agnostic. */
 function applyStatus(payload: string): void {
+  if (resetInFlight) return;
   const healthy = payload === 'healthy';
   _status.set({
     connecting: false,
@@ -274,6 +285,7 @@ export function stopDaemonStatusListener(): void {
     steadyStatePoll = null;
   }
   pollInFlight = false;
+  resetInFlight = false;
   started = false;
   lastHealthy = false;
   activeSource = null;
@@ -309,7 +321,13 @@ export async function getIncompatibleDatabase(): Promise<IncompatibleDatabase | 
  * Rejects with the backend's message when nothing was moved.
  */
 export async function resetIncompatibleDatabase(): Promise<ResetIncompatibleDatabaseResult> {
-  const result = await invoke<ResetIncompatibleDatabaseResult>('reset_incompatible_database');
+  resetInFlight = true;
+  let result: ResetIncompatibleDatabaseResult;
+  try {
+    result = await invoke<ResetIncompatibleDatabaseResult>('reset_incompatible_database');
+  } finally {
+    resetInFlight = false;
+  }
   applyStatus(result.status);
   return result;
 }

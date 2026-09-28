@@ -169,6 +169,34 @@ describe('daemon-status service', () => {
     expect(callback).toHaveBeenCalledTimes(1);
   });
 
+  it('holds back statuses observed while a reset is in flight, then applies the final one', async () => {
+    const { daemonStatus, startDaemonStatusListener, resetIncompatibleDatabase } = await import(
+      '$lib/services/daemon-status'
+    );
+    startDaemonStatusListener();
+    await Promise.resolve();
+    await Promise.resolve();
+    emitDaemonStatus('incompatible_database');
+
+    let finish: (value: object) => void = () => {};
+    mockInvoke.mockReturnValue(new Promise<object>((resolve) => (finish = resolve)));
+    const reset = resetIncompatibleDatabase();
+
+    // The daemon is still restarting: a poll or push reporting not_running
+    // must not swap the banner for the generic one mid-reset.
+    emitDaemonStatus('not_running');
+    expect(get(daemonStatus).incompatibleDatabase).toBe(true);
+    expect(get(daemonStatus).unreachable).toBe(false);
+
+    finish({ backupPath: null, status: 'healthy' });
+    await reset;
+    expect(get(daemonStatus)).toEqual({
+      connecting: false,
+      unreachable: false,
+      incompatibleDatabase: false
+    });
+  });
+
   it('resetIncompatibleDatabase leaves the state alone when the backend refuses', async () => {
     const { daemonStatus, startDaemonStatusListener, resetIncompatibleDatabase } = await import(
       '$lib/services/daemon-status'
