@@ -207,7 +207,7 @@ pub const TARGET_TYPE_MUST_EXIST: SchemaRule = SchemaRule {
     id: "target-type-must-exist",
     imperative: "The targetType MUST be an existing schema ID from the EXISTING SCHEMAS list in the system prompt, or the schema ID of the type you are creating in this same call — do NOT invent types that aren't listed. If the target type doesn't exist yet: when the user asked for both types, create the target type first and declare the relationship on the type created second (see CREATING TWO LINKED TYPES); only when the target is a type the user never asked for, omit the relationship entirely. reverseName and reverseCardinality are REQUIRED on every relationship — a declaration missing either is rejected. One edge is stored and read from BOTH ends, so name it from both: reverseName is what the edge is called read from the target (plural where that end may hold many — \"invoices\", not \"Invoice (Customer)\"), and reverseCardinality is \"one\" or \"many\", saying how many sources may point at one target. Examples:\n- ADR supersedes adr (one), read back as superseded_by: `{\"name\": \"supersedes\", \"targetType\": \"adr\", \"direction\": \"out\", \"cardinality\": \"one\", \"reverseName\": \"superseded_by\", \"reverseCardinality\": \"one\"}`\n- Ticket has_task task (many), read back as ticket: `{\"name\": \"has_task\", \"targetType\": \"task\", \"direction\": \"out\", \"cardinality\": \"many\", \"reverseName\": \"ticket\", \"reverseCardinality\": \"one\"}`\n- ADR decided_by person, readable back as the person's decisions: `{\"name\": \"decided_by\", \"targetType\": \"person\", \"direction\": \"out\", \"cardinality\": \"one\", \"reverseName\": \"decisions\", \"reverseCardinality\": \"many\"}`\n\nSELF-REFERENCE: a type may point at itself in the same schema create call — use its own schema ID (the snake_case form of the name), no second call needed. The required reverseName is what names the other direction, so never declare a second relationship for it: one stored edge, readable from both ends. Example, on `schema create` for ADR: `{\"name\": \"supersedes\", \"targetType\": \"adr\", \"direction\": \"out\", \"cardinality\": \"one\", \"reverseName\": \"superseded_by\", \"reverseCardinality\": \"one\"}`. Same for `blocks`/`blocked_by` on a task or `parent`/`child` on a category.",
     prose: "`targetType` must be an existing schema ID, or the schema ID of the type being created in the same call. If it doesn't exist yet and the user asked for both types, create the target type first and declare the relationship on the type created second (see *Creating two linked types*); omit the relationship only when the target is a type the user never asked for. `reverseName` and `reverseCardinality` are **required** on every relationship — a declaration missing either is rejected. One edge is stored and read from both ends, so name it from both: `reverseName` is what the edge is called read from the target (plural where that end may hold many — `invoices`, not `Invoice (Customer)`), and `reverseCardinality` is `one` or `many`, saying how many sources may point at one target. Examples: `{\"name\":\"supersedes\",\"targetType\":\"adr\",\"direction\":\"out\",\"cardinality\":\"one\",\"reverseName\":\"superseded_by\",\"reverseCardinality\":\"one\"}`, `{\"name\":\"has_task\",\"targetType\":\"task\",\"direction\":\"out\",\"cardinality\":\"many\",\"reverseName\":\"ticket\",\"reverseCardinality\":\"one\"}`, `{\"name\":\"decided_by\",\"targetType\":\"person\",\"direction\":\"out\",\"cardinality\":\"one\",\"reverseName\":\"decisions\",\"reverseCardinality\":\"many\"}`.\n\n**Self-referential relationships:** a type may point at itself in the same `schema create` call — give its own schema ID (the snake_case form of the name); no follow-up `schema update` is needed. The required `reverseName` is what names the other direction, so never declare a second relationship for it — one stored edge, readable from both ends: `{\"name\":\"supersedes\",\"targetType\":\"adr\",\"direction\":\"out\",\"cardinality\":\"one\",\"reverseName\":\"superseded_by\",\"reverseCardinality\":\"one\"}`. The same shape covers `blocks`/`blocked_by` on a task and `parent`/`child` on a category.",
-    anchors: &["existing schema ID", "same call", "create the target type first", "never asked for", "reverseName", "reverseCardinality", "rejected", "invoices", "Invoice (Customer)", "snake_case", "never declare a second relationship", "blocked_by", "parent", "child"],
+    anchors: &["existing schema ID", "same call", "create the target type first", "never asked for", "reverseName", "reverseCardinality", "rejected", "invoices", "Invoice (Customer)", "snake_case", "never declare a second relationship", "blocked_by", "parent"],
 };
 
 /// The rejected-shape warning is the single most important sentence in this
@@ -244,7 +244,7 @@ pub const ENUM_EDGE_FIELDS: SchemaRule = SchemaRule {
     id: "enum-edge-fields",
     imperative: "EDGE FIELDS: A relationship may carry attributes on the edge itself via edgeFields — use them for facts about the CONNECTION rather than about either node (an access level on a membership, a billing date on an invoice link). When an edge field has a fixed vocabulary, declare it as an enum with coreValues, exactly like a node field: `{\"name\": \"access\", \"type\": \"enum\", \"coreValues\": [{\"value\": \"owner\", \"label\": \"Owner\"}, {\"value\": \"editor\", \"label\": \"Editor\"}, {\"value\": \"viewer\", \"label\": \"Viewer\"}]}`. RULES: coreValues is REQUIRED on an enum edge field and REJECTED on any other type; a default MUST be one of the declared values; values must be unique. Edge enums are closed — there is no userValues or extensible on an edge field. Creating or editing an edge validates the value against the declared set, so an undeclared value is rejected rather than stored. LIMITS: only relationships YOU declare can carry edgeFields — the built-in structural names (member_of, has_child, mentions, has_role) are reserved and rejected as declarations, so you cannot attach an edge field to them. `required` and `default` on an edge field are recorded but NOT enforced when an edge is written: an omitted enum key is stored absent, not filled in from default. Do not rely on a default to supply a value.",
     prose: "**Edge fields.** A relationship can carry attributes on the edge itself via `edgeFields` — facts about the *connection*, not about either node (an access level on a membership, a billing date on an invoice link). Give an edge field a fixed vocabulary by declaring it as an enum with `coreValues`, the same shape a node field uses:\n\n```json\n{\"name\": \"access\", \"type\": \"enum\",\n \"coreValues\": [{\"value\": \"owner\", \"label\": \"Owner\"},\n                {\"value\": \"editor\", \"label\": \"Editor\"},\n                {\"value\": \"viewer\", \"label\": \"Viewer\"}]}\n```\n\n`coreValues` is required on an enum edge field and rejected on any other type; a `default` must be one of the declared values; values must be unique. Edge enums are closed — no `userValues`/`extensible` half. Creating or editing an edge validates the value against the declared set (including via `--edge-data`), and the relationships UI renders a picker instead of a free-text box.\n\nTwo limits worth knowing. Only relationships you declare can carry `edgeFields`: the built-in structural names (`member_of`, `has_child`, `mentions`, `has_role`) are reserved and rejected as declarations, so an edge field cannot be attached to them. And `required`/`default` on an edge field are recorded but not enforced at write time — an omitted enum key is stored absent rather than filled in from `default`, so don't rely on a default to supply a value.",
-    anchors: &["edgeFields", "connection", "coreValues", "rejected on any other type", "default", "unique", "closed", "userValues", "extensible", "member_of", "has_child", "mentions", "has_role", "reserved", "not enforced", "stored absent"],
+    anchors: &["edgeFields", "connection", "coreValues", "rejected on any other type", "must be one of the declared values", "unique", "closed", "userValues", "extensible", "member_of", "has_child", "mentions", "has_role", "reserved", "not enforced", "stored absent"],
 };
 
 /// The premise this rule leads with is not decoration: without it, "identity
@@ -536,13 +536,18 @@ mod tests {
 
     /// Rules whose prose walks through complete CLI commands the imperative
     /// form has no counterpart for: the local agent issues those steps as
-    /// tool calls it is told about in words, not as copied payloads.
+    /// tool calls it is told about in words, not as copied payloads. Only the
+    /// prose-side examples are exempt — an example added to the imperative
+    /// form must still appear in the prose.
     const PROSE_ONLY_EXAMPLES: &[&str] = &["delete-a-schema"];
 
     /// Every JSON object embedded in `text`, including nested ones, parsed so
     /// that formatting differences between the forms (`"a": 1` vs `"a":1`)
-    /// don't count as drift. Placeholder braces such as `{name}` don't parse
-    /// and are skipped.
+    /// don't count as drift. Anything that doesn't parse is skipped: that is
+    /// placeholder braces such as `{name}`, and also the deliberately elided
+    /// rejected shape both forms of `EXTENDS_SCHEMA_COMPOSITION` show
+    /// (`{"relationships": [{"name": "extends", ...}]}`), which is an
+    /// illustration of what not to send rather than a payload to copy.
     fn json_examples(text: &str) -> Vec<serde_json::Value> {
         let mut found = Vec::new();
         for (i, _) in text.match_indices('{') {
@@ -566,9 +571,7 @@ mod tests {
     fn schema_rule_forms_share_their_json_examples() {
         let mut drift = Vec::new();
         for r in SCHEMA_RULES {
-            if PROSE_ONLY_EXAMPLES.contains(&r.id) {
-                continue;
-            }
+            let prose_only_allowed = PROSE_ONLY_EXAMPLES.contains(&r.id);
             let imperative = json_examples(r.imperative);
             let prose = json_examples(r.prose);
             for example in &imperative {
@@ -580,7 +583,7 @@ mod tests {
                 }
             }
             for example in &prose {
-                if !imperative.contains(example) {
+                if !prose_only_allowed && !imperative.contains(example) {
                     drift.push(format!("{}: only the prose form shows {example}", r.id));
                 }
             }
