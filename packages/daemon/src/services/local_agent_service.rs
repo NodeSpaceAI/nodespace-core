@@ -17,7 +17,7 @@ use async_trait::async_trait;
 use nodespace_agent::agent_types::{
     AgentToolExecutor, ChatInferenceEngine, ChatMessage, ChatModelSpec, ClarifyPrompt,
     InferenceError, InferenceUsage, LocalAgentStatus, MentionedEntity, ModelManager, ModelStatus,
-    PriorWrite, Role, StreamingChunk, ToolExecutionRecord,
+    PriorTurn, PriorWrite, Role, StreamingChunk, ToolExecutionRecord,
 };
 use nodespace_agent::local_agent::agent_loop::{
     canonical_args, canonical_args_identity, LocalAgentService,
@@ -29,7 +29,7 @@ use nodespace_agent::local_agent::tools::{
 };
 use nodespace_core::models::{
     AiChatCompletedWrite, AiChatMessage, AiChatNode, AiChatPendingDeletion, AiChatResolvedEntity,
-    NodeFilter, NodeUpdate,
+    AiChatTurnOutcome, NodeFilter, NodeUpdate,
 };
 use nodespace_core::services::{NodeEmbeddingService, NodeService, NodeServiceError};
 
@@ -746,6 +746,7 @@ impl LocalAgentServiceImpl {
         }
 
         let prior_writes = prior_writes_from_history(&messages);
+        let prior_turns = prior_turns_from_history(&messages);
         let history = node_history_from_messages(messages);
         if history.is_empty() {
             tracing::warn!(node_id, "ai-chat history empty — skipping turn");
@@ -824,6 +825,14 @@ impl LocalAgentServiceImpl {
         if !prior_writes.is_empty() {
             service
                 .set_session_prior_writes(&session_id, prior_writes)
+                .await;
+        }
+
+        // How earlier turns ended, for the one-clarification-per-intent
+        // contract. The rebuilt history carries only their text.
+        if !prior_turns.is_empty() {
+            service
+                .set_session_prior_turns(&session_id, prior_turns)
                 .await;
         }
 
@@ -928,10 +937,13 @@ impl LocalAgentServiceImpl {
                     .append_assistant_message(
                         &node_id,
                         &result.response,
-                        result.reasoning.as_deref(),
-                        completed_writes,
-                        resolved_entities_from(&result.tool_calls_made),
-                        result.clarify.as_ref(),
+                        AssistantRecord {
+                            reasoning: result.reasoning.as_deref(),
+                            completed_writes,
+                            resolved_entities: resolved_entities_from(&result.tool_calls_made),
+                            clarify: result.clarify.as_ref(),
+                            outcome: Some(result.outcome()),
+                        },
                     )
                     .await
                 {
@@ -971,16 +983,16 @@ impl LocalAgentServiceImpl {
                         // history growth is bounded by `maybe_summarize_history`
                         // the same as any other turn, and a model that sees its
                         // own stated failure is exactly the context it needs to
-                        // avoid repeating the same failing action blindly.
+                        // avoid repeating the same failing action blindly. It
+                        // carries no outcome: no turn produced it, so the
+                        // clarification contract skips it
+                        // (`prior_turns_from_history`).
                         let error_text = format!("This turn failed and could not complete: {e}");
                         match self
                             .append_assistant_message(
                                 &node_id,
                                 &error_text,
-                                None,
-                                Vec::new(),
-                                Vec::new(),
-                                None,
+                                AssistantRecord::default(),
                             )
                             .await
                         {
@@ -1059,7 +1071,15 @@ impl LocalAgentServiceImpl {
         });
 
         if let Err(e) = self
-            .append_assistant_message(node_id, &text, None, writes, Vec::new(), None)
+            .append_assistant_message(
+                node_id,
+                &text,
+                AssistantRecord {
+                    completed_writes: writes,
+                    outcome: Some(AiChatTurnOutcome::Acted),
+                    ..Default::default()
+                },
+            )
             .await
         {
             tracing::warn!(node_id, error = %e, "failed to append delete confirmation reply");
@@ -1274,11 +1294,15 @@ impl LocalAgentServiceImpl {
         &self,
         node_id: &str,
         content: &str,
-        reasoning: Option<&str>,
-        completed_writes: Vec<AiChatCompletedWrite>,
-        resolved_entities: Vec<AiChatResolvedEntity>,
-        clarify: Option<&ClarifyPrompt>,
+        record: AssistantRecord<'_>,
     ) -> Result<(), String> {
+        let AssistantRecord {
+            reasoning,
+            completed_writes,
+            resolved_entities,
+            clarify,
+            outcome,
+        } = record;
         for attempt in 0..MAX_WRITE_ATTEMPTS {
             let node = self
                 .inner
@@ -1309,6 +1333,7 @@ impl LocalAgentServiceImpl {
                 pending_deletions: clarify
                     .map(|c| c.pending_deletions.clone())
                     .unwrap_or_default(),
+                outcome,
             });
 
             // Set status to idle here too (atomic with message append).
@@ -2698,6 +2723,41 @@ pub fn resolved_entities_from(executions: &[ToolExecutionRecord]) -> Vec<AiChatR
     deduped
 }
 
+/// What an assistant message persists beyond its text. Each field is empty for
+/// a message that carries none of it.
+#[derive(Default)]
+struct AssistantRecord<'a> {
+    /// The model's captured chain-of-thought.
+    reasoning: Option<&'a str>,
+    /// Graph writes the turn performed.
+    completed_writes: Vec<AiChatCompletedWrite>,
+    /// Graph entities the turn's reads surfaced.
+    resolved_entities: Vec<AiChatResolvedEntity>,
+    /// The composed question, when the turn asked one.
+    clarify: Option<&'a ClarifyPrompt>,
+    /// How the turn ended. `None` for text no agent turn produced.
+    outcome: Option<AiChatTurnOutcome>,
+}
+
+/// Rebuild the clarification contract's view of earlier turns from persisted
+/// messages: each assistant message's outcome, with the text the user saw.
+///
+/// An assistant message with no outcome — a failed turn's error notice — is
+/// left out rather than guessed at. It neither asked the user anything nor
+/// resolved what they asked, so the intent around it is unchanged.
+fn prior_turns_from_history(messages: &[AiChatMessage]) -> Vec<PriorTurn> {
+    messages
+        .iter()
+        .filter(|m| m.role == "assistant")
+        .filter_map(|m| {
+            m.outcome.map(|outcome| PriorTurn {
+                outcome,
+                response: m.content.clone(),
+            })
+        })
+        .collect()
+}
+
 /// Rebuild the duplicate-guard's view of earlier turns from persisted messages.
 ///
 /// Filtering to the guarded tools here keeps the set small, since the
@@ -3623,6 +3683,7 @@ mod tests {
             question: None,
             options: Vec::new(),
             pending_deletions: Vec::new(),
+            outcome: None,
         });
         let mut props = serde_json::json!({});
         props["ai-chat"] = ai_chat.to_properties_value();
@@ -4354,6 +4415,7 @@ mod tests {
             question: None,
             options: Vec::new(),
             pending_deletions: Vec::new(),
+            outcome: None,
         }
     }
 
@@ -4583,10 +4645,10 @@ mod tests {
         svc.append_assistant_message(
             &node_id,
             "Delete \"A\" (text)?",
-            None,
-            Vec::new(),
-            Vec::new(),
-            Some(&clarify),
+            AssistantRecord {
+                clarify: Some(&clarify),
+                ..Default::default()
+            },
         )
         .await
         .expect("append");
@@ -4946,7 +5008,7 @@ mod tests {
             "a status write to a missing node must return Err"
         );
         assert!(
-            svc.append_assistant_message(&node_id, "Reply.", None, Vec::new(), Vec::new(), None,)
+            svc.append_assistant_message(&node_id, "Reply.", AssistantRecord::default())
                 .await
                 .is_err(),
             "an append to a missing node must return Err"
@@ -5086,10 +5148,10 @@ mod tests {
         svc.append_assistant_message(
             &node_id,
             "The answer.",
-            Some("I reasoned about it."),
-            Vec::new(),
-            Vec::new(),
-            None,
+            AssistantRecord {
+                reasoning: Some("I reasoned about it."),
+                ..Default::default()
+            },
         )
         .await
         .expect("append");
@@ -5124,10 +5186,10 @@ mod tests {
             &node_id,
             "I can take that a couple of ways. Did you want to track debts or search notes?\n\n\
              - Track who owes me money\n- Search existing notes",
-            None,
-            Vec::new(),
-            Vec::new(),
-            Some(&clarify),
+            AssistantRecord {
+                clarify: Some(&clarify),
+                ..Default::default()
+            },
         )
         .await
         .expect("append");
@@ -5149,8 +5211,60 @@ mod tests {
             ]
         );
         // The flattened text is still there too — plain-text readers and the
-        // LLM-facing history scan are unaffected by adding the structured field.
+        // LLM-facing history are unaffected by adding the structured field.
         assert!(assistant.content.contains("Track who owes me money"));
+    }
+
+    /// The clarification contract is rebuilt from persisted outcomes, not from
+    /// reply text: each turn's outcome must survive the round-trip through the
+    /// node, and text no turn produced must not stand in for one.
+    #[tokio::test]
+    async fn turn_outcomes_persist_and_rebuild_the_prior_turns() {
+        let (svc, node_service, _tempdir) = test_service().await;
+        let node_id = create_ai_chat_node(&node_service).await;
+
+        for (text, outcome) in [
+            (
+                "I can take that a couple of ways. Which?",
+                Some(AiChatTurnOutcome::Clarified),
+            ),
+            (
+                "Which contacts do you mean?",
+                Some(AiChatTurnOutcome::Replied),
+            ),
+            ("This turn failed and could not complete: boom", None),
+            ("Found 3 contacts.", Some(AiChatTurnOutcome::Acted)),
+        ] {
+            svc.append_assistant_message(
+                &node_id,
+                text,
+                AssistantRecord {
+                    outcome,
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("append");
+        }
+
+        let messages = load_chat_messages(&node_service, &node_id).await;
+        assert_eq!(
+            prior_turns_from_history(&messages),
+            vec![
+                PriorTurn {
+                    outcome: AiChatTurnOutcome::Clarified,
+                    response: "I can take that a couple of ways. Which?".to_string(),
+                },
+                PriorTurn {
+                    outcome: AiChatTurnOutcome::Replied,
+                    response: "Which contacts do you mean?".to_string(),
+                },
+                PriorTurn {
+                    outcome: AiChatTurnOutcome::Acted,
+                    response: "Found 3 contacts.".to_string(),
+                },
+            ]
+        );
     }
 
     /// An ordinary reply (no clarify) must not gain `question`/`options` —
@@ -5160,16 +5274,9 @@ mod tests {
         let (svc, node_service, _tempdir) = test_service().await;
         let node_id = create_ai_chat_node(&node_service).await;
 
-        svc.append_assistant_message(
-            &node_id,
-            "Here's your answer.",
-            None,
-            Vec::new(),
-            Vec::new(),
-            None,
-        )
-        .await
-        .expect("append");
+        svc.append_assistant_message(&node_id, "Here's your answer.", AssistantRecord::default())
+            .await
+            .expect("append");
 
         let messages = load_chat_messages(&node_service, &node_id).await;
         let assistant = messages
@@ -5213,10 +5320,10 @@ mod tests {
         svc.append_assistant_message(
             &node_id,
             "I have added \"Kind of Blue\".",
-            None,
-            writes,
-            Vec::new(),
-            None,
+            AssistantRecord {
+                completed_writes: writes,
+                ..Default::default()
+            },
         )
         .await
         .expect("append");
@@ -5418,10 +5525,10 @@ mod tests {
         svc.append_assistant_message(
             &node_id,
             "You have one task node: \"Finish the report\".",
-            None,
-            Vec::new(),
-            entities,
-            None,
+            AssistantRecord {
+                resolved_entities: entities,
+                ..Default::default()
+            },
         )
         .await
         .expect("append");
@@ -5454,16 +5561,9 @@ mod tests {
         let (svc, node_service, _tempdir) = test_service().await;
         let node_id = create_ai_chat_node(&node_service).await;
 
-        svc.append_assistant_message(
-            &node_id,
-            "I found 3 tasks.",
-            None,
-            Vec::new(),
-            Vec::new(),
-            None,
-        )
-        .await
-        .expect("append");
+        svc.append_assistant_message(&node_id, "I found 3 tasks.", AssistantRecord::default())
+            .await
+            .expect("append");
 
         let history = load_node_history(&node_service, &node_id).await;
         assert!(!history.iter().any(|m| matches!(m.role, Role::System)));
@@ -5617,23 +5717,16 @@ mod tests {
         let node_id = create_ai_chat_node(&node_service).await;
 
         // None and whitespace-only both persist no reasoning field.
-        svc.append_assistant_message(
-            &node_id,
-            "Plain answer.",
-            None,
-            Vec::new(),
-            Vec::new(),
-            None,
-        )
-        .await
-        .expect("append none");
+        svc.append_assistant_message(&node_id, "Plain answer.", AssistantRecord::default())
+            .await
+            .expect("append none");
         svc.append_assistant_message(
             &node_id,
             "Another answer.",
-            Some("   "),
-            Vec::new(),
-            Vec::new(),
-            None,
+            AssistantRecord {
+                reasoning: Some("   "),
+                ..Default::default()
+            },
         )
         .await
         .expect("append whitespace");
@@ -5950,6 +6043,7 @@ model = "model-b"
             question: None,
             options: Vec::new(),
             pending_deletions: Vec::new(),
+            outcome: None,
         }];
 
         let prior = prior_writes_from_history(&msgs);
@@ -6172,6 +6266,7 @@ model = "model-b"
             question: None,
             options: Vec::new(),
             pending_deletions: Vec::new(),
+            outcome: None,
         }]);
 
         let assistant = history
@@ -6232,6 +6327,7 @@ model = "model-b"
             question: None,
             options: Vec::new(),
             pending_deletions: Vec::new(),
+            outcome: None,
         }
     }
 
@@ -6246,6 +6342,7 @@ model = "model-b"
             question: None,
             options: Vec::new(),
             pending_deletions: Vec::new(),
+            outcome: None,
         }
     }
 
@@ -6565,6 +6662,7 @@ model = "model-b"
                 question: None,
                 options: Vec::new(),
                 pending_deletions: Vec::new(),
+                outcome: None,
             },
         ]);
 
@@ -6750,6 +6848,7 @@ model = "model-b"
                 question: None,
                 options: Vec::new(),
                 pending_deletions: Vec::new(),
+                outcome: None,
             },
             AiChatMessage {
                 role: "assistant".to_string(),
@@ -6767,6 +6866,7 @@ model = "model-b"
                 question: None,
                 options: Vec::new(),
                 pending_deletions: Vec::new(),
+                outcome: None,
             },
         ]);
 
@@ -6840,6 +6940,7 @@ model = "model-b"
             question: None,
             options: Vec::new(),
             pending_deletions: Vec::new(),
+            outcome: None,
         }];
 
         assert!(

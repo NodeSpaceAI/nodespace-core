@@ -155,6 +155,7 @@ fn turn1_and_turn2_messages() -> Vec<AiChatMessage> {
             question: None,
             options: Vec::new(),
             pending_deletions: Vec::new(),
+            outcome: None,
         },
         AiChatMessage {
             role: "assistant".to_string(),
@@ -170,6 +171,7 @@ fn turn1_and_turn2_messages() -> Vec<AiChatMessage> {
             question: None,
             options: Vec::new(),
             pending_deletions: Vec::new(),
+            outcome: None,
         },
         AiChatMessage {
             role: "user".to_string(),
@@ -182,6 +184,7 @@ fn turn1_and_turn2_messages() -> Vec<AiChatMessage> {
             question: None,
             options: Vec::new(),
             pending_deletions: Vec::new(),
+            outcome: None,
         },
         AiChatMessage {
             role: "assistant".to_string(),
@@ -195,6 +198,7 @@ fn turn1_and_turn2_messages() -> Vec<AiChatMessage> {
             question: None,
             options: Vec::new(),
             pending_deletions: Vec::new(),
+            outcome: None,
         },
     ]
 }

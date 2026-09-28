@@ -8,6 +8,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 
+use nodespace_core::models::AiChatTurnOutcome;
 use opentelemetry::trace::{Span, TraceContextExt, Tracer};
 use opentelemetry::KeyValue;
 use regex::Regex;
@@ -17,8 +18,8 @@ use tokio_util::sync::CancellationToken;
 
 use crate::agent_types::{
     AgentSession, AgentToolExecutor, AgentTurnResult, ChatInferenceEngine, ChatMessage,
-    ChatModelSpec, InferenceError, InferenceRequest, InferenceUsage, LocalAgentStatus, Role,
-    StreamingChunk, ToolCallRaw, ToolExecutionRecord,
+    ChatModelSpec, InferenceError, InferenceRequest, InferenceUsage, LocalAgentStatus, PriorTurn,
+    Role, StreamingChunk, ToolCallRaw, ToolExecutionRecord,
 };
 use crate::local_agent::decisions;
 use crate::local_agent::otlp_tracer::TRACER_NAME;
@@ -124,15 +125,18 @@ pub fn stage1_skill_names(titles: impl IntoIterator<Item = String>) -> Vec<Strin
     names
 }
 
+/// Put to Stage 2 when it replies in prose, with no tool call, in an intent
+/// that is already clarified (see [`session_already_clarified`]). `System`-role, like the other records the
+/// history carries, because it states a fact of the conversation rather than
+/// something the user said.
+const ALREADY_CLARIFIED_NUDGE: &str = "The user has already answered a clarifying question \
+     about this request, and a request gets only one. Do not ask them anything further. Act on \
+     the most reasonable reading of what they said by calling the tool that fits it.";
+
 /// Opening phrase of a routing clarification.
 ///
-/// The session is rebuilt from persisted messages every turn, so the
-/// clarification contract ("at most one per intent") cannot rely on in-memory
-/// state — whether we already clarified has to be answerable from the history
-/// alone. Clarifications are composed here and always open with this phrase,
-/// so their own text is the record. Matching on text is imprecise in general,
-/// but it is exact for strings this module wrote itself, and it avoids
-/// widening the persisted session shape for one boolean.
+/// Presentation only. Whether a turn clarified is recorded structurally (see
+/// [`session_already_clarified`]), never read back from this text.
 const CLARIFICATION_OPENER: &str = "I can take that a couple of ways";
 
 /// Longest canonical-args string stored verbatim as a completed write's identity.
@@ -724,9 +728,10 @@ fn comparable_title(s: &str) -> String {
 /// safe direction — no false refusal — and deliberately not widened into a
 /// fuzzy match to catch it.
 ///
-/// Disarmed for an entity that a clarification the user has answered in the
-/// current intent (`answered_clarifications`, taken at turn start) asked
-/// about. That is the confirmation turn, where a user who asked for a second,
+/// Disarmed for an entity that a composed clarification the user has answered
+/// in the current intent (`composed_clarifications`, taken at turn start) asked
+/// about. Only composed ones: a read-only reply that linked the record asked
+/// nothing. That is the confirmation turn, where a user who asked for a second,
 /// separate record must be able to get one; asking again there would make the
 /// duplicate unreachable.
 ///
@@ -742,7 +747,7 @@ fn comparable_title(s: &str) -> String {
 /// call. The guard's job ends once the user has been asked.
 fn mentioned_entity_duplicated_by<'a>(
     mentioned_entities: &'a [crate::agent_types::MentionedEntity],
-    answered_clarifications: &[String],
+    composed_clarifications: &[String],
     tool: &str,
     args: &serde_json::Value,
 ) -> Option<&'a crate::agent_types::MentionedEntity> {
@@ -758,7 +763,7 @@ fn mentioned_entity_duplicated_by<'a>(
         .iter()
         .find(|e| e.node_type == node_type && comparable_title(&e.title) == title)
         .filter(|e| {
-            !answered_clarifications
+            !composed_clarifications
                 .iter()
                 .any(|asked| asked.contains(e.id.as_str()))
         })
@@ -1278,8 +1283,9 @@ struct RoutingOutcome {
     /// only when Stage 1 asked to clarify *and* the contract allowed it.
     ///
     /// This is the flattened text `format_clarification` produces — still the
-    /// form persisted into `session.messages` for the LLM-facing history and
-    /// `session_already_clarified`'s scan. [`Self::clarify_prompt`] carries the
+    /// form persisted into `session.messages` for the LLM-facing history.
+    /// Whether the turn clarified is recorded structurally (`PriorTurn`), not
+    /// read back from this text. [`Self::clarify_prompt`] carries the
     /// same question/options unflattened, for the frontend.
     clarification: Option<String>,
     /// The same clarification as structured data, alongside the flattened
@@ -1370,47 +1376,65 @@ pub fn stage1_query_from_turns(prior_turns: &[&str], user_message: &str) -> Stri
 /// a clarification answered twenty turns ago must not stop a genuinely new
 /// ambiguous request from being clarified today.
 ///
-/// The intent boundary is an assistant turn that *answered* rather than asked:
-/// once the agent has resolved something and replied normally, whatever the
-/// user says next starts a fresh intent and the mechanism re-arms.
+/// The intent boundary is a turn that *acted* — made a successful write. Once
+/// the agent has changed something, whatever the user says next starts a
+/// fresh intent and the mechanism re-arms. A turn that only read does not
+/// close the intent (see [`AgentTurnResult::outcome`]).
+///
+/// Counted from `session.prior_turns`, the structural record of how each
+/// earlier turn ended, never from reply text. Every earlier turn has been
+/// replied to: the message that started this turn is the reply.
+///
+/// A composed clarification counts on its own. A turn that did not write
+/// (`Replied`) counts only as the second such turn in the intent. The model
+/// can ask in its own words, and that question carries no marker a text match
+/// could find; structurally, reading and then replying looks the same whether
+/// the reply showed what was found or asked about it. One such turn is as
+/// likely an answer ("hi" → "Hello!") as a question, so counting it alone would
+/// suppress the first genuine clarification of any chat that opened with
+/// conversation or a lookup, and re-prompt its next plain reply. Two in one
+/// intent is the loop the contract exists to stop. Two costs are accepted.
+/// An intent clarified only in prose can ask twice. And a chat that only reads
+/// never closes its intent, so from its third non-writing turn a tool-free
+/// reply is re-prompted once (with a nudge that assumes a clarification was
+/// asked) and an ambiguous request falls through to retrieval instead of being
+/// clarified, until something is written.
+///
+/// A prose reply never closes the intent either, so it cannot erase a composed
+/// clarification before it — which reading every non-composed reply as a
+/// resolution did.
 fn session_already_clarified(session: &AgentSession) -> bool {
-    !answered_clarifications(session).is_empty()
+    let mut replied = 0;
+    for turn in current_intent(session) {
+        if turn.outcome == AiChatTurnOutcome::Clarified {
+            return true;
+        }
+        replied += 1;
+    }
+    replied >= 2
 }
 
-/// The text of every clarification in the current intent that the user has
-/// since replied to — the intent scoping of [`session_already_clarified`],
-/// exposed for callers that need to know WHAT was asked, not only that
-/// something was.
-fn answered_clarifications(session: &AgentSession) -> Vec<&str> {
-    // Everything from the last resolved turn onward is the current intent.
-    // A clarification is not a resolution, so it does not close an intent —
-    // that is what lets the "already clarified" state survive the user's reply
-    // to it, while still clearing once the turn actually completes.
-    let intent_start = session
-        .messages
-        .iter()
-        .rposition(|m| {
-            matches!(m.role, Role::Assistant) && !m.content.starts_with(CLARIFICATION_OPENER)
-        })
-        .map_or(0, |idx| idx + 1);
-
-    let current_intent = &session.messages[intent_start..];
-
-    // Within this intent: did we ask, and has the user since replied? A
-    // clarification with no user message after it is the one we just asked and
-    // are still waiting on, not a second attempt.
-    current_intent
-        .iter()
-        .enumerate()
-        .filter(|(idx, m)| {
-            matches!(m.role, Role::Assistant)
-                && m.content.starts_with(CLARIFICATION_OPENER)
-                && current_intent[idx + 1..]
-                    .iter()
-                    .any(|m| matches!(m.role, Role::User))
-        })
-        .map(|(_, m)| m.content.as_str())
+/// The clarifications in the current intent that the module composed — the
+/// turns recorded `Clarified`, not every turn that did not act.
+///
+/// What the duplicate-entity guard reads: it disarms only for a record the
+/// user was actually asked about. A read-only answer that linked the record
+/// ("Northwind Trading (nodespace://nw-1) is a customer") stays inside the
+/// intent too, but it asked nothing, and must not disarm the guard.
+fn composed_clarifications(session: &AgentSession) -> Vec<&str> {
+    current_intent(session)
+        .filter(|t| t.outcome == AiChatTurnOutcome::Clarified)
+        .map(|t| t.response.as_str())
         .collect()
+}
+
+/// Every earlier turn since the last one that acted, newest first.
+fn current_intent(session: &AgentSession) -> impl Iterator<Item = &PriorTurn> {
+    session
+        .prior_turns
+        .iter()
+        .rev()
+        .take_while(|t| t.outcome != AiChatTurnOutcome::Acted)
 }
 
 /// Compose a clarification from Stage 1's question and options.
@@ -2032,6 +2056,12 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
         if !confirm_held_deletions(session, &mut result) {
             duplicate_entity_backstop(session, &mut result);
         }
+        // Recorded after the guards above, which can turn a reply into a
+        // question: the outcome is what the user was finally shown.
+        session.prior_turns.push(PriorTurn {
+            outcome: result.outcome(),
+            response: result.response.clone(),
+        });
         Ok(result)
     }
 
@@ -2062,10 +2092,8 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
             .messages
             .push(ChatMessage::text(Role::User, user_message.to_string()));
 
-        // Taken now, while the history ends at the user's message: every tool
-        // call this turn appends an assistant message, which
-        // `answered_clarifications` reads as the intent being resolved.
-        let answered_clarifications: Vec<String> = answered_clarifications(session)
+        let already_clarified = session_already_clarified(session);
+        let composed_clarifications: Vec<String> = composed_clarifications(session)
             .into_iter()
             .map(str::to_owned)
             .collect();
@@ -2351,6 +2379,11 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
         // model can burn every iteration without executing a single tool. Reset
         // on any successful parse, so only an unbroken run trips it.
         let mut consecutive_parse_failures = 0usize;
+        // Whether this turn has already been re-prompted for replying in prose
+        // after an answered clarification. Once only: a model that declines
+        // twice has its reply accepted, and the turn is recorded as one that
+        // did not act.
+        let mut clarify_nudged = false;
         // Seeded with the Stage-1 routing turn's usage: it is part of what this
         // turn cost, and reporting only the Stage-2 tokens would hide the price
         // of the extra turn from everything that reads this figure.
@@ -2603,6 +2636,38 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
             );
 
             if tool_calls.is_empty() {
+                // The user already answered a clarification in this intent, and
+                // the model is replying without acting — asking again in its
+                // own words, since `route_clarify` is off the surface. Counting
+                // that reply (see `session_already_clarified`) stops the NEXT
+                // turn from clarifying; it does nothing for this one. So put
+                // it back once, with the contract stated, before accepting
+                // prose. Keyed on structure alone — no call this turn, and an
+                // intent already clarified (a composed clarification, or two
+                // turns that did not write) — never on the reply's wording. The prose is dropped rather than kept as history:
+                // the model re-reading its own question is what to avoid.
+                if !clarify_nudged
+                    && !any_real_tool_calls
+                    && already_clarified
+                    && !tools.is_empty()
+                    && !response_text.trim().is_empty()
+                    && iteration + 1 < effective_max_iterations
+                {
+                    clarify_nudged = true;
+                    let (preview, preview_truncated) = char_preview(&response_text, 120);
+                    tracing::info!(
+                        session_id = %session.id,
+                        iteration,
+                        response_preview = %preview,
+                        response_preview_truncated = preview_truncated,
+                        "Clarification contract: prose reply after an answered clarification — re-prompting to act"
+                    );
+                    session
+                        .messages
+                        .push(ChatMessage::text(Role::System, ALREADY_CLARIFIED_NUDGE));
+                    continue;
+                }
+
                 // No tool calls — final response
                 on_status(LocalAgentStatus::Streaming);
                 session.status = LocalAgentStatus::Streaming;
@@ -2882,7 +2947,10 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                 // for intent — exactly the unstructured, unreliable channel
                 // ADR-038 built `route_clarify` to avoid. Widening this is a
                 // model-behavior question for #1922/#1927 to own, not a
-                // rendering gap for this turn's response to paper over.
+                // rendering gap for this turn's response to paper over. The
+                // clarification contract still counts it: a turn that made no
+                // write is recorded as `Replied` (`AgentTurnResult::outcome`),
+                // whatever its text says.
                 return Ok(AgentTurnResult {
                     response: final_response,
                     reasoning,
@@ -3127,7 +3195,7 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                                 )
                             } else if let Some(entity) = mentioned_entity_duplicated_by(
                                 &session.mentioned_entities,
-                                &answered_clarifications,
+                                &composed_clarifications,
                                 &tc.function_name,
                                 &args,
                             ) {
@@ -4224,6 +4292,7 @@ impl<E: ChatInferenceEngine + ?Sized + 'static, T: AgentToolExecutor + ?Sized + 
             prior_writes: Vec::new(),
             routing_disabled: false,
             mentioned_entities: Vec::new(),
+            prior_turns: Vec::new(),
         };
 
         let cancel = CancellationToken::new();
@@ -4263,6 +4332,23 @@ impl<E: ChatInferenceEngine + ?Sized + 'static, T: AgentToolExecutor + ?Sized + 
         let mut sessions = self.sessions.write().await;
         if let Some(session) = sessions.get_mut(session_id) {
             session.prior_writes = prior_writes;
+        }
+    }
+
+    /// Seed how the earlier turns of this conversation ended.
+    ///
+    /// The clarification contract (ADR-038) reads these to scope "at most one
+    /// clarification per intent". Callers that rebuild the session from
+    /// persisted history call this with the outcomes persisted alongside it;
+    /// a session that lives across turns in memory accumulates them itself.
+    pub async fn set_session_prior_turns(
+        &self,
+        session_id: &str,
+        prior_turns: Vec<crate::agent_types::PriorTurn>,
+    ) {
+        let mut sessions = self.sessions.write().await;
+        if let Some(session) = sessions.get_mut(session_id) {
+            session.prior_turns = prior_turns;
         }
     }
 
@@ -4723,7 +4809,21 @@ mod tests {
             prior_writes: Vec::new(),
             routing_disabled: false,
             mentioned_entities: Vec::new(),
+            prior_turns: Vec::new(),
         }
+    }
+
+    /// Append an earlier assistant turn that showed the user `response` and
+    /// ended with `outcome` — the history text and the structural record
+    /// together, as the daemon seeds them from persisted messages.
+    fn seed_turn(session: &mut AgentSession, outcome: AiChatTurnOutcome, response: &str) {
+        session
+            .messages
+            .push(ChatMessage::text(Role::Assistant, response.to_string()));
+        session.prior_turns.push(PriorTurn {
+            outcome,
+            response: response.to_string(),
+        });
     }
 
     // -- Tests -----------------------------------------------------------
@@ -9312,16 +9412,18 @@ mod tests {
     #[tokio::test]
     async fn a_clarification_naming_the_entity_without_its_id_does_not_disarm() {
         let mut session = session_mentioning_northwind();
-        session.messages = vec![
-            ChatMessage::text(Role::User, "Track Northwind Trading for me."),
-            ChatMessage::text(
-                Role::Assistant,
-                format_clarification(
-                    "Should Northwind Trading be a customer or a company you sell to?",
-                    &["A customer".to_string(), "A company we sell to".to_string()],
-                ),
+        session.messages = vec![ChatMessage::text(
+            Role::User,
+            "Track Northwind Trading for me.",
+        )];
+        seed_turn(
+            &mut session,
+            AiChatTurnOutcome::Clarified,
+            &format_clarification(
+                "Should Northwind Trading be a customer or a company you sell to?",
+                &["A customer".to_string(), "A company we sell to".to_string()],
             ),
-        ];
+        );
         let (_, calls) = run_entity_turn(
             &mut session,
             vec![
@@ -9334,6 +9436,36 @@ mod tests {
         assert!(
             !calls.iter().any(|c| c == "create_node"),
             "naming the entity is not confirming a duplicate of it, got {calls:?}"
+        );
+    }
+
+    /// A read-only answer stays inside the intent and may link the record by
+    /// its id, but it asked the user nothing. "Do I have Northwind?" answered
+    /// with its link, then "add Northwind", is the case the guard exists for.
+    #[tokio::test]
+    async fn a_read_only_answer_linking_the_entity_does_not_disarm() {
+        let mut session = session_mentioning_northwind();
+        session.messages = vec![ChatMessage::text(
+            Role::User,
+            "Do I have Northwind Trading?",
+        )];
+        seed_turn(
+            &mut session,
+            AiChatTurnOutcome::Replied,
+            "Yes — Northwind Trading (nodespace://nw-1) is a company you sell to.",
+        );
+        let (_, calls) = run_entity_turn(
+            &mut session,
+            vec![
+                tool_round("tc_1", "create_node", NORTHWIND_CREATE),
+                text_round("Added Northwind Trading."),
+            ],
+        )
+        .await;
+
+        assert!(
+            !calls.iter().any(|c| c == "create_node"),
+            "a linked answer is not a confirmation, got {calls:?}"
         );
     }
 
@@ -9416,20 +9548,19 @@ mod tests {
     #[tokio::test]
     async fn the_confirmation_turn_can_create_the_duplicate() {
         let mut session = session_mentioning_northwind();
-        session.messages = vec![
-            ChatMessage::text(
-                Role::User,
-                "Add Northwind Trading to the companies we sell to.",
+        session.messages = vec![ChatMessage::text(
+            Role::User,
+            "Add Northwind Trading to the companies we sell to.",
+        )];
+        seed_turn(
+            &mut session,
+            AiChatTurnOutcome::Clarified,
+            &format_clarification(
+                "\"Northwind Trading\" already exists (nodespace://nw-1). Did you mean \
+                 that record?",
+                &["Create a second \"Northwind Trading\"".to_string()],
             ),
-            ChatMessage::text(
-                Role::Assistant,
-                format_clarification(
-                    "\"Northwind Trading\" already exists (nodespace://nw-1). Did you mean \
-                     that record?",
-                    &["Create a second \"Northwind Trading\"".to_string()],
-                ),
-            ),
-        ];
+        );
         let (result, calls) = run_entity_turn(
             &mut session,
             vec![
@@ -9487,16 +9618,18 @@ mod tests {
     #[tokio::test]
     async fn an_unrelated_answered_clarification_does_not_disarm_the_guard() {
         let mut session = session_mentioning_northwind();
-        session.messages = vec![
-            ChatMessage::text(Role::User, "Help me track who we sell to."),
-            ChatMessage::text(
-                Role::Assistant,
-                format_clarification(
-                    "Do you want a new type, or to add a record to one you have?",
-                    &["A new type".to_string(), "A record".to_string()],
-                ),
+        session.messages = vec![ChatMessage::text(
+            Role::User,
+            "Help me track who we sell to.",
+        )];
+        seed_turn(
+            &mut session,
+            AiChatTurnOutcome::Clarified,
+            &format_clarification(
+                "Do you want a new type, or to add a record to one you have?",
+                &["A new type".to_string(), "A record".to_string()],
             ),
-        ];
+        );
         let (result, calls) = run_entity_turn(
             &mut session,
             vec![
@@ -11762,10 +11895,11 @@ mod tests {
         // One clarification per intent: after the user answered one, a
         // retrieval that surfaces the same wrong skill must not ask again.
         let mut session = new_session();
-        session.messages.push(ChatMessage::text(
-            Role::Assistant,
-            format!("{CLARIFICATION_OPENER}. Did you mean set its status?"),
-        ));
+        seed_turn(
+            &mut session,
+            AiChatTurnOutcome::Clarified,
+            &format!("{CLARIFICATION_OPENER}. Did you mean set its status?"),
+        );
         session
             .messages
             .push(ChatMessage::text(Role::User, "yes".to_string()));
@@ -12522,17 +12656,10 @@ mod tests {
                     },
                 },
             ],
-            vec![
-                StreamingChunk::Token {
-                    text: "Here is what I found.".to_string(),
-                },
-                StreamingChunk::Done {
-                    usage: InferenceUsage {
-                        prompt_tokens: 20,
-                        completion_tokens: 8,
-                    },
-                },
-            ],
+            // Twice: a prose reply after an answered clarification is put
+            // back once before it is accepted.
+            text_round("Here is what I found."),
+            text_round("Here is what I found."),
         ]);
         let exec = RoutingToolExecutor::new(
             MockToolExecutor::new(),
@@ -12543,10 +12670,11 @@ mod tests {
 
         let mut session = new_session();
         // A prior clarification the user has already answered.
-        session.messages.push(ChatMessage::text(
-            Role::Assistant,
-            format!("{CLARIFICATION_OPENER}. Which one?"),
-        ));
+        seed_turn(
+            &mut session,
+            AiChatTurnOutcome::Clarified,
+            &format!("{CLARIFICATION_OPENER}. Which one?"),
+        );
         session
             .messages
             .push(ChatMessage::text(Role::User, "the first one".to_string()));
@@ -12574,57 +12702,460 @@ mod tests {
         );
     }
 
+    /// Runs "just show me what I have" through Stage 1 (routed to research)
+    /// and then `stage2` — the scored turn of the routing eval's
+    /// `clarification-then-fallthrough`.
+    async fn run_routed_turn(
+        session: &mut AgentSession,
+        stage2: Vec<Vec<StreamingChunk>>,
+    ) -> (AgentTurnResult, usize) {
+        let mut rounds = vec![tool_round(
+            "r1",
+            routing::ROUTE_QUERY_TOOL,
+            r#"{"query":"search existing contacts"}"#,
+        )];
+        rounds.extend(stage2);
+        let engine = Arc::new(MockEngine::new(rounds));
+        let exec = RoutingToolExecutor::new(
+            MockToolExecutor::new(),
+            vec![skill_candidate("research", 0.9, &["search_nodes"])],
+        );
+        let loop_ = LocalAgentLoop::new(engine.clone(), Arc::new(exec));
+        let result = loop_
+            .run_turn(
+                session,
+                "just show me what I have",
+                |_| {},
+                |_| {},
+                CancellationToken::new(),
+            )
+            .await
+            .expect("turn should succeed");
+        (result, engine.generate_count.load(Ordering::SeqCst))
+    }
+
+    /// The eval's shape: a composed clarification, a prose one after it, and
+    /// then Stage 2 asking a third time in prose. It is put back once with
+    /// the contract stated, and acts.
+    #[tokio::test]
+    async fn a_prose_reply_after_an_answered_clarification_is_put_back_to_act() {
+        let mut session = new_session();
+        session
+            .messages
+            .push(ChatMessage::text(Role::User, "organize my client contacts"));
+        seed_turn(
+            &mut session,
+            AiChatTurnOutcome::Clarified,
+            &format!("{CLARIFICATION_OPENER}. Organize how?"),
+        );
+        session.messages.push(ChatMessage::text(
+            Role::User,
+            "I just want to search what I already have",
+        ));
+        seed_turn(
+            &mut session,
+            AiChatTurnOutcome::Replied,
+            "Which contacts do you want to search?",
+        );
+
+        let (result, _) = run_routed_turn(
+            &mut session,
+            vec![
+                text_round("Do you want to see all contacts, or filter them?"),
+                tool_round("tc_1", "search_nodes", r#"{"query":"contacts"}"#),
+                text_round("Here are your contacts."),
+            ],
+        )
+        .await;
+
+        assert!(
+            result
+                .tool_calls_made
+                .iter()
+                .any(|r| r.name == "search_nodes"),
+            "the re-prompted turn must act: {:?}",
+            result.tool_calls_made
+        );
+        assert_eq!(result.response, "Here are your contacts.");
+        assert!(
+            session
+                .messages
+                .iter()
+                .any(|m| m.role == Role::System && m.content == ALREADY_CLARIFIED_NUDGE),
+            "the contract must be stated to the model"
+        );
+        assert!(
+            !session
+                .messages
+                .iter()
+                .any(|m| m.content == "Do you want to see all contacts, or filter them?"),
+            "the dropped prose question must not stay in history for the model to re-read"
+        );
+        // It only read, so it does not close the intent.
+        assert_eq!(
+            session.prior_turns.last().map(|t| t.outcome),
+            Some(AiChatTurnOutcome::Replied)
+        );
+    }
+
+    /// Only a turn with no tool call at all is put back. One that searched and
+    /// then replied may have shown the user what it found; pushing it to call
+    /// another tool would be wrong.
+    #[tokio::test]
+    async fn a_reply_after_a_tool_call_is_not_put_back() {
+        let mut session = new_session();
+        seed_turn(
+            &mut session,
+            AiChatTurnOutcome::Clarified,
+            &format!("{CLARIFICATION_OPENER}. Organize how?"),
+        );
+
+        let (result, generations) = run_routed_turn(
+            &mut session,
+            vec![
+                tool_round("tc_1", "search_nodes", r#"{"query":"contacts"}"#),
+                text_round("Here are your contacts."),
+            ],
+        )
+        .await;
+
+        assert_eq!(result.response, "Here are your contacts.");
+        assert_eq!(generations, 3, "Stage 1 and two Stage-2 generations only");
+        assert!(!session
+            .messages
+            .iter()
+            .any(|m| m.content == ALREADY_CLARIFIED_NUDGE));
+    }
+
+    /// The shape the routing eval actually produced: Stage 2 searched and then
+    /// asked in prose, twice, before the scored turn. A search is not acting,
+    /// so both turns stay in the intent and the third turn's prose reply is put
+    /// back, rather than each search closing the intent and leaving nothing on
+    /// record.
+    #[tokio::test]
+    async fn two_search_then_prose_turns_count_as_the_intents_clarification() {
+        let mut session = new_session();
+
+        for question in [
+            "I found two trackers. Which one holds your contacts?",
+            "Which of those two do you mean?",
+        ] {
+            let (turn, _) = run_routed_turn(
+                &mut session,
+                vec![
+                    tool_round("tc_1", "search_nodes", r#"{"query":"contacts"}"#),
+                    text_round(question),
+                ],
+            )
+            .await;
+            assert!(turn
+                .tool_calls_made
+                .iter()
+                .any(|r| r.name == "search_nodes"));
+            assert_eq!(
+                session.prior_turns.last().map(|t| t.outcome),
+                Some(AiChatTurnOutcome::Replied)
+            );
+        }
+        assert!(
+            session_already_clarified(&session),
+            "two search-then-ask turns must stay on record"
+        );
+
+        let (third, _) = run_routed_turn(
+            &mut session,
+            vec![
+                text_round("Could you tell me which list they are in?"),
+                tool_round("tc_2", "search_nodes", r#"{"query":"contacts"}"#),
+                text_round("Here are your contacts."),
+            ],
+        )
+        .await;
+        assert!(
+            session
+                .messages
+                .iter()
+                .any(|m| m.role == Role::System && m.content == ALREADY_CLARIFIED_NUDGE),
+            "the prose reply after them must be put back"
+        );
+        assert_eq!(third.response, "Here are your contacts.");
+    }
+
+    /// "hi" → "Hello!" is one turn that did not write. It is not a
+    /// clarification on record, so the next plain reply stands as is.
+    #[tokio::test]
+    async fn one_earlier_reply_does_not_put_a_plain_reply_back() {
+        let mut session = new_session();
+        seed_turn(&mut session, AiChatTurnOutcome::Replied, "Hello!");
+
+        let (result, generations) =
+            run_routed_turn(&mut session, vec![text_round("I can search your notes.")]).await;
+
+        assert_eq!(result.response, "I can search your notes.");
+        assert_eq!(generations, 2, "Stage 1 and one Stage-2 generation only");
+        assert!(!session
+            .messages
+            .iter()
+            .any(|m| m.content == ALREADY_CLARIFIED_NUDGE));
+    }
+
+    /// A reply with no answered clarification on record is an ordinary
+    /// answer: accepted as is, with no extra generation.
+    #[tokio::test]
+    async fn a_prose_reply_with_no_clarification_on_record_is_not_put_back() {
+        let mut session = new_session();
+        seed_turn(&mut session, AiChatTurnOutcome::Acted, "Created the task.");
+
+        let (result, generations) =
+            run_routed_turn(&mut session, vec![text_round("You have no contacts yet.")]).await;
+
+        assert_eq!(result.response, "You have no contacts yet.");
+        assert_eq!(generations, 2, "Stage 1 and one Stage-2 generation only");
+        assert!(!session
+            .messages
+            .iter()
+            .any(|m| m.content == ALREADY_CLARIFIED_NUDGE));
+        assert_eq!(
+            session.prior_turns.last().map(|t| t.outcome),
+            Some(AiChatTurnOutcome::Replied)
+        );
+    }
+
+    /// Once only: a model that replies in prose again has that reply
+    /// accepted, and the turn is recorded as one that did not act.
+    #[tokio::test]
+    async fn a_second_prose_reply_after_the_put_back_is_accepted() {
+        let mut session = new_session();
+        seed_turn(
+            &mut session,
+            AiChatTurnOutcome::Clarified,
+            &format!("{CLARIFICATION_OPENER}. Organize how?"),
+        );
+
+        let (result, generations) = run_routed_turn(
+            &mut session,
+            vec![
+                text_round("Which contacts?"),
+                text_round("Which contacts, exactly?"),
+            ],
+        )
+        .await;
+
+        assert_eq!(result.response, "Which contacts, exactly?");
+        assert_eq!(generations, 3, "Stage 1, the put-back reply, and one retry");
+        assert_eq!(
+            session.prior_turns.last().map(|t| t.outcome),
+            Some(AiChatTurnOutcome::Replied)
+        );
+    }
+
     #[tokio::test]
     async fn the_clarification_contract_re_arms_on_a_new_intent() {
         // ADR-038 scopes the contract "per intent", and a conversation is many
         // intents. A clarification answered earlier must not stop a genuinely
         // new ambiguous request from being clarified later.
         let mut session = new_session();
-        session.messages.push(ChatMessage::text(
-            Role::Assistant,
-            format!("{CLARIFICATION_OPENER}. Which one?"),
-        ));
-        session
-            .messages
-            .push(ChatMessage::text(Role::User, "the first".to_string()));
+        seed_turn(
+            &mut session,
+            AiChatTurnOutcome::Clarified,
+            &format!("{CLARIFICATION_OPENER}. Which one?"),
+        );
         assert!(
             session_already_clarified(&session),
             "still inside the clarified intent"
         );
 
-        // The turn completes: the agent answers rather than asking again.
-        // That closes the intent.
-        session.messages.push(ChatMessage::text(
-            Role::Assistant,
-            "Done — I created it.".to_string(),
-        ));
-        session.messages.push(ChatMessage::text(
-            Role::User,
-            "now do the other thing".to_string(),
-        ));
+        // The turn completes: the agent acts rather than asking again. That
+        // closes the intent.
+        seed_turn(
+            &mut session,
+            AiChatTurnOutcome::Acted,
+            "Done — I created it.",
+        );
         assert!(
             !session_already_clarified(&session),
             "a resolved turn starts a new intent; clarifying must be possible again"
         );
     }
 
+    /// The erasure case: a prose question after a composed clarification used
+    /// to read as the intent resolving, dropping the composed one from the
+    /// window — so clarifications could alternate forever.
     #[test]
-    fn a_composed_clarification_is_recognised_as_one() {
-        // Round-trip: the contract is carried in user-visible message text, so
-        // a rewording of `format_clarification` that broke the read would
-        // silently stop the contract enforcing. Tests that hand-build the
-        // marker from the constant would still pass; this one would not.
+    fn a_prose_reply_does_not_erase_a_composed_clarification() {
+        let composed = format_clarification("Which did you mean?", &["Track debts".to_string()]);
         let mut session = new_session();
-        session.messages.push(ChatMessage::text(
-            Role::Assistant,
-            format_clarification("Which did you mean?", &["Track debts".to_string()]),
-        ));
-        session
-            .messages
-            .push(ChatMessage::text(Role::User, "the first".to_string()));
+        seed_turn(&mut session, AiChatTurnOutcome::Clarified, &composed);
+        seed_turn(
+            &mut session,
+            AiChatTurnOutcome::Replied,
+            "Could you say a bit more about what you want to see?",
+        );
+        assert!(
+            composed_clarifications(&session).contains(&composed.as_str()),
+            "the composed clarification must still be in the intent: {:?}",
+            composed_clarifications(&session)
+        );
+        assert!(session_already_clarified(&session));
+    }
+
+    /// A clarification asked in prose carries no text a guard could match; it
+    /// is counted because the turn did not act. One such turn is as likely an
+    /// answer as a question, so it takes a second to count.
+    #[test]
+    fn two_prose_replies_count_as_the_intents_clarification() {
+        let mut session = new_session();
+        seed_turn(&mut session, AiChatTurnOutcome::Acted, "Created the task.");
+        assert!(!session_already_clarified(&session));
+
+        seed_turn(
+            &mut session,
+            AiChatTurnOutcome::Replied,
+            "Do you mean your clients or your vendors?",
+        );
+        assert!(
+            !session_already_clarified(&session),
+            "one reply may have been an answer; it must not cost the intent its clarification"
+        );
+
+        seed_turn(
+            &mut session,
+            AiChatTurnOutcome::Replied,
+            "Which list are they in?",
+        );
         assert!(
             session_already_clarified(&session),
-            "format_clarification output must be recognised by session_already_clarified"
+            "a second reply without acting is the loop the contract stops"
+        );
+    }
+
+    fn turn_result(
+        tool_names: &[&str],
+        clarify: Option<crate::agent_types::ClarifyPrompt>,
+    ) -> AgentTurnResult {
+        AgentTurnResult {
+            response: "reply".to_string(),
+            reasoning: None,
+            tool_calls_made: tool_names
+                .iter()
+                .map(|name| ToolExecutionRecord {
+                    tool_call_id: "tc".to_string(),
+                    name: (*name).to_string(),
+                    args: json!({}),
+                    result: json!({}),
+                    is_error: false,
+                    duration_ms: 0,
+                })
+                .collect(),
+            usage: InferenceUsage::default(),
+            clarify,
+        }
+    }
+
+    fn clarify_prompt(
+        pending_deletions: Vec<nodespace_core::models::AiChatPendingDeletion>,
+    ) -> crate::agent_types::ClarifyPrompt {
+        crate::agent_types::ClarifyPrompt {
+            question: "Which one?".to_string(),
+            options: Vec::new(),
+            pending_deletions,
+        }
+    }
+
+    #[test]
+    fn a_turn_outcome_is_derived_from_what_the_turn_did() {
+        assert_eq!(turn_result(&[], None).outcome(), AiChatTurnOutcome::Replied);
+        // Reading is not acting: a search may have been on the way to a question.
+        assert_eq!(
+            turn_result(&["search_nodes"], None).outcome(),
+            AiChatTurnOutcome::Replied
+        );
+        assert_eq!(
+            turn_result(&["search_nodes", "create_node"], None).outcome(),
+            AiChatTurnOutcome::Acted
+        );
+        // A write that failed changed nothing.
+        let mut failed = turn_result(&["create_node"], None);
+        failed.tool_calls_made[0].is_error = true;
+        assert_eq!(failed.outcome(), AiChatTurnOutcome::Replied);
+        // A search that found two matches, then asked which: a clarification.
+        assert_eq!(
+            turn_result(
+                &["search_nodes", routing::ROUTE_CLARIFY_TOOL],
+                Some(clarify_prompt(Vec::new()))
+            )
+            .outcome(),
+            AiChatTurnOutcome::Clarified
+        );
+        // `route_clarify` performs nothing: it is not acting.
+        assert_eq!(
+            turn_result(&[routing::ROUTE_CLARIFY_TOOL], None).outcome(),
+            AiChatTurnOutcome::Replied
+        );
+        // A delete confirmation resolves its target; it is not a clarification.
+        let pending = nodespace_core::models::AiChatPendingDeletion {
+            node_id: "n1".to_string(),
+            title: "A".to_string(),
+            node_type: "text".to_string(),
+            version: 1,
+            descendant_count: 0,
+        };
+        assert_eq!(
+            turn_result(&["delete_node"], Some(clarify_prompt(vec![pending]))).outcome(),
+            AiChatTurnOutcome::Acted
+        );
+    }
+
+    #[tokio::test]
+    async fn run_turn_records_how_each_turn_ended() {
+        let loop_ = LocalAgentLoop::new(
+            Arc::new(MockEngine::new(vec![
+                text_round("Hello!"),
+                tool_round("tc_1", "search_nodes", r#"{"query":"x"}"#),
+                text_round("Found it."),
+                tool_round(
+                    "tc_2",
+                    "create_node",
+                    r#"{"node_type":"text","content":"y"}"#,
+                ),
+                text_round("Created it."),
+            ])),
+            Arc::new(MockToolExecutor::new().with_tool(
+                "create_node",
+                json!({"type": "object"}),
+                json!({"id": "nodespace://y"}),
+            )),
+        );
+        let mut session = new_session();
+        for message in ["hi", "find x", "add y"] {
+            loop_
+                .run_turn(
+                    &mut session,
+                    message,
+                    |_| {},
+                    |_| {},
+                    CancellationToken::new(),
+                )
+                .await
+                .expect("turn should succeed");
+        }
+        assert_eq!(
+            session.prior_turns,
+            vec![
+                PriorTurn {
+                    outcome: AiChatTurnOutcome::Replied,
+                    response: "Hello!".to_string(),
+                },
+                // Only read: it stays inside the intent.
+                PriorTurn {
+                    outcome: AiChatTurnOutcome::Replied,
+                    response: "Found it.".to_string(),
+                },
+                PriorTurn {
+                    outcome: AiChatTurnOutcome::Acted,
+                    response: "Created it.".to_string(),
+                },
+            ]
         );
     }
 
@@ -12708,24 +13239,6 @@ mod tests {
             mark_it_paid_pos > current_request_pos,
             "the current message must appear after its CURRENT REQUEST label: {q:?}"
         );
-    }
-
-    #[tokio::test]
-    async fn an_unanswered_clarification_is_not_treated_as_already_clarified() {
-        // The clarification we just asked and are still waiting on is not a
-        // prior one — otherwise a single clarification would disable the
-        // mechanism for the rest of the conversation.
-        let mut session = new_session();
-        session.messages.push(ChatMessage::text(
-            Role::Assistant,
-            format!("{CLARIFICATION_OPENER}. Which one?"),
-        ));
-        assert!(!session_already_clarified(&session));
-
-        session
-            .messages
-            .push(ChatMessage::text(Role::User, "the first".to_string()));
-        assert!(session_already_clarified(&session));
     }
 
     #[tokio::test]

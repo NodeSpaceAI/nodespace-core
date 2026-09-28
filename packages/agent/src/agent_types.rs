@@ -10,6 +10,7 @@
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use nodespace_core::models::AiChatTurnOutcome;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -487,6 +488,25 @@ pub struct AgentSession {
     /// no workspace context.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub mentioned_entities: Vec<MentionedEntity>,
+
+    /// How each earlier turn of this conversation ended, oldest first.
+    ///
+    /// The record ADR-038's "at most one clarification per intent" contract
+    /// is enforced from: `messages` carries only each turn's text, which
+    /// cannot tell a prose question from an answer. The loop appends to it as
+    /// each turn ends; a caller that rebuilds the session from persisted
+    /// history seeds it from the outcomes persisted with those messages.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub prior_turns: Vec<PriorTurn>,
+}
+
+/// An earlier turn as the clarification contract sees it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PriorTurn {
+    /// How the turn ended.
+    pub outcome: AiChatTurnOutcome,
+    /// The reply the user saw — for a clarification, the question asked.
+    pub response: String,
 }
 
 /// An existing node named in the current message, as the entity-resolution
@@ -523,10 +543,9 @@ pub struct PriorWrite {
 /// clickable options instead of parsing markdown bullets back out of prose.
 ///
 /// `response` on [`AgentTurnResult`] still carries `format_clarification`'s
-/// flattened text for the internal LLM-facing history — a bare string is what
-/// `session_already_clarified` scans for and what any plain-text reader of
-/// `response` still gets. This struct is the additional structured channel
-/// the UI needs.
+/// flattened text for the internal LLM-facing history and any plain-text
+/// reader of `response`. This struct is the additional structured channel the
+/// UI needs.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClarifyPrompt {
     /// The specific question put to the user.
@@ -563,6 +582,35 @@ pub struct AgentTurnResult {
     /// (see #1930's scope note on `agent_loop::run_turn`).
     #[serde(default)]
     pub clarify: Option<ClarifyPrompt>,
+}
+
+impl AgentTurnResult {
+    /// How this turn ended, derived from what it did rather than what it said.
+    ///
+    /// Acting means changing the graph: a turn is `Acted` only when a write
+    /// succeeded. A turn that only read is `Replied`, because reading and then
+    /// replying looks the same whether the reply showed what was found or
+    /// asked about it (a search that found two matches, then asked which in
+    /// prose). Counting reads as acting let a search close the intent before
+    /// every prose question, so no question was ever on record.
+    ///
+    /// A composed clarifying question wins over anything the turn did on the
+    /// way to it. A delete confirmation carries a question too, but it is the
+    /// delete resolving its target, not a clarification: it counts as acting.
+    pub fn outcome(&self) -> AiChatTurnOutcome {
+        match &self.clarify {
+            Some(c) if c.pending_deletions.is_empty() => AiChatTurnOutcome::Clarified,
+            Some(_) => AiChatTurnOutcome::Acted,
+            None if self
+                .tool_calls_made
+                .iter()
+                .any(|r| !r.is_error && crate::local_agent::tools::is_write_tool(&r.name)) =>
+            {
+                AiChatTurnOutcome::Acted
+            }
+            None => AiChatTurnOutcome::Replied,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

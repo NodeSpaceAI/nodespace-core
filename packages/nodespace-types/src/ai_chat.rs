@@ -84,6 +84,22 @@ pub struct AiChatMessage {
     /// Deletes this assistant turn is asking the user to confirm.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pending_deletions: Vec<AiChatPendingDeletion>,
+
+    /// How this assistant turn ended, when an agent turn produced it.
+    /// Mirrors `nodespace_core::models::AiChatTurnOutcome`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<AiChatTurnOutcome>,
+}
+
+/// How an agent turn ended.
+///
+/// Mirrors `nodespace_core::models::AiChatTurnOutcome`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AiChatTurnOutcome {
+    Acted,
+    Clarified,
+    Replied,
 }
 
 /// Wire shape for ai-chat nodes sent to the frontend.

@@ -218,6 +218,37 @@ pub struct AiChatMessage {
     /// user's next message can confirm them; see [`AiChatPendingDeletion`].
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pending_deletions: Vec<AiChatPendingDeletion>,
+
+    /// How this assistant turn ended, when an agent turn produced it. `None`
+    /// for user messages and for assistant text no turn produced (a failed
+    /// turn's error notice). See [`AiChatTurnOutcome`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<AiChatTurnOutcome>,
+}
+
+/// How an agent turn ended — the structural record ADR-038's "at most one
+/// clarification per intent" contract is enforced from.
+///
+/// The session is rebuilt from persisted messages every turn, so whether the
+/// current intent already asked the user something has to be answerable from
+/// the history alone. The reply's text cannot answer it: a turn that asked in
+/// its own words carries no marker, and reading the model's prose for a
+/// question is the unreliable channel ADR-038 built `route_clarify` to avoid.
+/// What the turn *did* — change the graph, ask through the clarify composer,
+/// or neither — is known exactly when it ends, so that is recorded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AiChatTurnOutcome {
+    /// A write succeeded, or the turn asked to confirm a delete. Resolves the
+    /// current intent: the user's next message starts a new one.
+    Acted,
+    /// The turn put a composed clarifying question to the user.
+    Clarified,
+    /// Anything else: a prose reply, including one after reads only or after a
+    /// write that failed. Does not resolve the intent, and counts against its
+    /// one clarification: reading and then replying looks the same whether the
+    /// reply showed what was found or asked the user about it.
+    Replied,
 }
 
 /// Strongly-typed view of an `ai-chat` node.
