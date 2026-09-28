@@ -3355,3 +3355,76 @@ mod indented_bullets_under_header_line {
         );
     }
 }
+
+#[cfg(test)]
+mod list_round_trip_tests {
+    use crate::markdown::prepare_nodes_from_markdown;
+    use crate::models::Node;
+    use crate::services::render_subtree_markdown;
+    use std::collections::HashMap;
+
+    fn text_node(id: &str, content: &str) -> Node {
+        Node::new_with_id(
+            id.to_string(),
+            "text".to_string(),
+            content.to_string(),
+            serde_json::json!({}),
+        )
+    }
+
+    /// Parse `markdown` under a synthetic root and render it straight back:
+    /// the import → prompt-render round trip, minus the database.
+    fn round_trip(markdown: &str) -> String {
+        let root = "root".to_string();
+        let prepared = prepare_nodes_from_markdown(markdown, Some(root.clone())).unwrap();
+        let mut node_map = HashMap::new();
+        let mut adjacency: HashMap<String, Vec<String>> = HashMap::new();
+        for p in prepared {
+            if let Some(parent) = &p.parent_id {
+                adjacency
+                    .entry(parent.clone())
+                    .or_default()
+                    .push(p.id.clone());
+            }
+            node_map.insert(
+                p.id.clone(),
+                Node::new_with_id(p.id, p.node_type, p.content, p.properties),
+            );
+        }
+        render_subtree_markdown(&root, &node_map, &adjacency)
+    }
+
+    #[test]
+    fn hard_wrapped_bullet_keeps_its_marker_and_position() {
+        assert_eq!(
+            round_trip("Intro\n- a\n- b\nwrapped\n- c"),
+            "Intro\n\n- a\n- b\nwrapped\n- c"
+        );
+    }
+
+    #[test]
+    fn list_after_a_hard_wrapped_paragraph_attaches_to_it() {
+        assert_eq!(
+            round_trip("First.\n\nLine one\nline two:\n- a\n- b"),
+            "First.\n\nLine one\nline two:\n\n- a\n- b"
+        );
+    }
+
+    #[test]
+    fn empty_node_children_take_its_place() {
+        let node_map = HashMap::from([
+            ("p".to_string(), text_node("p", "Intro")),
+            ("empty".to_string(), text_node("empty", "")),
+            ("child".to_string(), text_node("child", "Item")),
+        ]);
+        let adjacency = HashMap::from([
+            ("root".to_string(), vec!["p".to_string()]),
+            ("p".to_string(), vec!["empty".to_string()]),
+            ("empty".to_string(), vec!["child".to_string()]),
+        ]);
+        assert_eq!(
+            render_subtree_markdown("root", &node_map, &adjacency),
+            "Intro\n\n- Item"
+        );
+    }
+}

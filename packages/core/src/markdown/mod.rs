@@ -534,13 +534,13 @@ pub fn prepare_nodes_from_markdown(
         };
 
         // Detect node type and extract content
-        let (node_type, content, heading_level, is_multiline, properties) =
+        let (node_type, content, heading_level, properties) =
             if let Some(level) = detect_heading(content_line) {
-                ("header", content_line.to_string(), Some(level), false, None)
+                ("header", content_line.to_string(), Some(level), None)
             } else if is_checkbox_line(content_line) {
                 // Checkbox node - pure content node, state encoded in content string
                 // Content preserved as full markdown line ("- [ ] text" or "- [x] text")
-                ("checkbox", content_line.to_string(), None, false, None)
+                ("checkbox", content_line.to_string(), None, None)
             } else if content_line.starts_with("```") {
                 // Code block
                 let mut code_lines = vec![content_line];
@@ -553,7 +553,7 @@ pub fn prepare_nodes_from_markdown(
                     }
                     i += 1;
                 }
-                ("code-block", code_lines.join("\n"), None, true, None)
+                ("code-block", code_lines.join("\n"), None, None)
             } else if content_line.starts_with("> ") || content_line == ">" {
                 // Quote block - collect consecutive quote lines including empty continuation lines
                 // Empty quote continuation lines are just ">" without trailing space
@@ -567,7 +567,7 @@ pub fn prepare_nodes_from_markdown(
                         break;
                     }
                 }
-                ("quote-block", quote_lines.join("\n"), None, true, None)
+                ("quote-block", quote_lines.join("\n"), None, None)
             } else if let Some(num_end) = detect_ordered_list(content_line) {
                 // Ordered list
                 let first_item_content = &content_line[num_end + 2..];
@@ -587,15 +587,9 @@ pub fn prepare_nodes_from_markdown(
                         break;
                     }
                 }
-                ("ordered-list", list_items.join("\n"), None, true, None)
+                ("ordered-list", list_items.join("\n"), None, None)
             } else if is_horizontal_rule(content_line) {
-                (
-                    "horizontal-line",
-                    content_line.to_string(),
-                    None,
-                    false,
-                    None,
-                )
+                ("horizontal-line", content_line.to_string(), None, None)
             } else if is_table_start(content_line)
                 && i + 1 < lines.len()
                 && is_table_delimiter(lines[i + 1].trim_start())
@@ -615,7 +609,7 @@ pub fn prepare_nodes_from_markdown(
                         break;
                     }
                 }
-                ("table", table_lines.join("\n"), None, true, None)
+                ("table", table_lines.join("\n"), None, None)
             } else {
                 // Text paragraph
                 let mut text_lines = vec![content_line];
@@ -644,13 +638,7 @@ pub fn prepare_nodes_from_markdown(
                     i = j;
                     j += 1;
                 }
-                (
-                    "text",
-                    text_lines.join("\n"),
-                    None,
-                    text_lines.len() > 1,
-                    None,
-                )
+                ("text", text_lines.join("\n"), None, None)
             };
 
         // Pop indent stack for same or lower indentation
@@ -670,7 +658,7 @@ pub fn prepare_nodes_from_markdown(
             last_content_node
                 .clone()
                 .or_else(|| context.current_parent_id())
-        } else if is_bullet && !is_multiline {
+        } else if is_bullet {
             if indent_level > 0 {
                 indent_stack
                     .last()
@@ -729,7 +717,7 @@ pub fn prepare_nodes_from_markdown(
             context.push_heading(node_id.clone(), h_level);
         }
 
-        if node_type == "text" && !is_multiline && !is_bullet {
+        if node_type == "text" && !is_bullet {
             last_text_node = Some((node_id.clone(), indent_level));
         } else if node_type != "text" {
             last_text_node = None;

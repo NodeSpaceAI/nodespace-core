@@ -1244,7 +1244,20 @@ impl NodeService {
 /// item. Consecutive list items are joined by a single newline (a tight
 /// list); every other boundary is a blank line. Other node types
 /// (code-block, ordered-list, …) carry their markdown syntax inside `content`
-/// and are emitted verbatim.
+/// and are emitted verbatim. An empty node is skipped and its children take
+/// its place in the outline.
+///
+/// Known limits — structure cannot say everything the markers did. A list
+/// with no introducing paragraph (directly under a heading, at the start of
+/// a body, or right after a code block, table or ordered list) is stored as
+/// a heading's text children, the same shape as paragraphs, so it renders as
+/// paragraphs. And an indented continuation paragraph of a list item is
+/// stored as that item's text child, so it renders as a nested item.
+///
+/// `crate::markdown::handle_get_markdown_from_node_id` (markdown export for
+/// editing) decides bullets by its own, different rule — this one is the
+/// exact inverse of how `prepare_nodes_from_markdown` attaches bullets, which
+/// is what prompt rendering of imported guidance needs.
 pub fn render_subtree_markdown(
     root_id: &str,
     node_map: &std::collections::HashMap<String, crate::models::Node>,
@@ -1288,21 +1301,28 @@ pub fn render_subtree_markdown(
             push_children(&mut stack, children, false, None);
             continue;
         };
+        if node.content.is_empty() {
+            push_children(
+                &mut stack,
+                children,
+                pending.parent_is_text,
+                pending.parent_list_level,
+            );
+            continue;
+        }
         let is_text = node.node_type == "text";
         let list_level = (is_text && pending.parent_is_text)
             .then(|| pending.parent_list_level.map_or(0, |level| level + 1));
-        if !node.content.is_empty() {
-            if !out.is_empty() {
-                let tight = prev_was_list_item && list_level.is_some();
-                out.push_str(if tight { "\n" } else { "\n\n" });
-            }
-            if let Some(level) = list_level {
-                out.push_str(&"  ".repeat(level));
-                out.push_str("- ");
-            }
-            out.push_str(&node.content);
-            prev_was_list_item = list_level.is_some();
+        if !out.is_empty() {
+            let tight = prev_was_list_item && list_level.is_some();
+            out.push_str(if tight { "\n" } else { "\n\n" });
         }
+        if let Some(level) = list_level {
+            out.push_str(&"  ".repeat(level));
+            out.push_str("- ");
+        }
+        out.push_str(&node.content);
+        prev_was_list_item = list_level.is_some();
         push_children(&mut stack, children, is_text, list_level);
     }
     out

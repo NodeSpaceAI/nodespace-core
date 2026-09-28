@@ -22,7 +22,7 @@
 //!    `agent_guidance.rs`) the same way `PromptAssembler::assemble()` does:
 //!    each seed's `markdown_content` is parsed into a node subtree via
 //!    `prepare_nodes_from_template` (`assemble()`'s callers seed the graph
-//!    with exactly this), flattened via the real `render_subtree_markdown`
+//!    with exactly this), rendered via the real `render_subtree_markdown`
 //!    (matching `fetch_prompt_body`'s traversal), THEN rendered through
 //!    Minijinja and joined.
 //!

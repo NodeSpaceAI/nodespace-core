@@ -113,7 +113,7 @@ async fn render_node_subtree(node_service: &NodeService, root_id: &str) -> Strin
     render_subtree_markdown(root_id, &node_map, &adjacency_list)
 }
 
-/// Render a skill node's child subtree as flat markdown — the actual
+/// Render a skill node's child subtree as markdown — the actual
 /// procedure the model must follow.
 ///
 /// One `get_subtree_data` query per skill. Acceptable under
@@ -123,7 +123,7 @@ async fn render_skill_instructions(node_service: &NodeService, skill_id: &str) -
     render_node_subtree(node_service, skill_id).await
 }
 
-/// Render a schema node's own description subtree as flat markdown.
+/// Render a schema node's own description subtree as markdown.
 ///
 /// A schema's description is authored as markdown and stored as a child
 /// subtree (parsed into text/header nodes), not as a flat property — see
