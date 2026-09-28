@@ -70,6 +70,7 @@ CREATE INDEX IF NOT EXISTS idx_task_priority ON node (json_extract(properties, '
 -- index is cheaper to maintain for the common status-only filter.
 CREATE INDEX IF NOT EXISTS idx_task_status_due_date ON node (json_extract(properties, '$.task.status'), json_extract(properties, '$.task.due_date')) WHERE node_type = 'task';
 CREATE INDEX IF NOT EXISTS idx_project_status ON node (json_extract(properties, '$.project.status')) WHERE node_type = 'project';
+CREATE INDEX IF NOT EXISTS idx_project_priority ON node (json_extract(properties, '$.project.priority')) WHERE node_type = 'project';
 
 -- Holds BOTH instance-level edges (person→task tasks/assignee, has_child, …)
 -- and schema relationship DECLARATIONS: a declaration row connects two schema

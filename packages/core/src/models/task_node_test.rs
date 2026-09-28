@@ -2,7 +2,7 @@
 
 #[cfg(test)]
 mod tests {
-    use crate::models::{task_node::TaskPriority, task_node::TaskStatus, Node, TaskNode};
+    use crate::models::{task_node::TaskStatus, Node, Priority, TaskNode};
     use serde_json::json;
 
     #[test]
@@ -72,7 +72,7 @@ mod tests {
             json!({"priority": "high"}),
         );
         let task = TaskNode::from_node(node).unwrap();
-        assert_eq!(task.get_priority(), TaskPriority::High);
+        assert_eq!(task.get_priority(), Priority::High);
     }
 
     #[test]
@@ -80,7 +80,7 @@ mod tests {
         let node = Node::new("task".to_string(), "Test".to_string(), json!({}));
         let task = TaskNode::from_node(node).unwrap();
         // Default priority is Medium
-        assert_eq!(task.get_priority(), TaskPriority::Medium);
+        assert_eq!(task.get_priority(), Priority::Medium);
     }
 
     #[test]
@@ -88,9 +88,9 @@ mod tests {
         let node = Node::new("task".to_string(), "Test".to_string(), json!({}));
         let mut task = TaskNode::from_node(node).unwrap();
 
-        task.set_priority(TaskPriority::Low);
+        task.set_priority(Priority::Low);
 
-        assert_eq!(task.get_priority(), TaskPriority::Low);
+        assert_eq!(task.get_priority(), Priority::Low);
         assert_eq!(task.as_node().properties["priority"], "low");
     }
 
@@ -193,7 +193,7 @@ mod tests {
         // Default status is Open
         assert_eq!(task.status(), TaskStatus::Open);
         // Default priority is Medium
-        assert_eq!(task.get_priority(), TaskPriority::Medium);
+        assert_eq!(task.get_priority(), Priority::Medium);
     }
 
     #[test]
@@ -210,24 +210,24 @@ mod tests {
     #[test]
     fn test_builder_with_priority() {
         let task = TaskNode::builder("Fix bug".to_string())
-            .with_priority(TaskPriority::High)
+            .with_priority(Priority::High)
             .build();
 
-        assert_eq!(task.get_priority(), TaskPriority::High);
+        assert_eq!(task.get_priority(), Priority::High);
         // Direct field access
-        assert_eq!(task.priority, Some(TaskPriority::High));
+        assert_eq!(task.priority, Some(Priority::High));
     }
 
     #[test]
     fn test_builder_full() {
         let task = TaskNode::builder("Complete project".to_string())
             .with_status(TaskStatus::InProgress)
-            .with_priority(TaskPriority::High)
+            .with_priority(Priority::High)
             .with_due_date("2025-12-31T00:00:00Z")
             .build();
 
         assert_eq!(task.status(), TaskStatus::InProgress);
-        assert_eq!(task.get_priority(), TaskPriority::High);
+        assert_eq!(task.get_priority(), Priority::High);
         assert_eq!(task.due_date(), Some("2025-12-31".to_string()));
     }
 
@@ -304,12 +304,12 @@ mod tests {
 
         // Update multiple properties
         task.set_status(TaskStatus::InProgress);
-        task.set_priority(TaskPriority::Low);
+        task.set_priority(Priority::Low);
         task.set_due_date(Some("2025-03-15T00:00:00Z"));
 
         // Verify all updates
         assert_eq!(task.status(), TaskStatus::InProgress);
-        assert_eq!(task.get_priority(), TaskPriority::Low);
+        assert_eq!(task.get_priority(), Priority::Low);
         assert_eq!(task.due_date(), Some("2025-03-15".to_string()));
     }
 
@@ -317,7 +317,7 @@ mod tests {
     fn test_serde_serialization() {
         let task = TaskNode::builder("Serialize me".to_string())
             .with_status(TaskStatus::Done)
-            .with_priority(TaskPriority::High)
+            .with_priority(Priority::High)
             .build();
 
         let json = serde_json::to_value(&task).unwrap();
@@ -344,7 +344,7 @@ mod tests {
         assert_eq!(task.id, "test-123");
         assert_eq!(task.content, "Deserialize me");
         assert_eq!(task.status, TaskStatus::InProgress);
-        assert_eq!(task.priority, Some(TaskPriority::Medium));
+        assert_eq!(task.priority, Some(Priority::Medium));
     }
 
     #[test]
@@ -356,25 +356,19 @@ mod tests {
             json!({"priority": "critical"}),
         );
         let task = TaskNode::from_node(node).unwrap();
-        assert_eq!(
-            task.get_priority(),
-            TaskPriority::User("critical".to_string())
-        );
+        assert_eq!(task.get_priority(), Priority::User("critical".to_string()));
         assert!(task.get_priority().is_user_defined());
         assert!(!task.get_priority().is_core());
     }
 
     #[test]
     fn test_priority_as_str() {
-        assert_eq!(TaskPriority::Highest.as_str(), "highest");
-        assert_eq!(TaskPriority::High.as_str(), "high");
-        assert_eq!(TaskPriority::Medium.as_str(), "medium");
-        assert_eq!(TaskPriority::Low.as_str(), "low");
-        assert_eq!(TaskPriority::Lowest.as_str(), "lowest");
-        assert_eq!(
-            TaskPriority::User("critical".to_string()).as_str(),
-            "critical"
-        );
+        assert_eq!(Priority::Highest.as_str(), "highest");
+        assert_eq!(Priority::High.as_str(), "high");
+        assert_eq!(Priority::Medium.as_str(), "medium");
+        assert_eq!(Priority::Low.as_str(), "low");
+        assert_eq!(Priority::Lowest.as_str(), "lowest");
+        assert_eq!(Priority::User("critical".to_string()).as_str(), "critical");
     }
 
     #[test]

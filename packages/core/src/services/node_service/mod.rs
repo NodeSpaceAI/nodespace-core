@@ -11617,7 +11617,7 @@ mod tests {
     /// #2006 content-only guard would leave it stale.
     #[tokio::test]
     async fn update_task_node_property_only_recomputes_templated_title() {
-        use crate::models::{TaskNodeUpdate, TaskPriority};
+        use crate::models::{Priority, TaskNodeUpdate};
         use crate::services::{CreateNodeParams, InsertPositionOwned};
 
         let (service, _temp) = create_test_service().await;
@@ -11639,7 +11639,7 @@ mod tests {
         let created = service.get_node(&id).await.unwrap().unwrap();
 
         // Priority-only update (no content) — the template now depends on it.
-        let update = TaskNodeUpdate::new().with_priority(Some(TaskPriority::High));
+        let update = TaskNodeUpdate::new().with_priority(Some(Priority::High));
         service
             .update_task_node(&id, created.version, update)
             .await
@@ -11658,7 +11658,7 @@ mod tests {
     /// typed task update path rejects content on it like every other write.
     #[tokio::test]
     async fn update_task_node_templated_title_uses_post_merge_properties_and_rejects_content() {
-        use crate::models::{TaskNodeUpdate, TaskPriority};
+        use crate::models::{Priority, TaskNodeUpdate};
         use crate::services::{CreateNodeParams, InsertPositionOwned};
 
         let (service, _temp) = create_test_service().await;
@@ -11683,7 +11683,7 @@ mod tests {
             .update_task_node(
                 &id,
                 created.version,
-                TaskNodeUpdate::new().with_priority(Some(TaskPriority::Low)),
+                TaskNodeUpdate::new().with_priority(Some(Priority::Low)),
             )
             .await
             .unwrap();
@@ -11695,7 +11695,7 @@ mod tests {
                 seeded.version,
                 TaskNodeUpdate::new()
                     .with_content("Ship the spec".to_string())
-                    .with_priority(Some(TaskPriority::High)),
+                    .with_priority(Some(Priority::High)),
             )
             .await
             .expect_err("content on a templated task must be rejected");
@@ -11709,7 +11709,7 @@ mod tests {
             .update_task_node(
                 &id,
                 seeded.version,
-                TaskNodeUpdate::new().with_priority(Some(TaskPriority::High)),
+                TaskNodeUpdate::new().with_priority(Some(Priority::High)),
             )
             .await
             .expect("update_task_node should succeed");
@@ -11865,7 +11865,7 @@ mod tests {
     /// still be moved and have a field edited.
     #[tokio::test]
     async fn move_and_field_only_update_succeed_after_a_type_gains_a_template() {
-        use crate::models::{TaskNodeUpdate, TaskPriority};
+        use crate::models::{Priority, TaskNodeUpdate};
 
         let (service, _temp) = create_test_service().await;
         let parent_id = service
@@ -11891,7 +11891,7 @@ mod tests {
             .update_task_node(
                 &task_id,
                 task.version,
-                TaskNodeUpdate::new().with_priority(Some(TaskPriority::High)),
+                TaskNodeUpdate::new().with_priority(Some(Priority::High)),
             )
             .await
             .expect("a field-only update must not trip the content rule");

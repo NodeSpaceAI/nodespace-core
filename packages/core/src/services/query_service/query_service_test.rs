@@ -7,7 +7,7 @@
 #[cfg(test)]
 mod tests {
     use crate::db::SqliteStore;
-    use crate::models::{Node, TaskPriority};
+    use crate::models::{Node, Priority};
     use crate::services::node_service::{CreateNodeParams, NodeService};
     use crate::services::query_service::{
         BoundSql, FilterOperator, FilterType, QueryDefinition, QueryFilter, QueryService,
@@ -1518,7 +1518,8 @@ mod tests {
     // =========================================================================
     // Priority rank ordering
     //
-    // task.priority is a string enum whose alphabetical order is meaningless
+    // priority (on task and project, which share one scale) is a string enum
+    // whose alphabetical order is meaningless
     // (`high, highest, low, lowest, medium`), so sorting ranks it instead.
     // Two independent sites implement that rank — the SQL CASE in
     // resolve_order_field and compare_priority_values in Rust — and the Rust
@@ -1530,17 +1531,25 @@ mod tests {
     /// Create one task per priority value, in an order chosen so that neither
     /// insertion order nor alphabetical order matches the expected result.
     async fn create_tasks_with_priorities(node_service: &NodeService, priorities: &[&str]) {
+        create_nodes_with_priorities(node_service, "task", priorities).await;
+    }
+
+    async fn create_nodes_with_priorities(
+        node_service: &NodeService,
+        node_type: &str,
+        priorities: &[&str],
+    ) {
         for priority in priorities {
-            let task = CreateNodeParams {
+            let node = CreateNodeParams {
                 id: None,
-                node_type: "task".to_string(),
-                content: format!("Task {priority}"),
+                node_type: node_type.to_string(),
+                content: format!("{node_type} {priority}"),
                 parent_id: None,
                 position: crate::services::InsertPositionOwned::End,
-                properties: json!({"task": {"priority": priority}}),
+                properties: json!({node_type: {"priority": priority}}),
                 lifecycle_status: None,
             };
-            node_service.create_node_with_parent(task).await.unwrap();
+            node_service.create_node_with_parent(node).await.unwrap();
         }
     }
 
@@ -1548,7 +1557,7 @@ mod tests {
         results
             .iter()
             .map(|n| {
-                n.properties["task"]["priority"]
+                n.properties[&n.node_type]["priority"]
                     .as_str()
                     .unwrap()
                     .to_string()
@@ -1557,8 +1566,16 @@ mod tests {
     }
 
     fn priority_query(direction: SortDirection, limit: Option<usize>) -> QueryDefinition {
+        priority_query_for("task", direction, limit)
+    }
+
+    fn priority_query_for(
+        target_type: &str,
+        direction: SortDirection,
+        limit: Option<usize>,
+    ) -> QueryDefinition {
         QueryDefinition {
-            target_type: "task".to_string(),
+            target_type: target_type.to_string(),
             filters: vec![],
             sorting: Some(vec![SortConfig {
                 field: "priority".to_string(),
@@ -1670,16 +1687,77 @@ mod tests {
         // LIMIT applies in SQL, before the in-Rust re-sort, so the database
         // alone decides which rows survive. This fails if the CASE in
         // resolve_order_field regresses, even though the Rust pass would still
-        // order whatever rows it received.
+        // order whatever rows it received. The limit is 3, not 2: the first
+        // two rows alphabetically (`high, highest`) are the same two the rank
+        // keeps, so a limit of 2 passes against a text sort as well.
         let results = query_service
-            .execute(&priority_query(SortDirection::Ascending, Some(2)))
+            .execute(&priority_query(SortDirection::Ascending, Some(3)))
             .await
             .unwrap();
 
         assert_eq!(
             priorities_of(&results),
-            ["highest", "high"],
+            ["highest", "high", "medium"],
             "LIMIT must cut by rank in SQL, not alphabetically"
+        );
+    }
+
+    /// `project.priority` shares the task scale, so it ranks the same way —
+    /// before sharing it, a project sort came back `high, low, medium`.
+    #[tokio::test]
+    async fn test_project_sort_by_priority_uses_rank_not_alphabetical() {
+        let (query_service, node_service, _temp) = create_test_services().await;
+
+        create_nodes_with_priorities(
+            &node_service,
+            "project",
+            &["low", "highest", "medium", "lowest", "high"],
+        )
+        .await;
+
+        let results = query_service
+            .execute(&priority_query_for(
+                "project",
+                SortDirection::Ascending,
+                None,
+            ))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            priorities_of(&results),
+            ["highest", "high", "medium", "low", "lowest"],
+            "ascending project priority must follow urgency rank, not string order"
+        );
+    }
+
+    /// The SQL half for projects: LIMIT cuts before the Rust re-sort, so this
+    /// fails if resolve_order_field's scope drops `project` even while the
+    /// Rust comparator still ranks it.
+    #[tokio::test]
+    async fn test_project_sort_by_priority_with_limit_ranks_in_sql() {
+        let (query_service, node_service, _temp) = create_test_services().await;
+
+        create_nodes_with_priorities(
+            &node_service,
+            "project",
+            &["low", "highest", "medium", "lowest", "high"],
+        )
+        .await;
+
+        let results = query_service
+            .execute(&priority_query_for(
+                "project",
+                SortDirection::Ascending,
+                Some(3),
+            ))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            priorities_of(&results),
+            ["highest", "high", "medium"],
+            "LIMIT must cut project priority by rank in SQL, not alphabetically"
         );
     }
 
@@ -1755,15 +1833,15 @@ mod tests {
 
         let sql = query_service.resolve_order_field("priority", "task", "ASC");
 
-        // Pins the SQL CASE to TaskPriority::rank(). If a rank changes on one
+        // Pins the SQL CASE to Priority::rank(). If a rank changes on one
         // side only, the SQL and Rust orderings disagree and results depend on
         // whether a LIMIT was present.
         for priority in [
-            TaskPriority::Highest,
-            TaskPriority::High,
-            TaskPriority::Medium,
-            TaskPriority::Low,
-            TaskPriority::Lowest,
+            Priority::Highest,
+            Priority::High,
+            Priority::Medium,
+            Priority::Low,
+            Priority::Lowest,
         ] {
             let arm = format!("= '{}' THEN {}", priority.as_str(), priority.rank());
             assert!(
@@ -1775,14 +1853,14 @@ mod tests {
         }
 
         assert!(
-            sql.contains(&format!("ELSE {} END", TaskPriority::USER_RANK)),
+            sql.contains(&format!("ELSE {} END", Priority::USER_RANK)),
             "user-defined priorities must fall to USER_RANK: {sql}"
         );
         // A searched CASE with an explicit IS NULL arm, not a simple CASE: the
         // latter compares with `=`, so NULL matches nothing and an absent
         // priority would be ranked as a user value instead of before the scale.
         assert!(
-            sql.contains(&format!("IS NULL THEN {}", TaskPriority::ABSENT_RANK)),
+            sql.contains(&format!("IS NULL THEN {}", Priority::ABSENT_RANK)),
             "an absent priority must rank ABSENT_RANK via an explicit IS NULL \
              arm: {sql}"
         );
@@ -1804,11 +1882,11 @@ mod tests {
             query_service.resolve_order_field("created_at", "task", "DESC"),
             "created_at DESC"
         );
-        // project.priority is a separate 3-level field with its own open
-        // question about scale; the task rank must not silently apply to it.
+        // A user-defined type's bare `priority` is its own vocabulary; the
+        // shared rank must not silently apply to it.
         assert_eq!(
-            query_service.resolve_order_field("priority", "project", "ASC"),
-            "json_extract(properties, '$.project.priority') ASC"
+            query_service.resolve_order_field("priority", "venue", "ASC"),
+            "json_extract(properties, '$.venue.priority') ASC"
         );
     }
 
@@ -1818,9 +1896,9 @@ mod tests {
 
         // A wildcard query resolves the namespace from each row's own
         // node_type, so a single CASE would rank every type's priority on the
-        // task scale — and rank a non-task row's NULL as a user value rather
-        // than sorting it first. The Rust comparator deliberately ranks only
-        // when both nodes are tasks, so ranking here too would make the two
+        // shared scale — including a user-defined type's own vocabulary. The
+        // Rust comparator deliberately ranks only when the target is one of
+        // `Priority::NODE_TYPES`, so ranking here too would make the two
         // layers disagree, with the winner depending on whether a LIMIT was
         // present. Rank only where the scale is actually defined.
         let sql = query_service.resolve_order_field("priority", "*", "ASC");
