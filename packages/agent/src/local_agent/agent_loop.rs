@@ -961,7 +961,8 @@ const CUT_OFF_NAMED_LIMIT: usize = 3;
 ///   `Clarified` turn counts, not [`session_already_clarified`]'s two-replies
 ///   proxy: two lookups followed by "now mark it resolved" is the very turn
 ///   this exists for, and this question is recorded `Clarified` itself, so it
-///   cannot repeat within an intent;
+///   cannot repeat within an intent. A question the model asked in its own
+///   prose is recorded `Replied` and does not count, so this may follow one;
 /// - at least one entity-resolving read succeeded
 ///   ([`super::tools::resolves_entities_tool`]), so the question can name
 ///   what was found. Other successful calls — a conflict listing, say — are
@@ -12330,6 +12331,27 @@ mod tests {
 
         assert!(result.clarify.is_none(), "got {:?}", result.response);
         assert_eq!(result.response, GAVE_UP);
+    }
+
+    #[tokio::test]
+    async fn a_cut_off_clarification_names_only_what_entity_reads_found() {
+        let read = r#"{"query":"rowan on call"}"#;
+        let mut session = new_session();
+        let result = run_mismatched_turn(
+            &mut session,
+            vec![
+                tool_round("t0", "list_conflicts", "{}"),
+                tool_round("t1", "search_nodes", read),
+                tool_round("t2", "search_nodes", read),
+                text_round(GAVE_UP),
+            ],
+            true,
+        )
+        .await;
+
+        let question = &result.clarify.as_ref().expect("must clarify").question;
+        assert!(question.contains(INCIDENT_URI), "{question}");
+        assert!(!question.contains("nodespace://conflict-1"), "{question}");
     }
 
     #[tokio::test]
