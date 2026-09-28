@@ -956,9 +956,16 @@ const CUT_OFF_NAMED_LIMIT: usize = 3;
 /// - nothing was written, a held delete included (that turn ends in a delete
 ///   confirmation instead);
 /// - the turn is not already asking (a model or backstop `route_clarify`);
-/// - the intent has not already clarified — the user's answer to a question
-///   is exactly what must not be asked again;
-/// - at least one read succeeded, so the question can name what was found.
+/// - no clarification is on record in the current intent — the user's answer
+///   to a question is exactly what must not be asked again. Only a recorded
+///   `Clarified` turn counts, not [`session_already_clarified`]'s two-replies
+///   proxy: two lookups followed by "now mark it resolved" is the very turn
+///   this exists for, and this question is recorded `Clarified` itself, so it
+///   cannot repeat within an intent;
+/// - at least one entity-resolving read succeeded
+///   ([`super::tools::resolves_entities_tool`]), so the question can name
+///   what was found. Other successful calls — a conflict listing, say — are
+///   neither counted nor named.
 ///
 /// The model's reply is replaced with a question naming the records the
 /// turn's reads returned. The user's answer re-enters Stage 1, worded more
@@ -971,9 +978,9 @@ fn cut_off_turn_backstop(
     session: &mut AgentSession,
     result: &mut AgentTurnResult,
     end: TurnEnd,
-    already_clarified: bool,
+    intent_clarified: bool,
 ) {
-    if !end.cut_off || !end.scoped_surface || already_clarified || result.clarify.is_some() {
+    if !end.cut_off || !end.scoped_surface || intent_clarified || result.clarify.is_some() {
         return;
     }
     let calls = &result.tool_calls_made;
@@ -983,7 +990,10 @@ fn cut_off_turn_backstop(
     {
         return;
     }
-    let reads: Vec<&ToolExecutionRecord> = calls.iter().filter(|r| !r.is_error).collect();
+    let reads: Vec<&ToolExecutionRecord> = calls
+        .iter()
+        .filter(|r| !r.is_error && super::tools::resolves_entities_tool(&r.name))
+        .collect();
     if reads.is_empty() {
         return;
     }
@@ -1008,9 +1018,9 @@ fn cut_off_turn_backstop(
         ),
     };
     let question = format!(
-        "I looked this up and found {named}, but the capabilities I matched to your request \
-         only got me as far as reading, not making a change. What exactly should I change? \
-         Naming the record, the field and the new value helps."
+        "I looked this up and found {named}, but ran out of steps before making any change. \
+         What would you like me to do? If it's a change, naming the record, the field and \
+         the new value helps."
     );
     let clarification = format_clarification(&question, &[]);
     tracing::warn!(
@@ -2183,7 +2193,7 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
     ) -> Result<AgentTurnResult, InferenceError> {
         // Read before the turn runs: whether the intent had already clarified
         // when this message arrived, not after this turn's own outcome.
-        let already_clarified = session_already_clarified(session);
+        let intent_clarified = !composed_clarifications(session).is_empty();
         let (mut result, end) = self
             .run_turn_unguarded(session, user_message, on_status, on_chunk, cancel)
             .await?;
@@ -2192,7 +2202,7 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
         // reach the user whichever one the turn took.
         if !confirm_held_deletions(session, &mut result) {
             duplicate_entity_backstop(session, &mut result);
-            cut_off_turn_backstop(session, &mut result, end, already_clarified);
+            cut_off_turn_backstop(session, &mut result, end, intent_clarified);
         }
         // Recorded after the guards above, which can turn a reply into a
         // question: the outcome is what the user was finally shown.
@@ -12117,6 +12127,15 @@ mod tests {
         rounds
     }
 
+    /// Tools on the mismatched skill's surface: two entity reads, a read that
+    /// resolves no entity, and a write that is not the one the request needs.
+    const MISMATCHED_SURFACE: &[&str] = &[
+        "search_nodes",
+        "search_semantic",
+        "list_conflicts",
+        "create_relationship",
+    ];
+
     /// Run one turn on a Stage-2 surface scoped to a skill that can read the
     /// incident but not mark it resolved.
     async fn run_mismatched_turn(
@@ -12124,16 +12143,39 @@ mod tests {
         rounds: Vec<Vec<StreamingChunk>>,
         routed: bool,
     ) -> AgentTurnResult {
-        let inner = MockToolExecutor::new().with_tool(
-            "search_nodes",
-            json!({"type": "object"}),
-            json!([{ "id": INCIDENT_URI, "title": "Checkout outage" }]),
-        );
+        let obj = || json!({"type": "object"});
+        let inner = MockToolExecutor::new()
+            .with_tool(
+                "search_nodes",
+                obj(),
+                json!([{ "id": INCIDENT_URI, "title": "Checkout outage" }]),
+            )
+            .with_tool(
+                "search_semantic",
+                obj(),
+                json!((1..=5)
+                    .map(|i| json!({ "id": format!("nodespace://sem-{i}") }))
+                    .collect::<Vec<_>>()),
+            )
+            .with_tool(
+                "list_conflicts",
+                obj(),
+                json!([{ "id": "nodespace://conflict-1" }]),
+            )
+            .with_tool(
+                "create_relationship",
+                obj(),
+                json!({ "created": true, "source": INCIDENT_URI }),
+            );
         let message = "the incident Rowan was on call for — mark it resolved";
         let result = if routed {
             let exec = RoutingToolExecutor::new(
                 inner,
-                vec![skill_candidate("Conflict Journal", 0.87, &["search_nodes"])],
+                vec![skill_candidate(
+                    "Conflict Journal",
+                    0.87,
+                    MISMATCHED_SURFACE,
+                )],
             );
             LocalAgentLoop::new(Arc::new(stage2_rounds(rounds)), Arc::new(exec))
                 .run_turn(session, message, |_| {}, |_| {}, CancellationToken::new())
@@ -12202,6 +12244,114 @@ mod tests {
 
         assert!(result.clarify.is_none(), "got {:?}", result.response);
         assert_eq!(result.response, GAVE_UP);
+    }
+
+    #[tokio::test]
+    async fn a_cut_off_turn_clarifies_after_two_read_only_replies() {
+        // Two lookups, then the change: `session_already_clarified` counts
+        // that as asked-already, but no question was ever on record.
+        let mut session = new_session();
+        seed_turn(
+            &mut session,
+            AiChatTurnOutcome::Replied,
+            "Rowan was on call.",
+        );
+        seed_turn(
+            &mut session,
+            AiChatTurnOutcome::Replied,
+            "It was the outage.",
+        );
+        let result = run_mismatched_turn(&mut session, reads_until_the_cap(), true).await;
+
+        assert!(result.clarify.is_some(), "got {:?}", result.response);
+    }
+
+    #[tokio::test]
+    async fn a_turn_the_duplicate_call_break_cuts_off_clarifies() {
+        let read = r#"{"query":"rowan on call"}"#;
+        let mut session = new_session();
+        let result = run_mismatched_turn(
+            &mut session,
+            vec![
+                tool_round("t0", "search_nodes", read),
+                tool_round("t1", "search_nodes", read),
+                text_round(GAVE_UP),
+            ],
+            true,
+        )
+        .await;
+
+        let clarify = result.clarify.as_ref().expect("the turn must clarify");
+        assert!(
+            clarify.question.contains(INCIDENT_URI),
+            "{}",
+            clarify.question
+        );
+    }
+
+    #[tokio::test]
+    async fn a_cut_off_turn_that_wrote_is_left_alone() {
+        // It changed something; "ran out of steps before making any change"
+        // would be false.
+        let mut rounds = vec![tool_round(
+            "w0",
+            "create_relationship",
+            &json!({ "source_id": INCIDENT_URI, "target_id": "nodespace://rowan" }).to_string(),
+        )];
+        rounds.extend(reads_until_the_cap().into_iter().skip(1));
+        let mut session = new_session();
+        let result = run_mismatched_turn(&mut session, rounds, true).await;
+
+        assert!(
+            result
+                .tool_calls_made
+                .iter()
+                .any(|r| r.name == "create_relationship" && !r.is_error),
+            "the write must have landed for this test to mean anything"
+        );
+        assert!(result.clarify.is_none(), "got {:?}", result.response);
+        assert_eq!(result.response, GAVE_UP);
+    }
+
+    #[tokio::test]
+    async fn a_cut_off_turn_whose_calls_resolved_no_entity_is_left_alone() {
+        let mut rounds: Vec<_> = (0..MAX_TOOL_ITERATIONS)
+            .map(|i| {
+                tool_round(
+                    &format!("t{i}"),
+                    "list_conflicts",
+                    &json!({ "limit": i + 1 }).to_string(),
+                )
+            })
+            .collect();
+        rounds.push(text_round(GAVE_UP));
+        let mut session = new_session();
+        let result = run_mismatched_turn(&mut session, rounds, true).await;
+
+        assert!(result.clarify.is_none(), "got {:?}", result.response);
+        assert_eq!(result.response, GAVE_UP);
+    }
+
+    #[tokio::test]
+    async fn a_cut_off_clarification_names_at_most_three_finds() {
+        let read = r#"{"query":"incident"}"#;
+        let mut session = new_session();
+        let result = run_mismatched_turn(
+            &mut session,
+            vec![
+                tool_round("t0", "search_semantic", read),
+                tool_round("t1", "search_semantic", read),
+                text_round(GAVE_UP),
+            ],
+            true,
+        )
+        .await;
+
+        let question = &result.clarify.as_ref().expect("must clarify").question;
+        assert!(
+            question.contains("nodespace://sem-1, nodespace://sem-2, nodespace://sem-3 and 2 more"),
+            "{question}"
+        );
     }
 
     #[tokio::test]
