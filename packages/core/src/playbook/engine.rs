@@ -639,6 +639,9 @@ impl PlaybookEngine {
     /// `MAX_CHAIN_DEPTH` the repair is skipped. A distributed ping-pong
     /// between devices whose invariants disagree terminates, while a user's
     /// edit to a node a play once stamped near the limit is still repaired.
+    /// Invariant rules the repair's own write triggers in-transaction on this
+    /// device continue the same count, so a cycle that passes through them
+    /// is bounded too.
     ///
     /// Best-effort: a failure fetching the node or evaluating/executing one
     /// rule is logged and does not block the others, since (unlike the

@@ -307,17 +307,24 @@ impl NodeService {
             }
 
             // Invariant rules are non-chaining depth-1 by save-time
-            // eligibility (`playbook::validation`), so there is no
-            // in-process chain depth to propagate — this is always the
-            // start of a fresh (bounded) execution, never a continuation of
-            // a reactive chain. `depth: 0` matches that: nodes this
-            // dispatch's actions create/update are stamped depth 0, which
-            // is correct for the reactive engine's OWN cycle tracking should
-            // one of those nodes also match a reactive trigger once this
-            // transaction's buffered events flush after commit.
+            // eligibility (`playbook::validation`), so they never chain into
+            // each other inside this transaction. The write that triggered
+            // them can still be a hop of a longer chain: a reactive rule's
+            // action, or a sync repair (ADR-060 §7). Its depth is carried on
+            // this service's execution context, and the invariant's writes
+            // continue it (ADR-060 §5), so a cycle that passes through an
+            // invariant rule still counts toward `MAX_CHAIN_DEPTH` instead
+            // of restarting at 0 on every pass. A write with no play context
+            // (a user's own edit) starts a fresh chain at 0. The depth is
+            // capped rather than refused: an invariant is fail-closed, and a
+            // hop at the cap stops the next reactive or repair hop.
             let execution_context = crate::db::events::PlaybookExecutionContext {
                 originating_event_id: uuid::Uuid::new_v4().to_string(),
-                depth: 0,
+                depth: self.execution_context.as_ref().map_or(0, |ctx| {
+                    ctx.depth
+                        .saturating_add(1)
+                        .min(crate::playbook::types::MAX_CHAIN_DEPTH)
+                }),
                 source_playbook_id: rule_ref.play_id.clone(),
             };
 

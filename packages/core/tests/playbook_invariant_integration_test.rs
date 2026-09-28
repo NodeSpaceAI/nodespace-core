@@ -3074,6 +3074,20 @@ async fn sync_update_repair_writes_once_one_hop_past_the_received_depth() -> Res
         Some(&json!(1)),
         "the repair write carries its chain depth, one hop past the received write"
     );
+    assert!(
+        received
+            .properties
+            .get(PLAYBOOK_WRITE_ID_PROPERTY)
+            .is_none(),
+        "the received user edit carries no write id"
+    );
+    assert!(
+        after_repair
+            .properties
+            .get(PLAYBOOK_WRITE_ID_PROPERTY)
+            .is_some_and(|id| id.is_string()),
+        "the repair write stamps a write id, marking it as a play write for the next device"
+    );
 
     shutdown_engine(shutdown_tx, task).await;
     Ok(())
@@ -3383,6 +3397,229 @@ async fn contradictory_invariants_ping_pong(initial_properties: serde_json::Valu
         "the exchange must run to the depth limit and stop there, not stop early"
     );
     assert_eq!(depth_on(&b), Some(json!(MAX_CHAIN_DEPTH)));
+
+    relay_ab.abort();
+    relay_ba.abort();
+    shutdown_engine(shutdown_a, task_a).await;
+    shutdown_engine(shutdown_b, task_b).await;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Chains through in-transaction invariant hops
+// ---------------------------------------------------------------------------
+//
+// A sync repair's write is local, so it runs this device's pre-commit
+// invariant rules on the fields it changed. Those in-transaction hops must
+// continue the repair's chain depth; restarting at 0 would let a cycle that
+// passes through them run forever across devices.
+
+/// Toggle-style rules: when `{from}.f` changes, copy its `on`/`off` value
+/// (inverted when `invert`) into `f` on the node `target_id`.
+fn relay_f_rules(from: &str, target_id: &str, invert: bool) -> serde_json::Value {
+    let rule = |when: &str, set: &str| {
+        json!({
+            "name": format!("{from}-{when}-sets-{set}"),
+            "class": "invariant",
+            "trigger": {
+                "type": "graph_event",
+                "on": "property_changed",
+                "node_type": from,
+                "property_key": format!("{from}.f")
+            },
+            "conditions": [format!("node.f == '{when}'")],
+            "actions": [{
+                "action_type": "update_node",
+                "params": { "node_id": target_id, "properties": { "f": set } }
+            }]
+        })
+    };
+    let (on, off) = if invert { ("off", "on") } else { ("on", "off") };
+    json!([rule("on", on), rule("off", off)])
+}
+
+async fn chain_device(
+    rules: &[(&str, serde_json::Value)],
+) -> Result<(
+    Arc<NodeService>,
+    TempDir,
+    watch::Sender<bool>,
+    tokio::task::JoinHandle<Result<()>>,
+)> {
+    let (service, tmp) = create_test_service().await?;
+    for node_type in ["rv_x", "rv_y", "rv_z"] {
+        create_schema(
+            &service,
+            node_type,
+            json!([{ "name": "f", "type": "string" }]),
+        )
+        .await?;
+    }
+    let (engine, shutdown_tx, task) = spawn_engine(&service).await;
+    for (name, play_rules) in rules {
+        activate_rules_directly(&engine, name, play_rules.clone());
+    }
+    for (id, node_type) in [("rv-x", "rv_x"), ("rv-y", "rv_y"), ("rv-z", "rv_z")] {
+        create_via_sync(
+            &service,
+            Node::new_with_id(
+                id.to_string(),
+                node_type.to_string(),
+                id.to_string(),
+                json!({ "f": "none" }),
+            ),
+        )
+        .await?;
+    }
+    Ok((service, tmp, shutdown_tx, task))
+}
+
+fn depth_of(node: &Node) -> Option<serde_json::Value> {
+    node.properties.get(PLAYBOOK_CHAIN_DEPTH_PROPERTY).cloned()
+}
+
+/// An invariant the repair's own write triggers in-transaction writes one
+/// hop further: a received play write at depth 5 on X is repaired onto Y at
+/// depth 6, and the invariant Y's change triggers writes Z at depth 7.
+#[tokio::test]
+async fn in_transaction_invariant_hop_continues_the_repair_chain_depth() -> Result<()> {
+    let (service, _tmp, shutdown_tx, task) = chain_device(&[
+        ("x-to-y", relay_f_rules("rv_x", "rv-y", false)),
+        ("y-to-z", relay_f_rules("rv_y", "rv-z", false)),
+    ])
+    .await?;
+
+    update_via_sync(
+        &service,
+        "rv-x",
+        json!({
+            "f": "on",
+            (PLAYBOOK_CHAIN_DEPTH_PROPERTY): 5,
+            (PLAYBOOK_WRITE_ID_PROPERTY): "remote-play-write"
+        }),
+    )
+    .await?;
+
+    let reached_z = wait_until(|| {
+        let service = Arc::clone(&service);
+        async move {
+            matches!(
+                service.get_node("rv-z").await,
+                Ok(Some(n)) if user_field(&n, "rv_z", "f") == Some(&json!("on"))
+            )
+        }
+    })
+    .await;
+    assert!(
+        reached_z,
+        "the repair and the invariant it triggers must both run"
+    );
+
+    let y = service.get_node("rv-y").await?.unwrap();
+    let z = service.get_node("rv-z").await?.unwrap();
+    assert_eq!(
+        depth_of(&y),
+        Some(json!(6)),
+        "the repair runs one hop past the received write"
+    );
+    assert_eq!(
+        depth_of(&z),
+        Some(json!(7)),
+        "an in-transaction invariant hop continues the repair's chain, not restarts it"
+    );
+
+    shutdown_engine(shutdown_tx, task).await;
+    Ok(())
+}
+
+/// Two devices with a cycle that passes through an in-transaction hop:
+/// device A holds X→Y and Y→Z, device B holds Z→X inverted, so every pass
+/// flips X and the cycle never settles on its own. A relay carries each
+/// device's local writes to the other as sync applies. The chain depth must
+/// rise through every hop, including the in-transaction Y→Z hop, so the
+/// exchange stops at `MAX_CHAIN_DEPTH`.
+#[tokio::test]
+async fn cycle_through_an_in_transaction_invariant_hop_stops_at_the_limit() -> Result<()> {
+    let (device_a, _tmp_a, shutdown_a, task_a) = chain_device(&[
+        ("x-to-y", relay_f_rules("rv_x", "rv-y", false)),
+        ("y-to-z", relay_f_rules("rv_y", "rv-z", false)),
+    ])
+    .await?;
+    let (device_b, _tmp_b, shutdown_b, task_b) =
+        chain_device(&[("z-to-x", relay_f_rules("rv_z", "rv-x", true))]).await?;
+
+    fn relay(from: &Arc<NodeService>, to: &Arc<NodeService>) -> tokio::task::JoinHandle<()> {
+        let mut events = from.subscribe_to_events();
+        let to = Arc::clone(to);
+        tokio::spawn(async move {
+            while let Ok(envelope) = events.recv().await {
+                if envelope.metadata.source_client_id.as_deref() == Some(SYNC_SERVICE_CLIENT_ID) {
+                    continue;
+                }
+                let DomainEvent::NodeUpdated {
+                    node_id,
+                    node_type,
+                    node,
+                    ..
+                } = envelope.event
+                else {
+                    continue;
+                };
+                if !node_id.starts_with("rv-") {
+                    continue;
+                }
+                // Sync carries the whole node, bookkeeping stamps included.
+                let mut properties = json!({ "f": node.properties[&node_type]["f"].clone() });
+                for key in [PLAYBOOK_CHAIN_DEPTH_PROPERTY, PLAYBOOK_WRITE_ID_PROPERTY] {
+                    if let Some(value) = node.properties.get(key) {
+                        properties[key] = value.clone();
+                    }
+                }
+                let _ = update_via_sync(&to, &node_id, properties).await;
+            }
+        })
+    }
+    let relay_ab = relay(&device_a, &device_b);
+    let relay_ba = relay(&device_b, &device_a);
+
+    // A user's edit on some third device arrives at A.
+    update_via_sync(&device_a, "rv-x", json!({ "f": "on" })).await?;
+
+    let versions = |a: &Arc<NodeService>, b: &Arc<NodeService>| {
+        let (a, b) = (Arc::clone(a), Arc::clone(b));
+        async move {
+            let mut v = Vec::new();
+            for service in [&a, &b] {
+                for id in ["rv-x", "rv-y", "rv-z"] {
+                    v.push(service.get_node(id).await?.unwrap().version);
+                }
+            }
+            anyhow::Ok(v)
+        }
+    };
+    let mut last = Vec::new();
+    let mut stable_polls = 0;
+    for _ in 0..200 {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let now = versions(&device_a, &device_b).await?;
+        stable_polls = if now == last { stable_polls + 1 } else { 0 };
+        last = now;
+        if stable_polls >= 10 {
+            break;
+        }
+    }
+    assert!(
+        stable_polls >= 10,
+        "a cross-device cycle through an in-transaction invariant hop must terminate \
+         (versions still moving: {last:?})"
+    );
+
+    let z_on_b = device_b.get_node("rv-z").await?.unwrap();
+    assert_eq!(
+        depth_of(&z_on_b),
+        Some(json!(MAX_CHAIN_DEPTH)),
+        "the exchange must run to the depth limit and stop there"
+    );
 
     relay_ab.abort();
     relay_ba.abort();
