@@ -11,7 +11,7 @@
 // DOM-free on purpose: this file runs under `bun test scripts/`, which
 // bypasses the Happy-DOM vitest config (see CLAUDE.md).
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -760,22 +760,52 @@ describe("the machine slot is shared by every account on the machine", () => {
     }
   });
 
-  test("a shared lock creates its directory and queue world-writable and not sticky, whatever the umask", async () => {
-    // Stands in for a second uid: what lets another account take, reclaim and
-    // sweep here is the directory mode, which is what this pins.
-    const sharedLock = join(dir, "shared", "machine.lock");
-    const previous = process.umask(0o022);
-    try {
-      const lock = await acquireGateLock(harness({ lockPath: sharedLock, shared: true }).options);
-      expect(lock.held).toBe(true);
-      for (const path of [join(dir, "shared"), queueDir(sharedLock)]) {
-        expect(statSync(path).mode & 0o7777).toBe(0o777);
+  test.each([
+    ["022", 0o022],
+    ["077", 0o077],
+  ])(
+    "under umask %s, a shared lock's directory and queue are world-writable and not sticky, and its records readable by all",
+    async (_label, umask) => {
+      // Stands in for a second uid: what lets another account take, reclaim
+      // and sweep here is the directory mode, and what lets it tell a live
+      // lock from garbage is the file mode — so those are what this pins.
+      const sharedLock = join(dir, "shared", "machine.lock");
+      const previous = process.umask(umask);
+      try {
+        const lock = await acquireGateLock(harness({ lockPath: sharedLock, shared: true }).options);
+        expect(lock.held).toBe(true);
+        for (const path of [join(dir, "shared"), queueDir(sharedLock)]) {
+          expect(statSync(path).mode & 0o7777).toBe(0o777);
+        }
+        expect(statSync(sharedLock).mode & 0o777).toBe(0o644);
+
+        // A second waiter queues behind it; its ticket is inspected mid-wait.
+        const ticketModes: number[] = [];
+        let clock = 0;
+        const waiter = await acquireGateLock(
+          harness({
+            lockPath: sharedLock,
+            shared: true,
+            pid: 999_002,
+            isAlive: () => true,
+            maxWaitMs: 5,
+            now: () => clock,
+            sleep: async () => {
+              clock += 10;
+              const q = queueDir(sharedLock);
+              for (const name of readdirSync(q)) ticketModes.push(statSync(join(q, name)).mode & 0o777);
+            },
+          }).options
+        );
+        expect(waiter.held).toBe(false);
+        expect(ticketModes.length).toBeGreaterThan(0);
+        expect(ticketModes.every((m) => m === 0o644)).toBe(true);
+        lock.release();
+      } finally {
+        process.umask(previous);
       }
-      lock.release();
-    } finally {
-      process.umask(previous);
     }
-  });
+  );
 
   test("a lock that isn't shared keeps the umask's mode", async () => {
     const previous = process.umask(0o022);
@@ -788,12 +818,31 @@ describe("the machine slot is shared by every account on the machine", () => {
     }
   });
 
-  test("an existing shared directory is used as its creator left it", () => {
-    // Only the owner may chmod; a second account must not fail trying to.
+  test("its owner repairs a shared directory left at the umask's mode", () => {
+    // A creator killed between mkdir and chmod leaves it 0755, which would lock
+    // every other account out for good.
     const existing = join(dir, "existing");
     mkdirSync(existing, { mode: 0o755 });
     ensureDir(existing, true);
-    expect(statSync(existing).mode & 0o7777).toBe(0o755);
+    expect(statSync(existing).mode & 0o7777).toBe(0o777);
+  });
+
+  test("a lock this account can't read is waited on, never reaped", async () => {
+    plantLock();
+    chmodSync(lockPath, 0o000);
+    let clock = 0;
+    const lock = await acquireGateLock(
+      harness({
+        maxWaitMs: 50,
+        now: () => clock,
+        sleep: async () => {
+          clock += 10;
+        },
+      }).options
+    );
+    expect(lock.held).toBe(false);
+    expect(existsSync(lockPath)).toBe(true);
+    expect(readHolder(lockPath)).toEqual({ state: "forbidden" });
   });
 
   test("a stale lock left by another account's dead process is reclaimed", async () => {
@@ -804,12 +853,8 @@ describe("the machine slot is shared by every account on the machine", () => {
     lock.release();
   });
 
-  test("the waiting line names the holding account", () => {
-    expect(formatWaitingLine(holderFile({ user: "mayank" }), 2000, 0)).toContain("(mayank)");
-  });
-
-  test("a holder record without an account is uninterpretable", () => {
+  test("a holder record without an account is still a claim — the account only labels it", () => {
     const { user: _user, ...withoutUser } = holderFile();
-    expect(parseHolder(JSON.stringify(withoutUser))).toBeNull();
+    expect(parseHolder(JSON.stringify(withoutUser))).toMatchObject({ pid: withoutUser.pid, user: "?" });
   });
 });
