@@ -262,6 +262,15 @@ impl NodeService {
             (Some(ctx), _) => ctx.chain(),
             (None, _) => own_chain,
         };
+        // `find_namespaced_property` itself already falls back to a flat
+        // top-level lookup (for a `schema`-type node's own fields and
+        // `_`-prefixed bookkeeping keys — see its doc) after every bucket in
+        // `search_chain` misses, so that fallback runs BEFORE the
+        // every-bucket fallback just below. In practice the two never
+        // compete: a flat top-level key and a namespace bucket are disjoint
+        // by construction (`NodeService::normalize_flat_properties_to_namespace`),
+        // so at most one of the two fallbacks can ever find anything for a
+        // given node.
         let mut current =
             crate::services::find_namespaced_property(&node.properties, &segments, search_chain);
         // Fall back to every bucket when the scope declares the field but the
