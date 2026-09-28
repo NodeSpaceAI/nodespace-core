@@ -538,7 +538,6 @@ fn coerce_filter_value_to_field_type(
     item
 }
 
-/// Truncate a string to `max_chars`, appending `[truncated]` if truncated.
 /// The top-level keys of `args` that are not one of the tool's own `known`
 /// parameters. `create_node` / `update_node` promote these into
 /// `field_values`, tolerating models that pass schema fields flat.
@@ -553,6 +552,7 @@ fn unknown_top_level_keys(args: &Value, known: &[&str]) -> serde_json::Map<Strin
         .unwrap_or_default()
 }
 
+/// Truncate a string to `max_chars`, appending `[truncated]` if truncated.
 fn truncate(s: &str, max_chars: usize) -> String {
     if s.len() <= max_chars {
         s.to_string()
@@ -3227,8 +3227,6 @@ impl GraphToolExecutor {
         args: Value,
     ) -> Result<ToolResult, ToolError> {
         // Collect any flat (unknown) keys and promote them into field_values.
-        // This tolerates models that pass schema fields at the top level rather
-        // than nested inside "field_values".
         let flat_extras = unknown_top_level_keys(
             &args,
             &[
