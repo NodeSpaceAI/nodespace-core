@@ -283,6 +283,8 @@ Test files and DeveloperInspector are exempt.
 
 **Runtime:** Bun-only. `npm`/`yarn`/`pnpm` are blocked. Use `bun install`, `bun run dev`, `bun run test`, `bunx` for one-off tools.
 
+**`bun.lock`:** The `"configVersion": 0` line in its header is written by Bun 1.3+ and is intentional — never remove it or revert it as stray churn. Removing it makes every `bun install` re-add it, dirtying every fresh worktree.
+
 **Tooling scripts:** Tooling in `scripts/` is TypeScript (`scripts/*.ts`, run via `bun run`). A `.sh` file is acceptable only where shell is genuinely required — e.g. an uninstaller that must run without Bun present, or a signing/packaging pipeline driving platform tools. Prefer deleting a one-off script once its purpose is served rather than leaving it in `scripts/`.
 
 **Testing — NEVER use `bun test`** — it bypasses the Happy-DOM vitest config and breaks DOM tests. Always use `bun run test` or another `bun run test:*` command.
