@@ -144,7 +144,8 @@ pub fn stage1_skill_names(titles: impl IntoIterator<Item = String>) -> Vec<Strin
 /// exists for failed every time. This wording passed the same state every time.
 /// Its cost in the read-only branch was measured too: the "thanks" turn made no
 /// tool call. Rewording it needs the same populated-graph measurement.
-pub(crate) const ALREADY_CLARIFIED_NUDGE: &str = "The user has already answered a clarifying question \
+pub(crate) const ALREADY_CLARIFIED_NUDGE: &str =
+    "The user has already answered a clarifying question \
      about this request, and a request gets only one. Do not ask them anything further. Act on \
      the most reasonable reading of what they said by calling the tool that fits it.";
 

@@ -231,7 +231,10 @@ const FIXTURES: RoutingScenario[] = [
     id: "mutating-gate-borderline-schema",
     scenario:
       "Mutating gate: borderline schema request — gated harder than read-only",
-    prompt: "maybe set up some kind of tracking for tech debt",
+    // The object must name no obvious record shape. "tech debt" did — the
+    // model built a tracker for it 3/3 without asking — so the scenario
+    // stopped measuring the gate; "the codebase" could mean many trackers.
+    prompt: "maybe set up some kind of tracking for the codebase",
     expected: { kind: "clarify" }, // borderline → must clarify before schema creation
     mutating: true,
     loadBearing: true,
