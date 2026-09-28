@@ -540,7 +540,14 @@
     return content;
   }
 
-  // Handle creating new nodes when Enter is pressed
+  /**
+   * Handle creating new nodes when Enter is pressed.
+   * Promotes the viewer-local placeholder to a real persisted node (when Enter fires
+   * on an empty page's placeholder), deferring store mutations to the next tick —
+   * matching contentChanged/nodeTypeChanged/slashCommandSelected — then proceeds to
+   * create the actual new sibling node, since that step depends on the promoted node
+   * already being present in nodeManager/sharedNodeStore.
+   */
   function handleCreateNewNode(detail: CreateNewNodeDetail) {
     const {
       afterNodeId,
@@ -560,6 +567,97 @@
       return;
     }
 
+    // Everything from here on assumes afterNodeId already exists in nodeManager/
+    // sharedNodeStore — true immediately when it's an existing real node, and true
+    // only after the placeholder-promotion tick below resolves when it isn't.
+    function proceedWithNodeCreation() {
+      // Verify the target node exists (should now exist after promotion)
+      if (!nodeManager.nodes.has(afterNodeId)) {
+        log.error('Target node does not exist:', afterNodeId);
+        return;
+      }
+
+      // Update current node content if provided and actually changed
+      if (currentContent !== undefined) {
+        const existingNode = nodeManager.findNode(afterNodeId);
+        if (existingNode && existingNode.content !== currentContent) {
+          // Use updateNodeContent for node splitting - with new reactive architecture no forcing needed
+          nodeManager.updateNodeContent(afterNodeId, currentContent);
+        }
+      }
+
+      // Create new node using NodeManager - placeholder if empty, real if has content
+      let newNodeId: string;
+
+      // CRITICAL FIX: Use afterNode's actual parent from parentsCache
+      // The viewer's nodeId represents the viewer's display context (e.g., date node)
+      // but the actual parent is stored in sharedNodeStore.getParentsForNode()
+      // After indent, the parent relationship is updated in the cache
+      const parents = sharedNodeStore.getParentsForNode(afterNodeId);
+      const explicitParentId = parents.length > 0 ? parents[0].id : (nodeId ?? null);
+
+      // Add formatting syntax to the new content based on node type and header level
+      // (applies to both empty and non-empty content for header inheritance)
+      const formattedNewContent = addFormattingSyntax(newContent || '');
+
+      // IMPORTANT: Enter key ALWAYS creates real persisted nodes (even if blank)
+      // Only the first viewer-local placeholder uses the placeholder->promotion cycle
+      // All subsequent nodes created via Enter are persisted immediately
+      newNodeId = nodeManager.createNode(
+        afterNodeId,
+        formattedNewContent,
+        nodeType,
+        inheritHeaderLevel,
+        insertAtBeginning || false,
+        originalContent,
+        !focusOriginalNode, // Focus new node when creating splits, original node when creating above
+        paneId,
+        false, // isInitialPlaceholder (Enter key never creates initial placeholders)
+        explicitParentId // Pass viewer's nodeId as parent (e.g., date node for date viewers)
+      );
+
+      // Validate that node creation succeeded
+      if (!newNodeId || !nodeManager.nodes.has(newNodeId)) {
+        log.error(`Node creation failed for afterNodeId: ${afterNodeId}, newNodeId: ${newNodeId}`);
+        return;
+      }
+
+      // Set cursor position using FocusManager (single source of truth)
+      // For inherited type nodes (Enter key on typed node), use focusNodeFromInheritedType
+      // which sets pattern state to 'inherited' (reverts to text only if the plugin's canRevert allows).
+      // This is different from pattern-detected type conversions which CAN revert.
+      if (newNodeCursorPosition !== undefined && !focusOriginalNode) {
+        if (nodeType !== 'text') {
+          // Non-text inherited nodes: Use inherited-type signal (pattern state = 'inherited')
+          focusManager.focusNodeFromInheritedType(newNodeId, newNodeCursorPosition, paneId);
+        } else {
+          // Text nodes: Use regular editing node
+          focusManager.focusNodeAtPosition(newNodeId, newNodeCursorPosition, paneId);
+        }
+      }
+
+      // Handle focus direction based on focusOriginalNode parameter
+      if (focusOriginalNode) {
+        // The hierarchy is correct (new node above, original below)
+        // Use the nodeManager's update methods to properly trigger reactivity
+
+        // Use updateNodeContent on original node to trigger focus
+        const originalNode = nodeManager.nodes.get(afterNodeId);
+        if (originalNode) {
+          // Update the original node's content to itself, which should trigger focus
+          nodeManager.updateNodeContent(afterNodeId, originalNode.content);
+        }
+      }
+
+      // Handle HTML formatting conversion if needed
+      if (newContent && newContent.includes('<span class="markdown-')) {
+        setTimeout(() => {
+          const markdownContent = htmlToMarkdown(newContent);
+          nodeManager.updateNodeContent(newNodeId, markdownContent);
+        }, 100);
+      }
+    }
+
     // CRITICAL FIX: Handle Enter key on viewer-local placeholder
     // The placeholder is not in nodeManager.nodes until promoted
     // If afterNodeId matches the placeholder, promote it first
@@ -574,110 +672,40 @@
       const promotedNode = promotePlaceholderToNode(currentPlaceholder, nodeId, {
         content: currentContent ?? ''
       });
+      const promotionParentId = nodeId;
 
       // Clear placeholder ID synchronously so the next placeholder gets a fresh ID
       resetPlaceholderId();
 
-      // Add to shared store and persist immediately (not in-memory only)
-      // Persist now so it exists in DB when creating the next node with insertAfterNodeId
-      sharedNodeStore.setNode(promotedNode, { type: 'viewer', viewerId }, false);
+      // Defer store mutations to next tick: sharedNodeStore.setNode() triggers
+      // notifySubscribers(), which calls wildcard subscription callbacks that mutate
+      // $state. If called during template render — as happens when Enter is pressed
+      // on a brand-new, empty page — Svelte throws "state_unsafe_mutation" and wedges
+      // the reactive flush. tick() ensures we're outside render (matches
+      // contentChanged/nodeTypeChanged/slashCommandSelected). Node creation continues
+      // inside the callback since it depends on the promoted node already being in
+      // the store.
+      tick().then(() => {
+        // Add to shared store and persist immediately (not in-memory only)
+        // Persist now so it exists in DB when creating the next node with insertAfterNodeId
+        sharedNodeStore.setNode(promotedNode, { type: 'viewer', viewerId }, false);
 
-      // Add to structure tree for immediate visibility
-      reactiveStructureTree.addChild({
-        parentId: nodeId,
-        childId: promotedNode.id,
-        order: Date.now()
+        // Add to structure tree for immediate visibility
+        reactiveStructureTree.addChild({
+          parentId: promotionParentId,
+          childId: promotedNode.id,
+          order: Date.now()
+        });
+
+        // Clear promotion flag
+        isPromoting = false;
+
+        proceedWithNodeCreation();
       });
-
-      // Clear promotion flag
-      isPromoting = false;
-    }
-
-    // Verify the target node exists (should now exist after promotion)
-    if (!nodeManager.nodes.has(afterNodeId)) {
-      log.error('Target node does not exist:', afterNodeId);
       return;
     }
 
-    // Update current node content if provided and actually changed
-    if (currentContent !== undefined) {
-      const existingNode = nodeManager.findNode(afterNodeId);
-      if (existingNode && existingNode.content !== currentContent) {
-        // Use updateNodeContent for node splitting - with new reactive architecture no forcing needed
-        nodeManager.updateNodeContent(afterNodeId, currentContent);
-      }
-    }
-
-    // Create new node using NodeManager - placeholder if empty, real if has content
-    let newNodeId: string;
-
-    // CRITICAL FIX: Use afterNode's actual parent from parentsCache
-    // The viewer's nodeId represents the viewer's display context (e.g., date node)
-    // but the actual parent is stored in sharedNodeStore.getParentsForNode()
-    // After indent, the parent relationship is updated in the cache
-    const parents = sharedNodeStore.getParentsForNode(afterNodeId);
-    const explicitParentId = parents.length > 0 ? parents[0].id : (nodeId ?? null);
-
-    // Add formatting syntax to the new content based on node type and header level
-    // (applies to both empty and non-empty content for header inheritance)
-    const formattedNewContent = addFormattingSyntax(newContent || '');
-
-    // IMPORTANT: Enter key ALWAYS creates real persisted nodes (even if blank)
-    // Only the first viewer-local placeholder uses the placeholder->promotion cycle
-    // All subsequent nodes created via Enter are persisted immediately
-    newNodeId = nodeManager.createNode(
-      afterNodeId,
-      formattedNewContent,
-      nodeType,
-      inheritHeaderLevel,
-      insertAtBeginning || false,
-      originalContent,
-      !focusOriginalNode, // Focus new node when creating splits, original node when creating above
-      paneId,
-      false, // isInitialPlaceholder (Enter key never creates initial placeholders)
-      explicitParentId // Pass viewer's nodeId as parent (e.g., date node for date viewers)
-    );
-
-    // Validate that node creation succeeded
-    if (!newNodeId || !nodeManager.nodes.has(newNodeId)) {
-      log.error(`Node creation failed for afterNodeId: ${afterNodeId}, newNodeId: ${newNodeId}`);
-      return;
-    }
-
-    // Set cursor position using FocusManager (single source of truth)
-    // For inherited type nodes (Enter key on typed node), use focusNodeFromInheritedType
-    // which sets pattern state to 'inherited' (reverts to text only if the plugin's canRevert allows).
-    // This is different from pattern-detected type conversions which CAN revert.
-    if (newNodeCursorPosition !== undefined && !focusOriginalNode) {
-      if (nodeType !== 'text') {
-        // Non-text inherited nodes: Use inherited-type signal (pattern state = 'inherited')
-        focusManager.focusNodeFromInheritedType(newNodeId, newNodeCursorPosition, paneId);
-      } else {
-        // Text nodes: Use regular editing node
-        focusManager.focusNodeAtPosition(newNodeId, newNodeCursorPosition, paneId);
-      }
-    }
-
-    // Handle focus direction based on focusOriginalNode parameter
-    if (focusOriginalNode) {
-      // The hierarchy is correct (new node above, original below)
-      // Use the nodeManager's update methods to properly trigger reactivity
-
-      // Use updateNodeContent on original node to trigger focus
-      const originalNode = nodeManager.nodes.get(afterNodeId);
-      if (originalNode) {
-        // Update the original node's content to itself, which should trigger focus
-        nodeManager.updateNodeContent(afterNodeId, originalNode.content);
-      }
-    }
-
-    // Handle HTML formatting conversion if needed
-    if (newContent && newContent.includes('<span class="markdown-')) {
-      setTimeout(() => {
-        const markdownContent = htmlToMarkdown(newContent);
-        nodeManager.updateNodeContent(newNodeId, markdownContent);
-      }, 100);
-    }
+    proceedWithNodeCreation();
   }
 
   // Handle indenting nodes (Tab key)
