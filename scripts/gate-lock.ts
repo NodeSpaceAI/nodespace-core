@@ -783,7 +783,15 @@ export async function acquireGateLock(options: AcquireOptions): Promise<GateLock
       log("   (gates are serialized so they don't starve each other of CPU; see ADR-047)");
       announced = true;
     }
-    status(`waiting:${holderNow.pid}`, formatWaitingLine(holderNow, now(), waitedMs));
+    // A local holder that is gone but whose lock we couldn't remove is not a
+    // busy slot: say so, and name the file, rather than report it as holding.
+    const corpse = !isForeignHost(holderNow, host) && !isAlive(holderNow.pid);
+    status(
+      `waiting:${holderNow.pid}`,
+      corpse
+        ? `  waiting on ${lockPath}: pid ${holderNow.pid} (${holderNow.user}) is gone but this account can't remove its lock — delete it by hand — waited ${formatDuration(waitedMs)}`
+        : formatWaitingLine(holderNow, now(), waitedMs)
+    );
     await sleep(pollIntervalMs);
   }
 }
