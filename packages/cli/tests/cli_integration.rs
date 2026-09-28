@@ -2117,18 +2117,137 @@ async fn node_set_status_rejects_invalid_status() {
     let mut client = connect(&sock, DatabaseIdInterceptor::none())
         .await
         .expect("connect");
+    let mut raw = connect(&sock, DatabaseIdInterceptor::none())
+        .await
+        .expect("raw connect");
 
+    // A real node: with no CLI-side vocabulary check left, the RPC actually
+    // reaches the daemon, which resolves the node before validating the
+    // property — a nonexistent id would fail with NotFound first and never
+    // exercise the status check this test is for.
+    let id = raw
+        .create_node(CreateNodeRequest {
+            node_type: "task".into(),
+            content: "a task".into(),
+            parent_id: None,
+            properties: serde_json::json!({"status": "open"}).to_string(),
+            collections: Vec::new(),
+            collection_ids: Vec::new(),
+            lifecycle_status: None,
+            id: None,
+            position: None,
+        })
+        .await
+        .expect("seed task")
+        .into_inner()
+        .node_id;
+
+    // No CLI-side vocabulary check remains, so this exercises the daemon's
+    // live-schema validation (`NodeService::validate_task_status`) via the
+    // RPC — same error-mapping path as `schema_create_rejects_malformed_params`.
     let err = commands::node::run(
         &mut client,
         commands::node::NodeAction::SetStatus(commands::node::SetStatusArgs {
-            id: "irrelevant".into(),
+            id,
             status: "not-a-real-status".into(),
         }),
         true,
     )
     .await
     .expect_err("invalid status should error");
-    assert!(err.to_string().contains("invalid status"));
+    let status = err
+        .chain()
+        .find_map(|e| e.downcast_ref::<tonic::Status>())
+        .expect("expected tonic::Status in error chain");
+    assert_eq!(status.code(), Code::InvalidArgument);
+    assert!(
+        status.message().contains("not-a-real-status"),
+        "expected status message to name the offending value, got: {}",
+        status.message()
+    );
+    assert!(
+        status.message().contains("open"),
+        "expected status message to list the valid values, got: {}",
+        status.message()
+    );
+
+    let _ = shutdown.send(());
+}
+
+#[tokio::test]
+async fn node_set_status_accepts_schema_extended_status() {
+    // Reproduces the documented schema-extension flow: `schema update` with
+    // `add_field_values` adds `backlog` to `task.status` (which is declared
+    // `extensible: true`), and `set-status` must accept it since the daemon's
+    // live vocabulary — not a hardcoded CLI list — is the source of truth.
+    let (sock, shutdown, _tempdir) = spawn_test_daemon().await;
+    let mut client = connect(&sock, DatabaseIdInterceptor::none())
+        .await
+        .expect("connect");
+    let mut raw = connect(&sock, DatabaseIdInterceptor::none())
+        .await
+        .expect("raw connect");
+
+    commands::schema::run(
+        &mut client,
+        commands::schema::SchemaAction::Update(commands::schema::SchemaParamsArgs {
+            params: Some(
+                serde_json::json!({
+                    "schema_id": "task",
+                    "add_field_values": [{
+                        "field": "status",
+                        "values": [{"value": "backlog", "label": "Backlog"}]
+                    }]
+                })
+                .to_string(),
+            ),
+            params_file: None,
+        }),
+        true,
+    )
+    .await
+    .expect("extending task.status with 'backlog' should succeed");
+
+    let id = raw
+        .create_node(CreateNodeRequest {
+            node_type: "task".into(),
+            content: "a task".into(),
+            parent_id: None,
+            properties: serde_json::json!({"status": "open"}).to_string(),
+            collections: Vec::new(),
+            collection_ids: Vec::new(),
+            lifecycle_status: None,
+            id: None,
+            position: None,
+        })
+        .await
+        .expect("seed task")
+        .into_inner()
+        .node_id;
+
+    commands::node::run(
+        &mut client,
+        commands::node::NodeAction::SetStatus(commands::node::SetStatusArgs {
+            id: id.clone(),
+            status: "backlog".into(),
+        }),
+        true,
+    )
+    .await
+    .expect("set-status should accept the schema-extended value");
+
+    let node = raw
+        .get_node(GetNodeRequest {
+            node_id: id.clone(),
+        })
+        .await
+        .expect("get node")
+        .into_inner()
+        .node_data
+        .expect("node_data");
+    let props: serde_json::Value =
+        serde_json::from_str(&node.properties).expect("parse properties");
+    assert_eq!(props["task"]["status"], "backlog");
 
     let _ = shutdown.send(());
 }
