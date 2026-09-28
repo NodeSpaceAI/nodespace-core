@@ -921,6 +921,125 @@ fn duplicate_entity_backstop(session: &mut AgentSession, result: &mut AgentTurnR
     });
 }
 
+/// How `run_turn_unguarded` ended, for the guards applied over the finished
+/// turn.
+#[derive(Clone, Copy, Default)]
+struct TurnEnd {
+    /// The system stopped the loop — the iteration cap, a repeated call, or a
+    /// run of unparseable arguments — and forced a tool-less reply, rather
+    /// than the model choosing to reply.
+    cut_off: bool,
+    /// Stage 2 ran on a surface scoped to the retrieved skills, not the
+    /// fail-open full surface.
+    scoped_surface: bool,
+}
+
+/// How many found records a cut-off clarification names.
+const CUT_OFF_NAMED_LIMIT: usize = 3;
+
+/// Ask the user what they want when a Stage-2 turn was cut off having only
+/// read.
+///
+/// The failure this catches: retrieval hands Stage 2 skills that cannot make
+/// the change the request needs, and the model reads — a search, the related
+/// records, the record itself — until the loop stops it, then gives up in
+/// prose that says neither why nor what it needs. No instruction to clarify
+/// changed that on the locked model, because the model does not notice the
+/// right tool is missing. The system does not need to: the signal here is
+/// structural.
+///
+/// Fires only when every one of these holds:
+/// - the loop was cut off (see [`TurnEnd::cut_off`]) — a model that chose to
+///   reply, a read-only answer included, is left alone;
+/// - the surface was scoped by retrieval — on the fail-open surface every
+///   tool was on offer, so the wrong-skills explanation does not apply;
+/// - nothing was written, a held delete included (that turn ends in a delete
+///   confirmation instead);
+/// - the turn is not already asking (a model or backstop `route_clarify`);
+/// - no clarification is on record in the current intent — the user's answer
+///   to a question is exactly what must not be asked again. Only a recorded
+///   `Clarified` turn counts, not [`session_already_clarified`]'s two-replies
+///   proxy: two lookups followed by "now mark it resolved" is the very turn
+///   this exists for, and this question is recorded `Clarified` itself, so it
+///   cannot repeat within an intent. A question the model asked in its own
+///   prose is recorded `Replied` and does not count, so this may follow one;
+/// - at least one entity-resolving read succeeded
+///   ([`super::tools::resolves_entities_tool`]), so the question can name
+///   what was found. Other successful calls — a conflict listing, say — are
+///   neither counted nor named.
+///
+/// The model's reply is replaced with a question naming the records the
+/// turn's reads returned. The user's answer re-enters Stage 1, worded more
+/// explicitly than the request that failed.
+///
+/// A long read-only question that runs the loop out is caught too, and is
+/// answered with this question instead of a summary — accepted, since the
+/// cut-off reply to it was forced without tools either way.
+fn cut_off_turn_backstop(
+    session: &mut AgentSession,
+    result: &mut AgentTurnResult,
+    end: TurnEnd,
+    intent_clarified: bool,
+) {
+    if !end.cut_off || !end.scoped_surface || intent_clarified || result.clarify.is_some() {
+        return;
+    }
+    let calls = &result.tool_calls_made;
+    if calls
+        .iter()
+        .any(|r| !r.is_error && super::tools::is_write_tool(&r.name))
+    {
+        return;
+    }
+    let reads: Vec<&ToolExecutionRecord> = calls
+        .iter()
+        .filter(|r| !r.is_error && super::tools::resolves_entities_tool(&r.name))
+        .collect();
+    if reads.is_empty() {
+        return;
+    }
+
+    let mut found: Vec<String> = Vec::new();
+    for read in &reads {
+        let mut uris = HashSet::new();
+        collect_node_uris(&read.result, &mut uris);
+        let mut uris: Vec<String> = uris.into_iter().filter(|u| !found.contains(u)).collect();
+        // A HashSet's order is arbitrary; sort within one result so the
+        // question is stable, keeping earlier reads' finds first.
+        uris.sort();
+        found.extend(uris);
+    }
+    let named = match found.len() {
+        0 => "nothing that matched".to_string(),
+        n if n <= CUT_OFF_NAMED_LIMIT => found.join(", "),
+        n => format!(
+            "{} and {} more",
+            found[..CUT_OFF_NAMED_LIMIT].join(", "),
+            n - CUT_OFF_NAMED_LIMIT
+        ),
+    };
+    let question = format!(
+        "I looked this up and found {named}, but ran out of steps before making any change. \
+         What would you like me to do? If it's a change, naming the record, the field and \
+         the new value helps."
+    );
+    let clarification = format_clarification(&question, &[]);
+    tracing::warn!(
+        session_id = %session.id,
+        reads = reads.len(),
+        found = found.len(),
+        "Stage-2 turn cut off having only read — asking the user instead of replying"
+    );
+
+    replace_turn_reply(session, &clarification);
+    result.response = clarification;
+    result.clarify = Some(crate::agent_types::ClarifyPrompt {
+        question,
+        options: Vec::new(),
+        pending_deletions: Vec::new(),
+    });
+}
+
 /// Name the writes a turn completed, for a question that replaces its reply.
 ///
 /// The replaced reply may have been the only report of those writes, so they
@@ -2073,7 +2192,10 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
         on_chunk: impl Fn(StreamingChunk) + Send + Sync + 'static,
         cancel: CancellationToken,
     ) -> Result<AgentTurnResult, InferenceError> {
-        let mut result = self
+        // Read before the turn runs: whether the intent had already clarified
+        // when this message arrived, not after this turn's own outcome.
+        let intent_clarified = !composed_clarifications(session).is_empty();
+        let (mut result, end) = self
             .run_turn_unguarded(session, user_message, on_status, on_chunk, cancel)
             .await?;
         // Applied here, over the finished turn, because the loop has several
@@ -2081,6 +2203,7 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
         // reach the user whichever one the turn took.
         if !confirm_held_deletions(session, &mut result) {
             duplicate_entity_backstop(session, &mut result);
+            cut_off_turn_backstop(session, &mut result, end, intent_clarified);
         }
         // Recorded after the guards above, which can turn a reply into a
         // question: the outcome is what the user was finally shown.
@@ -2098,7 +2221,7 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
         on_status: impl Fn(LocalAgentStatus) + Send + Sync + 'static,
         on_chunk: impl Fn(StreamingChunk) + Send + Sync + 'static,
         cancel: CancellationToken,
-    ) -> Result<AgentTurnResult, InferenceError> {
+    ) -> Result<(AgentTurnResult, TurnEnd), InferenceError> {
         // Wrap on_chunk in Arc so it can be cloned into each iteration's callback
         let on_chunk = Arc::new(on_chunk);
 
@@ -2153,13 +2276,16 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                 .messages
                 .push(ChatMessage::text(Role::Assistant, clarification.clone()));
             on_status(LocalAgentStatus::Idle);
-            return Ok(AgentTurnResult {
-                response: clarification,
-                reasoning: None,
-                tool_calls_made: Vec::new(),
-                usage: routed.usage,
-                clarify: routed.clarify_prompt,
-            });
+            return Ok((
+                AgentTurnResult {
+                    response: clarification,
+                    reasoning: None,
+                    tool_calls_made: Vec::new(),
+                    usage: routed.usage,
+                    clarify: routed.clarify_prompt,
+                },
+                TurnEnd::default(),
+            ));
         }
 
         // Stage 2's surface: scoped to what the eligible candidates permit, so
@@ -2170,7 +2296,9 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
         // disabled — the routing-reliability matrix measured the *prompt
         // block* suppressing tool-calling, not the scoped tool list, so only
         // the mechanism actually implicated is turned off.
-        let mut tools = routing::stage2_tools(&routed.candidates, &all_tools);
+        let scoped = routing::stage2_scoped_tools(&routed.candidates, &all_tools);
+        let scoped_surface = scoped.is_some();
+        let mut tools = scoped.unwrap_or_else(|| routing::fail_open_surface(&all_tools));
 
         // ADR-038's Stage-2 clarify branch: `route_clarify` stays callable even
         // when no matched skill whitelists it. This addition is skipped once
@@ -2978,13 +3106,19 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                 // clarification contract still counts it: a turn that made no
                 // write is recorded as `Replied` (`AgentTurnResult::outcome`),
                 // whatever its text says.
-                return Ok(AgentTurnResult {
-                    response: final_response,
-                    reasoning,
-                    tool_calls_made: all_tool_executions,
-                    usage: total_usage,
-                    clarify: None,
-                });
+                return Ok((
+                    AgentTurnResult {
+                        response: final_response,
+                        reasoning,
+                        tool_calls_made: all_tool_executions,
+                        usage: total_usage,
+                        clarify: None,
+                    },
+                    TurnEnd {
+                        cut_off: false,
+                        scoped_surface,
+                    },
+                ));
             }
 
             // Append the assistant message that issued these tool calls, carrying
@@ -3448,17 +3582,23 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                 session.status = LocalAgentStatus::Idle;
                 let reasoning = (!accumulated_reasoning.trim().is_empty())
                     .then(|| accumulated_reasoning.trim().to_string());
-                return Ok(AgentTurnResult {
-                    response: clarification,
-                    reasoning,
-                    tool_calls_made: all_tool_executions,
-                    usage: total_usage,
-                    clarify: Some(crate::agent_types::ClarifyPrompt {
-                        question,
-                        options: labels,
-                        pending_deletions: Vec::new(),
-                    }),
-                });
+                return Ok((
+                    AgentTurnResult {
+                        response: clarification,
+                        reasoning,
+                        tool_calls_made: all_tool_executions,
+                        usage: total_usage,
+                        clarify: Some(crate::agent_types::ClarifyPrompt {
+                            question,
+                            options: labels,
+                            pending_deletions: Vec::new(),
+                        }),
+                    },
+                    TurnEnd {
+                        cut_off: false,
+                        scoped_surface,
+                    },
+                ));
             }
 
             // A model that cannot emit valid JSON is not making progress, and each
@@ -3557,13 +3697,19 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                         on_status(LocalAgentStatus::Idle);
                         session.status = LocalAgentStatus::Idle;
 
-                        return Ok(AgentTurnResult {
-                            response: normalized,
-                            reasoning,
-                            tool_calls_made: all_tool_executions,
-                            usage: total_usage,
-                            clarify: None,
-                        });
+                        return Ok((
+                            AgentTurnResult {
+                                response: normalized,
+                                reasoning,
+                                tool_calls_made: all_tool_executions,
+                                usage: total_usage,
+                                clarify: None,
+                            },
+                            TurnEnd {
+                                cut_off: true,
+                                scoped_surface,
+                            },
+                        ));
                     }
                 }
 
@@ -3588,14 +3734,20 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                     }
                 };
 
-                return Ok(AgentTurnResult {
-                    response: fallback,
-                    reasoning: (!accumulated_reasoning.trim().is_empty())
-                        .then(|| accumulated_reasoning.trim().to_string()),
-                    tool_calls_made: all_tool_executions,
-                    usage: total_usage,
-                    clarify: None,
-                });
+                return Ok((
+                    AgentTurnResult {
+                        response: fallback,
+                        reasoning: (!accumulated_reasoning.trim().is_empty())
+                            .then(|| accumulated_reasoning.trim().to_string()),
+                        tool_calls_made: all_tool_executions,
+                        usage: total_usage,
+                        clarify: None,
+                    },
+                    TurnEnd {
+                        cut_off: true,
+                        scoped_surface,
+                    },
+                ));
             }
 
             // Otherwise loop back for another inference round
@@ -3706,13 +3858,19 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
         on_status(LocalAgentStatus::Idle);
         session.status = LocalAgentStatus::Idle;
 
-        Ok(AgentTurnResult {
-            response: final_response,
-            reasoning,
-            tool_calls_made: all_tool_executions,
-            usage: total_usage,
-            clarify: None,
-        })
+        Ok((
+            AgentTurnResult {
+                response: final_response,
+                reasoning,
+                tool_calls_made: all_tool_executions,
+                usage: total_usage,
+                clarify: None,
+            },
+            TurnEnd {
+                cut_off: true,
+                scoped_surface,
+            },
+        ))
     }
 
     /// Parse collected streaming chunks into response text and tool calls.
@@ -11936,6 +12094,297 @@ mod tests {
             !names.iter().any(|n| n == routing::ROUTE_CLARIFY_TOOL),
             "route_clarify must be withheld after an answered clarification: {names:?}"
         );
+    }
+
+    // -- Cut-off turn backstop -------------------------------------------
+
+    const INCIDENT_URI: &str = "nodespace://inc-1";
+    const GAVE_UP: &str = "I couldn't find a way to mark that incident resolved.";
+
+    /// Stage 1's `route_query` round, followed by the given Stage-2 rounds.
+    fn stage2_rounds(rounds: Vec<Vec<StreamingChunk>>) -> MockEngine {
+        let mut all = vec![tool_round(
+            "r1",
+            routing::ROUTE_QUERY_TOOL,
+            &json!({ "query": "mark incident resolved" }).to_string(),
+        )];
+        all.extend(rounds);
+        MockEngine::new(all)
+    }
+
+    /// Distinct reads for every allowed round, then prose: the loop is cut
+    /// off at the iteration cap and forced to reply without tools.
+    fn reads_until_the_cap() -> Vec<Vec<StreamingChunk>> {
+        let mut rounds: Vec<_> = (0..MAX_TOOL_ITERATIONS)
+            .map(|i| {
+                tool_round(
+                    &format!("t{i}"),
+                    "search_nodes",
+                    &json!({ "query": format!("incident {i}") }).to_string(),
+                )
+            })
+            .collect();
+        rounds.push(text_round(GAVE_UP));
+        rounds
+    }
+
+    /// Tools on the mismatched skill's surface: two entity reads, a read that
+    /// resolves no entity, and a write that is not the one the request needs.
+    const MISMATCHED_SURFACE: &[&str] = &[
+        "search_nodes",
+        "search_semantic",
+        "list_conflicts",
+        "create_relationship",
+    ];
+
+    /// Run one turn on a Stage-2 surface scoped to a skill that can read the
+    /// incident but not mark it resolved.
+    async fn run_mismatched_turn(
+        session: &mut AgentSession,
+        rounds: Vec<Vec<StreamingChunk>>,
+        routed: bool,
+    ) -> AgentTurnResult {
+        let obj = || json!({"type": "object"});
+        let inner = MockToolExecutor::new()
+            .with_tool(
+                "search_nodes",
+                obj(),
+                json!([{ "id": INCIDENT_URI, "title": "Checkout outage" }]),
+            )
+            .with_tool(
+                "search_semantic",
+                obj(),
+                json!((1..=5)
+                    .map(|i| json!({ "id": format!("nodespace://sem-{i}") }))
+                    .collect::<Vec<_>>()),
+            )
+            .with_tool(
+                "list_conflicts",
+                obj(),
+                json!([{ "id": "nodespace://conflict-1" }]),
+            )
+            .with_tool(
+                "create_relationship",
+                obj(),
+                json!({ "created": true, "source": INCIDENT_URI }),
+            );
+        let message = "the incident Rowan was on call for — mark it resolved";
+        let result = if routed {
+            let exec = RoutingToolExecutor::new(
+                inner,
+                vec![skill_candidate(
+                    "Conflict Journal",
+                    0.87,
+                    MISMATCHED_SURFACE,
+                )],
+            );
+            LocalAgentLoop::new(Arc::new(stage2_rounds(rounds)), Arc::new(exec))
+                .run_turn(session, message, |_| {}, |_| {}, CancellationToken::new())
+                .await
+        } else {
+            LocalAgentLoop::new(Arc::new(MockEngine::new(rounds)), Arc::new(inner))
+                .run_turn(session, message, |_| {}, |_| {}, CancellationToken::new())
+                .await
+        };
+        result.expect("turn should succeed")
+    }
+
+    #[tokio::test]
+    async fn a_cut_off_mismatched_turn_becomes_a_clarification() {
+        let mut session = new_session();
+        let result = run_mismatched_turn(&mut session, reads_until_the_cap(), true).await;
+
+        let clarify = result.clarify.as_ref().expect("the turn must clarify");
+        assert!(
+            clarify.question.contains(INCIDENT_URI),
+            "the question must name what was found: {}",
+            clarify.question
+        );
+        assert!(!result.response.contains(GAVE_UP), "{}", result.response);
+        assert!(result.response.starts_with(CLARIFICATION_OPENER));
+        assert_eq!(
+            session.messages.last().map(|m| m.content.as_str()),
+            Some(result.response.as_str()),
+            "history must carry the question, not the prose it replaced"
+        );
+        assert_eq!(
+            session.prior_turns.last().map(|t| t.outcome),
+            Some(AiChatTurnOutcome::Clarified)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_read_only_answer_in_prose_is_left_alone() {
+        // The model chose to reply after one read: that is an answer, not a
+        // turn the system had to stop.
+        let answer = "Rowan was on call for the checkout outage (nodespace://inc-1).";
+        let mut session = new_session();
+        let result = run_mismatched_turn(
+            &mut session,
+            vec![
+                tool_round("t0", "search_nodes", r#"{"query":"rowan on call"}"#),
+                text_round(answer),
+            ],
+            true,
+        )
+        .await;
+
+        assert!(result.clarify.is_none(), "got {:?}", result.response);
+        assert_eq!(result.response, answer);
+    }
+
+    #[tokio::test]
+    async fn a_cut_off_turn_does_not_clarify_once_the_intent_has() {
+        let mut session = new_session();
+        seed_turn(
+            &mut session,
+            AiChatTurnOutcome::Clarified,
+            &format!("{CLARIFICATION_OPENER}. Which incident did you mean?"),
+        );
+        let result = run_mismatched_turn(&mut session, reads_until_the_cap(), true).await;
+
+        assert!(result.clarify.is_none(), "got {:?}", result.response);
+        assert_eq!(result.response, GAVE_UP);
+    }
+
+    #[tokio::test]
+    async fn a_cut_off_turn_clarifies_after_two_read_only_replies() {
+        // Two lookups, then the change: `session_already_clarified` counts
+        // that as asked-already, but no question was ever on record.
+        let mut session = new_session();
+        seed_turn(
+            &mut session,
+            AiChatTurnOutcome::Replied,
+            "Rowan was on call.",
+        );
+        seed_turn(
+            &mut session,
+            AiChatTurnOutcome::Replied,
+            "It was the outage.",
+        );
+        let result = run_mismatched_turn(&mut session, reads_until_the_cap(), true).await;
+
+        assert!(result.clarify.is_some(), "got {:?}", result.response);
+    }
+
+    #[tokio::test]
+    async fn a_turn_the_duplicate_call_break_cuts_off_clarifies() {
+        let read = r#"{"query":"rowan on call"}"#;
+        let mut session = new_session();
+        let result = run_mismatched_turn(
+            &mut session,
+            vec![
+                tool_round("t0", "search_nodes", read),
+                tool_round("t1", "search_nodes", read),
+                text_round(GAVE_UP),
+            ],
+            true,
+        )
+        .await;
+
+        let clarify = result.clarify.as_ref().expect("the turn must clarify");
+        assert!(
+            clarify.question.contains(INCIDENT_URI),
+            "{}",
+            clarify.question
+        );
+    }
+
+    #[tokio::test]
+    async fn a_cut_off_turn_that_wrote_is_left_alone() {
+        // It changed something; "ran out of steps before making any change"
+        // would be false.
+        let mut rounds = vec![tool_round(
+            "w0",
+            "create_relationship",
+            &json!({ "source_id": INCIDENT_URI, "target_id": "nodespace://rowan" }).to_string(),
+        )];
+        rounds.extend(reads_until_the_cap().into_iter().skip(1));
+        let mut session = new_session();
+        let result = run_mismatched_turn(&mut session, rounds, true).await;
+
+        assert!(
+            result
+                .tool_calls_made
+                .iter()
+                .any(|r| r.name == "create_relationship" && !r.is_error),
+            "the write must have landed for this test to mean anything"
+        );
+        assert!(result.clarify.is_none(), "got {:?}", result.response);
+        assert_eq!(result.response, GAVE_UP);
+    }
+
+    #[tokio::test]
+    async fn a_cut_off_turn_whose_calls_resolved_no_entity_is_left_alone() {
+        let mut rounds: Vec<_> = (0..MAX_TOOL_ITERATIONS)
+            .map(|i| {
+                tool_round(
+                    &format!("t{i}"),
+                    "list_conflicts",
+                    &json!({ "limit": i + 1 }).to_string(),
+                )
+            })
+            .collect();
+        rounds.push(text_round(GAVE_UP));
+        let mut session = new_session();
+        let result = run_mismatched_turn(&mut session, rounds, true).await;
+
+        assert!(result.clarify.is_none(), "got {:?}", result.response);
+        assert_eq!(result.response, GAVE_UP);
+    }
+
+    #[tokio::test]
+    async fn a_cut_off_clarification_names_only_what_entity_reads_found() {
+        let read = r#"{"query":"rowan on call"}"#;
+        let mut session = new_session();
+        let result = run_mismatched_turn(
+            &mut session,
+            vec![
+                tool_round("t0", "list_conflicts", "{}"),
+                tool_round("t1", "search_nodes", read),
+                tool_round("t2", "search_nodes", read),
+                text_round(GAVE_UP),
+            ],
+            true,
+        )
+        .await;
+
+        let question = &result.clarify.as_ref().expect("must clarify").question;
+        assert!(question.contains(INCIDENT_URI), "{question}");
+        assert!(!question.contains("nodespace://conflict-1"), "{question}");
+    }
+
+    #[tokio::test]
+    async fn a_cut_off_clarification_names_at_most_three_finds() {
+        let read = r#"{"query":"incident"}"#;
+        let mut session = new_session();
+        let result = run_mismatched_turn(
+            &mut session,
+            vec![
+                tool_round("t0", "search_semantic", read),
+                tool_round("t1", "search_semantic", read),
+                text_round(GAVE_UP),
+            ],
+            true,
+        )
+        .await;
+
+        let question = &result.clarify.as_ref().expect("must clarify").question;
+        assert!(
+            question.contains("nodespace://sem-1, nodespace://sem-2, nodespace://sem-3 and 2 more"),
+            "{question}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_cut_off_turn_on_the_fail_open_surface_is_left_alone() {
+        // No retrieval, so every tool was on offer: the wrong-skills
+        // explanation the question gives does not apply.
+        let mut session = new_session();
+        let result = run_mismatched_turn(&mut session, reads_until_the_cap(), false).await;
+
+        assert!(result.clarify.is_none(), "got {:?}", result.response);
+        assert_eq!(result.response, GAVE_UP);
     }
 
     #[tokio::test]

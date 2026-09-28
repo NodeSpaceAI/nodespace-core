@@ -705,6 +705,18 @@ fn stage2_permitted_names(candidates: &[SkillCandidate]) -> std::collections::Ha
 /// what retrieval surfaced. The model still has every other tool to answer
 /// the request with.
 pub fn stage2_tools(candidates: &[SkillCandidate], all: &[ToolDefinition]) -> Vec<ToolDefinition> {
+    stage2_scoped_tools(candidates, all).unwrap_or_else(|| fail_open_surface(all))
+}
+
+/// [`stage2_tools`], or `None` where it would fail open to the full surface.
+///
+/// The turn-end guards need to know which of the two the model ran on: a
+/// scoped surface means retrieval chose the capabilities, so a turn that
+/// could not finish on it may have been handed the wrong ones.
+pub fn stage2_scoped_tools(
+    candidates: &[SkillCandidate],
+    all: &[ToolDefinition],
+) -> Option<Vec<ToolDefinition>> {
     // The union is right for ordinary tools and wrong for destructive ones.
     // A skill contributes its whole whitelist to the surface merely by being
     // one of the (up to three) candidates above its bar — so a weak
@@ -724,7 +736,7 @@ pub fn stage2_tools(candidates: &[SkillCandidate], all: &[ToolDefinition]) -> Ve
     let permitted = stage2_permitted_names(candidates);
 
     if permitted.is_empty() {
-        return fail_open_surface(all);
+        return None;
     }
     let scoped: Vec<ToolDefinition> = all
         .iter()
@@ -734,10 +746,7 @@ pub fn stage2_tools(candidates: &[SkillCandidate], all: &[ToolDefinition]) -> Ve
 
     // A whitelist naming only tools this build does not register would strand
     // the model with nothing to call. Fail open to the full surface.
-    if scoped.is_empty() {
-        return fail_open_surface(all);
-    }
-    scoped
+    (!scoped.is_empty()).then_some(scoped)
 }
 
 /// Add `route_clarify` to a Stage-2 surface when the registry offers it and
@@ -930,8 +939,8 @@ pub fn declare_write_tool_fields(
 }
 
 /// The full tool surface, minus tools whose required parameters depend on the
-/// `EXISTING SCHEMAS` block. Shared by both fail-open branches of
-/// [`stage2_tools`] so they can't drift apart.
+/// `EXISTING SCHEMAS` block. What [`stage2_tools`] falls back to wherever
+/// [`stage2_scoped_tools`] cannot scope, so no fail-open case can drift.
 ///
 /// The exclusion is an *eligibility* judgement, not a claim that the block is
 /// absent. Workspace context can render it independently of routing (see
@@ -942,7 +951,7 @@ pub fn declare_write_tool_fields(
 /// an ambiguous reference — when the system could not even identify which
 /// capability the request needs — widens the surface at exactly the moment
 /// there is least reason to trust it. Every other tool remains available.
-fn fail_open_surface(all: &[ToolDefinition]) -> Vec<ToolDefinition> {
+pub fn fail_open_surface(all: &[ToolDefinition]) -> Vec<ToolDefinition> {
     all.iter()
         .filter(|t| !super::tools::requires_routed_guidance_tool(&t.name))
         .cloned()
