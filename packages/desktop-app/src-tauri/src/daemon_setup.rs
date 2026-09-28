@@ -527,6 +527,13 @@ pub async fn ensure_daemon_running(app: &AppHandle) -> Result<DaemonStatus> {
                 ?retried,
                 "nodespaced stayed unresponsive after retrying a Starting probe; proceeding to (re)register/spawn"
             );
+            // Mirror the binary_updated branch: don't fall through to an
+            // unconditional spawn while whatever was holding the socket/pipe
+            // (still Starting, or transitioned to Healthy again after our
+            // check above but before this line) might still be alive.
+            // should_attempt_kill treats anything but a confirmed
+            // NotRunning as worth signalling first.
+            kill_running_daemon(&socket_path).await;
         }
     }
 
