@@ -14,6 +14,10 @@ import { $ } from "bun";
 import {
   bisectBatch,
   describeLock,
+  fenced,
+  type LandEntry,
+  type Lander,
+  landStack,
   type LockInfo,
   MergeQueue,
   parseLockInfo,
@@ -21,6 +25,7 @@ import {
   prFromQueueRef,
   QUEUE_PREFIX,
   StaleWatch,
+  stripAnsi,
 } from "./merge-queue";
 
 let dir: string;
@@ -94,13 +99,23 @@ describe("the lock", () => {
     const a = new MergeQueue(machineA);
     const b = new MergeQueue(machineB);
     const first = (await a.tryAcquire(info("a"))) as string;
-    const second = await a.renew(first, info("a"));
-    expect(second).not.toBeNull();
-    expect(second).not.toBe(first);
+    const renewed = await a.renew(first, info("a"));
+    if (renewed.status !== "renewed") throw new Error(`expected a renewal, got ${renewed.status}`);
+    expect(renewed.sha).not.toBe(first);
 
-    // B judged it stale at `second` and takes it over.
-    expect(await b.tryAcquire(info("b"), second as string)).not.toBeNull();
-    expect(await a.renew(second as string, info("a"))).toBeNull();
+    // B judged it stale at `renewed.sha` and takes it over.
+    expect(await b.tryAcquire(info("b"), renewed.sha)).not.toBeNull();
+    expect(await a.renew(renewed.sha, info("a"))).toEqual({ status: "lost" });
+  });
+
+  test("a push that fails while the lock still reads as ours is unknown, not lost", async () => {
+    const a = new MergeQueue(machineA);
+    const held = (await a.tryAcquire(info("a"))) as string;
+    // An unreachable remote: the push fails for a reason that isn't the lock moving.
+    await $`git -C ${machineA} remote add broken ${join(dir, "no-such-remote.git")}`.quiet();
+    expect(await new MergeQueue(machineA, "broken").renew(held, info("a"))).toEqual({ status: "unknown" });
+    // The real lock is untouched.
+    expect(await a.lockSha()).toBe(held);
   });
 
   test("a takeover only succeeds against the sha judged stale", async () => {
@@ -175,5 +190,102 @@ describe("parsing", () => {
     expect(parseLockInfo("not json")).toBeNull();
     expect(parseLockInfo('{"host":"x"}')).toBeNull();
     expect(describeLock(record)).toBe("u@mini (pid 1) on #1, #2");
+  });
+});
+
+describe("landStack", () => {
+  const T0 = "tree-main";
+  const entry = (pr: number): LandEntry => ({ pr, headRefName: `b${pr}`, head: `head${pr}`, commits: [`c${pr}`], tree: `tree${pr}` });
+
+  /**
+   * A fake origin and GitHub where everything goes right: main advances to
+   * each landed PR's tree, and every check passes. `overrides` breaks one thing.
+   */
+  function fakeLander(overrides: Partial<Lander> = {}) {
+    let mainTree = T0;
+    const log: string[] = [];
+    const lander: Lander = {
+      confirmHolding: async () => true,
+      isQueued: async () => true,
+      main: async () => ({ sha: `sha-${mainTree}`, tree: mainTree }),
+      headOf: async (branch) => `head${branch.slice(1)}`,
+      replayOnto: async (_main, commits) => ({ tree: `tree${commits[0].slice(1)}`, tip: `tip${commits[0].slice(1)}` }),
+      push: async (branch) => (log.push(`push ${branch}`), true),
+      merge: async (pr) => {
+        log.push(`merge #${pr}`);
+        mainTree = `tree${pr}`;
+        return { ok: true };
+      },
+      landed: async (pr) => void log.push(`landed #${pr}`),
+      eject: async (pr) => void log.push(`eject #${pr}`),
+      ...overrides,
+    };
+    return { lander, log };
+  }
+
+  test("lands every PR in order when nothing changed", async () => {
+    const { lander, log } = fakeLander();
+    expect(await landStack([entry(1), entry(2)], T0, lander)).toEqual({ landed: [1, 2] });
+    expect(log).toEqual(["push b1", "merge #1", "landed #1", "push b2", "merge #2", "landed #2"]);
+  });
+
+  test("lands nothing when main moved outside the queue", async () => {
+    const { lander, log } = fakeLander({ main: async () => ({ sha: "x", tree: "someone-pushed" }) });
+    expect(await landStack([entry(1)], T0, lander)).toEqual({ landed: [], stopped: "main moved outside the queue" });
+    expect(log).toEqual([]);
+  });
+
+  test("stops before merging when the lock can't be confirmed at that moment", async () => {
+    const { lander, log } = fakeLander({ confirmHolding: async () => false });
+    const outcome = await landStack([entry(1), entry(2)], T0, lander);
+    expect(outcome.landed).toEqual([]);
+    expect(outcome.stopped).toContain("lock");
+    expect(log).not.toContain("merge #1");
+  });
+
+  test("ejects a PR GitHub refuses to merge, keeping what landed before it and leaving the rest queued", async () => {
+    const { lander, log } = fakeLander({
+      merge: async (pr) => (pr === 2 ? { ok: false, reason: "Pull request is in draft state" } : { ok: true }),
+    });
+    // main advances only through the fake's own merge; this one lands #1 without moving it,
+    // so give #2 a base check that passes.
+    const outcome = await landStack([entry(1), { ...entry(2), tree: "tree2" }, entry(3)], T0, {
+      ...lander,
+      main: async () => ({ sha: "m", tree: log.includes("landed #1") ? "tree1" : T0 }),
+    });
+    expect(outcome).toEqual({ landed: [1], stopped: "GitHub refused to merge #2", ejected: 2 });
+    expect(log).toContain("eject #2");
+    expect(log).not.toContain("push b3");
+  });
+
+  test.each([
+    ["the PR left the queue", { isQueued: async () => false }, "left the queue"],
+    ["its head moved", { headOf: async () => "someone-pushed" }, "head moved"],
+    ["the replay doesn't reproduce the tested tree", { replayOnto: async () => ({ tree: "other", tip: "t" }) }, "tested tree"],
+    ["the branch push is refused", { push: async () => false }, "head moved"],
+  ] as [string, Partial<Lander>, string][])("stops without merging when %s", async (_label, override, reason) => {
+    const { lander, log } = fakeLander(override);
+    const outcome = await landStack([entry(1)], T0, lander);
+    expect(outcome.landed).toEqual([]);
+    expect(outcome.stopped).toContain(reason);
+    expect(log.some((l) => l.startsWith("merge"))).toBe(false);
+  });
+
+  test("a PR already based on main is merged without a push", async () => {
+    const { lander, log } = fakeLander({ replayOnto: async () => ({ tree: "tree1", tip: "head1" }) });
+    expect((await landStack([entry(1)], T0, lander)).landed).toEqual([1]);
+    expect(log).not.toContain("push b1");
+  });
+});
+
+describe("eject comment formatting", () => {
+  test("a fence is longer than any backtick run in the output, so it can't be closed early", () => {
+    expect(fenced("plain")).toBe("```\nplain\n```");
+    expect(fenced("has ``` inside and ````` too")).toMatch(/^``````\n[\s\S]*\n``````$/);
+  });
+
+  test("terminal colour codes are stripped", () => {
+    const esc = String.fromCharCode(27);
+    expect(stripAnsi(`${esc}[31m✗ failed${esc}[0m ${esc}[2K`)).toBe("✗ failed ");
   });
 });

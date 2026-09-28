@@ -110,6 +110,8 @@ export function bisectBatch<T>(failed: T[]): T[] {
   return failed.slice(0, Math.max(1, Math.floor(failed.length / 2)));
 }
 
+export type RenewResult = { status: "renewed"; sha: string } | { status: "lost" } | { status: "unknown" };
+
 /** The queue and lock on one remote, operated from the checkout at `cwd`. */
 export class MergeQueue {
   constructor(
@@ -152,7 +154,10 @@ export class MergeQueue {
     return (await this.lsRemote(`${QUEUE_PREFIX}${pr}`)).has(`${QUEUE_PREFIX}${pr}`);
   }
 
-  /** Adds `pr` to the queue, recording the head it was queued at. */
+  /**
+   * Adds `pr` to the queue. The ref points at the head it was queued at — for
+   * anyone inspecting the queue; a round reads the head afresh from origin.
+   */
   async enqueue(pr: number, head: string): Promise<void> {
     const out = await this.git(["push", "--quiet", "--no-verify", "--force", this.remote, `${head}:${QUEUE_PREFIX}${pr}`]);
     if (out.exitCode !== 0) throw new Error(`could not queue #${pr}: ${out.stderr.toString().trim()}`);
@@ -202,12 +207,22 @@ export class MergeQueue {
 
   /**
    * Re-pushes the lock (the heartbeat), optionally with a new PR list.
-   * Returns the new sha, or null when the lock is no longer `current` — it
-   * was taken over, so this process must stop before it lands anything.
+   *
+   * - `renewed`: pushed; the lock is this process's, at `sha`.
+   * - `lost`: the lock is no longer `current` — it was taken over, so this
+   *   process must stop before it lands anything.
+   * - `unknown`: the push failed and the lock couldn't be read, or still reads
+   *   `current` (a network blip, a 5xx). Still held as far as anyone knows;
+   *   the next beat retries. Not proof of holding, though: only `renewed` is.
    */
-  async renew(current: string, info: LockInfo): Promise<string | null> {
-    const sha = await this.lockCommit(info);
-    return (await this.compareAndSwap(LOCK_REF, current, sha)) ? sha : null;
+  async renew(current: string, info: LockInfo): Promise<RenewResult> {
+    try {
+      const sha = await this.lockCommit(info);
+      if (await this.compareAndSwap(LOCK_REF, current, sha)) return { status: "renewed", sha };
+      return (await this.lockSha()) === current ? { status: "unknown" } : { status: "lost" };
+    } catch {
+      return { status: "unknown" };
+    }
   }
 
   /** Releases the lock if it is still `current`. */
@@ -239,4 +254,96 @@ export class StaleWatch {
     }
     return sha !== null && t - this.since >= this.staleAfterMs;
   }
+}
+
+/** What landing needs from git and GitHub; injected so every stop path is testable. */
+export interface Lander {
+  /** A live check that this process still holds the lock: true only on a successful heartbeat. */
+  confirmHolding(): Promise<boolean>;
+  isQueued(pr: number): Promise<boolean>;
+  /** main on origin right now. */
+  main(): Promise<{ sha: string; tree: string }>;
+  /** The PR branch's head on origin, or null when it can't be read. */
+  headOf(branch: string): Promise<string | null>;
+  /** Replays commits onto `mainSha`: the resulting tree and tip, or null on any failure. */
+  replayOnto(mainSha: string, commits: string[]): Promise<{ tree: string; tip: string } | null>;
+  /** Moves the PR branch from `head` to `tip`; false when its head had moved. */
+  push(branch: string, head: string, tip: string): Promise<boolean>;
+  /** Squash-merges the PR at exactly `tip`, or says why GitHub refused. */
+  merge(pr: number, tip: string): Promise<{ ok: true } | { ok: false; reason: string }>;
+  /** After a landing: out of the queue, branch deleted. */
+  landed(pr: number, branch: string): Promise<void>;
+  eject(pr: number, reason: string): Promise<void>;
+}
+
+/** A stacked PR, as landing needs it. */
+export interface LandEntry {
+  pr: number;
+  headRefName: string;
+  head: string;
+  commits: string[];
+  /** The tree of main plus this PR and every PR below it. */
+  tree: string;
+}
+
+export interface LandOutcome {
+  landed: number[];
+  /** Why landing stopped before the end of the stack; the rest stay queued. */
+  stopped?: string;
+  /** A PR GitHub refused to merge, ejected so the queue can't loop on it. */
+  ejected?: number;
+}
+
+/**
+ * Squash-merges each stacked PR in order, checking before each that nothing
+ * the round relied on has changed: the PR is still queued, main is still the
+ * tree below it in the stack (no push outside the queue), its head hasn't
+ * moved, replaying it onto main reproduces the tested tree, and — last, at the
+ * moment of the side effect — this process still holds the lock. Stops at the
+ * first that fails; the rest stay queued and are retested next round. A merge
+ * GitHub refuses (the PR became a draft, was closed, isn't mergeable) ejects
+ * that PR, so the next round doesn't rerun the gate only to be refused again.
+ */
+export async function landStack(stack: LandEntry[], baseTree: string, l: Lander): Promise<LandOutcome> {
+  const landed: number[] = [];
+  let expectedTree = baseTree;
+  const stop = (stopped: string): LandOutcome => ({ landed, stopped });
+  for (const entry of stack) {
+    if (!(await l.isQueued(entry.pr))) return stop(`#${entry.pr} left the queue`);
+    const main = await l.main();
+    if (main.tree !== expectedTree) return stop("main moved outside the queue");
+    if ((await l.headOf(entry.headRefName)) !== entry.head) return stop(`#${entry.pr}'s head moved`);
+    const replay = await l.replayOnto(main.sha, entry.commits);
+    if (replay === null || replay.tree !== entry.tree) {
+      return stop(`replaying #${entry.pr} onto main didn't reproduce the tested tree`);
+    }
+    if (replay.tip !== entry.head && !(await l.push(entry.headRefName, entry.head, replay.tip))) {
+      return stop(`#${entry.pr}'s head moved`);
+    }
+    if (!(await l.confirmHolding())) return stop("this machine couldn't confirm it still holds the queue's lock");
+    const merged = await l.merge(entry.pr, replay.tip);
+    if (!merged.ok) {
+      await l.eject(entry.pr, `GitHub refused to merge it: ${merged.reason}`);
+      return { landed, stopped: `GitHub refused to merge #${entry.pr}`, ejected: entry.pr };
+    }
+    landed.push(entry.pr);
+    expectedTree = entry.tree;
+    await l.landed(entry.pr, entry.headRefName);
+  }
+  return { landed };
+}
+
+/** Terminal colour and cursor codes: an ESC, `[`, parameters, a final letter. */
+const ANSI_ESCAPE = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*[A-Za-z]`, "g");
+
+/** Strips terminal escape codes, which render as noise in a PR comment. */
+export function stripAnsi(text: string): string {
+  return text.replace(ANSI_ESCAPE, "");
+}
+
+/** `text` in a code fence longer than any run of backticks inside it, so gate output can't close it early. */
+export function fenced(text: string): string {
+  const longest = Math.max(0, ...[...text.matchAll(/`+/g)].map((m) => m[0].length));
+  const fence = "`".repeat(Math.max(3, longest + 1));
+  return `${fence}\n${text}\n${fence}`;
 }
