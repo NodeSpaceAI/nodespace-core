@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 // Machine-wide advisory locks that serialize the heavy work on this machine:
-// merges (MERGE_LOCK_PATH) and the CPU-heavy runs themselves
+// the gate checkout (MERGE_LOCK_PATH) and the CPU-heavy runs themselves
 // (MACHINE_LOCK_PATH) — a merge gate for its whole run, or `bun run
 // test:changed` while it builds and runs the Rust tier.
 //
@@ -90,10 +90,12 @@ export const SHARED_LOCK_DIR =
   process.platform === "darwin" ? "/Users/Shared/nodespace-gate" : join(tmpdir(), "nodespace-gate");
 
 /**
- * The merge lock, for `bun run merge` (scripts/merge-pr.ts). It serializes
- * merges and guards the one shared gate checkout they test in, and is held
- * from before the rebase until the merge lands. Per-user: each account merges
- * from its own gate checkout.
+ * The gate-checkout lock, for `bun run merge` (scripts/merge-pr.ts): this
+ * account's one gate checkout, held while a merge-queue round or a --dry-run
+ * uses it. Merges themselves are serialized team-wide by the merge queue's
+ * lock on origin (scripts/merge-queue.ts), which a round takes first; a
+ * --dry-run takes only this one. Per-user: each account has its own gate
+ * checkout.
  */
 export const MERGE_LOCK_PATH = join(tmpdir(), "nodespace-merge.lock");
 

@@ -1,0 +1,242 @@
+#!/usr/bin/env bun
+// The team-wide merge queue (ADR-047): one queue and one gate at a time
+// across every machine, kept in git refs on origin — no service to run.
+//
+// Before it, each machine had its own merge lock, so a merge landing from one
+// machine moved main under a gate running on another, which then rebased and
+// ran the whole pyramid again — up to three times, then gave up. With ~10
+// parallel worktrees across the team, most of that work was thrown away.
+//
+// - Queue: `refs/nodespace/merge-queue/<PR#>`, one ref per PR waiting to
+//   land. `bun run merge` adds its PR and waits for it to land or be ejected.
+// - Lock: `refs/nodespace/merge-lock`, which points at a commit whose message
+//   says who holds it. Taken and released with `git push --force-with-lease`,
+//   which the server applies atomically: of two machines pushing against the
+//   same expected value, exactly one wins. The holder re-pushes it every
+//   minute (the heartbeat). A waiter that watches it stay unchanged for
+//   STALE_AFTER_MS — timed by the waiter's own clock, so skew between
+//   machines can't matter — takes it over from a holder that died.
+//
+// main moves only through a queue landing, so a running gate is never
+// invalidated by another merge. (A push straight to main — a release's
+// version bump — is caught before landing; see merge-pr.ts.)
+
+import { $ } from "bun";
+import { randomUUID } from "node:crypto";
+import { hostname } from "node:os";
+import { currentUser } from "./gate-lock";
+
+export const QUEUE_PREFIX = "refs/nodespace/merge-queue/";
+export const LOCK_REF = "refs/nodespace/merge-lock";
+
+/** Git's well-known empty tree, which every repository has without storing it. */
+const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+
+/** Where a fetched lock commit is kept locally, to read who holds it. */
+const SEEN_LOCK_REF = "refs/nodespace-seen/merge-lock";
+
+/** How often the holder re-pushes the lock. */
+export const HEARTBEAT_MS = 60 * 1000;
+
+/**
+ * A lock unchanged this long (as a waiter watched it) belongs to a holder
+ * that died. Well past a heartbeat interval plus a slow push, so a live
+ * holder on a flaky network isn't taken over.
+ */
+export const STALE_AFTER_MS = 10 * 60 * 1000;
+
+/** Who holds the lock, as recorded in the lock commit's message. */
+export interface LockInfo {
+  host: string;
+  user: string;
+  pid: number;
+  /** Epoch ms the holder took the lock. */
+  startedAt: number;
+  /** The PRs in the round it's running, for the waiting line. */
+  prs: number[];
+}
+
+export function describeLock(info: LockInfo): string {
+  const prs = info.prs.length > 0 ? ` on ${info.prs.map((p) => `#${p}`).join(", ")}` : "";
+  return `${info.user}@${info.host} (pid ${info.pid})${prs}`;
+}
+
+/** Parses a lock commit's message; null for anything that isn't one. */
+export function parseLockInfo(message: string): LockInfo | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(message);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== "object") return null;
+  const { host, user, pid, startedAt, prs } = parsed as Record<string, unknown>;
+  if (typeof host !== "string" || typeof user !== "string") return null;
+  if (typeof pid !== "number" || typeof startedAt !== "number") return null;
+  if (!Array.isArray(prs) || !prs.every((p) => typeof p === "number")) return null;
+  return { host, user, pid, startedAt, prs };
+}
+
+/** This process's lock record. */
+export function lockInfoHere(prs: number[] = []): LockInfo {
+  return { host: hostname(), user: currentUser(), pid: process.pid, startedAt: Date.now(), prs };
+}
+
+/** The PR number a queue ref names, or null for anything else under the prefix. */
+export function prFromQueueRef(ref: string): number | null {
+  if (!ref.startsWith(QUEUE_PREFIX)) return null;
+  const pr = Number(ref.slice(QUEUE_PREFIX.length));
+  return Number.isInteger(pr) && pr > 0 ? pr : null;
+}
+
+/** Parses `git ls-remote` output into ref → sha. */
+export function parseLsRemote(output: string): Map<string, string> {
+  const refs = new Map<string, string>();
+  for (const line of output.split("\n")) {
+    const [sha, ref] = line.trim().split(/\s+/);
+    if (sha && ref && /^[0-9a-f]{40}$/.test(sha)) refs.set(ref, sha);
+  }
+  return refs;
+}
+
+/**
+ * The PRs to test together this round, after `failed` (a batch, in queue
+ * order) failed its gate: its first half. Retesting a prefix, rather than
+ * any subset, means whatever passes can land in queue order at once, and each
+ * round either lands something or halves the suspects — so a batch of N costs
+ * at most about log2(N) extra runs to find the PR that broke it.
+ */
+export function bisectBatch<T>(failed: T[]): T[] {
+  return failed.slice(0, Math.max(1, Math.floor(failed.length / 2)));
+}
+
+/** The queue and lock on one remote, operated from the checkout at `cwd`. */
+export class MergeQueue {
+  constructor(
+    private readonly cwd: string,
+    private readonly remote = "origin"
+  ) {}
+
+  private git(args: string[]) {
+    return $`git -c core.hooksPath=/dev/null ${args}`.cwd(this.cwd).quiet().nothrow();
+  }
+
+  private async lsRemote(pattern: string): Promise<Map<string, string>> {
+    const out = await this.git(["ls-remote", this.remote, pattern]);
+    if (out.exitCode !== 0) throw new Error(`git ls-remote failed: ${out.stderr.toString().trim()}`);
+    return parseLsRemote(out.stdout.toString());
+  }
+
+  /**
+   * Pushes `sha` to `ref` only if the remote's `ref` is `expected` right now
+   * ("" = must not exist). The server checks and updates atomically, so this
+   * is the compare-and-swap everything here is built on. False when the ref
+   * had moved.
+   */
+  private async compareAndSwap(ref: string, expected: string, sha: string | null): Promise<boolean> {
+    const target = sha === null ? `:${ref}` : `${sha}:${ref}`;
+    const out = await this.git(["push", "--quiet", "--no-verify", `--force-with-lease=${ref}:${expected}`, this.remote, target]);
+    return out.exitCode === 0;
+  }
+
+  /** The PRs waiting to land, oldest PR first. */
+  async queued(): Promise<number[]> {
+    const refs = await this.lsRemote(`${QUEUE_PREFIX}*`);
+    return [...refs.keys()]
+      .map(prFromQueueRef)
+      .filter((pr): pr is number => pr !== null)
+      .sort((a, b) => a - b);
+  }
+
+  async isQueued(pr: number): Promise<boolean> {
+    return (await this.lsRemote(`${QUEUE_PREFIX}${pr}`)).has(`${QUEUE_PREFIX}${pr}`);
+  }
+
+  /** Adds `pr` to the queue, recording the head it was queued at. */
+  async enqueue(pr: number, head: string): Promise<void> {
+    const out = await this.git(["push", "--quiet", "--no-verify", "--force", this.remote, `${head}:${QUEUE_PREFIX}${pr}`]);
+    if (out.exitCode !== 0) throw new Error(`could not queue #${pr}: ${out.stderr.toString().trim()}`);
+  }
+
+  /** Removes `pr` from the queue. Idempotent. */
+  async dequeue(pr: number): Promise<void> {
+    await this.git(["push", "--quiet", "--no-verify", this.remote, `:${QUEUE_PREFIX}${pr}`]);
+  }
+
+  /**
+   * A commit holding `info` as its message, on the empty tree. `beat` makes
+   * every one unique: commit-tree is deterministic, and a heartbeat within the
+   * same second as the last would otherwise produce the same sha — no change
+   * for a waiter to see, and a takeover that should have failed would succeed.
+   */
+  private async lockCommit(info: LockInfo): Promise<string> {
+    const out = await $`git commit-tree ${EMPTY_TREE} -m ${JSON.stringify({ ...info, beat: randomUUID() })}`
+      .cwd(this.cwd)
+      .env({ ...process.env, GIT_AUTHOR_NAME: "merge-queue", GIT_AUTHOR_EMAIL: "merge-queue@nodespace", GIT_COMMITTER_NAME: "merge-queue", GIT_COMMITTER_EMAIL: "merge-queue@nodespace" })
+      .quiet();
+    return out.stdout.toString().trim();
+  }
+
+  /** The lock's current commit on the remote, or null when nobody holds it. */
+  async lockSha(): Promise<string | null> {
+    return (await this.lsRemote(LOCK_REF)).get(LOCK_REF) ?? null;
+  }
+
+  /** Who holds the lock at `sha`, or null when it can't be read. */
+  async lockInfo(sha: string): Promise<LockInfo | null> {
+    const fetched = await this.git(["fetch", "--quiet", "--no-tags", this.remote, `+${LOCK_REF}:${SEEN_LOCK_REF}`]);
+    if (fetched.exitCode !== 0) return null;
+    const out = await this.git(["log", "-1", "--format=%B", sha]);
+    return out.exitCode === 0 ? parseLockInfo(out.stdout.toString().trim()) : null;
+  }
+
+  /**
+   * Takes the lock if it is free (`expected` = "") or still at the stale
+   * `expected` sha being taken over. Returns the new lock sha, or null when
+   * someone else got there first.
+   */
+  async tryAcquire(info: LockInfo, expected = ""): Promise<string | null> {
+    const sha = await this.lockCommit(info);
+    return (await this.compareAndSwap(LOCK_REF, expected, sha)) ? sha : null;
+  }
+
+  /**
+   * Re-pushes the lock (the heartbeat), optionally with a new PR list.
+   * Returns the new sha, or null when the lock is no longer `current` — it
+   * was taken over, so this process must stop before it lands anything.
+   */
+  async renew(current: string, info: LockInfo): Promise<string | null> {
+    const sha = await this.lockCommit(info);
+    return (await this.compareAndSwap(LOCK_REF, current, sha)) ? sha : null;
+  }
+
+  /** Releases the lock if it is still `current`. */
+  async release(current: string): Promise<void> {
+    await this.compareAndSwap(LOCK_REF, current, null);
+  }
+}
+
+/**
+ * Watches the lock as a waiter sees it, and says when it has gone stale: the
+ * same sha, seen continuously for `staleAfterMs` of this process's own time.
+ */
+export class StaleWatch {
+  private sha: string | null = null;
+  private since = 0;
+
+  constructor(
+    private readonly staleAfterMs = STALE_AFTER_MS,
+    private readonly now: () => number = Date.now
+  ) {}
+
+  /** Records a sighting of the lock at `sha` (null = free). True once it is stale. */
+  observe(sha: string | null): boolean {
+    const t = this.now();
+    if (sha !== this.sha) {
+      this.sha = sha;
+      this.since = t;
+      return false;
+    }
+    return sha !== null && t - this.since >= this.staleAfterMs;
+  }
+}
