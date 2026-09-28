@@ -645,16 +645,28 @@ async fn run_batch_import(
         if writer.skipped_docs > 0 {
             summary.push_str(&format!(", {} already present", writer.skipped_docs));
         }
-        let failed_docs = phase1_results.iter().filter(|r| !r.success).count();
+        let mut all_results: Vec<LocalFileImportResult> = failed_results;
+        all_results.append(&mut phase1_results);
+
+        let failed_docs = all_results.iter().filter(|r| !r.success).count();
         let message = match import_error.as_ref().or(writer.first_error.as_ref()) {
             Some(err) => {
-                format!("Import completed with errors: {err}. {summary}, {failed_docs} failed")
+                let mut message =
+                    format!("Import completed with errors: {err}. {summary}, {failed_docs} failed");
+                // A committed document's links into an unimported one are
+                // already rewritten, but their mentions were skipped. A plain
+                // re-import skips the committed document, so only --replace
+                // re-creates those mentions.
+                if writer.halted.is_some() {
+                    message.push_str(
+                        "; re-run with --replace to complete the import and its references",
+                    );
+                }
+                message
             }
             None => summary,
         };
 
-        let mut all_results: Vec<LocalFileImportResult> = failed_results;
-        all_results.append(&mut phase1_results);
         let proto_results: Vec<FileImportResult> =
             all_results.into_iter().map(proto_file_result).collect();
 
@@ -885,8 +897,14 @@ impl Phase2Writer {
             // so a replaced document still has its previous subtree.
             tracing::error!("Failed to bulk create an import chunk: {:?}", e);
             let error = format!("Node insertion failed: {e}");
-            for root_id in written.iter().map(|(r, _, _)| r).chain(&skipped) {
+            for (root_id, _, _) in &written {
                 self.fail(root_id, &error);
+            }
+            // An already-present document had nothing to insert and is intact,
+            // but its membership and archival re-assertion never ran.
+            let unverified = format!("Not re-verified: its import chunk failed ({error})");
+            for root_id in &skipped {
+                self.fail(root_id, &unverified);
             }
             self.halted = Some(format!(
                 "Not imported: an earlier import chunk failed ({error})"
@@ -1669,14 +1687,14 @@ mod tests {
         format!("note-{i:03}.md")
     }
 
-    /// Write the test vault: note `i` has `PARAGRAPHS` paragraphs starting
-    /// with `tag` and links to note `(i + 60) % NOTES`, so links cross chunks.
-    /// Returns every note's path.
+    /// Write the test vault: note `i` has a heading and `PARAGRAPHS`
+    /// paragraphs starting with `tag`, and links to note `(i + 60) % NOTES`, so
+    /// links cross chunks. Returns every note's path.
     fn write_notes(src: &Path, tag: &str, poisoned: Option<usize>) -> Vec<String> {
         std::fs::create_dir_all(src).unwrap();
         (0..NOTES)
             .map(|i| {
-                let mut body = format!("# Note {i}\n\n");
+                let mut body = format!("# {tag} Note {i}\n\n");
                 for p in 0..PARAGRAPHS {
                     let marker = if poisoned == Some(i) && p == 0 {
                         " POISON"
@@ -1757,8 +1775,11 @@ mod tests {
                 .contains(&format!("Imported {FAILED_CHUNK_START} files"))
                 && done
                     .message
-                    .contains(&format!("{} failed", NOTES - FAILED_CHUNK_START)),
-            "terminal message states what committed: {}",
+                    .contains(&format!("{} failed", NOTES - FAILED_CHUNK_START))
+                && done
+                    .message
+                    .ends_with("re-run with --replace to complete the import and its references"),
+            "terminal message states what committed and how to recover: {}",
             done.message
         );
 
@@ -1850,6 +1871,12 @@ mod tests {
                     .filter(|n| n.content.contains("paragraph"))
                     .all(|n| n.content.starts_with(tag)),
                 "note {i} holds its {tag} content",
+            );
+            let stored_root = ns.get_node(&root).await.unwrap().expect("root kept");
+            assert_eq!(
+                stored_root.content,
+                format!("# {tag} Note {i}"),
+                "note {i}'s root is refreshed only with its committed subtree",
             );
             assert_eq!(
                 result_for(&done, i).success,
