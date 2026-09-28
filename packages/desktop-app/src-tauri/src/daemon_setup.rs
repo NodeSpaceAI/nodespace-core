@@ -22,20 +22,23 @@
 //! launch that leaves a healthy daemon running — `rotate_daemon_logs` rolls
 //! either log file past `DAEMON_LOG_MAX_BYTES` to `<name>.1` and keeps
 //! `DAEMON_LOG_KEEP` generations, so the two files cannot grow without bound
-//! for the life of an install. See `rotate_log_file` for why rotation lives
-//! here rather than inside the daemon, and its call site in
-//! `ensure_daemon_running` for why it must not run any earlier.
+//! for the life of an install. See its call site in `ensure_daemon_running`
+//! for why it must not run any earlier.
 //!
 //! That startup-time check alone leaves the *live* file unbounded across a
 //! long session: under launchd's `KeepAlive`/systemd's `Restart=on-failure`,
-//! a healthy daemon simply never restarts on its own to trip it.
-//! [`spawn_log_rotation_watcher`] closes that gap by re-checking both files on
-//! an interval for as long as the app runs and, only when nodespaced is
-//! actually `Healthy` and one of them has actually grown past the threshold,
-//! restarting it — reusing the exact `kill_running_daemon` + rotate +
-//! platform-(re)spawn sequence this module already uses, rather than any new
-//! IPC or in-process log ownership. See [`check_and_rotate_live_logs`] for the
-//! decision and [`run_periodic_checks`] for the timer loop itself.
+//! a healthy daemon simply never restarts on its own to trip it. On macOS and
+//! Linux the daemon closes that gap itself — `nodespaced`'s
+//! `stdio_log_rotation` rotates the file behind its own stdout/stderr and
+//! `dup2`s a fresh one over them, which is also what bounds a headless
+//! (Homebrew/systemd) install that never runs this app. On Windows the
+//! daemon's log is a handle this module passed it, so
+//! [`spawn_log_rotation_watcher`] re-checks both files on an interval for as
+//! long as the app runs and, only when nodespaced is actually `Healthy` and
+//! one of them has actually grown past the threshold, restarts it — reusing
+//! the exact `kill_running_daemon` + rotate + spawn sequence this module
+//! already uses. See [`check_and_rotate_live_logs`] for the decision and
+//! [`run_periodic_checks`] for the timer loop itself.
 //!
 //! On subsequent launches:
 //!   - Check if the socket exists and the daemon responds (cheap path).
@@ -50,8 +53,10 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use tauri::AppHandle;
 use tokio::time::timeout;
+#[cfg(any(windows, test))]
 use tokio_util::sync::CancellationToken;
 
+#[cfg(windows)]
 use crate::window_routing;
 
 const DAEMON_BIN_DIR: &str = ".nodespace/bin";
@@ -1583,28 +1588,25 @@ const DAEMON_LOG_MAX_BYTES: u64 = 10 * 1024 * 1024;
 /// The rotated generations are therefore bounded at roughly
 /// `DAEMON_LOG_MAX_BYTES * DAEMON_LOG_KEEP`. The *live* file is bounded too:
 /// `ensure_daemon_running` only evaluates the threshold at daemon (re)spawn,
-/// but [`spawn_log_rotation_watcher`] re-checks it on an interval for the life
-/// of the app session and restarts nodespaced — the same
-/// kill-then-rotate-then-respawn sequence a startup (re)spawn already uses —
-/// whenever it has actually crossed the threshold, so a session that stays up
-/// for weeks under launchd's `KeepAlive` still gets rotated.
+/// but a running daemon is rotated by `nodespaced` itself on macOS/Linux (its
+/// `stdio_log_rotation` uses the same size and generation count) and by
+/// [`spawn_log_rotation_watcher`]'s restart on Windows.
 const DAEMON_LOG_KEEP: u32 = 3;
 
 /// Roll `path` to `path.1` if it has grown past `DAEMON_LOG_MAX_BYTES`,
 /// shifting any existing generations down (`.2` -> `.3`) and dropping the
 /// oldest.
 ///
-/// Rotation happens here — in the app, at daemon-startup time — rather than
-/// inside the daemon, because on all three platforms these files are the
-/// daemon's *inherited stdio*, not something the daemon itself opens:
-/// `launchd`'s `StandardOutPath`/`StandardErrorPath`, `systemd`'s
-/// `StandardOutput=append:`, and `spawn_daemon_windows`'s `Stdio::from(File)`.
-/// Everything the process writes to fd 1/2 lands there, including `eprintln!`
-/// diagnostics and panic messages that never pass through `tracing`. An
-/// in-process rolling appender (e.g. `tracing-appender`) would therefore
-/// rotate only the `tracing` subset while the service manager kept the
-/// original, still-unbounded file open for the rest — so the file is rolled
-/// while no daemon holds it instead.
+/// On all three platforms these files are the daemon's *inherited stdio*,
+/// not something the daemon itself opens: `launchd`'s
+/// `StandardOutPath`/`StandardErrorPath`, `systemd`'s `StandardOutput=append:`,
+/// and `spawn_daemon_windows`'s `Stdio::from(File)`. Everything the process
+/// writes to fd 1/2 lands there, including `eprintln!` diagnostics and panic
+/// messages that never pass through `tracing`, so an in-process rolling
+/// appender (e.g. `tracing-appender`) would rotate only the `tracing` subset.
+/// This startup-time roll happens while no daemon holds the file; a running
+/// daemon rolls its own stdio on macOS/Linux (see this module's top-level doc
+/// comment).
 ///
 /// Renaming (rather than truncating) preserves the append-across-restarts
 /// property `open_daemon_log` documents: an ordinary restart under the size
@@ -1697,8 +1699,9 @@ fn rotate_daemon_logs(log_dir: &Path) {
 // `ensure_daemon_running`'s rotation check above only ever runs once, at
 // daemon (re)spawn. Under launchd's `KeepAlive`/systemd's `Restart=on-failure`
 // a healthy daemon can stay up for weeks without that call site ever running
-// again, so the live log file needs its own periodic check for the life of
-// the app session — this section is that check.
+// again, so the live log file needs its own periodic check. On macOS/Linux the
+// daemon rotates its own stdio; on Windows its log is a handle this app passed
+// it, so this section restarts it for the life of the app session instead.
 
 /// How often [`spawn_log_rotation_watcher`] re-checks the live daemon log
 /// files while the app is running.
@@ -1712,6 +1715,7 @@ fn rotate_daemon_logs(log_dir: &Path) {
 /// `DAEMON_LOG_MAX_BYTES` by more than a session's typical half-hour of
 /// logging, without restarting the daemon any more often than that
 /// disruption is worth.
+#[cfg(windows)]
 const LOG_ROTATION_CHECK_INTERVAL: Duration = Duration::from_secs(30 * 60);
 
 /// Whether `path` has grown past the size [`rotate_log_file`] rotates at.
@@ -1719,6 +1723,7 @@ const LOG_ROTATION_CHECK_INTERVAL: Duration = Duration::from_secs(30 * 60);
 /// early return exactly, so this and the rotation it triggers always agree on
 /// what counts as oversized. A missing file (nothing logged yet, or already
 /// sitting at a fresh post-rotation size) is not oversized.
+#[cfg(any(windows, test))]
 fn log_file_oversized(path: &Path) -> bool {
     std::fs::metadata(path)
         .map(|meta| meta.len() > DAEMON_LOG_MAX_BYTES)
@@ -1739,6 +1744,7 @@ fn log_file_oversized(path: &Path) -> bool {
 /// reopen with, and forcing a spawn from this background watcher is outside
 /// what it is for — the next real (re)spawn, whenever it happens, already
 /// rotates via `ensure_daemon_running`'s own `rotate_daemon_logs` call.
+#[cfg(any(windows, test))]
 fn should_restart_for_log_rotation(oversized: bool, status: &DaemonStatus) -> bool {
     oversized && *status == DaemonStatus::Healthy
 }
@@ -1755,6 +1761,7 @@ fn should_restart_for_log_rotation(oversized: bool, status: &DaemonStatus) -> bo
 /// same platform-specific (re)register/spawn `ensure_daemon_running` runs.
 /// No new IPC and no change to how the daemon owns (or rather, does not own)
 /// its stdio.
+#[cfg(windows)]
 async fn check_and_rotate_live_logs(app: &AppHandle) -> Result<()> {
     let home = home_dir().context("Cannot resolve home directory")?;
     let log_dir = home.join(DAEMON_LOG_DIR);
@@ -1765,9 +1772,6 @@ async fn check_and_rotate_live_logs(app: &AppHandle) -> Result<()> {
         return Ok(());
     }
 
-    #[cfg(unix)]
-    let socket_path = home.join(daemon_socket_relative());
-    #[cfg(windows)]
     let socket_path = PathBuf::from(crate::services::grpc_client::resolve_pipe_name());
 
     let status = check_daemon_socket(&socket_path).await;
@@ -1791,26 +1795,8 @@ async fn check_and_rotate_live_logs(app: &AppHandle) -> Result<()> {
     kill_running_daemon(&socket_path).await;
     rotate_daemon_logs(&log_dir);
 
-    #[cfg(target_os = "macos")]
-    {
-        let plist_path = launch_agents_dir(&home).join(plist_filename());
-        write_plist(&home, &plist_path, &daemon_bin).context("Failed to write launchd plist")?;
-        bootstrap_launchd_agent(&plist_path)?;
-    }
-
-    #[cfg(target_os = "linux")]
-    {
-        let service_path = systemd_user_service_dir(&home).join(SYSTEMD_SERVICE_NAME);
-        write_systemd_service(&home, &service_path, &daemon_bin)
-            .context("Failed to write systemd service file")?;
-        enable_systemd_service()?;
-    }
-
-    #[cfg(windows)]
-    {
-        spawn_daemon_windows(&daemon_bin, &log_dir).context("Failed to spawn daemon on Windows")?;
-        register_autorun_windows(&daemon_bin);
-    }
+    spawn_daemon_windows(&daemon_bin, &log_dir).context("Failed to spawn daemon on Windows")?;
+    register_autorun_windows(&daemon_bin);
 
     let status = wait_for_daemon(&socket_path, Duration::from_secs(30)).await;
     window_routing::emit_routed(
@@ -1841,6 +1827,7 @@ async fn check_and_rotate_live_logs(app: &AppHandle) -> Result<()> {
 /// signal-sending behavior, which — unlike `signal_daemon_to_stop` — has no
 /// `cfg(not(test))` guard and instead relies on there being no real,
 /// matching-argv0 nodespaced process on the machine running the test suite).
+#[cfg(any(windows, test))]
 async fn run_periodic_checks<F, Fut>(
     interval: Duration,
     cancel_token: CancellationToken,
@@ -1871,6 +1858,7 @@ async fn run_periodic_checks<F, Fut>(
 /// Exits when `cancel_token` is cancelled — pass a child of the same
 /// `ShutdownToken` the node watcher (`watcher::spawn`) and
 /// `crate::graceful_shutdown` use, so this task never outlives the app.
+#[cfg(windows)]
 pub fn spawn_log_rotation_watcher(app: AppHandle, cancel_token: CancellationToken) {
     tauri::async_runtime::spawn(async move {
         run_periodic_checks(LOG_ROTATION_CHECK_INTERVAL, cancel_token, move || {

@@ -9,6 +9,8 @@ pub mod db_routing;
 pub mod incompatible_database;
 pub mod router;
 pub mod services;
+#[cfg(unix)]
+pub mod stdio_log_rotation;
 pub mod tray;
 
 use std::path::PathBuf;
