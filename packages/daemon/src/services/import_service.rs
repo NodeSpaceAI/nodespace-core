@@ -3,7 +3,8 @@
 //! Preserves the two-phase pipeline from `commands/import.rs`:
 //!   Phase 1 — file reads (`tokio::fs`), markdown parsing and link resolution
 //!             (CPU-bound, on the blocking pool), in bounded chunks
-//!   Phase 2 — DB writes, collection assignment, mention creation (async background)
+//!   Phase 2 — DB writes in per-chunk transactions (an explicit partial import on
+//!             failure), collection assignment, mention creation (async background)
 //!
 //! Progress events are streamed back to the caller via a tokio channel that
 //! bridges the background task to the tonic server-streaming response.
@@ -16,6 +17,7 @@ use nodespace_core::markdown::{
     prepare_nodes_from_markdown, transform_links_in_nodes_with_mentions, PreparedNode,
 };
 use nodespace_core::services::{CollectionService, NodeService as CoreNodeService};
+use nodespace_core::SqliteStore;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status};
@@ -29,9 +31,9 @@ const CHANNEL_BUFFER: usize = 64;
 
 /// Maximum files accepted by one `ImportMarkdownFiles` call.
 ///
-/// Every file of a batch import is parsed into memory and written in one bulk
-/// insert, so the batch size bounds both the daemon's peak memory and how long
-/// that single write holds the store. The cap is deliberately far above real
+/// Every file of a batch import is parsed and held in memory until phase 2
+/// writes it (the cross-file link index spans the whole batch), so the batch
+/// size bounds the daemon's peak memory. The cap is deliberately far above real
 /// usage — the project's own docs import is a few hundred files and large
 /// personal vaults run to low thousands — so it only rejects absurd requests
 /// (a mistaken import of a home directory or a dependency tree) with an
@@ -41,9 +43,16 @@ pub(crate) const MAX_IMPORT_FILES: usize = 5_000;
 /// Files read and parsed together in phase 1 of a batch import. Raw file
 /// contents are held only per chunk and dropped once parsed, and each chunk's
 /// CPU-bound parse runs in a single blocking-pool task. The parsed nodes of
-/// every file are still kept until the single phase-2 insert, so peak memory
-/// grows with the whole import — [`MAX_IMPORT_FILES`] is what bounds it.
+/// every file are still kept until phase 2 writes them, so peak memory grows
+/// with the whole import — [`MAX_IMPORT_FILES`] is what bounds it.
 const PHASE1_CHUNK_SIZE: usize = 32;
+
+/// Node rows written by one phase-2 insert. A chunk is a whole number of files
+/// (a file's subtree never spans two chunks) committed in its own transaction,
+/// so this bounds both the rows built for one insert and how long one write
+/// transaction holds the store. Files are added until the chunk reaches the
+/// budget, so a single file larger than it becomes a chunk of its own.
+const PHASE2_CHUNK_NODES: usize = 1_000;
 
 /// Stable namespace for deriving deterministic import root ids from a document's
 /// identity key (its base-directory-relative path). Re-importing the same file
@@ -430,7 +439,7 @@ async fn run_batch_import(
 
     // Resolve links across the whole import (one global file→root-id index),
     // off the async workers: it rewrites every node's content.
-    let (prepared_files, all_mentions) =
+    let prepared_files =
         match tokio::task::spawn_blocking(move || resolve_import_links(prepared_files)).await {
             Ok(resolved) => resolved,
             Err(join_err) => {
@@ -452,13 +461,14 @@ async fn run_batch_import(
         .into_iter()
         .collect();
 
-    // Build Phase 1 results (success entries; failed_results holds failures)
+    // Result skeletons for every parsed file; phase 2 fills in each outcome
+    // from what actually committed. (failed_results holds phase-1 failures.)
     let mut phase1_results: Vec<LocalFileImportResult> = prepared_files
         .iter()
         .map(|p| LocalFileImportResult {
             file_path: p.file_path.to_string_lossy().to_string(),
             root_id: Some(p.root_id.clone()),
-            nodes_created: 1 + p.children.len(),
+            nodes_created: 0,
             success: true,
             error: None,
             collection: p.collection_path.clone(),
@@ -471,7 +481,6 @@ async fn run_batch_import(
     // ========================================================================
 
     let unique_collections_count = unique_collections.len();
-    let all_mentions_count = all_mentions.len();
     let replace = opts.replace;
     let store = Arc::clone(node_service.store());
     let node_service_clone = (*node_service).clone();
@@ -479,11 +488,11 @@ async fn run_batch_import(
     let tx_guard = tx.clone();
 
     let phase2 = tokio::spawn(async move {
-        // First failure seen in phase 2. When set, the import did NOT fully
-        // succeed (nodes may exist but be unlinked from collections, or mentions
-        // may be missing), so every file result is marked failed rather than
-        // reporting a false "complete".
-        let mut phase2_error: Option<String> = None;
+        // A failure that concerns the whole import rather than one chunk (the
+        // collections could not be resolved, or the mentions not written).
+        // Nodes may still have committed, so it marks every otherwise
+        // successful file failed rather than reporting a false "complete".
+        let mut import_error: Option<String> = None;
 
         send_progress(
             &tx_bg,
@@ -504,293 +513,163 @@ async fn run_batch_import(
             Ok(map) => map,
             Err(e) => {
                 tracing::error!("Failed to bulk resolve collections: {:?}", e);
-                phase2_error.get_or_insert_with(|| format!("Collection resolution failed: {e}"));
+                import_error = Some(format!("Collection resolution failed: {e}"));
                 HashMap::new()
             }
         };
+
+        let mut writer = Phase2Writer::new(node_service_clone, Arc::clone(&store), replace);
+        writer.collection_map = collection_map;
 
         // Idempotent re-import: a document's root id is deterministic, so a
         // matching id already in the store means this file was imported before.
         // `--replace` refreshes it in place; without it, the existing document
         // is left untouched (skipped) so a plain re-import never duplicates.
+        // Without this answer every document would be misclassified, so a
+        // failed check imports nothing.
         let root_ids: Vec<String> = prepared_files.iter().map(|p| p.root_id.clone()).collect();
-        let existing_roots: std::collections::HashSet<String> =
-            match store.get_nodes_by_ids(&root_ids).await {
-                Ok(map) => map.into_keys().collect(),
-                Err(e) => {
-                    tracing::error!("Failed to check for existing roots: {:?}", e);
-                    phase2_error.get_or_insert_with(|| format!("Existing-root check failed: {e}"));
-                    std::collections::HashSet::new()
-                }
-            };
-
-        let mut all_nodes: Vec<(
-            String,
-            String,
-            String,
-            Option<String>,
-            f64,
-            serde_json::Value,
-        )> = Vec::new();
-        let mut collection_assignments: Vec<(String, String)> = Vec::new();
-        let mut replaced_roots: Vec<String> = Vec::new();
-        let mut skipped_roots: std::collections::HashSet<String> = std::collections::HashSet::new();
-        let mut new_docs: usize = 0;
-        // Old child ids of replaced docs, pruned only AFTER the fresh subtree is
-        // inserted so a failed insert never destroys the previous content (the
-        // bulk insert is not transactional). See the prune step below.
-        let mut prune_after_insert: Vec<String> = Vec::new();
-        // Same deterministic root id can appear twice in one batch (a duplicated
-        // or symlinked file); handle each document once so we never double-insert
-        // or double-prune.
-        let mut seen_roots: std::collections::HashSet<String> = std::collections::HashSet::new();
-
-        for prepared in &prepared_files {
-            if !seen_roots.insert(prepared.root_id.clone()) {
-                continue;
-            }
-            let exists = existing_roots.contains(&prepared.root_id);
-
-            if exists && !replace {
-                // Already imported and not refreshing: skip creating anything.
-                // The root stays a valid link target for other docs; only its
-                // (idempotent) collection membership is re-asserted below so a
-                // doc that lost its edge in a prior partial import self-heals.
-                skipped_roots.insert(prepared.root_id.clone());
-            } else if exists && replace {
-                // Refresh in place. Update the root now (non-destructive) so its
-                // id and inbound links/mentions survive, and capture its current
-                // children to prune only after the fresh subtree is inserted.
-                let update =
-                    nodespace_core::NodeUpdate::new().with_content(prepared.root_content.clone());
-                if let Err(e) = store
-                    .update_node(&prepared.root_id, update, Some("import".to_string()))
-                    .await
-                {
-                    tracing::warn!("Failed to refresh root {}: {}", prepared.root_id, e);
-                }
-                match node_service_clone.get_descendants(&prepared.root_id).await {
-                    Ok(desc) => prune_after_insert.extend(desc.into_iter().map(|n| n.id)),
-                    Err(e) => {
-                        tracing::error!(
-                            "Failed to read existing subtree for {}: {:?}",
-                            prepared.root_id,
-                            e
-                        );
-                        phase2_error.get_or_insert_with(|| format!("Subtree replace failed: {e}"));
-                    }
-                }
-                replaced_roots.push(prepared.root_id.clone());
-            } else {
-                // New document: create the root node.
-                let mut root_props = serde_json::json!({});
-                if prepared.is_archived {
-                    root_props["lifecycle_status"] = serde_json::json!("archived");
-                }
-                all_nodes.push((
-                    prepared.root_id.clone(),
-                    "header".to_string(),
-                    prepared.root_content.clone(),
-                    None,
-                    1.0,
-                    root_props,
-                ));
-                new_docs += 1;
-            }
-
-            // Children are (re)created for new and replaced roots. Skipped roots
-            // keep their existing subtree, so contribute no children here.
-            if !exists || replace {
-                for child in &prepared.children {
-                    let parent = child
-                        .parent_id
-                        .clone()
-                        .or_else(|| Some(prepared.root_id.clone()));
-                    all_nodes.push((
-                        child.id.clone(),
-                        child.node_type.clone(),
-                        child.content.clone(),
-                        parent,
-                        child.order,
-                        child.properties.clone(),
-                    ));
-                }
-            }
-
-            // Collection membership is idempotent (existing edges are skipped),
-            // so re-asserting it for every file — new, replaced, or skipped —
-            // both wires up new docs and repairs any that lost their edge.
-            if let Some(ref coll_path) = prepared.collection_path {
-                if let Some(coll_id) = collection_map.get(coll_path) {
-                    collection_assignments.push((prepared.root_id.clone(), coll_id.clone()));
-                }
+        match store.get_nodes_by_ids(&root_ids).await {
+            Ok(map) => writer.existing_roots = map.into_keys().collect(),
+            Err(e) => {
+                tracing::error!("Failed to check for existing roots: {:?}", e);
+                writer.halted = Some(format!("Not imported: existing-document check failed: {e}"));
             }
         }
 
-        send_progress(
-            &tx_bg,
-            6,
-            "importing",
-            &format!("Importing {} nodes...", all_nodes.len()),
-            0,
-            all_nodes.len(),
-            vec![],
-        )
-        .await;
-
-        let nodes_written = all_nodes.len();
-        let bulk_insert_failed = match node_service_clone
-            .bulk_create_hierarchy_trusted(all_nodes)
-            .await
-        {
-            Ok(ids) => {
-                tracing::info!("Bulk created {} nodes", ids.len());
-                false
+        // Insert in chunks of whole files, each committed in its own
+        // transaction, so neither the rows held for one insert nor one write
+        // transaction grows with the import. A file's subtree never spans two
+        // chunks. The same deterministic root id can appear twice in one batch
+        // (a duplicated or symlinked file); each document is handled once.
+        let total_docs = root_ids
+            .iter()
+            .collect::<std::collections::HashSet<_>>()
+            .len();
+        let mut seen_roots: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut chunk: Vec<PreparedFileImport> = Vec::new();
+        let mut chunk_nodes = 0usize;
+        let mut docs_done = 0usize;
+        let mut files = prepared_files.into_iter().peekable();
+        while let Some(prepared) = files.next() {
+            if seen_roots.insert(prepared.root_id.clone()) {
+                chunk_nodes += 1 + prepared.children.len();
+                chunk.push(prepared);
             }
-            Err(e) => {
-                tracing::error!("Failed to bulk create nodes: {:?}", e);
-                phase2_error.get_or_insert_with(|| {
-                    "Bulk node insertion failed; see daemon logs".to_string()
-                });
-                true
+            if chunk.is_empty() || (chunk_nodes < PHASE2_CHUNK_NODES && files.peek().is_some()) {
+                continue;
             }
-        };
+            docs_done += chunk.len();
+            writer.write_chunk(std::mem::take(&mut chunk)).await;
+            chunk_nodes = 0;
+            send_progress(
+                &tx_bg,
+                6,
+                "importing",
+                &format!("Imported {} nodes...", writer.nodes_written),
+                docs_done,
+                total_docs,
+                vec![],
+            )
+            .await;
+        }
 
         send_progress(
             &tx_bg,
             7,
             "assigning",
-            "Assigning to collections...",
-            0,
-            collection_assignments.len(),
+            &format!(
+                "Assigned {} collection memberships",
+                writer.memberships_assigned
+            ),
+            writer.memberships_assigned,
+            writer.memberships_assigned,
             vec![],
         )
         .await;
 
-        if !bulk_insert_failed && !collection_assignments.is_empty() {
-            // Route through the notifying variant so each new `member_of` edge
-            // emits a RelationshipCreated event and thus PUSHES to cloud. The raw
-            // `store.bulk_add_to_collections` writes the rows but emits nothing, so
-            // the memberships would land only in the local DB — every other device
-            // (and any first-time puller) would then see these collections empty.
-            match node_service_clone
-                .bulk_add_to_collections_notify(&collection_assignments)
-                .await
-            {
-                Ok(count) => tracing::info!("Bulk assigned {} collection memberships", count),
-                Err(e) => {
-                    tracing::error!("Failed to bulk add to collections: {:?}", e);
-                    phase2_error
-                        .get_or_insert_with(|| format!("Collection assignment failed: {e}"));
-                }
-            }
-        }
-
+        // Mentions go in only after every chunk, so a link into a later chunk
+        // finds its target. Only documents that committed contribute sources;
+        // `bulk_create_mentions` skips a pair whose target does not exist (a
+        // link into a document whose chunk failed).
+        let mentions = std::mem::take(&mut writer.mentions);
         send_progress(
             &tx_bg,
             8,
             "references",
-            &format!("Creating {} references...", all_mentions_count),
+            &format!("Creating {} references...", mentions.len()),
             0,
-            all_mentions_count,
+            mentions.len(),
             vec![],
         )
         .await;
 
-        if !bulk_insert_failed && !all_mentions.is_empty() {
-            match store.bulk_create_mentions(&all_mentions).await {
+        if !mentions.is_empty() {
+            match store.bulk_create_mentions(&mentions).await {
                 Ok(count) => tracing::info!("Bulk created {} mentions", count),
                 Err(e) => {
                     tracing::error!("Failed to bulk create mentions: {:?}", e);
-                    phase2_error.get_or_insert_with(|| format!("Reference creation failed: {e}"));
+                    import_error.get_or_insert_with(|| format!("Reference creation failed: {e}"));
                 }
             }
         }
 
-        if !bulk_insert_failed {
-            for prepared in &prepared_files {
-                if prepared.is_archived {
-                    if let Err(e) = store
-                        .update_lifecycle_status(&prepared.root_id, "archived")
-                        .await
-                    {
-                        tracing::warn!(
-                            "Failed to set lifecycle_status for {}: {}",
-                            prepared.root_id,
-                            e
-                        );
-                    }
-                }
-            }
-        }
-
-        // Now that the fresh subtrees are inserted, prune each replaced doc's
-        // OLD children. Deferring the delete to here (rather than before the
-        // insert) means a failed bulk insert leaves the previous content intact
-        // instead of truncating it — re-import is never destructive on error.
-        if !bulk_insert_failed && !prune_after_insert.is_empty() {
-            if let Err(e) = store
-                .delete_nodes_by_ids_unchecked(&prune_after_insert)
-                .await
-            {
-                tracing::error!(
-                    "Failed to prune {} stale node(s) after replace: {}",
-                    prune_after_insert.len(),
-                    e
-                );
-                phase2_error.get_or_insert_with(|| format!("Stale subtree prune failed: {e}"));
-            }
-        }
-
-        // A replaced root keeps its id but gets a fresh child subtree, so its
-        // content effectively changed — re-mark it stale so it re-embeds. New
-        // roots already get their markers inside bulk_create_hierarchy_trusted.
-        if !bulk_insert_failed && !replaced_roots.is_empty() {
-            if let Err(e) = store
-                .create_stale_embedding_markers_bulk(&replaced_roots)
-                .await
-            {
-                tracing::warn!(
-                    "Failed to re-mark {} replaced root(s) stale: {}",
-                    replaced_roots.len(),
-                    e
-                );
-            }
-        }
-
-        // Skipped documents (already present, no --replace) created no nodes.
-        // Reflect that in their per-file result so the count is honest.
         for r in phase1_results.iter_mut() {
-            if let Some(ref rid) = r.root_id {
-                if skipped_roots.contains(rid) {
-                    r.nodes_created = 0;
+            let outcome = r.root_id.as_ref().and_then(|rid| writer.outcomes.get(rid));
+            match outcome {
+                Some(DocOutcome::Written { nodes, .. }) => r.nodes_created = *nodes,
+                Some(DocOutcome::Skipped) => {}
+                Some(DocOutcome::Failed { nodes, error }) => {
+                    r.nodes_created = *nodes;
+                    r.success = false;
+                    r.error = Some(error.clone());
+                }
+                None => {
+                    r.success = false;
+                    r.error = Some("Not imported".to_string());
                 }
             }
         }
+        // Fold any import-wide failure into the per-file results so the caller
+        // sees a non-success outcome instead of a false "complete" — the disease
+        // behind "nodes land with zero member_of edges while the CLI reports
+        // success".
+        apply_phase2_error(&mut phase1_results, &import_error);
 
-        // Fold any phase-2 failure into the per-file results so the caller sees a
-        // non-success outcome instead of a false "complete" — the disease behind
-        // "nodes land with zero member_of edges while the CLI reports success".
-        apply_phase2_error(&mut phase1_results, &phase2_error);
-
+        let mut summary = format!(
+            "Imported {} files ({} nodes)",
+            writer.new_docs, writer.nodes_written
+        );
+        if writer.refreshed_docs > 0 {
+            summary.push_str(&format!(", {} refreshed", writer.refreshed_docs));
+        }
+        if writer.skipped_docs > 0 {
+            summary.push_str(&format!(", {} already present", writer.skipped_docs));
+        }
         let mut all_results: Vec<LocalFileImportResult> = failed_results;
         all_results.append(&mut phase1_results);
+
+        let failed_docs = all_results.iter().filter(|r| !r.success).count();
+        let message = match import_error.as_ref().or(writer.first_error.as_ref()) {
+            Some(err) => {
+                let mut message =
+                    format!("Import completed with errors: {err}. {summary}, {failed_docs} failed");
+                // A committed document's links into an unimported one are
+                // already rewritten, but their mentions were skipped. A plain
+                // re-import skips the committed document, so only --replace
+                // re-creates those mentions.
+                if writer.halted.is_some() {
+                    message.push_str(
+                        "; re-run with --replace to complete the import and its references",
+                    );
+                }
+                message
+            }
+            None => summary,
+        };
+
         let proto_results: Vec<FileImportResult> =
             all_results.into_iter().map(proto_file_result).collect();
 
-        let message = match &phase2_error {
-            Some(err) => format!("Import completed with errors: {err}"),
-            None => {
-                let mut summary = format!("Imported {new_docs} files ({nodes_written} nodes)");
-                if !replaced_roots.is_empty() {
-                    summary.push_str(&format!(", {} refreshed", replaced_roots.len()));
-                }
-                if !skipped_roots.is_empty() {
-                    summary.push_str(&format!(", {} already present", skipped_roots.len()));
-                }
-                summary
-            }
-        };
         send_progress(
             &tx_bg,
             9,
@@ -820,15 +699,313 @@ async fn run_batch_import(
     });
 }
 
-/// Fold a phase-2 failure into every per-file result. When phase 2 fails partway
-/// (collections unresolved, membership or mention writes rejected, or the bulk
-/// node insert failed), the files are not fully imported — so their results must
-/// report failure rather than a false success. No-op when `error` is `None`.
+/// Fold an import-wide phase-2 failure into every per-file result that still
+/// reports success. Nodes may have committed, but the files are not fully
+/// imported (unlinked from their collection, or missing their mentions), so
+/// their results must report failure rather than a false success. A file that
+/// already failed keeps its own, more specific error. No-op when `error` is
+/// `None`.
 fn apply_phase2_error(results: &mut [LocalFileImportResult], error: &Option<String>) {
     if let Some(err) = error {
-        for r in results {
+        for r in results.iter_mut().filter(|r| r.success) {
             r.success = false;
             r.error = Some(err.clone());
+        }
+    }
+}
+
+/// One node row for `bulk_create_hierarchy_trusted`:
+/// (id, node_type, content, parent_id, order, properties).
+type HierarchyRow = (
+    String,
+    String,
+    String,
+    Option<String>,
+    f64,
+    serde_json::Value,
+);
+
+/// What phase 2 did with one document, keyed by its root id.
+enum DocOutcome {
+    /// Its nodes committed: a new document, or one refreshed by `--replace`.
+    Written { nodes: usize },
+    /// Already present and not replaced; nothing was written.
+    Skipped,
+    /// Not imported (`nodes == 0`), or its nodes committed but a follow-up
+    /// step for it failed.
+    Failed { nodes: usize, error: String },
+}
+
+/// Phase-2 writes of a batch import, one chunk of whole files at a time.
+///
+/// Each chunk's nodes commit in their own transaction, so the import is a
+/// partial import by design: a chunk that fails rolls back only itself, its
+/// files are reported failed, and no later chunk is attempted — every file
+/// after it is reported not imported. Files of earlier chunks stay imported.
+/// Every step that assumes a document's nodes exist — refreshing a replaced
+/// root, pruning its old subtree, collection membership, archival, mention
+/// sources — runs only for documents whose chunk committed.
+struct Phase2Writer {
+    node_service: CoreNodeService,
+    store: Arc<SqliteStore>,
+    replace: bool,
+    existing_roots: std::collections::HashSet<String>,
+    collection_map: HashMap<String, String>,
+    outcomes: HashMap<String, DocOutcome>,
+    /// Mentions sourced in committed documents, created after the last chunk.
+    mentions: Vec<(String, String)>,
+    /// Once set, the error every remaining file is reported with; no further
+    /// chunk is written.
+    halted: Option<String>,
+    first_error: Option<String>,
+    nodes_written: usize,
+    new_docs: usize,
+    refreshed_docs: usize,
+    skipped_docs: usize,
+    memberships_assigned: usize,
+}
+
+impl Phase2Writer {
+    fn new(node_service: CoreNodeService, store: Arc<SqliteStore>, replace: bool) -> Self {
+        Self {
+            node_service,
+            store,
+            replace,
+            existing_roots: std::collections::HashSet::new(),
+            collection_map: HashMap::new(),
+            outcomes: HashMap::new(),
+            mentions: Vec::new(),
+            halted: None,
+            first_error: None,
+            nodes_written: 0,
+            new_docs: 0,
+            refreshed_docs: 0,
+            skipped_docs: 0,
+            memberships_assigned: 0,
+        }
+    }
+
+    /// Record that `root_id` failed. A document whose nodes already committed
+    /// keeps its node count; the first error recorded for a document wins.
+    fn fail(&mut self, root_id: &str, error: &str) {
+        self.first_error.get_or_insert_with(|| error.to_string());
+        let nodes = match self.outcomes.get(root_id) {
+            Some(DocOutcome::Written { nodes }) => *nodes,
+            Some(DocOutcome::Failed { .. }) => return,
+            Some(DocOutcome::Skipped) | None => 0,
+        };
+        self.outcomes.insert(
+            root_id.to_string(),
+            DocOutcome::Failed {
+                nodes,
+                error: error.to_string(),
+            },
+        );
+    }
+
+    async fn write_chunk(&mut self, chunk: Vec<PreparedFileImport>) {
+        if let Some(reason) = self.halted.clone() {
+            for file in &chunk {
+                self.fail(&file.root_id, &reason);
+            }
+            return;
+        }
+
+        let mut rows: Vec<HierarchyRow> = Vec::new();
+        // Documents this chunk writes: (root id, node count, refreshed).
+        let mut written: Vec<(String, usize, bool)> = Vec::new();
+        let mut skipped: Vec<String> = Vec::new();
+        // A replaced document's new root content and old child ids, applied
+        // only once its fresh subtree has committed.
+        let mut refreshed_roots: Vec<(String, String)> = Vec::new();
+        let mut prune: Vec<String> = Vec::new();
+        let mut chunk_mentions: Vec<(String, String)> = Vec::new();
+        let mut memberships: Vec<(String, String)> = Vec::new();
+        let mut archived: Vec<String> = Vec::new();
+
+        for file in chunk {
+            let exists = self.existing_roots.contains(&file.root_id);
+            if exists && self.replace {
+                match self.node_service.get_descendants(&file.root_id).await {
+                    Ok(desc) => prune.extend(desc.into_iter().map(|n| n.id)),
+                    Err(e) => {
+                        tracing::error!(
+                            "Failed to read existing subtree for {}: {:?}",
+                            file.root_id,
+                            e
+                        );
+                        self.fail(&file.root_id, &format!("Subtree replace failed: {e}"));
+                        continue;
+                    }
+                }
+                refreshed_roots.push((file.root_id.clone(), file.root_content));
+            } else if !exists {
+                let mut root_props = serde_json::json!({});
+                if file.is_archived {
+                    root_props["lifecycle_status"] = serde_json::json!("archived");
+                }
+                rows.push((
+                    file.root_id.clone(),
+                    "header".to_string(),
+                    file.root_content,
+                    None,
+                    1.0,
+                    root_props,
+                ));
+            }
+
+            // Collection membership is idempotent (existing edges are skipped),
+            // so re-asserting it for every document — new, replaced, or
+            // skipped — both wires up new docs and repairs any that lost their
+            // edge in an earlier partial import.
+            if let Some(coll_id) = file
+                .collection_path
+                .as_ref()
+                .and_then(|path| self.collection_map.get(path))
+            {
+                memberships.push((file.root_id.clone(), coll_id.clone()));
+            }
+            if file.is_archived {
+                archived.push(file.root_id.clone());
+            }
+
+            if exists && !self.replace {
+                // Already imported and not refreshing: its existing subtree
+                // stays, and it stays a valid link target for other docs.
+                skipped.push(file.root_id);
+                continue;
+            }
+
+            written.push((file.root_id.clone(), 1 + file.children.len(), exists));
+            for child in file.children {
+                let parent = child.parent_id.or_else(|| Some(file.root_id.clone()));
+                rows.push((
+                    child.id,
+                    child.node_type,
+                    child.content,
+                    parent,
+                    child.order,
+                    child.properties,
+                ));
+            }
+            chunk_mentions.extend(file.mentions);
+        }
+
+        let row_count = rows.len();
+        if let Err(e) = self.node_service.bulk_create_hierarchy_trusted(rows).await {
+            // The chunk rolled back as a whole: none of its documents changed,
+            // so a replaced document still has its previous subtree.
+            tracing::error!("Failed to bulk create an import chunk: {:?}", e);
+            let error = format!("Node insertion failed: {e}");
+            for (root_id, _, _) in &written {
+                self.fail(root_id, &error);
+            }
+            // An already-present document had nothing to insert and is intact,
+            // but its membership and archival re-assertion never ran.
+            let unverified = format!("Not re-verified: its import chunk failed ({error})");
+            for root_id in &skipped {
+                self.fail(root_id, &unverified);
+            }
+            self.halted = Some(format!(
+                "Not imported: an earlier import chunk failed ({error})"
+            ));
+            return;
+        }
+        tracing::info!("Bulk created {} nodes", row_count);
+        self.nodes_written += row_count;
+        self.mentions.extend(chunk_mentions);
+        for (root_id, nodes, refreshed) in written {
+            if refreshed {
+                self.refreshed_docs += 1;
+            } else {
+                self.new_docs += 1;
+            }
+            self.outcomes.insert(root_id, DocOutcome::Written { nodes });
+        }
+        self.skipped_docs += skipped.len();
+        for root_id in skipped {
+            self.outcomes.insert(root_id, DocOutcome::Skipped);
+        }
+
+        // Refresh each replaced root in place (its id, and so its inbound
+        // links and mentions, survive), then prune its OLD children. Both wait
+        // for the fresh subtree to commit, so a failed chunk never truncates
+        // or retitles a document.
+        for (root_id, content) in &refreshed_roots {
+            let update = nodespace_core::NodeUpdate::new().with_content(content.clone());
+            if let Err(e) = self
+                .store
+                .update_node(root_id, update, Some("import".to_string()))
+                .await
+            {
+                tracing::warn!("Failed to refresh root {}: {}", root_id, e);
+            }
+        }
+        if !prune.is_empty() {
+            if let Err(e) = self.store.delete_nodes_by_ids_unchecked(&prune).await {
+                tracing::error!(
+                    "Failed to prune {} stale node(s) after replace: {}",
+                    prune.len(),
+                    e
+                );
+                let error = format!("Stale subtree prune failed: {e}");
+                for (root_id, _) in &refreshed_roots {
+                    self.fail(root_id, &error);
+                }
+            }
+        }
+        // A replaced root keeps its id but gets a fresh child subtree, so its
+        // content effectively changed — re-mark it stale so it re-embeds. New
+        // roots already get their markers inside bulk_create_hierarchy_trusted.
+        if !refreshed_roots.is_empty() {
+            let root_ids: Vec<String> = refreshed_roots.into_iter().map(|(r, _)| r).collect();
+            if let Err(e) = self
+                .store
+                .create_stale_embedding_markers_bulk(&root_ids)
+                .await
+            {
+                tracing::warn!(
+                    "Failed to re-mark {} replaced root(s) stale: {}",
+                    root_ids.len(),
+                    e
+                );
+            }
+        }
+
+        if !memberships.is_empty() {
+            // Route through the notifying variant so each new `member_of` edge
+            // emits a RelationshipCreated event and thus PUSHES to cloud. The
+            // raw `store.bulk_add_to_collections` writes the rows but emits
+            // nothing, so the memberships would land only in the local DB —
+            // every other device (and any first-time puller) would then see
+            // these collections empty.
+            match self
+                .node_service
+                .bulk_add_to_collections_notify(&memberships)
+                .await
+            {
+                Ok(count) => {
+                    tracing::info!("Bulk assigned {} collection memberships", count);
+                    self.memberships_assigned += count;
+                }
+                Err(e) => {
+                    tracing::error!("Failed to bulk add to collections: {:?}", e);
+                    let error = format!("Collection assignment failed: {e}");
+                    for (root_id, _) in &memberships {
+                        self.fail(root_id, &error);
+                    }
+                }
+            }
+        }
+
+        for root_id in &archived {
+            if let Err(e) = self
+                .store
+                .update_lifecycle_status(root_id, "archived")
+                .await
+            {
+                tracing::warn!("Failed to set lifecycle_status for {}: {}", root_id, e);
+            }
         }
     }
 }
@@ -917,6 +1094,7 @@ fn prepare_file_import(
             is_archived: file_read.is_archived,
             collection_path: file_read.collection_path,
             children,
+            mentions: Vec::new(),
         }),
         Err(e) => Err(LocalFileImportResult::error(
             file_read.path.to_string_lossy().to_string(),
@@ -927,18 +1105,15 @@ fn prepare_file_import(
 }
 
 /// Rewrite links between imported files to `nodespace://` references and
-/// collect the resulting mentions. The file→root-id index spans every prepared
-/// file of the import, so links resolve across the whole batch. Synchronous and
-/// CPU-bound — call from the blocking pool.
-fn resolve_import_links(
-    mut prepared_files: Vec<PreparedFileImport>,
-) -> (Vec<PreparedFileImport>, Vec<(String, String)>) {
+/// record each file's resulting mentions on it. The file→root-id index spans
+/// every prepared file of the import, so links resolve across the whole batch.
+/// Synchronous and CPU-bound — call from the blocking pool.
+fn resolve_import_links(mut prepared_files: Vec<PreparedFileImport>) -> Vec<PreparedFileImport> {
     let file_to_uuid_map: HashMap<PathBuf, String> = prepared_files
         .iter()
         .map(|f| (f.file_path.clone(), f.root_id.clone()))
         .collect();
 
-    let mut all_mentions: Vec<(String, String)> = Vec::new();
     for prepared in &mut prepared_files {
         let result = transform_links_in_nodes_with_mentions(
             &mut prepared.children,
@@ -946,9 +1121,9 @@ fn resolve_import_links(
             Some(&prepared.file_path),
             &prepared.root_id,
         );
-        all_mentions.extend(result.mentions);
+        prepared.mentions = result.mentions;
     }
-    (prepared_files, all_mentions)
+    prepared_files
 }
 
 // ---------------------------------------------------------------------------
@@ -1188,6 +1363,9 @@ struct PreparedFileImport {
     is_archived: bool,
     collection_path: Option<String>,
     children: Vec<PreparedNode>,
+    /// (source node id, target node id) for each link in this file that
+    /// resolved to a document of the import; filled by link resolution.
+    mentions: Vec<(String, String)>,
 }
 
 struct FileReadResult {
@@ -1456,24 +1634,256 @@ mod tests {
         }
     }
 
-    /// A phase-2 failure must mark every file result failed so the CLI cannot
-    /// report a false "complete" while nodes are left unlinked from collections
-    /// (the "searchable but unbrowsable" state). No error → results untouched.
+    /// An import-wide phase-2 failure must mark every successful file result
+    /// failed so the CLI cannot report a false "complete" while nodes are left
+    /// unlinked from collections (the "searchable but unbrowsable" state). A
+    /// file that already failed keeps its own error. No error → untouched.
     #[test]
-    fn phase2_error_marks_all_results_failed() {
+    fn phase2_error_marks_successful_results_failed() {
         let mut results = vec![ok_result("a.md"), ok_result("b.md")];
 
         apply_phase2_error(&mut results, &None);
         assert!(results.iter().all(|r| r.success && r.error.is_none()));
 
+        results[1].success = false;
+        results[1].error = Some("Node insertion failed: rejected".to_string());
         apply_phase2_error(
             &mut results,
-            &Some("Collection assignment failed: boom".to_string()),
+            &Some("Collection resolution failed: boom".to_string()),
         );
         assert!(results.iter().all(|r| !r.success));
-        assert!(results
+        assert_eq!(
+            results[0].error.as_deref(),
+            Some("Collection resolution failed: boom")
+        );
+        assert_eq!(
+            results[1].error.as_deref(),
+            Some("Node insertion failed: rejected"),
+            "a file's own failure is not overwritten",
+        );
+    }
+
+    /// Paragraphs per test note. With its root and link paragraph a note is
+    /// `PARAGRAPHS + 2` nodes, so a few dozen notes fill one phase-2 chunk.
+    const PARAGRAPHS: usize = 20;
+    /// Notes in a chunked-import test, and the note whose content trips the
+    /// reject rule: it lands in the third chunk, and a fourth chunk follows.
+    const NOTES: usize = 170;
+    const POISONED: usize = 120;
+    /// Notes per phase-2 chunk: files are added until the node budget is met.
+    const NOTES_PER_CHUNK: usize = PHASE2_CHUNK_NODES.div_ceil(PARAGRAPHS + 2);
+    /// The first note of the chunk holding the poisoned note.
+    const FAILED_CHUNK_START: usize = POISONED / NOTES_PER_CHUNK * NOTES_PER_CHUNK;
+    const _: () = assert!(
+        FAILED_CHUNK_START >= 2 * NOTES_PER_CHUNK
+            && FAILED_CHUNK_START + NOTES_PER_CHUNK < NOTES
+            && 60 < FAILED_CHUNK_START
+            && NOTES_PER_CHUNK <= 60,
+        "the poisoned note must fall in a later chunk, with a chunk after it, \
+         and note 0's link target (note 60) in an earlier, different chunk",
+    );
+
+    fn note_name(i: usize) -> String {
+        format!("note-{i:03}.md")
+    }
+
+    /// Write the test vault: note `i` has a heading and `PARAGRAPHS`
+    /// paragraphs starting with `tag`, and links to note `(i + 60) % NOTES`, so
+    /// links cross chunks. Returns every note's path.
+    fn write_notes(src: &Path, tag: &str, poisoned: Option<usize>) -> Vec<String> {
+        std::fs::create_dir_all(src).unwrap();
+        (0..NOTES)
+            .map(|i| {
+                let mut body = format!("# {tag} Note {i}\n\n");
+                for p in 0..PARAGRAPHS {
+                    let marker = if poisoned == Some(i) && p == 0 {
+                        " POISON"
+                    } else {
+                        ""
+                    };
+                    body.push_str(&format!("{tag} paragraph {p}{marker}.\n\n"));
+                }
+                let target = note_name((i + 60) % NOTES);
+                body.push_str(&format!("See [the linked note](./{target}).\n"));
+                let path = src.join(note_name(i));
+                std::fs::write(&path, body).unwrap();
+                path.to_str().unwrap().to_string()
+            })
+            .collect()
+    }
+
+    /// Reject creating any text node whose content contains `POISON`, so the
+    /// insert of whichever chunk holds the poisoned note fails and rolls back.
+    fn activate_poison_rule(ns: &Arc<CoreNodeService>) -> nodespace_core::PlaybookEngine {
+        let engine = nodespace_core::PlaybookEngine::new(Arc::clone(ns));
+        ns.set_playbook_lifecycle(engine.lifecycle().clone());
+        let play = nodespace_core::Node::new(
+            "play".to_string(),
+            "import-poison-play".to_string(),
+            serde_json::json!({ "rules": [{
+                "name": "reject-poison",
+                "class": "invariant",
+                "trigger": { "type": "graph_event", "on": "node_created", "node_type": "text" },
+                "conditions": ["node.content.contains('POISON')"],
+                "actions": [{ "action_type": "reject", "params": { "message": "poisoned" } }]
+            }] }),
+        );
+        engine
+            .lifecycle()
+            .write()
+            .unwrap()
+            .activate_play(&play)
+            .expect("play must parse and activate");
+        engine
+    }
+
+    fn result_for(done: &ImportProgressEvent, i: usize) -> &FileImportResult {
+        done.results
             .iter()
-            .all(|r| r.error.as_deref() == Some("Collection assignment failed: boom")));
+            .find(|r| r.file_path.ends_with(&note_name(i)))
+            .unwrap_or_else(|| panic!("no result for note {i}"))
+    }
+
+    /// A failed insert in a later chunk makes the import an explicit partial
+    /// import: notes of earlier committed chunks are imported (and reported
+    /// so), while the failed chunk and every chunk after it write nothing and
+    /// report failure. Links between committed notes in different chunks
+    /// still become mentions.
+    #[tokio::test]
+    async fn batch_import_failure_in_a_later_chunk_is_an_explicit_partial_import() {
+        let (ns, dir) = new_service_and_dir().await;
+        let ns = Arc::new(ns);
+        let src = dir.path().join("vault");
+        let files = write_notes(&src, "Fresh", Some(POISONED));
+        let _engine = activate_poison_rule(&ns);
+
+        let opts = ImportOptions {
+            base_directory: src.to_str().unwrap().to_string(),
+            auto_collection_routing: true,
+            ..Default::default()
+        };
+        let done = run_batch_and_wait(Arc::clone(&ns), files, opts).await;
+
+        assert!(
+            done.message
+                .starts_with("Import completed with errors: Node insertion failed"),
+            "terminal message names the failure: {}",
+            done.message
+        );
+        assert!(
+            done.message
+                .contains(&format!("Imported {FAILED_CHUNK_START} files"))
+                && done
+                    .message
+                    .contains(&format!("{} failed", NOTES - FAILED_CHUNK_START))
+                && done
+                    .message
+                    .ends_with("re-run with --replace to complete the import and its references"),
+            "terminal message states what committed and how to recover: {}",
+            done.message
+        );
+
+        for i in 0..NOTES {
+            let result = result_for(&done, i);
+            let root = deterministic_root_id(&note_name(i));
+            let stored = ns.get_node(&root).await.unwrap();
+            if i < FAILED_CHUNK_START {
+                assert!(result.success, "note {i} committed: {result:?}");
+                assert_eq!(result.nodes_created as usize, PARAGRAPHS + 2);
+                assert!(stored.is_some(), "note {i} imported");
+                assert!(
+                    !ns.store()
+                        .get_node_memberships(&root)
+                        .await
+                        .unwrap()
+                        .is_empty(),
+                    "note {i} is in its collection",
+                );
+                continue;
+            }
+            assert!(!result.success, "note {i} did not commit: {result:?}");
+            assert_eq!(result.nodes_created, 0);
+            assert!(stored.is_none(), "note {i} left nothing behind");
+            let expected = if i < FAILED_CHUNK_START + NOTES_PER_CHUNK {
+                "Node insertion failed"
+            } else {
+                "Not imported: an earlier import chunk failed"
+            };
+            assert!(
+                result.error.starts_with(expected),
+                "note {i} error: {}",
+                result.error
+            );
+        }
+
+        // Note 0 links to note 60, in the next chunk: both committed, so the
+        // cross-chunk link is a mention.
+        let target = deterministic_root_id(&note_name(60));
+        assert_eq!(ns.get_mentioned_by(&target).await.unwrap().len(), 1);
+    }
+
+    /// `--replace` never loses a document's previous content to a failed
+    /// chunk: documents in committed chunks are refreshed, while those in the
+    /// failed chunk and after it keep their old subtree untouched.
+    #[tokio::test]
+    async fn replace_keeps_previous_subtree_when_its_chunk_fails() {
+        let (ns, dir) = new_service_and_dir().await;
+        let ns = Arc::new(ns);
+        let src = dir.path().join("vault");
+        let files = write_notes(&src, "Original", None);
+        let opts = ImportOptions {
+            base_directory: src.to_str().unwrap().to_string(),
+            ..Default::default()
+        };
+        let first = run_batch_and_wait(Arc::clone(&ns), files.clone(), opts.clone()).await;
+        assert!(first.results.iter().all(|r| r.success), "{}", first.message);
+
+        write_notes(&src, "Revised", Some(POISONED));
+        let _engine = activate_poison_rule(&ns);
+        let opts_replace = ImportOptions {
+            replace: true,
+            ..opts
+        };
+        let done = run_batch_and_wait(Arc::clone(&ns), files, opts_replace).await;
+        assert!(
+            done.message
+                .contains(&format!("{FAILED_CHUNK_START} refreshed")),
+            "{}",
+            done.message
+        );
+
+        for i in 0..NOTES {
+            let root = deterministic_root_id(&note_name(i));
+            let children = ns.get_descendants(&root).await.unwrap();
+            assert_eq!(
+                children.len(),
+                PARAGRAPHS + 1,
+                "note {i} has exactly one subtree"
+            );
+            let tag = if i < FAILED_CHUNK_START {
+                "Revised"
+            } else {
+                "Original"
+            };
+            assert!(
+                children
+                    .iter()
+                    .filter(|n| n.content.contains("paragraph"))
+                    .all(|n| n.content.starts_with(tag)),
+                "note {i} holds its {tag} content",
+            );
+            let stored_root = ns.get_node(&root).await.unwrap().expect("root kept");
+            assert_eq!(
+                stored_root.content,
+                format!("# {tag} Note {i}"),
+                "note {i}'s root is refreshed only with its committed subtree",
+            );
+            assert_eq!(
+                result_for(&done, i).success,
+                i < FAILED_CHUNK_START,
+                "note {i}"
+            );
+        }
     }
 
     /// A request naming an unregistered database is rejected at the routing
