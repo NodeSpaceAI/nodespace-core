@@ -3339,6 +3339,63 @@ impl SqliteStore {
         Ok(affected)
     }
 
+    /// Every non-null value stored under `fields` in the `type_id` property
+    /// bucket, across the instances of `type_id` and of every subtype
+    /// extending it — returned as `(field name, value)` pairs, one per node
+    /// holding one.
+    ///
+    /// The same row set [`Self::rename_schema_field_in_tx`] migrates: under
+    /// ADR-078's per-owner buckets a subtype instance stores the fields
+    /// `type_id` declares under the `type_id` key, so both must look past
+    /// rows whose own `node_type` is `type_id`. `update_schema` reads it to
+    /// refuse re-declaring a field those values would no longer satisfy.
+    ///
+    /// Run on the caller's `tx` so the check sees the same state the schema
+    /// write that follows it commits against — no instance write can land
+    /// between the two under the store's single writer guard.
+    pub(crate) async fn get_bucket_field_values_in_tx(
+        tx: &Tx<'_>,
+        type_id: &str,
+        fields: &[String],
+    ) -> Result<Vec<(String, Value)>> {
+        let subtypes = Self::get_subtype_closure_in_tx(tx, type_id).await?;
+        let mut values = Vec::new();
+
+        const TYPE_CHUNK: usize = 900;
+        for chunk in subtypes.chunks(TYPE_CHUNK) {
+            let placeholders: Vec<String> = (1..=chunk.len()).map(|i| format!("?{i}")).collect();
+            let params: Vec<libsql::Value> =
+                chunk.iter().cloned().map(libsql::Value::Text).collect();
+            let mut rows = tx
+                .conn()
+                .query(
+                    &format!(
+                        "SELECT properties FROM node WHERE node_type IN ({})",
+                        placeholders.join(", ")
+                    ),
+                    params,
+                )
+                .await
+                .context("Failed to fetch nodes for field value check")?;
+
+            while let Some(row) = rows.next().await? {
+                let props_str: String = row.get(0)?;
+                let props: Value =
+                    serde_json::from_str(&props_str).unwrap_or(serde_json::json!({}));
+                let Some(bucket) = props.get(type_id).and_then(Value::as_object) else {
+                    continue;
+                };
+                for field in fields {
+                    if let Some(value) = bucket.get(field).filter(|v| !v.is_null()) {
+                        values.push((field.clone(), value.clone()));
+                    }
+                }
+            }
+        }
+
+        Ok(values)
+    }
+
     /// Atomically update a batch of nodes in a single transaction.
     ///
     /// **OCC contract:** This is an intentional last-write-wins fast-path for trusted internal

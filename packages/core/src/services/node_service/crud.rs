@@ -2619,130 +2619,126 @@ impl NodeService {
                 )));
             }
 
-            // Validate enum fields
-            if field.field_type == "enum" {
-                if let Some(value) = field_value {
-                    if let Some(value_str) = value.as_str() {
-                        // Get all valid enum values (core + user)
-                        let mut valid_values = Vec::new();
-                        if let Some(core_vals) = &field.core_values {
-                            valid_values.extend(core_vals.clone());
-                        }
-                        if let Some(user_vals) = &field.user_values {
-                            valid_values.extend(user_vals.clone());
-                        }
-
-                        // Check if the value matches any EnumValue.value
-                        let is_valid = valid_values.iter().any(|ev| ev.value == value_str);
-                        if !is_valid {
-                            let valid_labels: Vec<_> = valid_values
-                                .iter()
-                                .map(|ev| format!("{} ({})", ev.label, ev.value))
-                                .collect();
-                            return Err(NodeServiceError::invalid_update(format!(
-                                "Invalid value '{}' for enum field '{}'. Valid values: {}",
-                                value_str,
-                                field.name,
-                                valid_labels.join(", ")
-                            )));
-                        }
-                    } else if !value.is_null() {
-                        return Err(NodeServiceError::invalid_update(format!(
-                            "Enum field '{}' must be a string or null",
-                            field.name
-                        )));
-                    }
-                }
+            if let Some(value) = field_value {
+                Self::check_field_value(field, value).map_err(NodeServiceError::invalid_update)?;
             }
+        }
 
-            // Validate object-shaped fields structurally: a field declared
-            // `object` must hold a JSON object, and a field declared `array`
-            // with `item_type: "object"` must hold an array whose every
-            // element is a JSON object.
-            //
-            // Deliberately NOT recursive: a nested `object` field declared via
-            // `fields`/`item_fields` (e.g. `ai-chat.messages[].args`, which
-            // core_schemas.rs leaves without declared sub-fields on purpose,
-            // since tool-call arguments are freeform) is not walked into.
-            // `validate_node_with_fields` itself only ever sees the type's
-            // top-level `fields` list, never nested ones, so recursing would
-            // be a larger structural change than this fix's scope.
-            if field.field_type == "object" {
-                if let Some(value) = field_value {
-                    if !value.is_object() && !value.is_null() {
-                        return Err(NodeServiceError::invalid_update(format!(
-                            "Field '{}' is declared as type 'object' but received {}",
-                            field.name,
-                            crate::schema::json_type_name(value)
-                        )));
-                    }
-                }
-            } else if field.field_type == "array" && field.item_type.as_deref() == Some("object") {
-                if let Some(value) = field_value {
-                    if !value.is_null() {
-                        match value.as_array() {
-                            None => {
-                                return Err(NodeServiceError::invalid_update(format!(
-                                    "Field '{}' is declared as type 'array' (item type 'object') \
-                                     but received {}",
-                                    field.name,
-                                    crate::schema::json_type_name(value)
-                                )));
-                            }
-                            Some(items) => {
-                                for (index, item) in items.iter().enumerate() {
-                                    if !item.is_object() {
-                                        return Err(NodeServiceError::invalid_update(format!(
-                                            "Field '{}' is declared as type 'array' with item type \
-                                             'object', but item {} is {}",
-                                            field.name,
-                                            index,
-                                            crate::schema::json_type_name(item)
-                                        )));
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+        Ok(())
+    }
 
-            // Validate scalar fields: `number` holds a JSON number, `boolean`
-            // a JSON bool, `date` an ISO-8601 date or RFC 3339 date-time
-            // string, and `datetime` an RFC 3339 date-time string. Sorting,
-            // `gt`/`lt` query filters and the CEL date functions all trust
-            // the declared type, so a value that doesn't match it is rejected
-            // here rather than misread later. Null clears a field, as it does
-            // for `object`.
-            if let Some(value) = field_value.filter(|v| !v.is_null()) {
-                let check = match field.field_type.as_str() {
-                    "number" => Some((value.is_number(), "")),
-                    "boolean" => Some((value.is_boolean(), "")),
-                    "date" => Some((
-                        value
-                            .as_str()
-                            .is_some_and(crate::schema::is_iso_date_or_datetime),
-                        " (a YYYY-MM-DD date or RFC 3339 date-time string)",
-                    )),
-                    "datetime" => Some((
-                        value
-                            .as_str()
-                            .is_some_and(crate::schema::is_rfc3339_datetime),
-                        " (an RFC 3339 date-time string)",
-                    )),
-                    _ => None,
-                };
-                if let Some((false, expected)) = check {
-                    let received = match value.as_str() {
-                        Some(s) => format!("the string '{}'", s),
-                        None => crate::schema::json_type_name(value).to_string(),
-                    };
-                    return Err(NodeServiceError::invalid_update(format!(
-                        "Field '{}' is declared as type '{}'{} but received {}",
-                        field.name, field.field_type, expected, received
-                    )));
-                }
+    /// Check one value against one field declaration: enum membership, the
+    /// structural `object`/`array<object>` shape, and the scalar types. Null
+    /// always passes — it clears a field. Returns the rejection message.
+    ///
+    /// The single definition of "this value satisfies this declaration":
+    /// [`Self::validate_node_with_fields`] runs it on every write, and
+    /// `update_schema` runs it against existing instance values before
+    /// re-declaring a field, so a schema change can never leave a node
+    /// holding a value its next write would be rejected for.
+    pub(crate) fn check_field_value(
+        field: &crate::models::SchemaField,
+        value: &serde_json::Value,
+    ) -> Result<(), String> {
+        if value.is_null() {
+            return Ok(());
+        }
+
+        if field.field_type == "enum" {
+            let Some(value_str) = value.as_str() else {
+                return Err(format!(
+                    "Enum field '{}' must be a string or null",
+                    field.name
+                ));
+            };
+            let valid_values: Vec<_> = field
+                .core_values
+                .iter()
+                .flatten()
+                .chain(field.user_values.iter().flatten())
+                .collect();
+            if !valid_values.iter().any(|ev| ev.value == value_str) {
+                let valid_labels: Vec<_> = valid_values
+                    .iter()
+                    .map(|ev| format!("{} ({})", ev.label, ev.value))
+                    .collect();
+                return Err(format!(
+                    "Invalid value '{}' for enum field '{}'. Valid values: {}",
+                    value_str,
+                    field.name,
+                    valid_labels.join(", ")
+                ));
             }
+        }
+
+        // Object-shaped fields are validated structurally: a field declared
+        // `object` must hold a JSON object, and a field declared `array` with
+        // `item_type: "object"` must hold an array whose every element is a
+        // JSON object.
+        //
+        // Deliberately NOT recursive: a nested `object` field declared via
+        // `fields`/`item_fields` (e.g. `ai-chat.messages[].args`, which
+        // core_schemas.rs leaves without declared sub-fields on purpose,
+        // since tool-call arguments are freeform) is not walked into. Only a
+        // type's top-level `fields` list is ever checked here.
+        if field.field_type == "object" && !value.is_object() {
+            return Err(format!(
+                "Field '{}' is declared as type 'object' but received {}",
+                field.name,
+                crate::schema::json_type_name(value)
+            ));
+        }
+        if field.field_type == "array" && field.item_type.as_deref() == Some("object") {
+            let Some(items) = value.as_array() else {
+                return Err(format!(
+                    "Field '{}' is declared as type 'array' (item type 'object') but received {}",
+                    field.name,
+                    crate::schema::json_type_name(value)
+                ));
+            };
+            if let Some((index, item)) = items.iter().enumerate().find(|(_, i)| !i.is_object()) {
+                return Err(format!(
+                    "Field '{}' is declared as type 'array' with item type 'object', but item {} \
+                     is {}",
+                    field.name,
+                    index,
+                    crate::schema::json_type_name(item)
+                ));
+            }
+        }
+
+        // Scalar fields: `number` holds a JSON number, `boolean` a JSON bool,
+        // `date` an ISO-8601 date or RFC 3339 date-time string, and
+        // `datetime` an RFC 3339 date-time string. Sorting, `gt`/`lt` query
+        // filters and the CEL date functions all trust the declared type, so
+        // a value that doesn't match it is rejected here rather than misread
+        // later.
+        let check = match field.field_type.as_str() {
+            "number" => Some((value.is_number(), "")),
+            "boolean" => Some((value.is_boolean(), "")),
+            "date" => Some((
+                value
+                    .as_str()
+                    .is_some_and(crate::schema::is_iso_date_or_datetime),
+                " (a YYYY-MM-DD date or RFC 3339 date-time string)",
+            )),
+            "datetime" => Some((
+                value
+                    .as_str()
+                    .is_some_and(crate::schema::is_rfc3339_datetime),
+                " (an RFC 3339 date-time string)",
+            )),
+            _ => None,
+        };
+        if let Some((false, expected)) = check {
+            let received = match value.as_str() {
+                Some(s) => format!("the string '{}'", s),
+                None => crate::schema::json_type_name(value).to_string(),
+            };
+            return Err(format!(
+                "Field '{}' is declared as type '{}'{} but received {}",
+                field.name, field.field_type, expected, received
+            ));
         }
 
         Ok(())
