@@ -623,12 +623,10 @@ impl NodeService {
         &self,
         node_type: &str,
     ) -> Result<Vec<String>, NodeServiceError> {
-        // One query for every extends edge, rather than an async walk one
-        // parent at a time. The map holds one entry per *extending* schema,
-        // so it is empty in a database where nothing extends anything.
-        // Delegates to the store-only free function so callers that hold a
-        // `SqliteStore` but not a `NodeService` (`NodeEmbeddingService`) can
-        // get the same resolution without duplicating it.
+        // Delegates to the store-only free function (see its doc for the
+        // query-cost rationale) so callers that hold a `SqliteStore` but not
+        // a `NodeService` (`NodeEmbeddingService`) can get the same
+        // resolution without duplicating it.
         crate::services::resolve_type_chain_from_store(&self.store, node_type).await
     }
 

@@ -2029,6 +2029,80 @@ async fn test_search_semantic_enumerate_multi_type_counts_every_type_past_fetch_
     Ok(())
 }
 
+/// End-to-end regression for the `property_filters` namespace/extends-chain
+/// fix, through the full public `search_ops::search_semantic` enumerate
+/// path — not just `SearchNodeFilters::matches` directly — so a bug in how
+/// `enumerate_nodes` wires up the pre-resolved chains (as opposed to the
+/// lookup primitive itself) would also be caught here.
+///
+/// `status` is declared on `ticket`; `bug` extends `ticket` without
+/// redeclaring it, so a `bug` instance stores `status` in `ticket`'s bucket
+/// (ADR-078), not its own. The filter names the bare field with no namespace
+/// prefix, matching how `packages/agent/src/skill_pipeline.rs` documents
+/// `property_filters` (`{"status": "done"}`). Before the fix, `matches` did
+/// a flat top-level `properties.get("status")` against `bug`'s properties —
+/// which never has a top-level `status` key at all — so this returned zero
+/// matches regardless of which bug's status was queried.
+#[tokio::test]
+async fn test_search_semantic_enumerate_property_filter_finds_inherited_field() -> Result<()> {
+    let (embedding_service, node_service, _store, _temp_dir) = create_unified_test_env().await?;
+    let node_service = Arc::new(node_service);
+    let embedding_service = Arc::new(embedding_service);
+
+    nodespace_core::schema::handle_create_schema(
+        &node_service,
+        json!({
+            "name": "Ticket",
+            "fields": [
+                { "name": "status", "type": "string", "protection": "user", "indexed": false }
+            ]
+        }),
+    )
+    .await?;
+    nodespace_core::schema::handle_create_schema(
+        &node_service,
+        json!({
+            "name": "Bug",
+            "extends": "ticket",
+            "fields": [
+                { "name": "severity", "type": "string", "protection": "user", "indexed": false }
+            ]
+        }),
+    )
+    .await?;
+
+    let open_bug = Node::new(
+        "bug".to_string(),
+        "Login button broken".to_string(),
+        json!({ "status": "open", "severity": "high" }),
+    );
+    node_service.create_node(open_bug.clone()).await?;
+    let closed_bug = Node::new(
+        "bug".to_string(),
+        "Typo in footer".to_string(),
+        json!({ "status": "closed", "severity": "low" }),
+    );
+    node_service.create_node(closed_bug.clone()).await?;
+
+    let mut input = empty_search_input("*", Some(vec!["bug".to_string()]));
+    input.property_filters = Some(json!({ "status": "open" }));
+    let output = search_ops::search_semantic(&node_service, &embedding_service, input).await?;
+
+    assert_eq!(
+        output.count,
+        1,
+        "expected only the open bug, got node ids {:?}",
+        output
+            .matched_nodes
+            .iter()
+            .map(|n| &n.id)
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(output.matched_nodes[0].id, open_bug.id);
+
+    Ok(())
+}
+
 // A full integration test of `skip_scope_filter`'s effect on a real,
 // non-enumerate semantic query would require driving `search_semantic`'s
 // embedding path to a genuine similarity match — which requires generating

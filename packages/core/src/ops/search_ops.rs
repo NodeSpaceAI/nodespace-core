@@ -7,8 +7,8 @@
 use crate::models::{Node, NodeFilter, NodeQuery};
 use crate::ops::OpsError;
 use crate::services::{
-    CollectionService, NodeEmbeddingService, NodeService, NodeServiceError, SearchNodeFilters,
-    SearchScope,
+    chain_for_type, needs_property_filter_chain, resolve_type_chains_from_store, CollectionService,
+    NodeEmbeddingService, NodeService, NodeServiceError, SearchNodeFilters, SearchScope,
 };
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
@@ -229,33 +229,27 @@ fn parse_scope(scope: Option<&str>) -> Result<SearchScope, OpsError> {
 /// among `nodes`, once per type rather than once per row — matching how
 /// `NodeService::build_scope_context` resolves a query's scope once per
 /// query, not per row. Returns an empty map without touching the store when
-/// `filters` carries no `property_filters`, since
-/// [`SearchNodeFilters::matches`]'s `node_types` check never consults the
-/// chain.
+/// `filters` carries no (non-empty) `property_filters`, since
+/// [`SearchNodeFilters::matches`]'s `property_filters` loop is a no-op
+/// either way and its `node_types` check never consults the chain.
 async fn resolve_type_chains_for_filters(
     node_service: &Arc<NodeService>,
     nodes: &[Node],
     filters: Option<&SearchNodeFilters>,
 ) -> Result<HashMap<String, Vec<String>>, OpsError> {
-    let mut chains = HashMap::new();
-    if filters.and_then(|f| f.property_filters.as_ref()).is_none() {
-        return Ok(chains);
+    if !needs_property_filter_chain(filters) {
+        return Ok(HashMap::new());
     }
 
     let distinct_types: HashSet<&str> = nodes.iter().map(|n| n.node_type.as_str()).collect();
-    for node_type in distinct_types {
-        let chain = node_service
-            .resolve_type_chain(node_type)
-            .await
-            .map_err(|e| {
-                OpsError::Internal(format!(
-                    "Failed to resolve type chain for property filter: {}",
-                    e
-                ))
-            })?;
-        chains.insert(node_type.to_string(), chain);
-    }
-    Ok(chains)
+    resolve_type_chains_from_store(node_service.store(), distinct_types)
+        .await
+        .map_err(|e| {
+            OpsError::Internal(format!(
+                "Failed to resolve type chain for property filter: {}",
+                e
+            ))
+        })
 }
 
 /// Structural "list everything (of this type)" retrieval for an enumerate
@@ -316,10 +310,7 @@ async fn enumerate_nodes(
         .filter(|node| {
             filters
                 .map(|f| {
-                    let chain = type_chains
-                        .get(&node.node_type)
-                        .cloned()
-                        .unwrap_or_else(|| vec![node.node_type.clone()]);
+                    let chain = chain_for_type(&type_chains, &node.node_type);
                     f.matches(&node.node_type, &node.properties, &chain)
                 })
                 .unwrap_or(true)
@@ -480,10 +471,7 @@ async fn title_match_nodes(
             continue;
         }
         if let Some(f) = filters {
-            let chain = type_chains
-                .get(&node.node_type)
-                .cloned()
-                .unwrap_or_else(|| vec![node.node_type.clone()]);
+            let chain = chain_for_type(&type_chains, &node.node_type);
             if !f.matches(&node.node_type, &node.properties, &chain) {
                 continue;
             }

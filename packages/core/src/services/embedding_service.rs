@@ -29,7 +29,8 @@ use crate::db::SqliteStore;
 use crate::models::{EmbeddingConfig, EmbeddingSearchResult, NewEmbedding, Node};
 use crate::services::error::NodeServiceError;
 use crate::services::{
-    resolve_type_chain_from_store, NodeAccessor, SearchNodeFilters, SearchScope,
+    chain_for_type, needs_property_filter_chain, resolve_type_chains_from_store, NodeAccessor,
+    SearchNodeFilters, SearchScope,
 };
 use nodespace_nlp_engine::{EmbeddingError, EmbeddingService};
 use sha2::{Digest, Sha256};
@@ -941,19 +942,15 @@ impl NodeEmbeddingService {
         // a field inherited from an ancestor schema's bucket, and chain
         // resolution needs store access the per-row filter closure below
         // can't do (it's synchronous). Skipped entirely when there are no
-        // property_filters, since `matches`'s node_types check never
-        // consults the chain.
-        let has_property_filters = filters.and_then(|f| f.property_filters.as_ref()).is_some();
+        // (non-empty) property_filters, since `matches`'s property_filters
+        // loop is then a no-op regardless of the chain.
         let mut type_chains: HashMap<String, Vec<String>> = HashMap::new();
-        if has_property_filters {
+        if needs_property_filter_chain(filters) {
             let distinct_types: HashSet<&str> = results
                 .iter()
                 .filter_map(|r| r.node.as_ref().map(|n| n.node_type.as_str()))
                 .collect();
-            for node_type in distinct_types {
-                let chain = resolve_type_chain_from_store(&self.store, node_type).await?;
-                type_chains.insert(node_type.to_string(), chain);
-            }
+            type_chains = resolve_type_chains_from_store(&self.store, distinct_types).await?;
         }
 
         // Nodes are included via FETCH — no separate queries needed.
@@ -963,10 +960,7 @@ impl NodeEmbeddingService {
             .filter_map(|result| result.node.map(|node| (node, result.score)))
             .filter(|(node, _)| {
                 if let Some(f) = filters {
-                    let chain = type_chains
-                        .get(&node.node_type)
-                        .cloned()
-                        .unwrap_or_else(|| vec![node.node_type.clone()]);
+                    let chain = chain_for_type(&type_chains, &node.node_type);
                     if !f.matches(&node.node_type, &node.properties, &chain) {
                         tracing::debug!(
                             "semantic_search_nodes: filtered out node {} (type={})",

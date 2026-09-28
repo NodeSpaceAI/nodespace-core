@@ -187,29 +187,80 @@ pub(crate) fn find_namespaced_property<'a>(
     None
 }
 
-/// Resolve a node type's `extends` ancestor chain directly against the store,
-/// nearest-first (ADR-078) — same semantics as
-/// [`node_service::NodeService::resolve_type_chain`] (which delegates here),
-/// for callers that hold a `SqliteStore` but not a `NodeService`
-/// (`NodeEmbeddingService`, which needs this to pre-resolve chains for
-/// [`SearchNodeFilters::matches`]'s `type_chain` before filtering a batch of
-/// search results).
-pub(crate) async fn resolve_type_chain_from_store(
-    store: &crate::db::SqliteStore,
+/// Whether `filters` carries at least one `property_filters` key — used to
+/// decide whether pre-resolving a `type_chain` for
+/// [`SearchNodeFilters::matches`] is worth a store round trip at all.
+/// `None`, or an empty object (`{}`, which trivially matches every node —
+/// see `test_empty_property_object_passes_all`), both need no chain:
+/// `matches`'s `property_filters` loop is a no-op either way, regardless of
+/// what `type_chain` holds.
+pub(crate) fn needs_property_filter_chain(filters: Option<&SearchNodeFilters>) -> bool {
+    filters
+        .and_then(|f| f.property_filters.as_ref())
+        .and_then(|pf| pf.as_object())
+        .is_some_and(|obj| !obj.is_empty())
+}
+
+/// Look up `node_type`'s pre-resolved chain in `type_chains`, falling back
+/// to a single-element chain of just `node_type` (no inheritance) when it
+/// wasn't pre-resolved — the same shape a type nothing extends would
+/// resolve to anyway. Shared by every call site that batches `type_chains`
+/// across a result set before calling [`SearchNodeFilters::matches`] per
+/// node.
+pub(crate) fn chain_for_type(
+    type_chains: &std::collections::HashMap<String, Vec<String>>,
     node_type: &str,
-) -> Result<Vec<String>, error::NodeServiceError> {
+) -> Vec<String> {
+    type_chains
+        .get(node_type)
+        .cloned()
+        .unwrap_or_else(|| vec![node_type.to_string()])
+}
+
+/// Resolve the `extends` chain (ADR-078) for each of `node_types`, nearest-
+/// first, from a single store round trip — the parent-edge map is the same
+/// for every type in one call, so fetching it once and resolving every
+/// chain from it in memory avoids an avoidable per-type query. Callers that
+/// pre-resolve chains for a batch of search results before filtering
+/// (`NodeEmbeddingService::semantic_search_nodes`,
+/// `ops::search_ops::resolve_type_chains_for_filters`) use this instead of
+/// looping [`resolve_type_chain_from_store`] once per distinct type.
+pub(crate) async fn resolve_type_chains_from_store<'a>(
+    store: &crate::db::SqliteStore,
+    node_types: impl IntoIterator<Item = &'a str>,
+) -> Result<std::collections::HashMap<String, Vec<String>>, error::NodeServiceError> {
     let parent_map = store.get_extends_parent_map().await.map_err(|e| {
         error::NodeServiceError::query_failed(format!("Failed to load extends edges: {e}"))
     })?;
 
-    if parent_map.is_empty() {
-        return Ok(vec![node_type.to_string()]);
+    let mut chains = std::collections::HashMap::new();
+    for node_type in node_types {
+        let chain = if parent_map.is_empty() {
+            vec![node_type.to_string()]
+        } else {
+            let lookup = |id: &str| parent_map.get(id).cloned();
+            crate::schema::extends_chain::resolve_ancestor_chain(node_type, &lookup)
+        };
+        chains.insert(node_type.to_string(), chain);
     }
+    Ok(chains)
+}
 
-    let lookup = move |id: &str| parent_map.get(id).cloned();
-    Ok(crate::schema::extends_chain::resolve_ancestor_chain(
-        node_type, &lookup,
-    ))
+/// Resolve a single node type's `extends` ancestor chain directly against
+/// the store, nearest-first (ADR-078) — same semantics as
+/// [`node_service::NodeService::resolve_type_chain`] (which delegates here),
+/// for callers that hold a `SqliteStore` but not a `NodeService`. Resolving
+/// more than one type in the same call? Prefer
+/// [`resolve_type_chains_from_store`] — it resolves every chain from a
+/// single store fetch instead of one per type.
+pub(crate) async fn resolve_type_chain_from_store(
+    store: &crate::db::SqliteStore,
+    node_type: &str,
+) -> Result<Vec<String>, error::NodeServiceError> {
+    let mut chains = resolve_type_chains_from_store(store, std::iter::once(node_type)).await?;
+    Ok(chains
+        .remove(node_type)
+        .unwrap_or_else(|| vec![node_type.to_string()]))
 }
 
 /// Explicit insertion position for hierarchy operations.
@@ -505,5 +556,28 @@ mod tests {
         });
         let chain = vec!["issue".to_string(), "task".to_string()];
         assert!(!f.matches("issue", &properties, &chain));
+    }
+
+    /// `find_namespaced_property` supports a multi-segment path (used by
+    /// `NodeService::node_matches_property_filter`'s JSONPath filters, e.g.
+    /// `$.field.subfield`) — `SearchNodeFilters::matches` never reaches this
+    /// branch itself, since its flat `property_filters` keys are always a
+    /// single bare field name, but the shared helper's nested-lookup
+    /// behavior is exercised directly here rather than only through
+    /// `query.rs`'s own tests.
+    #[test]
+    fn test_find_namespaced_property_resolves_a_nested_segment() {
+        let properties = json!({
+            "task": {"metadata": {"priority": "high"}},
+        });
+        let chain = vec!["task".to_string()];
+        assert_eq!(
+            find_namespaced_property(&properties, &["metadata", "priority"], &chain),
+            Some(&json!("high"))
+        );
+        assert_eq!(
+            find_namespaced_property(&properties, &["metadata", "missing"], &chain),
+            None
+        );
     }
 }
