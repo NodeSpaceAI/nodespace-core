@@ -589,7 +589,7 @@ export function preflight(
         `write test data into live user data.`,
       `Isolate the daemon with NODESPACE_HOME (not NODESPACED_DB_PATH, which the\n` +
         `  database registry overrides):\n` +
-        `    NODESPACE_HOME=/tmp/nodespaced-test NODESPACED_HEADLESS=1 \\\n` +
+        `    NODESPACE_HOME=/tmp/nodespaced-test \\\n` +
         `      NODESPACED_SOCKET=${env.socket} target/release/nodespaced\n` +
         `  Then confirm with: grep served_db_path <daemon log>`,
     );

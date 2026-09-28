@@ -13,9 +13,12 @@
     <key>Label</key>
     <string>app.nodespace.daemon</string>
 
+    <!-- The tray flag opts into the tray icon; the daemon is headless without it.
+         Matches daemon_setup.rs's write_plist. -->
     <key>ProgramArguments</key>
     <array>
         <string>/usr/local/bin/nodespaced</string>
+        <string>--tray</string>
     </array>
 
     <!-- Conditional restart: only on a nonzero/crash exit, not on every
