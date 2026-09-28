@@ -26,4 +26,13 @@ describe("sccacheServerUds", () => {
     expect(sccacheServerUds(502)).toContain("502");
     expect(sccacheServerUds(501)).toContain("501");
   });
+
+  // uid 0 (root) is also the `process.getuid?.() ?? 0` fallback used at the
+  // call site when `getuid` is unavailable (e.g. Windows). Documented here so
+  // that collision is visible, even though the fallback is unreachable today
+  // (the pinned sccache release is darwin-arm64 only).
+  test("uid 0 gets its own distinct, stable path", () => {
+    expect(sccacheServerUds(0)).not.toBe(sccacheServerUds(502));
+    expect(sccacheServerUds(0)).toBe(sccacheServerUds(0));
+  });
 });
