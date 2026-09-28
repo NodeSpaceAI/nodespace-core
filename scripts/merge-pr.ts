@@ -123,9 +123,17 @@ export async function replayCommits(cwd: string, commits: string[]): Promise<Rep
   return { kind: "error", message: message || `git cherry-pick exited with code ${pick.exitCode}` };
 }
 
-/** Runs git in `cwd` and returns its trimmed stdout. */
+/**
+ * Runs git in `cwd` with hooks disabled and returns its trimmed stdout.
+ *
+ * The repo's post-checkout hook runs `bun install`, which rewrites bun.lock
+ * whenever the checked-out lockfile differs from what the installed Bun would
+ * write. Fired by the gate's own checkouts, that left bun.lock dirty, and the
+ * replay then refused to cherry-pick any PR commit touching it. The gate runs
+ * its own `bun install` once the tree is final, so the hook adds nothing here.
+ */
 async function git(cwd: string, ...args: string[]): Promise<string> {
-  return (await $`git ${args}`.cwd(cwd).quiet().text()).trim();
+  return (await $`git -c core.hooksPath=/dev/null ${args}`.cwd(cwd).quiet().text()).trim();
 }
 
 /**
