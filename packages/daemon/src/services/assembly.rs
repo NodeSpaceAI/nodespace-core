@@ -200,8 +200,11 @@ pub async fn build_shared_services() -> Result<(SharedServices, Option<tokio::ta
     let model_load_failed = Arc::new(AtomicBool::new(false));
     let model_task = model_path.map(|path| {
         let model_load_failed = model_load_failed.clone();
+        // Flagged in flight at scheduling time, not when the task first runs, so
+        // a shutdown that finishes before then still sees the pending load.
+        let in_flight = SharedModelLoadGuard::start();
         tokio::spawn(async move {
-            load_shared_embedding_model_bg(path, model_tx, model_load_failed).await;
+            load_shared_embedding_model_bg(path, model_tx, model_load_failed, in_flight).await;
         })
     });
 
@@ -498,7 +501,8 @@ fn resolve_model_path() -> Option<std::path::PathBuf> {
 }
 
 /// Whether the shared embedding model is still loading. See
-/// [`shared_model_load_in_flight`].
+/// [`shared_model_load_in_flight`]. Process-global because the model is: one
+/// load per process, shared by every database, never per-database state.
 static SHARED_MODEL_LOAD_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
 
 /// Whether the shared embedding model's native load is still running.
@@ -541,6 +545,7 @@ async fn load_shared_embedding_model_bg(
     model_path: std::path::PathBuf,
     model_tx: watch::Sender<Option<Arc<EmbeddingService>>>,
     load_failed: Arc<AtomicBool>,
+    in_flight: SharedModelLoadGuard,
 ) {
     tracing::info!(path = %model_path.display(), "Loading shared embedding model in background");
 
@@ -551,9 +556,8 @@ async fn load_shared_embedding_model_bg(
 
     // `EmbeddingService::new` + `initialize` are synchronous CPU/IO-bound operations
     // (~6-8s). Use spawn_blocking so they don't park a tokio worker thread.
-    // Flagged in flight before the spawn and cleared by the closure's own guard, so
-    // the flag tracks the native load itself rather than this task's await.
-    let in_flight = SharedModelLoadGuard::start();
+    // The in-flight guard moves into the closure, so the flag tracks the native
+    // load itself rather than this task's await.
     let nlp = match tokio::task::spawn_blocking(move || {
         let _in_flight = in_flight;
         let mut svc = EmbeddingService::new(config).map_err(|e| {

@@ -550,9 +550,8 @@ fn exit_if_model_load_in_flight(result: &Result<()>) {
             1
         }
     };
-    use std::io::Write;
-    let _ = std::io::stdout().flush();
-    let _ = std::io::stderr().flush();
+    let _ = std::io::Write::flush(&mut std::io::stdout());
+    let _ = std::io::Write::flush(&mut std::io::stderr());
     // SAFETY: `_exit` only terminates the process; nothing runs after it.
     unsafe { libc::_exit(code) }
 }
