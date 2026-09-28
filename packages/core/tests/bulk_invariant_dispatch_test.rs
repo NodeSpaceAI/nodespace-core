@@ -700,3 +700,200 @@ async fn markdown_import_of_a_violating_node_is_rejected() -> Result<()> {
     assert!(ok.is_ok(), "a compliant import must succeed, got {ok:?}");
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// bulk_create_hierarchy_in_tx (schema description subtree)
+// ---------------------------------------------------------------------------
+
+/// A schema's description subtree is created through
+/// `bulk_create_hierarchy_in_tx` inside the schema's own transaction, so a
+/// description node violating an invariant fails the whole schema create.
+#[tokio::test]
+async fn schema_description_violating_an_invariant_fails_the_schema_create() -> Result<()> {
+    let (service, _tmp) = create_test_service().await?;
+    let _engine = activate_rules(
+        &service,
+        reject_on_create(
+            "text",
+            "node.content.contains('forbidden')",
+            "no forbidden text",
+        ),
+    );
+
+    let rejected = nodespace_core::schema::handle_create_schema(
+        &service,
+        json!({
+            "name": "bi_described",
+            "description": "a forbidden description paragraph",
+            "fields": [{ "name": "state", "type": "string", "protection": "user", "indexed": false }]
+        }),
+    )
+    .await;
+    assert!(rejected.is_err(), "got {rejected:?}");
+    assert!(
+        service.get_node("bi_described").await?.is_none(),
+        "the schema node must roll back with its description"
+    );
+
+    nodespace_core::schema::handle_create_schema(
+        &service,
+        json!({
+            "name": "bi_described_ok",
+            "description": "an allowed description paragraph",
+            "fields": [{ "name": "state", "type": "string", "protection": "user", "indexed": false }]
+        }),
+    )
+    .await?;
+    assert!(service.get_node("bi_described_ok").await?.is_some());
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Batch-guard composition and sync no-op for updates
+// ---------------------------------------------------------------------------
+
+/// The sync replay falls back to per-row writes when a batched write fails,
+/// under the same `begin_batch_emit` guard. A rejected bulk write inside the
+/// guard must contribute no events, and a later successful write in the same
+/// guard must still deliver its events when the guard drops.
+#[tokio::test]
+async fn rejected_bulk_create_inside_a_batch_guard_contributes_no_events() -> Result<()> {
+    let (service, _tmp) = create_test_service().await?;
+    create_schema(
+        &service,
+        "bi_guarded",
+        json!([{ "name": "status", "type": "string" }]),
+    )
+    .await?;
+    let _engine = activate_rules(
+        &service,
+        reject_on_create("bi_guarded", "node.status == 'blocked'", "no blocked nodes"),
+    );
+    let mut rx = service.subscribe_to_events();
+
+    let bad = Node::new(
+        "bi_guarded".to_string(),
+        "blocked".to_string(),
+        json!({ "bi_guarded": { "status": "blocked" } }),
+    );
+    let good = Node::new(
+        "bi_guarded".to_string(),
+        "fine".to_string(),
+        json!({ "bi_guarded": { "status": "open" } }),
+    );
+    let (bad_id, good_id) = (bad.id.clone(), good.id.clone());
+    {
+        let _batch = service.begin_batch_emit();
+        assert!(service.bulk_create(vec![bad]).await.is_err());
+        service.bulk_create(vec![good]).await?;
+    }
+
+    let mut created = Vec::new();
+    while let Ok(envelope) = rx.try_recv() {
+        if let DomainEvent::NodeCreated { node_id, .. } = envelope.event {
+            created.push(node_id);
+        }
+    }
+    assert_eq!(
+        created,
+        vec![good_id],
+        "the rejected {bad_id} must emit nothing"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn sync_tagged_bulk_update_does_not_run_invariant_rules() -> Result<()> {
+    let (service, _tmp) = create_test_service().await?;
+    create_schema(
+        &service,
+        "bi_sync_upd",
+        json!([{ "name": "status", "type": "string" }]),
+    )
+    .await?;
+    let _engine = activate_rules(&service, reject_on_status_change("bi_sync_upd"));
+
+    let node = Node::new(
+        "bi_sync_upd".to_string(),
+        "n".to_string(),
+        json!({ "status": "open" }),
+    );
+    let id = node.id.clone();
+    service.create_node(node).await?;
+
+    service
+        .with_client(SYNC_SERVICE_CLIENT_ID)
+        .bulk_update(vec![(id.clone(), status_update("blocked"))])
+        .await?;
+    let after = service.get_node(&id).await?.unwrap();
+    assert_eq!(
+        user_field(&after, "bi_sync_upd", "status"),
+        Some(&json!("blocked"))
+    );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// bulk_create collection-name collision journaling
+// ---------------------------------------------------------------------------
+
+fn collection(name: &str, lifecycle: &str) -> Node {
+    let mut node = Node::new("collection".to_string(), name.to_string(), json!({}));
+    node.title = Some(name.to_string());
+    node.lifecycle_status = lifecycle.to_string();
+    node
+}
+
+async fn has_collision(service: &NodeService, id: &str) -> Result<bool> {
+    use nodespace_core::models::conflict::{ConflictKind, ConflictStatus};
+    Ok(service.conflicts_for_node(id).await?.iter().any(|r| {
+        r.kind == ConflictKind::CollectionNameCollision && r.status == ConflictStatus::Open
+    }))
+}
+
+/// `bulk_create` journals a collection-name collision (ADR-065/068) against a
+/// stored collection and against an earlier active row of the same batch —
+/// what the same rows created one at a time would journal — and never
+/// against an archived row.
+#[tokio::test]
+async fn bulk_create_journals_collection_name_collisions() -> Result<()> {
+    let (service, _tmp) = create_test_service().await?;
+    let stored = collection("Stored Name", "active");
+    let stored_id = stored.id.clone();
+    service.bulk_create(vec![stored]).await?;
+
+    let vs_stored = collection("stored name", "active");
+    let first = collection("Batch Name", "active");
+    let second = collection("BATCH NAME", "active");
+    let archived = collection("Archived Name", "archived");
+    let after_archived = collection("archived name", "active");
+    let ids: Vec<String> = [&vs_stored, &first, &second, &archived, &after_archived]
+        .iter()
+        .map(|n| n.id.clone())
+        .collect();
+    service
+        .bulk_create(vec![vs_stored, first, second, archived, after_archived])
+        .await?;
+
+    assert!(
+        has_collision(&service, &ids[0]).await?,
+        "collides with a stored collection"
+    );
+    assert!(
+        has_collision(&service, &stored_id).await?,
+        "both sides are journaled"
+    );
+    assert!(
+        has_collision(&service, &ids[2]).await?,
+        "collides with an earlier row"
+    );
+    assert!(
+        has_collision(&service, &ids[1]).await?,
+        "the earlier row is journaled too"
+    );
+    assert!(
+        !has_collision(&service, &ids[4]).await?,
+        "an archived row frees its name"
+    );
+    Ok(())
+}

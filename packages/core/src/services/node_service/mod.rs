@@ -480,10 +480,41 @@ const DOMAIN_EVENT_CHANNEL_CAPACITY: usize = 4096;
 /// relationship events — which are not node-keyed — must buffer here too,
 /// unlike `Batching`, which relationship events bypass entirely (see
 /// `emit_event`'s match below).
+///
+/// `parked` is a `begin_batch_emit` batch that was open when the
+/// transaction began, or opened while it ran. It lives inside the slot, not
+/// in the transaction's stack frame, because the batch's guard may drop
+/// before the transaction ends — the guard then flushes it from here — and
+/// the transaction must restore it afterwards only if it is still open.
 pub(crate) enum BatchState {
     Immediate,
     Batching(HashMap<String, crate::db::events::EventEnvelope>),
-    Transactional(Vec<crate::db::events::EventEnvelope>),
+    Transactional {
+        buf: Vec<crate::db::events::EventEnvelope>,
+        parked: Option<HashMap<String, crate::db::events::EventEnvelope>>,
+    },
+}
+
+impl BatchState {
+    /// End an active transaction: return its buffered events and put back
+    /// the batch it parked, if that batch's guard has not dropped meanwhile.
+    fn end_transaction(&mut self) -> Vec<crate::db::events::EventEnvelope> {
+        match std::mem::replace(self, BatchState::Immediate) {
+            BatchState::Transactional { buf, parked } => {
+                if let Some(batch) = parked {
+                    *self = BatchState::Batching(batch);
+                }
+                buf
+            }
+            other => {
+                // Only a transaction ends a transaction, and nothing else
+                // replaces `Transactional` while one runs.
+                debug_assert!(false, "end_transaction called outside a transaction");
+                *self = other;
+                Vec::new()
+            }
+        }
+    }
 }
 
 /// Whether an event envelope should be forwarded to the origin-filtered push
@@ -528,8 +559,20 @@ pub struct BatchEmitGuard {
 impl Drop for BatchEmitGuard {
     fn drop(&mut self) {
         let mut lock = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        let prev = std::mem::replace(&mut *lock, BatchState::Immediate);
-        if let BatchState::Batching(buf) = prev {
+        // This guard's batch is either the slot itself or parked under a
+        // transaction running in another task. In the second case the
+        // transaction keeps the slot; only the parked batch is taken, so the
+        // transaction ends with nothing to restore.
+        let buf = match &mut *lock {
+            BatchState::Batching(_) => match std::mem::replace(&mut *lock, BatchState::Immediate) {
+                BatchState::Batching(buf) => Some(buf),
+                _ => None,
+            },
+            BatchState::Transactional { parked, .. } => parked.take(),
+            BatchState::Immediate => None,
+        };
+        drop(lock);
+        if let Some(buf) = buf {
             for envelope in buf.into_values() {
                 // Mirror to the push channel unless this envelope's origin is
                 // excluded. Clone only when forwarding to avoid an extra copy.
@@ -670,7 +713,14 @@ impl NodeService {
     {
         let batch_state = Arc::clone(&self.batch_state);
 
-        let result: Result<(T, BatchState, Vec<DeferredEmbeddingRefresh>), NodeServiceError> = self
+        let result: Result<
+            (
+                T,
+                Vec<crate::db::events::EventEnvelope>,
+                Vec<DeferredEmbeddingRefresh>,
+            ),
+            NodeServiceError,
+        > = self
             .store
             .with_transaction(move |store_tx| {
                 Box::pin(async move {
@@ -678,36 +728,48 @@ impl NodeService {
                     // held for the rest of this closure — see this method's
                     // doc for why the check-and-set must live here rather
                     // than before requesting it.
-                    // A caller may already hold a `begin_batch_emit` guard
-                    // around this call (a sync replay batching a page through
-                    // `bulk_create`/`bulk_update`). Its buffer is parked for
-                    // the closure's duration and restored afterwards; this
-                    // transaction's committed events are deposited into it
-                    // after commit (see below), so the batch still delivers
-                    // them when its guard drops.
-                    let outer = {
+                    // An open `begin_batch_emit` batch (a sync replay batching
+                    // a page through `bulk_create`/`bulk_update`, from this
+                    // task or another) is parked inside the slot for the
+                    // transaction's duration — see `BatchState`.
+                    {
                         let mut state = batch_state.lock().unwrap_or_else(|e| e.into_inner());
-                        debug_assert!(
-                            !matches!(*state, BatchState::Transactional(_)),
-                            "with_transaction called while a transaction is already active"
-                        );
-                        std::mem::replace(&mut *state, BatchState::Transactional(Vec::new()))
-                    };
+                        let parked = match std::mem::replace(&mut *state, BatchState::Immediate) {
+                            BatchState::Immediate => None,
+                            BatchState::Batching(batch) => Some(batch),
+                            BatchState::Transactional { parked, .. } => {
+                                // Unreachable: the write guard serializes
+                                // transactions.
+                                debug_assert!(
+                                    false,
+                                    "with_transaction called while a transaction is already active"
+                                );
+                                parked
+                            }
+                        };
+                        *state = BatchState::Transactional {
+                            buf: Vec::new(),
+                            parked,
+                        };
+                    }
 
-                    // If `f` itself panics, restore the outer state on unwind
-                    // — scoped to this closure so the reset happens while the
+                    // If `f` itself panics, end the transaction on unwind —
+                    // scoped to this closure so the reset happens while the
                     // write guard is still held, same as the success/error
                     // paths below, rather than racing a caller that acquires
                     // the guard next.
-                    struct ResetOnDrop<'a>(&'a Mutex<BatchState>, Option<BatchState>);
+                    struct ResetOnDrop<'a>(&'a Mutex<BatchState>, bool);
                     impl Drop for ResetOnDrop<'_> {
                         fn drop(&mut self) {
-                            if let Some(outer) = self.1.take() {
-                                *self.0.lock().unwrap_or_else(|e| e.into_inner()) = outer;
+                            if !self.1 {
+                                self.0
+                                    .lock()
+                                    .unwrap_or_else(|e| e.into_inner())
+                                    .end_transaction();
                             }
                         }
                     }
-                    let mut reset_guard = ResetOnDrop(&batch_state, Some(outer));
+                    let mut reset_guard = ResetOnDrop(&batch_state, false);
 
                     let ns_tx = NodeServiceTx {
                         store_tx,
@@ -725,14 +787,11 @@ impl NodeService {
                     // this closure returns, so `self.store.with_transaction`
                     // never releases the write guard while `batch_state`
                     // still claims `Transactional`.
-                    let outer = reset_guard
-                        .1
-                        .take()
-                        .expect("taken only here or by the unwind reset");
-                    let prev = std::mem::replace(
-                        &mut *batch_state.lock().unwrap_or_else(|e| e.into_inner()),
-                        outer,
-                    );
+                    let prev = batch_state
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .end_transaction();
+                    reset_guard.1 = true;
 
                     match inner_result {
                         Ok(value) => Ok((value, prev, deferred)),
@@ -752,22 +811,32 @@ impl NodeService {
 
         // Commit (or rollback) already happened inside `self.store.with_transaction`
         // by the time we get here, and the buffer was already captured —
-        // pre-commit, inside the closure above — so `batch_state` is already
-        // back to `Immediate` for the next caller regardless of which branch
-        // this takes. This only decides what to do with the captured buffer:
+        // pre-commit, inside the closure above — so `batch_state` already
+        // holds whatever it held before the transaction (or `Immediate`, if
+        // a parked batch's guard dropped meanwhile) regardless of which
+        // branch this takes. This only decides what to do with the captured buffer:
         // flush in order on success, discard on failure, per ADR-069 §2 (an
         // event is a statement about committed state).
         // The deferred embedding refreshes likewise run only after a commit.
         match result {
-            Ok((value, prev, deferred)) => {
-                if let BatchState::Transactional(buf) = prev {
-                    // Committed: hand the events to a caller's still-open
-                    // batch if there is one — node-keyed last-write-wins,
-                    // relationship events straight through, exactly as
-                    // `emit_event` treats an event emitted under `Batching`
-                    // — otherwise broadcast them now.
+            Ok((value, buf, deferred)) => {
+                {
+                    // Committed: hand the events to a still-open batch if
+                    // there is one — in the slot, or parked under a
+                    // transaction that began since — node-keyed
+                    // last-write-wins, relationship events straight through,
+                    // exactly as `emit_event` treats an event emitted under
+                    // `Batching`; otherwise broadcast them now.
                     let mut state = self.batch_state.lock().unwrap_or_else(|e| e.into_inner());
-                    if let BatchState::Batching(batch) = &mut *state {
+                    let open_batch = match &mut *state {
+                        BatchState::Batching(batch) => Some(batch),
+                        BatchState::Transactional {
+                            parked: Some(batch),
+                            ..
+                        } => Some(batch),
+                        _ => None,
+                    };
+                    if let Some(batch) = open_batch {
                         let mut unkeyed = Vec::new();
                         for envelope in buf {
                             match envelope_node_id(&envelope) {
@@ -1384,7 +1453,7 @@ impl NodeService {
                         // Batched events flush (and mirror) in BatchEmitGuard::drop.
                         buf.insert(change.node.id.clone(), envelope);
                     }
-                    BatchState::Transactional(buf) => {
+                    BatchState::Transactional { buf, .. } => {
                         buf.push(envelope);
                     }
                 }
@@ -2889,14 +2958,25 @@ impl NodeService {
     pub fn begin_batch_emit(&self) -> BatchEmitGuard {
         let mut state = self.batch_state.lock().unwrap_or_else(|e| e.into_inner());
         // Nested batch guards are not supported: the outer buffer's events
-        // would be silently discarded when the inner guard resets the state.
-        // Same hazard applies to a `with_transaction` call active while a
-        // batch guard is requested — one buffer, not two (ADR-069 §2).
-        debug_assert!(
-            matches!(*state, BatchState::Immediate),
-            "begin_batch_emit called while a batch or transaction is already active"
-        );
-        *state = BatchState::Batching(HashMap::new());
+        // would be silently discarded when the inner guard replaces it. A
+        // transaction running in another task is fine: the batch is parked
+        // under it (see `BatchState`) rather than replacing its buffer.
+        match &mut *state {
+            BatchState::Transactional { parked, .. } => {
+                debug_assert!(
+                    parked.is_none(),
+                    "begin_batch_emit called while a batch is already active"
+                );
+                *parked = Some(HashMap::new());
+            }
+            other => {
+                debug_assert!(
+                    matches!(other, BatchState::Immediate),
+                    "begin_batch_emit called while a batch is already active"
+                );
+                *other = BatchState::Batching(HashMap::new());
+            }
+        }
         drop(state);
         BatchEmitGuard {
             state: Arc::clone(&self.batch_state),
@@ -2936,7 +3016,7 @@ impl NodeService {
             // relationship events in one ordered sequence (ADR-069 §2), so
             // relationship events cannot fall through to the immediate arm
             // below the way they do for `Batching`.
-            (BatchState::Transactional(buf), _) => {
+            (BatchState::Transactional { buf, .. }, _) => {
                 buf.push(envelope);
             }
             _ => {
@@ -8115,6 +8195,124 @@ mod tests {
         assert!(node_ids.contains(&root_id), "root event missing");
         assert!(node_ids.contains(&child1_id), "child1 event missing");
         assert!(node_ids.contains(&child2_id), "child2 event missing");
+    }
+
+    /// Start a transaction on another task that signals `started` once it
+    /// holds the slot, waits for `proceed`, then emits one event for
+    /// `node_id` and commits.
+    fn spawn_paused_transaction(
+        service: &NodeService,
+        node_id: &'static str,
+    ) -> (
+        Arc<tokio::sync::Notify>,
+        Arc<tokio::sync::Notify>,
+        tokio::task::JoinHandle<Result<(), NodeServiceError>>,
+    ) {
+        let started = Arc::new(tokio::sync::Notify::new());
+        let proceed = Arc::new(tokio::sync::Notify::new());
+        let (started_in, proceed_in) = (Arc::clone(&started), Arc::clone(&proceed));
+        let svc = service.clone();
+        let task = tokio::spawn(async move {
+            let svc_in = svc.clone();
+            svc.with_transaction(move |_tx| {
+                Box::pin(async move {
+                    started_in.notify_one();
+                    proceed_in.notified().await;
+                    svc_in.emit_event(DomainEvent::NodeCreated {
+                        node_id: node_id.to_string(),
+                        node_type: "text".to_string(),
+                    });
+                    Ok(())
+                })
+            })
+            .await
+        });
+        (started, proceed, task)
+    }
+
+    fn received_node_ids(
+        rx: &mut broadcast::Receiver<crate::db::events::EventEnvelope>,
+    ) -> Vec<String> {
+        let mut ids = Vec::new();
+        while let Ok(envelope) = rx.try_recv() {
+            if let DomainEvent::NodeCreated { node_id, .. } = envelope.event {
+                ids.push(node_id);
+            }
+        }
+        ids
+    }
+
+    /// A batch guard dropped while another task's transaction has its batch
+    /// parked flushes the batch then, and the transaction ends with the slot
+    /// back to `Immediate` — not a restored, ownerless batch that would
+    /// swallow every later event.
+    #[tokio::test]
+    async fn batch_guard_dropped_during_a_transaction_leaves_the_slot_immediate() {
+        let (service, _temp) = create_test_service().await;
+        let mut rx = service.subscribe_to_events();
+
+        let guard = service.begin_batch_emit();
+        service.emit_event(DomainEvent::NodeCreated {
+            node_id: "batched".to_string(),
+            node_type: "text".to_string(),
+        });
+        let (started, proceed, task) = spawn_paused_transaction(&service, "in-tx");
+        started.notified().await;
+
+        drop(guard);
+        assert_eq!(received_node_ids(&mut rx), vec!["batched".to_string()]);
+
+        proceed.notify_one();
+        task.await.unwrap().unwrap();
+        assert_eq!(received_node_ids(&mut rx), vec!["in-tx".to_string()]);
+        assert!(matches!(
+            *service.batch_state.lock().unwrap(),
+            BatchState::Immediate
+        ));
+
+        service.emit_event(DomainEvent::NodeCreated {
+            node_id: "after".to_string(),
+            node_type: "text".to_string(),
+        });
+        assert_eq!(
+            received_node_ids(&mut rx),
+            vec!["after".to_string()],
+            "a later event must broadcast immediately"
+        );
+    }
+
+    /// A batch opened while another task's transaction runs is parked under
+    /// it rather than replacing its buffer: the transaction's committed
+    /// events join the batch, and the batch delivers everything on drop.
+    #[tokio::test]
+    async fn batch_opened_during_a_transaction_receives_its_committed_events() {
+        let (service, _temp) = create_test_service().await;
+        let mut rx = service.subscribe_to_events();
+
+        let (started, proceed, task) = spawn_paused_transaction(&service, "in-tx");
+        started.notified().await;
+        let guard = service.begin_batch_emit();
+
+        proceed.notify_one();
+        task.await.unwrap().unwrap();
+        assert!(
+            received_node_ids(&mut rx).is_empty(),
+            "the transaction's events wait for the batch it found open"
+        );
+
+        service.emit_event(DomainEvent::NodeCreated {
+            node_id: "batched".to_string(),
+            node_type: "text".to_string(),
+        });
+        drop(guard);
+
+        let mut ids = received_node_ids(&mut rx);
+        ids.sort();
+        assert_eq!(ids, vec!["batched".to_string(), "in-tx".to_string()]);
+        assert!(matches!(
+            *service.batch_state.lock().unwrap(),
+            BatchState::Immediate
+        ));
     }
 
     /// The batch importer assigns collection membership via

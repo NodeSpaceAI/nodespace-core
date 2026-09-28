@@ -171,9 +171,12 @@ impl NodeService {
         let mut collisions: Vec<(String, String)> = Vec::new();
         let mut batch_collections: std::collections::HashMap<String, String> =
             std::collections::HashMap::new();
+        // Within the batch, match the way `get_collection_by_name` matches a
+        // stored row — this row's lowercased content against an earlier
+        // active collection's lowercased title — so a batch detects exactly
+        // what the same rows created one at a time would have.
         for node in nodes.iter().filter(|n| n.node_type == "collection") {
-            let name =
-                crate::services::collection_service::normalize_collection_name(&node.content);
+            let name = node.content.to_lowercase();
             let stored = self
                 .store
                 .get_collection_by_name(&node.content)
@@ -188,9 +191,9 @@ impl NodeService {
             if let Some(existing) = stored.or_else(|| batch_collections.get(&name).cloned()) {
                 collisions.push((node.id.clone(), existing));
             }
-            if node.lifecycle_status == "active" {
+            if let (true, Some(title)) = (node.lifecycle_status == "active", &node.title) {
                 batch_collections
-                    .entry(name)
+                    .entry(title.to_lowercase())
                     .or_insert_with(|| node.id.clone());
             }
         }
@@ -249,9 +252,11 @@ impl NodeService {
     /// row fails the caller's transaction, rolling back every row of the
     /// batch along with any invariant action's own writes.
     ///
-    /// Dispatch runs after the whole batch is inserted, so a rule on a child
-    /// row sees its parent's `has_child` edge already on `tx` — unlike a
-    /// `create_node_with_parent` create, whose edge lands after dispatch.
+    /// Dispatch runs after the whole batch is inserted, so an invariant
+    /// action — which runs on `tx` — sees every row and edge of the batch.
+    /// A rule's conditions do not: they are evaluated through pooled reads,
+    /// which cannot see this transaction's uncommitted rows, the same limit
+    /// every single-node dispatch has.
     async fn insert_bulk_hierarchy_rows_in_tx(
         &self,
         tx: &NodeServiceTx<'_>,
