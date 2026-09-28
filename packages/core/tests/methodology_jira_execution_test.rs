@@ -548,15 +548,33 @@ async fn a_cardinality_eviction_dispatches_its_removal() -> Result<()> {
         ))
         .await?;
     tokio::time::sleep(Duration::from_millis(80)).await;
+
+    // An open epic lets its issues go: the rule is a condition, not a blanket veto.
+    let moved = h.create("story", json!({})).await?;
+    assert!(h.link(&epic, "issues", &moved).await);
+    assert!(
+        h.link(&other, "issues", &moved).await,
+        "moving an issue out of an open epic must be allowed"
+    );
+    assert_eq!(h.containers_of(&moved, "epic").await?, vec![other.clone()]);
+
     assert!(h.set(&epic, json!({ "status": "in_progress" })).await?);
+    let stored = h.service.get_node(&epic).await?.expect("epic exists");
+    assert_eq!(
+        stored.properties["task"]["status"],
+        json!("in_progress"),
+        "precondition: the epic's status lives in the inherited `task` bucket, got {}",
+        stored.properties
+    );
 
     assert!(
         !h.link(&other, "issues", &story).await,
         "moving an issue out of an in-progress epic must be rejected via its eviction"
     );
     assert_eq!(h.containers_of(&story, "epic").await?, vec![epic.clone()]);
-    assert!(
-        h.issues_of(&other).await?.is_empty(),
+    assert_eq!(
+        h.issues_of(&other).await?,
+        vec![moved],
         "the rejected relink's new edge must be rolled back too"
     );
 
