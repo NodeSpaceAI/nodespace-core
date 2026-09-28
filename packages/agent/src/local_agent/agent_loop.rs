@@ -125,8 +125,8 @@ pub fn stage1_skill_names(titles: impl IntoIterator<Item = String>) -> Vec<Strin
     names
 }
 
-/// Put to Stage 2 when it replies in prose after the user already answered a
-/// clarification in this intent. `System`-role, like the other records the
+/// Put to Stage 2 when it replies in prose, with no tool call, in an intent
+/// that is already clarified (see [`session_already_clarified`]). `System`-role, like the other records the
 /// history carries, because it states a fact of the conversation rather than
 /// something the user said.
 const ALREADY_CLARIFIED_NUDGE: &str = "The user has already answered a clarifying question \
@@ -136,7 +136,7 @@ const ALREADY_CLARIFIED_NUDGE: &str = "The user has already answered a clarifyin
 /// Opening phrase of a routing clarification.
 ///
 /// Presentation only. Whether a turn clarified is recorded structurally (see
-/// [`answered_clarifications`]), never read back from this text.
+/// [`session_already_clarified`]), never read back from this text.
 const CLARIFICATION_OPENER: &str = "I can take that a couple of ways";
 
 /// Longest canonical-args string stored verbatim as a completed write's identity.
@@ -747,7 +747,7 @@ fn comparable_title(s: &str) -> String {
 /// call. The guard's job ends once the user has been asked.
 fn mentioned_entity_duplicated_by<'a>(
     mentioned_entities: &'a [crate::agent_types::MentionedEntity],
-    answered_clarifications: &[String],
+    composed_clarifications: &[String],
     tool: &str,
     args: &serde_json::Value,
 ) -> Option<&'a crate::agent_types::MentionedEntity> {
@@ -763,7 +763,7 @@ fn mentioned_entity_duplicated_by<'a>(
         .iter()
         .find(|e| e.node_type == node_type && comparable_title(&e.title) == title)
         .filter(|e| {
-            !answered_clarifications
+            !composed_clarifications
                 .iter()
                 .any(|asked| asked.contains(e.id.as_str()))
         })
@@ -1393,8 +1393,12 @@ pub fn stage1_query_from_turns(prior_turns: &[&str], user_message: &str) -> Stri
 /// likely an answer ("hi" → "Hello!") as a question, so counting it alone would
 /// suppress the first genuine clarification of any chat that opened with
 /// conversation or a lookup, and re-prompt its next plain reply. Two in one
-/// intent is the loop the contract exists to stop. The cost is that an intent
-/// clarified only in prose can ask twice.
+/// intent is the loop the contract exists to stop. Two costs are accepted.
+/// An intent clarified only in prose can ask twice. And a chat that only reads
+/// never closes its intent, so from its third non-writing turn a tool-free
+/// reply is re-prompted once (with a nudge that assumes a clarification was
+/// asked) and an ambiguous request falls through to retrieval instead of being
+/// clarified, until something is written.
 ///
 /// A prose reply never closes the intent either, so it cannot erase a composed
 /// clarification before it — which reading every non-composed reply as a
@@ -2638,9 +2642,9 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                 // that reply (see `session_already_clarified`) stops the NEXT
                 // turn from clarifying; it does nothing for this one. So put
                 // it back once, with the contract stated, before accepting
-                // prose. Keyed on structure alone — no call this turn, an
-                // answered clarification on record — never on the reply's
-                // wording. The prose is dropped rather than kept as history:
+                // prose. Keyed on structure alone — no call this turn, and an
+                // intent already clarified (a composed clarification, or two
+                // turns that did not write) — never on the reply's wording. The prose is dropped rather than kept as history:
                 // the model re-reading its own question is what to avoid.
                 if !clarify_nudged
                     && !any_real_tool_calls
