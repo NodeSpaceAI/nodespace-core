@@ -538,6 +538,20 @@ fn coerce_filter_value_to_field_type(
     item
 }
 
+/// The top-level keys of `args` that are not one of the tool's own `known`
+/// parameters. `create_node` / `update_node` promote these into
+/// `field_values`, tolerating models that pass schema fields flat.
+fn unknown_top_level_keys(args: &Value, known: &[&str]) -> serde_json::Map<String, Value> {
+    args.as_object()
+        .map(|obj| {
+            obj.iter()
+                .filter(|(k, _)| !known.contains(&k.as_str()))
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// Truncate a string to `max_chars`, appending `[truncated]` if truncated.
 fn truncate(s: &str, max_chars: usize) -> String {
     if s.len() <= max_chars {
@@ -3213,25 +3227,16 @@ impl GraphToolExecutor {
         args: Value,
     ) -> Result<ToolResult, ToolError> {
         // Collect any flat (unknown) keys and promote them into field_values.
-        // This tolerates models that pass schema fields at the top level rather
-        // than nested inside "field_values".
-        let flat_extras: serde_json::Map<String, Value> = {
-            const KNOWN: &[&str] = &[
+        let flat_extras = unknown_top_level_keys(
+            &args,
+            &[
                 "content",
                 "node_type",
                 "field_values",
                 "parent_id",
                 "collection",
-            ];
-            args.as_object()
-                .map(|obj| {
-                    obj.iter()
-                        .filter(|(k, _)| !KNOWN.contains(&k.as_str()))
-                        .map(|(k, v)| (k.clone(), v.clone()))
-                        .collect()
-                })
-                .unwrap_or_default()
-        };
+            ],
+        );
 
         let params: AgentCreateNodeParams =
             serde_json::from_value(args).map_err(|e| ToolError::InvalidArguments {
@@ -3347,17 +3352,8 @@ impl GraphToolExecutor {
         args: Value,
     ) -> Result<ToolResult, ToolError> {
         // Collect any flat (unknown) keys and promote them into field_values.
-        let flat_extras: serde_json::Map<String, Value> = {
-            const KNOWN: &[&str] = &["id", "node_id", "content", "field_values"];
-            args.as_object()
-                .map(|obj| {
-                    obj.iter()
-                        .filter(|(k, _)| !KNOWN.contains(&k.as_str()))
-                        .map(|(k, v)| (k.clone(), v.clone()))
-                        .collect()
-                })
-                .unwrap_or_default()
-        };
+        let flat_extras =
+            unknown_top_level_keys(&args, &["id", "node_id", "content", "field_values"]);
 
         let params: AgentUpdateNodeParams =
             serde_json::from_value(args).map_err(|e| ToolError::InvalidArguments {
@@ -4514,6 +4510,23 @@ mod tests {
             inference_engine: None,
             playbook_lifecycle: None,
         }
+    }
+
+    // -- unknown_top_level_keys --
+
+    #[test]
+    fn unknown_top_level_keys_excludes_known_params() {
+        let args = json!({"content": "x", "field_values": {}, "status": "open", "priority": 2});
+        let extras = unknown_top_level_keys(&args, &["content", "field_values"]);
+        assert_eq!(
+            Value::Object(extras),
+            json!({"status": "open", "priority": 2})
+        );
+    }
+
+    #[test]
+    fn unknown_top_level_keys_of_non_object_is_empty() {
+        assert!(unknown_top_level_keys(&json!("not an object"), &[]).is_empty());
     }
 
     // -- unique / unique_case_insensitive advisory-only wording --
