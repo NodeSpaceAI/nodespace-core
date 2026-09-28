@@ -105,7 +105,8 @@ fn daemon_binary_name() -> &'static str {
 /// forgot to opt out used to land in tray mode and hang on SIGTERM). The
 /// desktop app's daemon is the one deployment that wants the tray icon, so it
 /// opts in here. A flag rather than an environment variable, because the
-/// Windows HKCU autorun entry is a bare command line.
+/// Windows HKCU autorun entry is a bare command line. Must equal the daemon's
+/// own `TRAY_FLAG` (`packages/daemon/src/main.rs`).
 const DAEMON_TRAY_FLAG: &str = "--tray";
 
 /// Relative path from HOME to the daemon socket, scoped by build variant.

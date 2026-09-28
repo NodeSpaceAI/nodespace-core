@@ -1092,6 +1092,8 @@ mod watch_for_shutdown_signal_tests {
 }
 
 /// Command-line flag that opts the daemon INTO tray mode. See [`tray_mode`].
+/// The desktop app passes the same literal as `DAEMON_TRAY_FLAG` in
+/// `daemon_setup.rs`; the two crates share no dependency, so keep them in step.
 const TRAY_FLAG: &str = "--tray";
 
 /// Whether `main` should hand the main thread to `tray::run`'s
@@ -1099,9 +1101,8 @@ const TRAY_FLAG: &str = "--tray";
 /// [`serve_headless`] path.
 ///
 /// Headless is the default; tray mode is an explicit opt-in via [`TRAY_FLAG`],
-/// passed only by the desktop app's own daemon launchers (`write_plist`,
-/// `write_systemd_service`, `spawn_daemon_windows` and
-/// `register_autorun_windows` in `daemon_setup.rs`). It is a flag rather than
+/// passed only by the desktop app's own daemon launchers (`daemon_setup.rs`)
+/// and the .pkg installer's LaunchAgent plist. It is a flag rather than
 /// an environment variable because the Windows HKCU autorun entry is a bare
 /// command line with no way to carry environment.
 ///
