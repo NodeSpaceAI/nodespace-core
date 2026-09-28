@@ -7,6 +7,7 @@
  */
 
 import { createLogger } from '$lib/utils/logger';
+import { renderedOffsetTo } from '$lib/utils/rendered-text-offset';
 
 const log = createLogger('CursorPositioning');
 
@@ -215,6 +216,64 @@ export class PositioningPerformanceMonitor {
 export const performanceMonitor = new PositioningPerformanceMonitor();
 
 /**
+ * Find the rendered-text character offset for a click on a node's view
+ * element, using the browser's native caret hit-testing (`caretRangeFromPoint`)
+ * directly against the already-rendered live element — no DOM construction,
+ * so cost is independent of content length.
+ *
+ * @param viewElement - The live, already-rendered view div (not a mock)
+ * @param clientX - Click X in viewport coordinates (`event.clientX`)
+ * @param clientY - Click Y in viewport coordinates (`event.clientY`)
+ * @returns The rendered-text character offset (matching `extractTextWithLineBreaks`
+ *   / `renderedOffsetTo` counting: text length, +1 per `<br>`), or null when
+ *   native caret hit-testing isn't available in this environment (e.g.
+ *   Happy-DOM) or the hit point falls outside `viewElement`. Callers should
+ *   fall back to `createMockElementForView` + `findCharacterFromClick` in
+ *   that case.
+ */
+export function findViewOffsetFromClick(
+  viewElement: HTMLElement,
+  clientX: number,
+  clientY: number
+): number | null {
+  const startTime = performance.now();
+  const doc = viewElement.ownerDocument;
+
+  if (typeof doc?.caretRangeFromPoint !== 'function') {
+    return null;
+  }
+
+  let range: Range | null = null;
+  try {
+    range = doc.caretRangeFromPoint(clientX, clientY);
+  } catch (e) {
+    log.warn('caretRangeFromPoint threw; falling back to mock-element positioning', e);
+    return null;
+  }
+
+  if (!range) {
+    return null;
+  }
+
+  const offset = renderedOffsetTo(viewElement, range.startContainer, range.startOffset);
+
+  const duration = performance.now() - startTime;
+  performanceMonitor.recordMeasurement(duration);
+
+  return offset;
+}
+
+/**
+ * Hard cap on how many character spans `createMockElementForView` will ever
+ * build. The native path (`findViewOffsetFromClick`) never pays this cost —
+ * this only bounds the degraded fallback used when native caret hit-testing
+ * is unavailable, trading exact positioning beyond the cap for a bounded,
+ * predictable cost instead of one span per character of arbitrarily long
+ * content.
+ */
+export const MAX_MOCK_ELEMENT_CHARS = 4000;
+
+/**
  * Create temporary mock element with character spans for view div
  * Mirrors exact rendering from view mode for accurate click positioning
  *
@@ -264,7 +323,17 @@ export function createMockElementForView(
 
   // Wrap each character in span with data-position attribute
   // This allows findCharacterFromClick to map coordinates → position
-  content.split('').forEach((char, index) => {
+  // Capped: this fallback only runs when native caret hit-testing is
+  // unavailable, so beyond the cap positioning is approximate rather than
+  // building one span per character of arbitrarily long content.
+  if (content.length > MAX_MOCK_ELEMENT_CHARS) {
+    log.warn(
+      `createMockElementForView: content length ${content.length} exceeds cap ${MAX_MOCK_ELEMENT_CHARS}; positioning beyond the cap will be approximate`
+    );
+  }
+  const cappedContent = content.slice(0, MAX_MOCK_ELEMENT_CHARS);
+
+  cappedContent.split('').forEach((char, index) => {
     if (char === '\n') {
       // Handle newlines: add span + <br> (matches view rendering)
       const span = document.createElement('span');
