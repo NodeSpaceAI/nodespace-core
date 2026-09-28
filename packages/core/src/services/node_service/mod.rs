@@ -48,7 +48,7 @@ pub(crate) mod relationship;
 pub(crate) mod schema;
 
 pub use conflicts::deterministic_conflict_id;
-pub use hierarchy::flatten_subtree_content;
+pub use hierarchy::render_subtree_markdown;
 pub use relationship::{CreatedRelationship, StoredEdge};
 
 /// Reserved ID for the DatabaseSettingsNode singleton instance.

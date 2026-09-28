@@ -1230,39 +1230,82 @@ impl NodeService {
     }
 }
 
-/// Flatten a node's child subtree into ordered content sections: a depth-first
-/// pre-order walk of `adjacency_list` (children already in fractional order, then
-/// their descendants), collecting each node's non-empty `content`. The root itself
-/// is excluded. `node_map`/`adjacency_list` come from `get_subtree_data`.
-pub fn flatten_subtree_content(
+/// Render a node's child subtree as markdown: a depth-first pre-order walk of
+/// `adjacency_list` (children already in fractional order, then their
+/// descendants), emitting each node's non-empty `content`. The root itself is
+/// excluded. `node_map`/`adjacency_list` come from `get_subtree_data`.
+///
+/// Import stores a `- ` bullet's text without its marker; bullet-ness is
+/// carried by structure instead: `prepare_nodes_from_markdown` hangs a bullet
+/// off the paragraph that introduces it, or off the bullet it is indented
+/// under. This re-derives the markers from that outline shape: a `text` node
+/// whose parent is also a `text` node is a list item, rendered with a `- `
+/// marker and indented two spaces per level of nesting under another list
+/// item. Consecutive list items are joined by a single newline (a tight
+/// list); every other boundary is a blank line. Other node types
+/// (code-block, ordered-list, …) carry their markdown syntax inside `content`
+/// and are emitted verbatim.
+pub fn render_subtree_markdown(
     root_id: &str,
     node_map: &std::collections::HashMap<String, crate::models::Node>,
     adjacency_list: &std::collections::HashMap<String, Vec<String>>,
-) -> Vec<String> {
-    let mut parts = Vec::new();
-    let mut stack: Vec<String> = adjacency_list
-        .get(root_id)
-        .map(|c| c.iter().rev().cloned().collect())
-        .unwrap_or_default();
-    while let Some(id) = stack.pop() {
-        match node_map.get(&id) {
-            Some(node) => {
-                if !node.content.is_empty() {
-                    parts.push(node.content.clone());
-                }
-            }
-            None => tracing::warn!(
-                node_id = %id,
-                "flatten_subtree_content: id in adjacency_list missing from node_map"
-            ),
-        }
-        if let Some(children) = adjacency_list.get(&id) {
-            for c in children.iter().rev() {
-                stack.push(c.clone());
-            }
+) -> String {
+    /// A node still to visit, with the parent facts that decide whether it
+    /// is a list item: a `text` parent makes a `text` node one, and the
+    /// parent's own list level (when it is itself a list item) sets nesting.
+    struct Pending {
+        id: String,
+        parent_is_text: bool,
+        parent_list_level: Option<usize>,
+    }
+
+    fn push_children(
+        stack: &mut Vec<Pending>,
+        children: Option<&Vec<String>>,
+        parent_is_text: bool,
+        parent_list_level: Option<usize>,
+    ) {
+        for id in children.into_iter().flatten().rev() {
+            stack.push(Pending {
+                id: id.clone(),
+                parent_is_text,
+                parent_list_level,
+            });
         }
     }
-    parts
+
+    let mut out = String::new();
+    let mut prev_was_list_item = false;
+    let mut stack = Vec::new();
+    push_children(&mut stack, adjacency_list.get(root_id), false, None);
+    while let Some(pending) = stack.pop() {
+        let children = adjacency_list.get(&pending.id);
+        let Some(node) = node_map.get(&pending.id) else {
+            tracing::warn!(
+                node_id = %pending.id,
+                "render_subtree_markdown: id in adjacency_list missing from node_map"
+            );
+            push_children(&mut stack, children, false, None);
+            continue;
+        };
+        let is_text = node.node_type == "text";
+        let list_level = (is_text && pending.parent_is_text)
+            .then(|| pending.parent_list_level.map_or(0, |level| level + 1));
+        if !node.content.is_empty() {
+            if !out.is_empty() {
+                let tight = prev_was_list_item && list_level.is_some();
+                out.push_str(if tight { "\n" } else { "\n\n" });
+            }
+            if let Some(level) = list_level {
+                out.push_str(&"  ".repeat(level));
+                out.push_str("- ");
+            }
+            out.push_str(&node.content);
+            prev_was_list_item = list_level.is_some();
+        }
+        push_children(&mut stack, children, is_text, list_level);
+    }
+    out
 }
 
 /// Roots have no parent edge to reposition under, so they cannot be reordered.

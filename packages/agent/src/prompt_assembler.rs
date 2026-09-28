@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use nodespace_core::markdown::{NodeTemplate, SeedTier};
 use nodespace_core::models::Node;
-use nodespace_core::services::{flatten_subtree_content, NodeService};
+use nodespace_core::services::{render_subtree_markdown, NodeService};
 
 use crate::agent_guidance::{NODE_REFERENCE_FORMAT, SCHEMA_CREATION_RULES, TOOL_STRATEGY_RULES};
 use crate::agent_types::ToolDefinition;
@@ -168,8 +168,8 @@ impl PromptAssembler {
     }
 
     /// Fetch the full descendant subtree of an agent-guidance node and
-    /// concatenate every descendant's content as the body, in natural
-    /// document (depth-first, fractional-order) order.
+    /// render it back to markdown as the body, in natural document
+    /// (depth-first, fractional-order) order, with bullet markers restored.
     ///
     /// This walks the **entire** subtree, not just the node's direct
     /// children. Seeded guidance bodies that contain a `HEADER:` line followed
@@ -196,7 +196,7 @@ impl PromptAssembler {
         // children, following adjacency_list which is already sorted by
         // fractional order. The root node itself is excluded (its content is
         // the short title/label, not the guidance body).
-        flatten_subtree_content(&node.id, &node_map, &adjacency_list).join("\n\n")
+        render_subtree_markdown(&node.id, &node_map, &adjacency_list)
     }
 
     /// Render a Minijinja template with the given context.

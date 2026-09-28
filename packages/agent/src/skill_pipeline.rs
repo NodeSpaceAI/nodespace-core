@@ -1078,7 +1078,7 @@ mod tests {
     /// The seeding pipeline is a genuine markdown import — `prepare_nodes_from_markdown`
     /// turns ` ``` ` fences into `code-block` nodes — so an unfenced JSON example
     /// silently degrades to paragraph text. Fencing is what makes these examples
-    /// round-trip as structured markdown (`flatten_subtree_content` re-emits each
+    /// round-trip as structured markdown (`render_subtree_markdown` re-emits each
     /// node's content verbatim, fence markers included).
     ///
     /// Neither seed carries a multi-line JSON example any more: both moved

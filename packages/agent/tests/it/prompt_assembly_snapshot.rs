@@ -22,7 +22,7 @@
 //!    `agent_guidance.rs`) the same way `PromptAssembler::assemble()` does:
 //!    each seed's `markdown_content` is parsed into a node subtree via
 //!    `prepare_nodes_from_template` (`assemble()`'s callers seed the graph
-//!    with exactly this), flattened via the real `flatten_subtree_content`
+//!    with exactly this), flattened via the real `render_subtree_markdown`
 //!    (matching `fetch_prompt_body`'s traversal), THEN rendered through
 //!    Minijinja and joined.
 //!
@@ -32,9 +32,10 @@
 //!    that's a no-op, but `agent_guidance.rs`'s `TOOL_STRATEGY_RULES`/
 //!    `SCHEMA_CREATION_RULES` bodies are multi-line with `"HEADER:\n- bullet"`
 //!    structure: `prepare_nodes_from_template` parses each bullet into a
-//!    child node (stripping the `"- "` prefix) and `flatten_subtree_content`
-//!    rejoins them with blank lines — a materially different string than the
-//!    raw source text `assemble_static` would emit. `fetch_prompt_body`'s own
+//!    child node (stripping the `"- "` prefix) and `render_subtree_markdown`
+//!    re-derives the markers from that structure — a round trip that can
+//!    lose text `assemble_static` would never exercise (see
+//!    `seeded_markdown_round_trips_through_parse_and_render`). `fetch_prompt_body`'s own
 //!    doc comment names the historical bug this exact mechanism guards
 //!    against ("seed prompt body dropped" — a direct-children-only flatten
 //!    silently ate the bullets). Using `assemble_static` here would leave
@@ -60,7 +61,7 @@
 //!
 //! Skill instructions come from `skill_pipeline::seed_skill_nodes()` — the
 //! real production skill corpus — run through the real
-//! `prepare_nodes_from_template` parser and the real `flatten_subtree_content`
+//! `prepare_nodes_from_template` parser and the real `render_subtree_markdown`
 //! subtree-flatten function that `skill_ops::render_skill_instructions` and
 //! `PromptAssembler::fetch_prompt_body` both call against a live DB. Building
 //! the `node_map`/`adjacency_list` directly from `prepare_nodes_from_template`'s
@@ -122,7 +123,7 @@ use nodespace_core::models::schema::EnumValue;
 use nodespace_core::models::{Node, SchemaField, SchemaProtectionLevel, SkillNode};
 use nodespace_core::ops::context_ops::{EntityResolution, PlaybookInfo, WorkspaceContext};
 use nodespace_core::ops::entity_types_block::EntityTypeDescriptor;
-use nodespace_core::services::flatten_subtree_content;
+use nodespace_core::services::render_subtree_markdown;
 
 /// The skill names production's Stage-1 prompt carries on a freshly seeded
 /// registry — what `GraphToolExecutor::skill_names` returns there.
@@ -338,7 +339,7 @@ fn fixture_schema_metadata() -> serde_json::Value {
 // skill-candidate fixtures below.
 // ---------------------------------------------------------------------------
 
-/// Build the `(node_map, adjacency_list)` pair `flatten_subtree_content`
+/// Build the `(node_map, adjacency_list)` pair `render_subtree_markdown`
 /// expects, directly from a `prepare_nodes_from_template` parse — the same
 /// shape `get_subtree_data` would hand back from a real DB for the
 /// equivalent seeded node, minus the round trip.
@@ -378,8 +379,8 @@ fn build_node_map_and_adjacency(
 /// One seed's contribution to the resident prompt: parse its
 /// `markdown_content` into a node subtree exactly as first-run seeding does
 /// (`prepare_nodes_from_template`), flatten it exactly as
-/// `PromptAssembler::fetch_prompt_body` does (`flatten_subtree_content`,
-/// joined with `"\n\n"`), then render through Minijinja exactly as
+/// `PromptAssembler::fetch_prompt_body` does (`render_subtree_markdown`,
+/// which restores list markers), then render through Minijinja exactly as
 /// `PromptAssembler::render_template` does (raw text on a render error,
 /// never a panic). Returns `None` for an empty body, matching `assemble()`'s
 /// own skip.
@@ -390,7 +391,7 @@ fn render_seed_prompt_section(
     let prepared = prepare_nodes_from_template(tmpl).expect("seed prompt template parses");
     let root_id = prepared[0].id.clone();
     let (node_map, adjacency) = build_node_map_and_adjacency(&prepared);
-    let body = flatten_subtree_content(&root_id, &node_map, &adjacency).join("\n\n");
+    let body = render_subtree_markdown(&root_id, &node_map, &adjacency);
     if body.trim().is_empty() {
         return None;
     }
@@ -422,7 +423,7 @@ fn assemble_resident_system_prompt(workspace_context: &str) -> String {
 /// Render a seeded skill's instruction subtree to markdown the same way
 /// production does: `skill_ops::render_skill_instructions` fetches
 /// `node_service.get_subtree_data` then calls this same
-/// `flatten_subtree_content`. Building the node_map/adjacency_list directly
+/// `render_subtree_markdown`. Building the node_map/adjacency_list directly
 /// from `prepare_nodes_from_template`'s output reproduces that subtree
 /// without a database — the seed parse and the subtree flatten are each
 /// production code; only the DB round trip between them is skipped (the
@@ -431,7 +432,7 @@ fn render_seed_instructions(tmpl: &NodeTemplate) -> String {
     let prepared = prepare_nodes_from_template(tmpl).expect("seed skill template parses");
     let root_id = prepared[0].id.clone();
     let (node_map, adjacency) = build_node_map_and_adjacency(&prepared);
-    flatten_subtree_content(&root_id, &node_map, &adjacency).join("\n\n")
+    render_subtree_markdown(&root_id, &node_map, &adjacency)
 }
 
 fn seed_skill(tmpl: &NodeTemplate) -> SkillNode {
@@ -690,4 +691,44 @@ fn stage1_request_matches_golden() {
     rendered.push_str("\n\nTOOLS:\n");
     rendered.push_str(&render_tool_definitions(&stage1_tool_definitions()));
     golden::assert_matches("stage1_request", &rendered);
+}
+
+/// Every seeded body — skills and resident agent guidance — must reach the
+/// model as the markdown its author wrote: same lines, same order, list
+/// markers and nesting intact. Blank lines are ignored in the comparison
+/// (render joins blocks with exactly one, and a tight list's spacing is
+/// pinned by `render_subtree_markdown`'s own unit tests); anything else the
+/// parse → render round trip loses fails here, naming the seed and the
+/// first line that differs.
+#[test]
+fn seeded_markdown_round_trips_through_parse_and_render() {
+    fn content_lines(markdown: &str) -> Vec<&str> {
+        markdown
+            .lines()
+            .map(str::trim_end)
+            .filter(|l| !l.is_empty())
+            .collect()
+    }
+
+    let seeds = seed_skill_nodes()
+        .into_iter()
+        .chain(PromptAssembler::seed_agent_guidance_nodes());
+    for tmpl in seeds {
+        let rendered = render_seed_instructions(&tmpl);
+        let expected = content_lines(&tmpl.markdown_content);
+        let actual = content_lines(&rendered);
+        let first_diff = expected
+            .iter()
+            .zip(&actual)
+            .position(|(e, a)| e != a)
+            .unwrap_or(expected.len().min(actual.len()));
+        assert!(
+            expected == actual,
+            "seed `{}` does not round-trip at line {}:\n  source:   {:?}\n  rendered: {:?}",
+            tmpl.title,
+            first_diff + 1,
+            expected.get(first_diff),
+            actual.get(first_diff),
+        );
+    }
 }
