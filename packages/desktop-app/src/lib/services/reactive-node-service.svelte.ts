@@ -64,7 +64,9 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
 
   // UI state only - node data stored in SharedNodeStore
   const _uiState = $state<Record<string, NodeUIState>>({});
-  let _rootNodeIds = $state<string[]>([]);
+  // Raw, not deep: every write reassigns the whole array, and a deep proxy makes each
+  // indexOf/filter/spread over a large document's roots a per-element proxy read.
+  let _rootNodeIds = $state.raw<string[]>([]);
   const _activeNodeId = $state<string | undefined>(undefined);
 
   // Compute a node's depth by walking its parent chain via backend hierarchy queries.
