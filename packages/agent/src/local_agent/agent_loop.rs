@@ -728,9 +728,10 @@ fn comparable_title(s: &str) -> String {
 /// safe direction — no false refusal — and deliberately not widened into a
 /// fuzzy match to catch it.
 ///
-/// Disarmed for an entity that a clarification the user has answered in the
-/// current intent (`answered_clarifications`, taken at turn start) asked
-/// about. That is the confirmation turn, where a user who asked for a second,
+/// Disarmed for an entity that a composed clarification the user has answered
+/// in the current intent (`composed_clarifications`, taken at turn start) asked
+/// about. Only composed ones: a read-only reply that linked the record asked
+/// nothing. That is the confirmation turn, where a user who asked for a second,
 /// separate record must be able to get one; asking again there would make the
 /// duplicate unreachable.
 ///
@@ -1282,8 +1283,9 @@ struct RoutingOutcome {
     /// only when Stage 1 asked to clarify *and* the contract allowed it.
     ///
     /// This is the flattened text `format_clarification` produces — still the
-    /// form persisted into `session.messages` for the LLM-facing history and
-    /// `session_already_clarified`'s scan. [`Self::clarify_prompt`] carries the
+    /// form persisted into `session.messages` for the LLM-facing history.
+    /// Whether the turn clarified is recorded structurally (`PriorTurn`), not
+    /// read back from this text. [`Self::clarify_prompt`] carries the
     /// same question/options unflattened, for the frontend.
     clarification: Option<String>,
     /// The same clarification as structured data, alongside the flattened
@@ -1403,13 +1405,32 @@ fn session_already_clarified(session: &AgentSession) -> bool {
 /// its first reply as the clarification, and a later ambiguous request in it
 /// falls through to retrieval instead of being clarified.
 fn answered_clarifications(session: &AgentSession) -> Vec<&str> {
+    current_intent(session)
+        .map(|t| t.response.as_str())
+        .collect()
+}
+
+/// The clarifications in the current intent that the module composed — the
+/// turns recorded `Clarified`, not every turn that did not act.
+///
+/// What the duplicate-entity guard reads: it disarms only for a record the
+/// user was actually asked about. A read-only answer that linked the record
+/// ("Northwind Trading (nodespace://nw-1) is a customer") stays inside the
+/// intent too, but it asked nothing, and must not disarm the guard.
+fn composed_clarifications(session: &AgentSession) -> Vec<&str> {
+    current_intent(session)
+        .filter(|t| t.outcome == AiChatTurnOutcome::Clarified)
+        .map(|t| t.response.as_str())
+        .collect()
+}
+
+/// Every earlier turn since the last one that acted, newest first.
+fn current_intent(session: &AgentSession) -> impl Iterator<Item = &PriorTurn> {
     session
         .prior_turns
         .iter()
         .rev()
         .take_while(|t| t.outcome != AiChatTurnOutcome::Acted)
-        .map(|t| t.response.as_str())
-        .collect()
 }
 
 /// Compose a clarification from Stage 1's question and options.
@@ -2068,6 +2089,10 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
             .push(ChatMessage::text(Role::User, user_message.to_string()));
 
         let answered_clarifications: Vec<String> = answered_clarifications(session)
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+        let composed_clarifications: Vec<String> = composed_clarifications(session)
             .into_iter()
             .map(str::to_owned)
             .collect();
@@ -3169,7 +3194,7 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                                 )
                             } else if let Some(entity) = mentioned_entity_duplicated_by(
                                 &session.mentioned_entities,
-                                &answered_clarifications,
+                                &composed_clarifications,
                                 &tc.function_name,
                                 &args,
                             ) {
@@ -9413,6 +9438,36 @@ mod tests {
         );
     }
 
+    /// A read-only answer stays inside the intent and may link the record by
+    /// its id, but it asked the user nothing. "Do I have Northwind?" answered
+    /// with its link, then "add Northwind", is the case the guard exists for.
+    #[tokio::test]
+    async fn a_read_only_answer_linking_the_entity_does_not_disarm() {
+        let mut session = session_mentioning_northwind();
+        session.messages = vec![ChatMessage::text(
+            Role::User,
+            "Do I have Northwind Trading?",
+        )];
+        seed_turn(
+            &mut session,
+            AiChatTurnOutcome::Replied,
+            "Yes — Northwind Trading (nodespace://nw-1) is a company you sell to.",
+        );
+        let (_, calls) = run_entity_turn(
+            &mut session,
+            vec![
+                tool_round("tc_1", "create_node", NORTHWIND_CREATE),
+                text_round("Added Northwind Trading."),
+            ],
+        )
+        .await;
+
+        assert!(
+            !calls.iter().any(|c| c == "create_node"),
+            "a linked answer is not a confirmation, got {calls:?}"
+        );
+    }
+
     /// A write after the refusal is the model acting on what it was told —
     /// updating the existing record, say — and that correction stands.
     #[tokio::test]
@@ -12740,6 +12795,35 @@ mod tests {
             session.prior_turns.last().map(|t| t.outcome),
             Some(AiChatTurnOutcome::Replied)
         );
+    }
+
+    /// Only a turn with no tool call at all is put back. One that searched and
+    /// then replied may have shown the user what it found; pushing it to call
+    /// another tool would be wrong.
+    #[tokio::test]
+    async fn a_reply_after_a_tool_call_is_not_put_back() {
+        let mut session = new_session();
+        seed_turn(
+            &mut session,
+            AiChatTurnOutcome::Clarified,
+            &format!("{CLARIFICATION_OPENER}. Organize how?"),
+        );
+
+        let (result, generations) = run_routed_turn(
+            &mut session,
+            vec![
+                tool_round("tc_1", "search_nodes", r#"{"query":"contacts"}"#),
+                text_round("Here are your contacts."),
+            ],
+        )
+        .await;
+
+        assert_eq!(result.response, "Here are your contacts.");
+        assert_eq!(generations, 3, "Stage 1 and two Stage-2 generations only");
+        assert!(!session
+            .messages
+            .iter()
+            .any(|m| m.content == ALREADY_CLARIFIED_NUDGE));
     }
 
     /// The shape the routing eval actually produced: Stage 2 searched and then

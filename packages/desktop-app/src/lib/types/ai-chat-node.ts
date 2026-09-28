@@ -119,8 +119,9 @@ export interface AiChatMessage {
    */
   pendingDeletions?: AiChatPendingDeletion[];
   /**
-   * How this assistant turn ended, when an agent turn produced it: it called a
-   * tool, asked a composed clarifying question, or replied in prose.
+   * How this assistant turn ended, when an agent turn produced it: a write
+   * succeeded (or a delete was put up for confirmation), it asked a composed
+   * clarifying question, or it replied without changing anything.
    */
   outcome?: 'acted' | 'clarified' | 'replied';
 }

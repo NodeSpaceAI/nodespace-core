@@ -234,19 +234,20 @@ pub struct AiChatMessage {
 /// the history alone. The reply's text cannot answer it: a turn that asked in
 /// its own words carries no marker, and reading the model's prose for a
 /// question is the unreliable channel ADR-038 built `route_clarify` to avoid.
-/// What the turn *did* — act through a tool, ask through the clarify
-/// composer, or neither — is known exactly when it ends, so that is recorded.
+/// What the turn *did* — change the graph, ask through the clarify composer,
+/// or neither — is known exactly when it ends, so that is recorded.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum AiChatTurnOutcome {
-    /// The turn made at least one tool call. Resolves the current intent:
-    /// the user's next message starts a new one.
+    /// A write succeeded, or the turn asked to confirm a delete. Resolves the
+    /// current intent: the user's next message starts a new one.
     Acted,
     /// The turn put a composed clarifying question to the user.
     Clarified,
-    /// The turn replied in prose without calling a tool. Does not resolve the
-    /// intent, and counts against its one clarification: a prose reply that
-    /// asks the user something is a clarification the composer never saw.
+    /// Anything else: a prose reply, including one after reads only or after a
+    /// write that failed. Does not resolve the intent, and counts against its
+    /// one clarification: reading and then replying looks the same whether the
+    /// reply showed what was found or asked the user about it.
     Replied,
 }
 
