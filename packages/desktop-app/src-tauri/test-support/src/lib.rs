@@ -113,7 +113,6 @@ impl SpawnedDaemon {
             // daemon (ADR-053): without this, the daemon inherits the real HOME
             // and seeds `~/.nodespace/databases.toml` with this temp db path.
             .env("NODESPACE_HOME", tmp_dir.path())
-            .env("NODESPACED_HEADLESS", "1")
             // Default to `warn`, but let the caller raise it: diagnosing a
             // daemon-side stall from the test side is impossible when the
             // daemon's own `info!` breadcrumbs are filtered out before they

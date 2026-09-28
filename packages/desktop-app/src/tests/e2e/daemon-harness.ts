@@ -145,7 +145,6 @@ async function spawnDaemonAndProxy(): Promise<SpawnedProcesses> {
     // daemon never seeds the real user's `~/.nodespace/databases.toml` with
     // this throwaway db path (ADR-053).
     NODESPACE_HOME: tmpDir,
-    NODESPACED_HEADLESS: '1',
     RUST_LOG: 'warn'
   };
 

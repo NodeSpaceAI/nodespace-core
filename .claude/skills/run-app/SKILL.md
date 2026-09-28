@@ -45,7 +45,6 @@ minutes cold).
 mkdir -p /tmp/nsd && rm -f /tmp/nsd/d.sock
 NODESPACE_HOME=<scratchpad>/nshome \
 NODESPACED_SOCKET=/tmp/nsd/d.sock \
-NODESPACED_HEADLESS=1 \
   ./target/debug/nodespaced > <scratchpad>/daemon.log 2>&1
 ```
 
@@ -168,6 +167,6 @@ p.remove();
 | Isolation lever | `NODESPACE_HOME` (**not** `NODESPACED_DB_PATH` alone) |
 | Socket var | `NODESPACED_SOCKET`, same value for daemon and proxy |
 | Socket path | Must be short — `/tmp/nsd/d.sock`, never the scratchpad |
-| Headless | `NODESPACED_HEADLESS=1` |
+| Headless | Default — tray mode needs `--tray` |
 | Ports | Vite 5173, dev-proxy 3001 |
 | Real DB (never touch) | `~/.nodespace/database/nodespace.db` |

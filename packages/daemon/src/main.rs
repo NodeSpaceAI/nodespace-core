@@ -409,9 +409,8 @@ fn create_owner_only_pipe(
 /// it to a worker thread that hosts the gRPC server, and lets `tray::run`
 /// take over the main thread.
 ///
-/// Headless mode is supported for systems that don't have a display (Linux
-/// CI, headless servers): if `NODESPACED_HEADLESS=1` is set, the tray loop
-/// is skipped and we fall back to a pure async `main` that exits on signals.
+/// Tray mode is opt-in (see [`tray_mode`]): without `--tray` the tray loop is
+/// skipped and we fall back to a pure async `main` that exits on signals.
 ///
 /// Live validation found the tray-mode shutdown sequence can intermittently
 /// stall indefinitely after GPU/model teardown completes and before this
@@ -466,7 +465,7 @@ fn main() -> Result<()> {
         .build()
         .context("build tokio runtime")?;
 
-    if headless() {
+    if !tray_mode(&args) {
         let result = incompatible_database::stop_cleanly_on_incompatible_database(
             runtime.block_on(async { serve_headless().await }),
         );
@@ -1092,71 +1091,55 @@ mod watch_for_shutdown_signal_tests {
     }
 }
 
-/// Whether `main` should take the plain async [`serve_headless`] path instead
-/// of handing the main thread to `tray::run`'s `tao`/`NSApplication` event
-/// loop.
+/// Command-line flag that opts the daemon INTO tray mode. See [`tray_mode`].
+/// The desktop app passes the same literal as `DAEMON_TRAY_FLAG` in
+/// `daemon_setup.rs`; the two crates share no dependency, so keep them in step.
+const TRAY_FLAG: &str = "--tray";
+
+/// Whether `main` should hand the main thread to `tray::run`'s
+/// `tao`/`NSApplication` event loop instead of taking the plain async
+/// [`serve_headless`] path.
 ///
-/// Defaults to `false` (tray mode) so the desktop app's bundled daemon --
-/// which never sets this variable -- keeps its tray icon. That default is
-/// exactly what made the `nodespace-cli` Homebrew formula's daemon (no GUI,
-/// no bundled app, nothing that wants a tray icon) hang forever on
-/// `SIGTERM`/`SIGINT` with **zero clients ever attached**: unless
-/// `NODESPACED_HEADLESS=1` is set, that "headless" CLI daemon was *actually*
-/// entering tray mode too, since its `brew services` launch never set the
-/// variable either.
+/// Headless is the default; tray mode is an explicit opt-in via [`TRAY_FLAG`],
+/// passed only by the desktop app's own daemon launchers (`daemon_setup.rs`)
+/// and the .pkg installer's LaunchAgent plist. It is a flag rather than
+/// an environment variable because the Windows HKCU autorun entry is a bare
+/// command line with no way to carry environment.
 ///
-/// Root-caused two ways on real, live-hung instances (repeated, independent
-/// reproductions on separate machines): a `sample` (macOS) thread dump taken
-/// on a hung, zero-client instance shows every `tokio-rt-worker` thread and
-/// the I/O driver fully parked (`kevent`/condvar wait, 0% CPU, no busy loop)
-/// -- the process is genuinely stuck, not slow -- while the **main thread**
-/// sits forever inside `tray::run`'s `EventLoop::run_return` ->
-/// `-[NSApplication run]` -> `mach_msg2_trap`, i.e. parked in the tao/
-/// `NSApplication` event loop with nothing telling it to quit.
-///
-/// The exact symptom on top of that shared root cause varies by run and was
-/// not fully pinned down (would need platform-level tracing of `sigaction`
-/// and tao's `EventLoopProxy` wakeup path, out of scope here): sometimes the
-/// daemon's own `"SIGTERM received"` log line -- which fires synchronously
-/// the instant [`install_shutdown_handler`]'s future resolves, before any
-/// other work -- never prints at all, even minutes later; other times it
-/// prints almost immediately and the async shutdown sequence
-/// (`shutdown_all`/`release_shared_gpu`) completes in well under a second,
-/// but the OS process still lingers for tens of seconds to minutes before
-/// exiting (or needing `SIGKILL`) -- consistent with the main thread being
-/// stuck as above regardless of whether the signal task itself got promptly
-/// scheduled. The identical binary, signaled the identical way, with
-/// `NODESPACED_HEADLESS=1` set (so the tao/`NSApplication` event loop never
-/// starts and the main thread runs [`serve_headless`] directly instead)
-/// exits cleanly in well under a second, every time, including after real
-/// gRPC traffic -- this function's `false` default is what routes a
-/// should-be-headless deployment into the state that can produce either
-/// symptom above. What's fixed here is making sure a real headless
-/// deployment never exercises that path in the first place, via the
-/// Homebrew formula setting this variable explicitly
-/// (`scripts/update-homebrew-formula.ts`) rather than relying on this
-/// default. Tray mode's *own* SIGTERM handling remaining fragile when
-/// nothing pumps its run loop is a separate, still-open problem -- the same
-/// class of tray-mode shutdown hang this file's own watchdog documentation
-/// already flags as unresolved (see [`bridge_grpc_completion_to_tray`]).
-///
-/// Known gap left open deliberately: this function's own default is
-/// unchanged (still `false`, tray mode) -- only the one launcher known to
-/// need headless behavior, the `nodespace-cli` Homebrew formula, was updated
-/// to set the variable explicitly. Every existing headless-intent call site
-/// this codebase already has (the desktop app's own Tauri test harness, its
-/// daemon e2e harness, the skill eval preflight script) already sets this
-/// variable explicitly too, so nothing currently regresses -- but a future
-/// headless launcher (a systemd unit, a Docker entrypoint, a Linux distro
-/// package, or a person running `nodespaced` bare from memory) that forgets
-/// to set it would silently reproduce this exact class of hang. Flipping
-/// this function's default to headless-by-default, with tray mode becoming
-/// the opt-in (needed only by the desktop app's own bundled daemon launch),
-/// would close that class of bug at the root instead of per-launcher --
-/// deliberately left as a follow-up rather than folded into this fix, since
-/// it touches the desktop app's own daemon-launch code path.
-fn headless() -> bool {
-    matches!(std::env::var("NODESPACED_HEADLESS").as_deref(), Ok("1"))
+/// The default is the safe direction because tray mode's SIGTERM/SIGINT
+/// handling is unreliable when nothing else drives its run loop: live thread
+/// samples of hung, zero-client instances show every tokio worker parked
+/// while the main thread sits forever in `-[NSApplication run]`, and the
+/// daemon needs `SIGKILL`. The identical binary on the headless path exits in
+/// well under a second. With a tray-by-default, every headless launcher (a
+/// Homebrew service, a systemd unit, a Docker entrypoint, a bare
+/// `nodespaced &`) had to remember to opt out or reproduce that hang; with
+/// headless-by-default, forgetting the flag only costs the desktop app its
+/// tray icon.
+fn tray_mode(args: &[String]) -> bool {
+    args.iter().any(|a| a == TRAY_FLAG)
+}
+
+#[cfg(test)]
+mod tray_mode_tests {
+    use super::*;
+
+    fn argv(extra: &[&str]) -> Vec<String> {
+        std::iter::once("nodespaced")
+            .chain(extra.iter().copied())
+            .map(String::from)
+            .collect()
+    }
+
+    #[test]
+    fn bare_launch_is_headless() {
+        assert!(!tray_mode(&argv(&[])));
+    }
+
+    #[test]
+    fn tray_flag_opts_into_tray_mode() {
+        assert!(tray_mode(&argv(&[TRAY_FLAG])));
+    }
 }
 
 /// Returns the build edition: "pro" when compiled with `--features pro`, otherwise "community".
