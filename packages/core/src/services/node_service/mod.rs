@@ -494,12 +494,26 @@ impl Emitter {
 }
 
 /// One open `begin_batch_emit` batch: the guard's `token`, the emitter that
-/// opened it, and its events keyed by node id, each with the sequence number
-/// it was published at (see [`BatchState::offer`]).
+/// opened it, and its events keyed by node id and origin (see
+/// [`BatchState::offer`]).
 struct OpenBatch {
     token: u64,
     owner: Emitter,
-    events: HashMap<String, (u64, crate::db::events::EventEnvelope)>,
+    events: HashMap<BatchKey, HeldEvent>,
+}
+
+/// What a batch holds events under: the node, and the client the write came
+/// from. Writes from different origins never merge, so one writer's changes
+/// are never relabelled with another's metadata — a sync-applied create must
+/// not reach the playbook engine's local-origin gate (ADR-073) as a local one.
+type BatchKey = (String, Option<String>);
+
+/// A batch's merged event for one [`BatchKey`]: `first_seq` orders the
+/// flush, `last_seq` orders a merge (see [`BatchState::offer`]).
+struct HeldEvent {
+    first_seq: u64,
+    last_seq: u64,
+    envelope: crate::db::events::EventEnvelope,
 }
 
 /// The open `begin_batch_emit` batches, shared by every clone of a
@@ -550,9 +564,9 @@ impl BatchState {
     /// Offer a node-keyed `envelope` published at `seq` by `emitter` to an
     /// open batch: the most recent batch `emitter` opened itself, else the
     /// most recently opened batch of all. The batch holds one envelope per
-    /// node, merging each new one with the held one in `seq` order (see
-    /// [`coalesce_envelopes`]). Returns the envelope when no batch is open,
-    /// for the caller to broadcast.
+    /// node and origin, merging each new one with the held one in `seq`
+    /// order (see [`coalesce_envelopes`]). Returns the envelope when no batch
+    /// is open, for the caller to broadcast.
     fn offer(
         &mut self,
         emitter: Emitter,
@@ -568,15 +582,26 @@ impl BatchState {
         let Some(index) = index else {
             return Some(envelope);
         };
+        let key = (node_id, envelope.metadata.source_client_id.clone());
         let events = &mut self.batches[index].events;
-        let merged = match events.remove(&node_id) {
-            Some((held_seq, held)) if held_seq > seq => {
-                (held_seq, coalesce_envelopes(envelope, held))
-            }
-            Some((_, held)) => (seq, coalesce_envelopes(held, envelope)),
-            None => (seq, envelope),
+        let merged = match events.remove(&key) {
+            Some(held) if held.last_seq > seq => HeldEvent {
+                first_seq: held.first_seq.min(seq),
+                last_seq: held.last_seq,
+                envelope: coalesce_envelopes(envelope, held.envelope),
+            },
+            Some(held) => HeldEvent {
+                first_seq: held.first_seq,
+                last_seq: seq,
+                envelope: coalesce_envelopes(held.envelope, envelope),
+            },
+            None => HeldEvent {
+                first_seq: seq,
+                last_seq: seq,
+                envelope,
+            },
         };
-        events.insert(node_id, merged);
+        events.insert(key, merged);
         None
     }
 
@@ -648,8 +673,10 @@ impl Drop for BatchEmitGuard {
             .unwrap_or_else(|e| e.into_inner())
             .close(self.token);
         if let Some(batch) = batch {
+            let mut held: Vec<HeldEvent> = batch.events.into_values().collect();
+            held.sort_by_key(|event| event.first_seq);
             flush_envelopes(
-                batch.events.into_values().map(|(_, envelope)| envelope),
+                held.into_iter().map(|event| event.envelope),
                 &self.tx,
                 &self.push_tx,
                 &self.push_excluded_origin,
@@ -678,12 +705,15 @@ fn envelope_node_id(envelope: &crate::db::events::EventEnvelope) -> Option<Strin
 ///   read the node's current state by fetching it, as for any create.
 /// - Two updates become one carrying the later committed node and every key
 ///   either changed: each key's first `old_value` and last `new_value`, with
-///   a key whose value ended where it started left out.
+///   a key whose value ended where it started left out. The play write id is
+///   the exception: the merged update changed it only if the later one did,
+///   since `chain_depth_of_write` reads it as "the write that produced this
+///   node was a play write", and a user edit after a play write was not.
 /// - Anything else — a delete, or a create after a delete — is the later
 ///   event alone, since it states what the node now is.
 ///
-/// Metadata is always the later event's: it names the latest writer, which
-/// is what the push channel's origin filter must see.
+/// Both events come from one origin (see [`BatchKey`]); the metadata is the
+/// later event's.
 fn coalesce_envelopes(
     earlier: crate::db::events::EventEnvelope,
     later: crate::db::events::EventEnvelope,
@@ -719,12 +749,20 @@ fn coalesce_envelopes(
 
 /// The net change of two consecutive diffs, in first-changed order: each
 /// key's first `old_value` and last `new_value`, dropping a key whose value
-/// ended where it started.
+/// ended where it started. The play write id counts only if `later`
+/// changed it (see [`coalesce_envelopes`]).
 fn merge_property_changes(
     earlier: Vec<crate::db::events::PropertyChange>,
     later: Vec<crate::db::events::PropertyChange>,
 ) -> Vec<crate::db::events::PropertyChange> {
+    use crate::db::events::PLAYBOOK_WRITE_ID_PROPERTY;
+    let later_is_play_write = later
+        .iter()
+        .any(|change| change.key == PLAYBOOK_WRITE_ID_PROPERTY);
     let mut merged = earlier;
+    if !later_is_play_write {
+        merged.retain(|change| change.key != PLAYBOOK_WRITE_ID_PROPERTY);
+    }
     for change in later {
         match merged.iter_mut().find(|held| held.key == change.key) {
             Some(held) => held.new_value = change.new_value,
@@ -8805,6 +8843,94 @@ mod tests {
             }
             other => panic!("expected NodeUpdated, got {other:?}"),
         }
+    }
+
+    /// Net property changes of two consecutive diffs, including the cases a
+    /// round trip cancels and the play write id's later-write-only rule.
+    #[test]
+    fn merge_property_changes_nets_each_key() {
+        use crate::db::events::PLAYBOOK_WRITE_ID_PROPERTY as WRITE_ID;
+        let v = || Some(json!("v"));
+        let w = || Some(json!("w"));
+        let cases: Vec<(&str, Vec<_>, Vec<_>, Vec<_>)> = vec![
+            (
+                "remove then re-add",
+                vec![change("k", v(), None)],
+                vec![change("k", None, v())],
+                vec![],
+            ),
+            (
+                "add then remove",
+                vec![change("k", None, v())],
+                vec![change("k", v(), None)],
+                vec![],
+            ),
+            (
+                "chained",
+                vec![change("k", v(), w())],
+                vec![change("k", w(), None)],
+                vec![change("k", v(), None)],
+            ),
+            (
+                "user edit after play write",
+                vec![change(WRITE_ID, v(), w()), change("k", None, v())],
+                vec![change("j", None, v())],
+                vec![change("k", None, v()), change("j", None, v())],
+            ),
+            (
+                "play write after user edit",
+                vec![change("k", None, v())],
+                vec![change(WRITE_ID, v(), w())],
+                vec![change("k", None, v()), change(WRITE_ID, v(), w())],
+            ),
+            (
+                "two play writes",
+                vec![change(WRITE_ID, None, v())],
+                vec![change(WRITE_ID, v(), w())],
+                vec![change(WRITE_ID, None, w())],
+            ),
+        ];
+        for (name, earlier, later, expected) in cases {
+            assert_eq!(merge_property_changes(earlier, later), expected, "{name}");
+        }
+    }
+
+    /// Writes to one node from different origins never merge: a sync-applied
+    /// create followed by a local update flushes as the sync create and the
+    /// local update, each under its own origin, in commit order.
+    #[tokio::test]
+    async fn batch_keeps_writes_from_different_origins_apart() {
+        let (service, _temp) = create_test_service().await;
+        let sync = service.with_client(crate::db::events::SYNC_SERVICE_CLIENT_ID);
+        let mut rx = service.subscribe_to_events();
+        let node = Node::new("text".to_string(), "synced".to_string(), json!({}));
+
+        let guard = service.begin_batch_emit();
+        sync.emit_event(DomainEvent::NodeCreated {
+            node_id: node.id.clone(),
+            node_type: "text".to_string(),
+        });
+        service.emit_event(updated(
+            &node,
+            vec![change("text.k", None, Some(json!("local")))],
+        ));
+        drop(guard);
+
+        let mut flushed = Vec::new();
+        while let Ok(envelope) = rx.try_recv() {
+            flushed.push(envelope);
+        }
+        assert_eq!(flushed.len(), 2, "one event per origin, got {flushed:?}");
+        assert!(matches!(flushed[0].event, DomainEvent::NodeCreated { .. }));
+        assert_eq!(
+            flushed[0].metadata.source_client_id.as_deref(),
+            Some(crate::db::events::SYNC_SERVICE_CLIENT_ID)
+        );
+        assert!(matches!(flushed[1].event, DomainEvent::NodeUpdated { .. }));
+        assert_ne!(
+            flushed[1].metadata.source_client_id.as_deref(),
+            Some(crate::db::events::SYNC_SERVICE_CLIENT_ID)
+        );
     }
 
     /// A delete ends the node, so a batch that created or updated it and
