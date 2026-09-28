@@ -297,6 +297,19 @@ fn may_gain_parent_violation(
     }
 }
 
+/// One node's resolved value for one field, from
+/// [`SqliteStore::get_effective_field_values_in_tx`].
+#[derive(Debug, Clone)]
+pub(crate) struct EffectiveFieldValue {
+    pub node_id: String,
+    pub node_type: String,
+    pub field: String,
+    /// The property bucket the value was resolved from.
+    pub bucket: Option<String>,
+    /// `None` when no bucket in the node's scope holds the name.
+    pub value: Option<Value>,
+}
+
 impl SqliteStore {
     pub async fn create_node(
         &self,
@@ -3341,9 +3354,10 @@ impl SqliteStore {
 
     /// The value write validation will see for each of `fields` — declared by
     /// `owner` — on every instance of `scan_root` and of every subtype
-    /// extending it, returned as `(field name, value)` pairs, one per node
-    /// holding a non-null value. `owner` is `scan_root` itself or one of its
-    /// ancestors.
+    /// extending it: one [`EffectiveFieldValue`] per node and field, with
+    /// `value: None` where no bucket in scope holds the name. A resolved null
+    /// is left out — it satisfies every declaration, `required` included.
+    /// `owner` is `scan_root` itself or one of its ancestors.
     ///
     /// Under ADR-078's per-owner buckets an instance stores the fields `owner`
     /// declares under the `owner` key, whatever its own `node_type`. Each
@@ -3362,23 +3376,24 @@ impl SqliteStore {
         scan_root: &str,
         owner: &str,
         fields: &[String],
-    ) -> Result<Vec<(String, Value)>> {
+    ) -> Result<Vec<EffectiveFieldValue>> {
         let subtypes = Self::get_subtype_closure_in_tx(tx, scan_root).await?;
         let parents = Self::get_extends_parent_map_in_tx(tx).await?;
-        // Each subtype's chain up to and including `owner`, nearest first.
-        // `owner` is on `scan_root`'s chain, so every subtype's chain reaches
-        // it; scopes above it never win, since `owner`'s own bucket is
-        // consulted first.
+        // Each subtype's chain up to and including `owner`, nearest first;
+        // scopes above it never win, since `owner`'s own bucket is consulted
+        // first. `owner` is on `scan_root`'s chain, so every subtype's chain
+        // reaches it — one that doesn't is not under `owner` at all and is
+        // skipped rather than judged against a declaration it doesn't
+        // inherit.
         let lookup = |t: &str| parents.get(t).cloned();
         let chains: std::collections::HashMap<&str, Vec<String>> = subtypes
             .iter()
-            .map(|subtype| {
+            .filter_map(|subtype| {
                 let mut chain =
                     crate::schema::extends_chain::resolve_ancestor_chain(subtype, &lookup);
-                if let Some(end) = chain.iter().position(|t| t == owner) {
-                    chain.truncate(end + 1);
-                }
-                (subtype.as_str(), chain)
+                let end = chain.iter().position(|t| t == owner)?;
+                chain.truncate(end + 1);
+                Some((subtype.as_str(), chain))
             })
             .collect();
         let mut values = Vec::new();
@@ -3417,10 +3432,18 @@ impl SqliteStore {
                             .get(scope.as_str())
                             .and_then(Value::as_object)
                             .and_then(|bucket| bucket.get(field))
+                            .map(|value| (scope, value))
                     });
-                    if let Some(value) = resolved.filter(|v| !v.is_null()) {
-                        values.push((field.clone(), value.clone()));
+                    if resolved.is_some_and(|(_, value)| value.is_null()) {
+                        continue;
                     }
+                    values.push(EffectiveFieldValue {
+                        node_id: id.clone(),
+                        node_type: node_type.clone(),
+                        field: field.clone(),
+                        bucket: resolved.map(|(scope, _)| scope.clone()),
+                        value: resolved.map(|(_, value)| value.clone()),
+                    });
                 }
             }
         }

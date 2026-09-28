@@ -3170,10 +3170,17 @@ pub async fn handle_update_schema(
     // into force on this schema's instances, read from each declaring
     // schema's bucket — grouped by that schema for the instance-value check
     // below. Only when the parent actually changes.
+    //
+    // Those declarations are read here, outside the transaction, so the
+    // version of every schema on the new parent chain is recorded alongside
+    // and re-checked under the write guard: a type change on one of them
+    // committing in between would otherwise let this call judge instance
+    // values against a declaration that no longer stands.
     let mut inherited_by_owner: Vec<(String, Vec<SchemaField>)> = Vec::new();
+    let mut parent_chain_versions: Vec<(String, i64)> = Vec::new();
     if let Some(new_parent) = params.extends.as_deref().map(str::trim) {
         if declared_extends_parent(&schema.relationships).as_deref() != Some(new_parent) {
-            let (parent_fields, owners, _) = node_service
+            let (parent_fields, owners, parent_chain) = node_service
                 .resolve_field_owners(new_parent)
                 .await
                 .map_err(|e| {
@@ -3182,7 +3189,23 @@ pub async fn handle_update_schema(
                         new_parent, e
                     ))
                 })?;
+            for ancestor in parent_chain {
+                let version = node_service
+                    .get_node(&ancestor)
+                    .await
+                    .map_err(|e| {
+                        MarkdownError::internal_error(format!(
+                            "Failed to read schema '{}': {}",
+                            ancestor, e
+                        ))
+                    })?
+                    .map(|n| n.version)
+                    .unwrap_or_default();
+                parent_chain_versions.push((ancestor, version));
+            }
             for field in parent_fields {
+                // `resolve_field_owners` records an owner for every field it
+                // returns; the fallback only keeps this total.
                 let owner = owners
                     .get(&field.name)
                     .cloned()
@@ -3204,6 +3227,7 @@ pub async fn handle_update_schema(
             let properties = properties.clone();
             let added_fields = added_fields_for_tx.clone();
             let inherited_by_owner = inherited_by_owner.clone();
+            let parent_chain_versions = parent_chain_versions.clone();
             Box::pin(async move {
                 let current = crate::db::SqliteStore::get_node_in_tx(tx.store_tx(), &schema_id)
                     .await
@@ -3215,6 +3239,21 @@ pub async fn handle_update_schema(
                         expected_version,
                         actual_version: current.version,
                     });
+                }
+                for (ancestor, expected_version) in &parent_chain_versions {
+                    let actual_version =
+                        crate::db::SqliteStore::get_node_in_tx(tx.store_tx(), ancestor)
+                            .await
+                            .map_err(NodeServiceError::from_store)?
+                            .map(|n| n.version)
+                            .unwrap_or_default();
+                    if actual_version != *expected_version {
+                        return Err(NodeServiceError::VersionConflict {
+                            node_id: ancestor.clone(),
+                            expected_version: *expected_version,
+                            actual_version,
+                        });
+                    }
                 }
 
                 // Values stored under an added field's name must satisfy its
@@ -3297,7 +3336,7 @@ pub async fn handle_update_schema(
         .await
         .map_err(|e| match e {
             NodeServiceError::InvalidUpdate(_) => MarkdownError::invalid_params(e.to_string()),
-            NodeServiceError::VersionConflict { .. } => {
+            NodeServiceError::VersionConflict { ref node_id, .. } => {
                 // Phase 1 renames commit on their own, ahead of this group,
                 // so a caller retrying the whole call must not resend them.
                 let renames_note = if fields_renamed > 0 {
@@ -3307,10 +3346,10 @@ pub async fn handle_update_schema(
                     ""
                 };
                 MarkdownError::invalid_params(format!(
-                    "Schema '{}' changed concurrently while this update was being applied; \
-                     none of its field, relationship or description changes were written.{} \
-                     Re-read the schema and retry.",
-                    params.schema_id, renames_note
+                    "Schema '{}' changed concurrently while this update to '{}' was being \
+                     applied; none of its field, relationship or description changes were \
+                     written.{} Re-read the schema and retry.",
+                    node_id, params.schema_id, renames_note
                 ))
             }
             other => MarkdownError::internal_error(format!("Failed to update schema: {}", other)),
