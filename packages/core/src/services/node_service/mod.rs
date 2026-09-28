@@ -5316,6 +5316,43 @@ mod tests {
         );
     }
 
+    /// The load-bearing behavior change of this fix: `bulk_update` must
+    /// never take `title` from the caller, even when one IS supplied — not
+    /// just when it's absent. No `NodeService`-level update path has ever
+    /// honored a caller-supplied title (only the lower-level
+    /// `SqliteStore::update_node` does, for its own direct callers), so an
+    /// explicit `update.title` alongside an update that touches none of
+    /// content/node_type/properties must be silently ignored, exactly as
+    /// `update_node` would ignore it. Without this pinned, a regression that
+    /// reintroduced "fall back to the caller's title when nothing else
+    /// changed" would pass every other test in this file undetected.
+    #[tokio::test]
+    async fn bulk_update_ignores_a_caller_supplied_title_when_nothing_relevant_changed() {
+        let (service, _temp) = create_test_service().await;
+
+        let node = Node::new("text".to_string(), "Original".to_string(), json!({}));
+        let id = service.create_node(node).await.unwrap();
+        let before = service.get_node(&id).await.unwrap().unwrap();
+        assert_eq!(before.title, Some("Original".to_string()));
+
+        service
+            .bulk_update(vec![(
+                id.clone(),
+                NodeUpdate::new()
+                    .with_lifecycle_status("archived".to_string())
+                    .with_title(Some("caller-supplied title must be ignored".to_string())),
+            )])
+            .await
+            .unwrap();
+
+        let after = service.get_node(&id).await.unwrap().unwrap();
+        assert_eq!(
+            after.title, before.title,
+            "an explicit update.title must be ignored when content/node_type/properties don't \
+             trigger a recompute — bulk_update must never take title from the caller"
+        );
+    }
+
     #[tokio::test]
     async fn test_bulk_delete() {
         let (service, _temp) = create_test_service().await;

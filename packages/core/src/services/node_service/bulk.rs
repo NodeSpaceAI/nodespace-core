@@ -165,22 +165,29 @@ impl NodeService {
                 self.rebucket_and_validate(node, false).await?;
             }
 
-            // Step 3: Title — same rule as the single-node create path
-            // (`insert_node_in_tx_no_invariant_dispatch`): an untemplated
-            // type's caller-supplied title is honored as given, computed
-            // only when absent. A templated type's title is never
-            // caller-controlled — its `content` must already be empty (the
-            // rule enforced above) — so it is always (re)derived from the
-            // template, overwriting whatever was supplied; this is the gap
-            // this method used to leave open, persisting a synced batch's
-            // placeholder title verbatim instead of rendering it. Read AFTER
-            // `rebucket_and_validate` so a templated interpolation sees the
-            // final, chain-bucketed property layout, not the pre-rebucket
-            // one. `bulk_create` writes no `has_child` edge itself — a
-            // hierarchy import goes through `bulk_create_hierarchy*`
-            // instead — so every row here is a root at write time, the same
-            // treatment `create_node`'s own `is_root: true` gives a plain,
-            // non-hierarchical create.
+            // Step 3: Title. An untemplated type's caller-supplied title is
+            // honored as given, computed only when absent — matching the
+            // single-node create path's own `if node.title.is_none()` rule
+            // (`insert_node_in_tx_no_invariant_dispatch`). A templated
+            // type's title, though, is ALWAYS (re)derived here, even when
+            // one was supplied — a strictly broader rule than the
+            // single-node path's, which gets away with the plain
+            // `is_none()` check only because its one real caller always
+            // sends `title: None` for every row. A *batched* sync-apply
+            // create can't make that same assumption — it sends a non-null
+            // placeholder for every row, including templated ones — so an
+            // `is_none()`-only check here would silently miss exactly the
+            // case this method exists to fix. A templated type's title is
+            // never legitimately caller-controlled anyway — its `content`
+            // must already be empty (the rule enforced above) — so
+            // overriding a non-null placeholder is correct, not just
+            // permissive. Read AFTER `rebucket_and_validate` so a templated
+            // interpolation sees the final, chain-bucketed property layout,
+            // not the pre-rebucket one. `bulk_create` writes no `has_child`
+            // edge itself — a hierarchy import goes through
+            // `bulk_create_hierarchy*` instead — so every row here is a
+            // root at write time, the same treatment `create_node`'s own
+            // `is_root: true` gives a plain, non-hierarchical create.
             let schema = schemas.get(&node.node_type).and_then(Option::as_ref);
             let has_template = schema.and_then(|s| s.title_template.as_ref()).is_some();
             if has_template && !chain_fields.contains_key(&node.node_type) {
