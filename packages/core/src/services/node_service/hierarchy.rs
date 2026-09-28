@@ -592,6 +592,18 @@ impl NodeService {
                 ),
             });
         }
+        self.emit_former_parent_deleted(node_id, new_parent, moved);
+    }
+
+    /// Emit `RelationshipDeleted` for the `has_child` edge a committed move
+    /// replaced, when the parent actually changed. A same-parent reorder and a
+    /// first-time attach replaced no edge and emit nothing.
+    fn emit_former_parent_deleted(
+        &self,
+        node_id: &str,
+        new_parent: Option<&str>,
+        moved: &crate::db::NodeMove,
+    ) {
         if let Some(old_id) = moved.former_parent.as_deref() {
             if new_parent != Some(old_id) {
                 self.emit_event(DomainEvent::RelationshipDeleted {
@@ -887,8 +899,9 @@ impl NodeService {
 
     /// Create parent-child edge atomically with sibling positioning
     ///
-    /// Used during node creation to establish parent relationship while preserving
-    /// sibling ordering. This is separate from move_node() which is for moving existing nodes.
+    /// Replaces any existing parent, so this can reparent; a reparent emits
+    /// `RelationshipDeleted` for the replaced edge after `RelationshipCreated`
+    /// for the new one, the same event shape `move_node` produces.
     ///
     /// # Arguments
     ///
@@ -958,6 +971,9 @@ impl NodeService {
                         serde_json::json!({"order": moved.placement.order}),
                     ),
                 });
+                // A reparent also announces the edge it replaced, after the new
+                // one, exactly as `move_node` does.
+                service.emit_former_parent_deleted(&child_id, Some(&parent_id), &moved);
                 Ok(())
             })
         })
