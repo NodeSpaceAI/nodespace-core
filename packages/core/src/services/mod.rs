@@ -170,6 +170,18 @@ impl SearchNodeFilters {
 /// comparison operators) — the two `property_filters` implementations that
 /// both need the same namespaced-bucket lookup, just applied to
 /// differently-shaped filter inputs.
+///
+/// Falls back to a flat top-level lookup when no bucket holds the path.
+/// Namespacing is the rule for an ordinary instance node, but two categories
+/// are deliberately exempt (`NodeService::normalize_flat_properties_to_namespace`):
+/// a `schema`-type node's own definition fields (`node_type == "schema"` is
+/// special-cased out of namespacing entirely — its properties, e.g.
+/// `isCore`, sit flat at the top level, the same shape as before this
+/// namespace-aware lookup existed), and `_`-prefixed bookkeeping keys
+/// (`_seed`, `_schema_version`), which always stay at a fixed,
+/// type-independent top-level path on every node regardless of type. Neither
+/// has a namespace bucket to be found in above, so without this fallback a
+/// filter naming either would silently stop matching anything.
 pub(crate) fn find_namespaced_property<'a>(
     properties: &'a serde_json::Value,
     path_segments: &[&str],
@@ -184,7 +196,12 @@ pub(crate) fn find_namespaced_property<'a>(
             return candidate;
         }
     }
-    None
+
+    let mut candidate = Some(properties);
+    for segment in path_segments {
+        candidate = candidate.and_then(|v| v.get(*segment));
+    }
+    candidate
 }
 
 /// Whether `filters` carries at least one `property_filters` key — used to
@@ -577,6 +594,53 @@ mod tests {
         );
         assert_eq!(
             find_namespaced_property(&properties, &["metadata", "missing"], &chain),
+            None
+        );
+    }
+
+    /// A `schema`-type node's own definition fields (`isCore`, etc.) are
+    /// deliberately never namespaced (`node_type == "schema"` is exempted in
+    /// `NodeService::normalize_flat_properties_to_namespace`'s caller), so
+    /// they sit flat at the top level of `properties` — not under a
+    /// `"schema"` bucket, which a schema node's properties never has. A
+    /// chain of `["schema"]` (schema has no `extends` ancestry) finds
+    /// nothing in any bucket; the flat top-level fallback must still find
+    /// the field, matching how this lookup behaved before it became
+    /// namespace-aware.
+    #[test]
+    fn test_flat_top_level_fallback_finds_schema_node_own_fields() {
+        let properties = json!({"isCore": true, "name": "Task"});
+        let chain = vec!["schema".to_string()];
+        assert_eq!(
+            find_namespaced_property(&properties, &["isCore"], &chain),
+            Some(&json!(true))
+        );
+    }
+
+    /// `_`-prefixed bookkeeping keys (`_seed`, `_schema_version`) always stay
+    /// at a fixed, type-independent top-level path
+    /// (`normalize_flat_properties_to_namespace` never namespaces them, on
+    /// any node type), so they need the same flat fallback as a schema
+    /// node's own fields, on an otherwise perfectly ordinary namespaced node.
+    #[test]
+    fn test_flat_top_level_fallback_finds_underscore_prefixed_bookkeeping_key() {
+        let properties = json!({"task": {"status": "done"}, "_seed": "abc123"});
+        let chain = vec!["task".to_string()];
+        assert_eq!(
+            find_namespaced_property(&properties, &["_seed"], &chain),
+            Some(&json!("abc123"))
+        );
+    }
+
+    /// The flat fallback must not paper over a genuinely absent field: a key
+    /// that exists in neither a chain bucket nor at the top level still
+    /// reports not-found.
+    #[test]
+    fn test_flat_top_level_fallback_does_not_invent_a_missing_field() {
+        let properties = json!({"task": {"status": "done"}});
+        let chain = vec!["task".to_string()];
+        assert_eq!(
+            find_namespaced_property(&properties, &["nonexistent"], &chain),
             None
         );
     }
