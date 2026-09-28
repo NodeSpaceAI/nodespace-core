@@ -575,6 +575,9 @@
         content: currentContent ?? ''
       });
 
+      // Clear placeholder ID synchronously so the next placeholder gets a fresh ID
+      resetPlaceholderId();
+
       // Add to shared store and persist immediately (not in-memory only)
       // Persist now so it exists in DB when creating the next node with insertAfterNodeId
       sharedNodeStore.setNode(promotedNode, { type: 'viewer', viewerId }, false);
