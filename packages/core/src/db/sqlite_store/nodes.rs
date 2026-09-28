@@ -3339,26 +3339,31 @@ impl SqliteStore {
         Ok(affected)
     }
 
-    /// Every non-null value stored under `fields` in the `type_id` property
-    /// bucket, across the instances of `type_id` and of every subtype
-    /// extending it — returned as `(field name, value)` pairs, one per node
-    /// holding one.
+    /// The value write validation will see for each of `fields`, on every
+    /// instance of `type_id` and of every subtype extending it — returned as
+    /// `(field name, value)` pairs, one per node holding a non-null value.
     ///
-    /// The same row set [`Self::rename_schema_field_in_tx`] migrates: under
-    /// ADR-078's per-owner buckets a subtype instance stores the fields
-    /// `type_id` declares under the `type_id` key, so both must look past
-    /// rows whose own `node_type` is `type_id`. `update_schema` reads it to
-    /// refuse re-declaring a field those values would no longer satisfy.
+    /// The row set is the one [`Self::rename_schema_field_in_tx`] migrates:
+    /// under ADR-078's per-owner buckets a subtype instance stores the fields
+    /// `type_id` declares under the `type_id` key, so rows whose own
+    /// `node_type` is a subtype count too. Each value is resolved the way
+    /// `NodeService::validate_node_with_fields` merges buckets — walking from
+    /// the row's own type up the `extends` chain to `type_id`, nearest bucket
+    /// holding the name wins, even when it holds null. A leftover value in a
+    /// subtype's own bucket therefore shadows the `type_id` one here exactly
+    /// as it does on write.
     ///
-    /// Run on the caller's `tx` so the check sees the same state the schema
-    /// write that follows it commits against — no instance write can land
-    /// between the two under the store's single writer guard.
-    pub(crate) async fn get_bucket_field_values_in_tx(
+    /// Run on the caller's `tx`: it sees that transaction's own writes (a
+    /// rename's just-migrated rows), and no other instance write can land
+    /// between this read and the caller's commit under the store's single
+    /// writer guard.
+    pub(crate) async fn get_effective_field_values_in_tx(
         tx: &Tx<'_>,
         type_id: &str,
         fields: &[String],
     ) -> Result<Vec<(String, Value)>> {
         let subtypes = Self::get_subtype_closure_in_tx(tx, type_id).await?;
+        let parents = Self::get_extends_parent_map_in_tx(tx).await?;
         let mut values = Vec::new();
 
         const TYPE_CHUNK: usize = 900;
@@ -3370,7 +3375,7 @@ impl SqliteStore {
                 .conn()
                 .query(
                     &format!(
-                        "SELECT properties FROM node WHERE node_type IN ({})",
+                        "SELECT id, node_type, properties FROM node WHERE node_type IN ({})",
                         placeholders.join(", ")
                     ),
                     params,
@@ -3379,14 +3384,34 @@ impl SqliteStore {
                 .context("Failed to fetch nodes for field value check")?;
 
             while let Some(row) = rows.next().await? {
-                let props_str: String = row.get(0)?;
-                let props: Value =
-                    serde_json::from_str(&props_str).unwrap_or(serde_json::json!({}));
-                let Some(bucket) = props.get(type_id).and_then(Value::as_object) else {
-                    continue;
-                };
+                let id: String = row.get(0)?;
+                let node_type: String = row.get(1)?;
+                let props_str: String = row.get(2)?;
+                let props: Value = serde_json::from_str(&props_str)
+                    .with_context(|| format!("Node '{id}' has unparseable properties"))?;
+
+                // `node_type`'s chain up to and including `type_id`, nearest
+                // first. Every row's type is in `type_id`'s descendant
+                // closure, so the walk reaches it; the depth bound only
+                // guards a malformed edge set.
+                let mut chain = vec![node_type.as_str()];
+                while *chain.last().unwrap_or(&type_id) != type_id
+                    && chain.len() <= crate::schema::extends_chain::MAX_EXTENDS_DEPTH
+                {
+                    match chain.last().and_then(|t| parents.get(*t)) {
+                        Some(parent) => chain.push(parent.as_str()),
+                        None => break,
+                    }
+                }
+
                 for field in fields {
-                    if let Some(value) = bucket.get(field).filter(|v| !v.is_null()) {
+                    let resolved = chain.iter().find_map(|scope| {
+                        props
+                            .get(*scope)
+                            .and_then(Value::as_object)
+                            .and_then(|bucket| bucket.get(field))
+                    });
+                    if let Some(value) = resolved.filter(|v| !v.is_null()) {
                         values.push((field.clone(), value.clone()));
                     }
                 }

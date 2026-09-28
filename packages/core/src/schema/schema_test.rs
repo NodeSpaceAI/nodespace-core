@@ -7153,3 +7153,80 @@ async fn test_redeclare_field_type_checks_subtype_instances() {
     .await;
     expect_conflict(result, "number", 1);
 }
+
+#[tokio::test]
+async fn test_redeclare_field_type_sees_a_subtype_bucket_shadowing_the_base_one() {
+    let (svc, _tmp) = create_test_service().await;
+    handle_create_schema(&svc, json!({ "name": "Ticket", "fields": [] }))
+        .await
+        .unwrap();
+    // `points` starts as Bug's own field, so its value sits in the `bug`
+    // bucket and stays there once Bug drops the declaration.
+    handle_create_schema(
+        &svc,
+        json!({
+            "name": "Bug",
+            "extends": "ticket",
+            "fields": [
+                { "name": "points", "type": "string", "protection": "user", "indexed": false }
+            ]
+        }),
+    )
+    .await
+    .expect("Bug extends Ticket");
+    create_node_with_points(&svc, "bug", json!("large")).await;
+    handle_update_schema(
+        &svc,
+        json!({ "schema_id": "bug", "remove_fields": ["points"] }),
+    )
+    .await
+    .expect("Bug drops points");
+
+    // Nearest scope wins on write, so declaring `points` on Ticket would have
+    // the bug node's leftover string validated against `number`.
+    let result = handle_update_schema(
+        &svc,
+        json!({ "schema_id": "ticket", "add_fields": [number_points()] }),
+    )
+    .await;
+    expect_conflict(result, "number", 1);
+}
+
+#[tokio::test]
+async fn test_rename_onto_a_name_with_leftover_values_rejected() {
+    let (svc, _tmp) = create_test_service().await;
+    create_ticket_with_string_points(&svc).await;
+    let node_id = create_node_with_points(&svc, "ticket", json!("large")).await;
+    handle_update_schema(
+        &svc,
+        json!({
+            "schema_id": "ticket",
+            "remove_fields": ["points"],
+            "add_fields": [
+                { "name": "score", "type": "number", "protection": "user", "indexed": false }
+            ]
+        }),
+    )
+    .await
+    .expect("dropping points and adding score succeeds");
+
+    // The node holds no `score`, so the rename leaves its old `points`
+    // string in place under a field now declared `number`.
+    let result = handle_update_schema(
+        &svc,
+        json!({
+            "schema_id": "ticket",
+            "rename_fields": [{ "from": "score", "to": "points" }]
+        }),
+    )
+    .await;
+    expect_conflict(result, "number", 1);
+
+    // The whole rename rolled back.
+    let schema = svc.get_schema_node("ticket").await.unwrap().unwrap();
+    assert!(schema.get_field("score").is_some());
+    assert!(schema.get_field("points").is_none());
+    edit_content(&svc, &node_id)
+        .await
+        .expect("the node stays editable");
+}

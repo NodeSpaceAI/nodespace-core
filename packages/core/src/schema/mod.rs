@@ -3195,7 +3195,8 @@ pub async fn handle_update_schema(
                 // otherwise leave those nodes failing validation on every
                 // later write. Checked under the write guard, against the
                 // state this write commits over.
-                reject_incompatible_instance_values(tx, &schema_id, &added_fields).await?;
+                NodeService::reject_incompatible_instance_values(tx, &schema_id, &added_fields)
+                    .await?;
 
                 if relationships_added > 0 || relationships_removed > 0 {
                     node_service
@@ -3310,61 +3311,6 @@ pub async fn handle_update_schema(
 
     serde_json::to_value(&output)
         .map_err(|e| MarkdownError::internal_error(format!("Failed to serialize output: {}", e)))
-}
-
-/// Refuse to declare `fields` on `schema_id` while existing instances — of
-/// the type and of every subtype extending it — still hold a value under one
-/// of those names that the new declaration rejects.
-///
-/// `remove_fields` drops only the declaration; instance values stay where
-/// they are. Re-adding the name with a different type, or as an enum whose
-/// values exclude a stored one, would leave every such node failing
-/// [`NodeService::validate_node_with_fields`] on any later write, including
-/// a content-only one. Each value is judged by the same
-/// [`NodeService::check_field_value`] that write validation runs, so the two
-/// can't disagree.
-///
-/// Refusing is preferred over clearing the values the way a rename migrates
-/// them: that would be a silent destructive write across every instance.
-async fn reject_incompatible_instance_values(
-    tx: &crate::services::node_service::NodeServiceTx<'_>,
-    schema_id: &str,
-    fields: &[SchemaField],
-) -> Result<(), NodeServiceError> {
-    if fields.is_empty() {
-        return Ok(());
-    }
-    let names: Vec<String> = fields.iter().map(|f| f.name.clone()).collect();
-    let stored =
-        crate::db::SqliteStore::get_bucket_field_values_in_tx(tx.store_tx(), schema_id, &names)
-            .await
-            .map_err(NodeServiceError::from_store)?;
-
-    for field in fields {
-        let mut conflicts = 0usize;
-        let mut example = None;
-        for (_, value) in stored.iter().filter(|(name, _)| *name == field.name) {
-            if let Err(reason) = NodeService::check_field_value(field, value) {
-                conflicts += 1;
-                example.get_or_insert(reason);
-            }
-        }
-        if let Some(example) = example {
-            let nodes = if conflicts == 1 {
-                "node holds"
-            } else {
-                "nodes hold"
-            };
-            return Err(NodeServiceError::invalid_update(format!(
-                "Cannot declare field '{}' as type '{}' on schema '{}': {} existing {} a \
-                 value under that name the new declaration rejects (e.g. {}). Clear those \
-                 values (set '{}' to null) or convert them to fit, then retry.",
-                field.name, field.field_type, schema_id, conflicts, nodes, example, field.name
-            )));
-        }
-    }
-
-    Ok(())
 }
 
 // ============================================================================

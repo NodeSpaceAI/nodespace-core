@@ -2030,6 +2030,31 @@ impl SqliteStore {
         Ok(map)
     }
 
+    /// `_in_tx` twin of [`Self::get_extends_parent_map`], for a caller inside
+    /// a write transaction (`get_effective_field_values_in_tx`, which walks
+    /// each instance's chain to resolve its buckets). Same query, on the
+    /// transaction's own connection.
+    pub(crate) async fn get_extends_parent_map_in_tx(
+        tx: &Tx<'_>,
+    ) -> Result<HashMap<String, String>> {
+        let mut rows = tx
+            .conn()
+            .query(
+                "SELECT in_node, out_node FROM relationship WHERE relationship_type = ?1",
+                libsql::params![crate::models::schema::EXTENDS_RELATIONSHIP],
+            )
+            .await
+            .context("Failed to load extends edges in transaction")?;
+
+        let mut map = HashMap::new();
+        while let Some(row) = rows.next().await? {
+            let child: String = row.get(0)?;
+            let parent: String = row.get(1)?;
+            map.insert(child, parent);
+        }
+        Ok(map)
+    }
+
     /// Whether any `extends` edge exists at all.
     ///
     /// The guard on the query engine's hot path: `extends` is rare and absent
