@@ -79,8 +79,11 @@
   const dispatch = createEventDispatcher();
 
   // Parse language from opening fence (```language or just ```)
-  // Use $derived to reactively parse language from content
-  let language = $state<string>(parseLanguage(content));
+  // $derived so it reacts to any content change (local edit, remote update, undo, conflict
+  // resolution) instead of only capturing it once at construction. handleLanguageChange below
+  // writes the new language into `content` rather than assigning this directly, so it stays
+  // in sync the same way.
+  let language = $derived(parseLanguage(content));
 
   // Code blocks use multiline editing (Shift+Enter for new lines, Enter creates new node)
   // Prevent merging into code-blocks (structured content can't accept arbitrary merges)
@@ -216,11 +219,12 @@
   }
 
   /**
-   * Update language and content when language changes
+   * Update content when the user picks a new language from the dropdown
+   * `language` is $derived from `content`, so writing the new language into content here
+   * is what updates it - there's no separate assignment to `language` itself.
    * REFACTOR: Using $bindable() prop - update content directly via two-way binding
    */
   function handleLanguageChange(newLanguage: string) {
-    language = newLanguage;
     showLanguageDropdown = false;
 
     // Just replace the language in the existing content
