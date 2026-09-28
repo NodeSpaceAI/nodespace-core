@@ -11,10 +11,13 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { $ } from "bun";
+import { GATE_INFRA_EXIT } from "./gate-stage";
 import {
   bisectBatch,
+  changesDependencies,
   describeLock,
   fenced,
+  gateVerdict,
   type LandEntry,
   type Lander,
   landStack,
@@ -198,35 +201,37 @@ describe("landStack", () => {
   const entry = (pr: number): LandEntry => ({ pr, headRefName: `b${pr}`, head: `head${pr}`, commits: [`c${pr}`], tree: `tree${pr}` });
 
   /**
-   * A fake origin and GitHub where everything goes right: main advances to
-   * each landed PR's tree, and every check passes. `overrides` breaks one thing.
+   * A fake origin and GitHub where everything goes right: main advances to a
+   * PR's tree when it lands, and every check passes. `overrides` breaks one thing.
    */
   function fakeLander(overrides: Partial<Lander> = {}) {
     let mainTree = T0;
     const log: string[] = [];
     const lander: Lander = {
-      confirmHolding: async () => true,
+      confirmHolding: async () => (log.push("confirm"), true),
       isQueued: async () => true,
       main: async () => ({ sha: `sha-${mainTree}`, tree: mainTree }),
       headOf: async (branch) => `head${branch.slice(1)}`,
       replayOnto: async (_main, commits) => ({ tree: `tree${commits[0].slice(1)}`, tip: `tip${commits[0].slice(1)}` }),
       push: async (branch) => (log.push(`push ${branch}`), true),
-      merge: async (pr) => {
-        log.push(`merge #${pr}`);
+      merge: async (pr) => (log.push(`merge #${pr}`), { ok: true }),
+      landed: async (pr) => {
+        log.push(`landed #${pr}`);
         mainTree = `tree${pr}`;
-        return { ok: true };
       },
-      landed: async (pr) => void log.push(`landed #${pr}`),
       eject: async (pr) => void log.push(`eject #${pr}`),
       ...overrides,
     };
     return { lander, log };
   }
 
-  test("lands every PR in order when nothing changed", async () => {
+  test("lands every PR in order, confirming the lock before each push and each merge", async () => {
     const { lander, log } = fakeLander();
     expect(await landStack([entry(1), entry(2)], T0, lander)).toEqual({ landed: [1, 2] });
-    expect(log).toEqual(["push b1", "merge #1", "landed #1", "push b2", "merge #2", "landed #2"]);
+    expect(log).toEqual([
+      "confirm", "push b1", "confirm", "merge #1", "landed #1",
+      "confirm", "push b2", "confirm", "merge #2", "landed #2",
+    ]);
   });
 
   test("lands nothing when main moved outside the queue", async () => {
@@ -235,27 +240,32 @@ describe("landStack", () => {
     expect(log).toEqual([]);
   });
 
-  test("stops before merging when the lock can't be confirmed at that moment", async () => {
+  test("a holder that can't confirm the lock rewrites no branch and merges nothing", async () => {
     const { lander, log } = fakeLander({ confirmHolding: async () => false });
     const outcome = await landStack([entry(1), entry(2)], T0, lander);
     expect(outcome.landed).toEqual([]);
     expect(outcome.stopped).toContain("lock");
-    expect(log).not.toContain("merge #1");
+    expect(log.filter((l) => l.startsWith("push") || l.startsWith("merge"))).toEqual([]);
   });
 
-  test("ejects a PR GitHub refuses to merge, keeping what landed before it and leaving the rest queued", async () => {
-    const { lander, log } = fakeLander({
-      merge: async (pr) => (pr === 2 ? { ok: false, reason: "Pull request is in draft state" } : { ok: true }),
-    });
-    // main advances only through the fake's own merge; this one lands #1 without moving it,
-    // so give #2 a base check that passes.
-    const outcome = await landStack([entry(1), { ...entry(2), tree: "tree2" }, entry(3)], T0, {
+  test("ejects a PR GitHub definitely won't merge, keeping what landed before it and leaving the rest queued", async () => {
+    const { lander, log } = fakeLander();
+    const outcome = await landStack([entry(1), entry(2), entry(3)], T0, {
       ...lander,
-      main: async () => ({ sha: "m", tree: log.includes("landed #1") ? "tree1" : T0 }),
+      merge: async (pr) => (pr === 2 ? { ok: false, reason: "it's a draft", definite: true } : lander.merge(pr, "t")),
     });
-    expect(outcome).toEqual({ landed: [1], stopped: "GitHub refused to merge #2", ejected: 2 });
+    expect(outcome).toEqual({ landed: [1], stopped: "GitHub won't merge #2", ejected: 2 });
     expect(log).toContain("eject #2");
     expect(log).not.toContain("push b3");
+  });
+
+  test("a refusal that says nothing about the PR stops landing without ejecting it", async () => {
+    const { lander, log } = fakeLander({ merge: async () => ({ ok: false, reason: "Base branch was modified", definite: false }) });
+    const outcome = await landStack([entry(1), entry(2)], T0, lander);
+    expect(outcome.landed).toEqual([]);
+    expect(outcome.ejected).toBeUndefined();
+    expect(outcome.stopped).toContain("Base branch was modified");
+    expect(log.some((l) => l.startsWith("eject"))).toBe(false);
   });
 
   test.each([
@@ -275,6 +285,24 @@ describe("landStack", () => {
     const { lander, log } = fakeLander({ replayOnto: async () => ({ tree: "tree1", tip: "head1" }) });
     expect((await landStack([entry(1)], T0, lander)).landed).toEqual([1]);
     expect(log).not.toContain("push b1");
+  });
+});
+
+describe("gateVerdict", () => {
+  test("only the gate's own infra code is this machine's fault", () => {
+    expect(gateVerdict(0)).toBe("passed");
+    expect(gateVerdict(1)).toBe("failed");
+    expect(gateVerdict(null)).toBe("failed");
+    expect(gateVerdict(GATE_INFRA_EXIT)).toBe("infra");
+  });
+});
+
+describe("changesDependencies", () => {
+  test("a stack can break bun install only by changing what it reads", () => {
+    expect(changesDependencies(["packages/desktop-app/package.json"])).toBe(true);
+    expect(changesDependencies(["bun.lock"])).toBe(true);
+    expect(changesDependencies(["packages/core/src/lib.rs", "scripts/merge-pr.ts"])).toBe(false);
+    expect(changesDependencies(["docs/package.json.md"])).toBe(false);
   });
 });
 

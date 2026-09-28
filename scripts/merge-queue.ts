@@ -25,6 +25,7 @@ import { $ } from "bun";
 import { randomUUID } from "node:crypto";
 import { hostname } from "node:os";
 import { currentUser } from "./gate-lock";
+import { GATE_INFRA_EXIT } from "./gate-stage";
 
 export const QUEUE_PREFIX = "refs/nodespace/merge-queue/";
 export const LOCK_REF = "refs/nodespace/merge-lock";
@@ -214,12 +215,22 @@ export class MergeQueue {
    * - `unknown`: the push failed and the lock couldn't be read, or still reads
    *   `current` (a network blip, a 5xx). Still held as far as anyone knows;
    *   the next beat retries. Not proof of holding, though: only `renewed` is.
+   *
+   * A push the server applied but whose response was lost reads back as the
+   * new sha: that's `renewed`, not `lost`.
    */
   async renew(current: string, info: LockInfo): Promise<RenewResult> {
+    let sha: string | null = null;
     try {
-      const sha = await this.lockCommit(info);
+      sha = await this.lockCommit(info);
       if (await this.compareAndSwap(LOCK_REF, current, sha)) return { status: "renewed", sha };
-      return (await this.lockSha()) === current ? { status: "unknown" } : { status: "lost" };
+    } catch {
+      // Fall through to reading the lock.
+    }
+    try {
+      const now = await this.lockSha();
+      if (sha !== null && now === sha) return { status: "renewed", sha };
+      return now === current ? { status: "unknown" } : { status: "lost" };
     } catch {
       return { status: "unknown" };
     }
@@ -269,8 +280,13 @@ export interface Lander {
   replayOnto(mainSha: string, commits: string[]): Promise<{ tree: string; tip: string } | null>;
   /** Moves the PR branch from `head` to `tip`; false when its head had moved. */
   push(branch: string, head: string, tip: string): Promise<boolean>;
-  /** Squash-merges the PR at exactly `tip`, or says why GitHub refused. */
-  merge(pr: number, tip: string): Promise<{ ok: true } | { ok: false; reason: string }>;
+  /**
+   * Squash-merges the PR at exactly `tip`. On a refusal, `definite` says
+   * whether it's the PR's own doing (a draft, closed, conflicting) — as
+   * opposed to GitHub being slow, rate-limited or mid-recompute, which says
+   * nothing about the PR. A merge that went through despite an error is `ok`.
+   */
+  merge(pr: number, tip: string): Promise<{ ok: true } | { ok: false; reason: string; definite: boolean }>;
   /** After a landing: out of the queue, branch deleted. */
   landed(pr: number, branch: string): Promise<void>;
   eject(pr: number, reason: string): Promise<void>;
@@ -290,7 +306,7 @@ export interface LandOutcome {
   landed: number[];
   /** Why landing stopped before the end of the stack; the rest stay queued. */
   stopped?: string;
-  /** A PR GitHub refused to merge, ejected so the queue can't loop on it. */
+  /** A PR GitHub definitely won't merge, ejected so the queue can't loop on it. */
   ejected?: number;
 }
 
@@ -299,10 +315,12 @@ export interface LandOutcome {
  * the round relied on has changed: the PR is still queued, main is still the
  * tree below it in the stack (no push outside the queue), its head hasn't
  * moved, replaying it onto main reproduces the tested tree, and — last, at the
- * moment of the side effect — this process still holds the lock. Stops at the
- * first that fails; the rest stay queued and are retested next round. A merge
- * GitHub refuses (the PR became a draft, was closed, isn't mergeable) ejects
- * that PR, so the next round doesn't rerun the gate only to be refused again.
+ * moments of the side effects (the branch push and the merge) — this process
+ * still holds the lock. Stops at the first that fails; the rest stay queued
+ * and are retested next round. A merge GitHub definitely won't do (the PR
+ * became a draft, was closed, conflicts) ejects that PR, so the next round
+ * doesn't rerun the gate only to be refused again; any other refusal just
+ * stops, so a GitHub hiccup never costs a PR its place.
  */
 export async function landStack(stack: LandEntry[], baseTree: string, l: Lander): Promise<LandOutcome> {
   const landed: number[] = [];
@@ -317,14 +335,17 @@ export async function landStack(stack: LandEntry[], baseTree: string, l: Lander)
     if (replay === null || replay.tree !== entry.tree) {
       return stop(`replaying #${entry.pr} onto main didn't reproduce the tested tree`);
     }
-    if (replay.tip !== entry.head && !(await l.push(entry.headRefName, entry.head, replay.tip))) {
-      return stop(`#${entry.pr}'s head moved`);
+    const lostLock = "this machine couldn't confirm it still holds the queue's lock";
+    if (replay.tip !== entry.head) {
+      if (!(await l.confirmHolding())) return stop(lostLock);
+      if (!(await l.push(entry.headRefName, entry.head, replay.tip))) return stop(`#${entry.pr}'s head moved`);
     }
-    if (!(await l.confirmHolding())) return stop("this machine couldn't confirm it still holds the queue's lock");
+    if (!(await l.confirmHolding())) return stop(lostLock);
     const merged = await l.merge(entry.pr, replay.tip);
     if (!merged.ok) {
-      await l.eject(entry.pr, `GitHub refused to merge it: ${merged.reason}`);
-      return { landed, stopped: `GitHub refused to merge #${entry.pr}`, ejected: entry.pr };
+      if (!merged.definite) return stop(`GitHub didn't merge #${entry.pr} (${merged.reason})`);
+      await l.eject(entry.pr, `GitHub won't merge it: ${merged.reason}`);
+      return { landed, stopped: `GitHub won't merge #${entry.pr}`, ejected: entry.pr };
     }
     landed.push(entry.pr);
     expectedTree = entry.tree;
@@ -346,4 +367,18 @@ export function fenced(text: string): string {
   const longest = Math.max(0, ...[...text.matchAll(/`+/g)].map((m) => m[0].length));
   const fence = "`".repeat(Math.max(3, longest + 1));
   return `${fence}\n${text}\n${fence}`;
+}
+
+/** How a gate run ended, from its exit code: the code's verdict, or this machine's failure to give one. */
+export function gateVerdict(exitCode: number | null): "passed" | "failed" | "infra" {
+  if (exitCode === 0) return "passed";
+  return exitCode === GATE_INFRA_EXIT ? "infra" : "failed";
+}
+
+/**
+ * Whether a stack changes what `bun install` reads — only then can a failing
+ * install be the stack's fault rather than the registry's or the network's.
+ */
+export function changesDependencies(changedPaths: string[]): boolean {
+  return changedPaths.some((path) => /(^|\/)(package\.json|bun\.lockb?)$/.test(path));
 }

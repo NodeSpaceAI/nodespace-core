@@ -43,11 +43,22 @@
 import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { $ } from "bun";
-import { acquireGateLock, DISABLE_ENV_VAR, formatDuration, MERGE_LOCK_PATH, registerLockRelease, statusLogger } from "./gate-lock";
+import {
+  acquireGateLock,
+  DISABLE_ENV_VAR,
+  formatDuration,
+  isPidAlive,
+  MERGE_LOCK_PATH,
+  readHolder,
+  registerLockRelease,
+  statusLogger,
+} from "./gate-lock";
 import {
   bisectBatch,
+  changesDependencies,
   describeLock,
   fenced,
+  gateVerdict,
   HEARTBEAT_MS,
   type Lander,
   landStack,
@@ -62,6 +73,13 @@ const MAX_WAIT_MS = 3 * 60 * 60 * 1000;
 
 /** How often a waiting merge looks at the queue. */
 const POLL_MS = 15 * 1000;
+
+/**
+ * The longest a waiter backs off after rounds that got nowhere (a broken gate
+ * checkout, a machine out of disk): long enough not to hammer origin and
+ * GitHub, short enough that a healthy machine soon takes the round instead.
+ */
+const MAX_BACKOFF_MS = 4 * 60 * 1000;
 
 /** Merge attempts, 3s apart, while GitHub catches up with a push. */
 const MERGE_TRIES = 10;
@@ -118,6 +136,8 @@ interface PullRequest {
   state: string;
   baseRefName: string;
   isDraft: boolean;
+  /** MERGEABLE, CONFLICTING, or UNKNOWN while GitHub computes it. */
+  mergeable: string;
 }
 
 /** How replaying a PR's commits onto main went. */
@@ -180,16 +200,21 @@ async function git(cwd: string, ...args: string[]): Promise<string> {
  * at startup.
  */
 async function remoteHead(cwd: string, branch: string): Promise<string | null> {
+  return (await readRemoteHead(cwd, branch)).sha;
+}
+
+/** remoteHead, telling "origin couldn't be asked" (`reachable: false`) from "no such branch". */
+async function readRemoteHead(cwd: string, branch: string): Promise<{ reachable: boolean; sha: string | null }> {
   const ref = `refs/heads/${branch}`;
   const out = await $`git ${NO_HOOKS} ls-remote origin ${ref}`.cwd(cwd).quiet().nothrow();
-  if (out.exitCode !== 0) return null;
+  if (out.exitCode !== 0) return { reachable: false, sha: null };
   // ls-remote matches refs by suffix; take only the exact branch.
   const sha = out.stdout
     .toString()
     .split("\n")
     .map((line) => line.split(/\s+/))
     .find(([, name]) => name === ref)?.[0];
-  return sha !== undefined && /^[0-9a-f]{40}$/.test(sha) ? sha : null;
+  return { reachable: true, sha: sha !== undefined && /^[0-9a-f]{40}$/.test(sha) ? sha : null };
 }
 
 function fail(message: string): never {
@@ -198,7 +223,7 @@ function fail(message: string): never {
 }
 
 async function viewPr(pr: number): Promise<PullRequest | null> {
-  const out = await $`gh pr view ${pr} --json headRefName,state,baseRefName,isDraft`.quiet().nothrow();
+  const out = await $`gh pr view ${pr} --json headRefName,state,baseRefName,isDraft,mergeable`.quiet().nothrow();
   return out.exitCode === 0 ? (JSON.parse(out.stdout.toString()) as PullRequest) : null;
 }
 
@@ -309,15 +334,22 @@ export async function buildStack(cwd: string, mainSha: string, prs: QueuedPr[]):
 }
 
 /**
- * Runs the full gate in `cwd`, streaming its output through and keeping the
- * tail for an ejected PR's comment. A `bun install` that fails is a gate
- * failure like any other — the stack's lockfile is part of what's tested — so
- * bisection finds the PR that broke it instead of every round crashing on it.
+ * Runs the full gate in `cwd` (a stack on `mainSha`), streaming its output
+ * through and keeping the tail for an ejected PR's comment.
+ *
+ * The verdict keeps the two failure domains apart: `failed` is the code under
+ * test, `infra` is this machine (the gate's own GATE_INFRA_EXIT: too little
+ * disk, no machine slot). An infra failure must never cost a PR its place. A
+ * `bun install` that fails twice is the stack's fault only when the stack
+ * changes what install reads; otherwise it's the registry or the network.
  */
-async function runGate(cwd: string): Promise<{ passed: boolean; tail: string }> {
-  const install = await $`bun install`.cwd(cwd).quiet().nothrow();
+async function runGate(cwd: string, mainSha: string): Promise<{ verdict: "passed" | "failed" | "infra"; tail: string }> {
+  let install = await $`bun install`.cwd(cwd).quiet().nothrow();
+  if (install.exitCode !== 0) install = await $`bun install`.cwd(cwd).quiet().nothrow();
   if (install.exitCode !== 0) {
-    return { passed: false, tail: `bun install failed:\n${`${install.stdout}${install.stderr}`.trim().split("\n").slice(-EJECT_TAIL_LINES).join("\n")}` };
+    const changed = (await git(cwd, "diff", "--name-only", mainSha, "HEAD")).split("\n");
+    const output = `${install.stdout}${install.stderr}`.trim().split("\n").slice(-EJECT_TAIL_LINES).join("\n");
+    return { verdict: changesDependencies(changed) ? "failed" : "infra", tail: `bun install failed:\n${output}` };
   }
   const proc = Bun.spawn(["bun", "run", "scripts/test-gate.ts", "--mode=merge"], {
     cwd,
@@ -341,7 +373,7 @@ async function runGate(cwd: string): Promise<{ passed: boolean; tail: string }> 
     if (partial !== "") lines.push(partial);
   };
   await Promise.all([pump(proc.stdout, process.stdout), pump(proc.stderr, process.stderr), proc.exited]);
-  return { passed: proc.exitCode === 0, tail: lines.slice(-EJECT_TAIL_LINES).join("\n").trim() };
+  return { verdict: gateVerdict(proc.exitCode), tail: lines.slice(-EJECT_TAIL_LINES).join("\n").trim() };
 }
 
 /** Takes `pr` out of the queue and says why on the PR, where its author will see it. */
@@ -383,7 +415,16 @@ function realLander(gate: string, queue: MergeQueue, repo: string, confirmHoldin
         reason = `${out.stderr}${out.stdout}`.trim() || `gh pr merge exited with code ${out.exitCode}`;
         await Bun.sleep(3000);
       }
-      return { ok: false, reason };
+      // Only the PR's own state makes a refusal definite. A merge that went
+      // through with its response lost is a landing; a 5xx, a rate limit or
+      // "base branch was modified" says nothing about the PR.
+      const now = await viewPr(pr);
+      if (now?.state === "MERGED") return { ok: true };
+      if (now !== null && (now.isDraft || now.state === "CLOSED" || now.mergeable === "CONFLICTING")) {
+        const why = now.isDraft ? "it's a draft" : now.state === "CLOSED" ? "it was closed" : "it conflicts with main";
+        return { ok: false, reason: `${why} (${reason})`, definite: true };
+      }
+      return { ok: false, reason, definite: false };
     },
     landed: async (pr, branch) => {
       console.log(`✓ #${pr} landed.`);
@@ -404,8 +445,11 @@ let releaseHeldLock: (() => Promise<void>) | null = null;
  * machine's gate checkout: every queued PR, stacked, gated, then landed or
  * bisected. Releases the queue's lock when done. Never throws: an error ends
  * the round (logged), and the queue's lock is released for the next one.
+ * Returns whether the queue moved — something landed or was ejected — so a
+ * waiter can back off from rounds that get nowhere.
  */
-async function runRound(queue: MergeQueue, lockSha: string, repoRoot: string, repo: string): Promise<void> {
+async function runRound(queue: MergeQueue, lockSha: string, repoRoot: string, repo: string): Promise<boolean> {
+  let moved = false;
   let current = lockSha;
   let holding = true;
   let prs: number[] = [];
@@ -455,9 +499,14 @@ async function runRound(queue: MergeQueue, lockSha: string, repoRoot: string, re
         await eject(queue, pr, `it targets ${info.baseRefName}; the queue merges into main only.`);
         continue;
       }
-      const head = await remoteHead(gate, info.headRefName);
-      if (head === null) continue;
-      candidates.push({ pr, headRefName: info.headRefName, head });
+      const head = await readRemoteHead(gate, info.headRefName);
+      if (!head.reachable) continue;
+      if (head.sha === null) {
+        await eject(queue, pr, `its branch ${info.headRefName} isn't on origin (the queue can't merge a fork's PR).`);
+        moved = true;
+        continue;
+      }
+      candidates.push({ pr, headRefName: info.headRefName, head: head.sha });
     }
 
     while (candidates.length > 0 && holding) {
@@ -467,24 +516,29 @@ async function runRound(queue: MergeQueue, lockSha: string, repoRoot: string, re
       await resetGateCheckout(gate, mainSha);
       const { stack, ejected } = await buildStack(gate, mainSha, candidates);
       for (const { pr, reason } of ejected) await eject(queue, pr, reason);
-      if (stack.length === 0) return;
+      if (ejected.length > 0) moved = true;
+      if (stack.length === 0) return moved;
 
       prs = stack.map((e) => e.pr);
       await renew();
       console.log(`\n▶ Merge gate on ${prs.map((p) => `#${p}`).join(", ")} (stacked on ${mainSha.slice(0, 8)}) in ${gate}`);
-      const result = await runGate(gate);
+      const result = await runGate(gate, mainSha);
       if (!holding) {
         console.error("\n✗ This machine lost the queue's lock during the gate (another machine took it over); nothing landed.");
-        return;
+        return moved;
       }
-      if (result.passed) {
+      if (result.verdict === "infra") {
+        console.error("\n✗ This machine couldn't run the gate (see above); no PR is blamed. Releasing the queue for another round.");
+        return moved;
+      }
+      if (result.verdict === "passed") {
         const outcome = await landStack(stack, baseTree, realLander(gate, queue, repo, renew));
         if (outcome.stopped !== undefined) {
           const rest = stack.filter((e) => !outcome.landed.includes(e.pr) && e.pr !== outcome.ejected).map((e) => `#${e.pr}`);
           console.log(`\n⚠ Stopped landing: ${outcome.stopped}.${rest.length > 0 ? ` ${rest.join(", ")} stay queued for the next round.` : ""}`);
           if (outcome.landed.length > 0) console.log("  main holds part of a tested batch; the next round tests the rest on top of it.");
         }
-        return;
+        return moved || outcome.landed.length > 0 || outcome.ejected !== undefined;
       }
       if (stack.length === 1) {
         await eject(
@@ -492,7 +546,7 @@ async function runRound(queue: MergeQueue, lockSha: string, repoRoot: string, re
           stack[0].pr,
           `the merge gate failed on it, rebased onto main. Reproduce with \`git rebase origin/main\` and \`bun run test:changed\`, fix, push, and re-run \`bun run merge ${stack[0].pr}\`.\n\n${fenced(stripAnsi(result.tail))}`
         );
-        return;
+        return true;
       }
       candidates = bisectBatch(stack).map(({ pr, headRefName, head }) => ({ pr, headRefName, head }));
       console.log(`\n⟳ The batch failed; retesting ${candidates.map((c) => `#${c.pr}`).join(", ")} on their own.`);
@@ -504,6 +558,7 @@ async function runRound(queue: MergeQueue, lockSha: string, repoRoot: string, re
     await release();
     releaseHeldLock = null;
   }
+  return moved;
 }
 
 /** `--dry-run`: gates this one PR on current main in the gate checkout. */
@@ -520,8 +575,9 @@ async function dryRun(pr: number, info: PullRequest, repoRoot: string): Promise<
   const { stack, ejected } = await buildStack(gate, mainSha, [{ pr, headRefName: info.headRefName, head }]);
   if (stack.length === 0) fail(`PR #${pr} can't be gated: ${ejected[0]?.reason ?? "nothing to test."}`);
   console.log(`\n▶ Merge gate on #${pr} (stacked on ${mainSha.slice(0, 8)}) in ${gate}`);
-  const result = await runGate(gate);
-  if (!result.passed) fail(`The merge gate failed on #${pr}, rebased onto main.`);
+  const result = await runGate(gate, mainSha);
+  if (result.verdict === "infra") fail("This machine couldn't run the gate (see above).");
+  if (result.verdict === "failed") fail(`The merge gate failed on #${pr}, rebased onto main.`);
   console.log(`\n✓ Dry run: the merge gate passed on #${pr}. Nothing queued, pushed or merged.\n`);
 }
 
@@ -601,6 +657,7 @@ async function main(): Promise<void> {
 
   const started = Date.now();
   const watch = new StaleWatch();
+  let idleRounds = 0;
   const status = statusLogger((m) => console.log(m), Date.now);
   for (;;) {
     // One poll. Any error in it — a failed ls-remote, a gh hiccup — is
@@ -631,11 +688,16 @@ async function main(): Promise<void> {
 
       const sha = await queue.lockSha();
       const stale = watch.observe(sha);
-      if (sha === null || stale) {
-        // This machine's gate checkout first, then the queue's lock: a local
-        // --dry-run holding the checkout makes this machine sit the round out
-        // instead of holding up every machine while it waits.
+      // This machine's gate checkout first, then the queue's lock. A local
+      // --dry-run holding the checkout makes this machine sit the round out
+      // — without waiting on it, so this waiter keeps watching its PR — rather
+      // than hold up every machine while it waits.
+      const local = readHolder(MERGE_LOCK_PATH);
+      const checkoutBusy = local.state === "held" && isPidAlive(local.holder.pid);
+      if ((sha === null || stale) && !checkoutBusy) {
         const checkout = await acquireGateLock({ lockPath: MERGE_LOCK_PATH, what: "gate checkout", maxWaitMs: GATE_CHECKOUT_WAIT_MS });
+        let ran = false;
+        let moved = false;
         try {
           if (checkout.held) {
             if (stale) {
@@ -644,12 +706,20 @@ async function main(): Promise<void> {
             }
             const held = await queue.tryAcquire(lockInfoHere(), sha ?? "");
             if (held !== null) {
-              await runRound(queue, held, repoRoot, repo);
-              continue;
+              ran = true;
+              moved = await runRound(queue, held, repoRoot, repo);
             }
           }
         } finally {
           checkout.release();
+        }
+        if (ran) {
+          // A round that got nowhere (this machine can't run the gate, say)
+          // backs off before trying again, so it neither hammers origin and
+          // GitHub nor keeps a healthy machine from taking the round.
+          idleRounds = moved ? 0 : idleRounds + 1;
+          if (idleRounds > 0) await Bun.sleep(Math.min(POLL_MS * 2 ** idleRounds, MAX_BACKOFF_MS));
+          continue;
         }
       }
       const holder = sha === null ? null : await queue.lockInfo(sha);
