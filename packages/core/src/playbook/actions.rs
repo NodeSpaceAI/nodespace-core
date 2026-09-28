@@ -301,11 +301,14 @@ impl BindingContext {
             changed_properties, ..
         } = event
         {
-            changed_properties.first().map(|pc| PropertyBindings {
-                key: pc.key.clone(),
-                old_value: pc.old_value.clone().unwrap_or(Value::Null),
-                new_value: pc.new_value.clone().unwrap_or(Value::Null),
-            })
+            changed_properties
+                .iter()
+                .find(|pc| !pc.is_bookkeeping())
+                .map(|pc| PropertyBindings {
+                    key: pc.key.clone(),
+                    old_value: pc.old_value.clone().unwrap_or(Value::Null),
+                    new_value: pc.new_value.clone().unwrap_or(Value::Null),
+                })
         } else {
             None
         };
@@ -1673,8 +1676,8 @@ fn execute_reject(action_index: usize, params: &Value) -> Result<Value, ActionEr
 ///
 /// `properties` is expected to already be a JSON object (both call sites
 /// pass either the resolved `properties` param or `json!({})`); a non-object
-/// value is replaced with a fresh object carrying just the depth stamp
-/// rather than silently dropping it.
+/// value is replaced with a fresh object carrying just the depth stamp and
+/// write id rather than silently dropping them.
 fn stamp_chain(properties: Value, depth: u8) -> Value {
     let mut obj = match properties {
         Value::Object(map) => map,
@@ -5066,7 +5069,8 @@ mod tests {
         /// (`db::events::chain_depth_of_write`).
         #[tokio::test]
         async fn update_node_action_mints_a_fresh_write_id_on_every_write() {
-            use crate::db::events::PLAYBOOK_WRITE_ID_PROPERTY;
+            use crate::db::events::{chain_depth_of_write, PLAYBOOK_WRITE_ID_PROPERTY};
+            use crate::playbook::types::MAX_CHAIN_DEPTH;
 
             let (svc, _tmp) = create_test_service().await;
             svc.create_node(Node::new_with_id(
@@ -5088,9 +5092,27 @@ mod tests {
 
             let mut write_ids = Vec::new();
             for _ in 0..2 {
+                let mut events = svc.subscribe_to_events();
                 let result =
                     execute_actions(&actions, &trigger, &event, &svc, exec_ctx("play-1", 3)).await;
                 assert!(matches!(result, ActionResult::Success), "{result:?}");
+
+                // The store's own diff of this write must show the write id
+                // changing: that is what a receiving device reads to tell a
+                // play hop from a user's edit.
+                let envelope = loop {
+                    let envelope = events.recv().await.unwrap();
+                    if matches!(&envelope.event, DomainEvent::NodeUpdated { node_id, .. } if node_id == "node:target-2")
+                    {
+                        break envelope;
+                    }
+                };
+                assert_eq!(
+                    chain_depth_of_write(&envelope.event, &json!({}), MAX_CHAIN_DEPTH),
+                    Some(3),
+                    "a play update's committed diff must carry its write id change"
+                );
+
                 let updated = svc.get_node("node:target-2").await.unwrap().unwrap();
                 assert_eq!(updated.properties[PLAYBOOK_CHAIN_DEPTH_PROPERTY], json!(3));
                 let write_id = updated.properties[PLAYBOOK_WRITE_ID_PROPERTY].clone();

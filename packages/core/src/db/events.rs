@@ -121,6 +121,22 @@ pub struct PropertyChange {
     pub new_value: Option<serde_json::Value>,
 }
 
+impl PropertyChange {
+    /// Whether this change is to a `_`-prefixed internal-bookkeeping key
+    /// (`_playbookChainDepth`, `_playbookWriteId`, `_seed`, ...) rather than
+    /// a node field.
+    ///
+    /// These changes stay in `changed_properties`, since the engine reads
+    /// them (`chain_depth_of_write`), but they are not property changes a
+    /// rule can trigger on or bind to. Every play write changes
+    /// `_playbookWriteId`, so exposing it would fire wildcard
+    /// `property_changed` rules on writes that changed no field, and could
+    /// bind `trigger.property` to a random nonce.
+    pub fn is_bookkeeping(&self) -> bool {
+        self.key.starts_with('_')
+    }
+}
+
 /// Playbook execution context carried on events for cycle detection
 ///
 /// When the playbook engine executes actions that mutate the graph, the resulting
@@ -209,10 +225,16 @@ pub fn persisted_chain_depth(properties: &serde_json::Value, max_depth: u8) -> O
 /// A write continues a chain only when it was a play write, which is exactly
 /// when it changed `PLAYBOOK_WRITE_ID_PROPERTY`:
 ///
-/// - `NodeCreated`: `properties` (the node as it now stands) carries a write
-///   id, which only this create can have put there.
+/// - `NodeCreated`: `properties` (the node as the caller fetched it) carries
+///   a write id. Callers re-fetch the node, so a later play update may have
+///   stamped it rather than the create itself; that only continues a chain
+///   a play really wrote, so the count still never restarts on a play hop.
 /// - `NodeUpdated`: the update's own diff changed the write id. The depth is
-///   read from the update's committed node, not a later re-fetch.
+///   read from the update's committed node, not a later re-fetch. This
+///   requires the event to carry its real diff: an update event emitted with
+///   an empty `changed_properties` reads as a fresh chain. Every such emit
+///   today is an in-tx engine write, whose event carries an in-process
+///   context and never reaches this function.
 /// - Any other event carries no node write and starts fresh.
 ///
 /// Reading the depth stamp without this check made a user's edit continue a

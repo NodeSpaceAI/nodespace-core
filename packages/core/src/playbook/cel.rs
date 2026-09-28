@@ -563,7 +563,12 @@ fn build_condition_context_with_resolved<'a>(
         changed_properties, ..
     } = event
     {
-        if let Some(first_prop) = changed_properties.first() {
+        // Bookkeeping keys are not fields — see `PropertyChange::is_bookkeeping`.
+        let field_changes: Vec<_> = changed_properties
+            .iter()
+            .filter(|pc| !pc.is_bookkeeping())
+            .collect();
+        if let Some(first_prop) = field_changes.first() {
             let mut prop_map: HashMap<cel_interpreter::objects::Key, Value> = HashMap::new();
             prop_map.insert(key("key"), Value::String(Arc::new(first_prop.key.clone())));
             prop_map.insert(
@@ -591,7 +596,7 @@ fn build_condition_context_with_resolved<'a>(
         }
 
         // Also add trigger.properties (all changed properties) for multi-prop events
-        let props_list: Vec<Value> = changed_properties
+        let props_list: Vec<Value> = field_changes
             .iter()
             .map(|pc| {
                 let mut m: HashMap<cel_interpreter::objects::Key, Value> = HashMap::new();
