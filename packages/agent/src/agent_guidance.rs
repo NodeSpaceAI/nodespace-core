@@ -258,6 +258,13 @@ mod tests {
                 );
             }
         }
+        // The agent loop injects this as a System message mid-turn, so it is
+        // model-facing instruction like the rest — and it is exactly the kind
+        // of text an eval-driven rewording would tune against a scenario.
+        corpus.push((
+            "agent_loop::ALREADY_CLARIFIED_NUDGE".to_string(),
+            crate::local_agent::agent_loop::ALREADY_CLARIFIED_NUDGE.to_string(),
+        ));
         corpus
     }
 
