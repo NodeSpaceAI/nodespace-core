@@ -44,6 +44,16 @@ impl SqliteStore {
     /// method does not compute it, so the same conflict always upserts the
     /// same row regardless of which of its (symmetric) participants is
     /// "new."
+    ///
+    /// A thin [`Self::with_transaction`] wrapper around
+    /// [`Self::record_conflict_in_tx`] (ADR-069 §1a) — every caller today
+    /// (`mark_collection_name_collision`, `detect_unique_field_collisions`)
+    /// invokes this post-commit, outside any transaction of its own, by
+    /// design (see those callers' doc comments), so wrapping here cannot
+    /// deadlock on an already-held writer guard. A future caller that already
+    /// holds an open `Tx` must call `record_conflict_in_tx` directly instead
+    /// of this method, exactly as `resolve_conflict_in_tx` composes into
+    /// `merge_nodes_in_tx`.
     pub async fn record_conflict(
         &self,
         id: &str,
@@ -52,6 +62,45 @@ impl SqliteStore {
         detail: Value,
         detected_by: Option<&str>,
     ) -> Result<ConflictRecord> {
+        let id_owned = id.to_string();
+        let node_ids_owned = node_ids.to_vec();
+        let detected_by_owned = detected_by.map(|s| s.to_string());
+
+        self.with_transaction(move |tx| {
+            Box::pin(async move {
+                Self::record_conflict_in_tx(
+                    tx,
+                    &id_owned,
+                    kind,
+                    &node_ids_owned,
+                    detail,
+                    detected_by_owned.as_deref(),
+                )
+                .await
+            })
+        })
+        .await?;
+
+        self.get_conflict(id).await?.ok_or_else(|| {
+            anyhow::anyhow!("conflict record '{}' missing immediately after upsert", id)
+        })
+    }
+
+    /// `_in_tx` twin of [`Self::record_conflict`] (ADR-069) — the conflict
+    /// upsert and every `conflict_participant` insert in one unit of work, so
+    /// a failure partway through leaves neither a bare conflict row with no
+    /// participants nor a partial participant set behind. Same upsert
+    /// semantics, same conflict-id derivation (still the caller's job), same
+    /// participant ordering (`node_ids` sorted first) as the pre-transaction
+    /// version — only the atomicity changed.
+    pub(crate) async fn record_conflict_in_tx(
+        tx: &Tx<'_>,
+        id: &str,
+        kind: ConflictKind,
+        node_ids: &[String],
+        detail: Value,
+        detected_by: Option<&str>,
+    ) -> Result<()> {
         let mut sorted_ids = node_ids.to_vec();
         sorted_ids.sort();
         let node_ids_json =
@@ -60,8 +109,7 @@ impl SqliteStore {
             serde_json::to_string(&detail).context("Failed to serialize conflict detail")?;
         let now = Utc::now().to_rfc3339();
 
-        self.write()
-            .await
+        tx.conn()
             .execute(
                 "INSERT INTO conflict \
                  (id, kind, node_ids, detail, status, detected_at, detected_by, occurrences, last_seen_at) \
@@ -83,8 +131,7 @@ impl SqliteStore {
             .context("Failed to upsert conflict record")?;
 
         for node_id in &sorted_ids {
-            self.write()
-                .await
+            tx.conn()
                 .execute(
                     "INSERT OR IGNORE INTO conflict_participant (conflict_id, node_id) VALUES (?1, ?2)",
                     libsql::params![id.to_string(), node_id.clone()],
@@ -93,9 +140,7 @@ impl SqliteStore {
                 .context("Failed to upsert conflict_participant row")?;
         }
 
-        self.get_conflict(id).await?.ok_or_else(|| {
-            anyhow::anyhow!("conflict record '{}' missing immediately after upsert", id)
-        })
+        Ok(())
     }
 
     /// Read a single conflict record by id, if it exists.
@@ -774,4 +819,137 @@ fn row_to_conflict_record(row: &libsql::Row) -> Result<ConflictRecord> {
             .transpose()
             .context("Failed to deserialize conflict.resolution")?,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    async fn test_store() -> (SqliteStore, TempDir, std::path::PathBuf) {
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = temp_dir.path().join("test.db");
+        let store = SqliteStore::new(db_path.clone()).await.unwrap();
+        (store, temp_dir, db_path)
+    }
+
+    /// A second, independent connection to the SAME sqlite file — used only to
+    /// inject a fault `record_conflict`'s own write must trip over, the same
+    /// "force it through the public API" approach
+    /// `update_node_transaction_test.rs` uses for `update_node`. A plain
+    /// UNIQUE/CHECK constraint on `conflict_participant` won't do here: that
+    /// insert is `INSERT OR IGNORE`, and SQLite's IGNORE resolution silently
+    /// skips exactly those constraint families instead of raising — so the
+    /// fault is a `BEFORE INSERT` trigger that explicitly `RAISE(ABORT, ...)`s
+    /// for one poison node id, which is not something `OR IGNORE` suppresses.
+    async fn open_raw(db_path: &std::path::Path) -> libsql::Connection {
+        crate::db::ensure_sqlite_vec_registered().await;
+        let database = libsql::Builder::new_local(db_path)
+            .build()
+            .await
+            .expect("build libsql database");
+        database.connect().expect("connect")
+    }
+
+    #[tokio::test]
+    async fn record_conflict_writes_all_participants_and_conflicts_for_node_finds_each() {
+        let (store, _tmp, _path) = test_store().await;
+
+        let node_ids = vec![
+            "node-a".to_string(),
+            "node-b".to_string(),
+            "node-c".to_string(),
+        ];
+        let detail = serde_json::json!({ "field": "email" });
+
+        let record = store
+            .record_conflict(
+                "test-conflict-happy-path",
+                ConflictKind::UniqueFieldCollision,
+                &node_ids,
+                detail,
+                Some("device-1"),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(record.id, "test-conflict-happy-path");
+        assert_eq!(record.status, ConflictStatus::Open);
+        assert_eq!(record.occurrences, 1);
+        assert_eq!(record.node_ids, node_ids);
+
+        for node_id in &node_ids {
+            let found = store.conflicts_for_node(node_id).await.unwrap();
+            assert_eq!(
+                found.len(),
+                1,
+                "conflicts_for_node must find the conflict for participant '{node_id}'"
+            );
+            assert_eq!(found[0].id, "test-conflict-happy-path");
+        }
+    }
+
+    /// The bug this file's `record_conflict`/`record_conflict_in_tx` split
+    /// fixes: before the transaction wrap, the `conflict` upsert would already
+    /// have autocommitted by the time a later `conflict_participant` insert
+    /// failed, leaving an orphaned conflict row `conflicts_for_node` could
+    /// never find (it joins through `conflict_participant`). Forces the
+    /// failure on the THIRD of three participants (sorted order puts
+    /// "node-a"/"node-z" before "poison"), so the first two participant
+    /// inserts have already run in the same transaction when the failure
+    /// hits — exactly the "partway through" scenario the issue describes.
+    #[tokio::test]
+    async fn record_conflict_failure_partway_through_leaves_no_conflict_row_behind() {
+        let (store, _tmp, db_path) = test_store().await;
+
+        let raw = open_raw(&db_path).await;
+        raw.execute(
+            "CREATE TRIGGER poison_participant_insert \
+             BEFORE INSERT ON conflict_participant \
+             WHEN NEW.node_id = 'poison' \
+             BEGIN \
+                 SELECT RAISE(ABORT, 'injected failure for atomicity test'); \
+             END",
+            (),
+        )
+        .await
+        .expect("create poison trigger");
+        drop(raw);
+
+        let node_ids = vec![
+            "node-a".to_string(),
+            "poison".to_string(),
+            "node-z".to_string(),
+        ];
+        let detail = serde_json::json!({ "field": "email" });
+
+        let result = store
+            .record_conflict(
+                "test-conflict-atomic",
+                ConflictKind::UniqueFieldCollision,
+                &node_ids,
+                detail,
+                None,
+            )
+            .await;
+
+        assert!(
+            result.is_err(),
+            "record_conflict must fail outright when a participant insert errors"
+        );
+
+        let after = store.get_conflict("test-conflict-atomic").await.unwrap();
+        assert!(
+            after.is_none(),
+            "a failure partway through participant inserts must leave NO conflict row behind"
+        );
+
+        for node_id in &node_ids {
+            let found = store.conflicts_for_node(node_id).await.unwrap();
+            assert!(
+                found.is_empty(),
+                "no conflict_participant rows may survive a rolled-back record_conflict, but found some for '{node_id}'"
+            );
+        }
+    }
 }
