@@ -262,17 +262,8 @@ impl NodeService {
             (Some(ctx), _) => ctx.chain(),
             (None, _) => own_chain,
         };
-        let mut current = None;
-        for scope_name in search_chain {
-            let mut candidate = node.properties.get(scope_name.as_str());
-            for segment in &segments {
-                candidate = candidate.and_then(|v| v.get(*segment));
-            }
-            if candidate.is_some() {
-                current = candidate;
-                break;
-            }
-        }
+        let mut current =
+            crate::services::find_namespaced_property(&node.properties, &segments, search_chain);
         // Fall back to every bucket when the scope declares the field but the
         // node's own chain does not hold it — a deeper descendant may own it.
         if current.is_none() {

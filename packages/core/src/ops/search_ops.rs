@@ -225,6 +225,39 @@ fn parse_scope(scope: Option<&str>) -> Result<SearchScope, OpsError> {
     }
 }
 
+/// Pre-resolve the `extends` chain (ADR-078) for every distinct node type
+/// among `nodes`, once per type rather than once per row — matching how
+/// `NodeService::build_scope_context` resolves a query's scope once per
+/// query, not per row. Returns an empty map without touching the store when
+/// `filters` carries no `property_filters`, since
+/// [`SearchNodeFilters::matches`]'s `node_types` check never consults the
+/// chain.
+async fn resolve_type_chains_for_filters(
+    node_service: &Arc<NodeService>,
+    nodes: &[Node],
+    filters: Option<&SearchNodeFilters>,
+) -> Result<HashMap<String, Vec<String>>, OpsError> {
+    let mut chains = HashMap::new();
+    if filters.and_then(|f| f.property_filters.as_ref()).is_none() {
+        return Ok(chains);
+    }
+
+    let distinct_types: HashSet<&str> = nodes.iter().map(|n| n.node_type.as_str()).collect();
+    for node_type in distinct_types {
+        let chain = node_service
+            .resolve_type_chain(node_type)
+            .await
+            .map_err(|e| {
+                OpsError::Internal(format!(
+                    "Failed to resolve type chain for property filter: {}",
+                    e
+                ))
+            })?;
+        chains.insert(node_type.to_string(), chain);
+    }
+    Ok(chains)
+}
+
 /// Structural "list everything (of this type)" retrieval for an enumerate
 /// query (see [`normalize_enumerate_query`]) — a DB listing rather than an
 /// embedding-similarity search, since there is no query text to embed.
@@ -276,11 +309,19 @@ async fn enumerate_nodes(
         }
     };
 
+    let type_chains = resolve_type_chains_for_filters(node_service, &nodes, filters).await?;
+
     Ok(nodes
         .into_iter()
         .filter(|node| {
             filters
-                .map(|f| f.matches(&node.node_type, &node.properties))
+                .map(|f| {
+                    let chain = type_chains
+                        .get(&node.node_type)
+                        .cloned()
+                        .unwrap_or_else(|| vec![node.node_type.clone()]);
+                    f.matches(&node.node_type, &node.properties, &chain)
+                })
                 .unwrap_or(true)
         })
         .take(limit)
@@ -430,6 +471,8 @@ async fn title_match_nodes(
         }
     }
 
+    let type_chains = resolve_type_chains_for_filters(node_service, &candidates, filters).await?;
+
     let mut seen: HashSet<String> = HashSet::new();
     let mut scored: Vec<(Node, f64)> = Vec::new();
     for node in candidates {
@@ -437,7 +480,11 @@ async fn title_match_nodes(
             continue;
         }
         if let Some(f) = filters {
-            if !f.matches(&node.node_type, &node.properties) {
+            let chain = type_chains
+                .get(&node.node_type)
+                .cloned()
+                .unwrap_or_else(|| vec![node.node_type.clone()]);
+            if !f.matches(&node.node_type, &node.properties, &chain) {
                 continue;
             }
         }

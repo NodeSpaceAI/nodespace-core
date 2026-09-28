@@ -626,18 +626,10 @@ impl NodeService {
         // One query for every extends edge, rather than an async walk one
         // parent at a time. The map holds one entry per *extending* schema,
         // so it is empty in a database where nothing extends anything.
-        let parent_map = self.store.get_extends_parent_map().await.map_err(|e| {
-            NodeServiceError::query_failed(format!("Failed to load extends edges: {e}"))
-        })?;
-
-        if parent_map.is_empty() {
-            return Ok(vec![node_type.to_string()]);
-        }
-
-        let lookup = move |id: &str| parent_map.get(id).cloned();
-        Ok(crate::schema::extends_chain::resolve_ancestor_chain(
-            node_type, &lookup,
-        ))
+        // Delegates to the store-only free function so callers that hold a
+        // `SqliteStore` but not a `NodeService` (`NodeEmbeddingService`) can
+        // get the same resolution without duplicating it.
+        crate::services::resolve_type_chain_from_store(&self.store, node_type).await
     }
 
     /// Which schema in `node_type`'s chain declares each field, and the

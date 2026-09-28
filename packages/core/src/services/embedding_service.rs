@@ -28,10 +28,12 @@ use crate::behaviors::{CustomNodeBehavior, NodeBehavior, NodeBehaviorRegistry};
 use crate::db::SqliteStore;
 use crate::models::{EmbeddingConfig, EmbeddingSearchResult, NewEmbedding, Node};
 use crate::services::error::NodeServiceError;
-use crate::services::{NodeAccessor, SearchNodeFilters, SearchScope};
+use crate::services::{
+    resolve_type_chain_from_store, NodeAccessor, SearchNodeFilters, SearchScope,
+};
 use nodespace_nlp_engine::{EmbeddingError, EmbeddingService};
 use sha2::{Digest, Sha256};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 /// Built-in types the default `Knowledge` search scope returns: the user's own
@@ -934,6 +936,26 @@ impl NodeEmbeddingService {
 
         let results = self.semantic_search(query, fetch_limit, threshold).await?;
 
+        // Pre-resolve each distinct result node type's `extends` chain once
+        // (ADR-078), not per row: `property_filters` needs the chain to find
+        // a field inherited from an ancestor schema's bucket, and chain
+        // resolution needs store access the per-row filter closure below
+        // can't do (it's synchronous). Skipped entirely when there are no
+        // property_filters, since `matches`'s node_types check never
+        // consults the chain.
+        let has_property_filters = filters.and_then(|f| f.property_filters.as_ref()).is_some();
+        let mut type_chains: HashMap<String, Vec<String>> = HashMap::new();
+        if has_property_filters {
+            let distinct_types: HashSet<&str> = results
+                .iter()
+                .filter_map(|r| r.node.as_ref().map(|n| n.node_type.as_str()))
+                .collect();
+            for node_type in distinct_types {
+                let chain = resolve_type_chain_from_store(&self.store, node_type).await?;
+                type_chains.insert(node_type.to_string(), chain);
+            }
+        }
+
         // Nodes are included via FETCH — no separate queries needed.
         // Apply SearchNodeFilters when present, then truncate to requested limit.
         let nodes_with_scores: Vec<(Node, f64)> = results
@@ -941,7 +963,11 @@ impl NodeEmbeddingService {
             .filter_map(|result| result.node.map(|node| (node, result.score)))
             .filter(|(node, _)| {
                 if let Some(f) = filters {
-                    if !f.matches(&node.node_type, &node.properties) {
+                    let chain = type_chains
+                        .get(&node.node_type)
+                        .cloned()
+                        .unwrap_or_else(|| vec![node.node_type.clone()]);
+                    if !f.matches(&node.node_type, &node.properties, &chain) {
                         tracing::debug!(
                             "semantic_search_nodes: filtered out node {} (type={})",
                             node.id,
