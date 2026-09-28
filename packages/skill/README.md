@@ -1,6 +1,6 @@
 # @nodespaceai/skill
 
-Installs the NodeSpace Agent Skill into PTY agents (Claude Code, Codex, Gemini CLI, OpenCode).
+Installs the NodeSpace Agent Skill into PTY agents (Claude Code, Codex, Antigravity CLI, OpenCode, Pi).
 
 **This package is not published to npm.** `@nodespaceai/skill` never existed
 on the npm registry, and it is not going to: the NodeSpace desktop app is the

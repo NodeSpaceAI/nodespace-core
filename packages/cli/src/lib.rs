@@ -187,8 +187,8 @@ pub enum Command {
     /// Uninstall NodeSpace: stop daemon, remove binaries and service registration.
     Uninstall(commands::uninstall::UninstallArgs),
     /// Install, remove, or check the NodeSpace skill for detected AI-agent
-    /// harnesses (Claude Code, Codex, Gemini CLI, OpenCode) -- the CLI-only
-    /// equivalent of the desktop app's first-launch skill installer.
+    /// harnesses (Claude Code, Codex, Antigravity CLI, OpenCode, Pi) -- the
+    /// CLI-only equivalent of the desktop app's first-launch skill installer.
     Skill {
         #[command(subcommand)]
         action: commands::skill::SkillAction,

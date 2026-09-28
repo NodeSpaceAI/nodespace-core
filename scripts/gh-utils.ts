@@ -704,8 +704,6 @@ async function main() {
   ${Object.keys(manager["statusOptions"]).map(s => `"${s}"`).join(", ")}
 
 🚀 All commands use TypeScript API (no Claude Code approval prompts)
-
-📖 Based on docs/architecture/development/process/ documentation
         `);
         break;
     }

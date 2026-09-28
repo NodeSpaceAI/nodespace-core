@@ -1,18 +1,16 @@
 #!/usr/bin/env bun
 
 /**
- * Code Review Manager - Delta-Aware Reviews with GitHub Integration
+ * Code Review Manager - Delta-Aware Review State Tracking
  *
  * Features:
  * - Track review state across multiple review cycles
  * - Delta-aware: Only review changes since last review
- * - GitHub integration: Post reviews and inline comments to PRs
  *
  * Usage:
  *   bun run scripts/review-manager.ts --help
  *   bun run scripts/review-manager.ts --mode full
  *   bun run scripts/review-manager.ts --mode delta
- *   bun run scripts/review-manager.ts --post-to-github
  */
 
 import { GitHubClient } from "./github-client.ts";
@@ -34,20 +32,6 @@ interface ReviewRecord {
   filesReviewed: string[];
   prNumber?: number;
   reviewUrl?: string;
-}
-
-interface ReviewFinding {
-  severity: "critical" | "important" | "suggestion";
-  title: string;
-  description: string;
-  file?: string;
-  line?: number;
-}
-
-interface ReviewReport {
-  recommendation: "APPROVE" | "REQUEST_CHANGES" | "COMMENT";
-  findings: ReviewFinding[];
-  summary: string;
 }
 
 export class ReviewManager {
@@ -140,121 +124,6 @@ export class ReviewManager {
   }
 
   /**
-   * Parse review report markdown to extract findings
-   */
-  parseReviewReport(markdown: string): ReviewReport {
-    const findings: ReviewFinding[] = [];
-    let recommendation: ReviewReport["recommendation"] = "COMMENT";
-
-    // Extract recommendation
-    if (markdown.includes("**APPROVE**") || markdown.includes("Recommendation**: APPROVE")) {
-      recommendation = "APPROVE";
-    } else if (markdown.includes("**REQUEST CHANGES**") || markdown.includes("Recommendation**: REQUEST CHANGES")) {
-      recommendation = "REQUEST_CHANGES";
-    }
-
-    // Parse findings by severity
-    const criticalMatches = markdown.matchAll(/🔴\s*Critical[:\s]+(.+?)(?=\n\n|🟡|🟢|$)/gs);
-    for (const match of criticalMatches) {
-      findings.push({
-        severity: "critical",
-        title: match[1].split("\n")[0].trim(),
-        description: match[1].trim()
-      });
-    }
-
-    const importantMatches = markdown.matchAll(/🟡\s*Important[:\s]+(.+?)(?=\n\n|🔴|🟢|$)/gs);
-    for (const match of importantMatches) {
-      findings.push({
-        severity: "important",
-        title: match[1].split("\n")[0].trim(),
-        description: match[1].trim()
-      });
-    }
-
-    const suggestionMatches = markdown.matchAll(/🟢\s*(?:Suggestion|Nice-to-have)[:\s]+(.+?)(?=\n\n|🔴|🟡|$)/gs);
-    for (const match of suggestionMatches) {
-      findings.push({
-        severity: "suggestion",
-        title: match[1].split("\n")[0].trim(),
-        description: match[1].trim()
-      });
-    }
-
-    // Extract line references from findings (e.g., "Line 14:", "lines 44-69")
-    for (const finding of findings) {
-      const lineMatch = finding.description.match(/(?:Line|line)s?\s+(\d+)/);
-      if (lineMatch) {
-        finding.line = parseInt(lineMatch[1]);
-      }
-
-      const fileMatch = finding.description.match(/(?:file|File):\s*([^\s\n]+)/);
-      if (fileMatch) {
-        finding.file = fileMatch[1];
-      }
-    }
-
-    return {
-      recommendation,
-      findings,
-      summary: markdown
-    };
-  }
-
-  /**
-   * Post review to GitHub PR
-   */
-  async postReviewToGitHub(
-    prNumber: number,
-    report: ReviewReport,
-    _commitSha: string
-  ): Promise<{ id: number; url: string }> {
-    console.log(`\n📤 Posting review to PR #${prNumber}...`);
-
-    // Determine GitHub review event
-    let event: "APPROVE" | "REQUEST_CHANGES" | "COMMENT" = "COMMENT";
-    if (report.recommendation === "APPROVE") {
-      event = "APPROVE";
-    } else if (report.recommendation === "REQUEST_CHANGES") {
-      event = "REQUEST_CHANGES";
-    }
-
-    // Build inline comments for findings with file/line info
-    const inlineComments: Array<{ path: string; line: number; body: string }> = [];
-
-    for (const finding of report.findings) {
-      if (finding.file && finding.line) {
-        const severityEmoji = {
-          critical: "🔴",
-          important: "🟡",
-          suggestion: "🟢"
-        }[finding.severity];
-
-        inlineComments.push({
-          path: finding.file,
-          line: finding.line,
-          body: `${severityEmoji} **${finding.severity.toUpperCase()}**: ${finding.title}\n\n${finding.description}`
-        });
-      }
-    }
-
-    // Post review with inline comments
-    const review = await this.client.createPRReview(
-      prNumber,
-      report.summary,
-      event,
-      inlineComments.length > 0 ? inlineComments : undefined
-    );
-
-    console.log(`✅ Review posted: ${review.url}`);
-    console.log(`   Event: ${event}`);
-    console.log(`   Findings: ${report.findings.length}`);
-    console.log(`   Inline comments: ${inlineComments.length}`);
-
-    return review;
-  }
-
-  /**
    * Record a completed review
    */
   async recordReview(
@@ -343,14 +212,13 @@ async function main() {
     ? args[args.indexOf("--mode") + 1] as "full" | "delta"
     : "full";
 
-  const postToGitHub = args.includes("--post-to-github");
   const showStatus = args.includes("--status");
   const reset = args.includes("--reset");
   const help = args.includes("--help");
 
   if (help) {
     console.log(`
-🔍 Code Review Manager - Delta-Aware Reviews with GitHub Integration
+🔍 Code Review Manager - Delta-Aware Review State Tracking
 
 USAGE:
   bun run scripts/review-manager.ts [OPTIONS]
@@ -359,8 +227,6 @@ OPTIONS:
   --mode <full|delta>    Review mode (default: full)
                          full: Review all changes from main
                          delta: Only review changes since last review
-
-  --post-to-github       Post review results to GitHub PR
 
   --status               Show review status for current branch
 
@@ -374,9 +240,6 @@ EXAMPLES:
 
   # Delta review (only new changes since last review)
   bun run scripts/review-manager.ts --mode delta
-
-  # Review and post to GitHub
-  bun run scripts/review-manager.ts --mode delta --post-to-github
 
   # Check review status
   bun run scripts/review-manager.ts --status
@@ -429,20 +292,8 @@ EXAMPLES:
   console.log(`\n📋 Review scope:`);
   console.log(`   Mode: ${mode}`);
   console.log(`   Files: ${files.join(", ")}`);
-
-  if (postToGitHub) {
-    const prNumber = await manager["client"].getPRForBranch();
-    if (prNumber) {
-      console.log(`\n📤 Would post review to PR #${prNumber}`);
-      console.log(`   (Review posting requires integration with review agent)`);
-    } else {
-      console.log(`\n⚠️  No open PR found for current branch`);
-    }
-  }
 }
 
 if (import.meta.main) {
   main();
 }
-
-export type { ReviewReport, ReviewFinding };

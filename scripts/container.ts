@@ -319,7 +319,9 @@ Each container:
   • Has independent nodespace-core clone
   • Includes all development tools (Rust, Bun, Claude Code, GitHub CLI)
   • Can run simultaneously for parallel development
-  • Automatically passes GitHub credentials and terminal size from host
+  • Automatically passes terminal size from host
+  • Does NOT pass GitHub credentials from host (fully isolated) — see
+    "Workflow for authenticated containers" above to authenticate inside one
 `);
 }
 
