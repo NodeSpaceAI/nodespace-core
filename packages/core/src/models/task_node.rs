@@ -31,20 +31,20 @@
 //! # Examples
 //!
 //! ```rust
-//! use nodespace_core::models::{TaskNode, TaskStatus, TaskPriority};
+//! use nodespace_core::models::{TaskNode, TaskStatus, Priority};
 //!
 //! // Create with builder (for new tasks)
 //! let task = TaskNode::builder("Write tests".to_string())
 //!     .with_status(TaskStatus::InProgress)
-//!     .with_priority(TaskPriority::High)
+//!     .with_priority(Priority::High)
 //!     .build();
 //!
 //! // Direct field access (no JSON parsing)
 //! assert_eq!(task.status, TaskStatus::InProgress);
-//! assert_eq!(task.priority, Some(TaskPriority::High));
+//! assert_eq!(task.priority, Some(Priority::High));
 //! ```
 
-use crate::models::{Node, ValidationError};
+use crate::models::{Node, Priority, ValidationError};
 use chrono::{DateTime, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -177,137 +177,10 @@ impl<'de> Deserialize<'de> for TaskStatus {
     }
 }
 
-/// Task priority enumeration
-///
-/// Represents the priority levels of a task node.
-/// Values use lowercase format for consistency across all layers:
-/// - "highest" - Highest priority
-/// - "high" - High priority
-/// - "medium" - Medium priority (default)
-/// - "low" - Low priority
-/// - "lowest" - Lowest priority
-/// - User-defined priorities via schema extension (e.g., "critical", "urgent")
-///
-/// Core priorities are strongly typed; user-defined priorities use `User(String)`.
-/// This aligns with the schema system's `core_values` / `user_values` model.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub enum TaskPriority {
-    /// Highest priority
-    Highest,
-    /// High priority
-    High,
-    /// Medium priority (default)
-    #[default]
-    Medium,
-    /// Low priority
-    Low,
-    /// Lowest priority
-    Lowest,
-    /// User-defined priority (extended via schema)
-    User(String),
-}
-
-impl FromStr for TaskPriority {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "highest" => Ok(Self::Highest),
-            "high" => Ok(Self::High),
-            "medium" => Ok(Self::Medium),
-            "low" => Ok(Self::Low),
-            "lowest" => Ok(Self::Lowest),
-            // Any other value is treated as user-defined
-            other => Ok(Self::User(other.to_string())),
-        }
-    }
-}
-
-impl TaskPriority {
-    /// Convert priority to string representation
-    pub fn as_str(&self) -> &str {
-        match self {
-            Self::Highest => "highest",
-            Self::High => "high",
-            Self::Medium => "medium",
-            Self::Low => "low",
-            Self::Lowest => "lowest",
-            Self::User(s) => s.as_str(),
-        }
-    }
-
-    /// Rank of this priority for ordering purposes (0 = most urgent)
-    ///
-    /// Ascending rank yields highest, high, medium, low, lowest — the semantic
-    /// urgency order, not the lexicographic one the raw strings would give.
-    ///
-    /// User-defined priorities all share [`Self::USER_RANK`], one past the core
-    /// scale, so they sort after every core value. Since the rank alone cannot
-    /// separate two user values, callers must break that tie on the value
-    /// string to keep the ordering total; see `QueryService::resolve_order_field`
-    /// and `compare_json_values`, which both do exactly that.
-    ///
-    /// Kept in sync with `core_values` by
-    /// `test_task_priority_variants_match_core_values_bidirectionally`
-    /// in `core_schemas.rs`.
-    pub fn rank(&self) -> u8 {
-        match self {
-            Self::Highest => 0,
-            Self::High => 1,
-            Self::Medium => 2,
-            Self::Low => 3,
-            Self::Lowest => 4,
-            Self::User(_) => Self::USER_RANK,
-        }
-    }
-
-    /// Rank assigned to every user-defined priority — one past the core scale,
-    /// so user values sort after all core values.
-    pub const USER_RANK: u8 = 5;
-
-    /// Rank for an absent priority, before the whole scale.
-    ///
-    /// Signed because it sits below [`Self::Highest`]'s 0; the SQL side needs a
-    /// literal it can order against the other ranks, and an absent value sorts
-    /// first ascending. This is not a variant of the enum — a missing priority
-    /// has no `TaskPriority` at all — so it lives here as the shared constant
-    /// both ordering paths rank it by.
-    pub const ABSENT_RANK: i8 = -1;
-
-    /// Check if this is a core (built-in) priority
-    pub fn is_core(&self) -> bool {
-        !matches!(self, Self::User(_))
-    }
-
-    /// Check if this is a user-defined priority
-    pub fn is_user_defined(&self) -> bool {
-        matches!(self, Self::User(_))
-    }
-}
-
-impl Serialize for TaskPriority {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        serializer.serialize_str(self.as_str())
-    }
-}
-
-impl<'de> Deserialize<'de> for TaskPriority {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let s = String::deserialize(deserializer)?;
-        Ok(Self::from_str(&s).unwrap()) // from_str never fails: unknown strings map to User(_)
-    }
-}
-
 /// Strongly-typed task node with direct field access
 ///
 /// Uses Universal Graph Architecture - properties stored in node.properties JSON.
-/// All fields are strongly typed - TaskStatus and TaskPriority enums.
+/// All fields are strongly typed - TaskStatus and Priority enums.
 ///
 /// # Query Pattern (Universal Graph Architecture)
 ///
@@ -389,7 +262,7 @@ pub struct TaskNode {
 
     /// Task priority (strongly typed enum: highest, high, medium, low, lowest)
     #[serde(default)]
-    pub priority: Option<TaskPriority>,
+    pub priority: Option<Priority>,
 
     /// Due date for the task (YYYY-MM-DD)
     #[serde(default)]
@@ -410,7 +283,7 @@ fn default_version() -> i64 {
 
 impl TaskNode {
     /// Default priority value
-    pub const DEFAULT_PRIORITY: TaskPriority = TaskPriority::Medium;
+    pub const DEFAULT_PRIORITY: Priority = Priority::Medium;
 
     /// Create a TaskNode from an existing Node (for backward compatibility)
     ///
@@ -453,7 +326,7 @@ impl TaskNode {
         let priority = props
             .get("priority")
             .and_then(|v| v.as_str())
-            .map(|s| TaskPriority::from_str(s).unwrap_or_default());
+            .map(|s| Priority::from_str(s).unwrap_or_default());
 
         // Extract due_date from properties — normalize to YYYY-MM-DD (accept RFC 3339 for migration)
         let due_date = props
@@ -581,13 +454,13 @@ impl TaskNode {
         self.modified_at = Utc::now();
     }
 
-    /// Get the task's priority as TaskPriority enum
-    pub fn get_priority(&self) -> TaskPriority {
+    /// Get the task's priority as Priority enum
+    pub fn get_priority(&self) -> Priority {
         self.priority.clone().unwrap_or(Self::DEFAULT_PRIORITY)
     }
 
     /// Set the task's priority
-    pub fn set_priority(&mut self, priority: TaskPriority) {
+    pub fn set_priority(&mut self, priority: Priority) {
         self.priority = Some(priority);
         self.modified_at = Utc::now();
     }
@@ -608,7 +481,7 @@ impl TaskNode {
 pub struct TaskNodeBuilder {
     content: String,
     status: Option<TaskStatus>,
-    priority: Option<TaskPriority>,
+    priority: Option<Priority>,
     due_date: Option<String>,
 }
 
@@ -620,7 +493,7 @@ impl TaskNodeBuilder {
     }
 
     /// Set the task priority
-    pub fn with_priority(mut self, priority: TaskPriority) -> Self {
+    pub fn with_priority(mut self, priority: Priority) -> Self {
         self.priority = Some(priority);
         self
     }
@@ -710,7 +583,7 @@ pub struct TaskNodeUpdate {
     /// - `Some(None)` - Clear priority
     /// - `Some(Some(p))` - Set to priority p (highest, high, medium, low, lowest, or user-defined)
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub priority: Option<Option<TaskPriority>>,
+    pub priority: Option<Option<Priority>>,
 
     /// Update due date (task property)
     /// - `None` - Don't change
@@ -763,7 +636,7 @@ impl TaskNodeUpdate {
     }
 
     /// Set priority update (Some(value) to set, None to clear)
-    pub fn with_priority(mut self, priority: Option<TaskPriority>) -> Self {
+    pub fn with_priority(mut self, priority: Option<Priority>) -> Self {
         self.priority = Some(priority);
         self
     }
@@ -941,15 +814,15 @@ mod roundtrip_proptests {
         ]
     }
 
-    fn task_priority() -> impl Strategy<Value = Option<TaskPriority>> {
+    fn task_priority() -> impl Strategy<Value = Option<Priority>> {
         prop_oneof![
             Just(None),
-            Just(Some(TaskPriority::Highest)),
-            Just(Some(TaskPriority::High)),
-            Just(Some(TaskPriority::Medium)),
-            Just(Some(TaskPriority::Low)),
-            Just(Some(TaskPriority::Lowest)),
-            "[a-z][a-z_]{0,15}".prop_map(|s| Some(TaskPriority::User(s))),
+            Just(Some(Priority::Highest)),
+            Just(Some(Priority::High)),
+            Just(Some(Priority::Medium)),
+            Just(Some(Priority::Low)),
+            Just(Some(Priority::Lowest)),
+            "[a-z][a-z_]{0,15}".prop_map(|s| Some(Priority::User(s))),
         ]
     }
 

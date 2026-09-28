@@ -41,7 +41,7 @@
 //! ```
 
 use crate::db::SqliteStore;
-use crate::models::{Node, TaskPriority};
+use crate::models::{Node, Priority};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
@@ -366,12 +366,13 @@ impl QueryService {
                 let val_a = a.properties.get(&a.node_type).and_then(|ns| ns.get(field));
                 let val_b = b.properties.get(&b.node_type).and_then(|ns| ns.get(field));
 
-                // A task's priority is an enum whose alphabetical order is
-                // meaningless, so rank it. This pass runs after the SQL and has
-                // the final say, so the condition must match
-                // resolve_order_field's exactly — including its `task`-only
-                // scope — or the SQL ordering is silently undone here.
-                if field == "priority" && target_type == "task" {
+                // A task's or project's priority is an enum whose alphabetical
+                // order is meaningless, so rank it. This pass runs after the SQL
+                // and has the final say, so the condition must match
+                // resolve_order_field's exactly — including its
+                // `Priority::NODE_TYPES`-only scope — or the SQL ordering is
+                // silently undone here.
+                if field == "priority" && Priority::applies_to(target_type) {
                     return self.compare_priority_values(val_a, val_b);
                 }
 
@@ -380,13 +381,14 @@ impl QueryService {
         }
     }
 
-    /// Compare two `task.priority` values by rank rather than alphabetically
+    /// Compare two `priority` values of a [`Priority::NODE_TYPES`] type by
+    /// rank rather than alphabetically
     ///
     /// Ascending yields highest, high, medium, low, lowest, then user-defined
     /// values ordered lexicographically among themselves — the same ordering
     /// [`Self::resolve_order_field`] builds in SQL.
     ///
-    /// An absent priority ranks [`TaskPriority::ABSENT_RANK`], before the whole
+    /// An absent priority ranks [`Priority::ABSENT_RANK`], before the whole
     /// scale, so it sorts first ascending — the same position the SQL CASE's
     /// `IS NULL` arm gives it (`json_extract` yields SQL NULL for a JSON null
     /// too, so one arm covers both). A non-string value is not a valid priority
@@ -398,7 +400,8 @@ impl QueryService {
     /// matches SQL for every input, and the **tie-break within a rank** matches
     /// for strings, where both order the raw value. It does not match for
     /// non-strings — this keys on `to_string()` while SQLite orders integers
-    /// before text — but `task.priority` is an enum field, and
+    /// before text — but `priority` is an enum field on every type ranked
+    /// here, and
     /// `validate_node_with_fields` rejects a non-null non-string on every write
     /// path, so no such row exists to sort. Agreement matters because SQL
     /// applies LIMIT before this pass runs, discarding rows it has already
@@ -413,17 +416,17 @@ impl QueryService {
         fn key(value: Option<&serde_json::Value>) -> (i16, String) {
             match value {
                 None | Some(serde_json::Value::Null) => {
-                    (TaskPriority::ABSENT_RANK as i16, String::new())
+                    (Priority::ABSENT_RANK as i16, String::new())
                 }
                 Some(serde_json::Value::String(s)) => {
                     // from_str is infallible — every unknown string is User(_)
                     // — but name that fallback rather than letting Default's
                     // Medium stand in for an unparseable value.
                     let priority =
-                        TaskPriority::from_str(s).unwrap_or_else(|_| TaskPriority::User(s.clone()));
+                        Priority::from_str(s).unwrap_or_else(|_| Priority::User(s.clone()));
                     (priority.rank() as i16, s.clone())
                 }
-                Some(other) => (TaskPriority::USER_RANK as i16, other.to_string()),
+                Some(other) => (Priority::USER_RANK as i16, other.to_string()),
             }
         }
 
@@ -644,8 +647,8 @@ impl QueryService {
 
     /// Build one ORDER BY term, ranking priority instead of sorting it as text
     ///
-    /// Deliberately separate from [`Self::resolve_field`]. `task.priority` is a
-    /// string enum whose alphabetical order (`high, highest, low, lowest,
+    /// Deliberately separate from [`Self::resolve_field`]. `priority` on the
+    /// [`Priority::NODE_TYPES`] types is a string enum whose alphabetical order (`high, highest, low, lowest,
     /// medium`) is meaningless, so ordering by it needs a rank expression —
     /// but `resolve_field`'s output must stay byte-for-byte identical to the
     /// expression `idx_task_priority` is built on, or equality filters silently
@@ -653,7 +656,7 @@ impl QueryService {
     /// filter index for a working sort. So the rank lives here, on the ordering
     /// path only, and `resolve_field` is left alone.
     ///
-    /// The CASE mirrors [`TaskPriority::rank`]; the two are pinned together by
+    /// The CASE mirrors [`Priority::rank`]; the two are pinned together by
     /// `test_sql_priority_rank_matches_enum_rank`. User-defined values all land
     /// on the same `ELSE` rank, so the raw value is appended as a tiebreaker to
     /// order them lexicographically among themselves — matching what
@@ -668,15 +671,14 @@ impl QueryService {
     fn resolve_order_field(&self, field: &str, target_type: &str, direction: &str) -> String {
         let resolved = self.resolve_field(field, target_type);
 
-        // Scoped to `task` only. A wildcard query resolves the namespace from
-        // each row's own node_type, so ranking there would impose the task
-        // scale on every type's priority (and rank a non-task NULL as a user
-        // value instead of sorting it first) — while compare_priority_values
-        // ranks only when both nodes are tasks. The two layers would then
-        // disagree, and which one won would depend on whether a LIMIT was
-        // present. project.priority is a different scale; see the companion
-        // issue on whether it should be aligned.
-        if field == "priority" && target_type == "task" {
+        // Scoped to the types that share the scale. A wildcard query resolves
+        // the namespace from each row's own node_type, so ranking there would
+        // impose the shared scale on every type's priority — including a
+        // user-defined type's bare `priority`, which is its own vocabulary —
+        // while compare_priority_values ranks only for these same targets. The
+        // two layers would then disagree, and which one won would depend on
+        // whether a LIMIT was present.
+        if field == "priority" && Priority::applies_to(target_type) {
             // A *searched* CASE, deliberately: a simple `CASE <expr> WHEN ...`
             // compares with `=`, and `NULL = 'highest'` is NULL rather than
             // true, so an absent priority would match no arm and fall to ELSE
@@ -690,13 +692,13 @@ impl QueryService {
                  WHEN {resolved} = 'highest' THEN {} WHEN {resolved} = 'high' THEN {} \
                  WHEN {resolved} = 'medium' THEN {} WHEN {resolved} = 'low' THEN {} \
                  WHEN {resolved} = 'lowest' THEN {} ELSE {} END",
-                TaskPriority::ABSENT_RANK,
-                TaskPriority::Highest.rank(),
-                TaskPriority::High.rank(),
-                TaskPriority::Medium.rank(),
-                TaskPriority::Low.rank(),
-                TaskPriority::Lowest.rank(),
-                TaskPriority::USER_RANK,
+                Priority::ABSENT_RANK,
+                Priority::Highest.rank(),
+                Priority::High.rank(),
+                Priority::Medium.rank(),
+                Priority::Low.rank(),
+                Priority::Lowest.rank(),
+                Priority::USER_RANK,
             );
             return format!("{rank} {direction}, {resolved} {direction}");
         }

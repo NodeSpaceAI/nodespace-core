@@ -25,7 +25,7 @@ use nodespace_core::db::events::{
     DomainEvent, PLAYBOOK_CHAIN_DEPTH_PROPERTY, PLAYBOOK_WRITE_ID_PROPERTY, SYNC_SERVICE_CLIENT_ID,
 };
 use nodespace_core::db::SqliteStore;
-use nodespace_core::models::{Node, NodeUpdate, TaskNodeUpdate, TaskPriority, TaskStatus};
+use nodespace_core::models::{Node, NodeUpdate, Priority, TaskNodeUpdate, TaskStatus};
 use nodespace_core::playbook::types::MAX_CHAIN_DEPTH;
 use nodespace_core::services::{NodeService, NodeServiceError};
 use nodespace_core::PlaybookEngine;
@@ -2211,7 +2211,7 @@ async fn invariant_task_update_rule_executes_synchronously_in_same_transaction()
 
     assert_eq!(
         updated.priority,
-        Some(TaskPriority::High),
+        Some(Priority::High),
         "invariant action must have already run by the time update_task_node returned"
     );
     assert_eq!(
@@ -2390,7 +2390,7 @@ async fn invariant_task_update_rule_augmenting_action_commits_and_broadcasts_nor
         .await?;
     assert_eq!(
         updated.priority,
-        Some(TaskPriority::High),
+        Some(Priority::High),
         "augmenting action must have run"
     );
 

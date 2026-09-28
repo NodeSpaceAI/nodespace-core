@@ -17,8 +17,8 @@ use nodespace_agent::local_agent::deletion_confirmation::{self, DeletionStop};
 use nodespace_core::db::events::DomainEvent;
 use nodespace_core::db::ChildPlacement;
 use nodespace_core::models::{
-    AiChatPendingDeletion, Node, NodeQuery, NodeUpdate, OrderBy, PersonNodeUpdate,
-    ProjectNodeUpdate, QueryNodeUpdate, TaskNodeUpdate, TaskPriority, TaskStatus,
+    AiChatPendingDeletion, Node, NodeQuery, NodeUpdate, OrderBy, PersonNodeUpdate, Priority,
+    ProjectNodeUpdate, QueryNodeUpdate, TaskNodeUpdate, TaskStatus,
 };
 use nodespace_core::ops::{
     collection_ops::{
@@ -3102,8 +3102,8 @@ fn build_task_node_update(
     })
 }
 
-fn parse_task_priority(value: &str) -> Result<TaskPriority, String> {
-    serde_json::from_value::<TaskPriority>(serde_json::Value::String(value.to_string()))
+fn parse_task_priority(value: &str) -> Result<Priority, String> {
+    serde_json::from_value::<Priority>(serde_json::Value::String(value.to_string()))
         .map_err(|e| format!("Invalid task priority '{}': {}", value, e))
 }
 

@@ -11,7 +11,7 @@ use std::fmt;
 use std::str::FromStr;
 
 /// The kind of convergence conflict a record represents. A closed set —
-/// unlike `TaskStatus`/`TaskPriority`, there is no user-defined extension
+/// unlike `TaskStatus`/`Priority`, there is no user-defined extension
 /// point here, so an unrecognized stored value is a genuine data error, not a
 /// legitimate "user-defined kind" the way `TaskStatus::User(_)` is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

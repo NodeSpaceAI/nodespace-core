@@ -14,6 +14,7 @@ pub mod conflict;
 pub mod core_schemas;
 pub mod embedding;
 mod node;
+mod priority;
 pub mod schema;
 pub mod time;
 
@@ -77,8 +78,9 @@ pub use collection_node::CollectionNode;
 pub use date_node::DateNode;
 pub use embedding::{ChunkInfo, Embedding, EmbeddingConfig, EmbeddingSearchResult, NewEmbedding};
 pub use nodespace_types::{SkillNode, DEFAULT_SKILL_MAX_ITERATIONS, SKILL_NODE_TYPE};
+pub use priority::Priority;
 pub use schema_node::SchemaNode;
-pub use task_node::{TaskNode, TaskNodeUpdate, TaskPriority, TaskStatus};
+pub use task_node::{TaskNode, TaskNodeUpdate, TaskStatus};
 pub use text_node::TextNode;
 
 // node_to_typed_value and nodes_to_typed_values are the single canonical

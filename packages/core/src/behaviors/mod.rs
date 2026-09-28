@@ -645,18 +645,18 @@ impl TaskNodeBehavior {
     ///
     /// Returns `ValidationError` if validation fails. Currently validates:
     /// - Status is a valid enum value (enforced by TaskStatus type)
-    /// - Priority is a valid enum value (enforced by TaskPriority type)
+    /// - Priority is a valid enum value (enforced by Priority type)
     ///
     /// # Examples
     ///
     /// ```rust
     /// use nodespace_core::behaviors::TaskNodeBehavior;
-    /// use nodespace_core::models::{TaskNode, TaskStatus, TaskPriority};
+    /// use nodespace_core::models::{TaskNode, TaskStatus, Priority};
     ///
     /// let behavior = TaskNodeBehavior;
     /// let task = TaskNode::builder("Fix bug".to_string())
     ///     .with_status(TaskStatus::InProgress)
-    ///     .with_priority(TaskPriority::Medium)
+    ///     .with_priority(Priority::Medium)
     ///     .build();
     ///
     /// assert!(behavior.validate_task_node(&task).is_ok());
@@ -665,9 +665,9 @@ impl TaskNodeBehavior {
         // Status is already type-safe via TaskStatus enum - no validation needed
         // The Rust type system guarantees it's a valid status value
         //
-        // Priority is already type-safe via TaskPriority enum - no validation needed
+        // Priority is already type-safe via Priority enum - no validation needed
         // Core values (highest, high, medium, low, lowest) are enforced by the enum
-        // User-defined values (TaskPriority::User) are allowed by schema extension
+        // User-defined values (Priority::User) are allowed by schema extension
         //
         // Note: Empty content is allowed for tasks - users can add description later
         // Note: Due date validation (if present, must be valid DateTime) is enforced by type
@@ -3165,7 +3165,7 @@ mod tests {
         assert!(behavior.validate(&bad_status_type).is_ok());
 
         // Priority is now a string enum (highest, high, medium, low, lowest) with user-extensibility
-        // All values pass validation - unknown values become TaskPriority::User(value)
+        // All values pass validation - unknown values become Priority::User(value)
         let priority_highest = Node::new(
             "task".to_string(),
             "Task".to_string(),
@@ -3682,7 +3682,7 @@ mod tests {
 
     #[test]
     fn test_task_node_behavior_validate_task_node() {
-        use crate::models::{TaskNode, TaskPriority, TaskStatus};
+        use crate::models::{Priority, TaskNode, TaskStatus};
 
         let behavior = TaskNodeBehavior;
 
@@ -3698,19 +3698,19 @@ mod tests {
 
         // Valid task with priority (now a string enum)
         let task_with_priority = TaskNode::builder("High priority task".to_string())
-            .with_priority(TaskPriority::High)
+            .with_priority(Priority::High)
             .build();
         assert!(behavior.validate_task_node(&task_with_priority).is_ok());
 
         // Valid task with low priority
         let task_low_priority = TaskNode::builder("Low priority".to_string())
-            .with_priority(TaskPriority::Low)
+            .with_priority(Priority::Low)
             .build();
         assert!(behavior.validate_task_node(&task_low_priority).is_ok());
 
         // User-defined priority values are allowed (schema extensibility)
         let task_custom_priority = TaskNode::builder("Custom priority".to_string())
-            .with_priority(TaskPriority::User("critical".to_string()))
+            .with_priority(Priority::User("critical".to_string()))
             .build();
         assert!(
             behavior.validate_task_node(&task_custom_priority).is_ok(),
@@ -4543,7 +4543,7 @@ mod tests {
 
     #[test]
     fn test_task_node_from_node_nested_format() {
-        use crate::models::{TaskNode, TaskPriority};
+        use crate::models::{Priority, TaskNode};
 
         // Test that TaskNode::from_node handles nested format
         // Priority now uses string enum format
@@ -4561,12 +4561,12 @@ mod tests {
         let task = TaskNode::from_node(nested_node).unwrap();
         assert_eq!(task.content, "Nested format task");
         assert_eq!(task.status.as_str(), "in_progress");
-        assert_eq!(task.priority, Some(TaskPriority::Medium));
+        assert_eq!(task.priority, Some(Priority::Medium));
     }
 
     #[test]
     fn test_task_node_from_node_flat_format() {
-        use crate::models::{TaskNode, TaskPriority};
+        use crate::models::{Priority, TaskNode};
 
         // Test flat format (old property structure, but string priority)
         let flat_node = Node::new(
@@ -4581,12 +4581,12 @@ mod tests {
         let task = TaskNode::from_node(flat_node).unwrap();
         assert_eq!(task.content, "Flat format task");
         assert_eq!(task.status.as_str(), "done");
-        assert_eq!(task.priority, Some(TaskPriority::Low));
+        assert_eq!(task.priority, Some(Priority::Low));
     }
 
     #[test]
     fn test_task_node_from_node_string_priority() {
-        use crate::models::{TaskNode, TaskPriority};
+        use crate::models::{Priority, TaskNode};
 
         // Test string priority - now the canonical format
         let string_priority_node = Node::new(
@@ -4601,7 +4601,7 @@ mod tests {
         );
 
         let task = TaskNode::from_node(string_priority_node).unwrap();
-        assert_eq!(task.priority, Some(TaskPriority::High));
+        assert_eq!(task.priority, Some(Priority::High));
 
         // Test core string priorities
         let low_node = Node::new(
@@ -4610,7 +4610,7 @@ mod tests {
             json!({"priority": "low"}),
         );
         let low_task = TaskNode::from_node(low_node).unwrap();
-        assert_eq!(low_task.priority, Some(TaskPriority::Low));
+        assert_eq!(low_task.priority, Some(Priority::Low));
 
         // Test user-defined priority (schema extensibility)
         let urgent_node = Node::new(
@@ -4621,7 +4621,7 @@ mod tests {
         let urgent_task = TaskNode::from_node(urgent_node).unwrap();
         assert_eq!(
             urgent_task.priority,
-            Some(TaskPriority::User("urgent".to_string())),
+            Some(Priority::User("urgent".to_string())),
             "Unknown priorities become User-defined"
         );
     }

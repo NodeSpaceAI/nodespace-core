@@ -309,9 +309,11 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                     local_only: false,
                     protection: SchemaProtectionLevel::User,
                     core_values: Some(vec![
-                        EnumValue::new("low".to_string(), "Low".to_string()),
-                        EnumValue::new("medium".to_string(), "Medium".to_string()),
+                        EnumValue::new("highest".to_string(), "Highest".to_string()),
                         EnumValue::new("high".to_string(), "High".to_string()),
+                        EnumValue::new("medium".to_string(), "Medium".to_string()),
+                        EnumValue::new("low".to_string(), "Low".to_string()),
+                        EnumValue::new("lowest".to_string(), "Lowest".to_string()),
                     ]),
                     user_values: Some(vec![]),
                     indexed: true,
@@ -319,8 +321,11 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                     extensible: Some(true),
                     default: None,
                     description: Some(
-                        "Relative importance for triage across projects (low, medium, high). \
-                         Absent means no priority has been assigned."
+                        "Relative importance for triage across projects (highest, high, \
+                         medium, low, lowest) — the same scale as task priority. Sorting \
+                         follows that order rather than the alphabetical order of the \
+                         values; user-defined values sort after all of them. Absent means \
+                         no priority has been assigned."
                             .to_string(),
                     ),
                     item_type: None,
@@ -2085,58 +2090,78 @@ mod tests {
         }
     }
 
-    /// The `TaskPriority` sibling of the ADR-076 status drift check above.
+    /// The `Priority` sibling of the ADR-076 status drift check above, run
+    /// for every core type that shares the scale.
     ///
-    /// `task.priority` has the same two-sided consistency requirement: a named
-    /// variant with no `core_values` entry is a value the type accepts but the
-    /// schema rejects, and a `core_values` entry with no named variant parses
-    /// to `TaskPriority::User(_)` — validating fine while reporting
+    /// Each type's `priority` must list exactly the named variants, in rank
+    /// order. A named variant with no `core_values` entry is a value the type
+    /// accepts but the schema rejects; a `core_values` entry with no named
+    /// variant parses to `Priority::User(_)` — validating fine while reporting
     /// `is_core() == false`, so it is silently treated as a user extension of
-    /// the very field that declares it.
+    /// the very field that declares it, and sorts after the whole scale. The
+    /// order is pinned too, so every type's picker lists the scale the same
+    /// way the query service ranks it.
     #[test]
-    fn test_task_priority_variants_match_core_values_bidirectionally() {
-        use crate::models::TaskPriority;
+    fn test_priority_variants_match_core_values_bidirectionally() {
+        use crate::models::Priority;
+
+        let expected: Vec<&str> = [
+            Priority::Highest,
+            Priority::High,
+            Priority::Medium,
+            Priority::Low,
+            Priority::Lowest,
+        ]
+        .iter()
+        .map(|p| p.as_str())
+        .collect();
 
         let schemas = get_core_schemas();
-        let task = schemas.iter().find(|s| s.id == "task").unwrap();
-        let priority_field = task
-            .get_field("priority")
-            .expect("task schema has priority");
-        let core_value_strings: Vec<&str> = priority_field
-            .core_values
-            .as_ref()
-            .expect("priority field has core_values")
-            .iter()
-            .map(|ev| ev.value.as_str())
-            .collect();
+        for node_type in Priority::NODE_TYPES {
+            let schema = schemas
+                .iter()
+                .find(|s| s.id == node_type)
+                .unwrap_or_else(|| panic!("no core schema for '{}'", node_type));
+            let priority_field = schema
+                .get_field("priority")
+                .unwrap_or_else(|| panic!("{} schema has priority", node_type));
+            let core_value_strings: Vec<&str> = priority_field
+                .core_values
+                .as_ref()
+                .expect("priority field has core_values")
+                .iter()
+                .map(|ev| ev.value.as_str())
+                .collect();
 
-        let named_variants = [
-            TaskPriority::Highest,
-            TaskPriority::High,
-            TaskPriority::Medium,
-            TaskPriority::Low,
-            TaskPriority::Lowest,
-        ];
-        for variant in &named_variants {
-            assert!(
-                core_value_strings.contains(&variant.as_str()),
-                "TaskPriority::{:?} (\"{}\") has no matching entry in task.priority's \
-                 core_values ({:?}) — add it to core_schemas.rs's seed definition.",
-                variant,
-                variant.as_str(),
-                core_value_strings
+            assert_eq!(
+                core_value_strings, expected,
+                "{}.priority's core_values must be exactly the named Priority variants \
+                 in rank order — update core_schemas.rs or models/priority.rs so they agree.",
+                node_type
             );
         }
+    }
 
-        for value in &core_value_strings {
-            let parsed: TaskPriority = value.parse().expect("TaskPriority::from_str is infallible");
-            assert!(
-                parsed.is_core(),
-                "task.priority's core_values entry '{}' does not parse to a named TaskPriority \
-                 variant (got TaskPriority::User(_)) — add a matching variant in task_node.rs \
-                 or remove the stray core_values entry.",
-                value
-            );
+    /// The other direction of the check above: a core type that declares a
+    /// `priority` field must be listed in `Priority::NODE_TYPES`. Otherwise
+    /// its field would silently sort as text while looking like the shared
+    /// scale — the divergence `project.priority` once had. Adding a core type
+    /// with a deliberately different scale is fine, but it has to be a
+    /// decision made here, not drift.
+    #[test]
+    fn test_every_core_priority_field_uses_the_shared_scale() {
+        use crate::models::Priority;
+
+        for schema in get_core_schemas() {
+            if schema.get_field("priority").is_some() {
+                assert!(
+                    Priority::applies_to(&schema.id),
+                    "core schema '{}' declares `priority` but is not in \
+                     Priority::NODE_TYPES — add it there (and align its core_values), \
+                     or document why its scale differs.",
+                    schema.id
+                );
+            }
         }
     }
 
