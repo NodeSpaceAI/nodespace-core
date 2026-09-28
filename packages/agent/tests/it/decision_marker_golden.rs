@@ -48,7 +48,7 @@
 //! emission:
 //!
 //! ```text
-//! UPDATE_GOLDEN=1 cargo test -p nodespace-agent --test decision_marker_golden
+//! UPDATE_GOLDEN=1 cargo test -p nodespace-agent --test it decision_marker_golden::
 //! ```
 //!
 //! Then review the `git diff` and run the TypeScript side, which asserts what
@@ -145,15 +145,16 @@ fn capture(records: &[(u32, DecisionRecord)]) -> String {
     let text = String::from_utf8(captured).expect("tracing wrote non-UTF-8");
 
     // Prepend the fixed stamp and rewrite the target so each line matches the
-    // daemon's shape. The target is the test binary's name here but
+    // daemon's shape. The target is this test module's path here but
     // `nodespace_agent` in production; nothing in the scrape parses it, and
     // normalising it keeps the fixture readable as the real log slice it
     // stands in for rather than a test artefact.
+    let test_target = concat!(module_path!(), ":");
     text.lines()
         .map(|l| {
             format!(
                 "{FIXED_STAMP} {}",
-                l.replacen("decision_marker_golden:", "nodespace_agent:", 1)
+                l.replacen(test_target, "nodespace_agent:", 1)
             )
         })
         .collect::<Vec<_>>()
@@ -317,7 +318,7 @@ mod golden {
                 "golden file missing or unreadable at {} ({e}).\n\n\
                  Goldens are never auto-created. If this change to the decision \
                  emission is deliberate, regenerate it explicitly:\n\n  \
-                 UPDATE_GOLDEN=1 cargo test -p nodespace-agent --test decision_marker_golden\n\n\
+                 UPDATE_GOLDEN=1 cargo test -p nodespace-agent --test it decision_marker_golden::\n\n\
                  then review the diff AND run the TypeScript round-trip test, which \
                  asserts what these lines parse back to.",
                 file.display()

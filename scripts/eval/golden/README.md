@@ -11,9 +11,9 @@ record from it.
 
 | | |
 |---|---|
-| **Written by** | `packages/agent/tests/decision_marker_golden.rs` |
+| **Written by** | `packages/agent/tests/it/decision_marker_golden.rs` |
 | **Read by** | `scripts/eval/decision-roundtrip.test.ts` |
-| **Regenerate** | `UPDATE_GOLDEN=1 cargo test -p nodespace-agent --test decision_marker_golden` |
+| **Regenerate** | `UPDATE_GOLDEN=1 cargo test -p nodespace-agent --test it decision_marker_golden::` |
 
 After regenerating, review the `git diff` **and** run the TypeScript side
 (`bun run test:scripts`) — it asserts what these lines parse back to, and a

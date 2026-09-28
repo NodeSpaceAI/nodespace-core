@@ -16,7 +16,7 @@
 //!
 //! Ignored by default — loads the 5GB locked native GGUF. Run explicitly:
 //! ```text
-//! cargo test -p nodespace-agent --test live_update_node_noop_gate -- --ignored --nocapture --test-threads=1
+//! cargo test -p nodespace-agent --test it live_update_node_noop_gate:: -- --ignored --nocapture --test-threads=1
 //! ```
 
 use std::sync::Arc;

@@ -2234,7 +2234,7 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
         // `session.routing_disabled` is set once, by the caller, from a cached
         // routing-probe verdict for this session's model (see
         // `local_agent::routing_probe`). The matrix in
-        // `tests/live_openai_compat_routing.rs` found injecting this block
+        // `tests/it/live_openai_compat_routing.rs` found injecting this block
         // suppresses tool-calling outright on some served models, independent
         // of the block's content — so a model probed unsafe skips injection
         // entirely rather than receiving a "safer" smaller block; there is no
@@ -2497,7 +2497,7 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
             // chat template replays verbatim into the next prompt. The model then
             // copies the shape it reads there: measured at 8 of 8 malformed
             // retries from a malformed prior call, against 8 of 8 clean retries
-            // from a clean one (`nlp-engine/tests/toolcall_json_shape.rs`). So a
+            // from a clean one (`nlp-engine/tests/it/toolcall_json_shape.rs`). So a
             // single malformation was self-sustaining — repaired for the tool on
             // every attempt, yet re-taught to the model on every attempt.
             // Repairing the record itself is what breaks that loop.
@@ -8536,7 +8536,7 @@ mod tests {
         let engine = Arc::new(MockEngine::tool_then_text(
             "create_schema",
             // Exactly the wire shape measured from gemma-4-e4b on a retry after
-            // a rejected call (see nlp-engine/tests/toolcall_json_shape.rs).
+            // a rejected call (see nlp-engine/tests/it/toolcall_json_shape.rs).
             r#"{"name":"Venue","fields":[{"\"name\"":"capacity","\"type\"":"number"}]}"#,
             "Created the Venue type.",
         ));
@@ -11654,7 +11654,7 @@ mod tests {
 
     // -----------------------------------------------------------------------
     // `session.routing_disabled` (Option C from ADR-038): the
-    // routing-reliability matrix in `tests/live_openai_compat_routing.rs`
+    // routing-reliability matrix in `tests/it/live_openai_compat_routing.rs`
     // found Stage-2 candidate injection suppresses tool-calling outright on
     // some served models. A cached per-model probe verdict sets this flag;
     // these tests cover what the loop does with it.

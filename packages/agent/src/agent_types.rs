@@ -465,7 +465,7 @@ pub struct AgentSession {
     /// Set by the caller (`LocalAgentService`) from a cached routing-probe
     /// verdict (see `local_agent::routing_probe`) when the session's model is
     /// loaded — the loop itself never probes. The routing-reliability matrix
-    /// (`tests/live_openai_compat_routing.rs`) found this a per-model
+    /// (`tests/it/live_openai_compat_routing.rs`) found this a per-model
     /// property: injecting the candidate block suppresses tool-calling
     /// outright on some served models, independent of the block's content.
     /// `false` for every session whose model was never probed (the native

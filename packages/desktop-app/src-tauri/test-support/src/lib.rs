@@ -41,7 +41,7 @@ use nodespace_app_lib::services::GrpcClient;
 use tauri::Manager;
 
 // Re-exported the same way `daemon_binary_freshness` below is: `pub` purely
-// so `tests/sidecar_staging_sync_test.rs` can exercise the real algorithm,
+// so `tests/it/sidecar_staging_sync_test.rs` can exercise the real algorithm,
 // not because anything in this crate calls it itself. Pulled in via
 // `#[path]` rather than a `[build-dependencies]` crate because this crate
 // already depends on `nodespace-app` — a build-dependency back onto the same
@@ -453,7 +453,7 @@ fn newest_source_mtime(root: &Path) -> Option<(std::time::SystemTime, PathBuf)> 
 /// this check exists to catch a specific, silent mismatch, not to add a second
 /// way for the fixture to refuse to start.
 ///
-/// `pub` so `tests/daemon_binary_freshness_test.rs` can exercise it against a
+/// `pub` so `tests/it/daemon_binary_freshness_test.rs` can exercise it against a
 /// synthetic tree; the ADR-048 suite is where this crate's own logic gets run.
 pub fn daemon_binary_freshness(binary: &Path, root: &Path) -> Result<(), String> {
     let Ok(binary_mtime) = std::fs::metadata(binary).and_then(|m| m.modified()) else {

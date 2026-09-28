@@ -1945,7 +1945,7 @@ impl LocalAgentServiceImpl {
                 .await;
 
             // Routing-reliability probe (Option C): the matrix in
-            // `tests/live_openai_compat_routing.rs` found Stage-2 candidate
+            // `tests/it/live_openai_compat_routing.rs` found Stage-2 candidate
             // injection suppresses tool-calling on some served models,
             // independent of the block's content, and that this is a
             // per-model property rather than a native-vs-served split. Run
@@ -2907,7 +2907,7 @@ async fn load_chat_messages(node_service: &Arc<NodeService>, node_id: &str) -> V
 ///
 /// This is the terse-history replacement for an assistant turn's own prose.
 /// Confirmed on the golden scenario-6 sequence
-/// (`packages/agent/tests/golden_scenario6_sequence.rs`): history rendered as
+/// (`packages/agent/tests/it/golden_scenario6_sequence.rs`): history rendered as
 /// short declarative facts ("Fact: a schema with id 'X' was created, with
 /// fields Y (type) and Z (type).") keeps later turns emitting well-formed
 /// tool calls; the model's own narrative reply to the same turn (paragraphs,

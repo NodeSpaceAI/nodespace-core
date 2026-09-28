@@ -737,7 +737,7 @@ mod collection_service_tests {
         // sides — ADR-068), never a hard rejection — a hard error here would
         // propagate straight out of `nodespace-sync`'s `apply_node_upsert` and
         // permanently wedge the sync cursor on a benign duplicate name. See
-        // `tests/collection_name_convergence_test.rs` for the full adversarial
+        // `tests/it/collection_name_convergence_test.rs` for the full adversarial
         // convergence coverage of this behavior; this test only re-confirms that
         // `resolve_path`'s deterministic-id get-or-create still avoids ever hitting
         // the collision in the first place for its own callers.

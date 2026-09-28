@@ -14,7 +14,7 @@
 //! any OpenAI-compatible server) listening on [`BASE_URL`]:
 //!
 //! ```text
-//! cargo test -p nodespace-agent --test live_openai_compat_smoke -- --ignored --nocapture
+//! cargo test -p nodespace-agent --test it live_openai_compat_smoke:: -- --ignored --nocapture
 //! ```
 
 use nodespace_agent::agent_types::{

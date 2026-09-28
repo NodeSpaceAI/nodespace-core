@@ -1,6 +1,6 @@
 //! Shared between `build.rs` (which calls this for real, immediately before
 //! `tauri_build::build()`) and `nodespace-app-test-support`, which re-exports
-//! `sync_stale_sidecar` purely so `tests/sidecar_staging_sync_test.rs` can
+//! `sync_stale_sidecar` purely so `tests/it/sidecar_staging_sync_test.rs` can
 //! exercise the real algorithm against synthetic trees — no duplicated
 //! copy.
 //!

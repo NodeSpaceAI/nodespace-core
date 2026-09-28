@@ -24,7 +24,7 @@
 //! NodeSpace catalog path. Run explicitly:
 //!
 //! ```text
-//! cargo test -p nodespace-agent --test live_embedding_prefix_measurement -- --ignored --nocapture
+//! cargo test -p nodespace-agent --test it live_embedding_prefix_measurement:: -- --ignored --nocapture
 //! ```
 
 use std::collections::HashMap;

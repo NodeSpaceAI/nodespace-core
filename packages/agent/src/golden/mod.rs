@@ -15,8 +15,8 @@
 //! both, and would be new surface for the failure mode this project has
 //! already paid for: a harness bug reported as a model failure.
 //!
-//! The methodology comes from `tests/golden_scenario6_handauthored.rs` and
-//! `tests/golden_scenario6_sequence.rs`, which stay in place as the validated
+//! The methodology comes from `tests/it/golden_scenario6_handauthored.rs` and
+//! `tests/it/golden_scenario6_sequence.rs`, which stay in place as the validated
 //! Rust-side reference. They proved the approach but stayed bespoke — one
 //! scenario, prompts as string literals, a recompile per edit. Here the prompt
 //! is a TOML file and the loop is edit-and-rerun.

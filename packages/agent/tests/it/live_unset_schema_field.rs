@@ -29,7 +29,7 @@
 //!
 //! Live run:
 //! ```text
-//! cargo test -p nodespace-agent --test live_unset_schema_field -- --ignored --nocapture --test-threads=1
+//! cargo test -p nodespace-agent --test it live_unset_schema_field:: -- --ignored --nocapture --test-threads=1
 //! ```
 
 use std::sync::Arc;
@@ -836,7 +836,7 @@ async fn live_model_recovers_from_a_bad_enum_value_without_asking() {
     // 3 of 3 reps, before and after the schema/grammar change attempted for it,
     // produce byte-identical output — so this is a first-emission model defect,
     // not the history-propagation loop the repair fixes (that one is measured
-    // separately at 8/8 vs 0/8 in nlp-engine/tests/toolcall_json_shape.rs, and
+    // separately at 8/8 vs 0/8 in nlp-engine/tests/it/toolcall_json_shape.rs, and
     // requires a prior malformed tool call, which this prompt has none of).
     //
     // So the honest assertion is the one below: repair must carry the call as

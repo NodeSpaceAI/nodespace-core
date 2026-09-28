@@ -886,7 +886,7 @@ pub fn destructive_tools_withheld(candidates: &[SkillCandidate]) -> Vec<&str> {
 /// this injects retrieved-schema CONTENT into the tool surface, the same
 /// class of payload `agent_loop.rs`'s `candidate_block` skips injecting into
 /// the prompt when `session.routing_disabled`. The routing-reliability
-/// matrix (`tests/live_openai_compat_routing.rs`) found that injecting that
+/// matrix (`tests/it/live_openai_compat_routing.rs`) found that injecting that
 /// content suppressed tool-calling outright on some served models,
 /// independent of the block's content — the finding was about *any*
 /// retrieved-schema payload reaching the model, not specifically the

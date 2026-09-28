@@ -25,7 +25,7 @@ use crate::NodeClient;
 /// dev-only dependency of this crate (pulling in SQLite/embeddings for one
 /// `usize` is disproportionate), so the two must be kept in sync by hand.
 /// `search_nodes_oversized_include_markdown_still_caps_at_five` in
-/// `packages/daemon/tests/grpc_round_trip.rs` guards the server side of that
+/// `packages/daemon/tests/it/grpc_round_trip.rs` guards the server side of that
 /// sync.
 const REQUESTED_MARKDOWN_RESULTS: i32 = 5;
 

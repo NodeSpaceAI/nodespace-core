@@ -29,7 +29,7 @@
 //! Ignored by default — these are latency benchmarks, not correctness checks,
 //! and would otherwise run for real (slowly) on any machine with a reachable
 //! inference backend. Run explicitly with:
-//!   cargo test -p nodespace-agent --test search_skills_latency -- --ignored --nocapture
+//!   cargo test -p nodespace-agent --test it search_skills_latency:: -- --ignored --nocapture
 //!
 //! Gracefully skips if no inference backend is available (no OpenAI-compatible
 //! endpoint reachable and no local GGUF model downloaded).

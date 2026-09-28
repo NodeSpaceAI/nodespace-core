@@ -9,7 +9,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { descendantPids, runStage } from "./gate-stage";
+import { descendantPids, killActiveStages, runStage } from "./gate-stage";
 
 let dir: string;
 
@@ -84,5 +84,31 @@ describe("runStage", () => {
 
     expect(await runStage({ label: "slow cleanup", command, timeoutMs: 500 }, dir)).toBe(false);
     expect(existsSync(marker)).toBe(true);
+  }, 20_000);
+});
+
+// Last in the file: killActiveStages() marks the module as stopping for good,
+// which is right for a gate about to exit but would silence later tests here.
+describe("killActiveStages", () => {
+  test("kills every concurrent stage with its tree, and they fail without reporting", async () => {
+    const pidFiles = [join(dir, "a.pid"), join(dir, "b.pid")];
+    const stages = pidFiles.map((pidFile, i) =>
+      runStage({ label: `lane ${i}`, command: `sh -c 'sleep 300 & echo $! > ${pidFile}; wait'`, timeoutMs: 600_000 }, dir)
+    );
+    while (!pidFiles.every((f) => existsSync(f) && readFileSync(f, "utf8").trim() !== "")) await Bun.sleep(20);
+    const errors: string[] = [];
+    const originalError = console.error;
+    console.error = (...args: unknown[]) => errors.push(args.join(" "));
+    try {
+      const started = Date.now();
+      await killActiveStages();
+      expect(await Promise.all(stages)).toEqual([false, false]);
+      expect(Date.now() - started).toBeLessThan(15_000);
+    } finally {
+      console.error = originalError;
+    }
+    expect(errors).toEqual([]);
+    await Bun.sleep(200);
+    for (const f of pidFiles) expect(isAlive(Number(readFileSync(f, "utf8").trim()))).toBe(false);
   }, 20_000);
 });

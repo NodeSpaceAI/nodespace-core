@@ -5,16 +5,21 @@
 //   in its own process, which is what lets the libsql-linked crates run at
 //   full parallelism — see the race described in
 //   packages/core/src/db/sqlite_store/mod.rs.
-// - sccache is the compiler cache the gate puts in front of its own cargo
-//   builds (scripts/test-gate.ts), so a new worktree reuses the dependency
-//   builds of the ones before it.
+// - sccache is the compiler cache in front of every cargo build on the
+//   machine: the gate's (scripts/test-gate.ts), and development builds, which
+//   reach it through a generated, gitignored `.cargo/config.toml` and rustc
+//   wrapper in each checkout: the gate's cache, each checkout's own server
+//   (see ./gate-sccache.ts). What it shares
+//   across checkouts is llama.cpp's C/C++ build (measured: 97% hits, ~50s off
+//   a fresh worktree's first build). Rust crates hit only within one target
+//   dir — rustc's arguments carry the checkout's own target path, so every
+//   checkout hashes differently (measured: 0 of 374 hit across two fresh
+//   target dirs) — which is why the gate keeps one persistent checkout.
 //
 // Everything lives in `.tools/` in the primary checkout (gitignored), and
 // each worktree gets a `.tools` link to it: one download per machine, shared
 // by every worktree. Nothing is written outside the repository — no
-// ~/.cargo/bin, no cargo config, no sccache config. The gate hands sccache
-// its settings through environment variables, so only gate builds use it and
-// a developer's own cargo builds are untouched.
+// ~/.cargo/bin, no user-level cargo or sccache config.
 //
 // Runs from the root `prepare` script, i.e. on every `bun install`. Two rules
 // follow: near-free when already set up (no network, no writes), and never
@@ -28,6 +33,7 @@ import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync,
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { $ } from "bun";
+import { devCargoConfig, devRustcWrapper, GENERATED_MARKER } from "./gate-sccache";
 
 export const SKIP_ENV_VAR = "NODESPACE_SKIP_RUST_TOOLING";
 
@@ -165,6 +171,39 @@ function linkTools(checkoutRoot: string, primaryTools: string): void {
   symlinkSync(primaryTools, link);
 }
 
+/**
+ * Writes `content` to `path` unless it already holds exactly that — the
+ * near-free rule. Write-then-rename, because a build may be running the
+ * wrapper right now.
+ */
+function writeIfChanged(path: string, content: string, mode: number): void {
+  if (existsSync(path) && readFileSync(path, "utf8") === content) return;
+  const tmp = `${path}.${process.pid}.tmp`;
+  writeFileSync(tmp, content, { mode });
+  renameSync(tmp, path);
+}
+
+/**
+ * Points this checkout's cargo builds at the shared sccache: a rustc wrapper
+ * and a `.cargo/config.toml` naming it, both in the checkout's own gitignored
+ * `.cargo/`. The wrapper lives there rather than in the shared `.tools/` so a
+ * `.tools/` removed by a clean leaves it in place to fall back to a plain
+ * compile. A config file this script didn't write is left alone, with a
+ * warning. Returns whether the checkout is set up.
+ */
+export function setUpDevCache(checkoutRoot: string, primaryTools: string): boolean {
+  const config = join(checkoutRoot, ".cargo", "config.toml");
+  if (existsSync(config) && !readFileSync(config, "utf8").includes(GENERATED_MARKER)) {
+    console.warn(`⚠ ${config} wasn't written by bun install; development builds won't share the compiler cache.`);
+    return false;
+  }
+  mkdirSync(dirname(config), { recursive: true });
+  const wrapper = join(checkoutRoot, ".cargo", "rustc-wrapper");
+  writeIfChanged(wrapper, devRustcWrapper(primaryTools, checkoutRoot), 0o755);
+  writeIfChanged(config, devCargoConfig(wrapper), 0o644);
+  return true;
+}
+
 async function main(): Promise<void> {
   if (process.env[SKIP_ENV_VAR] === "1") return;
   if (process.platform !== "darwin") return;
@@ -192,6 +231,7 @@ async function main(): Promise<void> {
       console.warn(`  Re-run \`bun install\` once it's fixed. Set ${SKIP_ENV_VAR}=1 to silence this.`);
     }
   }
+  if (existsSync(join(primaryTools, "bin", SCCACHE.name))) setUpDevCache(checkoutRoot, primaryTools);
 }
 
 if (import.meta.main) {

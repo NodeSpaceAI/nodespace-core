@@ -11,7 +11,7 @@
 //! Ignored by default — it needs a real server. Run explicitly:
 //!
 //! ```text
-//! cargo test -p nodespace-agent --test live_routing_probe -- --ignored --nocapture
+//! cargo test -p nodespace-agent --test it live_routing_probe:: -- --ignored --nocapture
 //! ```
 //!
 //! **A degraded Ollama can fail both tests without either being wrong.**

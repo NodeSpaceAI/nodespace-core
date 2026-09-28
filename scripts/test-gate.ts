@@ -41,8 +41,8 @@ import { existsSync, realpathSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { $ } from "bun";
 import { acquireGateLock, DISABLE_ENV_VAR, MACHINE_LOCK_PATH, MACHINE_SLOT_WHAT, registerLockRelease } from "./gate-lock";
-import { sccacheServerUds } from "./gate-sccache";
-import { createLogDir, runStage, TIERS, type StageSpec } from "./gate-stage";
+import { SCCACHE_CACHE_SIZE, sccacheServerUds } from "./gate-sccache";
+import { createLogDir, killActiveStages, runStage, TIERS, type StageSpec } from "./gate-stage";
 import { TOOLS_DIR } from "./setup-rust-tooling";
 import { freeGiBFromDf } from "./gate-output";
 
@@ -64,9 +64,6 @@ const MACHINE_SLOT_WAIT_CAP_MS = 2 * 60 * MINUTE;
 /** Below this much free disk the merge gate refuses to start. */
 const MIN_FREE_GIB = 20;
 
-/** The gate's compiler cache: its size cap. */
-const SCCACHE_CACHE_SIZE = "20G";
-
 /** `path` with symlinks resolved — a worktree's `.tools` links to the primary's. */
 function realpathOrSelf(path: string): string {
   try {
@@ -76,23 +73,23 @@ function realpathOrSelf(path: string): string {
   }
 }
 
-// No incremental compilation in gate builds. The incremental cache is most
-// of a worktree's target/ (~15 GB), it is private to each worktree, and
-// sccache can't cache incremental compiles — so without it sccache covers
-// workspace crates too. The cost is recompiling a changed crate whole,
-// rather than incrementally. Cargo counts the setting in its build
-// fingerprint, so alternating a gate with an incremental `cargo test` or
-// `tauri:dev` in the same checkout rebuilds workspace crates each switch.
-process.env.CARGO_INCREMENTAL = "0";
+// Gate builds compile workspace crates incrementally, like development builds
+// (the dev profile's default). The gate once turned it off so sccache could
+// cache workspace crates, back when every push compiled in its own worktree.
+// Now only the persistent gate checkout compiles, where an unchanged crate is
+// already fresh in target/ and a changed one never hits the cache — so that
+// bought nothing, and cost the recompile after every rebase: rebuilding the
+// test binaries after a real nodespace-core edit took 39-64s without
+// incremental and 13-15s with it.
 
 // Gate builds go through the repository's own sccache (scripts/setup-rust-
-// tooling.ts), configured here rather than in any cargo or sccache config
-// file: only gate builds use it, and nothing outside the repository is
-// touched. Its cache sits beside it in the shared `.tools/`, so every
-// worktree reuses the dependency builds of the ones before it. Its own
-// private unix socket (sccacheServerUds, ./gate-sccache.ts) keeps it apart
-// both from any sccache a developer runs themselves and from another OS
-// user's gate.
+// tooling.ts), configured here so the gate doesn't depend on the checkout's
+// generated `.cargo/config.toml`; these variables take precedence over it.
+// It shares its cache directory in `.tools/` with development builds
+// (devRustcWrapper, ./gate-sccache.ts) but not its server: sccache compiles
+// in the server process, so each checkout's builds keep a server of their
+// own, and this gate's private unix socket (sccacheServerUds) keeps it apart
+// from every development server and from another OS user's gate.
 const sccache = join(realpathOrSelf(TOOLS_DIR), "bin", "sccache");
 if (existsSync(sccache)) {
   process.env.RUSTC_WRAPPER = sccache;
@@ -105,9 +102,32 @@ if (existsSync(sccache)) {
 
 const logDir = createLogDir(mode);
 
-/** Runs a stage, and stops the gate if it fails. */
+/** Set by the first failing stage; see run(). */
+let failed = false;
+
+/**
+ * Runs a stage, and stops the gate if it fails. Concurrent stages are killed
+ * first (killActiveStages), and a stage that fails only because of that kill
+ * waits for the exit rather than reporting a second failure.
+ */
 async function run(stage: StageSpec) {
-  if (await runStage(stage, logDir)) return;
+  // Once the gate is failing, a lane whose stage just finished starts nothing
+  // new: the kill below only reaches stages already running, and one started
+  // during its grace period would outlive the gate and the machine slot.
+  if (failed) return new Promise<never>(() => {});
+  let passed: boolean;
+  try {
+    passed = await runStage(stage, logDir);
+  } catch (err) {
+    // A stage that can't even start (e.g. its log can't be opened) fails the
+    // gate like any other, so the other lane is still stopped.
+    console.error(`\n${stage.label} could not run: ${err instanceof Error ? err.message : String(err)}`);
+    passed = false;
+  }
+  if (passed) return;
+  if (failed) return new Promise<never>(() => {});
+  failed = true;
+  await killActiveStages();
   if (merge) {
     console.error(`\n✗ ${stage.label} failed — merge blocked.`);
     console.error("  Fix the failure, push, and re-run: bun run merge <PR#>\n");
@@ -207,21 +227,33 @@ registerLockRelease(machineSlot);
 const daemonBinary = `${process.cwd()}/target/debug/${process.platform === "win32" ? "nodespaced.exe" : "nodespaced"}`;
 
 await run(TIERS.skillInstaller);
-await run({ label: "compile Rust test binaries", command: "bun run rust:test:build", timeoutMs: 60 * MINUTE });
-// "*" is quoted so the shell hands cargo the pattern, not a list of filenames.
-await run({
-  label: "compile nodespaced and the Tauri-seam test binaries",
-  command: `cargo build --bin nodespaced && cargo test -p nodespace-app --test "*" --no-run`,
-  timeoutMs: 45 * MINUTE,
-});
-// SKILL.md drift check (generated sections vs. the CLI definitions). After the
-// daemon build so its `cargo run --example` reuses that dev-profile
-// dependency tree.
-await run({ label: "skill:check (SKILL.md drift)", command: "bun run skill:check", timeoutMs: 20 * MINUTE });
 
-await run(TIERS.frontend);
-await run(TIERS.scripts);
-await run(TIERS.skill);
+// Two lanes at once: the Rust builds, and the tiers that need no Rust build.
+// One after the other, the frontend, scripts and skill tiers (~90s) waited on
+// a compile they never read. Their tests carry no wall-clock assertions
+// (those run at release time), so sharing the cores slows them, not breaks
+// them. The skill installer above goes first because the skill tier and the
+// Rust tests both read its output.
+await Promise.all([
+  (async () => {
+    await run({ label: "compile Rust test binaries", command: "bun run rust:test:build", timeoutMs: 60 * MINUTE });
+    await run({
+      label: "compile nodespaced and the Tauri-seam test binary",
+      command: `cargo build --bin nodespaced && cargo test -p nodespace-app --test it --no-run`,
+      timeoutMs: 45 * MINUTE,
+    });
+    // SKILL.md drift check (generated sections vs. the CLI definitions). After
+    // the daemon build so its `cargo run --example` reuses that dev-profile
+    // dependency tree.
+    await run({ label: "skill:check (SKILL.md drift)", command: "bun run skill:check", timeoutMs: 20 * MINUTE });
+  })(),
+  (async () => {
+    await run(TIERS.frontend);
+    await run(TIERS.scripts);
+    await run(TIERS.skill);
+  })(),
+]);
+
 await run(TIERS.rust);
 await run(TIERS.browser);
 await run({
@@ -230,7 +262,7 @@ await run({
   timeoutMs: 10 * MINUTE,
   env: { NODESPACED_BINARY: daemonBinary },
 });
-// --test "*": the `tests/*.rs` integration targets, and only those. This
+// --test it: the crate's integration-test binary (tests/it/), and only it. This
 // crate's `src/` unit tests are in-process, need no daemon binary, and run
 // headless in ~2s at full parallelism, so `rust:test` (above) runs them
 // alongside every other crate's. Narrowing this step is what leaves them free
@@ -242,9 +274,8 @@ await run({
 // --test-threads=1: every test in this suite spawns a real nodespaced
 // process, which loads a real embedding model (Metal shader compilation
 // included) before its socket binds — far more load-sensitive than
-// in-process assertions. Cargo already runs each tests/*.rs file's binary
-// sequentially, but within one binary (e.g. node_crud_tauri_seam_test.rs's
-// 5 tests) all tests run concurrently by default. `SpawnedDaemon::spawn()`
+// in-process assertions. All of them are in one binary (tests/it/), and
+// within a binary every test runs concurrently by default. `SpawnedDaemon::spawn()`
 // happens BEFORE any test acquires test-support's CONNECT_MUTEX (which only
 // serializes the health-wait/connect step, not the spawn itself), so without
 // this flag several real daemon processes can be mid-spawn at once fully
@@ -258,7 +289,7 @@ await run({
 // reliability.
 await run({
   label: "Tauri-seam integration tests (ADR-048)",
-  command: `cargo test -p nodespace-app --test "*" -- --test-threads=1`,
+  command: `cargo test -p nodespace-app --test it -- --test-threads=1`,
   timeoutMs: 15 * MINUTE,
   env: { NODESPACED_TEST_BIN: daemonBinary },
 });

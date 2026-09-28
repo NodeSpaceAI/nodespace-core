@@ -147,6 +147,24 @@ async function killTree(root: number): Promise<void> {
   signalAll([...tree].filter(isAlive), "SIGKILL");
 }
 
+/** The root pid of every stage still running — the gate runs some concurrently. */
+const activeStages = new Set<number>();
+
+/** Set once the gate is stopping; a stage killed by it fails silently. */
+let aborting = false;
+
+/**
+ * Kills every stage still running, with its process tree. For a gate whose
+ * concurrent stage just failed: it is about to exit, and a sibling stage left
+ * running would outlive it, holding the CPU with nothing to report to. The
+ * killed stages return false without printing, so the failure that stopped
+ * the gate is the only one reported.
+ */
+export async function killActiveStages(): Promise<void> {
+  aborting = true;
+  await Promise.all([...activeStages].map(killTree));
+}
+
 /**
  * Runs one stage as a shell command, output to its log in `logDir`. Returns
  * whether it passed; on failure, has already printed why. stdout and stderr
@@ -170,11 +188,13 @@ export async function runStage(stage: StageSpec, logDir: string): Promise<boolea
       stdin: "ignore",
       env: { ...process.env, ...stage.env },
     });
+    activeStages.add(proc.pid);
     const timer = setTimeout(() => {
       killing = killTree(proc.pid);
     }, stage.timeoutMs);
     exitCode = await proc.exited;
     clearTimeout(timer);
+    activeStages.delete(proc.pid);
     // The caller may exit as soon as this returns, which would cut the
     // SIGKILL pass short.
     if (killing) await killing;
@@ -184,9 +204,11 @@ export async function runStage(stage: StageSpec, logDir: string): Promise<boolea
   }
   const timedOut = killing !== null;
   if (exitCode === 0 && !timedOut) {
-    console.log(`  ✓ ${((Date.now() - started) / 1000).toFixed(0)}s`);
+    // Named, because stages that run concurrently interleave their lines.
+    console.log(`  ✓ ${stage.label} ${((Date.now() - started) / 1000).toFixed(0)}s`);
     return true;
   }
+  if (aborting) return false;
 
   const status = timedOut
     ? `[stage timed out after ${formatMinutes(stage.timeoutMs)} and was killed with its process tree]`

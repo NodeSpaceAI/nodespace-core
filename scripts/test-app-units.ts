@@ -174,7 +174,7 @@ if (missing.length > 0) {
 }
 
 // `--lib --bins` and deliberately not `--tests`, which is where this differs
-// from the rest of `rust:test`: the `tests/*.rs` targets each spawn a real
+// from the rest of `rust:test`: the `tests/it` integration tests each spawn a real
 // nodespaced and need `NODESPACED_TEST_BIN` plus `--test-threads=1`, so the
 // merge gate runs them as its own step (ADR-048). Splitting them out is
 // what lets these in-process unit tests run in `test:all` at all.

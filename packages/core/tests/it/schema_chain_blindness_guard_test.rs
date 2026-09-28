@@ -819,7 +819,7 @@ fn get_schema_node_relationships_and_fields_reads_are_allowlisted() {
         let mut msg = String::from(
             "Found call site(s) reading `.relationships`/`.fields` directly off a \
              `get_schema_node`/`get_schema_with_relationships` result that are NOT on the \
-             allowlist in packages/core/tests/schema_chain_blindness_guard_test.rs.\n\n\
+             allowlist in packages/core/tests/it/schema_chain_blindness_guard_test.rs.\n\n\
              This is the extends-chain-blindness bug shape (ADR-078): `get_schema_node` \
              returns a type's own directly-declared fields/relationships only, not the \
              extends-chain-merged set. If your call site should see inherited \
@@ -839,7 +839,7 @@ fn get_schema_node_relationships_and_fields_reads_are_allowlisted() {
 
     if !stale.is_empty() {
         let mut msg = String::from(
-            "ALLOWLIST in packages/core/tests/schema_chain_blindness_guard_test.rs has \
+            "ALLOWLIST in packages/core/tests/it/schema_chain_blindness_guard_test.rs has \
              entrie(s) that no longer match any call site the scanner finds — the \
              function was renamed/removed/rewritten, or no longer reads that field this \
              way. Remove the stale entry so the allowlist stays an accurate record of \

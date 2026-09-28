@@ -28,7 +28,7 @@
 //!
 //! Ignored by default — loads the 5GB locked native GGUF. Run explicitly:
 //! ```text
-//! cargo test -p nodespace-daemon --test scenario6_update_node_properties -- --ignored --nocapture --test-threads=1
+//! cargo test -p nodespace-daemon --test it scenario6_update_node_properties:: -- --ignored --nocapture --test-threads=1
 //! ```
 
 use std::sync::Arc;

@@ -22,7 +22,7 @@
 //! NodeSpace catalog path. Run explicitly:
 //!
 //! ```text
-//! cargo test -p nodespace-agent --test live_skill_retrieval_stability -- --ignored --nocapture
+//! cargo test -p nodespace-agent --test it live_skill_retrieval_stability:: -- --ignored --nocapture
 //! ```
 
 use std::sync::Arc;
