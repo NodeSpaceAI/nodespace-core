@@ -481,10 +481,11 @@ impl PlaybookEngine {
             // reactive `ExecutionQueue` above (never enqueued there; run
             // inline, here, against the already-committed node), and
             // deliberately still reached even though trigger evaluation for
-            // reactive/invariant firing is skipped for this event.
-            if let DomainEvent::NodeCreated { node_id, node_type } = &envelope.event {
-                self.dispatch_invariant_repair(node_id, node_type).await;
-            }
+            // reactive/invariant firing is skipped for this event. Covers
+            // received updates as well as creates: a `property_changed`
+            // invariant is violated just as permanently by a remote update
+            // as by a remote create.
+            self.dispatch_invariant_repair(&envelope.event).await;
             return;
         }
 
@@ -607,44 +608,59 @@ impl PlaybookEngine {
 
     /// Repair-and-log for a node received via sync (ADR-060 §7).
     ///
-    /// `node_id`/`node_type` are the just-applied `NodeCreated` event's own
-    /// fields (already known from the envelope — no need to re-derive them).
-    /// Looks up active `RuleClass::Invariant` rules matching this node's
-    /// creation, and for each whose condition STILL passes against the node
-    /// as it now stands (i.e. the effect the rule would have applied is
-    /// absent — the node violates an invariant this device holds), runs the
-    /// rule's actions as an ordinary write (no transaction to join — the
-    /// node already committed on the originating device) and records a
-    /// logs the repair. A rule whose condition now fails is left alone: the
-    /// node already carries the required effect (applied by whichever device
-    /// originated it, or by an earlier repair — this device's own or one
-    /// that already synced in), so re-running would be redundant at best.
+    /// `event` is the just-applied sync-originated event. Only
+    /// `NodeCreated` and `NodeUpdated` are repaired; any other event is a
+    /// no-op. Rules are matched with `trigger_keys_for_event` — the same
+    /// derivation the local pre-commit update path uses — so a received
+    /// update re-checks only the `property_changed` invariants keyed on a
+    /// property it actually changed (exact key or wildcard), and a received
+    /// create re-checks the `node_created` invariants.
+    ///
+    /// For each matched `RuleClass::Invariant` rule whose condition STILL
+    /// passes against the node as it now stands (i.e. the effect the rule
+    /// would have applied is absent — the node violates an invariant this
+    /// device holds), runs the rule's actions as an ordinary write (no
+    /// transaction to join — the node already committed on the originating
+    /// device) and logs the repair. A rule whose condition now fails is left
+    /// alone: the node already carries the required effect (applied by
+    /// whichever device originated it, or by an earlier repair — this
+    /// device's own or one that already synced in), so re-running would be
+    /// redundant at best.
+    ///
+    /// Loop safety. The repair write goes through `self.node_service`, not
+    /// the sync-tagged service, so its own `NodeUpdated` is local-origin and
+    /// can never re-enter this sync-only branch on this device. Across
+    /// devices, a repair continues the chain only when the received write
+    /// was itself a play write (`chain_depth_of_write`, read from the
+    /// received event's own committed node and diff), and otherwise starts
+    /// one at 0 (ADR-060 §5). Every repair write mints a fresh write id, so
+    /// a repair that syncs to another device and triggers a repair there
+    /// continues the same count, and once the next hop would exceed
+    /// `MAX_CHAIN_DEPTH` the repair is skipped. A distributed ping-pong
+    /// between devices whose invariants disagree terminates, while a user's
+    /// edit to a node a play once stamped near the limit is still repaired.
     ///
     /// Best-effort: a failure fetching the node or evaluating/executing one
     /// rule is logged and does not block the others, since (unlike the
     /// pre-commit path) there is no write to roll back here — the node is
     /// already durably committed either way.
-    ///
-    /// Loop safety. The repair write goes through `self.node_service`, not
-    /// the sync-tagged service, so it never re-enters this sync-only branch
-    /// on this device. Across devices, a repair continues the chain only
-    /// when the received write was itself a play write
-    /// (`chain_depth_of_write`), and otherwise starts one at 0. Every repair
-    /// write mints a fresh write id, so a repair that syncs to another device
-    /// and triggers a repair there continues the same count, and once the
-    /// next hop would exceed `MAX_CHAIN_DEPTH` the repair is skipped. A
-    /// distributed ping-pong between devices whose invariants disagree
-    /// terminates, while a user's edit to a node a play once stamped near
-    /// the limit is still repaired.
-    async fn dispatch_invariant_repair(&self, node_id: &str, node_type: &str) {
-        let key = TriggerKey::NodeEvent {
-            event: NodeEventType::NodeCreated,
-            node_type: node_type.to_string(),
-            property_key: None,
+    async fn dispatch_invariant_repair(&self, event: &DomainEvent) {
+        let node_id = match event {
+            DomainEvent::NodeCreated { node_id, .. } | DomainEvent::NodeUpdated { node_id, .. } => {
+                node_id.as_str()
+            }
+            _ => return,
         };
+        // Keys use the event's `node_type` while conditions below read the
+        // freshly fetched node; the two differ only if the node's type
+        // changed after this event was emitted.
+        let keys = trigger_keys_for_event(event, None);
+        if keys.is_empty() {
+            return;
+        }
         let matched = {
             let lifecycle = self.lifecycle.read().expect("lifecycle lock poisoned");
-            lifecycle.lookup_rules(&[key])
+            lifecycle.lookup_rules(&keys)
         };
         let invariant_rules: Vec<_> = matched
             .into_iter()
@@ -669,13 +685,31 @@ impl PlaybookEngine {
             }
         };
 
-        let event = DomainEvent::NodeCreated {
-            node_id: node.id.clone(),
-            node_type: node.node_type.clone(),
+        // Whether the received write continues a play chain is decided from
+        // the event as received (its committed node and diff), before the
+        // event is rebuilt around the re-fetched node below.
+        let parent_depth =
+            chain_depth_of_write(event, &node.properties, MAX_CHAIN_DEPTH).unwrap_or(0);
+
+        // Conditions and action bindings see the node as it stands now, not
+        // the snapshot the event carried: a later write may already have
+        // repaired (or re-broken) it. An update keeps its own
+        // `changed_properties`, so a condition on the change still reads it.
+        let event = match event {
+            DomainEvent::NodeUpdated {
+                changed_properties, ..
+            } => DomainEvent::NodeUpdated {
+                node_id: node.id.clone(),
+                node_type: node.node_type.clone(),
+                node: node.clone(),
+                changed_properties: changed_properties.clone(),
+            },
+            _ => DomainEvent::NodeCreated {
+                node_id: node.id.clone(),
+                node_type: node.node_type.clone(),
+            },
         };
 
-        let parent_depth =
-            chain_depth_of_write(&event, &node.properties, MAX_CHAIN_DEPTH).unwrap_or(0);
         if exceeds_max_chain_depth(parent_depth) {
             warn!(
                 node_id = %node.id,
@@ -766,6 +800,23 @@ impl PlaybookEngine {
                         play_id = %rule_ref.play_id,
                         rule = %rule_ref.rule.name,
                         "Repair-and-log: repaired invariant on node received via sync"
+                    );
+                }
+                // A `reject` rule vetoes the write it guards, but this write
+                // already committed on another device and cannot be undone
+                // here. The violation is logged; nothing else is possible.
+                crate::playbook::actions::ActionResult::Failed(
+                    crate::playbook::actions::ActionError::Rejected { message, .. },
+                ) => {
+                    warn!(
+                        node_id = %node.id,
+                        play_id = %rule_ref.play_id,
+                        rule = %rule_ref.rule.name,
+                        reason = %message,
+                        error_type = "rejected_remote_write",
+                        rule_index = rule_ref.rule_index,
+                        "Repair-and-log: node received via sync violates a reject invariant; \
+                         the remote write is already committed and cannot be undone"
                     );
                 }
                 crate::playbook::actions::ActionResult::Failed(err) => {

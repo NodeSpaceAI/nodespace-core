@@ -2695,3 +2695,698 @@ async fn sync_repair_continues_only_a_play_written_chain() -> Result<()> {
     shutdown_engine(shutdown_tx, task).await;
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// Repair-and-log for a node UPDATE received via sync (ADR-060 §7)
+// ---------------------------------------------------------------------------
+//
+// A received update can violate a `property_changed` invariant just as a
+// received create can violate a `node_created` one: the originating device
+// ran an older Play version, had the rule disabled, or predates it. These
+// tests drive the real sync tagging (`with_client(SYNC_SERVICE_CLIENT_ID)`)
+// against a running engine, so the repair runs through `handle_event`'s
+// sync-originated branch exactly as it does for a real sync apply.
+//
+// The rules are activated straight into the engine's lifecycle rather than
+// saved as Play nodes: the invariant here updates its own trigger node,
+// which save-time validation would reject as self-chaining. A received node
+// can still arrive in that shape from a device with a different Play, which
+// is the case these tests exist for.
+
+/// `property_changed` invariant on `{node_type}.status`: a node whose status
+/// is `done` must carry `verified: true`. The condition is written as "the
+/// effect is absent", so it stops passing once the repair has applied.
+fn verified_when_done_invariant_rule(node_type: &str) -> serde_json::Value {
+    json!([{
+        "name": "verified-when-done",
+        "class": "invariant",
+        "trigger": {
+            "type": "graph_event",
+            "on": "property_changed",
+            "node_type": node_type,
+            "property_key": format!("{node_type}.status")
+        },
+        "conditions": ["node.status == 'done' && !has(node.verified)"],
+        "actions": [{
+            "action_type": "update_node",
+            "params": {
+                "node_id": "{trigger.node.id}",
+                "properties": { "verified": true }
+            }
+        }]
+    }])
+}
+
+fn activate_rules_directly(engine: &PlaybookEngine, name: &str, rules: serde_json::Value) {
+    let play = Node::new(
+        "play".to_string(),
+        name.to_string(),
+        json!({ "rules": rules }),
+    );
+    let lifecycle = engine.lifecycle();
+    let mut lm = lifecycle.write().unwrap();
+    lm.activate_play(&play)
+        .expect("play must parse and activate");
+}
+
+/// Create `node` on this device as if it had arrived via sync, and return
+/// its id and version.
+async fn create_via_sync(service: &Arc<NodeService>, node: Node) -> Result<(String, i64)> {
+    let id = node.id.clone();
+    service
+        .with_client(SYNC_SERVICE_CLIENT_ID)
+        .create_node(node)
+        .await?;
+    let version = service.get_node(&id).await?.unwrap().version;
+    Ok((id, version))
+}
+
+async fn update_via_sync(
+    service: &Arc<NodeService>,
+    id: &str,
+    properties: serde_json::Value,
+) -> Result<Node> {
+    let version = service.get_node(id).await?.unwrap().version;
+    Ok(service
+        .with_client(SYNC_SERVICE_CLIENT_ID)
+        .update_node(id, version, properties_update(properties))
+        .await?)
+}
+
+async fn setup_verified_when_done(
+    node_type: &str,
+) -> Result<(
+    Arc<NodeService>,
+    TempDir,
+    watch::Sender<bool>,
+    tokio::task::JoinHandle<Result<()>>,
+)> {
+    let (service, tmp) = create_test_service().await?;
+    create_schema(
+        &service,
+        node_type,
+        json!([
+            { "name": "status", "type": "string" },
+            { "name": "priority", "type": "string" },
+            { "name": "verified", "type": "boolean" }
+        ]),
+    )
+    .await?;
+    let (engine, shutdown_tx, task) = spawn_engine(&service).await;
+    activate_rules_directly(
+        &engine,
+        "verified-when-done-play",
+        verified_when_done_invariant_rule(node_type),
+    );
+    Ok((service, tmp, shutdown_tx, task))
+}
+
+/// Barrier for negative assertions. The engine handles events in order and
+/// runs repair inline, so once a violating sentinel written after the events
+/// under test has been repaired, every earlier event has been fully handled.
+/// Needs the `verified-when-done` rule active for `node_type`.
+async fn drain_verified_when_done(service: &Arc<NodeService>, node_type: &str) -> Result<()> {
+    let (id, _) = create_via_sync(
+        service,
+        Node::new(
+            node_type.to_string(),
+            "sentinel".to_string(),
+            json!({ "status": "open" }),
+        ),
+    )
+    .await?;
+    update_via_sync(service, &id, json!({ "status": "done" })).await?;
+    let drained = wait_until(|| {
+        let service = Arc::clone(service);
+        let id = id.clone();
+        let node_type = node_type.to_string();
+        async move {
+            matches!(
+                service.get_node(&id).await,
+                Ok(Some(n)) if user_field(&n, &node_type, "verified") == Some(&json!(true))
+            )
+        }
+    })
+    .await;
+    assert!(drained, "barrier sentinel was never repaired");
+    Ok(())
+}
+
+/// A received update that violates a `property_changed` invariant this
+/// device holds is repaired, exactly as a received create is.
+#[tokio::test]
+async fn sync_applied_update_violating_invariant_is_repaired() -> Result<()> {
+    let (service, _tmp, shutdown_tx, task) = setup_verified_when_done("iv_su_repair").await?;
+
+    let (id, _) = create_via_sync(
+        &service,
+        Node::new(
+            "iv_su_repair".to_string(),
+            "task".to_string(),
+            json!({ "status": "open" }),
+        ),
+    )
+    .await?;
+    update_via_sync(&service, &id, json!({ "status": "done" })).await?;
+
+    let repaired = wait_until(|| {
+        let service = Arc::clone(&service);
+        let id = id.clone();
+        async move {
+            matches!(
+                service.get_node(&id).await,
+                Ok(Some(n)) if user_field(&n, "iv_su_repair", "verified") == Some(&json!(true))
+            )
+        }
+    })
+    .await;
+    assert!(
+        repaired,
+        "a received update violating a property_changed invariant must be repaired"
+    );
+
+    shutdown_engine(shutdown_tx, task).await;
+    Ok(())
+}
+
+/// Repair is keyed on what the received update changed: an update that
+/// doesn't touch the rule's property must not re-check it, even when the
+/// node as it stands would fail it.
+#[tokio::test]
+async fn sync_applied_update_not_touching_the_rule_property_is_not_repaired() -> Result<()> {
+    let (service, _tmp, shutdown_tx, task) = setup_verified_when_done("iv_su_other").await?;
+
+    // Arrives already violating (done, not verified). A create does not
+    // match a property_changed rule, so nothing repairs it here.
+    let (id, _) = create_via_sync(
+        &service,
+        Node::new(
+            "iv_su_other".to_string(),
+            "task".to_string(),
+            json!({ "status": "done", "priority": "low" }),
+        ),
+    )
+    .await?;
+    let updated = update_via_sync(&service, &id, json!({ "priority": "high" })).await?;
+
+    drain_verified_when_done(&service, "iv_su_other").await?;
+
+    let node = service.get_node(&id).await?.unwrap();
+    assert_eq!(
+        user_field(&node, "iv_su_other", "verified"),
+        None,
+        "a received update that changes only an unrelated property must not trigger repair"
+    );
+    assert_eq!(
+        node.version, updated.version,
+        "no repair write may follow the received update"
+    );
+
+    shutdown_engine(shutdown_tx, task).await;
+    Ok(())
+}
+
+/// A received update that touches the rule's property but leaves the
+/// invariant satisfied is not repaired.
+#[tokio::test]
+async fn sync_applied_non_violating_update_is_not_repaired() -> Result<()> {
+    let (service, _tmp, shutdown_tx, task) = setup_verified_when_done("iv_su_ok").await?;
+
+    let (id, _) = create_via_sync(
+        &service,
+        Node::new(
+            "iv_su_ok".to_string(),
+            "task".to_string(),
+            json!({ "status": "open" }),
+        ),
+    )
+    .await?;
+    // Status changes, but not to `done`: the condition fails.
+    let first = update_via_sync(&service, &id, json!({ "status": "in_progress" })).await?;
+    // Status changes to `done`, and the originating device already applied
+    // the effect in the same write.
+    let second =
+        update_via_sync(&service, &id, json!({ "status": "done", "verified": true })).await?;
+    assert!(second.version > first.version);
+
+    drain_verified_when_done(&service, "iv_su_ok").await?;
+
+    let node = service.get_node(&id).await?.unwrap();
+    assert_eq!(
+        node.version, second.version,
+        "an update that leaves the invariant satisfied must not be followed by a repair write"
+    );
+
+    shutdown_engine(shutdown_tx, task).await;
+    Ok(())
+}
+
+/// A `node_created` invariant is not re-checked by a received update, and
+/// the create path still repairs a received create with the update path
+/// wired in alongside it.
+#[tokio::test]
+async fn sync_applied_update_does_not_run_a_node_created_invariant() -> Result<()> {
+    let (service, _tmp) = create_test_service().await?;
+    create_schema(
+        &service,
+        "iv_su_create_only",
+        json!([
+            { "name": "status", "type": "string" },
+            { "name": "approved", "type": "boolean" }
+        ]),
+    )
+    .await?;
+    let (engine, shutdown_tx, task) = spawn_engine(&service).await;
+    activate_rules_directly(
+        &engine,
+        "create-only-play",
+        stamp_approved_invariant_rule("iv_su_create_only"),
+    );
+
+    // Condition is `node.status == 'pending'`; created as `open`, so the
+    // create itself is compliant.
+    let (id, _) = create_via_sync(
+        &service,
+        Node::new(
+            "iv_su_create_only".to_string(),
+            "task".to_string(),
+            json!({ "status": "open" }),
+        ),
+    )
+    .await?;
+    // Let the engine finish with the create first: create-path repair reads
+    // the node as it stands when the event is handled, so an update landing
+    // before then would be judged as part of the create. A later violating
+    // create being repaired proves the earlier one was handled.
+    let (barrier_id, _) = create_via_sync(
+        &service,
+        Node::new(
+            "iv_su_create_only".to_string(),
+            "barrier".to_string(),
+            json!({ "status": "pending" }),
+        ),
+    )
+    .await?;
+    assert!(
+        wait_until(|| {
+            let service = Arc::clone(&service);
+            let id = barrier_id.clone();
+            async move {
+                matches!(
+                    service.get_node(&id).await,
+                    Ok(Some(n)) if user_field(&n, "iv_su_create_only", "approved") == Some(&json!(true))
+                )
+            }
+        })
+        .await
+    );
+    let updated = update_via_sync(&service, &id, json!({ "status": "pending" })).await?;
+
+    // Create path, unchanged: a violating received create is still repaired.
+    let (created_id, _) = create_via_sync(
+        &service,
+        Node::new(
+            "iv_su_create_only".to_string(),
+            "task".to_string(),
+            json!({ "status": "pending" }),
+        ),
+    )
+    .await?;
+    let create_repaired = wait_until(|| {
+        let service = Arc::clone(&service);
+        let id = created_id.clone();
+        async move {
+            matches!(
+                service.get_node(&id).await,
+                Ok(Some(n)) if user_field(&n, "iv_su_create_only", "approved") == Some(&json!(true))
+            )
+        }
+    })
+    .await;
+    assert!(
+        create_repaired,
+        "a violating received create must still be repaired"
+    );
+
+    let node = service.get_node(&id).await?.unwrap();
+    assert_eq!(
+        user_field(&node, "iv_su_create_only", "approved"),
+        None,
+        "a node_created invariant must not be re-checked by a received update"
+    );
+    assert_eq!(node.version, updated.version);
+
+    shutdown_engine(shutdown_tx, task).await;
+    Ok(())
+}
+
+/// Loop safety on one device: the repair write is local-origin, so it never
+/// re-enters the sync-only repair branch. Exactly one repair write follows
+/// the violating update, stamped one hop past the received write's depth.
+#[tokio::test]
+async fn sync_update_repair_writes_once_one_hop_past_the_received_depth() -> Result<()> {
+    let (service, _tmp, shutdown_tx, task) = setup_verified_when_done("iv_su_once").await?;
+
+    let (id, _) = create_via_sync(
+        &service,
+        Node::new(
+            "iv_su_once".to_string(),
+            "task".to_string(),
+            json!({ "status": "open" }),
+        ),
+    )
+    .await?;
+    let received = update_via_sync(&service, &id, json!({ "status": "done" })).await?;
+
+    drain_verified_when_done(&service, "iv_su_once").await?;
+    let after_repair = service.get_node(&id).await?.unwrap();
+    assert_eq!(
+        user_field(&after_repair, "iv_su_once", "verified"),
+        Some(&json!(true))
+    );
+    assert_eq!(
+        after_repair.version,
+        received.version + 1,
+        "exactly one repair write must follow the violating update"
+    );
+    assert_eq!(
+        after_repair.properties.get(PLAYBOOK_CHAIN_DEPTH_PROPERTY),
+        Some(&json!(1)),
+        "the repair write carries its chain depth, one hop past the received write"
+    );
+
+    shutdown_engine(shutdown_tx, task).await;
+    Ok(())
+}
+
+/// A play's stamp at the limit left on a node does not suppress repairing
+/// a later violation that a user's edit introduced: the edit doesn't change
+/// the write id, so it starts a fresh chain.
+#[tokio::test]
+async fn stale_play_stamp_does_not_suppress_repair_of_a_user_edit() -> Result<()> {
+    let (service, _tmp, shutdown_tx, task) = setup_verified_when_done("iv_su_stale").await?;
+
+    let (id, _) = create_via_sync(
+        &service,
+        Node::new(
+            "iv_su_stale".to_string(),
+            "task".to_string(),
+            json!({
+                "status": "open",
+                (PLAYBOOK_CHAIN_DEPTH_PROPERTY): MAX_CHAIN_DEPTH,
+                (PLAYBOOK_WRITE_ID_PROPERTY): "earlier-chain"
+            }),
+        ),
+    )
+    .await?;
+    // A user's edit on another device: changes status, leaves the stamps.
+    update_via_sync(&service, &id, json!({ "status": "done" })).await?;
+
+    drain_verified_when_done(&service, "iv_su_stale").await?;
+    let node = service.get_node(&id).await?.unwrap();
+    assert_eq!(
+        user_field(&node, "iv_su_stale", "verified"),
+        Some(&json!(true)),
+        "a stale play stamp must not block repairing a violation a user edit introduced"
+    );
+    assert_eq!(
+        node.properties.get(PLAYBOOK_CHAIN_DEPTH_PROPERTY),
+        Some(&json!(1)),
+        "the repair starts a fresh chain"
+    );
+
+    shutdown_engine(shutdown_tx, task).await;
+    Ok(())
+}
+
+/// The same repair with a rule shape save-time validation accepts: a saved
+/// Play whose `property_changed` invariant creates a node of another type
+/// (it does not update its own trigger node, so it doesn't self-chain).
+#[tokio::test]
+async fn sync_applied_update_is_repaired_by_a_saved_non_self_chaining_invariant() -> Result<()> {
+    let (service, _tmp) = create_test_service().await?;
+    create_schema(
+        &service,
+        "iv_su_legal",
+        json!([{ "name": "status", "type": "string" }]),
+    )
+    .await?;
+    create_schema(
+        &service,
+        "iv_su_legal_log",
+        json!([{ "name": "note", "type": "string" }]),
+    )
+    .await?;
+    let (_engine, shutdown_tx, task) = spawn_engine(&service).await;
+    create_play(
+        &service,
+        "legal-shape-play",
+        json!([{
+            "name": "log-on-done",
+            "class": "invariant",
+            "trigger": {
+                "type": "graph_event",
+                "on": "property_changed",
+                "node_type": "iv_su_legal",
+                "property_key": "iv_su_legal.status"
+            },
+            "conditions": ["node.status == 'done'"],
+            "actions": [{
+                "action_type": "create_node",
+                "params": { "node_type": "iv_su_legal_log", "content": "done recorded" }
+            }]
+        }]),
+    )
+    .await?;
+    // The play is saved through the ordinary write path, so the engine
+    // validates it before activating it: a play that failed validation would
+    // be disabled and could not repair anything below. The engine handles
+    // the play's create event before the sync writes that follow it.
+
+    let (id, _) = create_via_sync(
+        &service,
+        Node::new(
+            "iv_su_legal".to_string(),
+            "task".to_string(),
+            json!({ "status": "open" }),
+        ),
+    )
+    .await?;
+    update_via_sync(&service, &id, json!({ "status": "done" })).await?;
+
+    let repaired = wait_until(|| {
+        let service = Arc::clone(&service);
+        async move {
+            matches!(
+                service.query_nodes_by_type("iv_su_legal_log", None).await,
+                Ok(nodes) if nodes.len() == 1
+            )
+        }
+    })
+    .await;
+    assert!(
+        repaired,
+        "a received update violating a saved, validated invariant must be repaired"
+    );
+
+    shutdown_engine(shutdown_tx, task).await;
+    Ok(())
+}
+
+/// A received play write at the chain-depth limit is not repaired: the next
+/// hop would exceed `MAX_CHAIN_DEPTH`. The write changes the per-write id,
+/// which is what marks it as a play hop rather than a user's edit.
+#[tokio::test]
+async fn sync_update_at_the_chain_depth_limit_is_not_repaired() -> Result<()> {
+    let (service, _tmp, shutdown_tx, task) = setup_verified_when_done("iv_su_limit").await?;
+
+    let (id, _) = create_via_sync(
+        &service,
+        Node::new(
+            "iv_su_limit".to_string(),
+            "task".to_string(),
+            json!({ "status": "open" }),
+        ),
+    )
+    .await?;
+    let received = update_via_sync(
+        &service,
+        &id,
+        json!({
+            "status": "done",
+            (PLAYBOOK_CHAIN_DEPTH_PROPERTY): MAX_CHAIN_DEPTH,
+            (PLAYBOOK_WRITE_ID_PROPERTY): "remote-play-write"
+        }),
+    )
+    .await?;
+
+    drain_verified_when_done(&service, "iv_su_limit").await?;
+    let node = service.get_node(&id).await?.unwrap();
+    assert_eq!(user_field(&node, "iv_su_limit", "verified"), None);
+    assert_eq!(node.version, received.version);
+
+    shutdown_engine(shutdown_tx, task).await;
+    Ok(())
+}
+
+/// Loop safety across devices: two devices hold contradictory invariants on
+/// the same property (`mode` must be `a` on one, `b` on the other: the
+/// version-skew case ADR-060 §7 describes). Each device repairs what the
+/// other sends, and a relay carries every local-origin write to the other
+/// device as a sync apply, the way real sync does. Without a bound this
+/// ping-pongs forever. The persisted chain depth carries the hop count
+/// across devices, so the exchange stops at `MAX_CHAIN_DEPTH`.
+#[tokio::test]
+async fn contradictory_invariants_on_two_devices_stop_at_the_chain_depth_limit() -> Result<()> {
+    contradictory_invariants_ping_pong(json!({})).await
+}
+
+/// The same exchange on a node that already carries a play's stamp (depth 1
+/// and a write id) from an earlier chain, started by a write that doesn't
+/// touch the stamp (a user's edit). The first repair restarts the count and
+/// writes depth 1, the depth the node already carries. The chain must still
+/// be seen as continuing on the next device: that write changed the write
+/// id even though the depth is unchanged. Restarting whenever the depth
+/// stamp was unchanged would let the devices restart on every hop, forever.
+#[tokio::test]
+async fn contradictory_invariants_stop_at_the_limit_on_an_already_stamped_node() -> Result<()> {
+    contradictory_invariants_ping_pong(json!({
+        (PLAYBOOK_CHAIN_DEPTH_PROPERTY): 1,
+        (PLAYBOOK_WRITE_ID_PROPERTY): "earlier-chain"
+    }))
+    .await
+}
+
+async fn contradictory_invariants_ping_pong(initial_properties: serde_json::Value) -> Result<()> {
+    const NODE_TYPE: &str = "iv_su_pingpong";
+    fn mode_must_be(required: &str) -> serde_json::Value {
+        json!([{
+            "name": format!("mode-must-be-{required}"),
+            "class": "invariant",
+            "trigger": {
+                "type": "graph_event",
+                "on": "property_changed",
+                "node_type": NODE_TYPE,
+                "property_key": format!("{NODE_TYPE}.mode")
+            },
+            "conditions": [format!("node.mode != '{required}'")],
+            "actions": [{
+                "action_type": "update_node",
+                "params": {
+                    "node_id": "{trigger.node.id}",
+                    "properties": { "mode": required }
+                }
+            }]
+        }])
+    }
+
+    async fn device(
+        required: &str,
+    ) -> Result<(
+        Arc<NodeService>,
+        TempDir,
+        watch::Sender<bool>,
+        tokio::task::JoinHandle<Result<()>>,
+    )> {
+        let (service, tmp) = create_test_service().await?;
+        create_schema(
+            &service,
+            NODE_TYPE,
+            json!([{ "name": "mode", "type": "string" }]),
+        )
+        .await?;
+        let (engine, shutdown_tx, task) = spawn_engine(&service).await;
+        activate_rules_directly(
+            &engine,
+            &format!("device-{required}"),
+            mode_must_be(required),
+        );
+        Ok((service, tmp, shutdown_tx, task))
+    }
+
+    let (device_a, _tmp_a, shutdown_a, task_a) = device("a").await?;
+    let (device_b, _tmp_b, shutdown_b, task_b) = device("b").await?;
+
+    let node = Node::new(
+        NODE_TYPE.to_string(),
+        "shared".to_string(),
+        initial_properties,
+    );
+    let id = node.id.clone();
+    create_via_sync(&device_a, node.clone()).await?;
+    create_via_sync(&device_b, node).await?;
+
+    // Relay each device's local-origin writes to the other as sync applies.
+    fn relay(
+        from: &Arc<NodeService>,
+        to: &Arc<NodeService>,
+        id: &str,
+    ) -> tokio::task::JoinHandle<()> {
+        let mut events = from.subscribe_to_events();
+        let (to, id) = (Arc::clone(to), id.to_string());
+        tokio::spawn(async move {
+            while let Ok(envelope) = events.recv().await {
+                if envelope.metadata.source_client_id.as_deref() == Some(SYNC_SERVICE_CLIENT_ID) {
+                    continue;
+                }
+                let DomainEvent::NodeUpdated { node_id, node, .. } = envelope.event else {
+                    continue;
+                };
+                if node_id != id {
+                    continue;
+                }
+                let mut properties = json!({
+                    "mode": node.properties[NODE_TYPE]["mode"].clone(),
+                });
+                // Sync carries the whole node, bookkeeping stamps included.
+                for key in [PLAYBOOK_CHAIN_DEPTH_PROPERTY, PLAYBOOK_WRITE_ID_PROPERTY] {
+                    if let Some(value) = node.properties.get(key) {
+                        properties[key] = value.clone();
+                    }
+                }
+                let _ = update_via_sync(&to, &id, properties).await;
+            }
+        })
+    }
+    let relay_ab = relay(&device_a, &device_b, &id);
+    let relay_ba = relay(&device_b, &device_a, &id);
+
+    // A write from a device holding neither rule arrives on device A.
+    update_via_sync(&device_a, &id, json!({ "mode": "x" })).await?;
+
+    // Quiescent: neither device's version moves for a sustained window.
+    let mut last = (0, 0);
+    let mut stable_polls = 0;
+    for _ in 0..200 {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let now = (
+            device_a.get_node(&id).await?.unwrap().version,
+            device_b.get_node(&id).await?.unwrap().version,
+        );
+        stable_polls = if now == last { stable_polls + 1 } else { 0 };
+        last = now;
+        if stable_polls >= 10 {
+            break;
+        }
+    }
+    assert!(
+        stable_polls >= 10,
+        "contradictory invariants on two devices must not ping-pong forever (versions still moving: {last:?})"
+    );
+
+    let depth_on = |n: &Node| n.properties.get(PLAYBOOK_CHAIN_DEPTH_PROPERTY).cloned();
+    let a = device_a.get_node(&id).await?.unwrap();
+    let b = device_b.get_node(&id).await?.unwrap();
+    assert_eq!(
+        depth_on(&a),
+        Some(json!(MAX_CHAIN_DEPTH)),
+        "the exchange must run to the depth limit and stop there, not stop early"
+    );
+    assert_eq!(depth_on(&b), Some(json!(MAX_CHAIN_DEPTH)));
+
+    relay_ab.abort();
+    relay_ba.abort();
+    shutdown_engine(shutdown_a, task_a).await;
+    shutdown_engine(shutdown_b, task_b).await;
+    Ok(())
+}
