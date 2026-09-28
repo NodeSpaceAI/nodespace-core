@@ -542,9 +542,15 @@ pub fn trigger_keys_for_event(
             ..
         } => {
             let mut keys = Vec::new();
+            // Bookkeeping keys are not fields a rule can trigger on — see
+            // `PropertyChange::is_bookkeeping`.
+            let field_changes: Vec<_> = changed_properties
+                .iter()
+                .filter(|prop| !prop.is_bookkeeping())
+                .collect();
 
             // For each changed property, look up exact key AND wildcard
-            for prop in changed_properties {
+            for prop in &field_changes {
                 // Exact property key match
                 keys.push(TriggerKey::NodeEvent {
                     event: NodeEventType::PropertyChanged,
@@ -554,7 +560,7 @@ pub fn trigger_keys_for_event(
             }
 
             // Wildcard: any property change on this node type
-            if !changed_properties.is_empty() {
+            if !field_changes.is_empty() {
                 keys.push(TriggerKey::NodeEvent {
                     event: NodeEventType::PropertyChanged,
                     node_type: node_type.clone(),
@@ -1104,6 +1110,53 @@ mod tests {
         let keys = trigger_keys_for_event(&event, None);
         // Should have exact key + wildcard
         assert_eq!(keys.len(), 2);
+    }
+
+    /// A play write that changed only bookkeeping keys (every play write
+    /// changes `_playbookWriteId`) is not a property change a rule can
+    /// trigger on: no exact key and no wildcard.
+    #[test]
+    fn trigger_keys_skip_bookkeeping_property_changes() {
+        use crate::db::events::{
+            PropertyChange, PLAYBOOK_CHAIN_DEPTH_PROPERTY, PLAYBOOK_WRITE_ID_PROPERTY,
+        };
+
+        let change = |key: &str| PropertyChange {
+            key: key.to_string(),
+            old_value: Some(json!("old")),
+            new_value: Some(json!("new")),
+        };
+        let event = |changed_properties| crate::db::events::DomainEvent::NodeUpdated {
+            node_type: "task".to_string(),
+            node_id: "n1".to_string(),
+            node: Node {
+                id: "n1".to_string(),
+                node_type: "task".to_string(),
+                content: String::new(),
+                version: 1,
+                created_at: Utc::now(),
+                modified_at: Utc::now(),
+                properties: json!({}),
+                mentions: vec![],
+                mentioned_in: vec![],
+                title: None,
+                lifecycle_status: "active".to_string(),
+            },
+            changed_properties,
+        };
+
+        let only_bookkeeping = event(vec![
+            change(PLAYBOOK_WRITE_ID_PROPERTY),
+            change(PLAYBOOK_CHAIN_DEPTH_PROPERTY),
+        ]);
+        assert!(trigger_keys_for_event(&only_bookkeeping, None).is_empty());
+
+        let with_a_field = event(vec![
+            change(PLAYBOOK_WRITE_ID_PROPERTY),
+            change("task.status"),
+        ]);
+        // Exact `task.status` + wildcard; nothing for the write id.
+        assert_eq!(trigger_keys_for_event(&with_a_field, None).len(), 2);
     }
 
     #[test]

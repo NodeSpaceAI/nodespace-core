@@ -1593,11 +1593,14 @@ mod playbook_tests {
     #[test]
     fn effective_chain_depth_continues_from_the_persisted_property_after_a_device_hop() {
         use super::super::engine::effective_chain_depth;
-        use crate::db::events::PLAYBOOK_CHAIN_DEPTH_PROPERTY;
+        use crate::db::events::{PLAYBOOK_CHAIN_DEPTH_PROPERTY, PLAYBOOK_WRITE_ID_PROPERTY};
 
         let trigger_node = node_with_properties(
             "node:synced-1",
-            json!({ (PLAYBOOK_CHAIN_DEPTH_PROPERTY): 7 }),
+            json!({
+                (PLAYBOOK_CHAIN_DEPTH_PROPERTY): 7,
+                (PLAYBOOK_WRITE_ID_PROPERTY): "write-1",
+            }),
         );
         // No in-process context: this device never saw the chain's earlier
         // hops -- exactly what a sync-applied node looks like.
@@ -1617,11 +1620,14 @@ mod playbook_tests {
     #[test]
     fn effective_chain_depth_at_persisted_max_still_trips_cycle_limit_on_next_hop() {
         use super::super::engine::{effective_chain_depth, exceeds_max_chain_depth};
-        use crate::db::events::PLAYBOOK_CHAIN_DEPTH_PROPERTY;
+        use crate::db::events::{PLAYBOOK_CHAIN_DEPTH_PROPERTY, PLAYBOOK_WRITE_ID_PROPERTY};
 
         let trigger_node = node_with_properties(
             "node:synced-max",
-            json!({ (PLAYBOOK_CHAIN_DEPTH_PROPERTY): MAX_CHAIN_DEPTH }),
+            json!({
+                (PLAYBOOK_CHAIN_DEPTH_PROPERTY): MAX_CHAIN_DEPTH,
+                (PLAYBOOK_WRITE_ID_PROPERTY): "write-1",
+            }),
         );
         let work_item = work_item_for(trigger_node, None);
 
@@ -1642,11 +1648,115 @@ mod playbook_tests {
     #[test]
     fn effective_chain_depth_treats_a_255_persisted_value_as_absent_not_as_255() {
         use super::super::engine::effective_chain_depth;
-        use crate::db::events::PLAYBOOK_CHAIN_DEPTH_PROPERTY;
+        use crate::db::events::{PLAYBOOK_CHAIN_DEPTH_PROPERTY, PLAYBOOK_WRITE_ID_PROPERTY};
 
         let trigger_node = node_with_properties(
             "node:corrupt-depth",
-            json!({ (PLAYBOOK_CHAIN_DEPTH_PROPERTY): 255 }),
+            json!({
+                (PLAYBOOK_CHAIN_DEPTH_PROPERTY): 255,
+                (PLAYBOOK_WRITE_ID_PROPERTY): "write-1",
+            }),
+        );
+        let work_item = work_item_for(trigger_node, None);
+
+        assert_eq!(effective_chain_depth(&work_item), 0);
+    }
+
+    /// A `NodeUpdated` work item with no in-process context, as a user's or
+    /// MCP client's edit produces.
+    fn update_work_item_for(
+        trigger_node: Node,
+        changed_properties: Vec<crate::db::events::PropertyChange>,
+    ) -> ExecutionWorkItem {
+        ExecutionWorkItem {
+            rules: vec![],
+            trigger_event: EventEnvelope {
+                event: DomainEvent::NodeUpdated {
+                    node_id: trigger_node.id.clone(),
+                    node_type: trigger_node.node_type.clone(),
+                    node: trigger_node.clone(),
+                    changed_properties,
+                },
+                metadata: EventMetadata {
+                    source_client_id: Some("tauri-main".to_string()),
+                    playbook_context: None,
+                },
+            },
+            trigger_node,
+        }
+    }
+
+    /// A user's edit to a node a play last stamped at `MAX_CHAIN_DEPTH`
+    /// leaves the stamp in place. It must start a fresh chain rather than
+    /// continue from that stale depth, which would trip the cycle limit and
+    /// disable the play for an ordinary edit.
+    #[test]
+    fn effective_chain_depth_restarts_for_a_user_edit_to_a_stamped_node() {
+        use super::super::engine::{effective_chain_depth, exceeds_max_chain_depth};
+        use crate::db::events::{
+            PropertyChange, PLAYBOOK_CHAIN_DEPTH_PROPERTY, PLAYBOOK_WRITE_ID_PROPERTY,
+        };
+
+        let trigger_node = node_with_properties(
+            "node:stamped",
+            json!({
+                (PLAYBOOK_CHAIN_DEPTH_PROPERTY): MAX_CHAIN_DEPTH,
+                (PLAYBOOK_WRITE_ID_PROPERTY): "write-1",
+                "task": { "status": "done" },
+            }),
+        );
+        let work_item = update_work_item_for(
+            trigger_node,
+            vec![PropertyChange {
+                key: "task.status".to_string(),
+                old_value: Some(json!("open")),
+                new_value: Some(json!("done")),
+            }],
+        );
+
+        let depth = effective_chain_depth(&work_item);
+        assert_eq!(depth, 0);
+        assert!(!exceeds_max_chain_depth(depth));
+    }
+
+    /// An update that changed the write id was a play write, so it continues
+    /// the chain from the depth it stamped.
+    #[test]
+    fn effective_chain_depth_continues_for_an_update_that_changed_the_write_id() {
+        use super::super::engine::effective_chain_depth;
+        use crate::db::events::{
+            PropertyChange, PLAYBOOK_CHAIN_DEPTH_PROPERTY, PLAYBOOK_WRITE_ID_PROPERTY,
+        };
+
+        let trigger_node = node_with_properties(
+            "node:play-written",
+            json!({
+                (PLAYBOOK_CHAIN_DEPTH_PROPERTY): 4,
+                (PLAYBOOK_WRITE_ID_PROPERTY): "write-2",
+            }),
+        );
+        let work_item = update_work_item_for(
+            trigger_node,
+            vec![PropertyChange {
+                key: PLAYBOOK_WRITE_ID_PROPERTY.to_string(),
+                old_value: Some(json!("write-1")),
+                new_value: Some(json!("write-2")),
+            }],
+        );
+
+        assert_eq!(effective_chain_depth(&work_item), 4);
+    }
+
+    /// A created node carrying a depth stamp but no write id was not written
+    /// by a play action, so the stamp alone does not continue a chain.
+    #[test]
+    fn effective_chain_depth_ignores_a_depth_stamp_without_a_write_id() {
+        use super::super::engine::effective_chain_depth;
+        use crate::db::events::PLAYBOOK_CHAIN_DEPTH_PROPERTY;
+
+        let trigger_node = node_with_properties(
+            "node:depth-only",
+            json!({ (PLAYBOOK_CHAIN_DEPTH_PROPERTY): 7 }),
         );
         let work_item = work_item_for(trigger_node, None);
 

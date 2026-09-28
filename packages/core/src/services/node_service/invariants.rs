@@ -137,11 +137,12 @@ impl NodeService {
     /// match, not just what a condition can read.
     ///
     /// `changed_properties` must already reflect the real pre/post diff (see
-    /// `compute_property_changes`, called by the caller before this) — an
-    /// empty diff matches nothing (mirrors `trigger_keys_for_event`'s own
-    /// short-circuit: a title/lifecycle-only update with no property change
-    /// cannot match a `property_changed` trigger, exact or wildcard, and
-    /// building keys for it would be wasted work). Reuses
+    /// `compute_property_changes`, called by the caller before this) — a
+    /// diff with no field change matches nothing (mirrors
+    /// `trigger_keys_for_event`, which ignores bookkeeping changes: a
+    /// title/lifecycle-only update, or a play write that changed only its
+    /// chain stamp, cannot match a `property_changed` trigger, exact or
+    /// wildcard, and building keys for it would be wasted work). Reuses
     /// `playbook::lifecycle::trigger_keys_for_event` — the exact same
     /// exact-key/wildcard-key dual lookup the reactive engine's event
     /// subscriber already performs for a live `NodeUpdated` event — so save-
@@ -161,7 +162,7 @@ impl NodeService {
             return Ok(());
         };
 
-        if changed_properties.is_empty() {
+        if changed_properties.iter().all(|pc| pc.is_bookkeeping()) {
             return Ok(());
         }
 

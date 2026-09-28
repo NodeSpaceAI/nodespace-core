@@ -121,6 +121,22 @@ pub struct PropertyChange {
     pub new_value: Option<serde_json::Value>,
 }
 
+impl PropertyChange {
+    /// Whether this change is to a `_`-prefixed internal-bookkeeping key
+    /// (`_playbookChainDepth`, `_playbookWriteId`, `_seed`, ...) rather than
+    /// a node field.
+    ///
+    /// These changes stay in `changed_properties`, since the engine reads
+    /// them (`chain_depth_of_write`), but they are not property changes a
+    /// rule can trigger on or bind to. Every play write changes
+    /// `_playbookWriteId`, so exposing it would fire wildcard
+    /// `property_changed` rules on writes that changed no field, and could
+    /// bind `trigger.property` to a random nonce.
+    pub fn is_bookkeeping(&self) -> bool {
+        self.key.starts_with('_')
+    }
+}
+
 /// Playbook execution context carried on events for cycle detection
 ///
 /// When the playbook engine executes actions that mutate the graph, the resulting
@@ -160,6 +176,17 @@ pub struct PlaybookExecutionContext {
 /// though (see `persisted_chain_depth`'s doc).
 pub const PLAYBOOK_CHAIN_DEPTH_PROPERTY: &str = "_playbookChainDepth";
 
+/// Reserved node-property key carrying a fresh nonce minted by every play
+/// action write, alongside `PLAYBOOK_CHAIN_DEPTH_PROPERTY` (ADR-060 §5).
+///
+/// The depth stamp alone cannot tell a play write from any other write: a
+/// user's edit leaves a stale depth in place, and a play write can store the
+/// very depth the node already carries. The nonce makes provenance
+/// unambiguous. Every play write changes it and no other write does, so a
+/// write that changed it is a play hop whose depth continues, and a write
+/// that left it alone starts a fresh chain. See `chain_depth_of_write`.
+pub const PLAYBOOK_WRITE_ID_PROPERTY: &str = "_playbookWriteId";
+
 /// Read the causal chain depth persisted on a node's raw `properties`, if any,
 /// bounded to `0..=max_depth`.
 ///
@@ -172,7 +199,7 @@ pub const PLAYBOOK_CHAIN_DEPTH_PROPERTY: &str = "_playbookChainDepth";
 /// callers the same as a node never touched by a play action, falling back
 /// to depth 0 — when the property is absent, the stored value doesn't fit a
 /// `u8`, or it falls outside `0..=max_depth`. Callers pass `MAX_CHAIN_DEPTH`
-/// as `max_depth`; nothing this engine ever writes (see `stamp_chain_depth`
+/// as `max_depth`; nothing this engine ever writes (see `stamp_chain`
 /// in `playbook::actions`) produces a value above it, so anything larger is
 /// corrupt or externally-tampered data, not a legitimately deep chain — it
 /// is rejected outright rather than clamped, so it can't be silently
@@ -188,6 +215,63 @@ pub fn persisted_chain_depth(properties: &serde_json::Value, max_depth: u8) -> O
         .and_then(|v| v.as_u64())
         .and_then(|depth| u8::try_from(depth).ok())?;
     (depth <= max_depth).then_some(depth)
+}
+
+/// The chain depth a write carried across a boundary with no in-process
+/// `PlaybookExecutionContext` — a sync-applied write, or a local write the
+/// engine did not make — or `None` when the write starts a fresh chain
+/// (ADR-060 §5).
+///
+/// A write continues a chain only when it was a play write, which is exactly
+/// when it changed `PLAYBOOK_WRITE_ID_PROPERTY`:
+///
+/// - `NodeCreated`: `properties` (the node as the caller fetched it) carries
+///   a write id. Callers re-fetch the node, so a later play update may have
+///   stamped it rather than the create itself; that only continues a chain
+///   a play really wrote, so the count still never restarts on a play hop.
+/// - `NodeUpdated`: the update's own diff changed the write id. The depth is
+///   read from the update's committed node, not a later re-fetch. This
+///   requires the event to carry its real diff: an update event emitted with
+///   an empty `changed_properties` reads as a fresh chain. Every such emit
+///   today is an in-tx engine write, whose event carries an in-process
+///   context and never reaches this function.
+/// - Any other event carries no node write and starts fresh.
+///
+/// Reading the depth stamp without this check made a user's edit continue a
+/// chain from whatever depth a play last left on the node, so an ordinary
+/// edit to a node stamped near the limit tripped cycle detection and
+/// disabled the play. Restarting whenever the depth stamp was unchanged is
+/// not loop-safe either: a fresh-chain write can store the depth the node
+/// already carries, and two devices would then restart the count on every
+/// hop. The per-write nonce avoids both: after a chain's first hop every
+/// play write is a continuation, so the count rises strictly and hits
+/// `max_depth` even across devices and across nodes.
+///
+/// The returned depth is bounded by `persisted_chain_depth`.
+pub fn chain_depth_of_write(
+    event: &DomainEvent,
+    properties: &serde_json::Value,
+    max_depth: u8,
+) -> Option<u8> {
+    match event {
+        DomainEvent::NodeCreated { .. } => {
+            properties.get(PLAYBOOK_WRITE_ID_PROPERTY)?;
+            persisted_chain_depth(properties, max_depth)
+        }
+        DomainEvent::NodeUpdated {
+            node,
+            changed_properties,
+            ..
+        } => {
+            changed_properties
+                .iter()
+                .find(|change| change.key == PLAYBOOK_WRITE_ID_PROPERTY)?
+                .new_value
+                .as_ref()?;
+            persisted_chain_depth(&node.properties, max_depth)
+        }
+        _ => None,
+    }
 }
 
 /// Reserved `source_client_id` for writes applied by the local-first sync

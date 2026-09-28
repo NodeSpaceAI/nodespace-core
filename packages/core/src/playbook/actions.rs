@@ -110,7 +110,10 @@
 //! the two devices produce the SAME NUMBER of outputs. That gap is separate,
 //! pre-existing, and not addressed here.
 
-use crate::db::events::{DomainEvent, PlaybookExecutionContext, PLAYBOOK_CHAIN_DEPTH_PROPERTY};
+use crate::db::events::{
+    DomainEvent, PlaybookExecutionContext, PLAYBOOK_CHAIN_DEPTH_PROPERTY,
+    PLAYBOOK_WRITE_ID_PROPERTY,
+};
 use crate::models::{Node, NodeUpdate};
 use crate::playbook::graph_resolver::{declared_collection_type, GraphResolver};
 use crate::playbook::types::{ActionType, IterationPath, ParsedAction};
@@ -298,11 +301,14 @@ impl BindingContext {
             changed_properties, ..
         } = event
         {
-            changed_properties.first().map(|pc| PropertyBindings {
-                key: pc.key.clone(),
-                old_value: pc.old_value.clone().unwrap_or(Value::Null),
-                new_value: pc.new_value.clone().unwrap_or(Value::Null),
-            })
+            changed_properties
+                .iter()
+                .find(|pc| !pc.is_bookkeeping())
+                .map(|pc| PropertyBindings {
+                    key: pc.key.clone(),
+                    old_value: pc.old_value.clone().unwrap_or(Value::Null),
+                    new_value: pc.new_value.clone().unwrap_or(Value::Null),
+                })
         } else {
             None
         };
@@ -1650,8 +1656,8 @@ fn execute_reject(action_index: usize, params: &Value) -> Result<Value, ActionEr
     })
 }
 
-/// Merge the current chain depth into an action's output properties
-/// (ADR-060 §5).
+/// Merge the current chain depth, and a fresh write id, into an action's
+/// output properties (ADR-060 §5).
 ///
 /// Every node a play action creates or updates gets this stamp, regardless
 /// of whether the rule's own `properties` param set anything else — an
@@ -1663,16 +1669,25 @@ fn execute_reject(action_index: usize, params: &Value) -> Result<Value, ActionEr
 /// `NodeService::normalize_flat_properties_to_namespace` keeps it at the
 /// top level of `properties` independent of the node's type.
 ///
+/// The write id (`PLAYBOOK_WRITE_ID_PROPERTY`) is minted per call, so every
+/// play write changes it and no other write does. That is what lets a
+/// receiving device tell a play hop from a user's edit — see
+/// `db::events::chain_depth_of_write`.
+///
 /// `properties` is expected to already be a JSON object (both call sites
 /// pass either the resolved `properties` param or `json!({})`); a non-object
-/// value is replaced with a fresh object carrying just the depth stamp
-/// rather than silently dropping it.
-fn stamp_chain_depth(properties: Value, depth: u8) -> Value {
+/// value is replaced with a fresh object carrying just the depth stamp and
+/// write id rather than silently dropping them.
+fn stamp_chain(properties: Value, depth: u8) -> Value {
     let mut obj = match properties {
         Value::Object(map) => map,
         _ => serde_json::Map::new(),
     };
     obj.insert(PLAYBOOK_CHAIN_DEPTH_PROPERTY.to_string(), json!(depth));
+    obj.insert(
+        PLAYBOOK_WRITE_ID_PROPERTY.to_string(),
+        json!(uuid::Uuid::new_v4().to_string()),
+    );
     Value::Object(obj)
 }
 
@@ -1705,7 +1720,7 @@ async fn execute_create_node(
             })?;
     let content = params.get("content").and_then(|v| v.as_str()).unwrap_or("");
     let properties = params.get("properties").cloned().unwrap_or(json!({}));
-    let properties = stamp_chain_depth(properties, depth);
+    let properties = stamp_chain(properties, depth);
 
     let node_id = deterministic_action_output_id(rule_id, action_index, iteration_path);
 
@@ -1806,10 +1821,10 @@ async fn execute_update_node(
 
     // Every node an update action touches carries the chain's current depth
     // (ADR-060 §5), independent of whether the action's own params set
-    // `properties` at all -- see `stamp_chain_depth`'s doc. `NodeService`
+    // `properties` at all -- see `stamp_chain`'s doc. `NodeService`
     // deep-merges `update.properties` into the node's existing properties
     // rather than replacing them, so this never clobbers unrelated fields.
-    update.properties = Some(stamp_chain_depth(
+    update.properties = Some(stamp_chain(
         update.properties.unwrap_or_else(|| json!({})),
         depth,
     ));
@@ -2137,7 +2152,7 @@ async fn execute_create_node_in_tx(
             })?;
     let content = params.get("content").and_then(|v| v.as_str()).unwrap_or("");
     let properties = params.get("properties").cloned().unwrap_or(json!({}));
-    let properties = stamp_chain_depth(properties, depth);
+    let properties = stamp_chain(properties, depth);
 
     let node_id = deterministic_action_output_id(rule_id, action_index, iteration_path);
 
@@ -2216,7 +2231,7 @@ async fn execute_update_node_in_tx(
         update.node_type = Some(node_type.to_string());
     }
 
-    update.properties = Some(stamp_chain_depth(
+    update.properties = Some(stamp_chain(
         update.properties.unwrap_or_else(|| json!({})),
         depth,
     ));
@@ -5046,6 +5061,72 @@ mod tests {
                 "the depth stamp must merge in, not replace, the node's existing properties"
             );
             assert_eq!(updated.content, "updated");
+        }
+
+        /// Every play write changes the write id, even one that stores the
+        /// depth the node already carries. That is what lets a receiving
+        /// device tell a play hop from a user's edit
+        /// (`db::events::chain_depth_of_write`).
+        #[tokio::test]
+        async fn update_node_action_mints_a_fresh_write_id_on_every_write() {
+            use crate::db::events::{chain_depth_of_write, PLAYBOOK_WRITE_ID_PROPERTY};
+            use crate::playbook::types::MAX_CHAIN_DEPTH;
+
+            let (svc, _tmp) = create_test_service().await;
+            svc.create_node(Node::new_with_id(
+                "node:target-2".to_string(),
+                "text".to_string(),
+                "original".to_string(),
+                json!({}),
+            ))
+            .await
+            .unwrap();
+
+            let trigger = make_trigger_node("task-1", "task", json!({}));
+            let event = make_node_created_event("task-1", "task");
+            let actions = vec![make_action(
+                ActionType::UpdateNode,
+                json!({"node_id": "node:target-2", "content": "updated"}),
+                None,
+            )];
+
+            let mut write_ids = Vec::new();
+            for _ in 0..2 {
+                let mut events = svc.subscribe_to_events();
+                let result =
+                    execute_actions(&actions, &trigger, &event, &svc, exec_ctx("play-1", 3)).await;
+                assert!(matches!(result, ActionResult::Success), "{result:?}");
+
+                // The store's own diff of this write must show the write id
+                // changing: that is what a receiving device reads to tell a
+                // play hop from a user's edit.
+                let envelope = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                    loop {
+                        let envelope = events.recv().await.unwrap();
+                    if matches!(&envelope.event, DomainEvent::NodeUpdated { node_id, .. } if node_id == "node:target-2")
+                    {
+                        break envelope;
+                    }
+                    }
+                })
+                .await
+                .expect("the play update must emit a NodeUpdated event");
+                assert_eq!(
+                    chain_depth_of_write(&envelope.event, &json!({}), MAX_CHAIN_DEPTH),
+                    Some(3),
+                    "a play update's committed diff must carry its write id change"
+                );
+
+                let updated = svc.get_node("node:target-2").await.unwrap().unwrap();
+                assert_eq!(updated.properties[PLAYBOOK_CHAIN_DEPTH_PROPERTY], json!(3));
+                let write_id = updated.properties[PLAYBOOK_WRITE_ID_PROPERTY].clone();
+                assert!(write_id.is_string(), "a play write must stamp a write id");
+                write_ids.push(write_id);
+            }
+            assert_ne!(
+                write_ids[0], write_ids[1],
+                "two play writes at the same depth must still stamp different write ids"
+            );
         }
 
         /// AC (device-hop half): when this same device later processes a

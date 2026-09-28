@@ -12,7 +12,7 @@
 //! - Phase 6: Cycle detection (max depth 10)
 //! - Phase 7: Save-time validation before play activation
 
-use crate::db::events::{persisted_chain_depth, DomainEvent, EventEnvelope};
+use crate::db::events::{chain_depth_of_write, DomainEvent, EventEnvelope};
 use crate::playbook::lifecycle::{trigger_keys_for_event, PlaybookLifecycleManager};
 use crate::playbook::types::*;
 use crate::services::{NodeService, NodeServiceError};
@@ -624,6 +624,18 @@ impl PlaybookEngine {
     /// rule is logged and does not block the others, since (unlike the
     /// pre-commit path) there is no write to roll back here — the node is
     /// already durably committed either way.
+    ///
+    /// Loop safety. The repair write goes through `self.node_service`, not
+    /// the sync-tagged service, so it never re-enters this sync-only branch
+    /// on this device. Across devices, a repair continues the chain only
+    /// when the received write was itself a play write
+    /// (`chain_depth_of_write`), and otherwise starts one at 0. Every repair
+    /// write mints a fresh write id, so a repair that syncs to another device
+    /// and triggers a repair there continues the same count, and once the
+    /// next hop would exceed `MAX_CHAIN_DEPTH` the repair is skipped. A
+    /// distributed ping-pong between devices whose invariants disagree
+    /// terminates, while a user's edit to a node a play once stamped near
+    /// the limit is still repaired.
     async fn dispatch_invariant_repair(&self, node_id: &str, node_type: &str) {
         let key = TriggerKey::NodeEvent {
             event: NodeEventType::NodeCreated,
@@ -661,6 +673,19 @@ impl PlaybookEngine {
             node_id: node.id.clone(),
             node_type: node.node_type.clone(),
         };
+
+        let parent_depth =
+            chain_depth_of_write(&event, &node.properties, MAX_CHAIN_DEPTH).unwrap_or(0);
+        if exceeds_max_chain_depth(parent_depth) {
+            warn!(
+                node_id = %node.id,
+                depth = parent_depth,
+                error_type = "cycle_limit",
+                max_chain_depth = MAX_CHAIN_DEPTH,
+                "Repair-and-log: cycle depth limit reached; skipping invariant repair"
+            );
+            return;
+        }
 
         for rule_ref in invariant_rules {
             let cel_scope = match PlaybookEngine::cel_scope_for(
@@ -721,7 +746,7 @@ impl PlaybookEngine {
 
             let execution_context = crate::db::events::PlaybookExecutionContext {
                 originating_event_id: uuid::Uuid::new_v4().to_string(),
-                depth: 0,
+                depth: parent_depth.saturating_add(1),
                 source_playbook_id: rule_ref.play_id.clone(),
             };
 
@@ -1426,31 +1451,27 @@ pub(crate) fn is_sync_originated(envelope: &EventEnvelope) -> bool {
 ///
 /// Prefers the in-process `PlaybookExecutionContext` carried on the
 /// triggering event — present whenever this hop's mutation was produced by
-/// this same running process, which covers every same-device chain today
-/// (ADR-073 currently excludes sync-applied events from trigger evaluation
-/// entirely, so a work item never reaches here with a foreign in-process
-/// context). Falls back to the depth persisted on the trigger node's own
-/// properties (`persisted_chain_depth`) when that in-process context is
-/// absent — the shape a node takes once it has crossed a device boundary via
-/// sync: sync transports the node's committed `properties`, not the
-/// transient `EventMetadata` that accompanied its creation elsewhere, so the
-/// persisted property is the only surviving record of how deep the chain
-/// already was.
+/// this same running process. Without it, the triggering write continues a
+/// chain only if it was itself a play write, which `chain_depth_of_write`
+/// decides from the per-write id the write stamped. A user's or MCP client's
+/// edit never changes that id, so it starts a fresh chain at 0 rather than
+/// continuing from whatever depth a play last left on the node — which
+/// would otherwise let a user's own edit trip the cycle limit and disable
+/// the play.
 ///
-/// Defaults to 0 when neither is present: a node never touched by a play
-/// action, or the first hop of a fresh chain. Also the fallback for a
-/// persisted value `persisted_chain_depth` rejects as out of range —
-/// indistinguishable here from a node that was never touched, which is a
-/// known, accepted limitation of a best-effort persisted signal with no
-/// write protection (see `persisted_chain_depth`'s doc).
+/// Defaults to 0 when neither source applies: a write that is not a play
+/// hop, or a persisted depth `persisted_chain_depth` rejects as out of
+/// range — indistinguishable here from a node never touched by a play,
+/// which is a known, accepted limitation of a best-effort persisted signal
+/// with no write protection (see `persisted_chain_depth`'s doc).
 ///
 /// The in-process context is bounded to `0..=MAX_CHAIN_DEPTH` by
 /// construction (only ever assigned `depth.saturating_add(1)` after
 /// `exceeds_max_chain_depth` already passed), but the persisted property is
 /// not similarly trustworthy — it is ordinary node data any
-/// `create_node`/`update_node` caller can write — so `persisted_chain_depth`
-/// is bounded explicitly against `MAX_CHAIN_DEPTH` here rather than trusting
-/// the stored value's own range.
+/// `create_node`/`update_node` caller can write — so it is bounded
+/// explicitly against `MAX_CHAIN_DEPTH` here rather than trusting the
+/// stored value's own range.
 pub(crate) fn effective_chain_depth(work_item: &ExecutionWorkItem) -> u8 {
     work_item
         .trigger_event
@@ -1459,7 +1480,12 @@ pub(crate) fn effective_chain_depth(work_item: &ExecutionWorkItem) -> u8 {
         .as_ref()
         .map(|ctx| ctx.depth)
         .unwrap_or_else(|| {
-            persisted_chain_depth(&work_item.trigger_node.properties, MAX_CHAIN_DEPTH).unwrap_or(0)
+            chain_depth_of_write(
+                &work_item.trigger_event.event,
+                &work_item.trigger_node.properties,
+                MAX_CHAIN_DEPTH,
+            )
+            .unwrap_or(0)
         })
 }
 
