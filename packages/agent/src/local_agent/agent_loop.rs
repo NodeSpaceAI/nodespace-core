@@ -1093,8 +1093,9 @@ fn words_match_modulo_plural(a: &str, b: &str) -> bool {
 ///
 /// Structural backstop for the restraint policy: nothing in the tool surface
 /// stops the model from calling `create_schema` again within one skill
-/// invocation (the loop's only cap is the global `MAX_TOOL_ITERATIONS`, and
-/// `stage2_tools` does not enforce call counts), and a model that invents a
+/// invocation (no per-skill cap applies — only the global `MAX_TOOL_ITERATIONS`
+/// round cap, and one round may carry several calls — and `stage2_tools` does
+/// not enforce call counts), and a model that invents a
 /// related type the user never asked for leaves the graph holding a type
 /// nobody wanted.
 ///
@@ -3235,8 +3236,9 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                                 // asked for", but nothing stops a second
                                 // create_schema call within the same skill
                                 // invocation from actually executing — only the
-                                // global MAX_TOOL_ITERATIONS cap bounds how many
-                                // create_schema calls a turn makes. Refuse one for a
+                                // global MAX_TOOL_ITERATIONS round cap applies, and
+                                // one round may carry several create_schema
+                                // calls. Refuse one for a
                                 // type the user never named, rather than letting
                                 // the model invent a related type as a side
                                 // effect. A type the user DID name is allowed
