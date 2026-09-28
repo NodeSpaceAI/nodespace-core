@@ -549,9 +549,10 @@ impl BatchState {
 
     /// Offer a node-keyed `envelope` published at `seq` by `emitter` to an
     /// open batch: the most recent batch `emitter` opened itself, else the
-    /// most recently opened batch of all. The batch keeps, per node, the
-    /// envelope with the highest `seq`. Returns the envelope when no batch
-    /// is open, for the caller to broadcast.
+    /// most recently opened batch of all. The batch holds one envelope per
+    /// node, merging each new one with the held one in `seq` order (see
+    /// [`coalesce_envelopes`]). Returns the envelope when no batch is open,
+    /// for the caller to broadcast.
     fn offer(
         &mut self,
         emitter: Emitter,
@@ -567,16 +568,15 @@ impl BatchState {
         let Some(index) = index else {
             return Some(envelope);
         };
-        match self.batches[index].events.entry(node_id) {
-            std::collections::hash_map::Entry::Occupied(mut held) => {
-                if held.get().0 <= seq {
-                    held.insert((seq, envelope));
-                }
+        let events = &mut self.batches[index].events;
+        let merged = match events.remove(&node_id) {
+            Some((held_seq, held)) if held_seq > seq => {
+                (held_seq, coalesce_envelopes(envelope, held))
             }
-            std::collections::hash_map::Entry::Vacant(slot) => {
-                slot.insert((seq, envelope));
-            }
-        }
+            Some((_, held)) => (seq, coalesce_envelopes(held, envelope)),
+            None => (seq, envelope),
+        };
+        events.insert(node_id, merged);
         None
     }
 
@@ -625,7 +625,8 @@ fn push_forward_allowed(
 /// RAII guard returned by `NodeService::begin_batch_emit`.
 ///
 /// While this guard is live, domain events emitted by the store notifier are
-/// coalesced per node (last-write-wins) instead of broadcast individually.
+/// coalesced per node (see [`coalesce_envelopes`]) instead of broadcast
+/// individually.
 /// On `Drop` the accumulated events are flushed to the broadcast channel —
 /// at most one event per node. A guard flushes only its own batch, whatever
 /// other guards are open or drop around it.
@@ -666,6 +667,72 @@ fn envelope_node_id(envelope: &crate::db::events::EventEnvelope) -> Option<Strin
         DomainEvent::NodeDeleted { id, .. } => Some(id.clone()),
         _ => None,
     }
+}
+
+/// Merge two events for one node, `earlier` then `later`, into the single
+/// event a batch flushes for it, without dropping what a subscriber keys on:
+///
+/// - A create followed by updates stays a `NodeCreated`, so a subscriber
+///   still sees the node as new (ADR-060 §7 re-checks `node_created`
+///   invariants on it). It takes the later event's type, and subscribers
+///   read the node's current state by fetching it, as for any create.
+/// - Two updates become one carrying the later committed node and every key
+///   either changed: each key's first `old_value` and last `new_value`, with
+///   a key whose value ended where it started left out.
+/// - Anything else — a delete, or a create after a delete — is the later
+///   event alone, since it states what the node now is.
+///
+/// Metadata is always the later event's: it names the latest writer, which
+/// is what the push channel's origin filter must see.
+fn coalesce_envelopes(
+    earlier: crate::db::events::EventEnvelope,
+    later: crate::db::events::EventEnvelope,
+) -> crate::db::events::EventEnvelope {
+    let event = match (earlier.event, later.event) {
+        (DomainEvent::NodeCreated { node_id, .. }, DomainEvent::NodeUpdated { node_type, .. }) => {
+            DomainEvent::NodeCreated { node_id, node_type }
+        }
+        (
+            DomainEvent::NodeUpdated {
+                changed_properties: earlier_changes,
+                ..
+            },
+            DomainEvent::NodeUpdated {
+                node_id,
+                node_type,
+                node,
+                changed_properties: later_changes,
+            },
+        ) => DomainEvent::NodeUpdated {
+            node_id,
+            node_type,
+            node,
+            changed_properties: merge_property_changes(earlier_changes, later_changes),
+        },
+        (_, later_event) => later_event,
+    };
+    crate::db::events::EventEnvelope {
+        event,
+        metadata: later.metadata,
+    }
+}
+
+/// The net change of two consecutive diffs, in first-changed order: each
+/// key's first `old_value` and last `new_value`, dropping a key whose value
+/// ended where it started.
+fn merge_property_changes(
+    earlier: Vec<crate::db::events::PropertyChange>,
+    later: Vec<crate::db::events::PropertyChange>,
+) -> Vec<crate::db::events::PropertyChange> {
+    let mut merged = earlier;
+    for change in later {
+        match merged.iter_mut().find(|held| held.key == change.key) {
+            Some(held) => held.new_value = change.new_value,
+            None => merged.push(change),
+        }
+    }
+    merged.retain(|change| change.old_value != change.new_value);
+    merged
 }
 
 /// Send every buffered envelope, in order, mirroring to the push channel the
@@ -2936,7 +3003,7 @@ impl NodeService {
     /// Begin batched event emission for bulk operations.
     ///
     /// While the returned `BatchEmitGuard` is live, domain events from the store
-    /// notifier are coalesced per node (last-write-wins) instead of being broadcast
+    /// notifier are coalesced per node (see [`coalesce_envelopes`]) instead of being broadcast
     /// individually. When the guard drops, one event per modified node is flushed to
     /// the broadcast channel.
     ///
@@ -2971,7 +3038,7 @@ impl NodeService {
     /// and execution_context as metadata.
     ///
     /// For a write made OUTSIDE any transaction: when a `BatchEmitGuard` is
-    /// open, a node-keyed event is buffered (last-write-wins per node_id; see
+    /// open, a node-keyed event is buffered (coalesced per node_id; see
     /// [`BatchState::route`]) instead of broadcast immediately. Code inside
     /// [`Self::with_transaction`] must use [`Self::emit_event_in_tx`]
     /// instead, so the event waits for the commit.
@@ -8626,6 +8693,211 @@ mod tests {
             }
         }
         assert_eq!(node_types, vec!["later".to_string()]);
+    }
+
+    /// Drain every node-keyed event the receiver holds.
+    fn drain_node_events(
+        rx: &mut broadcast::Receiver<crate::db::events::EventEnvelope>,
+    ) -> Vec<DomainEvent> {
+        let mut events = Vec::new();
+        while let Ok(envelope) = rx.try_recv() {
+            if envelope_node_id(&envelope).is_some() {
+                events.push(envelope.event);
+            }
+        }
+        events
+    }
+
+    fn change(
+        key: &str,
+        old: Option<Value>,
+        new: Option<Value>,
+    ) -> crate::db::events::PropertyChange {
+        crate::db::events::PropertyChange {
+            key: key.to_string(),
+            old_value: old,
+            new_value: new,
+        }
+    }
+
+    fn updated(node: &Node, changes: Vec<crate::db::events::PropertyChange>) -> DomainEvent {
+        DomainEvent::NodeUpdated {
+            node_id: node.id.clone(),
+            node_type: node.node_type.clone(),
+            node: node.clone(),
+            changed_properties: changes,
+        }
+    }
+
+    /// A node created and then updated inside one batch reaches subscribers
+    /// as its `NodeCreated`, so create-keyed subscribers (ADR-060 §7's
+    /// `node_created` invariant repair) still see it as new.
+    #[tokio::test]
+    async fn batch_keeps_a_create_followed_by_updates_as_node_created() {
+        let (service, _temp) = create_test_service().await;
+        let mut rx = service.subscribe_to_events();
+
+        let guard = service.begin_batch_emit();
+        let id = service
+            .create_node(Node::new("text".to_string(), "new".to_string(), json!({})))
+            .await
+            .unwrap();
+        let update = crate::models::NodeUpdate::new().with_content("edited".to_string());
+        service.update_node_unchecked(&id, update).await.unwrap();
+        drop(guard);
+
+        let events = drain_node_events(&mut rx);
+        assert_eq!(events.len(), 1, "one event per node, got {events:?}");
+        match &events[0] {
+            DomainEvent::NodeCreated { node_id, node_type } => {
+                assert_eq!(node_id, &id);
+                assert_eq!(node_type, "text");
+            }
+            other => panic!("expected NodeCreated, got {other:?}"),
+        }
+    }
+
+    /// Two updates to one node inside a batch flush as one `NodeUpdated`
+    /// carrying the later node and the net change of every key either
+    /// touched; a key that ended where it started is left out.
+    #[tokio::test]
+    async fn batch_merges_changed_properties_across_updates() {
+        let (service, _temp) = create_test_service().await;
+        let mut rx = service.subscribe_to_events();
+        let first = Node::new("task".to_string(), "v1".to_string(), json!({}));
+        let mut second = first.clone();
+        second.content = "v2".to_string();
+
+        let guard = service.begin_batch_emit();
+        service.emit_event(updated(
+            &first,
+            vec![
+                change("task.status", Some(json!("open")), Some(json!("done"))),
+                change("task.priority", Some(json!(1)), Some(json!(2))),
+            ],
+        ));
+        service.emit_event(updated(
+            &second,
+            vec![
+                change("task.priority", Some(json!(2)), Some(json!(1))),
+                change("task.due", None, Some(json!("2026-10-01"))),
+                change("task.status", Some(json!("done")), Some(json!("closed"))),
+            ],
+        ));
+        drop(guard);
+
+        let events = drain_node_events(&mut rx);
+        assert_eq!(events.len(), 1, "one event per node, got {events:?}");
+        match &events[0] {
+            DomainEvent::NodeUpdated {
+                node,
+                changed_properties,
+                ..
+            } => {
+                assert_eq!(node.content, "v2", "the later committed node");
+                assert_eq!(
+                    changed_properties,
+                    &vec![
+                        change("task.status", Some(json!("open")), Some(json!("closed"))),
+                        change("task.due", None, Some(json!("2026-10-01"))),
+                    ]
+                );
+            }
+            other => panic!("expected NodeUpdated, got {other:?}"),
+        }
+    }
+
+    /// A delete ends the node, so a batch that created or updated it and
+    /// then deleted it flushes the `NodeDeleted` alone.
+    #[tokio::test]
+    async fn batch_flushes_a_delete_after_other_events_as_the_delete() {
+        let (service, _temp) = create_test_service().await;
+        let mut rx = service.subscribe_to_events();
+        let node = Node::new("text".to_string(), "gone".to_string(), json!({}));
+
+        let guard = service.begin_batch_emit();
+        service.emit_event(DomainEvent::NodeCreated {
+            node_id: node.id.clone(),
+            node_type: "text".to_string(),
+        });
+        service.emit_event(updated(&node, vec![]));
+        service.emit_event(DomainEvent::NodeDeleted {
+            id: node.id.clone(),
+            node_type: "text".to_string(),
+        });
+        drop(guard);
+
+        let events = drain_node_events(&mut rx);
+        assert!(
+            matches!(events.as_slice(), [DomainEvent::NodeDeleted { id, .. }] if id == &node.id),
+            "expected the delete alone, got {events:?}"
+        );
+    }
+
+    /// Two updates whose transactions publish in the opposite order to their
+    /// commits still merge in commit order: the earlier commit's `old_value`
+    /// and the later commit's `new_value`.
+    #[tokio::test]
+    async fn batch_merges_out_of_order_publications_in_commit_order() {
+        let (service, _temp) = create_test_service().await;
+        let mut rx = service.subscribe_to_events();
+        let node = Node::new("task".to_string(), "t".to_string(), json!({}));
+        let guard = service.begin_batch_emit();
+
+        let commit = |event: DomainEvent| {
+            let svc = service.clone();
+            tokio::spawn(async move {
+                let svc_in = svc.clone();
+                svc.run_transaction(move |tx| {
+                    Box::pin(async move {
+                        svc_in.emit_event_in_tx(tx, event);
+                        Ok(())
+                    })
+                })
+                .await
+                .map(|((), committed, _)| committed)
+            })
+        };
+        let earlier = commit(updated(
+            &node,
+            vec![change(
+                "task.status",
+                Some(json!("open")),
+                Some(json!("done")),
+            )],
+        ))
+        .await
+        .unwrap()
+        .unwrap();
+        let later = commit(updated(
+            &node,
+            vec![change(
+                "task.status",
+                Some(json!("done")),
+                Some(json!("closed")),
+            )],
+        ))
+        .await
+        .unwrap()
+        .unwrap();
+        service.publish_committed(later);
+        service.publish_committed(earlier);
+        drop(guard);
+
+        let events = drain_node_events(&mut rx);
+        match events.as_slice() {
+            [DomainEvent::NodeUpdated {
+                changed_properties, ..
+            }] => assert_eq!(
+                changed_properties,
+                &vec![change(
+                    "task.status",
+                    Some(json!("open")),
+                    Some(json!("closed"))
+                )]
+            ),
+            other => panic!("expected one NodeUpdated, got {other:?}"),
+        }
     }
 
     /// The batch importer assigns collection membership via
