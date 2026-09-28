@@ -297,6 +297,19 @@ fn may_gain_parent_violation(
     }
 }
 
+/// One node's resolved value for one field, from
+/// [`SqliteStore::get_effective_field_values_in_tx`].
+#[derive(Debug, Clone)]
+pub(crate) struct EffectiveFieldValue {
+    pub node_id: String,
+    pub node_type: String,
+    pub field: String,
+    /// The property bucket the value was resolved from.
+    pub bucket: Option<String>,
+    /// `None` when no bucket in the node's scope holds the name.
+    pub value: Option<Value>,
+}
+
 impl SqliteStore {
     pub async fn create_node(
         &self,
@@ -3339,45 +3352,49 @@ impl SqliteStore {
         Ok(affected)
     }
 
-    /// The value write validation will see for each of `fields`, on every
-    /// instance of `type_id` and of every subtype extending it — returned as
-    /// `(field name, value)` pairs, one per node holding a non-null value.
+    /// The value write validation will see for each of `fields` — declared by
+    /// `owner` — on every instance of `scan_root` and of every subtype
+    /// extending it: one [`EffectiveFieldValue`] per node and field, with
+    /// `value: None` where no bucket in scope holds the name. A resolved null
+    /// is left out — it satisfies every declaration, `required` included.
+    /// `owner` is `scan_root` itself or one of its ancestors.
     ///
-    /// The row set is the one [`Self::rename_schema_field_in_tx`] migrates:
-    /// under ADR-078's per-owner buckets a subtype instance stores the fields
-    /// `type_id` declares under the `type_id` key, so rows whose own
-    /// `node_type` is a subtype count too. Each value is resolved the way
-    /// `NodeService::validate_node_with_fields` merges buckets — walking from
-    /// the row's own type up the `extends` chain to `type_id`, nearest bucket
-    /// holding the name wins, even when it holds null. A leftover value in a
-    /// subtype's own bucket therefore shadows the `type_id` one here exactly
-    /// as it does on write.
+    /// Under ADR-078's per-owner buckets an instance stores the fields `owner`
+    /// declares under the `owner` key, whatever its own `node_type`. Each
+    /// value is resolved the way `NodeService::validate_node_with_fields`
+    /// merges buckets — walking from the row's own type up the `extends`
+    /// chain to `owner`, nearest bucket holding the name wins, even when it
+    /// holds null. A leftover value in a nearer bucket therefore shadows the
+    /// `owner` one here exactly as it does on write.
     ///
     /// Run on the caller's `tx`: it sees that transaction's own writes (a
-    /// rename's just-migrated rows), and no other instance write can land
-    /// between this read and the caller's commit under the store's single
-    /// writer guard.
+    /// rename's just-migrated rows, a just-rewritten `extends` edge), and no
+    /// other instance write can land between this read and the caller's
+    /// commit under the store's single writer guard.
     pub(crate) async fn get_effective_field_values_in_tx(
         tx: &Tx<'_>,
-        type_id: &str,
+        scan_root: &str,
+        owner: &str,
         fields: &[String],
-    ) -> Result<Vec<(String, Value)>> {
-        let subtypes = Self::get_subtype_closure_in_tx(tx, type_id).await?;
+    ) -> Result<Vec<EffectiveFieldValue>> {
+        let subtypes = Self::get_subtype_closure_in_tx(tx, scan_root).await?;
         let parents = Self::get_extends_parent_map_in_tx(tx).await?;
-        // Each subtype's chain up to and including `type_id`, nearest first.
-        // Every subtype is in `type_id`'s descendant closure, so its ancestor
-        // chain reaches `type_id`; scopes above it never win, since
-        // `type_id`'s own bucket is consulted first.
+        // Each subtype's full ancestor chain, nearest first — the same scope
+        // the validator merges, so a bucket above `owner` holding the name
+        // (left from an ancestor that once declared it) is seen here exactly
+        // as it is on write. `owner` is on `scan_root`'s chain, so every
+        // subtype's chain reaches it; one that doesn't is not under `owner`
+        // at all and is skipped rather than judged against a declaration it
+        // doesn't inherit.
         let lookup = |t: &str| parents.get(t).cloned();
         let chains: std::collections::HashMap<&str, Vec<String>> = subtypes
             .iter()
-            .map(|subtype| {
-                let mut chain =
-                    crate::schema::extends_chain::resolve_ancestor_chain(subtype, &lookup);
-                if let Some(end) = chain.iter().position(|t| t == type_id) {
-                    chain.truncate(end + 1);
-                }
-                (subtype.as_str(), chain)
+            .filter_map(|subtype| {
+                let chain = crate::schema::extends_chain::resolve_ancestor_chain(subtype, &lookup);
+                chain
+                    .iter()
+                    .any(|t| t == owner)
+                    .then_some((subtype.as_str(), chain))
             })
             .collect();
         let mut values = Vec::new();
@@ -3416,10 +3433,18 @@ impl SqliteStore {
                             .get(scope.as_str())
                             .and_then(Value::as_object)
                             .and_then(|bucket| bucket.get(field))
+                            .map(|value| (scope, value))
                     });
-                    if let Some(value) = resolved.filter(|v| !v.is_null()) {
-                        values.push((field.clone(), value.clone()));
+                    if resolved.is_some_and(|(_, value)| value.is_null()) {
+                        continue;
                     }
+                    values.push(EffectiveFieldValue {
+                        node_id: id.clone(),
+                        node_type: node_type.clone(),
+                        field: field.clone(),
+                        bucket: resolved.map(|(scope, _)| scope.clone()),
+                        value: resolved.map(|(_, value)| value.clone()),
+                    });
                 }
             }
         }

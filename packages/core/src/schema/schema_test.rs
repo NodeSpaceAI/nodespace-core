@@ -7283,3 +7283,172 @@ async fn test_rename_over_a_leftover_value_the_migration_replaces_succeeds() {
         .await
         .expect("the node stays editable");
 }
+
+#[tokio::test]
+async fn test_extends_retarget_onto_a_leftover_bucket_rejected() {
+    let (svc, _tmp) = create_test_service().await;
+    handle_create_schema(&svc, json!({ "name": "Alpha", "fields": [] }))
+        .await
+        .unwrap();
+    create_ticket_with_string_points(&svc).await;
+    handle_create_schema(
+        &svc,
+        json!({ "name": "Bug", "extends": "ticket", "fields": [] }),
+    )
+    .await
+    .expect("Bug extends Ticket");
+    let bug_id = create_node_with_points(&svc, "bug", json!("large")).await;
+
+    // Moving Bug off Ticket leaves its `ticket` bucket behind, out of scope —
+    // so Ticket's own type change no longer sees the bug node.
+    handle_update_schema(&svc, json!({ "schema_id": "bug", "extends": "alpha" }))
+        .await
+        .expect("re-target to Alpha");
+    handle_update_schema(
+        &svc,
+        json!({
+            "schema_id": "ticket",
+            "remove_fields": ["points"],
+            "add_fields": [number_points()]
+        }),
+    )
+    .await
+    .expect("no Ticket instance holds a conflicting value any more");
+
+    // Moving back brings the leftover string under a `number` declaration.
+    let result =
+        handle_update_schema(&svc, json!({ "schema_id": "bug", "extends": "ticket" })).await;
+    let msg = result.as_ref().unwrap_err().to_string();
+    assert!(
+        msg.contains(&bug_id),
+        "error names an offending node: {msg}"
+    );
+    assert!(
+        msg.contains(r#"{"bug": {}, "ticket": {"points": null}}"#),
+        "error gives the payload that clears the dormant value: {msg}"
+    );
+    let clear = json!({ "bug": {}, "ticket": { "points": null } });
+    expect_conflict(result, "number", 1);
+
+    assert_eq!(
+        persisted_extends_target(&svc, "bug").await.as_deref(),
+        Some("alpha"),
+        "the refused re-target left the edge where it was"
+    );
+    edit_content(&svc, &bug_id)
+        .await
+        .expect("the node stays editable");
+
+    // Following the error's advice clears the value the re-target tripped on.
+    let bug = svc.get_node(&bug_id).await.unwrap().unwrap();
+    svc.update_node(
+        &bug_id,
+        bug.version,
+        NodeUpdate {
+            properties: Some(clear),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("the advised update is accepted");
+    handle_update_schema(&svc, json!({ "schema_id": "bug", "extends": "ticket" }))
+        .await
+        .expect("with the leftover cleared the re-target succeeds");
+    edit_content(&svc, &bug_id)
+        .await
+        .expect("the node stays editable under Ticket");
+}
+
+#[tokio::test]
+async fn test_extends_retarget_checks_ancestor_fields_on_grandchild_instances() {
+    let (svc, _tmp) = create_test_service().await;
+    handle_create_schema(&svc, json!({ "name": "Alpha", "fields": [] }))
+        .await
+        .unwrap();
+    // Ticket declares `points`; Mid sits between it and the re-targeted Bug,
+    // and the value lives on an instance of Bug's own subtype.
+    create_ticket_with_string_points(&svc).await;
+    for (name, parent) in [("Mid", "ticket"), ("Bug", "mid"), ("Crit", "bug")] {
+        handle_create_schema(
+            &svc,
+            json!({ "name": name, "extends": parent, "fields": [] }),
+        )
+        .await
+        .unwrap_or_else(|e| panic!("{name} extends {parent}: {e}"));
+    }
+    create_node_with_points(&svc, "crit", json!("large")).await;
+
+    handle_update_schema(&svc, json!({ "schema_id": "bug", "extends": "alpha" }))
+        .await
+        .expect("re-target to Alpha");
+    handle_update_schema(
+        &svc,
+        json!({
+            "schema_id": "ticket",
+            "remove_fields": ["points"],
+            "add_fields": [number_points()]
+        }),
+    )
+    .await
+    .expect("the crit node is out of Ticket's scope");
+
+    let result = handle_update_schema(&svc, json!({ "schema_id": "bug", "extends": "mid" })).await;
+    expect_conflict(result, "number", 1);
+}
+
+#[tokio::test]
+async fn test_required_field_without_default_rejected_over_nodes_lacking_it() {
+    let (svc, _tmp) = create_test_service().await;
+    create_ticket_with_string_points(&svc).await;
+    create_node_with_points(&svc, "ticket", json!("large")).await;
+
+    let required = |default: Option<Value>| {
+        let mut field = json!({
+            "name": "estimate", "type": "number", "protection": "user", "indexed": false,
+            "required": true
+        });
+        if let Some(default) = default {
+            field["default"] = default;
+        }
+        field
+    };
+
+    let msg = handle_update_schema(
+        &svc,
+        json!({ "schema_id": "ticket", "add_fields": [required(None)] }),
+    )
+    .await
+    .expect_err("every existing node lacks the new required field")
+    .to_string();
+    assert!(
+        msg.contains("required field 'estimate'") && msg.contains("1 existing node has"),
+        "{msg}"
+    );
+
+    handle_update_schema(
+        &svc,
+        json!({ "schema_id": "ticket", "add_fields": [required(Some(json!(1)))] }),
+    )
+    .await
+    .expect("a default covers nodes lacking the field");
+
+    // A re-target onto a parent declaring a required field is held to the
+    // same rule.
+    handle_create_schema(
+        &svc,
+        json!({
+            "name": "Sized",
+            "fields": [{
+                "name": "size", "type": "string", "protection": "user", "indexed": false,
+                "required": true
+            }]
+        }),
+    )
+    .await
+    .unwrap();
+    let msg = handle_update_schema(&svc, json!({ "schema_id": "ticket", "extends": "sized" }))
+        .await
+        .expect_err("the ticket node has no size")
+        .to_string();
+    assert!(msg.contains("required field 'size'"), "{msg}");
+}

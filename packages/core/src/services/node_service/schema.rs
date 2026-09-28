@@ -771,28 +771,32 @@ impl NodeService {
         ))
     }
 
-    /// Refuse to declare `fields` on `schema_id` while existing instances — of
-    /// the type and of every subtype extending it — hold a value under one of
-    /// those names that the declaration rejects.
+    /// Refuse to bring `fields`, declared by `owner`, into force on the
+    /// instances of `scan_root` (and of every subtype extending it) while one
+    /// of them holds a value under one of those names that the declaration
+    /// rejects. `owner` is `scan_root` itself or one of its ancestors.
     ///
     /// Declaring a name doesn't touch the values already stored under it:
-    /// `remove_fields` drops only the declaration, and a rename moves only
-    /// the rows holding its source name. Re-adding a name with a different
-    /// type, as an enum whose values exclude a stored one, or renaming onto a
-    /// name with leftover values would otherwise leave every such node
-    /// failing [`Self::validate_node_with_fields`] on any later write,
-    /// including a content-only one. Values are resolved the way that
-    /// validator resolves them and judged by the same
-    /// [`Self::check_field_value`], so the two can't disagree.
-    ///
-    /// Not covered: re-targeting `extends` onto a parent a node's type was
-    /// retyped away from, which can bring a dormant bucket back into scope.
+    /// `remove_fields` drops only the declaration, a rename moves only the
+    /// rows holding its source name, and an `extends` re-target brings the
+    /// new parent's buckets into scope as they are — including a bucket left
+    /// from an earlier parent or a retype. Re-adding a name with a different
+    /// type, as an enum whose values exclude a stored one, renaming onto a
+    /// name with leftover values, or re-parenting onto such a bucket would
+    /// otherwise leave every such node failing
+    /// [`Self::validate_node_with_fields`] on any later write, including a
+    /// content-only one. So would bringing a `required` field with no default
+    /// into force on nodes that don't hold it. Values are resolved the way
+    /// that validator resolves them and judged by the same
+    /// [`Self::check_field_value`] and presence rule, so the two can't
+    /// disagree.
     ///
     /// Refusing is preferred over clearing the values: that would be a silent
     /// destructive write across every instance.
     pub(crate) async fn reject_incompatible_instance_values(
         tx: &NodeServiceTx<'_>,
-        schema_id: &str,
+        scan_root: &str,
+        owner: &str,
         fields: &[crate::models::schema::SchemaField],
     ) -> Result<(), NodeServiceError> {
         if fields.is_empty() {
@@ -801,32 +805,89 @@ impl NodeService {
         let names: Vec<String> = fields.iter().map(|f| f.name.clone()).collect();
         let stored = crate::db::SqliteStore::get_effective_field_values_in_tx(
             tx.store_tx(),
-            schema_id,
+            scan_root,
+            owner,
             &names,
         )
         .await
         .map_err(NodeServiceError::from_store)?;
 
         for field in fields {
-            let mut conflicts = 0usize;
-            let mut example = None;
-            for (_, value) in stored.iter().filter(|(name, _)| *name == field.name) {
-                if let Err(reason) = Self::check_field_value(field, value) {
-                    conflicts += 1;
-                    example.get_or_insert(reason);
+            let at_field = || stored.iter().filter(|v| v.field == field.name);
+
+            // A required field with no default rejects every node lacking it.
+            if field.required.unwrap_or(false) && field.default.is_none() {
+                let missing: Vec<_> = at_field().filter(|v| v.value.is_none()).collect();
+                if let Some(first) = missing.first() {
+                    let set = if owner == first.node_type {
+                        format!("{{\"{owner}\": {{\"{}\": <value>}}}}", field.name)
+                    } else {
+                        format!(
+                            "{{\"{}\": {{}}, \"{owner}\": {{\"{}\": <value>}}}}",
+                            first.node_type, field.name
+                        )
+                    };
+                    return Err(NodeServiceError::invalid_update(format!(
+                        "Cannot apply required field '{}' as type '{}' (declared by schema '{}') \
+                         to '{}' instances: {} existing {} no value for it and it has no \
+                         default (e.g. node '{}'). Give the field a default, declare it not \
+                         required, or set it on each such node by updating it with properties \
+                         {}, then retry.",
+                        field.name,
+                        field.field_type,
+                        owner,
+                        scan_root,
+                        missing.len(),
+                        if missing.len() == 1 {
+                            "node has"
+                        } else {
+                            "nodes have"
+                        },
+                        first.node_id,
+                        set
+                    )));
                 }
             }
-            if let Some(example) = example {
-                let nodes = if conflicts == 1 {
-                    "node holds"
+
+            let rejected: Vec<_> = at_field()
+                .filter_map(|v| {
+                    let reason = Self::check_field_value(field, v.value.as_ref()?).err()?;
+                    Some((v, reason))
+                })
+                .collect();
+            if let Some((first, reason)) = rejected.first() {
+                // The value may sit in a bucket normal reads don't show (left
+                // from an earlier parent or a retype), so name the exact
+                // payload that clears it: an update deep-merges per bucket,
+                // and carrying the node's own type key keeps the input in
+                // storage shape rather than read as flat fields.
+                let bucket = first.bucket.as_deref().unwrap_or(owner);
+                let clear = if bucket == first.node_type {
+                    format!("{{\"{bucket}\": {{\"{}\": null}}}}", field.name)
                 } else {
-                    "nodes hold"
+                    format!(
+                        "{{\"{}\": {{}}, \"{bucket}\": {{\"{}\": null}}}}",
+                        first.node_type, field.name
+                    )
                 };
                 return Err(NodeServiceError::invalid_update(format!(
-                    "Cannot declare field '{}' as type '{}' on schema '{}': {} existing {} a \
-                     value under that name the declaration rejects (e.g. {}). Clear those \
-                     values (set '{}' to null) or convert them to fit, then retry.",
-                    field.name, field.field_type, schema_id, conflicts, nodes, example, field.name
+                    "Cannot apply field '{}' as type '{}' (declared by schema '{}') to '{}' \
+                     instances: {} existing {} a value under that name the declaration rejects \
+                     (e.g. node '{}': {}). Convert each value to fit, or clear it by updating \
+                     the node with properties {}, then retry.",
+                    field.name,
+                    field.field_type,
+                    owner,
+                    scan_root,
+                    rejected.len(),
+                    if rejected.len() == 1 {
+                        "node holds"
+                    } else {
+                        "nodes hold"
+                    },
+                    first.node_id,
+                    reason,
+                    clear
                 )));
             }
         }
@@ -912,13 +973,21 @@ impl NodeService {
                     // from a field of that name removed earlier — which the
                     // renamed declaration must accept. Checked after the
                     // migration, on this transaction's view, so it judges
-                    // exactly the values the rename leaves behind.
+                    // exactly the values the rename leaves behind. Presence
+                    // is not re-judged: a rename moves a value, never removes
+                    // one, so a node lacking a required field lacked it
+                    // before too, and refusing over it would block the rename
+                    // without protecting anything.
                     let renamed: Vec<_> = updated_fields
                         .iter()
                         .filter(|f| f.name == to)
-                        .cloned()
+                        .map(|f| crate::models::schema::SchemaField {
+                            required: None,
+                            ..f.clone()
+                        })
                         .collect();
-                    Self::reject_incompatible_instance_values(tx, &type_id, &renamed).await?;
+                    Self::reject_incompatible_instance_values(tx, &type_id, &type_id, &renamed)
+                        .await?;
 
                     // Declarations live in the relationship table, not in
                     // properties — the rebuilt properties carry fields only.
