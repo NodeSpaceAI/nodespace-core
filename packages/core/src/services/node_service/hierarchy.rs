@@ -899,8 +899,9 @@ impl NodeService {
 
     /// Create parent-child edge atomically with sibling positioning
     ///
-    /// Used during node creation to establish parent relationship while preserving
-    /// sibling ordering. This is separate from move_node() which is for moving existing nodes.
+    /// Replaces any existing parent, so this can reparent; a reparent emits
+    /// `RelationshipDeleted` for the replaced edge after `RelationshipCreated`
+    /// for the new one, the same event shape `move_node` produces.
     ///
     /// # Arguments
     ///

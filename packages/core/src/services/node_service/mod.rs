@@ -7902,17 +7902,18 @@ mod tests {
         let mut push_rx = service.subscribe_for_push();
 
         // Only the has_child edge events for `child`, in emission order.
+        let child_thing = crate::db::events::node_thing(&child);
         let child_edge_events = |rx: &mut broadcast::Receiver<crate::db::events::EventEnvelope>| {
             let mut seen = Vec::new();
             while let Ok(env) = rx.try_recv() {
                 match env.event {
                     DomainEvent::RelationshipCreated { relationship }
-                        if relationship.to_id.ends_with(&child) =>
+                        if relationship.to_id == child_thing =>
                     {
                         seen.push(format!("created:{}", relationship.from_id));
                     }
                     DomainEvent::RelationshipDeleted { from_id, to_id, .. }
-                        if to_id.ends_with(&child) =>
+                        if to_id == child_thing =>
                     {
                         seen.push(format!("deleted:{}", from_id));
                     }
@@ -7946,11 +7947,11 @@ mod tests {
         let reparent = child_edge_events(&mut ui_rx);
         assert_eq!(reparent.len(), 2, "got {reparent:?}");
         assert!(
-            reparent[0].starts_with("created:") && reparent[0].ends_with(&parent_b),
+            reparent[0] == format!("created:{}", crate::db::events::node_thing(&parent_b)),
             "new-parent edge must come first, got {reparent:?}"
         );
         assert!(
-            reparent[1].starts_with("deleted:") && reparent[1].ends_with(&parent_a),
+            reparent[1] == format!("deleted:{}", crate::db::events::node_thing(&parent_a)),
             "former-parent edge delete must follow, got {reparent:?}"
         );
 
