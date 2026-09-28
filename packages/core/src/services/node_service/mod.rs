@@ -5171,6 +5171,151 @@ mod tests {
         assert_eq!(node.content, "Will not change");
     }
 
+    /// The batched cold-pull/reconnect apply path (`nodespaced-pro`'s
+    /// `apply.rs`) routes creates through `bulk_create`, and — because it
+    /// doesn't know how to render a schema `title_template` itself —
+    /// supplies a generic, content-derived placeholder title for every row,
+    /// which is blank for a templated type (its `content` must be empty).
+    /// `bulk_create` used to persist that placeholder verbatim; it must
+    /// instead derive the real title the same way `create_node` does,
+    /// overwriting whatever was supplied. An untemplated type's
+    /// caller-supplied title, by contrast, is legitimate and must be kept —
+    /// exactly `insert_node_in_tx_no_invariant_dispatch`'s
+    /// `if node.title.is_none()` rule — and an untemplated type with no
+    /// supplied title still gets one derived from content, as a root
+    /// (`bulk_create` writes no `has_child` edge itself, so every row is a
+    /// root at write time, same as `create_node`'s own `is_root: true`).
+    #[tokio::test]
+    async fn bulk_create_computes_title_for_a_templated_type_and_preserves_a_supplied_one_otherwise(
+    ) {
+        let (service, _temp) = create_test_service().await;
+
+        let mut templated = Node::new(
+            "person".to_string(),
+            String::new(),
+            json!({ "person": { "first_name": "Ada", "last_name": "Lovelace" } }),
+        );
+        templated.title = Some(String::new());
+        let templated_id = templated.id.clone();
+
+        let mut with_caller_title = Node::new("text".to_string(), "ignored".to_string(), json!({}));
+        with_caller_title.title = Some("Caller-supplied title".to_string());
+        let with_caller_title_id = with_caller_title.id.clone();
+
+        let mut untitled = Node::new("text".to_string(), "**Some** name".to_string(), json!({}));
+        untitled.title = None;
+        let untitled_id = untitled.id.clone();
+
+        service
+            .bulk_create(vec![templated, with_caller_title, untitled])
+            .await
+            .unwrap();
+
+        assert_eq!(
+            service
+                .get_node(&templated_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .title,
+            Some("Ada Lovelace".to_string()),
+            "a templated type's title must be rendered from the template, not the supplied \
+             placeholder"
+        );
+        assert_eq!(
+            service
+                .get_node(&with_caller_title_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .title,
+            Some("Caller-supplied title".to_string()),
+            "an untemplated type's caller-supplied title must be preserved verbatim"
+        );
+        assert_eq!(
+            service.get_node(&untitled_id).await.unwrap().unwrap().title,
+            Some("Some name".to_string()),
+            "an untemplated type with no supplied title still derives one from content, as a root"
+        );
+    }
+
+    /// `bulk_update` must re-render a `title_template` when a field the
+    /// template reads changes — the same trigger
+    /// `update_with_version_check_returning_node_in_tx` uses
+    /// (content/node_type/properties changed) — so a batched sync-apply
+    /// update stays title-searchable exactly like a live per-row edit.
+    #[tokio::test]
+    async fn bulk_update_recomputes_a_templated_title_when_a_template_field_changes() {
+        let (service, _temp) = create_test_service().await;
+
+        let node = Node::new(
+            "person".to_string(),
+            String::new(),
+            json!({ "person": { "first_name": "Ada", "last_name": "Lovelace" } }),
+        );
+        let id = service.create_node(node).await.unwrap();
+        assert_eq!(
+            service.get_node(&id).await.unwrap().unwrap().title,
+            Some("Ada Lovelace".to_string())
+        );
+
+        service
+            .bulk_update(vec![(
+                id.clone(),
+                NodeUpdate::new().with_properties(json!({ "last_name": "King" })),
+            )])
+            .await
+            .unwrap();
+
+        let updated = service.get_node(&id).await.unwrap().unwrap();
+        assert_eq!(
+            updated.title,
+            Some("Ada King".to_string()),
+            "a bulk_update touching a templated field must re-render the title, matching \
+             update_node"
+        );
+    }
+
+    /// An untemplated type's `bulk_update` title behavior is unchanged: the
+    /// title re-derives from content on a content change (matching
+    /// `update_node`), and — the other half of "don't recompute blindly" —
+    /// is left untouched by a change the template/content rule can't see
+    /// (a lifecycle-only update).
+    #[tokio::test]
+    async fn bulk_update_leaves_an_untemplated_types_title_behavior_unchanged() {
+        let (service, _temp) = create_test_service().await;
+
+        let node = Node::new("text".to_string(), "Original".to_string(), json!({}));
+        let id = service.create_node(node).await.unwrap();
+        assert_eq!(
+            service.get_node(&id).await.unwrap().unwrap().title,
+            Some("Original".to_string())
+        );
+
+        service
+            .bulk_update(vec![(
+                id.clone(),
+                NodeUpdate::new().with_content("Renamed".to_string()),
+            )])
+            .await
+            .unwrap();
+        let after_content = service.get_node(&id).await.unwrap().unwrap();
+        assert_eq!(after_content.title, Some("Renamed".to_string()));
+
+        service
+            .bulk_update(vec![(
+                id.clone(),
+                NodeUpdate::new().with_lifecycle_status("archived".to_string()),
+            )])
+            .await
+            .unwrap();
+        let after_lifecycle = service.get_node(&id).await.unwrap().unwrap();
+        assert_eq!(
+            after_lifecycle.title, after_content.title,
+            "a lifecycle-only bulk_update must not touch the title"
+        );
+    }
+
     #[tokio::test]
     async fn test_bulk_delete() {
         let (service, _temp) = create_test_service().await;
