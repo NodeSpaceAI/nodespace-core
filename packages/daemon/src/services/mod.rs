@@ -18,8 +18,8 @@ pub mod settings_service;
 
 pub use agent_session_service::AgentSessionHandler;
 pub use assembly::{
-    build_database_services, build_shared_services, DatabaseServices, SharedContext,
-    SharedServices, SubtreeGateFactory,
+    build_database_services, build_shared_services, shared_model_load_in_flight, DatabaseServices,
+    SharedContext, SharedServices, SubtreeGateFactory,
 };
 pub use database_manager::{
     DatabaseEntry, DatabaseId, DatabaseListing, DatabaseManager, DatabaseStatus, Registry,

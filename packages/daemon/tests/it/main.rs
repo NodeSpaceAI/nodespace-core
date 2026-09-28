@@ -18,3 +18,4 @@ mod import_round_trip;
 mod per_db_compute;
 mod per_db_subtree_gate;
 mod scenario6_update_node_properties;
+mod sigterm_during_model_load;

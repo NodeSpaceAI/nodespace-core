@@ -497,6 +497,40 @@ fn resolve_model_path() -> Option<std::path::PathBuf> {
     Some(p)
 }
 
+/// Whether the shared embedding model is still loading. See
+/// [`shared_model_load_in_flight`].
+static SHARED_MODEL_LOAD_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
+
+/// Whether the shared embedding model's native load is still running.
+///
+/// The load runs inside `spawn_blocking`, which cannot be cancelled, and
+/// dropping a tokio runtime waits for every in-flight blocking task. A daemon
+/// told to stop mid-load would otherwise stay alive until the load finished,
+/// seconds after its graceful shutdown had already completed. `main` checks
+/// this once shutdown is done and, when it is set, ends the process without
+/// waiting on the load: the load's only output is a `watch` send nobody will
+/// read.
+pub fn shared_model_load_in_flight() -> bool {
+    SHARED_MODEL_LOAD_IN_FLIGHT.load(Ordering::SeqCst)
+}
+
+/// Marks the shared model load in flight until dropped, so the flag clears
+/// however the load ends: success, error, or a panic unwinding the closure.
+struct SharedModelLoadGuard;
+
+impl SharedModelLoadGuard {
+    fn start() -> Self {
+        SHARED_MODEL_LOAD_IN_FLIGHT.store(true, Ordering::SeqCst);
+        Self
+    }
+}
+
+impl Drop for SharedModelLoadGuard {
+    fn drop(&mut self) {
+        SHARED_MODEL_LOAD_IN_FLIGHT.store(false, Ordering::SeqCst);
+    }
+}
+
 /// Background task: load the NLP embedding model once for the whole process and
 /// publish it over `model_tx`. Non-fatal — on failure the channel simply never
 /// yields a model and embeddings stay disabled everywhere, but `load_failed`
@@ -517,7 +551,11 @@ async fn load_shared_embedding_model_bg(
 
     // `EmbeddingService::new` + `initialize` are synchronous CPU/IO-bound operations
     // (~6-8s). Use spawn_blocking so they don't park a tokio worker thread.
+    // Flagged in flight before the spawn and cleared by the closure's own guard, so
+    // the flag tracks the native load itself rather than this task's await.
+    let in_flight = SharedModelLoadGuard::start();
     let nlp = match tokio::task::spawn_blocking(move || {
+        let _in_flight = in_flight;
         let mut svc = EmbeddingService::new(config).map_err(|e| {
             tracing::warn!(error = %e, "Failed to create NLP engine — semantic search disabled");
             e
