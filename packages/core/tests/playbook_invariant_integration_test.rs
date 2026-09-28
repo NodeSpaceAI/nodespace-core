@@ -3379,12 +3379,12 @@ async fn contradictory_invariants_ping_pong(initial_properties: serde_json::Valu
         );
         stable_polls = if now == last { stable_polls + 1 } else { 0 };
         last = now;
-        if stable_polls >= 10 {
+        if stable_polls >= 20 {
             break;
         }
     }
     assert!(
-        stable_polls >= 10,
+        stable_polls >= 20,
         "contradictory invariants on two devices must not ping-pong forever (versions still moving: {last:?})"
     );
 
@@ -3604,12 +3604,12 @@ async fn cycle_through_an_in_transaction_invariant_hop_stops_at_the_limit() -> R
         let now = versions(&device_a, &device_b).await?;
         stable_polls = if now == last { stable_polls + 1 } else { 0 };
         last = now;
-        if stable_polls >= 10 {
+        if stable_polls >= 20 {
             break;
         }
     }
     assert!(
-        stable_polls >= 10,
+        stable_polls >= 20,
         "a cross-device cycle through an in-transaction invariant hop must terminate \
          (versions still moving: {last:?})"
     );
