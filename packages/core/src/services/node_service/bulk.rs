@@ -141,6 +141,10 @@ impl NodeService {
         // what the caller supplied, not filling in what they didn't.
         let mut schemas: std::collections::HashMap<String, Option<crate::models::SchemaNode>> =
             std::collections::HashMap::new();
+        let mut chain_fields: std::collections::HashMap<
+            String,
+            (Vec<crate::models::SchemaField>, Vec<String>),
+        > = std::collections::HashMap::new();
         for node in &mut nodes {
             // Step 1: Core behavior validation
             self.behaviors.validate_node(node)?;
@@ -159,6 +163,42 @@ impl NodeService {
             // Step 2: Chain-aware schema validation + re-bucketing
             if node.node_type != "schema" {
                 self.rebucket_and_validate(node, false).await?;
+            }
+
+            // Step 3: Title. An untemplated type's caller-supplied title is
+            // honored as given, computed only when absent — matching the
+            // single-node create path's own `if node.title.is_none()` rule
+            // (`insert_node_in_tx_no_invariant_dispatch`). A templated
+            // type's title, though, is ALWAYS (re)derived here, even when
+            // one was supplied — a strictly broader rule than the
+            // single-node path's, which gets away with the plain
+            // `is_none()` check only because its one real caller always
+            // sends `title: None` for every row. A *batched* sync-apply
+            // create can't make that same assumption — it sends a non-null
+            // placeholder for every row, including templated ones — so an
+            // `is_none()`-only check here would silently miss exactly the
+            // case this method exists to fix. A templated type's title is
+            // never legitimately caller-controlled anyway — its `content`
+            // must already be empty (the rule enforced above) — so
+            // overriding a non-null placeholder is correct, not just
+            // permissive. Read AFTER `rebucket_and_validate` so a templated
+            // interpolation sees the final, chain-bucketed property layout,
+            // not the pre-rebucket one. `bulk_create` writes no `has_child`
+            // edge itself — a hierarchy import goes through
+            // `bulk_create_hierarchy*` instead — so every row here is a
+            // root at write time, the same treatment `create_node`'s own
+            // `is_root: true` gives a plain, non-hierarchical create.
+            let schema = schemas.get(&node.node_type).and_then(Option::as_ref);
+            let has_template = schema.and_then(|s| s.title_template.as_ref()).is_some();
+            if has_template && !chain_fields.contains_key(&node.node_type) {
+                let (fields, _owners, chain) = self.resolve_field_owners(&node.node_type).await?;
+                chain_fields.insert(node.node_type.clone(), (fields, chain));
+            }
+            if has_template || node.title.is_none() {
+                let new_title = self
+                    .derive_title(node, true, schema, chain_fields.get(&node.node_type))
+                    .await?;
+                node.title = new_title;
             }
         }
 
@@ -796,11 +836,13 @@ impl NodeService {
 
             let mut updated = existing.clone();
             let mut node_type_changed = false;
+            let mut content_changed = false;
             if let Some(node_type) = &update.node_type {
                 node_type_changed = updated.node_type != *node_type;
                 updated.node_type = node_type.clone();
             }
             if let Some(content) = &update.content {
+                content_changed = updated.content != *content;
                 updated.content = content.clone();
             }
 
@@ -815,7 +857,9 @@ impl NodeService {
             // `updated.properties` may end up mutated either way.
             let old_props = existing.properties.clone();
 
+            let mut properties_changed = false;
             if let Some(properties) = &update.properties {
+                properties_changed = true;
                 if updated.node_type == "schema" {
                     // Schema nodes use a flat (non-namespaced) format — deep-merge as-is.
                     Self::deep_merge_namespaced_properties(
@@ -880,6 +924,22 @@ impl NodeService {
             let changed_properties =
                 super::compute_property_changes(&old_props, &updated.properties);
 
+            // Recompute the title exactly when content, type, or properties
+            // change — the same trigger the single-node update paths use
+            // (`update_with_version_check_returning_node_in_tx`) — so a
+            // batched sync-apply update re-renders a `title_template` the
+            // same way a live per-row edit does. This intentionally does
+            // NOT read the caller's own `update.title`: no NodeService-level
+            // update path honors a caller-supplied title (only the
+            // lower-level `SqliteStore::update_node` does), so bulk_update
+            // doesn't either — the previous verbatim passthrough had no
+            // per-row analog and was the actual bug.
+            let title_update = if content_changed || node_type_changed || properties_changed {
+                Some(self.compute_title(&updated, None).await?)
+            } else {
+                None
+            };
+
             // Persist the caller's intent for type/content/title/lifecycle. Properties
             // are always re-persisted with the current (possibly rebucketed) value —
             // not just when the caller's update touched them — so a bucket move made
@@ -895,17 +955,19 @@ impl NodeService {
                     node_type: update.node_type.clone(),
                     content: update.content.clone(),
                     properties: Some(updated.properties.clone()),
-                    title: update.title.clone(),
+                    title: title_update.clone(),
                     lifecycle_status: update.lifecycle_status.clone(),
                 },
             ));
             // The node as the store will hold it once this update lands —
             // what an invariant rule's condition must read, the same as the
-            // single-node update path's store-returned node.
+            // single-node update path's store-returned node. Reflects the
+            // recomputed title too, so a rule reading `title` sees the final
+            // rendered value, not the pre-update one.
             updated.version = existing.version + 1;
             updated.modified_at = chrono::Utc::now();
-            if let Some(title) = &update.title {
-                updated.title = title.clone();
+            if let Some(new_title) = &title_update {
+                updated.title = new_title.clone();
             }
             if let Some(status) = &update.lifecycle_status {
                 updated.lifecycle_status = status.clone();
