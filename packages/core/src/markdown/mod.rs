@@ -502,8 +502,10 @@ pub fn prepare_nodes_from_markdown(
     // Track indentation-based hierarchy (node_id, indent_level)
     let mut indent_stack: Vec<(String, usize)> = Vec::new();
 
-    // Track last text paragraph for bullet/ordered-list hierarchy
-    let mut last_text_node: Option<(String, usize)> = None;
+    // Paragraphs that can introduce a bullet/ordered list, innermost last,
+    // each with its indent: a list item's indented continuation paragraph
+    // sits above the paragraph that introduced the list itself.
+    let mut text_stack: Vec<(String, usize)> = Vec::new();
 
     // Track last content node for code-block/quote-block hierarchy
     let mut last_content_node: Option<String> = None;
@@ -534,13 +536,13 @@ pub fn prepare_nodes_from_markdown(
         };
 
         // Detect node type and extract content
-        let (node_type, content, heading_level, is_multiline, properties) =
+        let (node_type, content, heading_level, properties) =
             if let Some(level) = detect_heading(content_line) {
-                ("header", content_line.to_string(), Some(level), false, None)
+                ("header", content_line.to_string(), Some(level), None)
             } else if is_checkbox_line(content_line) {
                 // Checkbox node - pure content node, state encoded in content string
                 // Content preserved as full markdown line ("- [ ] text" or "- [x] text")
-                ("checkbox", content_line.to_string(), None, false, None)
+                ("checkbox", content_line.to_string(), None, None)
             } else if content_line.starts_with("```") {
                 // Code block
                 let mut code_lines = vec![content_line];
@@ -553,7 +555,7 @@ pub fn prepare_nodes_from_markdown(
                     }
                     i += 1;
                 }
-                ("code-block", code_lines.join("\n"), None, true, None)
+                ("code-block", code_lines.join("\n"), None, None)
             } else if content_line.starts_with("> ") || content_line == ">" {
                 // Quote block - collect consecutive quote lines including empty continuation lines
                 // Empty quote continuation lines are just ">" without trailing space
@@ -567,7 +569,7 @@ pub fn prepare_nodes_from_markdown(
                         break;
                     }
                 }
-                ("quote-block", quote_lines.join("\n"), None, true, None)
+                ("quote-block", quote_lines.join("\n"), None, None)
             } else if let Some(num_end) = detect_ordered_list(content_line) {
                 // Ordered list
                 let first_item_content = &content_line[num_end + 2..];
@@ -587,15 +589,9 @@ pub fn prepare_nodes_from_markdown(
                         break;
                     }
                 }
-                ("ordered-list", list_items.join("\n"), None, true, None)
+                ("ordered-list", list_items.join("\n"), None, None)
             } else if is_horizontal_rule(content_line) {
-                (
-                    "horizontal-line",
-                    content_line.to_string(),
-                    None,
-                    false,
-                    None,
-                )
+                ("horizontal-line", content_line.to_string(), None, None)
             } else if is_table_start(content_line)
                 && i + 1 < lines.len()
                 && is_table_delimiter(lines[i + 1].trim_start())
@@ -615,7 +611,7 @@ pub fn prepare_nodes_from_markdown(
                         break;
                     }
                 }
-                ("table", table_lines.join("\n"), None, true, None)
+                ("table", table_lines.join("\n"), None, None)
             } else {
                 // Text paragraph
                 let mut text_lines = vec![content_line];
@@ -644,13 +640,7 @@ pub fn prepare_nodes_from_markdown(
                     i = j;
                     j += 1;
                 }
-                (
-                    "text",
-                    text_lines.join("\n"),
-                    None,
-                    text_lines.len() > 1,
-                    None,
-                )
+                ("text", text_lines.join("\n"), None, None)
             };
 
         // Pop indent stack for same or lower indentation
@@ -662,6 +652,16 @@ pub fn prepare_nodes_from_markdown(
             }
         }
 
+        // A paragraph indented deeper than this line (a list item's
+        // continuation) cannot introduce what follows at a shallower indent.
+        while text_stack
+            .last()
+            .is_some_and(|(_, text_indent)| *text_indent > indent_level)
+        {
+            text_stack.pop();
+        }
+        let last_text_id = text_stack.last().map(|(id, _)| id.clone());
+
         // Determine parent based on hierarchy rules
         let parent_id = if node_type == "horizontal-line" {
             // Horizontal rules are document-level dividers — always place at root level
@@ -670,24 +670,18 @@ pub fn prepare_nodes_from_markdown(
             last_content_node
                 .clone()
                 .or_else(|| context.current_parent_id())
-        } else if is_bullet && !is_multiline {
+        } else if is_bullet {
             if indent_level > 0 {
                 indent_stack
                     .last()
                     .map(|(id, _)| id.clone())
-                    .or_else(|| last_text_node.as_ref().map(|(id, _)| id.clone()))
+                    .or(last_text_id)
                     .or_else(|| context.current_parent_id())
             } else {
-                last_text_node
-                    .as_ref()
-                    .map(|(id, _)| id.clone())
-                    .or_else(|| context.current_parent_id())
+                last_text_id.or_else(|| context.current_parent_id())
             }
         } else if node_type == "ordered-list" {
-            last_text_node
-                .as_ref()
-                .map(|(id, _)| id.clone())
-                .or_else(|| context.current_parent_id())
+            last_text_id.or_else(|| context.current_parent_id())
         } else if let Some(h_level) = heading_level {
             context.pop_headings_for_level(h_level);
             indent_stack
@@ -729,10 +723,18 @@ pub fn prepare_nodes_from_markdown(
             context.push_heading(node_id.clone(), h_level);
         }
 
-        if node_type == "text" && !is_multiline && !is_bullet {
-            last_text_node = Some((node_id.clone(), indent_level));
+        if node_type == "text" && !is_bullet {
+            // Already popped to this indent: a same-indent paragraph replaces
+            // its predecessor, a deeper one stacks above it.
+            if text_stack
+                .last()
+                .is_some_and(|(_, text_indent)| *text_indent == indent_level)
+            {
+                text_stack.pop();
+            }
+            text_stack.push((node_id.clone(), indent_level));
         } else if node_type != "text" {
-            last_text_node = None;
+            text_stack.clear();
         }
 
         if node_type == "header" || (node_type == "text" && !is_bullet) {

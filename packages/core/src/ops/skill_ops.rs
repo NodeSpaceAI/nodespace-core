@@ -4,7 +4,7 @@
 //! tool and the MCP `find_skills` handler exposed to external agents.
 
 use crate::models::SkillNode;
-use crate::services::{flatten_subtree_content, NodeEmbeddingService, NodeService};
+use crate::services::{render_subtree_markdown, NodeEmbeddingService, NodeService};
 use serde_json::{json, Value};
 use std::sync::Arc;
 
@@ -81,12 +81,12 @@ pub struct FindSkillsOutput {
     pub total_results: usize,
 }
 
-/// Render a node's child subtree as flat markdown, via the shared
-/// ADR-057 subtree-render utility (`flatten_subtree_content`).
+/// Render a node's child subtree as markdown, via the shared
+/// ADR-057 subtree-render utility (`render_subtree_markdown`).
 ///
 /// Fetches the full subtree in a single DB query, then walks it depth-first
-/// (root children first, their children next) and joins each node's content
-/// with a blank line separator. `root_id` itself is excluded — callers
+/// (root children first, their children next), restoring list markers the
+/// import stored as structure. `root_id` itself is excluded — callers
 /// already have whatever flat metadata (name, `description` property) lives
 /// directly on the root node.
 ///
@@ -110,10 +110,10 @@ async fn render_node_subtree(node_service: &NodeService, root_id: &str) -> Strin
         }
     };
 
-    flatten_subtree_content(root_id, &node_map, &adjacency_list).join("\n\n")
+    render_subtree_markdown(root_id, &node_map, &adjacency_list)
 }
 
-/// Render a skill node's child subtree as flat markdown — the actual
+/// Render a skill node's child subtree as markdown — the actual
 /// procedure the model must follow.
 ///
 /// One `get_subtree_data` query per skill. Acceptable under
@@ -123,7 +123,7 @@ async fn render_skill_instructions(node_service: &NodeService, skill_id: &str) -
     render_node_subtree(node_service, skill_id).await
 }
 
-/// Render a schema node's own description subtree as flat markdown.
+/// Render a schema node's own description subtree as markdown.
 ///
 /// A schema's description is authored as markdown and stored as a child
 /// subtree (parsed into text/header nodes), not as a flat property — see
@@ -1166,15 +1166,15 @@ mod tests {
     }
 
     #[test]
-    fn flatten_subtree_content_empty_skill() {
+    fn render_subtree_markdown_empty_skill() {
         let node_map: HashMap<String, Node> = HashMap::new();
         let adjacency_list: HashMap<String, Vec<String>> = HashMap::new();
-        let parts = flatten_subtree_content("skill-root", &node_map, &adjacency_list);
-        assert!(parts.is_empty());
+        let rendered = render_subtree_markdown("skill-root", &node_map, &adjacency_list);
+        assert!(rendered.is_empty());
     }
 
     #[test]
-    fn flatten_subtree_content_flat_children() {
+    fn render_subtree_markdown_flat_children() {
         let mut node_map = HashMap::new();
         node_map.insert("c1".to_string(), make_node("c1", "Step one"));
         node_map.insert("c2".to_string(), make_node("c2", "Step two"));
@@ -1183,31 +1183,68 @@ mod tests {
             "skill-root".to_string(),
             vec!["c1".to_string(), "c2".to_string()],
         );
-        let parts = flatten_subtree_content("skill-root", &node_map, &adjacency_list);
-        assert_eq!(parts, vec!["Step one", "Step two"]);
+        let rendered = render_subtree_markdown("skill-root", &node_map, &adjacency_list);
+        assert_eq!(rendered, "Step one\n\nStep two");
     }
 
     #[test]
-    fn flatten_subtree_content_nested_children() {
+    fn render_subtree_markdown_restores_tight_list_under_its_paragraph() {
         let mut node_map = HashMap::new();
-        node_map.insert("c1".to_string(), make_node("c1", "Section header"));
-        node_map.insert("c1a".to_string(), make_node("c1a", "Sub-step A"));
-        node_map.insert("c2".to_string(), make_node("c2", "Another section"));
+        node_map.insert("p".to_string(), make_node("p", "PARAMETERS:"));
+        node_map.insert("b1".to_string(), make_node("b1", "Use 'collection'"));
+        node_map.insert("b2".to_string(), make_node("b2", "Use 'node_types'"));
+        node_map.insert("next".to_string(), make_node("next", "Next paragraph"));
         let mut adjacency_list: HashMap<String, Vec<String>> = HashMap::new();
         adjacency_list.insert(
             "skill-root".to_string(),
-            vec!["c1".to_string(), "c2".to_string()],
+            vec!["p".to_string(), "next".to_string()],
         );
-        adjacency_list.insert("c1".to_string(), vec!["c1a".to_string()]);
-        let parts = flatten_subtree_content("skill-root", &node_map, &adjacency_list);
+        adjacency_list.insert("p".to_string(), vec!["b1".to_string(), "b2".to_string()]);
+        let rendered = render_subtree_markdown("skill-root", &node_map, &adjacency_list);
         assert_eq!(
-            parts,
-            vec!["Section header", "Sub-step A", "Another section"]
+            rendered,
+            "PARAMETERS:\n\n- Use 'collection'\n- Use 'node_types'\n\nNext paragraph"
         );
     }
 
     #[test]
-    fn flatten_subtree_content_skips_empty_content() {
+    fn render_subtree_markdown_indents_nested_list_items() {
+        let mut node_map = HashMap::new();
+        node_map.insert("p".to_string(), make_node("p", "Intro"));
+        node_map.insert("b1".to_string(), make_node("b1", "Outer"));
+        node_map.insert("b1a".to_string(), make_node("b1a", "Inner"));
+        node_map.insert("b2".to_string(), make_node("b2", "Outer again"));
+        let mut adjacency_list: HashMap<String, Vec<String>> = HashMap::new();
+        adjacency_list.insert("skill-root".to_string(), vec!["p".to_string()]);
+        adjacency_list.insert("p".to_string(), vec!["b1".to_string(), "b2".to_string()]);
+        adjacency_list.insert("b1".to_string(), vec!["b1a".to_string()]);
+        let rendered = render_subtree_markdown("skill-root", &node_map, &adjacency_list);
+        assert_eq!(rendered, "Intro\n\n- Outer\n  - Inner\n- Outer again");
+    }
+
+    #[test]
+    fn render_subtree_markdown_marks_only_text_under_text() {
+        // A header's direct text children are paragraphs, and a code block
+        // attached to a paragraph carries its own fences — neither is a list
+        // item.
+        let mut node_map = HashMap::new();
+        let mut header = make_node("h", "# Guidance");
+        header.node_type = "header".to_string();
+        let mut code = make_node("code", "```\nx\n```");
+        code.node_type = "code-block".to_string();
+        node_map.insert("h".to_string(), header);
+        node_map.insert("p".to_string(), make_node("p", "Example:"));
+        node_map.insert("code".to_string(), code);
+        let mut adjacency_list: HashMap<String, Vec<String>> = HashMap::new();
+        adjacency_list.insert("skill-root".to_string(), vec!["h".to_string()]);
+        adjacency_list.insert("h".to_string(), vec!["p".to_string()]);
+        adjacency_list.insert("p".to_string(), vec!["code".to_string()]);
+        let rendered = render_subtree_markdown("skill-root", &node_map, &adjacency_list);
+        assert_eq!(rendered, "# Guidance\n\nExample:\n\n```\nx\n```");
+    }
+
+    #[test]
+    fn render_subtree_markdown_skips_empty_content() {
         let mut node_map = HashMap::new();
         node_map.insert("c1".to_string(), make_node("c1", ""));
         node_map.insert("c2".to_string(), make_node("c2", "Has content"));
@@ -1216,8 +1253,8 @@ mod tests {
             "skill-root".to_string(),
             vec!["c1".to_string(), "c2".to_string()],
         );
-        let parts = flatten_subtree_content("skill-root", &node_map, &adjacency_list);
-        assert_eq!(parts, vec!["Has content"]);
+        let rendered = render_subtree_markdown("skill-root", &node_map, &adjacency_list);
+        assert_eq!(rendered, "Has content");
     }
 
     #[test]
@@ -1237,24 +1274,6 @@ mod tests {
         assert!(!filter.matches("text", &empty_props, &["text".to_string()]));
         assert!(!filter.matches("schema", &empty_props, &["schema".to_string()]));
         assert!(!filter.matches("ai-chat", &empty_props, &["ai-chat".to_string()]));
-    }
-
-    #[test]
-    fn flatten_subtree_content_join_produces_instructions_string() {
-        // Verify the full flatten_subtree_content → join pipeline that produces the
-        // `instructions` value delivered to the model. A regression in the flatten
-        // logic (e.g. wrong separator, missing DFS step) breaks this test.
-        let mut node_map = HashMap::new();
-        node_map.insert("c1".to_string(), make_node("c1", "Step one"));
-        node_map.insert("c2".to_string(), make_node("c2", "Step two"));
-        let mut adjacency_list: HashMap<String, Vec<String>> = HashMap::new();
-        adjacency_list.insert(
-            "skill-root".to_string(),
-            vec!["c1".to_string(), "c2".to_string()],
-        );
-        let instructions =
-            flatten_subtree_content("skill-root", &node_map, &adjacency_list).join("\n\n");
-        assert_eq!(instructions, "Step one\n\nStep two");
     }
 
     // -------------------------------------------------------------------
