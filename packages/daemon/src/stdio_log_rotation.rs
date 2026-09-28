@@ -16,13 +16,16 @@
 //! it to `<name>.1` (shifting older generations down to `.<LOG_KEEP>`), opens
 //! a fresh file at the original path and `dup2`s it over every stdio fd that
 //! pointed at the old one. Writes made between the rename and the `dup2` land
-//! in `<name>.1`, so nothing is lost; the service manager holds no handle of
-//! its own on the file, so nothing keeps writing to the rotated copy.
+//! in `<name>.1`, so nothing is lost. The service manager holds no handle of
+//! its own on the file, and the one long-lived child the daemon starts (the
+//! app, from the tray) gets null stdio, so nothing keeps writing to the
+//! rotated copy.
 //!
 //! An fd that is not a regular file — a terminal, a pipe, `/dev/null`, or the
 //! journald stream socket of a unit without `StandardOutput=append:` — is left
 //! alone: its size is already someone else's to bound.
 
+use std::collections::HashSet;
 use std::fs::{File, OpenOptions};
 use std::mem::ManuallyDrop;
 use std::os::fd::{AsRawFd, FromRawFd, RawFd};
@@ -33,12 +36,12 @@ use std::time::Duration;
 /// Size past which the live log file is rotated. Matches the desktop app's
 /// startup-time rotation threshold, so a file rotates at the same size
 /// whichever side gets to it.
-pub const LOG_MAX_BYTES: u64 = 10 * 1024 * 1024;
+const LOG_MAX_BYTES: u64 = 10 * 1024 * 1024;
 
 /// Rotated generations kept per log file (`.1` … `.3`); older ones are
 /// deleted. Together with [`LOG_MAX_BYTES`] and [`CHECK_INTERVAL`] this bounds
 /// a log's disk footprint at roughly `LOG_MAX_BYTES * (LOG_KEEP + 1)`.
-pub const LOG_KEEP: u32 = 3;
+const LOG_KEEP: u32 = 3;
 
 /// How often [`spawn`] re-checks the stdio fds. Two `fstat`s per tick, so a
 /// short interval costs nothing; it bounds how far past [`LOG_MAX_BYTES`] the
@@ -54,17 +57,28 @@ const CHECK_INTERVAL: Duration = Duration::from_secs(60);
 pub fn spawn() {
     let spawned = std::thread::Builder::new()
         .name("stdio-log-rotation".into())
-        .spawn(|| loop {
-            std::thread::sleep(CHECK_INTERVAL);
-            rotate_if_oversized(&[libc::STDOUT_FILENO, libc::STDERR_FILENO], LOG_MAX_BYTES);
+        .spawn(|| {
+            let mut given_up = HashSet::new();
+            loop {
+                std::thread::sleep(CHECK_INTERVAL);
+                rotate_if_oversized(
+                    &[libc::STDOUT_FILENO, libc::STDERR_FILENO],
+                    LOG_MAX_BYTES,
+                    &mut given_up,
+                );
+            }
         });
     if let Err(e) = spawned {
         tracing::warn!(error = %e, "Could not start stdio log rotation; the daemon log will grow unbounded");
     }
 }
 
+/// Identity of an open file: device and inode.
+type FileId = (u64, u64);
+
 /// A regular file one or more of the checked fds currently write to.
 struct LogTarget {
+    id: FileId,
     path: PathBuf,
     size: u64,
     mode: u32,
@@ -81,29 +95,34 @@ struct LogTarget {
 ///
 /// Best-effort: every failure is logged and leaves the fd writing where it
 /// was, since a rotation problem must never take the daemon's logging down.
-pub fn rotate_if_oversized(fds: &[RawFd], max_bytes: u64) {
+/// A file that failed to rotate is recorded in `given_up` and never retried —
+/// a failure like a read-only log directory is permanent, and retrying every
+/// tick would only repeat the same warning into the log it cannot bound.
+fn rotate_if_oversized(fds: &[RawFd], max_bytes: u64, given_up: &mut HashSet<FileId>) {
     for target in log_targets(fds) {
-        if target.size > max_bytes {
-            rotate(&target);
+        if target.size > max_bytes && !given_up.contains(&target.id) && !rotate(&target) {
+            given_up.insert(target.id);
         }
     }
 }
 
 fn log_targets(fds: &[RawFd]) -> Vec<LogTarget> {
-    let mut targets: Vec<(u64, u64, LogTarget)> = Vec::new();
+    let mut targets: Vec<LogTarget> = Vec::new();
     for &fd in fds {
         // Borrow the fd as a `File` without taking ownership: dropping the
         // `ManuallyDrop` never closes it.
-        // SAFETY: `fd` is only read through `metadata()` while it is open.
+        // SAFETY: only `metadata()` (an `fstat`) is called on the borrowed fd,
+        // which never closes it, and a closed or invalid fd just returns an
+        // error. For fds 0–2 Rust's runtime also guarantees at startup that
+        // they are open (reopened on `/dev/null` otherwise), so fd 1/2 never
+        // alias an unrelated file the daemon opened later.
         let file = ManuallyDrop::new(unsafe { File::from_raw_fd(fd) });
         let Ok(meta) = file.metadata() else { continue };
         if !meta.file_type().is_file() {
             continue;
         }
-        if let Some((_, _, target)) = targets
-            .iter_mut()
-            .find(|(dev, ino, _)| *dev == meta.dev() && *ino == meta.ino())
-        {
+        let id = (meta.dev(), meta.ino());
+        if let Some(target) = targets.iter_mut().find(|target| target.id == id) {
             target.fds.push(fd);
             continue;
         }
@@ -112,21 +131,18 @@ fn log_targets(fds: &[RawFd]) -> Vec<LogTarget> {
         // else already renamed or replaced it, rotating `path` would roll a
         // file this process is not writing to.
         match std::fs::metadata(&path) {
-            Ok(on_disk) if on_disk.dev() == meta.dev() && on_disk.ino() == meta.ino() => {}
+            Ok(on_disk) if (on_disk.dev(), on_disk.ino()) == id => {}
             _ => continue,
         }
-        targets.push((
-            meta.dev(),
-            meta.ino(),
-            LogTarget {
-                path,
-                size: meta.len(),
-                mode: meta.mode() & 0o7777,
-                fds: vec![fd],
-            },
-        ));
+        targets.push(LogTarget {
+            id,
+            path,
+            size: meta.len(),
+            mode: meta.mode() & 0o7777,
+            fds: vec![fd],
+        });
     }
-    targets.into_iter().map(|(_, _, target)| target).collect()
+    targets
 }
 
 /// The path of the file `fd` refers to, if the platform can report it.
@@ -163,7 +179,9 @@ fn generation(path: &Path, n: u32) -> PathBuf {
     path.with_file_name(name)
 }
 
-fn rotate(target: &LogTarget) {
+/// Returns `false` when the file could not be rotated or the fds could not be
+/// moved off it.
+fn rotate(target: &LogTarget) -> bool {
     let path = &target.path;
 
     // Drop the oldest generation, then shift the rest down: .2 -> .3, .1 -> .2.
@@ -185,11 +203,12 @@ fn rotate(target: &LogTarget) {
 
     if let Err(e) = std::fs::rename(path, generation(path, 1)) {
         tracing::warn!(path = %path.display(), error = %e, "Could not rotate daemon log — it will keep growing");
-        return;
+        return false;
     }
 
     // Everything written from here until the dup2 below still lands in the
-    // renamed `.1` file through the old descriptions, so nothing is lost.
+    // renamed `.1` file through the old descriptions, so nothing is lost. The
+    // fresh file is created with the old one's mode, narrowed by the umask.
     let fresh = match OpenOptions::new()
         .create(true)
         .append(true)
@@ -203,10 +222,11 @@ fn rotate(target: &LogTarget) {
                 error = %e,
                 "Could not open a fresh daemon log after rotating — logging continues into the rotated file"
             );
-            return;
+            return false;
         }
     };
 
+    let mut moved = true;
     for &fd in &target.fds {
         // dup2 replaces `fd` atomically, so no concurrent write sees it closed.
         // SAFETY: both fds are open; `fd` stays owned by the process's stdio.
@@ -216,6 +236,7 @@ fn rotate(target: &LogTarget) {
                 error = %std::io::Error::last_os_error(),
                 "Could not redirect a stdio fd to the fresh daemon log"
             );
+            moved = false;
         }
     }
 
@@ -224,6 +245,7 @@ fn rotate(target: &LogTarget) {
         size_bytes = target.size,
         "Rotated daemon log past size threshold"
     );
+    moved
 }
 
 #[cfg(test)]
@@ -252,7 +274,7 @@ mod tests {
         let file = open_append(&path);
         write_fd(file.as_raw_fd(), b"old history\n");
 
-        rotate_if_oversized(&[file.as_raw_fd()], 4);
+        rotate_if_oversized(&[file.as_raw_fd()], 4, &mut HashSet::new());
         write_fd(file.as_raw_fd(), b"after rotation\n");
 
         assert_eq!(
@@ -269,7 +291,7 @@ mod tests {
         let file = open_append(&path);
         write_fd(file.as_raw_fd(), b"1234");
 
-        rotate_if_oversized(&[file.as_raw_fd()], 4);
+        rotate_if_oversized(&[file.as_raw_fd()], 4, &mut HashSet::new());
 
         assert!(!generation(&path, 1).exists());
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "1234");
@@ -287,7 +309,7 @@ mod tests {
         write_fd(out.as_raw_fd(), b"stdout before\n");
         write_fd(err.as_raw_fd(), b"stderr before\n");
 
-        rotate_if_oversized(&[out.as_raw_fd(), err.as_raw_fd()], 4);
+        rotate_if_oversized(&[out.as_raw_fd(), err.as_raw_fd()], 4, &mut HashSet::new());
         write_fd(out.as_raw_fd(), b"stdout after\n");
         write_fd(err.as_raw_fd(), b"stderr after\n");
 
@@ -312,7 +334,7 @@ mod tests {
         let file = open_append(&path);
         write_fd(file.as_raw_fd(), b"live");
 
-        rotate_if_oversized(&[file.as_raw_fd()], 1);
+        rotate_if_oversized(&[file.as_raw_fd()], 1, &mut HashSet::new());
 
         assert_eq!(
             std::fs::read_to_string(generation(&path, 1)).unwrap(),
@@ -328,7 +350,7 @@ mod tests {
     }
 
     #[test]
-    fn fresh_file_keeps_the_rotated_files_permissions() {
+    fn fresh_file_keeps_the_rotated_files_owner_only_mode() {
         use std::os::unix::fs::PermissionsExt;
 
         let dir = tempfile::tempdir().unwrap();
@@ -337,10 +359,31 @@ mod tests {
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
         write_fd(file.as_raw_fd(), b"old history\n");
 
-        rotate_if_oversized(&[file.as_raw_fd()], 4);
+        rotate_if_oversized(&[file.as_raw_fd()], 4, &mut HashSet::new());
 
         let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
+    }
+
+    /// A rotation that fails (here: a read-only log directory) is not retried
+    /// on later ticks, even once it could succeed.
+    #[test]
+    fn failed_rotation_is_not_retried() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nodespaced.log");
+        let file = open_append(&path);
+        write_fd(file.as_raw_fd(), b"old history\n");
+        let mut given_up = HashSet::new();
+
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o555)).unwrap();
+        rotate_if_oversized(&[file.as_raw_fd()], 4, &mut given_up);
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(given_up.len(), 1);
+
+        rotate_if_oversized(&[file.as_raw_fd()], 4, &mut given_up);
+        assert!(!generation(&path, 1).exists());
     }
 
     #[test]
@@ -364,7 +407,7 @@ mod tests {
         std::fs::remove_file(&path).unwrap();
         std::fs::write(&path, "someone else's file").unwrap();
 
-        rotate_if_oversized(&[file.as_raw_fd()], 4);
+        rotate_if_oversized(&[file.as_raw_fd()], 4, &mut HashSet::new());
 
         assert!(!generation(&path, 1).exists());
         assert_eq!(
