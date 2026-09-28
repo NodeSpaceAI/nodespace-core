@@ -90,7 +90,11 @@ const PERF_SCALE = {
 // Performance thresholds: architecture targets at full dataset scale
 const PERF_THRESHOLDS = {
   structuralOp: budget(10), // <10ms per structural operation (architecture target)
-  bulkStructural: budget(100), // 100 indent/outdent ops on a 1000-node document
+  // 100 indent/outdent ops on a 1000-node document: 1ms/op, a tenth of the per-op target.
+  // Measures ~14ms on the dev Mac under ordinary load. It once measured ~230ms because
+  // every op read the 1000 root ids through a deep $state proxy; well above ~15ms
+  // points at an O(roots) proxied read or copy back on the indent/outdent path.
+  bulkStructural: budget(100),
   initialRender: budget(500), // <500ms for 1000 nodes (architecture target)
   syncLatency: budget(100), // <100ms multi-client sync latency (architecture target)
   lookup: budget(1) // <1ms per lookup operation

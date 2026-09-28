@@ -64,7 +64,9 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
 
   // UI state only - node data stored in SharedNodeStore
   const _uiState = $state<Record<string, NodeUIState>>({});
-  let _rootNodeIds = $state<string[]>([]);
+  // Raw, not deep: every write reassigns the whole array, and a deep proxy makes each
+  // indexOf/filter/spread over a large document's roots a per-element proxy read.
+  let _rootNodeIds = $state.raw<readonly string[]>([]);
   const _activeNodeId = $state<string | undefined>(undefined);
 
   // Compute a node's depth by walking its parent chain via backend hierarchy queries.
@@ -92,7 +94,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
   // NOTE: Backend now returns children pre-sorted via fractional ordering (ORDER BY order ASC)
   // No frontend sorting needed - we trust the backend's ordering
 
-  function getVisibleNodesRecursive(nodeIds: string[]): (Node & {
+  function getVisibleNodesRecursive(nodeIds: readonly string[]): (Node & {
     depth: number;
     children: string[];
     expanded: boolean;
@@ -154,7 +156,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     inheritHeaderLevel: number;
     isPlaceholder: boolean;
   })[] {
-    let viewRoots: string[];
+    let viewRoots: readonly string[];
     if (viewParentId !== null) {
       // Get children from SharedNodeStore (already sorted by backend via fractional ordering)
       // NOTE: Parent may not exist yet (e.g., virtual date nodes) - this is OK
@@ -900,7 +902,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     const currentParentId = structureTree.getParent(nodeId);
 
     // Get siblings (already sorted by backend via fractional ordering)
-    let siblings: string[];
+    let siblings: readonly string[];
     if (currentParentId) {
       siblings = sharedNodeStore.getNodesForParent(currentParentId).map((n) => n.id);
     } else {
