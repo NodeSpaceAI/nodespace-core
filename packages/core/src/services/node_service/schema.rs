@@ -819,11 +819,20 @@ impl NodeService {
             if field.required.unwrap_or(false) && field.default.is_none() {
                 let missing: Vec<_> = at_field().filter(|v| v.value.is_none()).collect();
                 if let Some(first) = missing.first() {
+                    let set = if owner == first.node_type {
+                        format!("{{\"{owner}\": {{\"{}\": <value>}}}}", field.name)
+                    } else {
+                        format!(
+                            "{{\"{}\": {{}}, \"{owner}\": {{\"{}\": <value>}}}}",
+                            first.node_type, field.name
+                        )
+                    };
                     return Err(NodeServiceError::invalid_update(format!(
                         "Cannot apply required field '{}' as type '{}' (declared by schema '{}') \
                          to '{}' instances: {} existing {} no value for it and it has no \
-                         default (e.g. node '{}'). Give the field a default, set it on those \
-                         nodes first, or declare it not required, then retry.",
+                         default (e.g. node '{}'). Give the field a default, declare it not \
+                         required, or set it on each such node by updating it with properties \
+                         {}, then retry.",
                         field.name,
                         field.field_type,
                         owner,
@@ -834,7 +843,8 @@ impl NodeService {
                         } else {
                             "nodes have"
                         },
-                        first.node_id
+                        first.node_id,
+                        set
                     )));
                 }
             }

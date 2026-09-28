@@ -3379,21 +3379,22 @@ impl SqliteStore {
     ) -> Result<Vec<EffectiveFieldValue>> {
         let subtypes = Self::get_subtype_closure_in_tx(tx, scan_root).await?;
         let parents = Self::get_extends_parent_map_in_tx(tx).await?;
-        // Each subtype's chain up to and including `owner`, nearest first;
-        // scopes above it never win, since `owner`'s own bucket is consulted
-        // first. `owner` is on `scan_root`'s chain, so every subtype's chain
-        // reaches it — one that doesn't is not under `owner` at all and is
-        // skipped rather than judged against a declaration it doesn't
-        // inherit.
+        // Each subtype's full ancestor chain, nearest first — the same scope
+        // the validator merges, so a bucket above `owner` holding the name
+        // (left from an ancestor that once declared it) is seen here exactly
+        // as it is on write. `owner` is on `scan_root`'s chain, so every
+        // subtype's chain reaches it; one that doesn't is not under `owner`
+        // at all and is skipped rather than judged against a declaration it
+        // doesn't inherit.
         let lookup = |t: &str| parents.get(t).cloned();
         let chains: std::collections::HashMap<&str, Vec<String>> = subtypes
             .iter()
             .filter_map(|subtype| {
-                let mut chain =
-                    crate::schema::extends_chain::resolve_ancestor_chain(subtype, &lookup);
-                let end = chain.iter().position(|t| t == owner)?;
-                chain.truncate(end + 1);
-                Some((subtype.as_str(), chain))
+                let chain = crate::schema::extends_chain::resolve_ancestor_chain(subtype, &lookup);
+                chain
+                    .iter()
+                    .any(|t| t == owner)
+                    .then_some((subtype.as_str(), chain))
             })
             .collect();
         let mut values = Vec::new();

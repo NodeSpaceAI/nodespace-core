@@ -3345,11 +3345,18 @@ pub async fn handle_update_schema(
                 } else {
                     ""
                 };
+                let changed = if *node_id == params.schema_id {
+                    format!("Schema '{}' changed concurrently", node_id)
+                } else {
+                    format!(
+                        "Schema '{}', on the new extends chain of '{}', changed concurrently",
+                        node_id, params.schema_id
+                    )
+                };
                 MarkdownError::invalid_params(format!(
-                    "Schema '{}' changed concurrently while this update to '{}' was being \
-                     applied; none of its field, relationship or description changes were \
-                     written.{} Re-read the schema and retry.",
-                    node_id, params.schema_id, renames_note
+                    "{} while this update was being applied; none of its field, relationship or \
+                     description changes were written.{} Re-read the schema and retry.",
+                    changed, renames_note
                 ))
             }
             other => MarkdownError::internal_error(format!("Failed to update schema: {}", other)),
