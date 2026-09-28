@@ -999,6 +999,60 @@ mod playbook_tests {
         assert_eq!(rules.len(), 1);
     }
 
+    /// `has_relationship_triggers` is the O(1) in-memory guard `handle_event`
+    /// checks before paying for a relationship event's source-node fetch —
+    /// it must track the trigger index through activation, deactivation, and
+    /// a play with no relationship trigger at all.
+    #[test]
+    fn has_relationship_triggers_tracks_activation_and_deactivation() {
+        let mut mgr = PlaybookLifecycleManager::new();
+        assert!(
+            !mgr.has_relationship_triggers(),
+            "a fresh manager has no relationship triggers"
+        );
+
+        let node_only = make_play_node(
+            "pb-node-only",
+            json!([{
+                "name": "on created",
+                "trigger": { "type": "graph_event", "on": "node_created", "node_type": "task" },
+                "conditions": [],
+                "actions": []
+            }]),
+        );
+        mgr.activate_play(&node_only).unwrap();
+        assert!(
+            !mgr.has_relationship_triggers(),
+            "a node_created-only play must not set the flag"
+        );
+
+        let with_relationship = make_play_node(
+            "pb-with-relationship",
+            json!([{
+                "name": "on relationship added",
+                "trigger": {
+                    "type": "graph_event",
+                    "on": "relationship_added",
+                    "node_type": "story"
+                },
+                "conditions": [],
+                "actions": []
+            }]),
+        );
+        mgr.activate_play(&with_relationship).unwrap();
+        assert!(
+            mgr.has_relationship_triggers(),
+            "activating a play with a relationship_added trigger must set the flag"
+        );
+
+        mgr.deactivate_play("pb-with-relationship");
+        assert!(
+            !mgr.has_relationship_triggers(),
+            "deactivating the only play with a relationship trigger must clear the flag \
+             (the node_created-only play must not keep it set)"
+        );
+    }
+
     // -----------------------------------------------------------------------
     // Mixed trigger type tests
     // -----------------------------------------------------------------------

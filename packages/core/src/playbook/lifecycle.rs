@@ -37,6 +37,21 @@ pub struct PlaybookLifecycleManager {
     /// absent entry means "no ancestry", so an unextended type costs one
     /// failed hash lookup.
     ancestor_cache: HashMap<String, Vec<String>>,
+    /// Whether `trigger_index` currently holds any `TriggerKey::RelationshipEvent`
+    /// entry — recomputed (from `trigger_index` itself) whenever a play
+    /// activates, deactivates, is disabled, or is re-enabled, so the flag is
+    /// never more than one lifecycle operation stale.
+    ///
+    /// Matching a relationship event needs its source node's type, which
+    /// `handle_event` (`engine.rs`) can only get via a `get_node` fetch — real
+    /// I/O, unlike every other trigger check this index answers. Without this
+    /// flag, EVERY `has_child`/`mentions`/`member_of` write in the app (every
+    /// outline indent/outdent, every mention, every collection add) would pay
+    /// that fetch even in the overwhelmingly common case of zero installed
+    /// plays registering a relationship trigger at all. This is the O(1)
+    /// in-memory guard `handle_event` checks first, so that fetch is paid only
+    /// when it can possibly matter.
+    has_relationship_triggers: bool,
 }
 
 impl PlaybookLifecycleManager {
@@ -46,7 +61,28 @@ impl PlaybookLifecycleManager {
             trigger_index: HashMap::new(),
             cron_registry: Vec::new(),
             ancestor_cache: HashMap::new(),
+            has_relationship_triggers: false,
         }
+    }
+
+    /// Whether any active play currently registers a `relationship_added`/
+    /// `relationship_removed` trigger — see [`Self::has_relationship_triggers`]
+    /// (the field) for why `handle_event` must check this before fetching a
+    /// relationship event's source node.
+    pub fn has_relationship_triggers(&self) -> bool {
+        self.has_relationship_triggers
+    }
+
+    /// Recompute [`Self::has_relationship_triggers`] from `trigger_index`
+    /// itself. Cheap relative to the lifecycle operation it runs after
+    /// (install/uninstall/disable/re-enable a play) — none of which are a
+    /// per-event hot path — and correct by construction rather than by
+    /// keeping an incremental counter in sync with every insert/retain.
+    fn recompute_has_relationship_triggers(&mut self) {
+        self.has_relationship_triggers = self
+            .trigger_index
+            .keys()
+            .any(|key| matches!(key, TriggerKey::RelationshipEvent { .. }));
     }
 
     /// Replace the `extends` ancestry cache (ADR-078).
@@ -195,6 +231,8 @@ impl PlaybookLifecycleManager {
             }
         }
 
+        self.recompute_has_relationship_triggers();
+
         info!("Activated play {} with {} rules", node.id, rule_defs.len());
         self.active_playbooks.insert(node.id.clone(), play);
         Ok(())
@@ -333,6 +371,7 @@ impl PlaybookLifecycleManager {
             rules.retain(|r| r.play_id != play_id);
             !rules.is_empty()
         });
+        self.recompute_has_relationship_triggers();
     }
 
     fn remove_from_cron_registry(&mut self, play_id: &str) {

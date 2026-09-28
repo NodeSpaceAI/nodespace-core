@@ -369,6 +369,29 @@ impl PlaybookEngine {
         Ok(())
     }
 
+    /// Best-effort node fetch for `handle_event`'s two lookups below (a
+    /// relationship event's source node, and a matched event's trigger
+    /// node): `Ok(Some(_))` becomes `Some`, and both "doesn't exist" and "the
+    /// fetch itself failed" become `None`, logged identically either way
+    /// `handle_event` needs this lookup. `context` names what the id is, for
+    /// the log line (e.g. `"trigger node"`, `"relationship source node"`).
+    async fn fetch_node_logged(&self, id: &str, context: &str) -> Option<crate::models::Node> {
+        match self.node_service.get_node(id).await {
+            Ok(Some(node)) => Some(node),
+            Ok(None) => {
+                debug!(
+                    "{} {} not found (deleted before processing?), skipping",
+                    context, id
+                );
+                None
+            }
+            Err(e) => {
+                error!("Failed to fetch {} {}: {}", context, id, e);
+                None
+            }
+        }
+    }
+
     /// Handle a single event from the broadcast channel.
     ///
     /// Performs lifecycle management (detect play/schema CRUD), then trigger
@@ -470,28 +493,28 @@ impl PlaybookEngine {
         // A relationship event carries no node type inline the way
         // NodeCreated/NodeUpdated do (see `relationship_source_id`'s doc), so
         // matching one needs its source node fetched first, here, to resolve
-        // that type before `TriggerKey` construction. This is the one place
-        // that fetch happens: `lifecycle.lookup_rules` below (the trigger
-        // index itself, ADR-078) stays a pure in-memory hash lookup either
-        // way, and a matched relationship event reuses this same fetch as its
-        // `trigger_node` below rather than fetching the source node twice.
+        // that type before `TriggerKey` construction. That fetch is real I/O,
+        // unlike every other trigger check this index answers, so it is
+        // gated behind `has_relationship_triggers` — an O(1) in-memory check
+        // (ADR-078) — first: the overwhelmingly common case is zero installed
+        // plays registering a relationship trigger at all, and every
+        // `has_child`/`mentions`/`member_of` write in the app (every outline
+        // indent/outdent, every mention, every collection add) reaches this
+        // point. `lifecycle.lookup_rules` below (the trigger index itself)
+        // stays a pure in-memory hash lookup either way, and a matched
+        // relationship event reuses this same fetch as its `trigger_node`
+        // below rather than fetching the source node twice.
         let relationship_source = match relationship_source_id(&envelope.event) {
-            Some(id) => match self.node_service.get_node(id).await {
-                Ok(Some(node)) => Some(node),
-                Ok(None) => {
-                    debug!(
-                        "Relationship source node {} not found (deleted before processing?), \
-                         skipping trigger matching for this event",
-                        id
-                    );
-                    None
-                }
-                Err(e) => {
-                    error!("Failed to fetch relationship source node {}: {}", id, e);
-                    None
-                }
-            },
-            None => None,
+            Some(id)
+                if self
+                    .lifecycle
+                    .read()
+                    .expect("lifecycle lock poisoned")
+                    .has_relationship_triggers() =>
+            {
+                self.fetch_node_logged(id, "relationship source node").await
+            }
+            _ => None,
         };
 
         let keys = trigger_keys_for_event(
@@ -551,19 +574,12 @@ impl PlaybookEngine {
                 None => return,
             };
 
-            match self.node_service.get_node(trigger_node_id).await {
-                Ok(Some(node)) => node,
-                Ok(None) => {
-                    debug!(
-                        "Trigger node {} not found (deleted before processing?), skipping",
-                        trigger_node_id
-                    );
-                    return;
-                }
-                Err(e) => {
-                    error!("Failed to fetch trigger node {}: {}", trigger_node_id, e);
-                    return;
-                }
+            match self
+                .fetch_node_logged(trigger_node_id, "trigger node")
+                .await
+            {
+                Some(node) => node,
+                None => return,
             }
         };
 
