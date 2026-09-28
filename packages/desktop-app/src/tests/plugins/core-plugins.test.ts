@@ -653,5 +653,14 @@ describe('Core Plugins Integration', () => {
       expect(result.afterContent).toBe('- [ ] ');
       expect(result.newNodeCursorPosition).toBe(6);
     });
+
+    it('Enter on an empty checkbox creates another empty checkbox', () => {
+      registerCorePlugins(registry);
+
+      const result = patternSplitter.split('- [ ] ', 6);
+
+      expect(result.beforeContent).toBe('- [ ] ');
+      expect(result.afterContent).toBe('- [ ] ');
+    });
   });
 });
