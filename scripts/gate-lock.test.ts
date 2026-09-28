@@ -11,12 +11,15 @@
 // DOM-free on purpose: this file runs under `bun test scripts/`, which
 // bypasses the Happy-DOM vitest config (see CLAUDE.md).
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   acquireGateLock,
+  currentUser,
   DISABLE_ENV_VAR,
+  ensureDir,
+  SHARED_LOCK_DIR,
   MACHINE_LOCK_PATH,
   MERGE_LOCK_PATH,
   errorCode,
@@ -73,7 +76,7 @@ describe("errorCode", () => {
 });
 
 function holderFile(overrides: Partial<LockHolder> = {}): LockHolder {
-  return { pid: 999_001, startedAt: 1000, host: HOST, cwd: "/tmp/other-worktree", ...overrides };
+  return { pid: 999_001, startedAt: 1000, host: HOST, user: "other-account", cwd: "/tmp/other-worktree", ...overrides };
 }
 
 /** Puts a lockfile in place as if another gate had acquired it. */
@@ -192,7 +195,7 @@ describe("formatDuration", () => {
 describe("waiting output", () => {
   test("names the holder's pid and worktree, how long it has held, and how long we have waited", () => {
     const line = formatWaitingLine(holderFile({ pid: 4242, startedAt: 1_000_000 }), 1_252_000, 30_000);
-    expect(line).toContain("pid 4242 in other-worktree");
+    expect(line).toContain("pid 4242 (other-account) in other-worktree");
     expect(line).toContain("holding 4m12s");
     expect(line).toContain("waited 30s");
   });
@@ -745,5 +748,68 @@ describe("the merge lock and the machine slot", () => {
     plantLock({ pid: process.pid });
     first.release();
     expect(parseHolder(readFileSync(lockPath, "utf8"))?.pid).toBe(process.pid);
+  });
+});
+
+describe("the machine slot is shared by every account on the machine", () => {
+  test("lives outside the per-user temp directory on macOS", () => {
+    expect(MACHINE_LOCK_PATH.startsWith(SHARED_LOCK_DIR)).toBe(true);
+    if (process.platform === "darwin") {
+      // tmpdir() is per-user on macOS; a slot there is one slot per account.
+      expect(MACHINE_LOCK_PATH.startsWith(tmpdir())).toBe(false);
+    }
+  });
+
+  test("a shared lock creates its directory and queue world-writable and not sticky, whatever the umask", async () => {
+    // Stands in for a second uid: what lets another account take, reclaim and
+    // sweep here is the directory mode, which is what this pins.
+    const sharedLock = join(dir, "shared", "machine.lock");
+    const previous = process.umask(0o022);
+    try {
+      const lock = await acquireGateLock(harness({ lockPath: sharedLock, shared: true }).options);
+      expect(lock.held).toBe(true);
+      for (const path of [join(dir, "shared"), queueDir(sharedLock)]) {
+        expect(statSync(path).mode & 0o7777).toBe(0o777);
+      }
+      lock.release();
+    } finally {
+      process.umask(previous);
+    }
+  });
+
+  test("a lock that isn't shared keeps the umask's mode", async () => {
+    const previous = process.umask(0o022);
+    try {
+      const lock = await acquireGateLock(harness().options);
+      expect(statSync(queueDir(lockPath)).mode & 0o7777).toBe(0o755);
+      lock.release();
+    } finally {
+      process.umask(previous);
+    }
+  });
+
+  test("an existing shared directory is used as its creator left it", () => {
+    // Only the owner may chmod; a second account must not fail trying to.
+    const existing = join(dir, "existing");
+    mkdirSync(existing, { mode: 0o755 });
+    ensureDir(existing, true);
+    expect(statSync(existing).mode & 0o7777).toBe(0o755);
+  });
+
+  test("a stale lock left by another account's dead process is reclaimed", async () => {
+    plantLock({ user: "other-account" });
+    const lock = await acquireGateLock(harness({ isAlive: () => false }).options);
+    expect(lock.held).toBe(true);
+    expect(parseHolder(readFileSync(lockPath, "utf8"))).toMatchObject({ pid: process.pid, user: currentUser() });
+    lock.release();
+  });
+
+  test("the waiting line names the holding account", () => {
+    expect(formatWaitingLine(holderFile({ user: "mayank" }), 2000, 0)).toContain("(mayank)");
+  });
+
+  test("a holder record without an account is uninterpretable", () => {
+    const { user: _user, ...withoutUser } = holderFile();
+    expect(parseHolder(JSON.stringify(withoutUser))).toBeNull();
   });
 });

@@ -38,9 +38,9 @@
 // went ahead of it — and then run unserialized anyway, the exact contention
 // the lock exists to prevent.
 
-import { linkSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, linkSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
-import { hostname, tmpdir } from "node:os";
+import { hostname, tmpdir, userInfo } from "node:os";
 import { basename, dirname, join } from "node:path";
 
 /**
@@ -66,16 +66,34 @@ export const DEFAULT_POLL_INTERVAL_MS = 2000;
 /** Escape hatch for someone who knowingly wants parallel gates. */
 export const DISABLE_ENV_VAR = "NODESPACE_GATE_NO_LOCK";
 
-// Where the locks live. Machine-wide on purpose: worktrees of the same repo
-// are the thing being coordinated, but so are separate clones — the resource
-// under contention is the CPU, which is per-machine, not per-repo. On macOS
-// `tmpdir()` is per-user (/var/folders/...), which is the right scope in
-// practice: one developer's runs are what collide.
+// Where the locks live. Worktrees of the same repo are the thing being
+// coordinated, but so are separate clones and separate macOS accounts — the
+// resource under contention is the CPU, which is per-machine, not per-repo or
+// per-user.
+
+/**
+ * The directory every account on this machine shares for the machine slot.
+ *
+ * Not `tmpdir()`: on macOS that is per-user (/var/folders/...), so two
+ * accounts on one Mac each got their own slot, and one account's Rust tier
+ * ran beside another's merge gate (load average ~175, a gate killed for low
+ * memory). Not `/tmp` either: its sticky bit stops one user unlinking
+ * another's lock, ticket or staging file, so reclaiming a dead holder and
+ * sweeping its litter would fail with EPERM. `/Users/Shared` is itself
+ * sticky, which is why the lock lives one level down, in a directory created
+ * world-writable and not sticky (see ensureDir).
+ *
+ * Elsewhere `tmpdir()` is the machine's shared temp directory or the machine
+ * has one developer account; a subdirectory keeps the files together.
+ */
+export const SHARED_LOCK_DIR =
+  process.platform === "darwin" ? "/Users/Shared/nodespace-gate" : join(tmpdir(), "nodespace-gate");
 
 /**
  * The merge lock, for `bun run merge` (scripts/merge-pr.ts). It serializes
  * merges and guards the one shared gate checkout they test in, and is held
- * from before the rebase until the merge lands.
+ * from before the rebase until the merge lands. Per-user: each account merges
+ * from its own gate checkout.
  */
 export const MERGE_LOCK_PATH = join(tmpdir(), "nodespace-merge.lock");
 
@@ -85,12 +103,10 @@ export const MERGE_LOCK_PATH = join(tmpdir(), "nodespace-merge.lock");
  * Rust test run overlaps its tests — a compile beside a timed test run slows
  * it several-fold even under `nice`. `bun run test:changed` takes it only
  * around its Rust tier. Locks are only ever taken in the order merge →
- * machine, so the two can't deadlock.
- *
- * The file keeps the name of the compile slot it replaced, so gates still
- * running from branches cut before the change queue on the same file.
+ * machine, so the two can't deadlock. Shared by every account on the machine
+ * (SHARED_LOCK_DIR); callers pass `shared: true`.
  */
-export const MACHINE_LOCK_PATH = join(tmpdir(), "nodespace-compile.lock");
+export const MACHINE_LOCK_PATH = join(SHARED_LOCK_DIR, "machine.lock");
 
 /** What the machine slot serializes, for its waiting messages. */
 export const MACHINE_SLOT_WHAT = "heavy run (merge gate or test:changed Rust tier)";
@@ -101,6 +117,8 @@ export interface LockHolder {
   startedAt: number;
   /** Machine that wrote the lock — see isForeignHost(). */
   host: string;
+  /** Account that holds it, so a waiter can tell another account's run from its own. */
+  user: string;
   /** Working directory of the holder, so the waiting line can name the worktree. */
   cwd: string;
 }
@@ -129,11 +147,11 @@ export function parseHolder(raw: string): LockHolder | null {
     return null;
   }
   if (!parsed || typeof parsed !== "object") return null;
-  const { pid, startedAt, host, cwd } = parsed as Record<string, unknown>;
+  const { pid, startedAt, host, user, cwd } = parsed as Record<string, unknown>;
   if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 0) return null;
   if (typeof startedAt !== "number" || !Number.isFinite(startedAt)) return null;
-  if (typeof host !== "string" || typeof cwd !== "string") return null;
-  return { pid, startedAt, host, cwd };
+  if (typeof host !== "string" || typeof user !== "string" || typeof cwd !== "string") return null;
+  return { pid, startedAt, host, user, cwd };
 }
 
 /**
@@ -170,9 +188,22 @@ export function formatDuration(ms: number): string {
   return minutes > 0 ? `${minutes}m${String(seconds).padStart(2, "0")}s` : `${seconds}s`;
 }
 
-/** Who holds the lock and for how long, e.g. "pid 123 in issue-45-foo, holding 3m05s". */
+/**
+ * Who holds the lock and for how long, e.g. "pid 123 (alice) in
+ * issue-45-foo, holding 3m05s". Built from the lock's own contents only: the
+ * holder's worktree may be in another account's home, unreadable to us.
+ */
 function describeHolder(holder: LockHolder, now: number): string {
-  return `pid ${holder.pid} in ${basename(holder.cwd)}, holding ${formatDuration(now - holder.startedAt)}`;
+  return `pid ${holder.pid} (${holder.user}) in ${basename(holder.cwd)}, holding ${formatDuration(now - holder.startedAt)}`;
+}
+
+/** This process's account name, or its uid where the name can't be looked up. */
+export function currentUser(): string {
+  try {
+    return userInfo().username;
+  } catch {
+    return `uid ${process.getuid?.() ?? "?"}`;
+  }
 }
 
 export function formatWaitingLine(holder: LockHolder, now: number, waitedMs: number): string {
@@ -211,6 +242,12 @@ export interface AcquireOptions {
   what?: string;
   /** Queue ahead of every non-urgent waiter (the merge gate). */
   urgent?: boolean;
+  /**
+   * Every account on the machine uses this lock (the machine slot): create
+   * its directory and queue world-writable, so any account can take, reclaim
+   * and sweep them. See SHARED_LOCK_DIR.
+   */
+  shared?: boolean;
 }
 
 /** Returned by acquireGateLock; call release() exactly once when the gate is done. */
@@ -399,18 +436,31 @@ export function ticketName(startedWaitingAt: number, pid: number, urgent = false
 }
 
 /**
+ * Creates `dir` if missing. Not recursive: a lock location whose parent
+ * doesn't exist is an unusable one — the caller degrades, it doesn't build it.
+ *
+ * A shared directory is chmod'ed 0777 by whoever creates it, because mkdir
+ * applies the umask (0755 by default, which would leave every other account
+ * unable to create or unlink anything in it). Only the creator may chmod, so
+ * an existing directory is left as its creator made it.
+ */
+export function ensureDir(dir: string, shared: boolean): void {
+  try {
+    mkdirSync(dir);
+  } catch (err) {
+    if (errorCode(err) === "EEXIST") return;
+    throw err;
+  }
+  if (shared) chmodSync(dir, 0o777);
+}
+
+/**
  * Files this waiter's ticket. Written under a staging name and renamed into
  * place so no reader ever sees a partial ticket; rename is fine here (unlike
  * for the lock itself) because every ticket name is unique to its waiter.
  */
-function fileTicket(dir: string, name: string, holder: LockHolder): void {
-  // Not recursive: the queue lives beside the lock, and a lock location that
-  // doesn't exist is an unusable one — the caller degrades, it doesn't build it.
-  try {
-    mkdirSync(dir);
-  } catch (err) {
-    if (errorCode(err) !== "EEXIST") throw err;
-  }
+function fileTicket(dir: string, name: string, holder: LockHolder, shared: boolean): void {
+  ensureDir(dir, shared);
   const staging = join(dir, `.${name}.${randomUUID()}`);
   writeFileSync(staging, serializeHolder(holder));
   renameSync(staging, join(dir, name));
@@ -526,14 +576,16 @@ export async function acquireGateLock(options: AcquireOptions): Promise<GateLock
 
   const startedWaitingAt = now();
   const pid = options.pid ?? process.pid;
-  const holder: LockHolder = { pid, startedAt: startedWaitingAt, host, cwd: process.cwd() };
+  const holder: LockHolder = { pid, startedAt: startedWaitingAt, host, user: currentUser(), cwd: process.cwd() };
   let announced = false;
   let lastSeen: LockHolder | null = null;
 
   const queue = queueDir(lockPath);
   const ticket = ticketName(startedWaitingAt, pid, options.urgent ?? false);
+  const shared = options.shared ?? false;
   try {
-    fileTicket(queue, ticket, holder);
+    if (shared) ensureDir(dirname(lockPath), true);
+    fileTicket(queue, ticket, holder, shared);
   } catch (err) {
     console.warn(
       `\n⚠ Could not join the gate queue (${err instanceof Error ? err.message : String(err)}).` +

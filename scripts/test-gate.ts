@@ -216,6 +216,7 @@ const machineSlot = await acquireGateLock({
   lockPath: MACHINE_LOCK_PATH,
   what: MACHINE_SLOT_WHAT,
   urgent: true,
+  shared: true,
   maxWaitMs: MACHINE_SLOT_WAIT_CAP_MS,
 });
 if (!machineSlot.held) {

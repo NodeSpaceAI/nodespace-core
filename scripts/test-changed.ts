@@ -57,7 +57,7 @@ if (scope.scripts) await run(niced(TIERS.scripts));
 if (scope.skill) await run(niced(TIERS.skill));
 if (scope.frontend) await run(niced(TIERS.browser));
 if (scope.rust) {
-  const slot = await acquireGateLock({ lockPath: MACHINE_LOCK_PATH, what: MACHINE_SLOT_WHAT });
+  const slot = await acquireGateLock({ lockPath: MACHINE_LOCK_PATH, what: MACHINE_SLOT_WHAT, shared: true });
   // Past the wait cap the lock would let this run anyway, building Rust beside
   // a merge gate's tests. Stop instead — unless the person opted out of the
   // lock on purpose.
