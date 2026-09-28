@@ -391,6 +391,84 @@ pub enum DaemonStatus {
     NotRunning,
 }
 
+/// Pure decision: given a fresh probe of a daemon believed to have an
+/// unchanged binary, should `ensure_daemon_running` retry the health check
+/// rather than falling straight through to a fresh (re)spawn?
+///
+/// Split out for the same reason [`should_restart_for_log_rotation`] is:
+/// unit-testable without touching a real socket or pipe. `Healthy` never
+/// reaches this call site — the caller already returns early on it — so
+/// only `Starting` matters here. On Windows, `Starting` specifically means
+/// `ERROR_PIPE_BUSY` (see `check_daemon_socket`'s doc comment): an
+/// already-running, healthy daemon that happened to be busy with another
+/// client at the instant of the probe, not one that needs spawning.
+/// Treating it the same as `NotRunning` is exactly what caused a second
+/// `nodespaced` to be spawned alongside a perfectly healthy one.
+fn should_retry_before_spawn(status: &DaemonStatus) -> bool {
+    *status == DaemonStatus::Starting
+}
+
+/// Pure decision: given a fresh probe, should [`kill_running_daemon`]
+/// attempt to find and signal a process at all?
+///
+/// Kept in sync with [`should_retry_before_spawn`] above so the two stay
+/// coherent: anything but a confirmed `NotRunning` might still be a real
+/// process worth signalling. A `Healthy` daemon obviously has one; a
+/// `Starting` one might too — on Windows that's `ERROR_PIPE_BUSY`, i.e. a
+/// live process merely busy with another client, and on Unix it's the same
+/// ambiguous "the socket file exists but hasn't accepted yet" case. Only a
+/// confirmed `NotRunning` means there is definitely nothing to kill. Without
+/// this, a `Starting`/busy daemon at the moment of a binary-update restart
+/// was silently left running while a second, updated daemon got spawned
+/// alongside it.
+fn should_attempt_kill(status: &DaemonStatus) -> bool {
+    *status != DaemonStatus::NotRunning
+}
+
+/// Covers the two decisions above, which together are what keeps
+/// `ensure_daemon_running` from spawning a second `nodespaced` alongside a
+/// busy-but-healthy one, and `kill_running_daemon` coherent with that: this
+/// is the real bug a Windows `ERROR_PIPE_BUSY` health probe used to trigger.
+#[cfg(test)]
+mod daemon_starting_retry_tests {
+    use super::{should_attempt_kill, should_retry_before_spawn, DaemonStatus};
+
+    #[test]
+    fn retries_only_on_starting() {
+        assert!(
+            should_retry_before_spawn(&DaemonStatus::Starting),
+            "a busy-but-likely-healthy (Windows ERROR_PIPE_BUSY) daemon must be retried, \
+             never treated like NotRunning and spawned over"
+        );
+        assert!(
+            !should_retry_before_spawn(&DaemonStatus::NotRunning),
+            "a confirmed not-running daemon should proceed straight to a fresh spawn"
+        );
+        assert!(
+            !should_retry_before_spawn(&DaemonStatus::Healthy),
+            "Healthy is handled by the caller's own early return before this is consulted"
+        );
+    }
+
+    #[test]
+    fn kill_is_attempted_for_anything_but_not_running() {
+        assert!(
+            should_attempt_kill(&DaemonStatus::Healthy),
+            "a healthy daemon is exactly what kill_running_daemon exists to stop"
+        );
+        assert!(
+            should_attempt_kill(&DaemonStatus::Starting),
+            "a Starting/busy daemon may still be a real process (e.g. mid binary-update \
+             restart) — leaving it unkilled is what let a second daemon get spawned \
+             alongside it"
+        );
+        assert!(
+            !should_attempt_kill(&DaemonStatus::NotRunning),
+            "nothing to signal when the daemon is confirmed not running"
+        );
+    }
+}
+
 /// Ensure nodespaced is installed as a user service (launchd/systemd) and running.
 ///
 /// Call this from the Tauri setup block. It is non-fatal: logs errors
@@ -435,6 +513,20 @@ pub async fn ensure_daemon_running(app: &AppHandle) -> Result<DaemonStatus> {
         if status == DaemonStatus::Healthy {
             tracing::info!("nodespaced is already running and healthy");
             return Ok(DaemonStatus::Healthy);
+        }
+        if should_retry_before_spawn(&status) {
+            // Give a busy-but-likely-healthy daemon a short window to answer
+            // before falling through to the unconditional (re)register/spawn
+            // block below — see should_retry_before_spawn's doc comment.
+            let retried = wait_for_daemon(&socket_path, Duration::from_secs(5)).await;
+            if retried == DaemonStatus::Healthy {
+                tracing::info!("nodespaced was starting/busy, now healthy");
+                return Ok(DaemonStatus::Healthy);
+            }
+            tracing::warn!(
+                ?retried,
+                "nodespaced stayed unresponsive after retrying a Starting probe; proceeding to (re)register/spawn"
+            );
         }
     }
 
@@ -510,7 +602,7 @@ pub async fn ensure_daemon_running(app: &AppHandle) -> Result<DaemonStatus> {
 /// clients or unrelated processes that happen to share the socket.
 #[cfg(unix)]
 async fn kill_running_daemon(socket_path: &Path) {
-    if check_daemon_socket(socket_path).await != DaemonStatus::Healthy {
+    if !should_attempt_kill(&check_daemon_socket(socket_path).await) {
         return;
     }
 
@@ -575,7 +667,7 @@ fn daemon_image_name_for(is_pro: bool) -> String {
 /// binary.
 #[cfg(windows)]
 async fn kill_running_daemon(socket_path: &Path) {
-    if check_daemon_socket(socket_path).await != DaemonStatus::Healthy {
+    if !should_attempt_kill(&check_daemon_socket(socket_path).await) {
         return;
     }
 
