@@ -2029,6 +2029,129 @@ async fn test_search_semantic_enumerate_multi_type_counts_every_type_past_fetch_
     Ok(())
 }
 
+/// End-to-end regression for the `property_filters` namespace/extends-chain
+/// fix, through the full public `search_ops::search_semantic` enumerate
+/// path — not just `SearchNodeFilters::matches` directly — so a bug in how
+/// `enumerate_nodes` wires up the pre-resolved chains (as opposed to the
+/// lookup primitive itself) would also be caught here.
+///
+/// `status` is declared on `ticket`; `bug` extends `ticket` without
+/// redeclaring it, so a `bug` instance stores `status` in `ticket`'s bucket
+/// (ADR-078), not its own. The filter names the bare field with no namespace
+/// prefix, matching how `packages/agent/src/skill_pipeline.rs` documents
+/// `property_filters` (`{"status": "done"}`). Before the fix, `matches` did
+/// a flat top-level `properties.get("status")` against `bug`'s properties —
+/// which never has a top-level `status` key at all — so this returned zero
+/// matches regardless of which bug's status was queried.
+#[tokio::test]
+async fn test_search_semantic_enumerate_property_filter_finds_inherited_field() -> Result<()> {
+    let (embedding_service, node_service, _store, _temp_dir) = create_unified_test_env().await?;
+    let node_service = Arc::new(node_service);
+    let embedding_service = Arc::new(embedding_service);
+
+    nodespace_core::schema::handle_create_schema(
+        &node_service,
+        json!({
+            "name": "Ticket",
+            "fields": [
+                { "name": "status", "type": "string", "protection": "user", "indexed": false }
+            ]
+        }),
+    )
+    .await?;
+    nodespace_core::schema::handle_create_schema(
+        &node_service,
+        json!({
+            "name": "Bug",
+            "extends": "ticket",
+            "fields": [
+                { "name": "severity", "type": "string", "protection": "user", "indexed": false }
+            ]
+        }),
+    )
+    .await?;
+
+    let open_bug = Node::new(
+        "bug".to_string(),
+        "Login button broken".to_string(),
+        json!({ "status": "open", "severity": "high" }),
+    );
+    node_service.create_node(open_bug.clone()).await?;
+    let closed_bug = Node::new(
+        "bug".to_string(),
+        "Typo in footer".to_string(),
+        json!({ "status": "closed", "severity": "low" }),
+    );
+    node_service.create_node(closed_bug.clone()).await?;
+
+    let mut input = empty_search_input("*", Some(vec!["bug".to_string()]));
+    input.property_filters = Some(json!({ "status": "open" }));
+    let output = search_ops::search_semantic(&node_service, &embedding_service, input).await?;
+
+    assert_eq!(
+        output.count,
+        1,
+        "expected only the open bug, got node ids {:?}",
+        output
+            .matched_nodes
+            .iter()
+            .map(|n| &n.id)
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(output.matched_nodes[0].id, open_bug.id);
+
+    Ok(())
+}
+
+/// Regression for a narrower edge the namespace/extends-chain fix could
+/// have broken: a `schema`-type node (a schema *definition*, not an instance
+/// of a defined type) is deliberately exempt from namespacing entirely
+/// (`node_type == "schema"` is special-cased out of
+/// `NodeService::normalize_flat_properties_to_namespace`'s caller), so its
+/// own fields (`isCore`, etc.) sit flat at the top level — `schema` has no
+/// `extends` ancestry, so its resolved chain is `["schema"]`, and a schema
+/// node's properties has no `"schema"` bucket at all. Before this PR,
+/// `matches`'s flat top-level lookup found this by coincidence; a naive
+/// namespace-bucket-only lookup would regress it. `schema` is also a
+/// `KNOWLEDGE_CORE_TYPES` member, so this is reachable through the default
+/// scope, not just an explicit `node_types: ["schema"]`.
+#[tokio::test]
+async fn test_search_semantic_enumerate_property_filter_finds_schema_nodes_own_flat_field(
+) -> Result<()> {
+    let (embedding_service, node_service, store, _temp_dir) = create_unified_test_env().await?;
+    let node_service = Arc::new(node_service);
+    let embedding_service = Arc::new(embedding_service);
+
+    let task_schema = store.get_node("task").await?.expect("core task schema");
+    assert_eq!(task_schema.node_type, "schema");
+    assert_eq!(task_schema.properties["isCore"], true);
+
+    let created = nodespace_core::schema::handle_create_schema(
+        &node_service,
+        json!({ "name": "Widget", "fields": [] }),
+    )
+    .await?;
+    let widget_schema_id = created["schemaId"].as_str().expect("schema id").to_string();
+
+    let mut input = empty_search_input("*", Some(vec!["schema".to_string()]));
+    input.property_filters = Some(json!({ "isCore": true }));
+    let output = search_ops::search_semantic(&node_service, &embedding_service, input).await?;
+
+    let matched_ids: Vec<&str> = output.matched_nodes.iter().map(|n| n.id.as_str()).collect();
+    assert!(
+        matched_ids.contains(&"task"),
+        "expected the core `task` schema (isCore: true) among matches, got {:?}",
+        matched_ids
+    );
+    assert!(
+        !matched_ids.contains(&widget_schema_id.as_str()),
+        "the user-defined `{widget_schema_id}` schema (isCore: false) must not match isCore: true, got {:?}",
+        matched_ids
+    );
+
+    Ok(())
+}
+
 // A full integration test of `skip_scope_filter`'s effect on a real,
 // non-enumerate semantic query would require driving `search_semantic`'s
 // embedding path to a genuine similarity match — which requires generating

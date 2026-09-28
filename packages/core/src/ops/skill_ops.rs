@@ -1233,10 +1233,10 @@ mod tests {
             property_filters: None,
         };
         let empty_props = serde_json::json!({});
-        assert!(filter.matches("skill", &empty_props));
-        assert!(!filter.matches("text", &empty_props));
-        assert!(!filter.matches("schema", &empty_props));
-        assert!(!filter.matches("ai-chat", &empty_props));
+        assert!(filter.matches("skill", &empty_props, &["skill".to_string()]));
+        assert!(!filter.matches("text", &empty_props, &["text".to_string()]));
+        assert!(!filter.matches("schema", &empty_props, &["schema".to_string()]));
+        assert!(!filter.matches("ai-chat", &empty_props, &["ai-chat".to_string()]));
     }
 
     #[test]

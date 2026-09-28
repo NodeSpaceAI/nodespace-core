@@ -262,17 +262,17 @@ impl NodeService {
             (Some(ctx), _) => ctx.chain(),
             (None, _) => own_chain,
         };
-        let mut current = None;
-        for scope_name in search_chain {
-            let mut candidate = node.properties.get(scope_name.as_str());
-            for segment in &segments {
-                candidate = candidate.and_then(|v| v.get(*segment));
-            }
-            if candidate.is_some() {
-                current = candidate;
-                break;
-            }
-        }
+        // `find_namespaced_property` itself already falls back to a flat
+        // top-level lookup (for a `schema`-type node's own fields and
+        // `_`-prefixed bookkeeping keys — see its doc) after every bucket in
+        // `search_chain` misses, so that fallback runs BEFORE the
+        // every-bucket fallback just below. In practice the two never
+        // compete: a flat top-level key and a namespace bucket are disjoint
+        // by construction (`NodeService::normalize_flat_properties_to_namespace`),
+        // so at most one of the two fallbacks can ever find anything for a
+        // given node.
+        let mut current =
+            crate::services::find_namespaced_property(&node.properties, &segments, search_chain);
         // Fall back to every bucket when the scope declares the field but the
         // node's own chain does not hold it — a deeper descendant may own it.
         if current.is_none() {
@@ -523,33 +523,23 @@ impl NodeService {
         nodes: Vec<Node>,
     ) -> Result<Vec<Node>, NodeServiceError> {
         // One query for every `extends` edge, then resolve each node's chain
-        // in memory. Doing this per node would mean a full scan of the edge
-        // table per row — 501 queries for a 500-row result, on the frontend's
-        // main read path. An empty map also answers the existence check, so
-        // this replaces the separate `has_any_extends_edge` guard rather than
-        // adding to it.
-        let parent_map = self
-            .store
-            .get_extends_parent_map()
-            .await
-            .map_err(NodeServiceError::from_store)?;
-        if parent_map.is_empty() {
-            return Ok(nodes);
-        }
-        let lookup = move |id: &str| parent_map.get(id).cloned();
-
-        // Chains are memoized across rows: a result set is typically a handful
-        // of distinct types over many nodes.
-        let mut chains: std::collections::HashMap<String, Vec<String>> =
-            std::collections::HashMap::new();
+        // in memory — doing this per node would mean a full scan of the edge
+        // table per row (501 queries for a 500-row result, on the frontend's
+        // main read path). `resolve_type_chains_from_store` is the shared
+        // fetch-once-resolve-many primitive: a result set is typically a
+        // handful of distinct types over many nodes, so it resolves each
+        // type's chain exactly once regardless of how many nodes share it.
+        let distinct_types: std::collections::HashSet<&str> =
+            nodes.iter().map(|n| n.node_type.as_str()).collect();
+        let chains =
+            crate::services::resolve_type_chains_from_store(&self.store, distinct_types).await?;
 
         let mut out = Vec::with_capacity(nodes.len());
         for mut node in nodes {
-            let chain = chains.entry(node.node_type.clone()).or_insert_with(|| {
-                crate::schema::extends_chain::resolve_ancestor_chain(&node.node_type, &lookup)
-            });
-            if chain.len() > 1 {
-                node.properties = Self::collapse_properties(&node.properties, chain);
+            if let Some(chain) = chains.get(&node.node_type) {
+                if chain.len() > 1 {
+                    node.properties = Self::collapse_properties(&node.properties, chain);
+                }
             }
             out.push(node);
         }
