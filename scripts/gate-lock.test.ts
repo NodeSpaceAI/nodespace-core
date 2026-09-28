@@ -890,3 +890,33 @@ describe("the machine slot is shared by every account on the machine", () => {
     expect(parseHolder(JSON.stringify(withoutUser))).toMatchObject({ pid: withoutUser.pid, user: "?" });
   });
 });
+
+describe("quietTimeout", () => {
+  test.each([
+    [false, 1],
+    [true, 0],
+  ])("with quietTimeout %p, a timed-out wait warns %p time(s) that it's running anyway", async (quietTimeout, warnings) => {
+    plantLock();
+    let clock = 0;
+    const warned: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (...args: unknown[]) => warned.push(args.join(" "));
+    try {
+      const lock = await acquireGateLock(
+        harness({
+          isAlive: () => true,
+          maxWaitMs: 10,
+          quietTimeout,
+          now: () => clock,
+          sleep: async () => {
+            clock += 10;
+          },
+        }).options
+      );
+      expect(lock.held).toBe(false);
+    } finally {
+      console.warn = originalWarn;
+    }
+    expect(warned).toHaveLength(warnings);
+  });
+});

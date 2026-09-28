@@ -15,6 +15,7 @@ import { GATE_INFRA_EXIT } from "./gate-stage";
 import {
   bisectBatch,
   changesDependencies,
+  changesGate,
   describeLock,
   fenced,
   gateVerdict,
@@ -289,11 +290,26 @@ describe("landStack", () => {
 });
 
 describe("gateVerdict", () => {
-  test("only the gate's own infra code is this machine's fault", () => {
+  test("the gate's infra code, or a kill by signal, is this machine's fault", () => {
     expect(gateVerdict(0)).toBe("passed");
     expect(gateVerdict(1)).toBe("failed");
-    expect(gateVerdict(null)).toBe("failed");
     expect(gateVerdict(GATE_INFRA_EXIT)).toBe("infra");
+    expect(gateVerdict(null)).toBe("infra");
+  });
+
+  test("a stack that changes the gate's own scripts owns an infra exit, so it's bisected out", () => {
+    expect(gateVerdict(GATE_INFRA_EXIT, true)).toBe("failed");
+    expect(gateVerdict(null, true)).toBe("failed");
+    expect(gateVerdict(0, true)).toBe("passed");
+  });
+});
+
+describe("changesGate", () => {
+  test("covers the gate's scripts and nothing else", () => {
+    expect(changesGate(["scripts/test-gate.ts"])).toBe(true);
+    expect(changesGate(["scripts/gate-stage.ts"])).toBe(true);
+    expect(changesGate(["scripts/gate-lock.test.ts"])).toBe(false);
+    expect(changesGate(["scripts/merge-pr.ts", "packages/core/src/lib.rs"])).toBe(false);
   });
 });
 

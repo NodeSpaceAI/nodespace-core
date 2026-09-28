@@ -369,10 +369,23 @@ export function fenced(text: string): string {
   return `${fence}\n${text}\n${fence}`;
 }
 
-/** How a gate run ended, from its exit code: the code's verdict, or this machine's failure to give one. */
-export function gateVerdict(exitCode: number | null): "passed" | "failed" | "infra" {
+/**
+ * How a gate run ended, from its exit code: the code's verdict, or this
+ * machine's failure to give one. No exit code means the gate was killed by a
+ * signal (the OOM killer, a Ctrl-C) — the machine, not the code. But when the
+ * stack changes the gate's own scripts, those scripts are what decided the
+ * exit code, so an infra exit is theirs to own: otherwise a PR that breaks
+ * the gate would stall the queue forever without being bisected out.
+ */
+export function gateVerdict(exitCode: number | null, stackChangesGate = false): "passed" | "failed" | "infra" {
   if (exitCode === 0) return "passed";
-  return exitCode === GATE_INFRA_EXIT ? "infra" : "failed";
+  if (exitCode === GATE_INFRA_EXIT || exitCode === null) return stackChangesGate ? "failed" : "infra";
+  return "failed";
+}
+
+/** Whether a stack changes the merge gate's own scripts (see gateVerdict). */
+export function changesGate(changedPaths: string[]): boolean {
+  return changedPaths.some((path) => /^scripts\/(test-gate|gate-[\w-]+)\.ts$/.test(path));
 }
 
 /**

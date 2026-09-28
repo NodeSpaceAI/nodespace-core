@@ -56,6 +56,7 @@ import {
 import {
   bisectBatch,
   changesDependencies,
+  changesGate,
   describeLock,
   fenced,
   gateVerdict,
@@ -90,6 +91,9 @@ const MERGE_TRIES = 10;
  * machine; it's held only by a round or a --dry-run here.
  */
 const GATE_CHECKOUT_WAIT_MS = 60 * 60 * 1000;
+
+/** How long a waiter tries for this machine's gate checkout before sitting the round out. */
+const WAITER_CHECKOUT_WAIT_MS = 5 * 1000;
 
 /** Lines of gate output quoted in an ejected PR's comment. */
 const EJECT_TAIL_LINES = 40;
@@ -138,6 +142,8 @@ interface PullRequest {
   isDraft: boolean;
   /** MERGEABLE, CONFLICTING, or UNKNOWN while GitHub computes it. */
   mergeable: string;
+  /** A PR from a fork: its branch isn't origin's to push to or land from. */
+  isCrossRepository: boolean;
 }
 
 /** How replaying a PR's commits onto main went. */
@@ -223,7 +229,7 @@ function fail(message: string): never {
 }
 
 async function viewPr(pr: number): Promise<PullRequest | null> {
-  const out = await $`gh pr view ${pr} --json headRefName,state,baseRefName,isDraft,mergeable`.quiet().nothrow();
+  const out = await $`gh pr view ${pr} --json headRefName,state,baseRefName,isDraft,mergeable,isCrossRepository`.quiet().nothrow();
   return out.exitCode === 0 ? (JSON.parse(out.stdout.toString()) as PullRequest) : null;
 }
 
@@ -339,17 +345,26 @@ export async function buildStack(cwd: string, mainSha: string, prs: QueuedPr[]):
  *
  * The verdict keeps the two failure domains apart: `failed` is the code under
  * test, `infra` is this machine (the gate's own GATE_INFRA_EXIT: too little
- * disk, no machine slot). An infra failure must never cost a PR its place. A
- * `bun install` that fails twice is the stack's fault only when the stack
- * changes what install reads; otherwise it's the registry or the network.
+ * disk, no machine slot). An infra failure must never cost a PR its place.
+ *
+ * A `bun install` that fails twice is tested against main: if main installs,
+ * the stack broke it — through package.json, bun.lock, or any of the scripts
+ * install runs — and it's a failure to bisect; if main fails too, it's the
+ * registry, the network or this machine. That leaves the checkout at main,
+ * which the next round resets anyway.
  */
 async function runGate(cwd: string, mainSha: string): Promise<{ verdict: "passed" | "failed" | "infra"; tail: string }> {
+  const changed = (await git(cwd, "diff", "--name-only", mainSha, "HEAD")).split("\n");
   let install = await $`bun install`.cwd(cwd).quiet().nothrow();
   if (install.exitCode !== 0) install = await $`bun install`.cwd(cwd).quiet().nothrow();
   if (install.exitCode !== 0) {
-    const changed = (await git(cwd, "diff", "--name-only", mainSha, "HEAD")).split("\n");
     const output = `${install.stdout}${install.stderr}`.trim().split("\n").slice(-EJECT_TAIL_LINES).join("\n");
-    return { verdict: changesDependencies(changed) ? "failed" : "infra", tail: `bun install failed:\n${output}` };
+    let stackAtFault = changesDependencies(changed);
+    if (!stackAtFault) {
+      await git(cwd, "checkout", "--quiet", "--force", "--detach", mainSha);
+      stackAtFault = (await $`bun install`.cwd(cwd).quiet().nothrow()).exitCode === 0;
+    }
+    return { verdict: stackAtFault ? "failed" : "infra", tail: `bun install failed:\n${output}` };
   }
   const proc = Bun.spawn(["bun", "run", "scripts/test-gate.ts", "--mode=merge"], {
     cwd,
@@ -373,7 +388,7 @@ async function runGate(cwd: string, mainSha: string): Promise<{ verdict: "passed
     if (partial !== "") lines.push(partial);
   };
   await Promise.all([pump(proc.stdout, process.stdout), pump(proc.stderr, process.stderr), proc.exited]);
-  return { verdict: gateVerdict(proc.exitCode), tail: lines.slice(-EJECT_TAIL_LINES).join("\n").trim() };
+  return { verdict: gateVerdict(proc.exitCode, changesGate(changed)), tail: lines.slice(-EJECT_TAIL_LINES).join("\n").trim() };
 }
 
 /** Takes `pr` out of the queue and says why on the PR, where its author will see it. */
@@ -489,20 +504,28 @@ async function runRound(queue: MergeQueue, lockSha: string, repoRoot: string, re
       if (info === null) continue;
       if (info.state !== "OPEN") {
         await queue.dequeue(pr);
+        moved = true;
         continue;
       }
       if (info.isDraft) {
         await eject(queue, pr, "it's a draft, which GitHub won't merge. Mark it ready for review and re-run `bun run merge`.");
+        moved = true;
         continue;
       }
       if (info.baseRefName !== "main") {
         await eject(queue, pr, `it targets ${info.baseRefName}; the queue merges into main only.`);
+        moved = true;
+        continue;
+      }
+      if (info.isCrossRepository) {
+        await eject(queue, pr, "it comes from a fork; the queue lands branches on origin only.");
+        moved = true;
         continue;
       }
       const head = await readRemoteHead(gate, info.headRefName);
       if (!head.reachable) continue;
       if (head.sha === null) {
-        await eject(queue, pr, `its branch ${info.headRefName} isn't on origin (the queue can't merge a fork's PR).`);
+        await eject(queue, pr, `its branch ${info.headRefName} isn't on origin.`);
         moved = true;
         continue;
       }
@@ -695,7 +718,9 @@ async function main(): Promise<void> {
       const local = readHolder(MERGE_LOCK_PATH);
       const checkoutBusy = local.state === "held" && isPidAlive(local.holder.pid);
       if ((sha === null || stale) && !checkoutBusy) {
-        const checkout = await acquireGateLock({ lockPath: MERGE_LOCK_PATH, what: "gate checkout", maxWaitMs: GATE_CHECKOUT_WAIT_MS });
+        // The read above is only a hint — two waiters here can both see it
+        // free — so the loser waits a few seconds, not a whole round.
+        const checkout = await acquireGateLock({ lockPath: MERGE_LOCK_PATH, what: "gate checkout", maxWaitMs: WAITER_CHECKOUT_WAIT_MS, quietTimeout: true });
         let ran = false;
         let moved = false;
         try {

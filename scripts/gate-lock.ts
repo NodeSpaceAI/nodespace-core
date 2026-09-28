@@ -247,6 +247,12 @@ export interface AcquireOptions {
   /** Queue ahead of every non-urgent waiter (the merge gate). */
   urgent?: boolean;
   /**
+   * For a caller that only wants the lock if it's free soon and will retry
+   * later (a merge-queue waiter): no "running anyway" warning on timeout,
+   * since it won't run anyway.
+   */
+  quietTimeout?: boolean;
+  /**
    * Every account on the machine uses this lock (the machine slot): create
    * its directory and queue world-writable, so any account can take, reclaim
    * and sweep them. See SHARED_LOCK_DIR.
@@ -666,7 +672,7 @@ export async function acquireGateLock(options: AcquireOptions): Promise<GateLock
       const waitedMs = now() - startedWaitingAt;
       if (waitedMs >= maxWaitMs) {
         leaveQueue();
-        console.warn(formatTimeoutWarning(lastSeen, maxWaitMs));
+        if (!options.quietTimeout) console.warn(formatTimeoutWarning(lastSeen, maxWaitMs));
         return { held: false, release: () => {} };
       }
       const current = readHolder(lockPath);
@@ -741,7 +747,7 @@ export async function acquireGateLock(options: AcquireOptions): Promise<GateLock
       const waitedMs = now() - startedWaitingAt;
       if (waitedMs >= maxWaitMs) {
         leaveQueue();
-        console.warn(formatTimeoutWarning(lastSeen, maxWaitMs));
+        if (!options.quietTimeout) console.warn(formatTimeoutWarning(lastSeen, maxWaitMs));
         return { held: false, release: () => {} };
       }
       status(
@@ -776,7 +782,7 @@ export async function acquireGateLock(options: AcquireOptions): Promise<GateLock
     const waitedMs = now() - startedWaitingAt;
     if (waitedMs >= maxWaitMs) {
       leaveQueue();
-      console.warn(formatTimeoutWarning(lastSeen, maxWaitMs));
+      if (!options.quietTimeout) console.warn(formatTimeoutWarning(lastSeen, maxWaitMs));
       return { held: false, release: () => {} };
     }
 

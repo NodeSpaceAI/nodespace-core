@@ -100,13 +100,18 @@ if (existsSync(sccache)) {
   process.env.SCCACHE_SERVER_UDS = sccacheServerUds(process.getuid?.() ?? 0);
 }
 
-const logDir = createLogDir(mode);
+// A disk too full or read-only for the stage logs is this machine's fault.
+const logDir = (() => {
+  try {
+    return createLogDir(mode);
+  } catch (err) {
+    console.error(`\n✗ Could not create the stage log directory: ${err instanceof Error ? err.message : String(err)}\n`);
+    return process.exit(GATE_INFRA_EXIT);
+  }
+})();
 
 /** Set by the first failing stage; see run(). */
 let failed = false;
-
-/** Set when a stage couldn't even start: this machine's fault, not the code's. */
-let couldNotRun = false;
 
 /**
  * Runs a stage, and stops the gate if it fails. Concurrent stages are killed
@@ -119,11 +124,13 @@ async function run(stage: StageSpec) {
   // during its grace period would outlive the gate and the machine slot.
   if (failed) return new Promise<never>(() => {});
   let passed: boolean;
+  // A stage that can't even start (e.g. its log can't be opened) is this
+  // machine's fault, not the code's — decided by this stage alone, so a
+  // sibling lane's failure can't relabel a real one.
+  let couldNotRun = false;
   try {
     passed = await runStage(stage, logDir);
   } catch (err) {
-    // A stage that can't even start (e.g. its log can't be opened) fails the
-    // gate like any other, so the other lane is still stopped.
     console.error(`\n${stage.label} could not run: ${err instanceof Error ? err.message : String(err)}`);
     couldNotRun = true;
     passed = false;
