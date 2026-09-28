@@ -172,7 +172,11 @@ class TauriAdapter implements BackendAdapter {
   }
 
   async getDescendants(rootNodeId: string): Promise<Node[]> {
-    return getDescendantsViaChildren(rootNodeId, (parentId) => this.getChildren(parentId));
+    return getDescendantsViaChildrenTree(
+      rootNodeId,
+      (parentId) => this.getChildrenTree(parentId),
+      (parentId) => this.getChildren(parentId)
+    );
   }
 
   async getChildrenTree(parentId: string): Promise<NodeWithChildren | null> {
@@ -585,7 +589,11 @@ export class HttpAdapter implements BackendAdapter {
   }
 
   async getDescendants(rootNodeId: string): Promise<Node[]> {
-    return getDescendantsViaChildren(rootNodeId, (parentId) => this.getChildren(parentId));
+    return getDescendantsViaChildrenTree(
+      rootNodeId,
+      (parentId) => this.getChildrenTree(parentId),
+      (parentId) => this.getChildren(parentId)
+    );
   }
 
   async getChildrenTree(parentId: string): Promise<NodeWithChildren | null> {
@@ -771,21 +779,80 @@ export class HttpAdapter implements BackendAdapter {
 }
 
 // ============================================================================
-// Shared helper (not transport-specific — recursion, not wire shaping)
+// Shared helpers (not transport-specific — recursion, not wire shaping)
 // ============================================================================
 
-async function getDescendantsViaChildren(
+/**
+ * Flattens a `NodeWithChildren` tree into a level-ordered `Node[]`, excluding
+ * the tree's own root. Level order matches the per-level BFS fallback below,
+ * so a caller sees the same ordering regardless of which path served it.
+ */
+function flattenChildrenTree(tree: NodeWithChildren): Node[] {
+  const allNodes: Node[] = [];
+  const queue: NodeWithChildren[] = [...(tree.children ?? [])];
+
+  while (queue.length > 0) {
+    const current = queue.shift()!;
+    // Same idiom shared-node-store.svelte.ts's loadChildrenTree flatten uses:
+    // drop the nested `children` key, keep the rest as the wire-shaped Node.
+    const { children, ...nodeFields } = current;
+    allNodes.push(nodeFields as Node);
+    if (children && children.length > 0) {
+      queue.push(...children);
+    }
+  }
+
+  return allNodes;
+}
+
+/**
+ * Collects all descendants of a node (excluding the node itself), using a
+ * single `get_children_tree` round trip in the common case instead of one
+ * `get_children` call per descendant.
+ *
+ * `get_children_tree` refuses to serialize a subtree past a server-side
+ * depth or node-count ceiling (`MAX_TREE_DEPTH` / `MAX_TREE_NODES` in
+ * `packages/core/src/services/node_service/mod.rs`) — a legitimate, if
+ * unusually large or deep, subtree that single call cannot answer. Rather
+ * than let that surface as a delete-confirmation failure, fall back to a
+ * per-level BFS over `getChildren`, which has no such ceiling and still
+ * parallelizes every level instead of awaiting one node at a time.
+ */
+async function getDescendantsViaChildrenTree(
+  rootNodeId: string,
+  getChildrenTree: (parentId: string) => Promise<NodeWithChildren | null>,
+  getChildren: (parentId: string) => Promise<Node[]>,
+): Promise<Node[]> {
+  try {
+    const tree = await getChildrenTree(rootNodeId);
+    return tree ? flattenChildrenTree(tree) : [];
+  } catch (error) {
+    log.warn(
+      `getChildrenTree failed for root ${rootNodeId}; falling back to per-level BFS`,
+      error
+    );
+    return getDescendantsViaChildrenLevels(rootNodeId, getChildren);
+  }
+}
+
+/** Per-level-parallel BFS fallback — no depth/size ceiling, unlike getChildrenTree. */
+async function getDescendantsViaChildrenLevels(
   rootNodeId: string,
   getChildren: (parentId: string) => Promise<Node[]>,
 ): Promise<Node[]> {
   const allNodes: Node[] = [];
-  const queue: string[] = [rootNodeId];
+  let currentLevel: string[] = [rootNodeId];
 
-  while (queue.length > 0) {
-    const parentId = queue.shift()!;
-    const children = await getChildren(parentId);
-    allNodes.push(...children);
-    queue.push(...children.map((c) => c.id));
+  while (currentLevel.length > 0) {
+    const levelResults = await Promise.all(
+      currentLevel.map((parentId) => getChildren(parentId))
+    );
+    const nextLevel: string[] = [];
+    for (const children of levelResults) {
+      allNodes.push(...children);
+      nextLevel.push(...children.map((c) => c.id));
+    }
+    currentLevel = nextLevel;
   }
 
   return allNodes;

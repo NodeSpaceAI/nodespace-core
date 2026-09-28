@@ -520,7 +520,89 @@ describe('Backend Adapter - HttpAdapter (Browser Dev Mode)', () => {
       );
     });
 
-    it('should get descendants recursively', async () => {
+    it('should get descendants via a single children-tree round trip', async () => {
+      const { getBackendAdapter } = await import('$lib/services/backend-adapter');
+      const adapter = getBackendAdapter();
+
+      const mockTree: NodeWithChildren = {
+        id: 'root-1',
+        nodeType: 'text',
+        content: 'Root',
+        version: 1,
+        createdAt: '2025-01-01T00:00:00Z',
+        modifiedAt: '2025-01-01T00:00:00Z',
+        properties: {},
+        children: [
+          {
+            id: 'child-1',
+            nodeType: 'text',
+            content: 'Child 1',
+            version: 1,
+            createdAt: '2025-01-01T00:00:00Z',
+            modifiedAt: '2025-01-01T00:00:00Z',
+            properties: {},
+            children: [
+              {
+                id: 'grandchild-1',
+                nodeType: 'text',
+                content: 'Grandchild 1',
+                version: 1,
+                createdAt: '2025-01-01T00:00:00Z',
+                modifiedAt: '2025-01-01T00:00:00Z',
+                properties: {},
+                children: []
+              }
+            ]
+          },
+          {
+            id: 'child-2',
+            nodeType: 'text',
+            content: 'Child 2',
+            version: 1,
+            createdAt: '2025-01-01T00:00:00Z',
+            modifiedAt: '2025-01-01T00:00:00Z',
+            properties: {},
+            children: []
+          }
+        ]
+      };
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        headers: new Headers(),
+        json: async () => mockTree
+      });
+
+      const result = await adapter.getDescendants('root-1');
+
+      expect(result).toHaveLength(3);
+      expect(result.map((n) => n.id)).toEqual(['child-1', 'child-2', 'grandchild-1']);
+      // One get_children_tree round trip — not one get_children call per descendant.
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+      expect(mockFetch).toHaveBeenCalledWith(
+        'http://localhost:3001/api/nodes/root-1/children-tree'
+      );
+    });
+
+    it('should return an empty array from getDescendants when the tree is empty/missing', async () => {
+      const { getBackendAdapter } = await import('$lib/services/backend-adapter');
+      const adapter = getBackendAdapter();
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        headers: new Headers(),
+        json: async () => ({})
+      });
+
+      const result = await adapter.getDescendants('missing-root');
+
+      expect(result).toEqual([]);
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+    });
+
+    it('should fall back to a per-level getChildren BFS when the tree call fails', async () => {
       const { getBackendAdapter } = await import('$lib/services/backend-adapter');
       const adapter = getBackendAdapter();
 
@@ -534,6 +616,13 @@ describe('Backend Adapter - HttpAdapter (Browser Dev Mode)', () => {
       const level2b: Node[] = [];
 
       mockFetch
+        // get_children_tree refuses the subtree (e.g. past MAX_TREE_NODES).
+        .mockResolvedValueOnce({
+          ok: false,
+          status: 500,
+          headers: new Headers(),
+          json: async () => ({ message: 'Subtree too large', code: 'TREE_TOO_LARGE' })
+        })
         .mockResolvedValueOnce({ ok: true, status: 200, headers: new Headers(), json: async () => level1 })
         .mockResolvedValueOnce({ ok: true, status: 200, headers: new Headers(), json: async () => level2a })
         .mockResolvedValueOnce({ ok: true, status: 200, headers: new Headers(), json: async () => level2b })
@@ -542,7 +631,9 @@ describe('Backend Adapter - HttpAdapter (Browser Dev Mode)', () => {
       const result = await adapter.getDescendants('root-1');
 
       expect(result).toHaveLength(3);
-      expect(result.map(n => n.id)).toEqual(['child-1', 'child-2', 'grandchild-1']);
+      expect(result.map((n) => n.id)).toEqual(['child-1', 'child-2', 'grandchild-1']);
+      // 1 failed tree call + 4 getChildren calls (root, child-1, child-2, grandchild-1).
+      expect(mockFetch).toHaveBeenCalledTimes(5);
     });
 
     it('should get children tree structure', async () => {
@@ -1313,7 +1404,65 @@ describe('Backend Adapter - TauriAdapter (Tauri IPC Mode)', () => {
       expect(mockInvoke).toHaveBeenCalledWith('get_children', { parentId: 'parent-1' });
     });
 
-    it('should get descendants recursively via IPC', async () => {
+    it('should get descendants via a single get_children_tree call', async () => {
+      const { getBackendAdapter } = await import('$lib/services/backend-adapter');
+      const adapter = getBackendAdapter();
+
+      const mockTree: NodeWithChildren = {
+        id: 'root-1',
+        nodeType: 'text',
+        content: 'Root',
+        version: 1,
+        createdAt: '2025-01-01T00:00:00Z',
+        modifiedAt: '2025-01-01T00:00:00Z',
+        properties: {},
+        children: [
+          {
+            id: 'child-1',
+            nodeType: 'text',
+            content: 'Child 1',
+            version: 1,
+            createdAt: '2025-01-01T00:00:00Z',
+            modifiedAt: '2025-01-01T00:00:00Z',
+            properties: {},
+            children: [
+              {
+                id: 'grandchild-1',
+                nodeType: 'text',
+                content: 'Grandchild',
+                version: 1,
+                createdAt: '2025-01-01T00:00:00Z',
+                modifiedAt: '2025-01-01T00:00:00Z',
+                properties: {},
+                children: []
+              }
+            ]
+          },
+          {
+            id: 'child-2',
+            nodeType: 'text',
+            content: 'Child 2',
+            version: 1,
+            createdAt: '2025-01-01T00:00:00Z',
+            modifiedAt: '2025-01-01T00:00:00Z',
+            properties: {},
+            children: []
+          }
+        ]
+      };
+
+      mockInvoke.mockResolvedValueOnce(mockTree);
+
+      const result = await adapter.getDescendants('root-1');
+
+      expect(result).toHaveLength(3);
+      expect(result.map((n) => n.id)).toEqual(['child-1', 'child-2', 'grandchild-1']);
+      // One get_children_tree round trip — not one get_children call per descendant.
+      expect(mockInvoke).toHaveBeenCalledTimes(1);
+      expect(mockInvoke).toHaveBeenCalledWith('get_children_tree', { parentId: 'root-1' });
+    });
+
+    it('should fall back to a per-level get_children BFS when get_children_tree fails', async () => {
       const { getBackendAdapter } = await import('$lib/services/backend-adapter');
       const adapter = getBackendAdapter();
 
@@ -1326,6 +1475,8 @@ describe('Backend Adapter - TauriAdapter (Tauri IPC Mode)', () => {
       ];
 
       mockInvoke
+        // get_children_tree refuses the subtree (e.g. past MAX_TREE_NODES).
+        .mockRejectedValueOnce(new Error('Subtree too large'))
         .mockResolvedValueOnce(level1)
         .mockResolvedValueOnce(level2)
         .mockResolvedValueOnce([])
@@ -1334,7 +1485,9 @@ describe('Backend Adapter - TauriAdapter (Tauri IPC Mode)', () => {
       const result = await adapter.getDescendants('root-1');
 
       expect(result).toHaveLength(3);
-      expect(mockInvoke).toHaveBeenCalledTimes(4);
+      expect(result.map((n) => n.id)).toEqual(['child-1', 'child-2', 'grandchild-1']);
+      // 1 failed get_children_tree call + 4 get_children calls (root, child-1, child-2, grandchild-1).
+      expect(mockInvoke).toHaveBeenCalledTimes(5);
     });
 
     it('should get children tree via IPC', async () => {
