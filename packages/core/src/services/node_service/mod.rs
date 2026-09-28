@@ -495,10 +495,10 @@ pub(crate) enum BatchState {
 /// origin is configured the push channel mirrors the main channel.
 ///
 /// Correctness depends on the excluded writer propagating its client id onto the
-/// event's `source_client_id`. Per-node writes (create/update/delete) do this;
-/// `bulk_create_hierarchy` and `create_node_streaming` deliberately stamp a fixed
-/// source and would NOT carry the excluded origin — a writer that must be excluded
-/// here must not route through those.
+/// event's `source_client_id`. Per-node and bulk `NodeService` writes do this;
+/// `create_node_streaming` deliberately stamps a fixed source and would NOT carry
+/// the excluded origin — a writer that must be excluded here must not route
+/// through it.
 fn push_forward_allowed(
     excluded: &RwLock<Option<String>>,
     envelope: &crate::db::events::EventEnvelope,
@@ -539,6 +539,17 @@ impl Drop for BatchEmitGuard {
                 let _ = self.tx.send(envelope);
             }
         }
+    }
+}
+
+/// The node a `Batching` buffer keys `envelope` under, or `None` for a
+/// relationship event, which a batch never holds (see `emit_event`).
+fn envelope_node_id(envelope: &crate::db::events::EventEnvelope) -> Option<String> {
+    match &envelope.event {
+        DomainEvent::NodeCreated { node_id, .. } => Some(node_id.clone()),
+        DomainEvent::NodeUpdated { node_id, .. } => Some(node_id.clone()),
+        DomainEvent::NodeDeleted { id, .. } => Some(id.clone()),
+        _ => None,
     }
 }
 
@@ -640,6 +651,13 @@ impl NodeService {
     /// events emitted after that point would be appended to (and eventually
     /// flushed or discarded as) the wrong caller's transaction — not merely a
     /// debug-assertion trip, but a real risk of misattributed events.
+    ///
+    /// A transaction may run inside a caller's `begin_batch_emit` guard (the
+    /// reverse — a batch opened inside a transaction — is still unsupported).
+    /// The batch's buffer is set aside while the transaction buffers its own
+    /// events, then restored; on commit the transaction's events join the
+    /// batch under the rules `emit_event` applies to it, and on rollback
+    /// they are discarded without touching it.
     pub(crate) async fn with_transaction<T, F>(&self, f: F) -> Result<T, NodeServiceError>
     where
         F: for<'t> FnOnce(
@@ -660,30 +678,36 @@ impl NodeService {
                     // held for the rest of this closure — see this method's
                     // doc for why the check-and-set must live here rather
                     // than before requesting it.
-                    {
+                    // A caller may already hold a `begin_batch_emit` guard
+                    // around this call (a sync replay batching a page through
+                    // `bulk_create`/`bulk_update`). Its buffer is parked for
+                    // the closure's duration and restored afterwards; this
+                    // transaction's committed events are deposited into it
+                    // after commit (see below), so the batch still delivers
+                    // them when its guard drops.
+                    let outer = {
                         let mut state = batch_state.lock().unwrap_or_else(|e| e.into_inner());
                         debug_assert!(
-                            matches!(*state, BatchState::Immediate),
-                            "with_transaction called while a batch or transaction is already active"
+                            !matches!(*state, BatchState::Transactional(_)),
+                            "with_transaction called while a transaction is already active"
                         );
-                        *state = BatchState::Transactional(Vec::new());
-                    }
+                        std::mem::replace(&mut *state, BatchState::Transactional(Vec::new()))
+                    };
 
-                    // If `f` itself panics, restore `Immediate` on unwind —
-                    // scoped to this closure so the reset happens while the
+                    // If `f` itself panics, restore the outer state on unwind
+                    // — scoped to this closure so the reset happens while the
                     // write guard is still held, same as the success/error
                     // paths below, rather than racing a caller that acquires
                     // the guard next.
-                    struct ResetOnDrop<'a>(&'a Mutex<BatchState>, bool);
+                    struct ResetOnDrop<'a>(&'a Mutex<BatchState>, Option<BatchState>);
                     impl Drop for ResetOnDrop<'_> {
                         fn drop(&mut self) {
-                            if !self.1 {
-                                *self.0.lock().unwrap_or_else(|e| e.into_inner()) =
-                                    BatchState::Immediate;
+                            if let Some(outer) = self.1.take() {
+                                *self.0.lock().unwrap_or_else(|e| e.into_inner()) = outer;
                             }
                         }
                     }
-                    let mut reset_guard = ResetOnDrop(&batch_state, false);
+                    let mut reset_guard = ResetOnDrop(&batch_state, Some(outer));
 
                     let ns_tx = NodeServiceTx {
                         store_tx,
@@ -697,15 +721,18 @@ impl NodeService {
                             .unwrap_or_else(|e| e.into_inner()),
                     );
 
-                    // Reset to `Immediate` — capturing the buffer — before
+                    // Restore the outer state — capturing the buffer — before
                     // this closure returns, so `self.store.with_transaction`
                     // never releases the write guard while `batch_state`
                     // still claims `Transactional`.
+                    let outer = reset_guard
+                        .1
+                        .take()
+                        .expect("taken only here or by the unwind reset");
                     let prev = std::mem::replace(
                         &mut *batch_state.lock().unwrap_or_else(|e| e.into_inner()),
-                        BatchState::Immediate,
+                        outer,
                     );
-                    reset_guard.1 = true; // already reset above; skip the Drop's redundant reset
 
                     match inner_result {
                         Ok(value) => Ok((value, prev, deferred)),
@@ -734,12 +761,38 @@ impl NodeService {
         match result {
             Ok((value, prev, deferred)) => {
                 if let BatchState::Transactional(buf) = prev {
-                    flush_envelopes(
-                        buf,
-                        &self.event_tx,
-                        &self.push_event_tx,
-                        &self.push_excluded_origin,
-                    );
+                    // Committed: hand the events to a caller's still-open
+                    // batch if there is one — node-keyed last-write-wins,
+                    // relationship events straight through, exactly as
+                    // `emit_event` treats an event emitted under `Batching`
+                    // — otherwise broadcast them now.
+                    let mut state = self.batch_state.lock().unwrap_or_else(|e| e.into_inner());
+                    if let BatchState::Batching(batch) = &mut *state {
+                        let mut unkeyed = Vec::new();
+                        for envelope in buf {
+                            match envelope_node_id(&envelope) {
+                                Some(id) => {
+                                    batch.insert(id, envelope);
+                                }
+                                None => unkeyed.push(envelope),
+                            }
+                        }
+                        drop(state);
+                        flush_envelopes(
+                            unkeyed,
+                            &self.event_tx,
+                            &self.push_event_tx,
+                            &self.push_excluded_origin,
+                        );
+                    } else {
+                        drop(state);
+                        flush_envelopes(
+                            buf,
+                            &self.event_tx,
+                            &self.push_event_tx,
+                            &self.push_excluded_origin,
+                        );
+                    }
                 }
                 for refresh in deferred {
                     self.refresh_embedding_for_rootness(
@@ -2870,13 +2923,8 @@ impl NodeService {
                 playbook_context: self.execution_context.clone(),
             },
         };
-        let node_id = match &envelope.event {
-            DomainEvent::NodeCreated { node_id, .. } => Some(node_id.clone()),
-            DomainEvent::NodeUpdated { node_id, .. } => Some(node_id.clone()),
-            DomainEvent::NodeDeleted { id, .. } => Some(id.clone()),
-            // Relationship events are not node-keyed; always broadcast immediately.
-            _ => None,
-        };
+        // Relationship events are not node-keyed; always broadcast immediately.
+        let node_id = envelope_node_id(&envelope);
         let mut state = self.batch_state.lock().unwrap_or_else(|e| e.into_inner());
         match (&mut *state, node_id) {
             (BatchState::Batching(buf), Some(id)) => {
@@ -7999,8 +8047,8 @@ mod tests {
     }
 
     /// `bulk_create_hierarchy_trusted` must emit exactly one Created event per inserted
-    /// node with no duplicates, delivered in a single flush rather than one-at-a-time.
-    /// The batch guard coalesces last-write-wins per node_id on drop.
+    /// node with no duplicates, delivered in a single post-commit flush of its
+    /// transaction's event buffer rather than one-at-a-time.
     #[tokio::test]
     async fn bulk_create_hierarchy_trusted_coalesces_events_per_root() {
         let (service, _temp) = create_test_service().await;
@@ -11093,8 +11141,8 @@ mod tests {
     }
 
     /// `bulk_create_hierarchy` (and, via the shared
-    /// `prepare_bulk_hierarchy_nodes` preamble, `bulk_create_hierarchy_in_tx`
-    /// and `bulk_create_hierarchy_root_notify`) now resolves the full
+    /// `prepare_bulk_hierarchy_nodes` preamble, `bulk_create_hierarchy_in_tx`)
+    /// now resolves the full
     /// `extends` chain per unique type and re-buckets each row's properties,
     /// instead of validating only against the type's own schema with no
     /// bucketing at all.

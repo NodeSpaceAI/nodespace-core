@@ -3451,6 +3451,21 @@ impl SqliteStore {
         if updates.is_empty() {
             return Ok(());
         }
+        self.with_transaction(move |tx| Box::pin(Self::bulk_update_in_tx(tx, updates)))
+            .await
+    }
+
+    /// `_in_tx` twin of [`Self::bulk_update`] (ADR-069 §1a): the same
+    /// statements against the caller's `tx`, so `NodeService::bulk_update`
+    /// can run invariant-rule dispatch in the transaction that holds the
+    /// batch. Does not notify, like every `_in_tx` store method.
+    pub(crate) async fn bulk_update_in_tx(
+        tx: &Tx<'_>,
+        updates: Vec<(String, NodeUpdate)>,
+    ) -> Result<()> {
+        if updates.is_empty() {
+            return Ok(());
+        }
 
         const MAX_BATCH_SIZE: usize = 1000;
         if updates.len() > MAX_BATCH_SIZE {
@@ -3462,11 +3477,7 @@ impl SqliteStore {
         }
 
         let now = Utc::now().to_rfc3339();
-        let db = self.write().await;
-        let tx = db
-            .transaction()
-            .await
-            .context("Failed to begin bulk update transaction")?;
+        let tx = tx.conn();
 
         for (id, update) in &updates {
             if let Some(ref status) = update.lifecycle_status {
@@ -3522,30 +3533,7 @@ impl SqliteStore {
             }
         }
 
-        tx.commit().await.context("Failed to commit bulk update")?;
         Ok(())
-    }
-
-    /// `source`/`playbook_context` are threaded through to every node's
-    /// `StoreChange` notification exactly like single-row `create_node` —
-    /// callers that need every event tagged (e.g. `NodeService::bulk_create`
-    /// passing `self.client_id.clone()`) must NOT be silently downgraded to
-    /// an untagged write. A caller that doesn't care passes `None`/`None`,
-    /// same as `create_node`'s own callers do.
-    pub async fn batch_create_nodes(
-        &self,
-        nodes: Vec<Node>,
-        source: Option<String>,
-        playbook_context: Option<crate::db::events::PlaybookExecutionContext>,
-    ) -> Result<Vec<Node>> {
-        let mut created = Vec::new();
-        for node in nodes {
-            created.push(
-                self.create_node(node, source.clone(), playbook_context.clone())
-                    .await?,
-            );
-        }
-        Ok(created)
     }
 
     /// Insert a batch of nodes (and optional parent→child relationships) in a single transaction.
@@ -3669,19 +3657,6 @@ impl SqliteStore {
         }
 
         Ok(nodes.into_iter().map(|(id, ..)| id).collect())
-    }
-
-    pub async fn bulk_create_hierarchy_root_notify(
-        &self,
-        nodes: Vec<BulkNodeRow>,
-        root_ids: Vec<String>,
-    ) -> Result<Vec<String>> {
-        let created = self.bulk_create_hierarchy(nodes).await?;
-
-        // Create stale embedding markers for roots
-        self.create_stale_embedding_markers_bulk(&root_ids).await?;
-
-        Ok(created)
     }
 
     pub async fn create_node_streaming(

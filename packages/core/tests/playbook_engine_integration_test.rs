@@ -396,8 +396,8 @@ async fn sync_originated_event_does_not_reach_trigger_evaluation() -> Result<()>
 /// Regression test: the real sync-apply shape uses `NodeService::bulk_create`
 /// (`nodespaced-pro`'s catch-up/reconnect path batches pulled pages through
 /// `bulk_create`, not one `create_node` per row), not the single-row
-/// `create_node` the test above exercises. `SqliteStore::batch_create_nodes`
-/// previously hardcoded `source: None` for every node in the batch,
+/// `create_node` the test above exercises. `bulk_create`'s batch insert
+/// once hardcoded `source: None` for every node in the batch,
 /// discarding whatever client_id the calling `NodeService` was tagged with —
 /// so a sync-tagged `bulk_create` call emitted events with
 /// `source_client_id: None`, which `is_sync_originated` (correctly) does NOT

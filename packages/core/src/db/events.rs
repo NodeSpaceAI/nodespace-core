@@ -292,7 +292,7 @@ pub enum DomainEvent {
     /// already been told the operation succeeded.
     ///
     /// ADR-069 §5/F16: the bulk insert itself is a single atomic
-    /// transaction (`bulk_create_hierarchy_root_notify`) — this event does
+    /// transaction (`bulk_create_hierarchy`) — this event does
     /// not change that. What it fixes is that a failure there previously
     /// surfaced only via `tracing::error!`, invisible to anything but log
     /// inspection. `root_id` names the (empty) root container the caller

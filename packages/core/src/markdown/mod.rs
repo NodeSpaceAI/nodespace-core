@@ -1074,7 +1074,7 @@ pub async fn handle_create_nodes_from_markdown(
                 }
             } else {
                 // Default: Fire-and-forget async with single-transaction bulk insert
-                // Uses bulk_create_hierarchy_root_notify() - all nodes in one DB round trip
+                // Uses bulk_create_hierarchy() - all nodes in one DB round trip
                 // No validation queries needed (nodes pre-validated, order pre-calculated)
                 let ns = node_service.clone();
                 let root_id_for_log = root_id.clone();
@@ -1129,7 +1129,7 @@ pub async fn handle_create_nodes_from_markdown(
                         let total_nodes = nodes_for_bulk.len();
 
                         // Single-transaction bulk insert: all nodes + relationships in one DB round trip
-                        match ns.bulk_create_hierarchy_root_notify(nodes_for_bulk).await {
+                        match ns.bulk_create_hierarchy(nodes_for_bulk).await {
                             Ok(ids) => {
                                 let created_count = ids.len();
 

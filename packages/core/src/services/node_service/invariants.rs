@@ -8,6 +8,11 @@
 //! An action failure returns `Err`, which propagates out through
 //! `create_node_in_tx` and `with_transaction`'s `?`, rolling back the whole
 //! transaction — the node this dispatch ran for was never durably created.
+//! Every bulk write path in `bulk.rs` dispatches through these same helpers,
+//! inside the one transaction that holds its whole batch, so a single row's
+//! rejection fails the entire batch: the reactive engine never runs an
+//! invariant rule, so a write path that skipped this dispatch would leave
+//! the rule unevaluated for good.
 //! A `reject` action (ADR-060 §2) firing is reported as a distinct
 //! `NodeServiceError::PlayRuleRejected`, not the generic
 //! `InvariantRuleFailed` every other action failure produces — see
@@ -57,24 +62,59 @@ impl NodeService {
         tx: &NodeServiceTx<'_>,
         node: &Node,
     ) -> Result<(), NodeServiceError> {
+        let matched = self.invariant_rules_for_creation(&node.node_type);
+        self.run_creation_invariant_rules_in_tx(tx, node, matched)
+            .await
+    }
+
+    /// The invariant rules a creation of a `node_type` node must run, in
+    /// dispatch order — the lookup half of
+    /// [`Self::dispatch_invariant_rules_in_tx`], split out so a bulk create
+    /// can resolve it once per distinct type rather than once per row.
+    ///
+    /// Empty in exactly the three no-op cases
+    /// `dispatch_invariant_rules_in_tx` documents (non-local write, no
+    /// lifecycle handle, no matching rule). Non-invariant rules are dropped
+    /// here rather than left for `execute_matched_invariant_rules_in_tx` to
+    /// skip, so "empty" means "nothing to run" — a type carrying only
+    /// reactive rules costs a bulk create nothing per row. Matching goes
+    /// through `lookup_rules`, which fans out to `extends` ancestors
+    /// (ADR-078), so a subtype matches a rule registered on its base.
+    pub(crate) fn invariant_rules_for_creation(
+        &self,
+        node_type: &str,
+    ) -> Vec<crate::playbook::types::OrderedRuleRef> {
         if self.client_id.as_deref() == Some(crate::db::events::SYNC_SERVICE_CLIENT_ID) {
-            return Ok(());
+            return Vec::new();
         }
 
         let Some(lifecycle) = self.playbook_lifecycle() else {
-            return Ok(());
+            return Vec::new();
         };
 
         let key = TriggerKey::NodeEvent {
             event: NodeEventType::NodeCreated,
-            node_type: node.node_type.clone(),
+            node_type: node_type.to_string(),
             property_key: None,
         };
 
-        let matched = {
-            let lm = lifecycle.read().unwrap_or_else(|e| e.into_inner());
-            lm.lookup_rules(std::slice::from_ref(&key))
-        };
+        let lm = lifecycle.read().unwrap_or_else(|e| e.into_inner());
+        lm.lookup_rules(std::slice::from_ref(&key))
+            .into_iter()
+            .filter(|rule_ref| rule_ref.rule.class == RuleClass::Invariant)
+            .collect()
+    }
+
+    /// Run `matched` — [`Self::invariant_rules_for_creation`]'s result for
+    /// `node`'s type — against `node`'s creation, inside `tx`. The execution
+    /// half of [`Self::dispatch_invariant_rules_in_tx`]; a no-op for an empty
+    /// `matched`.
+    pub(crate) async fn run_creation_invariant_rules_in_tx(
+        &self,
+        tx: &NodeServiceTx<'_>,
+        node: &Node,
+        matched: Vec<crate::playbook::types::OrderedRuleRef>,
+    ) -> Result<(), NodeServiceError> {
         if matched.is_empty() {
             return Ok(());
         }
