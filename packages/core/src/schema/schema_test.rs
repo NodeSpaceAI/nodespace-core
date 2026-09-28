@@ -7230,3 +7230,56 @@ async fn test_rename_onto_a_name_with_leftover_values_rejected() {
         .await
         .expect("the node stays editable");
 }
+
+#[tokio::test]
+async fn test_rename_over_a_leftover_value_the_migration_replaces_succeeds() {
+    let (svc, _tmp) = create_test_service().await;
+    create_ticket_with_string_points(&svc).await;
+    handle_update_schema(
+        &svc,
+        json!({
+            "schema_id": "ticket",
+            "add_fields": [
+                { "name": "score", "type": "number", "protection": "user", "indexed": false }
+            ]
+        }),
+    )
+    .await
+    .unwrap();
+    // The node holds both names; dropping `points` leaves its string behind.
+    let node_id = svc
+        .create_node_with_parent(crate::services::CreateNodeParams {
+            id: None,
+            node_type: "ticket".to_string(),
+            content: "a ticket".to_string(),
+            parent_id: None,
+            position: crate::services::InsertPositionOwned::End,
+            properties: json!({ "ticket": { "points": "large", "score": 5 } }),
+            lifecycle_status: None,
+        })
+        .await
+        .unwrap();
+    handle_update_schema(
+        &svc,
+        json!({ "schema_id": "ticket", "remove_fields": ["points"] }),
+    )
+    .await
+    .unwrap();
+
+    // The migration overwrites the leftover with the node's `score`, so
+    // nothing incompatible remains under `points`.
+    handle_update_schema(
+        &svc,
+        json!({
+            "schema_id": "ticket",
+            "rename_fields": [{ "from": "score", "to": "points" }]
+        }),
+    )
+    .await
+    .expect("a leftover the migration replaces doesn't conflict");
+    let node = svc.get_node(&node_id).await.unwrap().unwrap();
+    assert_eq!(node.properties["ticket"]["points"], json!(5));
+    edit_content(&svc, &node_id)
+        .await
+        .expect("the node stays editable");
+}

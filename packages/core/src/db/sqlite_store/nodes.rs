@@ -3364,6 +3364,22 @@ impl SqliteStore {
     ) -> Result<Vec<(String, Value)>> {
         let subtypes = Self::get_subtype_closure_in_tx(tx, type_id).await?;
         let parents = Self::get_extends_parent_map_in_tx(tx).await?;
+        // Each subtype's chain up to and including `type_id`, nearest first.
+        // Every subtype is in `type_id`'s descendant closure, so its ancestor
+        // chain reaches `type_id`; scopes above it never win, since
+        // `type_id`'s own bucket is consulted first.
+        let lookup = |t: &str| parents.get(t).cloned();
+        let chains: std::collections::HashMap<&str, Vec<String>> = subtypes
+            .iter()
+            .map(|subtype| {
+                let mut chain =
+                    crate::schema::extends_chain::resolve_ancestor_chain(subtype, &lookup);
+                if let Some(end) = chain.iter().position(|t| t == type_id) {
+                    chain.truncate(end + 1);
+                }
+                (subtype.as_str(), chain)
+            })
+            .collect();
         let mut values = Vec::new();
 
         const TYPE_CHUNK: usize = 900;
@@ -3390,24 +3406,14 @@ impl SqliteStore {
                 let props: Value = serde_json::from_str(&props_str)
                     .with_context(|| format!("Node '{id}' has unparseable properties"))?;
 
-                // `node_type`'s chain up to and including `type_id`, nearest
-                // first. Every row's type is in `type_id`'s descendant
-                // closure, so the walk reaches it; the depth bound only
-                // guards a malformed edge set.
-                let mut chain = vec![node_type.as_str()];
-                while *chain.last().unwrap_or(&type_id) != type_id
-                    && chain.len() <= crate::schema::extends_chain::MAX_EXTENDS_DEPTH
-                {
-                    match chain.last().and_then(|t| parents.get(*t)) {
-                        Some(parent) => chain.push(parent.as_str()),
-                        None => break,
-                    }
-                }
+                let Some(chain) = chains.get(node_type.as_str()) else {
+                    continue;
+                };
 
                 for field in fields {
                     let resolved = chain.iter().find_map(|scope| {
                         props
-                            .get(*scope)
+                            .get(scope.as_str())
                             .and_then(Value::as_object)
                             .and_then(|bucket| bucket.get(field))
                     });
