@@ -41,6 +41,7 @@ import { existsSync, realpathSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { $ } from "bun";
 import { acquireGateLock, DISABLE_ENV_VAR, MACHINE_LOCK_PATH, MACHINE_SLOT_WHAT, registerLockRelease } from "./gate-lock";
+import { sccacheServerUds } from "./gate-sccache";
 import { createLogDir, runStage, TIERS, type StageSpec } from "./gate-stage";
 import { TOOLS_DIR } from "./setup-rust-tooling";
 import { freeGiBFromDf } from "./gate-output";
@@ -63,9 +64,8 @@ const MACHINE_SLOT_WAIT_CAP_MS = 2 * 60 * MINUTE;
 /** Below this much free disk the merge gate refuses to start. */
 const MIN_FREE_GIB = 20;
 
-/** The gate's compiler cache: its size cap, and the port of its own server. */
+/** The gate's compiler cache: its size cap. */
 const SCCACHE_CACHE_SIZE = "20G";
-const SCCACHE_SERVER_PORT = "4227";
 
 /** `path` with symlinks resolved — a worktree's `.tools` links to the primary's. */
 function realpathOrSelf(path: string): string {
@@ -90,7 +90,9 @@ process.env.CARGO_INCREMENTAL = "0";
 // file: only gate builds use it, and nothing outside the repository is
 // touched. Its cache sits beside it in the shared `.tools/`, so every
 // worktree reuses the dependency builds of the ones before it. Its own
-// server port keeps it apart from any sccache a developer runs themselves.
+// private unix socket (sccacheServerUds, ./gate-sccache.ts) keeps it apart
+// both from any sccache a developer runs themselves and from another OS
+// user's gate.
 const sccache = join(realpathOrSelf(TOOLS_DIR), "bin", "sccache");
 if (existsSync(sccache)) {
   process.env.RUSTC_WRAPPER = sccache;
@@ -98,7 +100,7 @@ if (existsSync(sccache)) {
   process.env.CMAKE_CXX_COMPILER_LAUNCHER = sccache;
   process.env.SCCACHE_DIR = join(realpathOrSelf(TOOLS_DIR), "sccache-cache");
   process.env.SCCACHE_CACHE_SIZE = SCCACHE_CACHE_SIZE;
-  process.env.SCCACHE_SERVER_PORT = SCCACHE_SERVER_PORT;
+  process.env.SCCACHE_SERVER_UDS = sccacheServerUds(process.getuid?.() ?? 0);
 }
 
 const logDir = createLogDir(mode);
