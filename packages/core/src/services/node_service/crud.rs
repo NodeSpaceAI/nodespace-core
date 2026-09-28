@@ -228,8 +228,8 @@ impl NodeService {
     /// [`Self::insert_node_in_tx_no_invariant_dispatch`] (the insert lands on
     /// `tx.store_tx()` instead of opening its own transaction, and the
     /// `NodeCreated` event is buffered on the transaction via
-    /// `self.emit_event_in_tx` — see `NodeService::with_transaction` — instead of relying on the store
-    /// notifier, since `create_node_in_tx` the store method deliberately does
+    /// `self.emit_event_in_tx` — see `NodeService::with_transaction` —
+    /// instead of relying on the store notifier, since `create_node_in_tx` the store method deliberately does
     /// not call `notify`), then additionally runs invariant-rule dispatch
     /// (ADR-060 §1) — the one thing that method does NOT do, by design.
     ///

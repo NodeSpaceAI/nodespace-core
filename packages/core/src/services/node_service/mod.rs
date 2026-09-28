@@ -468,6 +468,13 @@ pub struct CreateNodeParams {
 /// small ids).
 const DOMAIN_EVENT_CHANNEL_CAPACITY: usize = 4096;
 
+tokio::task_local! {
+    /// Set while a [`NodeService::with_transaction`] closure runs, so
+    /// [`NodeService::emit_event`] can refuse, in debug builds, to broadcast
+    /// from inside a transaction — such code must use `emit_event_in_tx`.
+    static IN_TRANSACTION: ();
+}
+
 /// The task — or, outside any tokio task, the thread — that emits an event
 /// or opens a batch. A batch belongs to the emitter that opened it, so each
 /// emitter's events join its own batch (see [`BatchState::offer`]).
@@ -512,9 +519,12 @@ pub(crate) struct BatchState {
 
 impl BatchState {
     /// The next publication sequence number. A transaction reserves its
-    /// number while it still holds the store's write guard, so numbers
-    /// follow commit order even when two committed transactions publish in
-    /// the opposite order.
+    /// number while it still holds the store's write guard, so between
+    /// transactions numbers follow commit order even when two committed
+    /// transactions publish in the opposite order. A non-transactional
+    /// write takes its number only when its event is routed, after it has
+    /// released the write guard, so a transaction committing in that window
+    /// can be numbered ahead of it.
     fn next_seq(&mut self) -> u64 {
         self.next_seq += 1;
         self.next_seq
@@ -817,7 +827,8 @@ impl NodeService {
                         events: Mutex::new(Vec::new()),
                         deferred_embedding_refreshes: Mutex::new(Vec::new()),
                     };
-                    let value = f(&ns_tx)
+                    let value = IN_TRANSACTION
+                        .scope((), f(&ns_tx))
                         .await
                         .map_err(|e| anyhow::anyhow!(NodeServiceTxError(e)))?;
                     // Reserved here, while the write guard that serializes
@@ -2965,6 +2976,10 @@ impl NodeService {
     /// [`Self::with_transaction`] must use [`Self::emit_event_in_tx`]
     /// instead, so the event waits for the commit.
     pub(crate) fn emit_event(&self, event: DomainEvent) {
+        debug_assert!(
+            IN_TRANSACTION.try_with(|_| ()).is_err(),
+            "emit_event called inside a transaction; use emit_event_in_tx"
+        );
         let envelope = self.envelope(event);
         let unbatched = self
             .batch_state
@@ -8287,10 +8302,10 @@ mod tests {
 
     /// An event from a write made outside any transaction is never buffered
     /// into another task's transaction, so that transaction rolling back
-    /// cannot discard it. Covers both the window a non-`_in_tx` write
-    /// notifies in (after releasing the write guard, while another task's
-    /// transaction holds it) and a real `create_node` queued behind the
-    /// transaction.
+    /// cannot discard it. `notified-late` stands in for the window a
+    /// non-`_in_tx` write notifies in (after releasing the write guard,
+    /// while another task's transaction holds it); the `create_node` queued
+    /// behind the transaction checks the real write path end to end.
     #[tokio::test]
     async fn a_rolled_back_transaction_never_takes_another_writers_event() {
         let (service, _temp) = create_test_service().await;
@@ -8314,6 +8329,24 @@ mod tests {
             vec!["notified-late".to_string(), plain_id],
             "both committed writes are announced, the rolled-back one is not"
         );
+    }
+
+    /// Broadcasting from inside a transaction would announce uncommitted
+    /// state, so debug builds refuse it outright.
+    #[cfg(debug_assertions)]
+    #[tokio::test]
+    #[should_panic(expected = "use emit_event_in_tx")]
+    async fn emit_event_inside_a_transaction_is_refused() {
+        let (service, _temp) = create_test_service().await;
+        let svc = service.clone();
+        let _ = service
+            .with_transaction(move |_tx| {
+                Box::pin(async move {
+                    emit_created(&svc, "too-early");
+                    Ok(())
+                })
+            })
+            .await;
     }
 
     /// Two batch guards open at once — on different tasks, or nested on one
