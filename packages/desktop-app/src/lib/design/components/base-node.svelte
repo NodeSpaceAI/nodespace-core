@@ -52,8 +52,13 @@
   import { focusManager } from '$lib/services/focus-manager.svelte';
   import type { Node as NodeData } from '$lib/types/node';
   import { positionCursor } from '$lib/actions/position-cursor';
-  import { createMockElementForView, findCharacterFromClick } from './cursor-positioning';
+  import {
+    createMockElementForView,
+    findCharacterFromClick,
+    findViewOffsetFromClick
+  } from './cursor-positioning';
   import { mapViewPositionToEditPosition } from '$lib/utils/view-edit-mapper';
+  import { extractRenderedText as extractTextWithLineBreaks } from '$lib/utils/rendered-text-offset';
   import { DEFAULT_PANE_ID } from '$lib/stores/navigation.svelte';
 
   // Logger instance for BaseNode component
@@ -107,26 +112,6 @@
   // In test environment, enable mock service to allow autocomplete testing
   // In production, use real service from context
   const services = getNodeServices();
-
-  /**
-   * Extract text from view element while preserving line breaks from <br> tags
-   * @param element - The view div element
-   * @returns Text content with \n for each <br> tag
-   */
-  function extractTextWithLineBreaks(element: HTMLElement): string {
-    let text = '';
-    const walk = (node: Node) => {
-      if (node.nodeType === Node.TEXT_NODE) {
-        text += node.textContent || '';
-      } else if (node.nodeName === 'BR') {
-        text += '\n';
-      } else if (node.childNodes) {
-        node.childNodes.forEach(walk);
-      }
-    };
-    walk(element);
-    return text;
-  }
 
   // DOM element - Svelte bind:this assignment
   let textareaElement = $state<HTMLTextAreaElement | undefined>(undefined);
@@ -884,33 +869,45 @@
         // the selection collapsed at the caret; a drag leaves a non-empty range.
         // Only the collapsed case proceeds to click-to-edit-at-position.
         if (isActiveTextSelection(window.getSelection())) return;
-        // Capture click coordinates
-        const clickX = e.pageX;
-        const clickY = e.pageY;
 
         // Get the actual rendered text from the view element
         // This is what the user sees (syntax stripped by markdown renderer)
         // IMPORTANT: We need to preserve line breaks from <br> tags
         const viewText = extractTextWithLineBreaks(viewElement!);
 
-        // Create temporary mock element with character spans using the rendered view text
-        const mockElement = createMockElementForView(viewElement!, viewText);
-        const mockRect = mockElement.getBoundingClientRect();
-
-        // Find character position in VIEW content
-        const viewPositionResult = findCharacterFromClick(mockElement, clickX, clickY, {
-          left: mockRect.left,
-          top: mockRect.top,
-          width: mockRect.width,
-          height: mockRect.height
-        });
-
-        // Clean up mock element immediately
-        mockElement.remove();
+        // Find character position in VIEW content. Native caret hit-testing on
+        // the live, already-rendered element is the primary path — cost is
+        // independent of content length, since the browser already computed
+        // this layout to paint the element. Fall back to a bounded mock-span
+        // search only when native hit-testing isn't available (e.g. an
+        // environment without caretRangeFromPoint, or a hit point that lands
+        // outside the view element).
+        let viewPosition = findViewOffsetFromClick(viewElement!, e.clientX, e.clientY);
+        if (viewPosition === null) {
+          // getBoundingClientRect (both the view element's and the mock's) is
+          // always viewport-relative, so the click coordinates compared
+          // against it must be too — clientX/clientY, matching the native
+          // path above, not pageX/pageY (which include scroll offset).
+          const clickX = e.clientX;
+          const clickY = e.clientY;
+          const mockElement = createMockElementForView(viewElement!, viewText, {
+            x: clickX,
+            y: clickY
+          });
+          const mockRect = mockElement.getBoundingClientRect();
+          const fallbackResult = findCharacterFromClick(mockElement, clickX, clickY, {
+            left: mockRect.left,
+            top: mockRect.top,
+            width: mockRect.width,
+            height: mockRect.height
+          });
+          mockElement.remove();
+          viewPosition = fallbackResult.index;
+        }
 
         // Map view position → edit position (accounting for syntax)
         const editPosition = mapViewPositionToEditPosition(
-          viewPositionResult.index,
+          viewPosition,
           viewText, // View content (actual rendered text)
           content // Edit content (with syntax)
         );

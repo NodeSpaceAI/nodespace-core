@@ -295,7 +295,8 @@ export default [
         DragEvent: 'readonly',
         DataTransfer: 'readonly',
         Event: 'readonly',
-        InputEvent: 'readonly'
+        InputEvent: 'readonly',
+        DOMRect: 'readonly'
       }
     },
     plugins: {

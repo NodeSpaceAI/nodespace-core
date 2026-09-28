@@ -35,6 +35,7 @@
 
 import { isActiveTextSelection } from './text-selection';
 import { mapViewPositionToEditPosition } from './view-edit-mapper';
+import { renderedOffsetTo, extractRenderedText } from './rendered-text-offset';
 
 /** Source content + tree depth for one node, resolved from the store/viewer. */
 export interface CopyNodeInfo {
@@ -72,73 +73,6 @@ function viewElementOf(nodeEl: HTMLElement): HTMLElement | null {
   return view instanceof HTMLElement ? view : null;
 }
 
-/** Total rendered length of a subtree: text length, +1 per `<br>`. */
-function renderedLength(node: Node): number {
-  if (node.nodeType === Node.TEXT_NODE) {
-    return (node.textContent ?? '').length;
-  }
-  if (node.nodeName === 'BR') {
-    return 1;
-  }
-  let total = 0;
-  node.childNodes.forEach((child) => {
-    total += renderedLength(child);
-  });
-  return total;
-}
-
-/**
- * Rendered offset (chars, +1 per `<br>`) from the start of `viewEl` to the DOM
- * position `(container, offset)`, mirroring `extractTextWithLineBreaks`. Returns
- * null when the position isn't inside `viewEl` (caller decides the fallback).
- */
-export function renderedOffsetTo(
-  viewEl: HTMLElement,
-  container: Node,
-  offset: number
-): number | null {
-  if (!viewEl.contains(container) && container !== viewEl) {
-    return null;
-  }
-
-  let count = 0;
-  let done = false;
-
-  const walk = (node: Node): void => {
-    if (done) return;
-
-    // Element container: `offset` is an index into its child nodes.
-    if (node === container && node.nodeType !== Node.TEXT_NODE) {
-      const children = Array.from(node.childNodes);
-      for (let i = 0; i < offset && i < children.length; i++) {
-        count += renderedLength(children[i]);
-      }
-      done = true;
-      return;
-    }
-
-    if (node.nodeType === Node.TEXT_NODE) {
-      if (node === container) {
-        count += Math.min(offset, (node.textContent ?? '').length);
-        done = true;
-        return;
-      }
-      count += (node.textContent ?? '').length;
-      return;
-    }
-
-    if (node.nodeName === 'BR') {
-      count += 1;
-      return;
-    }
-
-    node.childNodes.forEach(walk);
-  };
-
-  walk(viewEl);
-  return count;
-}
-
 /** Source offset for a rendered position within a node, via the shared mapper. */
 function sourceOffsetAt(
   viewEl: HTMLElement,
@@ -150,22 +84,6 @@ function sourceOffsetAt(
   if (rendered === null) return null;
   const viewText = extractRenderedText(viewEl);
   return mapViewPositionToEditPosition(rendered, viewText, content);
-}
-
-/** Rendered text of a view element (text + `\n` per `<br>`). */
-function extractRenderedText(element: HTMLElement): string {
-  let text = '';
-  const walk = (node: Node): void => {
-    if (node.nodeType === Node.TEXT_NODE) {
-      text += node.textContent ?? '';
-    } else if (node.nodeName === 'BR') {
-      text += '\n';
-    } else {
-      node.childNodes.forEach(walk);
-    }
-  };
-  walk(element);
-  return text;
 }
 
 /** Indent every line of `content` by `levels` units. */
