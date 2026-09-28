@@ -150,7 +150,9 @@ mod tests {
 
         let binary = dir.join("installer.sh");
         fs::write(&binary, format!("#!/bin/sh\n{script_body}\n")).expect("write fake installer");
-        let mut perms = fs::metadata(&binary).expect("stat fake installer").permissions();
+        let mut perms = fs::metadata(&binary)
+            .expect("stat fake installer")
+            .permissions();
         perms.set_mode(0o755);
         fs::set_permissions(&binary, perms).expect("chmod fake installer");
 
