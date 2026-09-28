@@ -6931,3 +6931,355 @@ async fn test_delete_allowed_when_subtree_holds_an_unreferenced_schema() {
         .expect("a schema nothing depends on goes with its container");
     assert!(svc.get_node("ticket").await.unwrap().is_none());
 }
+
+// ============================================================================
+// update_schema: re-declaring a field over existing instance values
+// ============================================================================
+
+/// Create a `Ticket` schema declaring `points` as a string.
+async fn create_ticket_with_string_points(svc: &Arc<NodeService>) {
+    handle_create_schema(
+        svc,
+        json!({
+            "name": "Ticket",
+            "fields": [
+                { "name": "points", "type": "string", "protection": "user", "indexed": false }
+            ]
+        }),
+    )
+    .await
+    .expect("Ticket schema creation failed");
+}
+
+/// Create a node of `node_type` holding `points` in its own bucket.
+async fn create_node_with_points(svc: &Arc<NodeService>, node_type: &str, points: Value) -> String {
+    svc.create_node_with_parent(crate::services::CreateNodeParams {
+        id: None,
+        node_type: node_type.to_string(),
+        content: "a ticket".to_string(),
+        parent_id: None,
+        position: crate::services::InsertPositionOwned::End,
+        properties: json!({ node_type: { "points": points } }),
+        lifecycle_status: None,
+    })
+    .await
+    .expect("create_node_with_parent failed")
+}
+
+/// A content-only edit — the write a conflicting re-declaration would break.
+async fn edit_content(svc: &Arc<NodeService>, node_id: &str) -> Result<Node, NodeServiceError> {
+    let node = svc.get_node(node_id).await.unwrap().expect("node exists");
+    svc.update_node(
+        node_id,
+        node.version,
+        NodeUpdate {
+            content: Some("edited".to_string()),
+            ..Default::default()
+        },
+    )
+    .await
+}
+
+fn number_points() -> Value {
+    json!({ "name": "points", "type": "number", "protection": "user", "indexed": false })
+}
+
+fn expect_conflict(result: Result<Value, MarkdownError>, field_type: &str, conflicts: usize) {
+    let msg = result
+        .expect_err("re-declaring over incompatible values must be refused")
+        .to_string();
+    assert!(
+        msg.contains("field 'points'"),
+        "error names the field: {msg}"
+    );
+    assert!(
+        msg.contains(&format!("type '{field_type}'")),
+        "error names the new type: {msg}"
+    );
+    assert!(
+        msg.contains(&format!("{conflicts} existing node")),
+        "error counts the conflicting nodes: {msg}"
+    );
+}
+
+#[tokio::test]
+async fn test_redeclare_field_type_in_same_call_rejected_over_incompatible_values() {
+    let (svc, _tmp) = create_test_service().await;
+    create_ticket_with_string_points(&svc).await;
+    let node_id = create_node_with_points(&svc, "ticket", json!("large")).await;
+    create_node_with_points(&svc, "ticket", json!("small")).await;
+
+    let result = handle_update_schema(
+        &svc,
+        json!({
+            "schema_id": "ticket",
+            "remove_fields": ["points"],
+            "add_fields": [number_points()]
+        }),
+    )
+    .await;
+    expect_conflict(result, "number", 2);
+
+    // The refusal left the schema as it was, so the node stays editable.
+    let schema = svc.get_schema_node("ticket").await.unwrap().unwrap();
+    assert_eq!(schema.get_field("points").unwrap().field_type, "string");
+    edit_content(&svc, &node_id)
+        .await
+        .expect("a content-only edit still succeeds");
+}
+
+#[tokio::test]
+async fn test_redeclare_field_type_in_separate_calls_rejected_over_incompatible_values() {
+    let (svc, _tmp) = create_test_service().await;
+    create_ticket_with_string_points(&svc).await;
+    create_node_with_points(&svc, "ticket", json!("large")).await;
+
+    handle_update_schema(
+        &svc,
+        json!({ "schema_id": "ticket", "remove_fields": ["points"] }),
+    )
+    .await
+    .expect("removing the field alone succeeds");
+
+    let result = handle_update_schema(
+        &svc,
+        json!({ "schema_id": "ticket", "add_fields": [number_points()] }),
+    )
+    .await;
+    expect_conflict(result, "number", 1);
+}
+
+#[tokio::test]
+async fn test_redeclare_enum_excluding_a_stored_value_rejected() {
+    let (svc, _tmp) = create_test_service().await;
+    create_ticket_with_string_points(&svc).await;
+    create_node_with_points(&svc, "ticket", json!("large")).await;
+    create_node_with_points(&svc, "ticket", json!("small")).await;
+
+    let result = handle_update_schema(
+        &svc,
+        json!({
+            "schema_id": "ticket",
+            "remove_fields": ["points"],
+            "add_fields": [{
+                "name": "points", "type": "enum", "protection": "user", "indexed": false,
+                "userValues": [{ "value": "small", "label": "Small" }]
+            }]
+        }),
+    )
+    .await;
+    // Only "large" falls outside the new values list.
+    expect_conflict(result, "enum", 1);
+}
+
+#[tokio::test]
+async fn test_redeclare_field_type_succeeds_when_no_value_conflicts() {
+    let (svc, _tmp) = create_test_service().await;
+    create_ticket_with_string_points(&svc).await;
+    let null_node = create_node_with_points(&svc, "ticket", json!(null)).await;
+
+    // Only a null is stored under the name.
+    handle_update_schema(
+        &svc,
+        json!({
+            "schema_id": "ticket",
+            "remove_fields": ["points"],
+            "add_fields": [number_points()]
+        }),
+    )
+    .await
+    .expect("a null doesn't conflict with the new type");
+    edit_content(&svc, &null_node)
+        .await
+        .expect("the node stays editable");
+
+    // Every stored value satisfies the new declaration.
+    let number_node = create_node_with_points(&svc, "ticket", json!(3)).await;
+    handle_update_schema(
+        &svc,
+        json!({
+            "schema_id": "ticket",
+            "remove_fields": ["points"],
+            "add_fields": [{
+                "name": "points", "type": "number", "protection": "user", "indexed": false,
+                "friendlyName": "Story points"
+            }]
+        }),
+    )
+    .await
+    .expect("compatible values don't conflict");
+    edit_content(&svc, &number_node)
+        .await
+        .expect("the node stays editable");
+
+    // No value stored under the name at all.
+    handle_update_schema(
+        &svc,
+        json!({
+            "schema_id": "ticket",
+            "add_fields": [
+                { "name": "estimate", "type": "number", "protection": "user", "indexed": false }
+            ]
+        }),
+    )
+    .await
+    .expect("a name no node holds doesn't conflict");
+}
+
+#[tokio::test]
+async fn test_redeclare_field_type_checks_subtype_instances() {
+    let (svc, _tmp) = create_test_service().await;
+    create_ticket_with_string_points(&svc).await;
+    handle_create_schema(
+        &svc,
+        json!({ "name": "Bug", "extends": "ticket", "fields": [] }),
+    )
+    .await
+    .expect("Bug extends Ticket");
+    // Only a subtype instance holds the value — under the `ticket` bucket,
+    // its declaring schema's (ADR-078).
+    let bug_id = create_node_with_points(&svc, "bug", json!("large")).await;
+    let bug = svc.get_node(&bug_id).await.unwrap().unwrap();
+    assert_eq!(bug.properties["ticket"]["points"], json!("large"));
+
+    let result = handle_update_schema(
+        &svc,
+        json!({
+            "schema_id": "ticket",
+            "remove_fields": ["points"],
+            "add_fields": [number_points()]
+        }),
+    )
+    .await;
+    expect_conflict(result, "number", 1);
+}
+
+#[tokio::test]
+async fn test_redeclare_field_type_sees_a_subtype_bucket_shadowing_the_base_one() {
+    let (svc, _tmp) = create_test_service().await;
+    handle_create_schema(&svc, json!({ "name": "Ticket", "fields": [] }))
+        .await
+        .unwrap();
+    // `points` starts as Bug's own field, so its value sits in the `bug`
+    // bucket and stays there once Bug drops the declaration.
+    handle_create_schema(
+        &svc,
+        json!({
+            "name": "Bug",
+            "extends": "ticket",
+            "fields": [
+                { "name": "points", "type": "string", "protection": "user", "indexed": false }
+            ]
+        }),
+    )
+    .await
+    .expect("Bug extends Ticket");
+    create_node_with_points(&svc, "bug", json!("large")).await;
+    handle_update_schema(
+        &svc,
+        json!({ "schema_id": "bug", "remove_fields": ["points"] }),
+    )
+    .await
+    .expect("Bug drops points");
+
+    // Nearest scope wins on write, so declaring `points` on Ticket would have
+    // the bug node's leftover string validated against `number`.
+    let result = handle_update_schema(
+        &svc,
+        json!({ "schema_id": "ticket", "add_fields": [number_points()] }),
+    )
+    .await;
+    expect_conflict(result, "number", 1);
+}
+
+#[tokio::test]
+async fn test_rename_onto_a_name_with_leftover_values_rejected() {
+    let (svc, _tmp) = create_test_service().await;
+    create_ticket_with_string_points(&svc).await;
+    let node_id = create_node_with_points(&svc, "ticket", json!("large")).await;
+    handle_update_schema(
+        &svc,
+        json!({
+            "schema_id": "ticket",
+            "remove_fields": ["points"],
+            "add_fields": [
+                { "name": "score", "type": "number", "protection": "user", "indexed": false }
+            ]
+        }),
+    )
+    .await
+    .expect("dropping points and adding score succeeds");
+
+    // The node holds no `score`, so the rename leaves its old `points`
+    // string in place under a field now declared `number`.
+    let result = handle_update_schema(
+        &svc,
+        json!({
+            "schema_id": "ticket",
+            "rename_fields": [{ "from": "score", "to": "points" }]
+        }),
+    )
+    .await;
+    expect_conflict(result, "number", 1);
+
+    // The whole rename rolled back.
+    let schema = svc.get_schema_node("ticket").await.unwrap().unwrap();
+    assert!(schema.get_field("score").is_some());
+    assert!(schema.get_field("points").is_none());
+    edit_content(&svc, &node_id)
+        .await
+        .expect("the node stays editable");
+}
+
+#[tokio::test]
+async fn test_rename_over_a_leftover_value_the_migration_replaces_succeeds() {
+    let (svc, _tmp) = create_test_service().await;
+    create_ticket_with_string_points(&svc).await;
+    handle_update_schema(
+        &svc,
+        json!({
+            "schema_id": "ticket",
+            "add_fields": [
+                { "name": "score", "type": "number", "protection": "user", "indexed": false }
+            ]
+        }),
+    )
+    .await
+    .unwrap();
+    // The node holds both names; dropping `points` leaves its string behind.
+    let node_id = svc
+        .create_node_with_parent(crate::services::CreateNodeParams {
+            id: None,
+            node_type: "ticket".to_string(),
+            content: "a ticket".to_string(),
+            parent_id: None,
+            position: crate::services::InsertPositionOwned::End,
+            properties: json!({ "ticket": { "points": "large", "score": 5 } }),
+            lifecycle_status: None,
+        })
+        .await
+        .unwrap();
+    handle_update_schema(
+        &svc,
+        json!({ "schema_id": "ticket", "remove_fields": ["points"] }),
+    )
+    .await
+    .unwrap();
+
+    // The migration overwrites the leftover with the node's `score`, so
+    // nothing incompatible remains under `points`.
+    handle_update_schema(
+        &svc,
+        json!({
+            "schema_id": "ticket",
+            "rename_fields": [{ "from": "score", "to": "points" }]
+        }),
+    )
+    .await
+    .expect("a leftover the migration replaces doesn't conflict");
+    let node = svc.get_node(&node_id).await.unwrap().unwrap();
+    assert_eq!(node.properties["ticket"]["points"], json!(5));
+    edit_content(&svc, &node_id)
+        .await
+        .expect("the node stays editable");
+}

@@ -3165,6 +3165,7 @@ pub async fn handle_update_schema(
     let schema_id_for_tx = params.schema_id.clone();
     let relationships_for_tx = relationships.clone();
     let description_for_tx = params.description.clone();
+    let added_fields_for_tx = params.add_fields.clone().unwrap_or_default();
     let node_service_for_tx = Arc::clone(node_service);
     node_service
         .with_transaction(move |tx| {
@@ -3173,6 +3174,7 @@ pub async fn handle_update_schema(
             let relationships = relationships_for_tx.clone();
             let description = description_for_tx.clone();
             let properties = properties.clone();
+            let added_fields = added_fields_for_tx.clone();
             Box::pin(async move {
                 let current = crate::db::SqliteStore::get_node_in_tx(tx.store_tx(), &schema_id)
                     .await
@@ -3185,6 +3187,16 @@ pub async fn handle_update_schema(
                         actual_version: current.version,
                     });
                 }
+
+                // Values stored under an added field's name must satisfy its
+                // new declaration. `remove_fields` drops a declaration but
+                // leaves instance values in place, so re-adding the name with
+                // another type (or an enum without a stored value) would
+                // otherwise leave those nodes failing validation on every
+                // later write. Checked under the write guard, against the
+                // state this write commits over.
+                NodeService::reject_incompatible_instance_values(tx, &schema_id, &added_fields)
+                    .await?;
 
                 if relationships_added > 0 || relationships_removed > 0 {
                     node_service

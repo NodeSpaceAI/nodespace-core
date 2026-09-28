@@ -3339,6 +3339,94 @@ impl SqliteStore {
         Ok(affected)
     }
 
+    /// The value write validation will see for each of `fields`, on every
+    /// instance of `type_id` and of every subtype extending it — returned as
+    /// `(field name, value)` pairs, one per node holding a non-null value.
+    ///
+    /// The row set is the one [`Self::rename_schema_field_in_tx`] migrates:
+    /// under ADR-078's per-owner buckets a subtype instance stores the fields
+    /// `type_id` declares under the `type_id` key, so rows whose own
+    /// `node_type` is a subtype count too. Each value is resolved the way
+    /// `NodeService::validate_node_with_fields` merges buckets — walking from
+    /// the row's own type up the `extends` chain to `type_id`, nearest bucket
+    /// holding the name wins, even when it holds null. A leftover value in a
+    /// subtype's own bucket therefore shadows the `type_id` one here exactly
+    /// as it does on write.
+    ///
+    /// Run on the caller's `tx`: it sees that transaction's own writes (a
+    /// rename's just-migrated rows), and no other instance write can land
+    /// between this read and the caller's commit under the store's single
+    /// writer guard.
+    pub(crate) async fn get_effective_field_values_in_tx(
+        tx: &Tx<'_>,
+        type_id: &str,
+        fields: &[String],
+    ) -> Result<Vec<(String, Value)>> {
+        let subtypes = Self::get_subtype_closure_in_tx(tx, type_id).await?;
+        let parents = Self::get_extends_parent_map_in_tx(tx).await?;
+        // Each subtype's chain up to and including `type_id`, nearest first.
+        // Every subtype is in `type_id`'s descendant closure, so its ancestor
+        // chain reaches `type_id`; scopes above it never win, since
+        // `type_id`'s own bucket is consulted first.
+        let lookup = |t: &str| parents.get(t).cloned();
+        let chains: std::collections::HashMap<&str, Vec<String>> = subtypes
+            .iter()
+            .map(|subtype| {
+                let mut chain =
+                    crate::schema::extends_chain::resolve_ancestor_chain(subtype, &lookup);
+                if let Some(end) = chain.iter().position(|t| t == type_id) {
+                    chain.truncate(end + 1);
+                }
+                (subtype.as_str(), chain)
+            })
+            .collect();
+        let mut values = Vec::new();
+
+        const TYPE_CHUNK: usize = 900;
+        for chunk in subtypes.chunks(TYPE_CHUNK) {
+            let placeholders: Vec<String> = (1..=chunk.len()).map(|i| format!("?{i}")).collect();
+            let params: Vec<libsql::Value> =
+                chunk.iter().cloned().map(libsql::Value::Text).collect();
+            let mut rows = tx
+                .conn()
+                .query(
+                    &format!(
+                        "SELECT id, node_type, properties FROM node WHERE node_type IN ({})",
+                        placeholders.join(", ")
+                    ),
+                    params,
+                )
+                .await
+                .context("Failed to fetch nodes for field value check")?;
+
+            while let Some(row) = rows.next().await? {
+                let id: String = row.get(0)?;
+                let node_type: String = row.get(1)?;
+                let props_str: String = row.get(2)?;
+                let props: Value = serde_json::from_str(&props_str)
+                    .with_context(|| format!("Node '{id}' has unparseable properties"))?;
+
+                let Some(chain) = chains.get(node_type.as_str()) else {
+                    continue;
+                };
+
+                for field in fields {
+                    let resolved = chain.iter().find_map(|scope| {
+                        props
+                            .get(scope.as_str())
+                            .and_then(Value::as_object)
+                            .and_then(|bucket| bucket.get(field))
+                    });
+                    if let Some(value) = resolved.filter(|v| !v.is_null()) {
+                        values.push((field.clone(), value.clone()));
+                    }
+                }
+            }
+        }
+
+        Ok(values)
+    }
+
     /// Atomically update a batch of nodes in a single transaction.
     ///
     /// **OCC contract:** This is an intentional last-write-wins fast-path for trusted internal
