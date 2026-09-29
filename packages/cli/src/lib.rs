@@ -738,6 +738,11 @@ mod windows_tests {
             None => std::env::remove_var("NODESPACED_SOCKET"),
         }
     }
+}
+
+#[cfg(test)]
+mod connect_failure_tests {
+    use super::*;
 
     #[test]
     fn classify_connect_error_distinguishes_busy_from_absent() {
