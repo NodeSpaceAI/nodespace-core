@@ -27,6 +27,10 @@
  *   bun run scripts/publish-install-script.ts <version> --push      # pushes to nodespace-website's
  *                                                                    # main branch
  *
+ *   bun run scripts/publish-install-script.ts drift-check          # compares the pin in the website
+ *                                                                   # repo AND on the live site against
+ *                                                                   # the latest release; exits 1 on mismatch
+ *
  * WEBSITE_DEPLOY_TOKEN is required either way: a PAT (or fine-grained token)
  * with `contents: write` on NodeSpaceAI/nodespace-website, set as a repo
  * secret once this is wired into the release flow -- `secrets.GITHUB_TOKEN`
@@ -133,7 +137,10 @@ export async function checkReleaseAssets(version: string): Promise<AssetCheckRes
  * local dry run needs that env var set too, same as --push. */
 export async function fetchWebsiteInstallScript(token?: string): Promise<string> {
   const headers: HeadersInit = token ? { Authorization: `token ${token}` } : {};
-  const res = await fetch(`https://raw.githubusercontent.com/${WEBSITE_REPO}/main/install.sh`, { headers });
+  const res = await fetch(`https://raw.githubusercontent.com/${WEBSITE_REPO}/main/install.sh`, {
+    headers,
+    signal: AbortSignal.timeout(30_000),
+  });
   if (!res.ok) {
     throw new Error(`failed to fetch ${WEBSITE_REPO}'s install.sh: HTTP ${res.status}`);
   }
@@ -191,14 +198,142 @@ async function pushInstallScriptUpdate(version: string, token: string): Promise<
   }
 }
 
+export const LIVE_INSTALL_SCRIPT_URL = "https://nodespace.ai/install.sh";
+
+/** Extracts the pinned tag from install.sh content, or null if there is no
+ * pin line. Pure -- no network. */
+export function extractPin(installShContent: string): string | null {
+  const lines = installShContent.match(VERSION_PIN_RE) ?? [];
+  // Zero or several pin lines are both "no trustworthy pin" (pinVersion
+  // refuses duplicates for the same reason).
+  if (lines.length !== 1) return null;
+  return lines[0].match(/"([^"]+)"/)?.[1] ?? null;
+}
+
+export type InstallScriptDrift =
+  | { kind: "ok" }
+  | { kind: "repo-stale"; repoPin: string | null; livePin: string | null }
+  | { kind: "deploy-stale"; repoPin: string; livePin: string | null };
+
+/** Pure decision logic. Two distinct failures, because the fix differs:
+ * `repo-stale` means the release sync never advanced the pin in the website
+ * repo (rerun this script with --push); `deploy-stale` means the repo is
+ * current but the live site serves something older (the website's hosting
+ * is not deploying its main branch -- nothing to fix from this repo).
+ * `repoPin` is null when the repo copy could not be checked (no token), in
+ * which case only the live copy is compared. */
+export function classifyInstallScriptDrift(
+  repoPin: string | null | undefined,
+  livePin: string | null,
+  latestTag: string,
+): InstallScriptDrift {
+  const latest = normalizeTag(latestTag);
+  const norm = (p: string | null | undefined) => (p ? normalizeTag(p) : null);
+  if (repoPin !== undefined && norm(repoPin) !== latest) {
+    return { kind: "repo-stale", repoPin: norm(repoPin), livePin: norm(livePin) };
+  }
+  if (norm(livePin) !== latest) {
+    return { kind: "deploy-stale", repoPin: latest, livePin: norm(livePin) };
+  }
+  return { kind: "ok" };
+}
+
+/** Operator-facing message for a non-ok result. The workflow's issue
+ * triage keys off the leading "INSTALL.SH PIN DRIFT" / "INSTALL.SH DEPLOY
+ * DRIFT" strings. `repoChecked` is false when no token allowed reading the
+ * private website repo: then a stale live pin is ambiguous (sync never ran,
+ * or the deploy is stale) and the message must not claim the repo is fine. */
+export function formatInstallScriptDrift(
+  r: Exclude<InstallScriptDrift, { kind: "ok" }>,
+  latestTag: string,
+  repoChecked: boolean,
+): string {
+  const latest = normalizeTag(latestTag);
+  if (r.kind === "repo-stale") {
+    return (
+      `INSTALL.SH PIN DRIFT: ${WEBSITE_REPO}'s install.sh is pinned to ${r.repoPin ?? "(no pin found)"}, ` +
+      `but the latest published release is ${latest}.\n` +
+      `Fix: bun run scripts/publish-install-script.ts ${latest} --push (requires WEBSITE_DEPLOY_TOKEN)`
+    );
+  }
+  if (!repoChecked) {
+    return (
+      `INSTALL.SH DEPLOY DRIFT (repo copy not checked -- WEBSITE_DEPLOY_TOKEN not set): ` +
+      `${LIVE_INSTALL_SCRIPT_URL} serves ${r.livePin ?? "(no pin found)"}, latest release is ${latest}. ` +
+      "Either the release sync never advanced the pin in the website repo (re-run " +
+      `\`bun run scripts/publish-install-script.ts ${latest} --push\`) or the site's hosting is not ` +
+      "deploying the repo's main branch (check the Pages project's Git integration)."
+    );
+  }
+  return (
+    `INSTALL.SH DEPLOY DRIFT: ${WEBSITE_REPO}'s install.sh is pinned correctly to ${r.repoPin}, ` +
+    `but ${LIVE_INSTALL_SCRIPT_URL} serves ${r.livePin ?? "(no pin found)"}. ` +
+    "The site's hosting is not deploying the repo's main branch -- check the hosting project's " +
+    "Git integration (Cloudflare Pages per wrangler.toml). Nothing to fix in nodespace-core."
+  );
+}
+
+async function fetchLiveInstallScript(): Promise<string> {
+  // Cache-buster + no-store: the whole point is to see what a fresh
+  // `curl | sh` would get, not a cached copy.
+  const res = await fetch(`${LIVE_INSTALL_SCRIPT_URL}?drift-check=${Date.now()}`, {
+    cache: "no-store",
+    // A hung connection must reach the "check failed to run" path, not run
+    // into the job timeout (a cancelled job never files its failure issue).
+    signal: AbortSignal.timeout(30_000),
+  });
+  if (!res.ok) throw new Error(`failed to fetch ${LIVE_INSTALL_SCRIPT_URL}: HTTP ${res.status}`);
+  return res.text();
+}
+
+async function runDriftCheck(): Promise<void> {
+  // Genuine drift and "the check itself failed to run" both exit 1 but are
+  // worded differently so an auto-filed issue can be triaged from its text.
+  let repoPin: string | null | undefined;
+  let livePin: string | null;
+  let latest: string;
+  try {
+    const token = process.env.WEBSITE_DEPLOY_TOKEN;
+    const [latestOut, live, repo] = await Promise.all([
+      $`gh release list --repo ${CORE_REPO} --json tagName,isLatest --jq '.[] | select(.isLatest) | .tagName'`.text(),
+      fetchLiveInstallScript(),
+      // The website repo is private, so its copy is only checkable with a
+      // token; without one, only the live copy is compared.
+      token ? fetchWebsiteInstallScript(token) : Promise.resolve(undefined),
+    ]);
+    latest = latestOut.trim();
+    if (!latest) throw new Error("could not determine the latest release from `gh release list`");
+    livePin = extractPin(live);
+    repoPin = repo === undefined ? undefined : extractPin(repo);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`DRIFT CHECK ERROR (not necessarily drift -- the check itself failed to run): ${message}`);
+    process.exit(1);
+  }
+
+  const r = classifyInstallScriptDrift(repoPin, livePin, latest);
+  if (r.kind === "ok") {
+    console.log(`install.sh in sync: ${normalizeTag(latest)}`);
+    return;
+  }
+  console.error(formatInstallScriptDrift(r, latest, repoPin !== undefined));
+  process.exit(1);
+}
+
 function usage(): void {
   console.log(`Usage:
-  bun run scripts/publish-install-script.ts <version> [--push]`);
+  bun run scripts/publish-install-script.ts <version> [--push]
+  bun run scripts/publish-install-script.ts drift-check`);
 }
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
   const command = args[0];
+
+  if (command === "drift-check") {
+    await runDriftCheck();
+    return;
+  }
 
   if (!command || !/^v?\d+\.\d+\.\d+(-[a-zA-Z0-9.]+)?$/.test(command)) {
     usage();

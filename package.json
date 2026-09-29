@@ -105,6 +105,7 @@
     "homebrew:drift-check": "bun run scripts/update-homebrew-cask.ts drift-check",
     "homebrew:sync-formula": "bun run scripts/update-homebrew-formula.ts",
     "homebrew:formula-drift-check": "bun run scripts/update-homebrew-formula.ts drift-check",
+    "install-script:drift-check": "bun run scripts/publish-install-script.ts drift-check",
     "merge": "bun run scripts/merge-pr.ts",
     "prepare": "husky && bun run scripts/setup-rust-tooling.ts",
     "audit": "bun scripts/audit-npm.ts"
