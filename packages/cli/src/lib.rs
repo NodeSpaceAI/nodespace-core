@@ -304,21 +304,104 @@ async fn dial_channel(pipe: &std::path::Path) -> Result<Channel> {
     let channel = Endpoint::from_static("http://localhost")
         .connect_with_connector(service_fn(move |_: Uri| {
             let pipe = pipe.clone();
-            async move { ClientOptions::new().open(&pipe).map(TokioIo::new) }
+            async move {
+                open_with_busy_retry(
+                    || ClientOptions::new().open(&pipe),
+                    PIPE_BUSY_RETRIES,
+                    PIPE_BUSY_DELAY,
+                )
+                .await
+                .map(TokioIo::new)
+            }
         }))
         .await?;
     Ok(channel)
 }
 
-/// Friendly "daemon isn't running" context for a failed connect. Shared by
-/// both transports — `sock` names either a Unix socket path or a Windows
-/// Named Pipe, `.display()` renders either correctly.
-fn connect_error_context(sock: &std::path::Path) -> String {
-    format!(
-        "Could not connect to nodespaced at {}.\n\
-         Is the daemon running? Start it with `nodespaced` in another terminal.",
-        sock.display()
-    )
+/// Win32 `ERROR_PIPE_BUSY`: the pipe exists but every instance is momentarily
+/// occupied (daemon running, between accepting one client and re-creating its
+/// listening instance).
+const ERROR_PIPE_BUSY: i32 = 231;
+
+/// How many times a busy pipe is re-tried, and the pause between tries. The
+/// budget (~1s) only applies to `ERROR_PIPE_BUSY`; an absent pipe fails at once.
+/// `pub` so the cross-platform tests and the Windows dial share one budget without
+/// a dead-code warning on Unix builds.
+pub const PIPE_BUSY_RETRIES: u32 = 20;
+pub const PIPE_BUSY_DELAY: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// Why a connect attempt failed, as far as the user-facing message cares.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConnectFailure {
+    /// Daemon is up but its pipe stayed occupied for the whole retry budget.
+    DaemonBusy,
+    /// Anything else, including an absent daemon.
+    NotRunning,
+}
+
+/// True for a raw OS error code equal to `ERROR_PIPE_BUSY`. Pure so it is
+/// testable on every platform (on Unix the code never occurs in production).
+fn is_pipe_busy(raw_os_error: Option<i32>) -> bool {
+    raw_os_error == Some(ERROR_PIPE_BUSY)
+}
+
+/// Classify a connect error by scanning its source chain for an `io::Error`
+/// carrying `ERROR_PIPE_BUSY`. `ERROR_FILE_NOT_FOUND` and everything else map
+/// to [`ConnectFailure::NotRunning`].
+fn classify_connect_error(err: &anyhow::Error) -> ConnectFailure {
+    let busy = err
+        .chain()
+        .filter_map(|e| e.downcast_ref::<std::io::Error>())
+        .any(|io| is_pipe_busy(io.raw_os_error()));
+    if busy {
+        ConnectFailure::DaemonBusy
+    } else {
+        ConnectFailure::NotRunning
+    }
+}
+
+/// Run `open`, retrying only while it fails with `ERROR_PIPE_BUSY`, up to
+/// `retries` extra attempts with `delay` between them. Any other error
+/// (notably `ERROR_FILE_NOT_FOUND`) is returned immediately.
+pub async fn open_with_busy_retry<T>(
+    mut open: impl FnMut() -> std::io::Result<T>,
+    retries: u32,
+    delay: std::time::Duration,
+) -> std::io::Result<T> {
+    let mut attempt = 0;
+    loop {
+        match open() {
+            Err(e) if is_pipe_busy(e.raw_os_error()) && attempt < retries => {
+                attempt += 1;
+                tokio::time::sleep(delay).await;
+            }
+            other => return other,
+        }
+    }
+}
+
+/// Friendly context for a failed connect. Shared by both transports — `sock`
+/// names either a Unix socket path or a Windows Named Pipe, `.display()`
+/// renders either correctly.
+fn connect_error_context(sock: &std::path::Path, failure: ConnectFailure) -> String {
+    match failure {
+        ConnectFailure::DaemonBusy => format!(
+            "nodespaced is running at {} but is busy (its pipe stayed occupied). \
+             Try again in a moment.",
+            sock.display()
+        ),
+        ConnectFailure::NotRunning => format!(
+            "Could not connect to nodespaced at {}.\n\
+             Is the daemon running? Start it with `nodespaced` in another terminal.",
+            sock.display()
+        ),
+    }
+}
+
+/// Attach the right "busy" / "not running" context to a failed dial.
+fn connect_failure(sock: &std::path::Path, err: anyhow::Error) -> anyhow::Error {
+    let ctx = connect_error_context(sock, classify_connect_error(&err));
+    err.context(ctx)
 }
 
 /// Connect a `NodeService` client bound to the selected database, returning a
@@ -332,7 +415,7 @@ pub async fn connect(
         .map(|channel| {
             with_message_limits!(NodeServiceClient::with_interceptor(channel, interceptor))
         })
-        .with_context(|| connect_error_context(sock))
+        .map_err(|e| connect_failure(sock, e))
 }
 
 /// Connect an `ImportService` client bound to the selected database.
@@ -345,7 +428,7 @@ pub async fn connect_import(
         .map(|channel| {
             with_message_limits!(ImportServiceClient::with_interceptor(channel, interceptor))
         })
-        .with_context(|| connect_error_context(sock))
+        .map_err(|e| connect_failure(sock, e))
 }
 
 /// Connect an `AgentSessionService` client bound to the selected database.
@@ -361,7 +444,7 @@ pub async fn connect_session(
                 interceptor
             ))
         })
-        .with_context(|| connect_error_context(sock))
+        .map_err(|e| connect_failure(sock, e))
 }
 
 /// Connect a `LocalAgentService` client bound to the selected database.
@@ -377,7 +460,7 @@ pub async fn connect_local_agent(
                 interceptor
             ))
         })
-        .with_context(|| connect_error_context(sock))
+        .map_err(|e| connect_failure(sock, e))
 }
 
 /// Connect a `DatabaseService` client. This operates on the daemon's database
@@ -387,7 +470,7 @@ pub async fn connect_database(sock: &std::path::Path) -> Result<DatabaseServiceC
     dial_channel(sock)
         .await
         .map(|channel| with_message_limits!(DatabaseServiceClient::new(channel)))
-        .with_context(|| connect_error_context(sock))
+        .map_err(|e| connect_failure(sock, e))
 }
 
 /// Resolve the `--database` selection into a routing interceptor plus the
@@ -656,5 +739,105 @@ mod windows_tests {
             Some(v) => std::env::set_var("NODESPACED_SOCKET", v),
             None => std::env::remove_var("NODESPACED_SOCKET"),
         }
+    }
+}
+
+#[cfg(test)]
+mod connect_failure_tests {
+    use super::*;
+
+    #[test]
+    fn classify_connect_error_distinguishes_busy_from_absent() {
+        const ERROR_FILE_NOT_FOUND: i32 = 2;
+        // Mirror tonic's real shape: a wrapper error whose `source()` is the io error.
+        #[derive(Debug)]
+        struct Transport(std::io::Error);
+        impl std::fmt::Display for Transport {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(f, "transport error")
+            }
+        }
+        impl std::error::Error for Transport {
+            fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+                Some(&self.0)
+            }
+        }
+        let busy = anyhow::Error::new(Transport(std::io::Error::from_raw_os_error(
+            ERROR_PIPE_BUSY,
+        )));
+        assert_eq!(classify_connect_error(&busy), ConnectFailure::DaemonBusy);
+
+        let absent = anyhow::Error::new(std::io::Error::from_raw_os_error(ERROR_FILE_NOT_FOUND));
+        assert_eq!(classify_connect_error(&absent), ConnectFailure::NotRunning);
+
+        let other = anyhow::anyhow!("boom");
+        assert_eq!(classify_connect_error(&other), ConnectFailure::NotRunning);
+    }
+
+    #[test]
+    fn connect_failure_message_matches_classification() {
+        let sock = std::path::Path::new("pipe-x");
+        let busy = connect_failure(
+            sock,
+            anyhow::Error::new(std::io::Error::from_raw_os_error(ERROR_PIPE_BUSY)),
+        );
+        let msg = format!("{busy}");
+        assert!(msg.contains("busy") && !msg.contains("Is the daemon running"));
+
+        let gone = connect_failure(sock, anyhow::anyhow!("nope"));
+        assert!(format!("{gone}").contains("Is the daemon running"));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn busy_then_available_retries_and_succeeds() {
+        let mut calls = 0;
+        let out = open_with_busy_retry(
+            || {
+                calls += 1;
+                if calls < 4 {
+                    Err(std::io::Error::from_raw_os_error(ERROR_PIPE_BUSY))
+                } else {
+                    Ok(calls)
+                }
+            },
+            PIPE_BUSY_RETRIES,
+            PIPE_BUSY_DELAY,
+        )
+        .await;
+        assert_eq!(out.unwrap(), 4);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn persistent_busy_gives_up_after_bounded_retries() {
+        let mut calls = 0;
+        let out: std::io::Result<()> = open_with_busy_retry(
+            || {
+                calls += 1;
+                Err(std::io::Error::from_raw_os_error(ERROR_PIPE_BUSY))
+            },
+            3,
+            PIPE_BUSY_DELAY,
+        )
+        .await;
+        assert!(is_pipe_busy(out.unwrap_err().raw_os_error()));
+        assert_eq!(calls, 4, "1 initial attempt + 3 retries");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn absent_pipe_fails_immediately_without_retry_or_delay() {
+        let mut calls = 0;
+        let start = tokio::time::Instant::now();
+        let out: std::io::Result<()> = open_with_busy_retry(
+            || {
+                calls += 1;
+                Err(std::io::Error::from_raw_os_error(2))
+            },
+            PIPE_BUSY_RETRIES,
+            PIPE_BUSY_DELAY,
+        )
+        .await;
+        assert!(out.is_err());
+        assert_eq!(calls, 1);
+        assert_eq!(start.elapsed(), std::time::Duration::ZERO);
     }
 }
