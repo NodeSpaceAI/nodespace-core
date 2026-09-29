@@ -90,6 +90,10 @@
       if (seq !== loadSeq) return;
       const mine = me.personId ? roster.find((m) => m.personId === me.personId) : undefined;
       members = roster;
+      // Drop per-row UI state for people no longer on the roster.
+      for (const id of Object.keys(confirming)) {
+        if (!roster.some((m) => m.personId === id)) delete confirming[id];
+      }
       myPersonId = me.personId;
       isAdmin = isTenantAdmin(mine);
       listError = '';
@@ -139,6 +143,9 @@
     } catch (err) {
       removeErrors[member.personId] = toError(err).message;
       delete confirming[member.personId];
+      // Re-sync so a stale row (already removed elsewhere) disappears instead
+      // of lingering next to its own error.
+      await load();
     } finally {
       delete removing[member.personId];
     }
@@ -209,6 +216,7 @@
     <Button
       size="sm"
       variant="outline"
+      disabled={approving[member.personId]}
       onclick={() => (confirming[member.personId] = true)}
       aria-label={`${verb} ${displayName(member)}`}
     >

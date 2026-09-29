@@ -904,6 +904,11 @@ fn admission_error(op: AdmissionOp, status: &tonic::Status) -> String {
              again. ({msg})",
             op.label()
         ),
+        (AdmissionOp::Remove, Code::Unimplemented) => {
+            "This version of the NodeSpace Pro service can't remove people yet. Update NodeSpace, \
+             then try again."
+                .into()
+        }
         (_, Code::Unimplemented) => format!(
             "{} failed: the NodeSpace Pro service on this device doesn't support workspace \
              admissions yet. Update NodeSpace, then try again.",
@@ -1100,6 +1105,12 @@ mod tests {
             "{m}"
         );
         assert!(m.contains("owner can't be removed"), "{m}");
+    }
+
+    #[test]
+    fn remove_on_an_older_daemon_asks_for_an_update_without_blaming_admissions() {
+        let m = err(AdmissionOp::Remove, Code::Unimplemented, "");
+        assert!(m.contains("can't remove people yet"), "{m}");
     }
 
     #[test]

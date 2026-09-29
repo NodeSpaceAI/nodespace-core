@@ -232,6 +232,36 @@ describe('WorkspaceMembersCard — decline and remove', () => {
     expect(screen.getByRole('button', { name: 'Decline new@ex.com' })).toBeTruthy();
   });
 
+  it('reloads after a failed decline so a stale row disappears', async () => {
+    let gone = false;
+    setup({
+      me: OWNER.person_id,
+      roster: () => (gone ? [OWNER] : [OWNER, PENDING]),
+      remove: () => {
+        gone = true;
+        return Promise.reject('That person is no longer in this workspace. Refresh the list.');
+      }
+    });
+    render(WorkspaceMembersCard);
+    await fireEvent.click(await screen.findByRole('button', { name: 'Decline new@ex.com' }));
+    await fireEvent.click(screen.getByRole('button', { name: 'Confirm decline new@ex.com' }));
+    expect(await screen.findByText('No one is waiting for approval.')).toBeTruthy();
+    expect(invokedWith('pro_list_tenant_members').length).toBe(2);
+  });
+
+  it('disables Decline while that row is being approved', async () => {
+    let release!: () => void;
+    setup({
+      me: OWNER.person_id,
+      roster: [OWNER, PENDING],
+      approve: () => new Promise((r) => (release = () => r(undefined)))
+    });
+    render(WorkspaceMembersCard);
+    await fireEvent.click(await screen.findByRole('button', { name: 'Approve new@ex.com' }));
+    expect(screen.getByRole('button', { name: 'Decline new@ex.com' })).toHaveProperty('disabled', true);
+    release();
+  });
+
   it('lists active members for removal, excluding the owner and the caller', async () => {
     setup({ me: ADMIN.person_id, roster: [OWNER, ADMIN, MEMBER, PENDING] });
     render(WorkspaceMembersCard);
