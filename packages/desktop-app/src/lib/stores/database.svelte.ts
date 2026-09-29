@@ -293,16 +293,6 @@ class DatabaseStore {
   private proActivateChain: Promise<void> = Promise.resolve();
 
   /**
-   * Re-target the Pro cloud-sync session to `id` (ADR-053 single-active sync).
-   * Called both from `load()`'s first resolution (so a fresh launch's default
-   * selection is the daemon's sync target from the start, not just after the
-   * first manual switch) and from `switchTo()`. No-ops in community mode (the
-   * Tauri command returns early without a `ProClient`). Best-effort and
-   * fire-and-forget from the CALLER's perspective (same contract as
-   * `pinWindowDatabase` above — a failure here must never destabilize the
-   * caller), but internally serialized via `proActivateChain` — see there.
-   */
-  /**
    * Resolves once every `pro_activate_database` re-target queued so far has
    * settled (never rejects). A view that queries the daemon's CURRENT tenant
    * right after a switch — e.g. the workspace-members card, which re-mounts
@@ -313,6 +303,16 @@ class DatabaseStore {
     return this.proActivateChain.catch(() => {});
   }
 
+  /**
+   * Re-target the Pro cloud-sync session to `id` (ADR-053 single-active sync).
+   * Called both from `load()`'s first resolution (so a fresh launch's default
+   * selection is the daemon's sync target from the start, not just after the
+   * first manual switch) and from `switchTo()`. No-ops in community mode (the
+   * Tauri command returns early without a `ProClient`). Best-effort and
+   * fire-and-forget from the CALLER's perspective (same contract as
+   * `pinWindowDatabase` above — a failure here must never destabilize the
+   * caller), but internally serialized via `proActivateChain` — see there.
+   */
   private activateProSync(id: string): void {
     if (!isTauriBridgePresent()) return;
     this.proActivateChain = this.proActivateChain
