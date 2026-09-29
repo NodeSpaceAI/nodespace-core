@@ -2831,7 +2831,7 @@ mod required_in_last_edge_tests {
     /// declaration shadowing the inherited one. Unreachable through
     /// `create_schema` / `update_schema` (cross-chain collision validation
     /// rejects it), so the shadow is written with the lower-level
-    /// `set_schema_relationships` (core#2909).
+    /// `set_schema_relationships`.
     async fn shadowed_owns_fixture(svc: &Arc<NodeService>) {
         let owns = |reverse_name: &str| {
             json!({
@@ -2887,7 +2887,7 @@ mod required_in_last_edge_tests {
     }
 
     /// Reverse-cardinality-one scoping is ownership *equality*, not
-    /// ancestor-chain membership (core#2909). `shadow_child` extends
+    /// ancestor-chain membership. `shadow_child` extends
     /// `shadow_base`; both end up declaring `owns` (reverse cardinality one)
     /// toward `shadow_thing`, but `shadow_child`'s own declaration shadows the
     /// inherited one. That state is unreachable through `create_schema` /
