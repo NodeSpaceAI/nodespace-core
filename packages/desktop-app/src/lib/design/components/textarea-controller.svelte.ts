@@ -38,6 +38,7 @@ import { focusManager } from '$lib/services/focus-manager.svelte';
 import { pluginRegistry } from '$lib/plugins/plugin-registry';
 import { navigationStore } from '$lib/stores/navigation.svelte';
 import { untrack } from 'svelte';
+import { TextareaCaretMirror, isSameRow } from './textarea-caret-geometry';
 import {
   PatternState,
   type NodeCreationSource
@@ -562,31 +563,40 @@ export class TextareaController {
       return this.element.selectionStart === this.element.value.length;
     }
 
+    /**
+     * Whether the caret is on the first VISUAL line: the first hard line, and
+     * within it, the first row a soft wrap produces. Only then does ArrowUp
+     * leave the node; on any other row the browser moves the caret up a row.
+     */
     public isAtFirstLine(): boolean {
       const position = this.element.selectionStart;
       const textBefore = this.element.value.substring(0, position);
-      return !textBefore.includes('\n');
+      if (textBefore.includes('\n')) return false;
+      return this.isOnSameRowAs(position, 0);
     }
 
+    /**
+     * Whether the caret is on the last VISUAL line: the last hard line, and
+     * within it, the last wrapped row. Only then does ArrowDown leave the node.
+     */
     public isAtLastLine(): boolean {
       const position = this.element.selectionStart;
       const content = this.element.value;
+      if (content.substring(position).includes('\n')) return false;
+      return this.isOnSameRowAs(position, content.length);
+    }
 
-      const textBefore = content.substring(0, position);
-      const newlinesBeforeCursor = (textBefore.match(/\n/g) || []).length;
-
-      const totalNewlines = (content.match(/\n/g) || []).length;
-
-      if (totalNewlines === 0) {
-        return true;
-      }
-
-      const hasTrailingNewline = content.endsWith('\n');
-
-      if (hasTrailingNewline) {
-        return newlinesBeforeCursor >= totalNewlines;
-      } else {
-        return newlinesBeforeCursor >= totalNewlines;
+    /** Whether two positions on one hard line share a wrapped row. True when
+     * layout can't be measured, which degrades to hard-line-only checks. */
+    private isOnSameRowAs(position: number, other: number): boolean {
+      const mirror = TextareaCaretMirror.create(this.element);
+      if (!mirror) return true;
+      try {
+        const a = mirror.pointAt(position);
+        const b = mirror.pointAt(other);
+        return a === null || b === null || isSameRow(a, b);
+      } finally {
+        mirror.dispose();
       }
     }
 
@@ -599,6 +609,23 @@ export class TextareaController {
 
     public getCurrentPixelOffset(): number {
       const position = this.element.selectionStart;
+
+      // Offset within the caret's wrapped row. Measuring from the hard line's
+      // start instead would put a caret on a later row far to the right.
+      const mirror = TextareaCaretMirror.create(this.element);
+      if (mirror) {
+        try {
+          const point = mirror.pointAt(position);
+          if (point) {
+            this.lastKnownPixelOffset =
+              this.element.getBoundingClientRect().left + point.left + window.scrollX;
+            return this.lastKnownPixelOffset;
+          }
+        } finally {
+          mirror.dispose();
+        }
+      }
+
       const content = this.element.value;
       const textBefore = content.substring(0, position);
       const lastNewline = textBefore.lastIndexOf('\n');
@@ -634,16 +661,20 @@ export class TextareaController {
     }
 
     public enterFromArrowNavigation(direction: 'up' | 'down', pixelOffset: number): void {
+      const rect = this.element.getBoundingClientRect();
+      const relativeOffset = pixelOffset - (rect.left + window.scrollX);
+      const wrappedPosition = this.findEntryPositionOnEdgeRow(direction, relativeOffset);
+      if (wrappedPosition !== null) {
+        this.focus();
+        this.setCursorPosition(wrappedPosition);
+        return;
+      }
+
       const content = this.element.value;
       const lines = content.split('\n');
 
       const lineIndex = direction === 'up' ? lines.length - 1 : 0;
       const targetLine = lines[lineIndex];
-
-      // Get the textarea's left edge position
-      const rect = this.element.getBoundingClientRect();
-      const textareaLeftEdge = rect.left + window.scrollX;
-      const relativePixelOffset = pixelOffset - textareaLeftEdge;
 
       // The pixelOffset represents the VISUAL cursor position from source's EDIT mode
       // But the target node displays in VIEW mode first, then switches to EDIT mode
@@ -655,7 +686,7 @@ export class TextareaController {
       const viewLine = stripAllMarkdown(targetLine);
 
       // Find column in view text that matches the pixel offset
-      const viewColumn = this.findColumnForPixelOffset(viewLine, relativePixelOffset);
+      const viewColumn = this.findColumnForPixelOffset(viewLine, relativeOffset);
 
       // Map view column to edit column (accounting for markdown syntax)
       const editColumn = mapViewPositionToEditPosition(viewColumn, viewLine, targetLine);
@@ -669,6 +700,78 @@ export class TextareaController {
 
       this.focus();
       this.setCursorPosition(position);
+    }
+
+    /**
+     * The caret position for entering this node by arrow key: on the last
+     * visual row when coming up from below, the first when coming down from
+     * above, at the position whose horizontal offset is nearest
+     * `relativeOffset`. Measured on the text as the textarea lays it out, so
+     * a soft-wrapped line is entered on its edge row rather than wherever the
+     * offset falls along the whole unwrapped line. Null when layout can't be
+     * measured.
+     */
+    private findEntryPositionOnEdgeRow(
+      direction: 'up' | 'down',
+      relativeOffset: number
+    ): number | null {
+      const mirror = TextareaCaretMirror.create(this.element);
+      if (!mirror) return null;
+      try {
+        const content = this.element.value;
+        const edge = direction === 'up' ? content.length : 0;
+        const edgePoint = mirror.pointAt(edge);
+        if (!edgePoint) return null;
+
+        // Positions on a hard line map to rows in non-decreasing order, so
+        // the edge row is a contiguous range: binary-search its far end.
+        const onEdgeRow = (position: number): boolean => {
+          const point = mirror.pointAt(position);
+          return point !== null && isSameRow(point, edgePoint);
+        };
+        let rowStart = edge;
+        let rowEnd = edge;
+        if (direction === 'up') {
+          let low = content.lastIndexOf('\n') + 1;
+          let high = edge;
+          while (low < high) {
+            const mid = Math.floor((low + high) / 2);
+            if (onEdgeRow(mid)) high = mid;
+            else low = mid + 1;
+          }
+          rowStart = low;
+        } else {
+          const newline = content.indexOf('\n');
+          let low = edge;
+          let high = newline === -1 ? content.length : newline;
+          while (low < high) {
+            const mid = Math.ceil((low + high) / 2);
+            if (onEdgeRow(mid)) low = mid;
+            else high = mid - 1;
+          }
+          rowEnd = low;
+        }
+
+        // Offsets increase along a row: find the first position at or past
+        // the target, then take it or its predecessor, whichever is nearer.
+        const leftOf = (position: number): number => mirror.pointAt(position)?.left ?? 0;
+        let low = rowStart;
+        let high = rowEnd;
+        while (low < high) {
+          const mid = Math.floor((low + high) / 2);
+          if (leftOf(mid) < relativeOffset) low = mid + 1;
+          else high = mid;
+        }
+        if (
+          low > rowStart &&
+          Math.abs(leftOf(low - 1) - relativeOffset) <= Math.abs(leftOf(low) - relativeOffset)
+        ) {
+          return low - 1;
+        }
+        return low;
+      } finally {
+        mirror.dispose();
+      }
     }
 
     /**

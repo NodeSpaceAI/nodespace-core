@@ -5,6 +5,7 @@
  * Implements smart navigation between nodes only at boundaries.
  *
  * Behavior:
+ * - Textarea (any node type): Navigate only from the first visual row
  * - For single-line nodes: Always navigate on ArrowUp
  * - For multiline nodes with actual multiple lines: Navigate only when at first line
  * - For multiline-capable nodes with single line: Always navigate
@@ -38,35 +39,32 @@ export class NavigateUpCommand implements KeyboardCommand {
       return false;
     }
 
-    // Determine if we should navigate between nodes
+    // A textarea (any node type) reports whether the caret is on its first
+    // VISUAL row, soft wraps included: a single-line node's text can wrap
+    // too, and the browser moves the caret between wrapped rows itself.
+    const element = controller.element;
+    if (element.tagName === 'TEXTAREA') {
+      return controller.isAtFirstLine ? controller.isAtFirstLine() : true;
+    }
+
+    // ContentEditable: decide from its line structure
     if (context.allowMultiline) {
-      // Check if this is a textarea or contenteditable
-      const element = controller.element;
-      const isTextarea = element.tagName === 'TEXTAREA';
+      // ContentEditable: Check if the node actually has multiple lines (DIVs or BRs exist)
+      const lineElements = Array.from(element.children).filter(
+        (child: Element) => child.tagName === 'DIV'
+      );
+      const hasBrTags = element.innerHTML.includes('<br>');
+      const hasMultipleLines = lineElements.length > 0 || hasBrTags;
 
-      if (isTextarea) {
-        // Textarea: Use isAtFirstLine() method which checks for \n newlines
-        // Only navigate if cursor is on the first line
-        const atFirstLine = controller.isAtFirstLine ? controller.isAtFirstLine() : true;
-        return atFirstLine;
+      if (hasMultipleLines) {
+        // For nodes with actual multiple lines, let browser handle all navigation
+        // Only intercept when we're at the absolute start (no content above cursor)
+        const atAbsoluteStart = this.isAtAbsoluteStart(context);
+        return atAbsoluteStart;
       } else {
-        // ContentEditable: Check if the node actually has multiple lines (DIVs or BRs exist)
-        const lineElements = Array.from(element.children).filter(
-          (child: Element) => child.tagName === 'DIV'
-        );
-        const hasBrTags = element.innerHTML.includes('<br>');
-        const hasMultipleLines = lineElements.length > 0 || hasBrTags;
-
-        if (hasMultipleLines) {
-          // For nodes with actual multiple lines, let browser handle all navigation
-          // Only intercept when we're at the absolute start (no content above cursor)
-          const atAbsoluteStart = this.isAtAbsoluteStart(context);
-          return atAbsoluteStart;
-        } else {
-          // Node supports multiline but currently has only single line
-          // Allow navigation from anywhere (like single-line nodes)
-          return true;
-        }
+        // Node supports multiline but currently has only single line
+        // Allow navigation from anywhere (like single-line nodes)
+        return true;
       }
     } else {
       // For single-line nodes, always navigate on arrow up
