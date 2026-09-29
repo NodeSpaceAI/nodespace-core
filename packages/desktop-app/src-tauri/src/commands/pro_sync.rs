@@ -13,12 +13,13 @@ use crate::services::pro_client::pb::cloud_sync_service_client::CloudSyncService
 use crate::services::pro_client::pb::list_tenant_memberships_response::Selection as TenantSelection;
 use crate::services::pro_client::pb::sync_status_event::State as PbState;
 use crate::services::pro_client::pb::{
-    AcceptInviteRequest, ActivateDatabaseRequest, ApproveRequestRequest, BindTenantRequest,
-    CreateInviteRequest, EnableSyncRequest, GetIdentityRequest, InitiateOAuthRequest,
-    JoinCollectionRequest, LeaveCollectionRequest, ListInvitesRequest,
-    ListJoinableCollectionsRequest, ListMembersRequest, ListRequestsRequest,
-    ListTenantMembershipsRequest, RemoveMemberRequest, RequestJoinRequest, RevokeInviteRequest,
-    SetMemberRequest, SignOutRequest, TenantMembershipInfo, WatchSyncStatusRequest,
+    AcceptInviteRequest, ActivateDatabaseRequest, ApproveAdmissionRequest, ApproveRequestRequest,
+    BindTenantRequest, CreateInviteRequest, EnableSyncRequest, GetIdentityRequest,
+    InitiateAdmissionRequest, InitiateOAuthRequest, JoinCollectionRequest, LeaveCollectionRequest,
+    ListInvitesRequest, ListJoinableCollectionsRequest, ListMembersRequest, ListRequestsRequest,
+    ListTenantMembersRequest, ListTenantMembershipsRequest, RemoveMemberRequest,
+    RequestJoinRequest, RevokeInviteRequest, SetMemberRequest, SignOutRequest,
+    TenantMembershipInfo, WatchSyncStatusRequest,
 };
 use crate::services::{ProClient, ProTier};
 use tonic::transport::Channel;
@@ -818,4 +819,272 @@ pub async fn pro_current_person(app: AppHandle) -> Result<PersonDto, String> {
         person_id: resp.person_node_id,
         email: resp.email,
     })
+}
+
+// --- Tenant admission (ADR-066 owner / tenant-admin / member) -------------
+//
+// A person who signs in to a tenant with admission enforcement lands `pending`
+// and gets nothing until an owner or tenant admin approves them. These three
+// commands back the Settings → Account "Workspace members" card: list the
+// tenant roster (pending rows included, with their status), approve a pending
+// admission, and invite someone by email. Like the membership commands above
+// they are thin JWT-forwarding pass-throughs — the cloud enforces who may do
+// what — but unlike those, their errors are rewritten into the next step the
+// user should take, since this card is the only place a stuck joiner can be
+// unblocked from.
+
+/// Bound on the admission calls. Longer than [`MEMBERSHIP_RPC_TIMEOUT`]:
+/// `InitiateAdmission` is two sequential cloud round-trips (the worker's
+/// email→uid lookup, then the tenant RPC), each with the daemon's own 30s
+/// HTTP timeout, and a slow-but-healthy lookup must not be reported as a hang.
+const ADMISSION_RPC_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(45);
+
+/// One row of the active tenant's roster, returned by [`pro_list_tenant_members`].
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct TenantMemberDto {
+    /// Person node id — the handle [`pro_approve_admission`] takes.
+    pub person_id: String,
+    /// Signed-in email; empty when the cloud has none on file.
+    pub email: String,
+    /// "owner" | "tenant_admin" | "member" (open set).
+    pub role: String,
+    /// "pending" | "active" (the cloud never lists removed rows).
+    pub status: String,
+}
+
+/// Result of [`pro_initiate_admission`].
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct AdmissionDto {
+    /// "initiated" | "already_member".
+    pub outcome: String,
+    /// The invitee's person node id (new or existing).
+    pub person_id: String,
+    /// The invitee's admission status after the call.
+    pub status: String,
+}
+
+/// Which admission call failed — selects the wording of [`admission_error`].
+#[derive(Debug, Clone, Copy)]
+enum AdmissionOp {
+    List,
+    Approve,
+    Invite,
+}
+
+impl AdmissionOp {
+    fn label(self) -> &'static str {
+        match self {
+            AdmissionOp::List => "Loading workspace members",
+            AdmissionOp::Approve => "Approving",
+            AdmissionOp::Invite => "Sending the invite",
+        }
+    }
+}
+
+const SIGN_IN_AGAIN: &str =
+    "Your NodeSpace Pro session has expired. Sign in again from Settings → Database, then retry.";
+
+/// Rewrite a daemon error into a sentence that says what happened and what to
+/// do next. Codes are the ones the daemon's admission handlers actually map
+/// (the worker's HTTP status for the invitee lookup, the PostgREST SQLSTATE for
+/// the tenant RPCs); anything unrecognized keeps the daemon's own message so
+/// nothing is swallowed.
+fn admission_error(op: AdmissionOp, status: &tonic::Status) -> String {
+    use tonic::Code;
+    let msg = status.message();
+    match (op, status.code()) {
+        (_, Code::Unauthenticated) => SIGN_IN_AGAIN.into(),
+        (_, Code::Unavailable) => format!(
+            "{} failed: NodeSpace Pro couldn't reach the cloud. Check your connection and try again.",
+            op.label()
+        ),
+        (_, Code::Unimplemented) => format!(
+            "{} failed: the NodeSpace Pro service on this device doesn't support workspace \
+             admissions yet. Update NodeSpace, then try again.",
+            op.label()
+        ),
+        (AdmissionOp::Approve, Code::PermissionDenied) => {
+            "Only a workspace owner or admin can approve members. Ask one of them to approve \
+             this person."
+                .into()
+        }
+        (_, Code::PermissionDenied) => format!(
+            "{} failed: your account isn't an active member of this workspace. If you were just \
+             invited, wait for an owner or admin to approve you.",
+            op.label()
+        ),
+        (AdmissionOp::Invite, Code::NotFound) => {
+            "No NodeSpace account uses that email yet. Ask them to sign in to NodeSpace Pro once, \
+             then invite them again."
+                .into()
+        }
+        (AdmissionOp::Invite, Code::ResourceExhausted) => {
+            "Too many invites in a short time. Wait a minute, then try again.".into()
+        }
+        (AdmissionOp::Invite, Code::FailedPrecondition) => {
+            "Inviting by email needs a browser sign-in. Sign out from Settings → Account, sign in \
+             again from Settings → Database, then retry."
+                .into()
+        }
+        (AdmissionOp::Invite, Code::InvalidArgument) => format!("Can't send that invite: {msg}."),
+        _ => format!("{} failed: {msg}", op.label()),
+    }
+}
+
+fn admission_timeout(op: AdmissionOp) -> String {
+    format!(
+        "{} failed: NodeSpace Pro didn't respond. Check that NodeSpace is still running, then \
+         try again.",
+        op.label()
+    )
+}
+
+/// The active tenant's roster — every non-removed member with their tenant role
+/// and admission status. Pending admissions are the rows with
+/// `status == "pending"`; the frontend filters them out for the approve list.
+/// Readable by any active member (the cloud gates it).
+#[tauri::command]
+pub async fn pro_list_tenant_members(app: AppHandle) -> Result<Vec<TenantMemberDto>, String> {
+    let op = AdmissionOp::List;
+    let mut client = membership_client(&app).await?;
+    let resp = tokio::time::timeout(
+        ADMISSION_RPC_TIMEOUT,
+        client.list_tenant_members(ListTenantMembersRequest {}),
+    )
+    .await
+    .map_err(|_elapsed| admission_timeout(op))?
+    .map_err(|e| admission_error(op, &e))?
+    .into_inner();
+    Ok(resp
+        .members
+        .into_iter()
+        .map(|m| TenantMemberDto {
+            person_id: m.person_id,
+            email: m.email,
+            role: m.role,
+            status: m.status,
+        })
+        .collect())
+}
+
+/// Approve a pending admission (owner / tenant admin only, cloud-gated). The
+/// cloud call is a no-op for a row that is no longer pending, so a double
+/// approve (two admins, or a stale list) succeeds rather than erroring.
+#[tauri::command]
+pub async fn pro_approve_admission(app: AppHandle, person_id: String) -> Result<(), String> {
+    let op = AdmissionOp::Approve;
+    let mut client = membership_client(&app).await?;
+    tokio::time::timeout(
+        ADMISSION_RPC_TIMEOUT,
+        client.approve_admission(ApproveAdmissionRequest { person_id }),
+    )
+    .await
+    .map_err(|_elapsed| admission_timeout(op))?
+    .map_err(|e| admission_error(op, &e))?;
+    tracing::info!("Pro: ApproveAdmission");
+    Ok(())
+}
+
+/// Invite a person to the active tenant by email. The daemon resolves the
+/// email to the invitee's account (it must already exist) and creates a
+/// pending admission, which an owner or tenant admin then approves.
+#[tauri::command]
+pub async fn pro_initiate_admission(app: AppHandle, email: String) -> Result<AdmissionDto, String> {
+    let op = AdmissionOp::Invite;
+    let mut client = membership_client(&app).await?;
+    let resp = tokio::time::timeout(
+        ADMISSION_RPC_TIMEOUT,
+        client.initiate_admission(InitiateAdmissionRequest { email }),
+    )
+    .await
+    .map_err(|_elapsed| admission_timeout(op))?
+    .map_err(|e| admission_error(op, &e))?
+    .into_inner();
+    tracing::info!(outcome = %resp.outcome, "Pro: InitiateAdmission");
+    Ok(AdmissionDto {
+        outcome: resp.outcome,
+        person_id: resp.person_node_id,
+        status: resp.status,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tonic::{Code, Status};
+
+    fn err(op: AdmissionOp, code: Code, msg: &str) -> String {
+        admission_error(op, &Status::new(code, msg))
+    }
+
+    #[test]
+    fn expired_session_asks_to_sign_in_again_for_every_op() {
+        for op in [AdmissionOp::List, AdmissionOp::Approve, AdmissionOp::Invite] {
+            assert_eq!(
+                err(op, Code::Unauthenticated, "not signed in"),
+                SIGN_IN_AGAIN
+            );
+        }
+    }
+
+    #[test]
+    fn invite_to_unknown_email_says_the_invitee_must_sign_in_first() {
+        let m = err(
+            AdmissionOp::Invite,
+            Code::NotFound,
+            "no account with that email",
+        );
+        assert!(m.contains("No NodeSpace account uses that email"), "{m}");
+        assert!(m.contains("sign in to NodeSpace Pro once"), "{m}");
+    }
+
+    #[test]
+    fn approve_by_non_admin_names_who_can_approve() {
+        let m = err(
+            AdmissionOp::Approve,
+            Code::PermissionDenied,
+            "only an active tenant admin may approve admission",
+        );
+        assert!(m.contains("Only a workspace owner or admin"), "{m}");
+    }
+
+    #[test]
+    fn invite_permission_denied_is_about_the_callers_own_membership() {
+        let m = err(AdmissionOp::Invite, Code::PermissionDenied, "not a member");
+        assert!(m.starts_with("Sending the invite failed"), "{m}");
+        assert!(m.contains("isn't an active member"), "{m}");
+    }
+
+    #[test]
+    fn invite_rate_limit_and_missing_worker_session_are_actionable() {
+        let m = err(AdmissionOp::Invite, Code::ResourceExhausted, "slow down");
+        assert!(m.contains("Wait a minute"), "{m}");
+        let m = err(AdmissionOp::Invite, Code::FailedPrecondition, "no worker");
+        assert!(m.contains("sign in"), "{m}");
+    }
+
+    #[test]
+    fn invite_invalid_argument_keeps_the_cloud_reason() {
+        let m = err(
+            AdmissionOp::Invite,
+            Code::InvalidArgument,
+            "cannot initiate an admission for yourself",
+        );
+        assert_eq!(
+            m,
+            "Can't send that invite: cannot initiate an admission for yourself."
+        );
+    }
+
+    #[test]
+    fn unrecognized_code_keeps_the_daemon_message() {
+        let m = err(AdmissionOp::Approve, Code::Internal, "boom (HTTP 500)");
+        assert_eq!(m, "Approving failed: boom (HTTP 500)");
+    }
+
+    #[test]
+    fn old_daemon_without_the_rpc_asks_for_an_update() {
+        let m = err(AdmissionOp::List, Code::Unimplemented, "");
+        assert!(m.contains("Update NodeSpace"), "{m}");
+    }
 }

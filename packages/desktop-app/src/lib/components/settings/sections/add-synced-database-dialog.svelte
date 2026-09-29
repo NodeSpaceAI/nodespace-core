@@ -105,6 +105,8 @@
   let step = $state<Step>('checking');
   let errorMessage = $state('');
   let tenants = $state<TenantMembership[]>([]);
+  /** Tenants the user has joined but no owner/admin has approved yet. */
+  let pendingTenants = $state<TenantMembership[]>([]);
   let selectedTenant = $state<TenantMembership | null>(null);
   let databaseName = $state('');
   let signingIn = $state(false);
@@ -178,6 +180,7 @@
     try {
       const result = await invoke<TenantMembershipsResult>('pro_list_tenant_memberships');
       tenants = result.memberships.filter((t) => t.status === 'active');
+      pendingTenants = result.memberships.filter((t) => t.status === 'pending');
       if (tenants.length === 0) {
         step = 'no-workspace';
       } else if (result.selection === 'auto-select' && result.autoSelected) {
@@ -358,10 +361,19 @@
       </div>
     {:else if step === 'no-workspace'}
       <div class="py-4">
-        <p class="text-muted-foreground text-sm leading-relaxed">
-          You're signed in, but you don't belong to any active workspace yet. Ask a workspace
-          admin to invite you, then try again.
-        </p>
+        {#if pendingTenants.length > 0}
+          <p class="text-foreground text-sm leading-relaxed" data-testid="pending-approval">
+            You've joined
+            {pendingTenants.map((t) => tenantLabel(t.schema) || 'a workspace').join(', ')}, but a workspace owner
+            or admin hasn't approved you yet. Ask them to approve you in Settings → Account, then
+            click Retry.
+          </p>
+        {:else}
+          <p class="text-muted-foreground text-sm leading-relaxed">
+            You're signed in, but you don't belong to any active workspace yet. Ask a workspace
+            admin to invite you, then try again.
+          </p>
+        {/if}
       </div>
       <Dialog.Footer>
         <Button variant="outline" onclick={() => void checkIdentity()}>Retry</Button>

@@ -137,9 +137,30 @@ describe('AddSyncedDatabaseDialog', () => {
 
     render(AddSyncedDatabaseDialog, { props: { open: true } });
 
+    // The only membership is pending, so it is not offered for binding; the
+    // user is told they are waiting for approval rather than that they belong
+    // to nothing.
+    const notice = await screen.findByTestId('pending-approval');
+    expect(notice.textContent).toContain('Pending');
+    expect(notice.textContent).toContain("hasn't approved you yet");
+    expect(screen.queryByText(/don't belong to any active workspace/)).toBeNull();
+    expect(screen.queryByText('Choose a workspace to sync a database to:')).toBeNull();
+  });
+
+  it('with no memberships at all, says the user belongs to no workspace', async () => {
+    mockInvoke.mockImplementation((cmd: string) => {
+      if (cmd === 'pro_current_person') return Promise.resolve(SIGNED_IN);
+      if (cmd === 'pro_list_tenant_memberships')
+        return Promise.resolve({ memberships: [], selection: 'no-workspace', autoSelected: null });
+      throw new Error(`unexpected invoke: ${cmd}`);
+    });
+
+    render(AddSyncedDatabaseDialog, { props: { open: true } });
+
     await waitFor(() =>
       expect(screen.getByText(/don't belong to any active workspace/)).toBeTruthy()
     );
+    expect(screen.queryByTestId('pending-approval')).toBeNull();
   });
 
   it('not signed in -> offers sign-in, then loads tenants once sync:status carries an email', async () => {

@@ -198,6 +198,69 @@ describe('AccountSettings', () => {
     expect(container.textContent).not.toContain('Signed out');
   });
 
+  it('tells a signed-in user which workspaces are still waiting to approve them', async () => {
+    proSync.tier = 'pro';
+    mockInvoke.mockImplementation((cmd: string) => {
+      if (cmd === 'pro_current_person') return Promise.resolve(SIGNED_IN);
+      if (cmd === 'pro_list_tenant_memberships')
+        return Promise.resolve({
+          memberships: [
+            { tenantId: 't1', schema: 'tenant_acme_labs', status: 'pending', role: 'member' },
+            { tenantId: 't2', schema: 'tenant_home', status: 'active', role: 'owner' }
+          ],
+          selection: 'auto-select',
+          autoSelected: null
+        });
+      return Promise.resolve(undefined);
+    });
+    const { findAllByTestId } = render(AccountSettings);
+
+    const notices = await findAllByTestId('pending-approval');
+    expect(notices).toHaveLength(1);
+    expect(notices[0].textContent?.replace(/\s+/g, ' ')).toContain(
+      'Waiting for approval to join Acme labs.'
+    );
+  });
+
+  it('shows no approval notice or members card when the user has no pending workspace and is not an admin', async () => {
+    proSync.tier = 'pro';
+    mockInvoke.mockImplementation((cmd: string) => {
+      // Wire shape (snake_case `person_id`) so the card really matches the
+      // caller to their `member` row — the role, not a missing id, hides it.
+      if (cmd === 'pro_current_person')
+        return Promise.resolve({ person_id: 'person-1', email: 'alice@example.com' });
+      if (cmd === 'pro_list_tenant_memberships')
+        return Promise.resolve({ memberships: [], selection: 'no-workspace', autoSelected: null });
+      if (cmd === 'pro_list_tenant_members')
+        return Promise.resolve([
+          { person_id: 'person-1', email: 'alice@example.com', role: 'member', status: 'active' }
+        ]);
+      return Promise.resolve(undefined);
+    });
+    const { container, queryByTestId } = render(AccountSettings);
+
+    await waitFor(() => expect(mockInvoke).toHaveBeenCalledWith('pro_list_tenant_members'));
+    await waitFor(() => expect(mockInvoke).toHaveBeenCalledWith('pro_list_tenant_memberships'));
+    expect(queryByTestId('pending-approval')).toBeNull();
+    expect(queryByTestId('workspace-members-card')).toBeNull();
+    expect(container.textContent).not.toContain('Workspace members');
+  });
+
+  it('shows the Workspace members card to a signed-in owner', async () => {
+    proSync.tier = 'pro';
+    mockInvoke.mockImplementation((cmd: string) => {
+      if (cmd === 'pro_current_person')
+        return Promise.resolve({ person_id: 'person-1', email: 'alice@example.com' });
+      if (cmd === 'pro_list_tenant_members')
+        return Promise.resolve([
+          { person_id: 'person-1', email: 'alice@example.com', role: 'owner', status: 'active' }
+        ]);
+      return Promise.resolve(undefined);
+    });
+    const { findByTestId } = render(AccountSettings);
+    expect(await findByTestId('workspace-members-card')).toBeTruthy();
+  });
+
   it('opens the Invitations inbox modal when signed in', async () => {
     proSync.tier = 'pro';
     mockIdentity(SIGNED_IN);
