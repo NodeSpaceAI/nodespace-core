@@ -11,7 +11,10 @@
 
 import { v4 as uuidv4 } from 'uuid';
 import { backendAdapter } from '$lib/services/backend-adapter';
+import { createLogger } from '$lib/utils/logger';
 import { sharedNodeStore } from '$lib/services/shared-node-store.svelte';
+
+const log = createLogger('MentionNodeService');
 
 /** Create a top-level text node titled `title` and cache it; returns its id. */
 export async function createMentionTargetNode(title: string): Promise<string> {
@@ -23,6 +26,13 @@ export async function createMentionTargetNode(title: string): Promise<string> {
     nodeType: 'text',
     properties: {}
   });
-  await sharedNodeStore.ensureNode(newNodeId);
+  // Best-effort cache warm: the node already exists in the backend, so a failed
+  // read must not make the caller treat the create as failed (the tab opened
+  // for it loads the node itself).
+  try {
+    await sharedNodeStore.ensureNode(newNodeId);
+  } catch (error) {
+    log.warn('ensureNode after mention create failed; the tab will load it', error);
+  }
   return newNodeId;
 }

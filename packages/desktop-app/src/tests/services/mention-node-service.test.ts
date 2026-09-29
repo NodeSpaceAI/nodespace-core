@@ -33,4 +33,27 @@ describe('createMentionTargetNode', () => {
     await expect(createMentionTargetNode('x')).rejects.toThrow('boom');
     expect(ensureSpy).not.toHaveBeenCalled();
   });
+
+  it('still resolves with the id when the follow-up store load fails', async () => {
+    vi.spyOn(backendAdapter, 'createNode').mockResolvedValue({ id: 'x', placement: null });
+    vi.spyOn(sharedNodeStore, 'ensureNode').mockRejectedValue(new Error('grpc down'));
+
+    await expect(createMentionTargetNode('Fresh')).resolves.toEqual(expect.any(String));
+  });
+
+  it('populates the real store from the backend read', async () => {
+    vi.spyOn(backendAdapter, 'createNode').mockResolvedValue({ id: 'x', placement: null });
+    vi.spyOn(backendAdapter, 'getNode').mockImplementation(async (id: string) => ({
+      id,
+      nodeType: 'text',
+      content: 'Fresh',
+      version: 1,
+      createdAt: '2026-01-01T00:00:00Z',
+      modifiedAt: '2026-01-01T00:00:00Z',
+      properties: {}
+    }));
+
+    const id = await createMentionTargetNode('Fresh');
+    expect(sharedNodeStore.getNode(id)?.content).toBe('Fresh');
+  });
 });
