@@ -16,10 +16,10 @@ use crate::services::pro_client::pb::{
     AcceptInviteRequest, ActivateDatabaseRequest, ApproveAdmissionRequest, ApproveRequestRequest,
     BindTenantRequest, CreateInviteRequest, EnableSyncRequest, GetIdentityRequest,
     InitiateAdmissionRequest, InitiateOAuthRequest, JoinCollectionRequest, LeaveCollectionRequest,
-    ListInvitesRequest, ListJoinableCollectionsRequest, ListMembersRequest, ListRequestsRequest,
-    ListTenantMembersRequest, ListTenantMembershipsRequest, RemoveFromTenantRequest,
-    RemoveMemberRequest, RequestJoinRequest, RevokeInviteRequest, SetMemberRequest, SignOutRequest,
-    TenantMembershipInfo, WatchSyncStatusRequest,
+    ListInvitesRequest, ListJoinableCollectionsRequest, ListMembersRequest, ListMembersResponse,
+    ListRequestsRequest, ListTenantMembersRequest, ListTenantMembershipsRequest,
+    RemoveFromTenantRequest, RemoveMemberRequest, RequestJoinRequest, RevokeInviteRequest,
+    SetMemberRequest, SignOutRequest, TenantMembershipInfo, WatchSyncStatusRequest,
 };
 use crate::services::{ProClient, ProTier};
 use tonic::transport::Channel;
@@ -509,6 +509,34 @@ pub struct MemberDto {
     pub permission: String,
 }
 
+/// A collection's roster plus the caller's stakeholder-gate outcome, returned by
+/// [`pro_list_members`].
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct RosterDto {
+    pub members: Vec<MemberDto>,
+    /// Whether the open-collection stakeholder limit (ADR-037 §2a) lets the caller
+    /// add another person, change their tier or create an invite: always `true`
+    /// on a restricted collection, stakeholder-only on an open one. `None` when
+    /// unknown (a daemon or tenant schema that predates it): hide nothing then.
+    pub stakeholder_gate_allows_caller: Option<bool>,
+}
+
+impl From<ListMembersResponse> for RosterDto {
+    fn from(resp: ListMembersResponse) -> Self {
+        Self {
+            members: resp
+                .members
+                .into_iter()
+                .map(|m| MemberDto {
+                    person_id: m.person_id,
+                    permission: m.permission,
+                })
+                .collect(),
+            stakeholder_gate_allows_caller: resp.stakeholder_gate_allows_caller,
+        }
+    }
+}
+
 /// One pending invite returned by [`pro_list_invites`].
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct InviteDto {
@@ -615,26 +643,17 @@ pub async fn pro_leave_collection(app: AppHandle, collection_id: String) -> Resu
     Ok(())
 }
 
-/// List the roster of a collection (member/admin).
+/// List the roster of a collection (member/admin), with the caller's
+/// stakeholder-gate outcome.
 #[tauri::command]
-pub async fn pro_list_members(
-    app: AppHandle,
-    collection_id: String,
-) -> Result<Vec<MemberDto>, String> {
+pub async fn pro_list_members(app: AppHandle, collection_id: String) -> Result<RosterDto, String> {
     let mut client = membership_client(&app).await?;
     let resp = client
         .list_members(ListMembersRequest { collection_id })
         .await
         .map_err(|e| format!("ListMembers failed: {e}"))?
         .into_inner();
-    Ok(resp
-        .members
-        .into_iter()
-        .map(|m| MemberDto {
-            person_id: m.person_id,
-            permission: m.permission,
-        })
-        .collect())
+    Ok(resp.into())
 }
 
 /// Create an invite (admin only). Returns the invite code. When `email` is set
@@ -1051,7 +1070,35 @@ pub async fn pro_initiate_admission(app: AppHandle, email: String) -> Result<Adm
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::services::pro_client::pb::Member;
     use tonic::{Code, Status};
+
+    #[test]
+    fn roster_dto_carries_members_and_the_stakeholder_gate() {
+        let resp = |gate| ListMembersResponse {
+            members: vec![Member {
+                person_id: "p1".into(),
+                permission: "admin".into(),
+            }],
+            stakeholder_gate_allows_caller: gate,
+        };
+        let dto = RosterDto::from(resp(Some(false)));
+        assert_eq!(dto.members.len(), 1);
+        assert_eq!(dto.members[0].person_id, "p1");
+        assert_eq!(dto.members[0].permission, "admin");
+        assert_eq!(dto.stakeholder_gate_allows_caller, Some(false));
+        assert_eq!(
+            RosterDto::from(resp(Some(true))).stakeholder_gate_allows_caller,
+            Some(true)
+        );
+        // An older daemon never sets the field: unknown, serialized as null.
+        let unknown = RosterDto::from(resp(None));
+        assert_eq!(unknown.stakeholder_gate_allows_caller, None);
+        assert_eq!(
+            serde_json::to_value(&unknown).unwrap()["stakeholder_gate_allows_caller"],
+            serde_json::Value::Null
+        );
+    }
 
     fn err(op: AdmissionOp, code: Code, msg: &str) -> String {
         admission_error(op, &Status::new(code, msg))

@@ -5,6 +5,12 @@
   already in the workspace. Self-service "Leave" for the caller. Non-admins see a
   read-only roster.
 
+  On an open collection, adding someone, changing a role, creating an invite and
+  approving a join request are limited to its stakeholders — its creator or a
+  workspace owner/admin (ADR-037 §2a) — so an admin the server's stakeholder gate
+  refuses keeps only remove / revoke / reject. An unknown gate (older daemon or
+  cloud schema) hides nothing; the server's refusal is then explained instead.
+
   Pro-only: rendered only when proSync.tier === 'pro' (the host tab is gated too),
   so the community build never mounts this. Invites & join requests (the primary
   onboarding paths) live in the sibling InvitesPanel (S4).
@@ -70,13 +76,30 @@
 	let view = $derived(membership.get(collectionId));
 	let myRole = $derived(membership.currentUserRole(collectionId));
 	let amAdmin = $derived(myRole === 'admin');
+	// Add / re-role / invite / approve: an admin the stakeholder gate doesn't refuse.
+	// The gate is always open on a restricted collection; `null` (unknown) hides nothing.
+	let canManageOthers = $derived(amAdmin && view.stakeholderGate !== false);
 	let myId = $derived(membership.currentPerson?.personId ?? '');
+
+	const STAKEHOLDER_ONLY =
+		'Only the collection’s creator or a workspace owner/admin can add people to this open collection or change their roles.';
 
 	function friendly(e: unknown): string {
 		const s = toError(e).message;
 		// Surface the last-admin protection clearly (daemon FAILED_PRECONDITION).
 		if (/last[ _]?admin|only admin|last remaining admin/i.test(s)) {
 			return 'You can’t remove or demote the last admin of this collection.';
+		}
+		// The open-collection stakeholder limit (the cloud's PERMISSION_DENIED): an
+		// older daemon doesn't report the gate, so these controls stay offered.
+		if (/only the creator or a tenant owner\/admin can create invites/i.test(s)) {
+			return 'Only the collection’s creator or a workspace owner/admin can create invites for this open collection.';
+		}
+		if (/only the creator or a tenant owner\/admin may add or change/i.test(s)) {
+			return STAKEHOLDER_ONLY;
+		}
+		if (/only the creator may grant admin/i.test(s)) {
+			return 'Only the collection’s creator can make someone an admin of this open collection.';
 		}
 		return s.replace(/^Error:\s*/, '');
 	}
@@ -242,17 +265,21 @@
 						</span>
 
 						{#if amAdmin && !isSelf}
-							<select
-								class="role-select"
-								value={m.permission}
-								disabled={busyPerson === m.personId}
-								onchange={(e) => changeRole(m.personId, e.currentTarget.value as Permission)}
-								aria-label="Role for {m.personId}"
-							>
-								{#each PERMISSIONS as p}
-									<option value={p}>{ROLE_LABEL[p]}</option>
-								{/each}
-							</select>
+							{#if canManageOthers}
+								<select
+									class="role-select"
+									value={m.permission}
+									disabled={busyPerson === m.personId}
+									onchange={(e) => changeRole(m.personId, e.currentTarget.value as Permission)}
+									aria-label="Role for {m.personId}"
+								>
+									{#each PERMISSIONS as p}
+										<option value={p}>{ROLE_LABEL[p]}</option>
+									{/each}
+								</select>
+							{:else}
+								<span class="role-badge" data-role={m.permission}>{ROLE_LABEL[m.permission]}</span>
+							{/if}
 
 							{#if pendingRemove === m.personId}
 								<button
@@ -278,7 +305,11 @@
 				{/each}
 			</ul>
 
-			{#if amAdmin}
+			{#if amAdmin && !canManageOthers}
+				<p class="hint" role="note">{STAKEHOLDER_ONLY}</p>
+			{/if}
+
+			{#if canManageOthers}
 				<div class="add-existing">
 					<h3>Add someone already in the workspace</h3>
 					<div class="add-row">
@@ -300,33 +331,37 @@
 					</div>
 					<p class="hint">To bring in someone new, use <strong>Invites</strong> below.</p>
 				</div>
+			{/if}
 
+			{#if amAdmin}
 				<div class="invites">
 					<div class="section-head">
 						<h3>Invites</h3>
 					</div>
-					<div class="add-row">
-						<select class="role-select" bind:value={inviteRole} aria-label="Invite role">
-							{#each PERMISSIONS as p}
-								<option value={p}>{ROLE_LABEL[p]}</option>
-							{/each}
-						</select>
-						<input
-							class="add-input"
-							type="email"
-							placeholder="email (optional)"
-							bind:value={inviteEmail}
-							disabled={creatingInvite}
-						/>
-						<select class="role-select" bind:value={inviteTtlIdx} aria-label="Invite expiry">
-							{#each TTL_PRESETS as t, i}
-								<option value={i}>{t.label}</option>
-							{/each}
-						</select>
-						<button class="btn btn-primary" disabled={creatingInvite} onclick={createInvite}>
-							{creatingInvite ? 'Creating…' : 'Create invite'}
-						</button>
-					</div>
+					{#if canManageOthers}
+						<div class="add-row">
+							<select class="role-select" bind:value={inviteRole} aria-label="Invite role">
+								{#each PERMISSIONS as p}
+									<option value={p}>{ROLE_LABEL[p]}</option>
+								{/each}
+							</select>
+							<input
+								class="add-input"
+								type="email"
+								placeholder="email (optional)"
+								bind:value={inviteEmail}
+								disabled={creatingInvite}
+							/>
+							<select class="role-select" bind:value={inviteTtlIdx} aria-label="Invite expiry">
+								{#each TTL_PRESETS as t, i}
+									<option value={i}>{t.label}</option>
+								{/each}
+							</select>
+							<button class="btn btn-primary" disabled={creatingInvite} onclick={createInvite}>
+								{creatingInvite ? 'Creating…' : 'Create invite'}
+							</button>
+						</div>
+					{/if}
 
 					{#if mintedCode}
 						<div class="minted" role="status">
@@ -373,21 +408,23 @@
 									<span class="member-name" title={req.requestedBy}
 										>{membership.displayFor(req.requestedBy)}</span
 									>
-									<select
-										class="role-select"
-										value={approveRole[req.id] ?? 'readOnly'}
-										onchange={(e) => (approveRole[req.id] = e.currentTarget.value as Permission)}
-										aria-label="Approve role for {req.requestedBy}"
-									>
-										{#each PERMISSIONS as p}
-											<option value={p}>{ROLE_LABEL[p]}</option>
-										{/each}
-									</select>
-									<button
-										class="btn btn-primary"
-										disabled={busyRequest === req.id}
-										onclick={() => approve(req.id)}>Approve</button
-									>
+									{#if canManageOthers}
+										<select
+											class="role-select"
+											value={approveRole[req.id] ?? 'readOnly'}
+											onchange={(e) => (approveRole[req.id] = e.currentTarget.value as Permission)}
+											aria-label="Approve role for {req.requestedBy}"
+										>
+											{#each PERMISSIONS as p}
+												<option value={p}>{ROLE_LABEL[p]}</option>
+											{/each}
+										</select>
+										<button
+											class="btn btn-primary"
+											disabled={busyRequest === req.id}
+											onclick={() => approve(req.id)}>Approve</button
+										>
+									{/if}
 									<button
 										class="btn btn-ghost"
 										disabled={busyRequest === req.id}

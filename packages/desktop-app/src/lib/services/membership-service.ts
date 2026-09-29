@@ -28,6 +28,19 @@ export interface Member {
 	permission: Permission;
 }
 
+/** A collection's roster plus the caller's stakeholder-gate outcome. */
+export interface Roster {
+	members: Member[];
+	/**
+	 * Whether the open-collection stakeholder limit (ADR-037 §2a) lets the caller
+	 * add another person, change their tier or create an invite: always `true` on
+	 * a restricted collection, and on an open one only for its creator or an
+	 * active workspace owner/admin. `null` when unknown (an older daemon, or a
+	 * workspace whose cloud schema predates it) — hide nothing on its account then.
+	 */
+	stakeholderGateAllowsCaller: boolean | null;
+}
+
 /** A pending invite (admin-only listing). */
 export interface Invite {
 	/** uuid — the handle {@link MembershipService.revokeInvite} takes. */
@@ -110,6 +123,11 @@ interface RawMember {
 	person_id: string;
 	permission: string;
 }
+interface RawRoster {
+	members: RawMember[];
+	/** `null` when the daemon or the workspace's cloud schema doesn't report it. */
+	stakeholder_gate_allows_caller?: boolean | null;
+}
 interface RawInvite {
 	id: string;
 	code: string;
@@ -149,10 +167,11 @@ interface RawJoinableCollection {
  * `@tauri-apps/api/core` directly, matching the `pro-sync` store's test pattern.
  */
 export class MembershipService {
-	/** Roster for a collection (any member can read). */
-	async listMembers(collectionId: string): Promise<Member[]> {
+	/** Roster for a collection (any member can read), with the caller's stakeholder gate. */
+	async listMembers(collectionId: string): Promise<Roster> {
 		log.debug('listMembers', { collectionId });
-		const rows = await invoke<RawMember[]>('pro_list_members', { collectionId });
+		const raw = await invoke<RawRoster>('pro_list_members', { collectionId });
+		const rows = raw.members;
 		// Collapse duplicate rows for the same person: a person can carry more than
 		// one `member_of` edge (e.g. a role-bearing edge plus a plain membership
 		// edge), so the roster RPC can return the same `person_id` twice. Keep the
@@ -168,7 +187,11 @@ export class MembershipService {
 				byPerson.set(r.person_id, { personId: r.person_id, permission });
 			}
 		}
-		return [...byPerson.values()];
+		const gate = raw.stakeholder_gate_allows_caller;
+		return {
+			members: [...byPerson.values()],
+			stakeholderGateAllowsCaller: typeof gate === 'boolean' ? gate : null
+		};
 	}
 
 	/** Add a member or change their role (admin only, server-gated). */

@@ -18,16 +18,35 @@ describe('MembershipService', () => {
 	});
 
 	it('listMembers maps snake_case rows to camelCase Member[]', async () => {
-		mockInvoke.mockResolvedValue([
-			{ person_id: 'p1', permission: 'admin' },
-			{ person_id: 'p2', permission: 'readOnly' }
-		]);
-		const members = await membershipService.listMembers('c1');
+		mockInvoke.mockResolvedValue({
+			members: [
+				{ person_id: 'p1', permission: 'admin' },
+				{ person_id: 'p2', permission: 'readOnly' }
+			],
+			stakeholder_gate_allows_caller: true
+		});
+		const roster = await membershipService.listMembers('c1');
 		expect(mockInvoke).toHaveBeenCalledWith('pro_list_members', { collectionId: 'c1' });
-		expect(members).toEqual([
-			{ personId: 'p1', permission: 'admin' },
-			{ personId: 'p2', permission: 'readOnly' }
-		]);
+		expect(roster).toEqual({
+			members: [
+				{ personId: 'p1', permission: 'admin' },
+				{ personId: 'p2', permission: 'readOnly' }
+			],
+			stakeholderGateAllowsCaller: true
+		});
+	});
+
+	it('listMembers passes a definite false stakeholder gate through', async () => {
+		mockInvoke.mockResolvedValue({ members: [], stakeholder_gate_allows_caller: false });
+		const roster = await membershipService.listMembers('c1');
+		expect(roster.stakeholderGateAllowsCaller).toBe(false);
+	});
+
+	it('listMembers reads a null or missing stakeholder gate as unknown (null), never false', async () => {
+		mockInvoke.mockResolvedValue({ members: [], stakeholder_gate_allows_caller: null });
+		expect((await membershipService.listMembers('c1')).stakeholderGateAllowsCaller).toBeNull();
+		mockInvoke.mockResolvedValue({ members: [] });
+		expect((await membershipService.listMembers('c1')).stakeholderGateAllowsCaller).toBeNull();
 	});
 
 	it('listMembers dedupes repeated person rows, keeping the highest permission', async () => {
@@ -35,13 +54,16 @@ describe('MembershipService', () => {
 		// a plain membership edge), so the roster RPC can return the same person_id
 		// more than once. Collapse to one row per person at the highest privilege,
 		// regardless of the order the rows arrive in.
-		mockInvoke.mockResolvedValue([
-			{ person_id: 'p1', permission: 'readOnly' },
-			{ person_id: 'p1', permission: 'admin' },
-			{ person_id: 'p2', permission: 'modify' },
-			{ person_id: 'p1', permission: 'modify' }
-		]);
-		const members = await membershipService.listMembers('c1');
+		mockInvoke.mockResolvedValue({
+			members: [
+				{ person_id: 'p1', permission: 'readOnly' },
+				{ person_id: 'p1', permission: 'admin' },
+				{ person_id: 'p2', permission: 'modify' },
+				{ person_id: 'p1', permission: 'modify' }
+			],
+			stakeholder_gate_allows_caller: null
+		});
+		const { members } = await membershipService.listMembers('c1');
 		expect(members).toEqual([
 			{ personId: 'p1', permission: 'admin' },
 			{ personId: 'p2', permission: 'modify' }

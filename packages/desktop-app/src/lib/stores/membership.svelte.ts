@@ -39,12 +39,26 @@ export interface CollectionMembership {
 	invites: Invite[];
 	/** Pending join requests — populated only when the caller is an admin, else `[]`. */
 	requests: JoinRequest[];
+	/**
+	 * Whether the open-collection stakeholder limit (ADR-037 §2a) lets the caller
+	 * add others, change their tier or invite: `true` on any restricted collection,
+	 * on an open one only for its creator or a workspace owner/admin. `null` when
+	 * unknown (an older daemon or cloud schema) — hide nothing on its account then.
+	 */
+	stakeholderGate: boolean | null;
 	loading: boolean;
 	error: string | null;
 }
 
 function emptyMembership(): CollectionMembership {
-	return { members: [], invites: [], requests: [], loading: false, error: null };
+	return {
+		members: [],
+		invites: [],
+		requests: [],
+		stakeholderGate: null,
+		loading: false,
+		error: null
+	};
 }
 
 class MembershipStore {
@@ -186,13 +200,19 @@ class MembershipStore {
 		this.patch(collectionId, { loading: true, error: null });
 		try {
 			await this.ensureIdentity();
-			const members = await membershipService.listMembers(collectionId);
+			const { members, stakeholderGateAllowsCaller } =
+				await membershipService.listMembers(collectionId);
 			// Determine admin-ness from the freshly-loaded roster (not stale cache).
 			const me = this.currentPerson?.personId;
 			const amAdmin = !!me && members.some((m) => m.personId === me && m.permission === 'admin');
 			// Commit the roster immediately so a failure of the admin-only listings
 			// below doesn't discard an already-fetched roster (patch merges).
-			this.patch(collectionId, { members, loading: false, error: null });
+			this.patch(collectionId, {
+				members,
+				stakeholderGate: stakeholderGateAllowsCaller,
+				loading: false,
+				error: null
+			});
 			// Resolve display names in the background; the roster shows ids until the
 			// person nodes land, then re-renders (personNames is reactive).
 			void this.resolvePersonNames(members.map((m) => m.personId));
