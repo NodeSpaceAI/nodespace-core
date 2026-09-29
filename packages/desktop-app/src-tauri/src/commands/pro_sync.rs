@@ -894,8 +894,12 @@ fn admission_error(op: AdmissionOp, status: &tonic::Status) -> String {
     let msg = status.message();
     match (op, status.code()) {
         (_, Code::Unauthenticated) => SIGN_IN_AGAIN.into(),
+        // Keep the daemon's detail: besides a network failure, Unavailable also
+        // carries a worker-side 5xx (upstream error, missing service key), and
+        // that text is the only thing distinguishing the two.
         (_, Code::Unavailable) => format!(
-            "{} failed: NodeSpace Pro couldn't reach the cloud. Check your connection and try again.",
+            "{} failed: NodeSpace Pro couldn't reach the cloud. Check your connection and try \
+             again. ({msg})",
             op.label()
         ),
         (_, Code::Unimplemented) => format!(
@@ -1080,6 +1084,17 @@ mod tests {
     fn unrecognized_code_keeps_the_daemon_message() {
         let m = err(AdmissionOp::Approve, Code::Internal, "boom (HTTP 500)");
         assert_eq!(m, "Approving failed: boom (HTTP 500)");
+    }
+
+    #[test]
+    fn unavailable_is_actionable_but_keeps_the_upstream_detail() {
+        let m = err(
+            AdmissionOp::Invite,
+            Code::Unavailable,
+            "service misconfigured",
+        );
+        assert!(m.contains("Check your connection"), "{m}");
+        assert!(m.ends_with("(service misconfigured)"), "{m}");
     }
 
     #[test]

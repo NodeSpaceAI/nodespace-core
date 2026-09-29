@@ -29,6 +29,7 @@
   import { Card, CardHeader, CardContent } from '$lib/components/ui/card';
   import { createLogger } from '$lib/utils/logger';
   import { toError } from '$lib/types/errors';
+  import { databaseStore } from '$lib/stores/database.svelte';
 
   const log = createLogger('WorkspaceMembersCard');
 
@@ -53,17 +54,27 @@
   // costing a round-trip.
   const inviteReady = $derived(/^[^\s@]+@[^\s@]+$/.test(inviteEmail.trim()));
 
+  /** Bumped per `load()`; a result from a superseded load is dropped. */
+  let loadSeq = 0;
+
   async function load(): Promise<void> {
+    const seq = ++loadSeq;
     try {
+      // The roster is scoped to whichever tenant the daemon is syncing, and a
+      // database switch re-targets it asynchronously — wait for that to land
+      // so this never shows (or acts on) the previous database's tenant.
+      await databaseStore.proSyncSettled();
       const [me, roster] = await Promise.all([
         membershipService.currentPerson(),
         membershipService.listTenantMembers()
       ]);
+      if (seq !== loadSeq) return;
       const mine = me.personId ? roster.find((m) => m.personId === me.personId) : undefined;
       members = roster;
       isAdmin = isTenantAdmin(mine);
       listError = '';
     } catch (err) {
+      if (seq !== loadSeq) return;
       const message = toError(err).message;
       log.warn('workspace roster load failed', { error: message });
       // Before the first successful load the caller's role is unknown, so the

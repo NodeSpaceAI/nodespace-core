@@ -302,6 +302,17 @@ class DatabaseStore {
    * `pinWindowDatabase` above — a failure here must never destabilize the
    * caller), but internally serialized via `proActivateChain` — see there.
    */
+  /**
+   * Resolves once every `pro_activate_database` re-target queued so far has
+   * settled (never rejects). A view that queries the daemon's CURRENT tenant
+   * right after a switch — e.g. the workspace-members card, which re-mounts
+   * on `activeDatabaseId` — awaits this first; otherwise its query can reach
+   * the daemon while it still points at the previous database's tenant.
+   */
+  proSyncSettled(): Promise<void> {
+    return this.proActivateChain.catch(() => {});
+  }
+
   private activateProSync(id: string): void {
     if (!isTauriBridgePresent()) return;
     this.proActivateChain = this.proActivateChain

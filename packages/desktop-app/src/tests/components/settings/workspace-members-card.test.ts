@@ -18,6 +18,7 @@ vi.mock('@tauri-apps/api/core', () =>
 );
 
 import WorkspaceMembersCard from '$lib/components/settings/sections/workspace-members-card.svelte';
+import { databaseStore } from '$lib/stores/database.svelte';
 
 type Row = { person_id: string; email: string; role: string; status: string };
 
@@ -240,5 +241,54 @@ describe('WorkspaceMembersCard — invite by email', () => {
     expect(alert.textContent).toContain('Ask them to sign in to NodeSpace Pro once');
     expect(input.value).toBe('ghost@ex.com');
     expect(screen.queryByRole('status')).toBeNull();
+  });
+});
+
+describe('WorkspaceMembersCard — database switch and refresh failures', () => {
+  it('waits for the Pro re-target to settle before reading the roster', async () => {
+    let settle!: () => void;
+    vi.spyOn(databaseStore, 'proSyncSettled').mockReturnValue(
+      new Promise<void>((r) => {
+        settle = r;
+      })
+    );
+    setup({ me: OWNER.person_id, roster: [OWNER, PENDING] });
+    render(WorkspaceMembersCard);
+
+    await new Promise((r) => setTimeout(r, 10));
+    expect(invokedWith('pro_list_tenant_members')).toHaveLength(0);
+    expect(screen.queryByTestId('workspace-members-card')).toBeNull();
+
+    settle();
+    expect(await screen.findByTestId('workspace-members-card')).toBeTruthy();
+  });
+
+  it('keeps the admin card with a Retry when a later refresh fails', async () => {
+    let calls = 0;
+    mockInvoke.mockImplementation((cmd: string) => {
+      if (cmd === 'pro_current_person')
+        return Promise.resolve({ person_id: OWNER.person_id, email: '' });
+      if (cmd === 'pro_list_tenant_members') {
+        calls += 1;
+        return calls === 2
+          ? Promise.reject(
+              "Loading workspace members failed: NodeSpace Pro couldn't reach the cloud."
+            )
+          : Promise.resolve([OWNER, PENDING]);
+      }
+      return Promise.resolve(undefined);
+    });
+    render(WorkspaceMembersCard);
+
+    await fireEvent.click(await screen.findByRole('button', { name: 'Approve new@ex.com' }));
+
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toContain("couldn't reach the cloud");
+    expect(screen.getByTestId('workspace-members-card')).toBeTruthy();
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
+    expect(calls).toBe(3);
+    expect(screen.getAllByTestId('pending-admission')).toHaveLength(1);
   });
 });
