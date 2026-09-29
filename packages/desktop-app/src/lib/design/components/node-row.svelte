@@ -165,7 +165,6 @@
     {#if rendersAsEntityRow(node.nodeType)}
       <button
         class="custom-entity-open-button"
-        tabindex="-1"
         onclick={openEntity}
         type="button"
         aria-label="Open entity in dedicated viewer pane (Cmd+Click for new tab in same pane)"
