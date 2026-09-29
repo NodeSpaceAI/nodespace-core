@@ -1,3 +1,23 @@
+/**
+ * Colour for a token whose value may carry its own alpha channel.
+ *
+ * Dark mode declares `--border` and `--input` as `H S% L% / A`. The stock
+ * `hsl(var(--x) / <alpha-value>)` form then expands to
+ * `hsl(0 0% 100% / 0.15 / 1)`, which is invalid: the declaration is dropped
+ * and `border-color` falls back to `currentColor` (near-white text), and a
+ * `bg-input/30` fill vanishes entirely. Mixing the token with transparent
+ * keeps the token's own alpha and scales it by the requested opacity, and is
+ * identical to the plain form for opaque light-mode tokens.
+ *
+ * @param {string} token CSS custom property name, e.g. "--border"
+ * @returns {any} a Tailwind colour function; typed loosely because the bundled
+ *   config typings only admit string colour values
+ */
+const withTokenAlpha = (token) => (/** @type {{ opacityValue?: string }} */ { opacityValue }) =>
+  opacityValue === undefined
+    ? `hsl(var(${token}))`
+    : `color-mix(in srgb, hsl(var(${token})) calc(${opacityValue} * 100%), transparent)`;
+
 /** @type {import('tailwindcss').Config} */
 export default {
   content: ["./src/**/*.{html,js,svelte,ts}"],
@@ -11,8 +31,8 @@ export default {
     },
     extend: {
       colors: {
-        border: "hsl(var(--border) / <alpha-value>)",
-        input: "hsl(var(--input) / <alpha-value>)",
+        border: withTokenAlpha("--border"),
+        input: withTokenAlpha("--input"),
         "switch-track": "hsl(var(--switch-track) / <alpha-value>)",
         ring: "hsl(var(--ring) / <alpha-value>)",
         background: "hsl(var(--background) / <alpha-value>)",

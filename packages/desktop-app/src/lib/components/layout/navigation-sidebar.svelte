@@ -334,7 +334,7 @@
 >
   <!-- Hamburger menu button -->
   <button
-    class="hamburger-button"
+    class="nav-item hamburger-button"
     onclick={handleToggleSidebar}
     aria-label={isCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
     aria-expanded={!isCollapsed}
@@ -769,12 +769,6 @@
     padding: 1rem;
   }
 
-  /* Hamburger button - base styles moved to positioning section */
-
-  .hamburger-button:hover {
-    color: hsl(var(--foreground));
-  }
-
   /* Removed :focus-visible border - Tab key used for indent/outdent, not UI navigation */
 
   .hamburger-icon {
@@ -783,17 +777,14 @@
     flex-shrink: 0;
   }
 
-  /* Hamburger button - keep at fixed position, adjust sidebar width instead */
-  .hamburger-button {
-    background: none;
-    border: none;
-    cursor: pointer;
-    padding: 0.5rem;
+  /*
+    Hamburger button - the first row of the nav rhythm. It is also a .nav-item
+    (40px row, same padding), so its icon sits at the same 40px pitch as the
+    items below it in both the expanded and collapsed sidebar; the icon column
+    comes from .nav-item's padding, so it is not positioned separately.
+  */
+  .nav-item.hamburger-button {
     color: hsl(var(--foreground));
-    position: absolute;
-    left: 0.5rem; /* Fixed 8px from left edge */
-    top: 1rem; /* Fixed top position */
-    z-index: 10; /* Ensure it stays above nav items */
   }
 
   /* Navigation items container */
@@ -802,7 +793,6 @@
     display: flex;
     flex-direction: column;
     gap: 0; /* Remove gaps between nav items */
-    margin-top: 3rem; /* Space for absolutely positioned hamburger button */
   }
 
   /* Navigation items - Full-width navigation items with no gaps */
