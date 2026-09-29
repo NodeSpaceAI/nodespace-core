@@ -6513,7 +6513,7 @@ model = "model-b"
     /// anything back. Scenario 12 is therefore a test of comparative reference
     /// RESOLUTION, not of decomposition; the group header in
     /// scripts/eval/fixtures/agent-matrix.ts carries the full reasoning, and
-    /// the decomposition gap remains open.
+    /// the decomposition-coverage gap it describes is still open.
     ///
     /// The negative assertion is kept anyway, because it still pins something
     /// real: if a future change to `terse_write_fact` started emitting a

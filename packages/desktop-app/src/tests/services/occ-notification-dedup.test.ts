@@ -17,7 +17,7 @@
  * notification for a genuine OCC conflict — so the outer guard failing to
  * match meant a SECOND, generic `write-failure` notification piled on top
  * of it every time. Fixed the same way as the analogous bug in
- * `deleteNode()`: a boolean captured inside the closure, set right where the
+ * `deleteNode()` of the same store: a boolean captured inside the closure, set right where the
  * specific notification is raised, checked by the outer catch instead of
  * re-deriving the classification from the already-stripped `err`.
  *
