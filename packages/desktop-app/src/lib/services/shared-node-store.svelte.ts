@@ -1216,12 +1216,29 @@ export class SharedNodeStore {
 
     if (this.isReachable(nodeId)) return; // reopened — nothing to do
 
-    if (PersistenceCoordinator.getInstance().hasPending(nodeId) || this.activeBatches.has(nodeId)) {
+    if (this.hasPendingWrite(nodeId) || this.hasCachedChildWithPendingWrite(nodeId)) {
       this.scheduleEviction(nodeId);
       return;
     }
 
     this.evictNode(nodeId);
+  }
+
+  private hasPendingWrite(nodeId: string): boolean {
+    return PersistenceCoordinator.getInstance().hasPending(nodeId) || this.activeBatches.has(nodeId);
+  }
+
+  /**
+   * Evicting a node drops its children's parent edges (see `evictNode`),
+   * and a child's pending CREATE resolves its parent from `structureTree`
+   * when it fires. So a parent stays cached until every cached child's
+   * write has settled; the child's own eviction is deferred the same way.
+   */
+  private hasCachedChildWithPendingWrite(nodeId: string): boolean {
+    if (!structureTree) return false;
+    return structureTree
+      .getChildren(nodeId)
+      .some((childId) => this.nodes.has(childId) && this.hasPendingWrite(childId));
   }
 
   /**
@@ -1231,8 +1248,15 @@ export class SharedNodeStore {
    * up). Purely a local cache decision: the node still exists in the
    * database, just no longer cached in memory — the next `ensureNode` for
    * it fetches fresh.
+   *
+   * Its `structureTree` edges go too (its entry under its parent and its
+   * own child list): the tree must only reference cached nodes, or every
+   * later invariant check sees orphan edges. Children still cached (pending
+   * their own eviction, or reachable through another tab or a pin) become
+   * parentless until this node's children are next loaded.
    */
   private evictNode(nodeId: string): void {
+    structureTree?.removeNode(nodeId);
     this.nodesDelete(nodeId);
     this.versions.delete(nodeId);
     this.pendingUpdates.delete(nodeId);
@@ -1243,6 +1267,19 @@ export class SharedNodeStore {
     this.resyncQueued.delete(nodeId);
     this.inFlightEnsures.delete(nodeId);
     log.debug(`Evicted unreachable node from cache: ${nodeId}`);
+  }
+
+  /**
+   * Whether `doLoadChildrenTree` runs `structureTree.assertInvariants` after
+   * hydrating. Off under test by default: the `structureTree` singleton
+   * accumulates state across tests. See `__setHierarchyInvariantChecksForTesting`.
+   */
+  private hierarchyInvariantChecksEnabled = !isTestEnvironment();
+
+  /** Test-only: run the post-load hierarchy invariant check under test, for
+   * a test that controls `structureTree` state itself. */
+  __setHierarchyInvariantChecksForTesting(enabled: boolean): void {
+    this.hierarchyInvariantChecksEnabled = enabled;
   }
 
   /** Test-only: override the inactivity threshold so eviction tests don't
@@ -3908,16 +3945,18 @@ export class SharedNodeStore {
       // Run invariant check after hydration completes (skipped in test environment
       // because the structureTree singleton accumulates state across tests and
       // produces false-positive orphan violations).
-      if (!isTestEnvironment()) {
+      if (this.hierarchyInvariantChecksEnabled) {
         const nodeIdSet = new Set(this.nodes.keys());
         // Allowlist __root__ sentinel plus any date nodes currently in the tree
         // that aren't in this.nodes (e.g. when loading a child of a date node
         // before the date node itself has been added to the store).
         const virtualIds = new Set<string>(['__root__']);
-        for (const parentId of structureTree.children.keys()) {
-          if (isValidDateId(parentId)) virtualIds.add(parentId);
+        for (const treeParentId of structureTree.children.keys()) {
+          if (isValidDateId(treeParentId)) virtualIds.add(treeParentId);
         }
-        structureTree.assertInvariants(nodeIdSet, virtualIds);
+        // Scoped to the subtree this load wrote: an inconsistency elsewhere
+        // in the global tree is not this load's doing and must not fail it.
+        structureTree.assertInvariants(nodeIdSet, virtualIds, parentId);
       }
 
       return allNodes;

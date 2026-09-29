@@ -22,12 +22,14 @@
  * - A node with a pending/unflushed write is never evicted mid-write.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { SharedNodeStore, SimplePersistenceCoordinator } from '../../lib/services/shared-node-store.svelte';
 import { structureTree } from '../../lib/stores/reactive-structure-tree.svelte';
 import { DATABASE_SETTINGS_NODE_ID } from '../../lib/plugins/ui-extensions';
 import { createTestNode } from '../helpers';
 import type { UpdateSource } from '../../lib/types/update-protocol';
+import type { NodeWithChildren } from '../../lib/types';
+import { backendAdapter } from '../../lib/services/backend-adapter';
 
 const databaseSource: UpdateSource = { type: 'database', reason: 'test-setup' };
 const TEST_INACTIVITY_MS = 30;
@@ -366,6 +368,133 @@ describe('SharedNodeStore - reachability tracking & eviction', () => {
       await wait(TEST_INACTIVITY_MS + 40);
 
       expect(store.getNode(DATABASE_SETTINGS_NODE_ID)).toBeUndefined();
+    });
+  });
+
+  // Eviction must keep `structureTree` consistent with the cached node set:
+  // a stale edge to an evicted node is an I1 orphan, and the post-load
+  // invariant check used to validate the whole global tree, so one evicted
+  // document broke expanding any unrelated node afterwards.
+  describe('structureTree consistency', () => {
+    const cachedIds = (): Set<string> => new Set(store.getAllNodes().keys());
+
+    const treeNode = (id: string, children: NodeWithChildren[] = []): NodeWithChildren => {
+      const { id: _id, nodeType, content, version, createdAt, modifiedAt, properties } = createTestNode({ id });
+      return { id, nodeType, content, version, createdAt, modifiedAt, properties, children };
+    };
+
+    /** Seed a cached document: `root` with `child-1` (itself with a child)
+     * and `child-2`, edges registered the way a tree load registers them. */
+    const seedDocument = (root: string): void => {
+      for (const id of [root, `${root}-c1`, `${root}-c1-x`, `${root}-c2`]) {
+        store.setNode(createTestNode({ id }), databaseSource);
+      }
+      structureTree.batchAddRelationships([
+        { parentId: root, childId: `${root}-c1`, order: 1 },
+        { parentId: `${root}-c1`, childId: `${root}-c1-x`, order: 1 },
+        { parentId: root, childId: `${root}-c2`, order: 2 }
+      ]);
+    };
+
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    it('removes an evicted document from structureTree, so expanding an unrelated node afterwards loads cleanly', async () => {
+      seedDocument('doc-a');
+      store.setNode(createTestNode({ id: 'doc-b' }), databaseSource);
+      store.setNode(createTestNode({ id: 'doc-b-heading' }), databaseSource);
+      structureTree.addInMemoryRelationship('doc-b', 'doc-b-heading', 1);
+
+      store.updateOpenDocumentRoots(['doc-a']);
+      store.updateOpenDocumentRoots(['doc-b']); // doc-a's tab closed, doc-b opened
+
+      await wait(TEST_INACTIVITY_MS + 40);
+
+      expect(store.getNode('doc-a')).toBeUndefined();
+      expect(store.getNode('doc-a-c1-x')).toBeUndefined();
+      expect(structureTree.getChildren('doc-a')).toEqual([]);
+      expect(structureTree.getChildren('doc-a-c1')).toEqual([]);
+      // The whole tree, not just doc-b's region, references only cached nodes.
+      expect(() => structureTree.assertInvariants(cachedIds())).not.toThrow();
+
+      // Expand a collapsed heading in doc-b: the lazy children load, with the
+      // post-load invariant check the app runs outside tests.
+      store.__setHierarchyInvariantChecksForTesting(true);
+      vi.spyOn(backendAdapter, 'getChildrenTree').mockResolvedValue(
+        treeNode('doc-b-heading', [treeNode('doc-b-item-1'), treeNode('doc-b-item-2')])
+      );
+      vi.spyOn(backendAdapter, 'getMentioningContainers').mockResolvedValue([]);
+
+      await expect(store.loadChildrenTree('doc-b-heading')).resolves.toHaveLength(2);
+      expect(structureTree.getChildren('doc-b-heading')).toEqual(['doc-b-item-1', 'doc-b-item-2']);
+    });
+
+    it('keeps a subtree still open in another tab, minus its edge to the evicted parent', async () => {
+      seedDocument('doc-a');
+
+      // Tab 1 shows doc-a, tab 2 is zoomed into doc-a-c1.
+      store.updateOpenDocumentRoots(['doc-a', 'doc-a-c1']);
+      store.updateOpenDocumentRoots(['doc-a-c1']); // tab 1 closed
+
+      await wait(TEST_INACTIVITY_MS + 40);
+
+      expect(store.getNode('doc-a')).toBeUndefined();
+      expect(store.getNode('doc-a-c2')).toBeUndefined();
+      expect(store.getNode('doc-a-c1')).toBeDefined();
+      expect(store.getNode('doc-a-c1-x')).toBeDefined();
+
+      // The still-open subtree keeps its own edges; its edge to the evicted
+      // parent goes with the parent.
+      expect(structureTree.getChildren('doc-a-c1')).toEqual(['doc-a-c1-x']);
+      expect(structureTree.getParent('doc-a-c1')).toBeNull();
+      expect(() => structureTree.assertInvariants(cachedIds())).not.toThrow();
+    });
+
+    it('defers evicting a parent while a cached child still has a pending write', async () => {
+      seedDocument('doc-a');
+      store.updateOpenDocumentRoots(['doc-a']);
+      store.updateOpenDocumentRoots([]);
+
+      let resolveWrite: () => void = () => {};
+      const writeCompletes = new Promise<void>((resolve) => {
+        resolveWrite = resolve;
+      });
+      SimplePersistenceCoordinator.getInstance().persist('doc-a-c2', () => writeCompletes, {
+        mode: 'immediate'
+      });
+
+      await wait(TEST_INACTIVITY_MS + 40);
+
+      // The child's pending CREATE resolves its parent from structureTree, so
+      // the parent and that edge must still be there.
+      expect(store.getNode('doc-a')).toBeDefined();
+      expect(structureTree.getParent('doc-a-c2')).toBe('doc-a');
+      // An unrelated, settled sibling subtree is evicted as usual.
+      expect(store.getNode('doc-a-c1-x')).toBeUndefined();
+
+      resolveWrite();
+      await wait(2 * TEST_INACTIVITY_MS + 80);
+
+      expect(store.getNode('doc-a-c2')).toBeUndefined();
+      expect(store.getNode('doc-a')).toBeUndefined();
+      expect(() => structureTree.assertInvariants(cachedIds())).not.toThrow();
+    });
+
+    it('a post-load invariant check ignores inconsistencies outside the loaded subtree', async () => {
+      store.setNode(createTestNode({ id: 'doc-b' }), databaseSource);
+      // A stale edge elsewhere in the tree, to a node no longer cached.
+      structureTree.addInMemoryRelationship('unrelated-parent', 'uncached-child', 1);
+
+      store.__setHierarchyInvariantChecksForTesting(true);
+      vi.spyOn(backendAdapter, 'getChildrenTree').mockResolvedValue(
+        treeNode('doc-b', [treeNode('doc-b-item-1')])
+      );
+      vi.spyOn(backendAdapter, 'getMentioningContainers').mockResolvedValue([]);
+
+      await expect(store.loadChildrenTree('doc-b')).resolves.toHaveLength(1);
+      // The whole-tree check still reports it.
+      expect(() => structureTree.assertInvariants(cachedIds())).toThrow(/orphan childId "uncached-child"/);
     });
   });
 });

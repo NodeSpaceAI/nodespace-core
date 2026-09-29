@@ -719,6 +719,68 @@ describe('ReactiveStructureTree', () => {
       const nodeIds = new Set(['c1', 'c2', 'p']);
       expect(() => structureTree.assertInvariants(nodeIds)).toThrow(/I3/);
     });
+
+    it('with a rootId, checks only the subtree rooted there', () => {
+      structureTree.addChild({ parentId: 'loaded', childId: 'l1', order: 1 });
+      structureTree.addChild({ parentId: 'l1', childId: 'l1-x', order: 1 });
+      structureTree.addChild({ parentId: 'elsewhere', childId: 'gone', order: 1 });
+      const nodeIds = new Set(['loaded', 'l1', 'l1-x', 'elsewhere']);
+
+      expect(() => structureTree.assertInvariants(nodeIds, new Set(), 'loaded')).not.toThrow();
+      expect(() => structureTree.assertInvariants(nodeIds)).toThrow(/orphan childId "gone"/);
+    });
+
+    it('with a rootId, still reports a violation inside that subtree', () => {
+      structureTree.addChild({ parentId: 'loaded', childId: 'l1', order: 1 });
+      structureTree.addChild({ parentId: 'l1', childId: 'missing', order: 1 });
+      const nodeIds = new Set(['loaded', 'l1']);
+
+      expect(() => structureTree.assertInvariants(nodeIds, new Set(), 'loaded')).toThrow(
+        /orphan childId "missing"/
+      );
+    });
+  });
+
+  describe('removeNode', () => {
+    beforeEach(() => {
+      structureTree.addChild({ parentId: 'p', childId: 'a', order: 1 });
+      structureTree.addChild({ parentId: 'p', childId: 'b', order: 2 });
+      structureTree.addChild({ parentId: 'a', childId: 'a1', order: 1 });
+      structureTree.addChild({ parentId: 'a1', childId: 'a1-x', order: 1 });
+    });
+
+    it("drops the node's entry under its parent and its own child list", () => {
+      structureTree.removeNode('a');
+
+      expect(structureTree.getChildren('p')).toEqual(['b']);
+      expect(structureTree.getParent('a')).toBeNull();
+      expect(structureTree.children.has('a')).toBe(false);
+      expect(structureTree.getParent('a1')).toBeNull();
+      // Grandchild edges are left for the child's own removal.
+      expect(structureTree.getChildren('a1')).toEqual(['a1-x']);
+    });
+
+    it("deletes the parent's list once its last child is removed", () => {
+      structureTree.removeNode('a');
+      structureTree.removeNode('b');
+
+      expect(structureTree.children.has('p')).toBe(false);
+    });
+
+    it('leaves the tree consistent with the remaining node set', () => {
+      structureTree.removeNode('a');
+
+      expect(() => structureTree.assertInvariants(new Set(['p', 'b', 'a1', 'a1-x']))).not.toThrow();
+    });
+
+    it('notifies reactive consumers, and no-ops for an unknown node', () => {
+      const before = structureTree.children;
+      structureTree.removeNode('not-in-tree');
+      expect(structureTree.children).toBe(before);
+
+      structureTree.removeNode('a1-x');
+      expect(structureTree.children).not.toBe(before);
+    });
   });
 
   describe('optimistic-then-event idempotency', () => {
