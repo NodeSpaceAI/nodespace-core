@@ -75,6 +75,7 @@
   {#if node.children && node.children.length > 0}
     <button
       class="chevron-icon"
+      tabindex="-1"
       class:expanded={node.expanded}
       onclick={() => onToggleExpanded(node.id)}
       onkeydown={(e) => {
@@ -215,6 +216,11 @@
     background: hsl(var(--muted));
   }
 
+  /* No focus treatment on the editor surface (Tab indents here); see .chevron-icon. */
+  .custom-entity-open-button:focus-visible {
+    outline: none;
+  }
+
   /* Flex children (node wrappers) should fill available space */
   /* Use :global() to apply across component boundaries (TaskNode, CodeBlock, etc. have different scopes) */
   .node-content-wrapper > :global(:not(.chevron-icon):not(.chevron-spacer)) {
@@ -266,6 +272,17 @@
     top: var(--icon-vertical-position);
     transform: translate(-50%, -50%); /* Center icon on coordinates, same as circles */
     z-index: 999; /* Very high z-index to ensure clickability over all other elements */
+  }
+
+  /*
+    No focus treatment on the editor surface: Tab is bound to indent/outdent
+    here, not focus traversal, so a ring would mark a key that is not
+    navigating. The chevron is also out of the tab order (tabindex -1); this
+    covers the keyboard-modality focus it can still take after a click or a
+    programmatic focus. See DESIGN.md's focus rule.
+  */
+  .chevron-icon:focus-visible {
+    outline: none;
   }
 
   .chevron-icon svg {

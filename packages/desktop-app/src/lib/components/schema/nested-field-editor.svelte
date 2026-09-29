@@ -17,6 +17,10 @@
     object field built from itemFields); scalar elements render a SchemaFieldLeaf.
     Each element has a delete button; an "Add item" button appends a new element.
 
+  Hierarchy is tonal, not stroked: object elements sit on a muted fill, scalar
+  elements are bare inputs, nesting is expressed by indentation alone, and the
+  add button is ghost.
+
   Arbitrary nesting depth works by recursion. Null/undefined values are treated as
   an empty object/array so a partially-filled value always renders.
 -->
@@ -101,7 +105,7 @@
 </script>
 
 {#if field.type === 'object'}
-  <div class="grid gap-3" class:pl-3={depth > 0} class:border-l={depth > 0}>
+  <div class="grid gap-3" class:pl-3={depth > 0}>
     {#each field.fields ?? [] as sub (sub.name)}
       {@const subValue = record[sub.name]}
       {@const subId = `nested-${sub.name}-${depth}`}
@@ -181,12 +185,12 @@
     {/each}
   </div>
 {:else if field.type === 'array'}
-  <div class="grid gap-2" class:pl-3={depth > 0} class:border-l={depth > 0}>
+  <div class="grid gap-2" class:pl-3={depth > 0}>
     {#each items as item, index (index)}
       {@const itemKey = `item-${index}`}
       {@const objectItem = field.itemType === 'object'}
       {@const itemId = `nested-${field.name}-${index}-${depth}`}
-      <div class="rounded-md border">
+      <div class={objectItem ? 'rounded-md bg-muted/40' : ''}>
         {#if objectItem}
           <Collapsible.Root
             open={!!openKeys[itemKey]}
@@ -232,7 +236,7 @@
             </Collapsible.Content>
           </Collapsible.Root>
         {:else}
-          <div class="flex items-center gap-2 p-2">
+          <div class="flex items-center gap-2">
             <div class="flex-1">
               <SchemaFieldLeaf
                 field={arrayScalarItemField(index)}
@@ -256,7 +260,7 @@
     {/each}
     <div>
       <Button
-        variant="outline"
+        variant="ghost"
         size="sm"
         onclick={() => onChange(addArrayItem(value, makeEmptyArrayItem(field)))}
       >
