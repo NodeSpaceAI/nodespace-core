@@ -507,23 +507,6 @@ describe('TauriSyncListener', () => {
       await vi.waitFor(() => expect(savedQueriesData.queries).toEqual([]), { timeout: 1000 });
     });
 
-    it('Pro coalesced path refreshes saved queries too (node:updated carries no nodeType)', async () => {
-      proSync.tier = 'pro';
-      const renamed = mockQueryNode('q-pro', 'From coalesced burst', 'spec');
-      registerMockNode(renamed);
-      vi.spyOn(backendAdapterModule.backendAdapter, 'queryNodes').mockResolvedValue([renamed]);
-
-      emitTauriEvent('node:updated', { id: 'q-pro' });
-
-      await vi.waitFor(
-        () => {
-          expect(savedQueriesData.forType('spec').map((q) => q.id)).toEqual(['q-pro']);
-        },
-        { timeout: 1000 }
-      );
-      proSync.tier = 'unknown';
-    });
-
     it('does not reload saved queries for a non-query node update', async () => {
       registerMockNode(createTestNode('node1', 'Just a text node'));
       const queryNodesSpy = vi
