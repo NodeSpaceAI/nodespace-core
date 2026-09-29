@@ -7,6 +7,10 @@ name: install.sh drift check
 # (advanced by release.yml's sync-install-script job) and the file the live
 # site actually serves (deployed by the website's hosting, outside this
 # repo). The failure message says which one drifted.
+#
+# Known, accepted: a run landing within minutes of a release publish can
+# report drift while the sync job / site deploy is still in flight; the
+# tracking issue is deduped and the next daily run clears it.
 
 permissions:
   contents: read
@@ -62,7 +66,7 @@ jobs:
             cat drift-output.txt 2>/dev/null || echo "(no output captured)"
             echo '```'
             echo
-            echo "\"INSTALL.SH PIN DRIFT\": re-run the sync (see the fix line above)."
+            echo "\"INSTALL.SH PIN DRIFT\": re-run the sync (see the fix line in the output above)."
             echo "\"INSTALL.SH DEPLOY DRIFT\": the repo is current but the live site is stale -- the website's Cloudflare Pages Git integration needs attention (not fixable from this repo)."
             echo "Any other message means the check itself failed to run (network/gh/auth) -- check the run log."
           } > issue-body.txt
