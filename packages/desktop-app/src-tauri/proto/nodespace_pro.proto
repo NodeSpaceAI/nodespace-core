@@ -134,6 +134,13 @@ service CloudSyncService {
   // admission to active. Thin JWT-forwarding call over the cloud
   // `approve_admission` RPC, which enforces the admin gate server-side.
   rpc ApproveAdmission (ApproveAdmissionRequest) returns (MembershipAck);
+  // Tenant removal. An active tenant admin removes a person from the tenant:
+  // declines a pending admission or removes an active member (the cloud RPC
+  // sets the identity to the terminal 'removed' status and tombstones the
+  // PersonNode). Named for the cloud RPC rather than "DeclineAdmission" because
+  // it is not pending-only. Thin JWT-forwarding call over `remove_from_tenant`,
+  // which enforces the admin gate server-side; the owner cannot be removed.
+  rpc RemoveFromTenant (RemoveFromTenantRequest) returns (MembershipAck);
 }
 
 // --- Messages -----------------------------------------------------
@@ -414,4 +421,7 @@ message InitiateAdmissionResponse {
 }
 message ApproveAdmissionRequest {
   string person_id = 1;  // target person node (a pending admission)
+}
+message RemoveFromTenantRequest {
+  string person_id = 1;  // target person node (a pending admission or member)
 }

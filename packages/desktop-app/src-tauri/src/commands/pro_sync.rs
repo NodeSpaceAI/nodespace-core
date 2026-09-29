@@ -17,8 +17,8 @@ use crate::services::pro_client::pb::{
     BindTenantRequest, CreateInviteRequest, EnableSyncRequest, GetIdentityRequest,
     InitiateAdmissionRequest, InitiateOAuthRequest, JoinCollectionRequest, LeaveCollectionRequest,
     ListInvitesRequest, ListJoinableCollectionsRequest, ListMembersRequest, ListRequestsRequest,
-    ListTenantMembersRequest, ListTenantMembershipsRequest, RemoveMemberRequest,
-    RequestJoinRequest, RevokeInviteRequest, SetMemberRequest, SignOutRequest,
+    ListTenantMembersRequest, ListTenantMembershipsRequest, RemoveFromTenantRequest,
+    RemoveMemberRequest, RequestJoinRequest, RevokeInviteRequest, SetMemberRequest, SignOutRequest,
     TenantMembershipInfo, WatchSyncStatusRequest,
 };
 use crate::services::{ProClient, ProTier};
@@ -869,6 +869,7 @@ enum AdmissionOp {
     List,
     Approve,
     Invite,
+    Remove,
 }
 
 impl AdmissionOp {
@@ -877,6 +878,7 @@ impl AdmissionOp {
             AdmissionOp::List => "Loading workspace members",
             AdmissionOp::Approve => "Approving",
             AdmissionOp::Invite => "Sending the invite",
+            AdmissionOp::Remove => "Removing",
         }
     }
 }
@@ -911,6 +913,16 @@ fn admission_error(op: AdmissionOp, status: &tonic::Status) -> String {
             "Only a workspace owner or admin can approve members. Ask one of them to approve \
              this person."
                 .into()
+        }
+        // The cloud raises 42501 both for a non-admin caller and for an attempt to
+        // remove the owner, so the wording covers both.
+        (AdmissionOp::Remove, Code::PermissionDenied) => {
+            "Only a workspace owner or admin can remove people, and the workspace owner can't \
+             be removed."
+                .into()
+        }
+        (AdmissionOp::Remove, Code::NotFound) => {
+            "That person is no longer in this workspace. Refresh the list.".into()
         }
         (_, Code::PermissionDenied) => format!(
             "{} failed: your account isn't an active member of this workspace. If you were just \
@@ -989,6 +1001,25 @@ pub async fn pro_approve_admission(app: AppHandle, person_id: String) -> Result<
     Ok(())
 }
 
+/// Remove a person from the active tenant: declines a pending admission or
+/// removes an active member (owner / tenant admin only, cloud-gated; the owner
+/// cannot be removed). The cloud sets the identity to a terminal `removed`
+/// status, so the person drops off the roster.
+#[tauri::command]
+pub async fn pro_remove_from_tenant(app: AppHandle, person_id: String) -> Result<(), String> {
+    let op = AdmissionOp::Remove;
+    let mut client = membership_client(&app).await?;
+    tokio::time::timeout(
+        ADMISSION_RPC_TIMEOUT,
+        client.remove_from_tenant(RemoveFromTenantRequest { person_id }),
+    )
+    .await
+    .map_err(|_elapsed| admission_timeout(op))?
+    .map_err(|e| admission_error(op, &e))?;
+    tracing::info!("Pro: RemoveFromTenant");
+    Ok(())
+}
+
 /// Invite a person to the active tenant by email. The daemon resolves the
 /// email to the invitee's account (it must already exist) and creates a
 /// pending admission, which an owner or tenant admin then approves.
@@ -1023,7 +1054,12 @@ mod tests {
 
     #[test]
     fn expired_session_asks_to_sign_in_again_for_every_op() {
-        for op in [AdmissionOp::List, AdmissionOp::Approve, AdmissionOp::Invite] {
+        for op in [
+            AdmissionOp::List,
+            AdmissionOp::Approve,
+            AdmissionOp::Invite,
+            AdmissionOp::Remove,
+        ] {
             assert_eq!(
                 err(op, Code::Unauthenticated, "not signed in"),
                 SIGN_IN_AGAIN
@@ -1050,6 +1086,26 @@ mod tests {
             "only an active tenant admin may approve admission",
         );
         assert!(m.contains("Only a workspace owner or admin"), "{m}");
+    }
+
+    #[test]
+    fn remove_by_non_admin_or_of_the_owner_explains_both() {
+        let m = err(
+            AdmissionOp::Remove,
+            Code::PermissionDenied,
+            "transfer ownership before removing the owner",
+        );
+        assert!(
+            m.contains("Only a workspace owner or admin can remove"),
+            "{m}"
+        );
+        assert!(m.contains("owner can't be removed"), "{m}");
+    }
+
+    #[test]
+    fn remove_of_a_missing_person_says_they_are_gone() {
+        let m = err(AdmissionOp::Remove, Code::NotFound, "no tenant identity");
+        assert!(m.contains("no longer in this workspace"), "{m}");
     }
 
     #[test]

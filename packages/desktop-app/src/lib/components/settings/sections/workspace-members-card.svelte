@@ -38,7 +38,26 @@
   /** Error from re-loading the roster after the admin view is already showing. */
   let listError = $state('');
 
+  /** The caller's own person id — never offered "Remove" on their own row. */
+  let myPersonId = $state('');
+
   const pending = $derived(members.filter((m) => m.status === 'pending'));
+  /**
+   * Active members the caller may remove: everyone except the owner (the cloud
+   * refuses to remove the owner) and the caller themselves (leaving is a
+   * separate flow, and a self-removed admin would lock themselves out).
+   */
+  const removable = $derived(
+    members.filter((m) => m.status === 'active' && m.role !== 'owner' && m.personId !== myPersonId)
+  );
+
+  /**
+   * Per-row remove/decline state, keyed by person id. `confirming` is the
+   * inline confirmation step: the first click only arms it, the second acts.
+   */
+  let confirming = $state<Record<string, boolean>>({});
+  let removing = $state<Record<string, boolean>>({});
+  let removeErrors = $state<Record<string, string>>({});
 
   /** Per-row approve state, keyed by person id. */
   let approving = $state<Record<string, boolean>>({});
@@ -71,6 +90,7 @@
       if (seq !== loadSeq) return;
       const mine = me.personId ? roster.find((m) => m.personId === me.personId) : undefined;
       members = roster;
+      myPersonId = me.personId;
       isAdmin = isTenantAdmin(mine);
       listError = '';
     } catch (err) {
@@ -103,6 +123,24 @@
       approveErrors[member.personId] = toError(err).message;
     } finally {
       delete approving[member.personId];
+    }
+  }
+
+  /** Decline a pending admission or remove an active member (same cloud call). */
+  async function remove(member: TenantMember): Promise<void> {
+    if (removing[member.personId]) return;
+    removing[member.personId] = true;
+    delete removeErrors[member.personId];
+    try {
+      await membershipService.removeFromTenant(member.personId);
+      log.info('member removed from workspace', { status: member.status });
+      delete confirming[member.personId];
+      await load();
+    } catch (err) {
+      removeErrors[member.personId] = toError(err).message;
+      delete confirming[member.personId];
+    } finally {
+      delete removing[member.personId];
     }
   }
 
@@ -144,6 +182,41 @@
   }
 </script>
 
+{#snippet removeControls(member: TenantMember, verb: 'Decline' | 'Remove')}
+  {#if confirming[member.personId]}
+    <span class="flex items-center gap-2">
+      <span class="text-muted-foreground text-sm">{verb} {displayName(member)}?</span>
+      <Button
+        size="sm"
+        variant="destructive"
+        disabled={removing[member.personId]}
+        onclick={() => void remove(member)}
+        aria-label={`Confirm ${verb.toLowerCase()} ${displayName(member)}`}
+      >
+        {removing[member.personId] ? `${verb === 'Decline' ? 'Declining' : 'Removing'}…` : 'Confirm'}
+      </Button>
+      <Button
+        size="sm"
+        variant="ghost"
+        disabled={removing[member.personId]}
+        onclick={() => delete confirming[member.personId]}
+        aria-label={`Cancel ${verb.toLowerCase()} ${displayName(member)}`}
+      >
+        Cancel
+      </Button>
+    </span>
+  {:else}
+    <Button
+      size="sm"
+      variant="outline"
+      onclick={() => (confirming[member.personId] = true)}
+      aria-label={`${verb} ${displayName(member)}`}
+    >
+      {verb}
+    </Button>
+  {/if}
+{/snippet}
+
 {#if isAdmin}
   <Card class="mb-4 gap-0 rounded-lg py-0" data-testid="workspace-members-card">
     <CardHeader class="p-5 pb-3">
@@ -175,18 +248,28 @@
             <li class="flex flex-col gap-1" data-testid="pending-admission">
               <div class="flex items-center justify-between gap-3">
                 <span class="text-foreground truncate text-sm">{displayName(member)}</span>
-                <Button
-                  size="sm"
-                  disabled={approving[member.personId]}
-                  onclick={() => void approve(member)}
-                  aria-label={`Approve ${displayName(member)}`}
-                >
-                  {approving[member.personId] ? 'Approving…' : 'Approve'}
-                </Button>
+                <span class="flex shrink-0 items-center gap-2">
+                  {@render removeControls(member, 'Decline')}
+                  {#if !confirming[member.personId]}
+                    <Button
+                      size="sm"
+                      disabled={approving[member.personId] || removing[member.personId]}
+                      onclick={() => void approve(member)}
+                      aria-label={`Approve ${displayName(member)}`}
+                    >
+                      {approving[member.personId] ? 'Approving…' : 'Approve'}
+                    </Button>
+                  {/if}
+                </span>
               </div>
               {#if approveErrors[member.personId]}
                 <p class="text-destructive m-0 text-sm" role="alert">
                   {approveErrors[member.personId]}
+                </p>
+              {/if}
+              {#if removeErrors[member.personId]}
+                <p class="text-destructive m-0 text-sm" role="alert">
+                  {removeErrors[member.personId]}
                 </p>
               {/if}
             </li>
@@ -194,6 +277,29 @@
         </ul>
       {/if}
     </CardContent>
+
+    {#if removable.length > 0}
+      <CardContent class="border-border border-t px-5 pt-4 pb-4">
+        <h3 class="text-foreground mb-2 text-sm font-medium">Members</h3>
+        <ul class="m-0 flex list-none flex-col gap-2 p-0">
+          {#each removable as member (member.personId)}
+            <li class="flex flex-col gap-1" data-testid="active-member">
+              <div class="flex items-center justify-between gap-3">
+                <span class="text-foreground truncate text-sm">{displayName(member)}</span>
+                <span class="flex shrink-0 items-center gap-2">
+                  {@render removeControls(member, 'Remove')}
+                </span>
+              </div>
+              {#if removeErrors[member.personId]}
+                <p class="text-destructive m-0 text-sm" role="alert">
+                  {removeErrors[member.personId]}
+                </p>
+              {/if}
+            </li>
+          {/each}
+        </ul>
+      </CardContent>
+    {/if}
 
     <CardContent class="border-border border-t px-5 pt-4 pb-5">
       <h3 class="text-foreground mb-1 text-sm font-medium">Invite by email</h3>
