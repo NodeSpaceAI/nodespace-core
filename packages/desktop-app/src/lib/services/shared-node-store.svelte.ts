@@ -1051,6 +1051,10 @@ export class SharedNodeStore {
    */
   private evictionInactivityMs = 30_000;
 
+  /** Window within which due eviction candidates are handled together. See
+   * `attemptEviction`. */
+  private static readonly EVICTION_COALESCE_MS = 1_000;
+
   /**
    * Replace the set of open-tab/pane document roots and re-evaluate every
    * cached node's reachability against it. Called by `navigation.svelte.ts`
@@ -1176,7 +1180,7 @@ export class SharedNodeStore {
    */
   private isReachable(
     nodeId: string,
-    anchorAncestors: ReadonlySet<string> = this.collectAnchorAncestors()
+    anchorAncestors: ReadonlySet<string>
   ): boolean {
     if (!this.hasOpenDocumentReport) return true;
     if (this.pinnedNodeRefCounts.has(nodeId)) return true;
@@ -1218,7 +1222,7 @@ export class SharedNodeStore {
   }
 
   private scheduleEviction(nodeId: string): void {
-    const dueAt = Date.now() + this.evictionInactivityMs;
+    const dueAt = performance.now() + this.evictionInactivityMs;
     const timer = setTimeout(() => this.attemptEviction(nodeId), this.evictionInactivityMs);
     this.evictionTimers.set(nodeId, { timer, dueAt });
   }
@@ -1247,9 +1251,11 @@ export class SharedNodeStore {
    *   node in memory once it finally settles.
    *
    * Closing a document schedules every one of its nodes in the same sweep,
-   * so their timers come due together. The first to fire handles every
-   * candidate due no later than itself, in one `structureTree` batch, so a
-   * closed document costs one reactive tree update rather than one per node.
+   * so their timers come due within moments of each other. The first to
+   * fire handles every candidate due within `EVICTION_COALESCE_MS` of it, in
+   * one `structureTree` batch, so a closed document costs one reactive tree
+   * update rather than one per node. Evicting a candidate that little early
+   * is harmless: each is still re-checked by `evictIfSettled`.
    */
   private attemptEviction(nodeId: string): void {
     const firing = this.evictionTimers.get(nodeId);
@@ -1257,7 +1263,7 @@ export class SharedNodeStore {
     const due = [nodeId];
     if (firing) {
       for (const [id, entry] of this.evictionTimers) {
-        if (entry.dueAt > firing.dueAt) continue;
+        if (entry.dueAt > firing.dueAt + SharedNodeStore.EVICTION_COALESCE_MS) continue;
         clearTimeout(entry.timer);
         this.evictionTimers.delete(id);
         due.push(id);
