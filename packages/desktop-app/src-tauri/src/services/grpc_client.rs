@@ -787,3 +787,34 @@ mod windows_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod interceptor_tests {
+    use super::{generate_client_id, DatabaseIdInterceptor};
+    use nodespace_proto::{CLIENT_ID_HEADER, DATABASE_ID_HEADER};
+    use tonic::service::Interceptor;
+
+    fn stamped(mut interceptor: DatabaseIdInterceptor) -> tonic::metadata::MetadataMap {
+        interceptor
+            .call(tonic::Request::new(()))
+            .expect("interceptor never rejects")
+            .metadata()
+            .clone()
+    }
+
+    /// The default `NodeService` client is built from `without_client_id()`:
+    /// it must keep the database routing but drop the client id, or the
+    /// daemon suppresses the echo of this window's non-store writes.
+    #[test]
+    fn without_client_id_keeps_routing_and_drops_the_client_id() {
+        let tagged = DatabaseIdInterceptor::for_id(Some("db-1"), generate_client_id());
+
+        let untagged = stamped(tagged.without_client_id());
+        assert_eq!(untagged.get(DATABASE_ID_HEADER).unwrap(), "db-1");
+        assert!(untagged.get(CLIENT_ID_HEADER).is_none());
+
+        let tagged = stamped(tagged);
+        assert_eq!(tagged.get(DATABASE_ID_HEADER).unwrap(), "db-1");
+        assert!(tagged.get(CLIENT_ID_HEADER).is_some());
+    }
+}

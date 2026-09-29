@@ -408,8 +408,8 @@
         properties: {}
       });
 
-      // The backend adapter emits events that update nodeManager automatically
-      // So we don't need to manually update nodeManager.nodes here
+      // The store does not get this node from an event (the daemon suppresses
+      // this window's own create_node echo); the tab opened below loads it.
 
       // Open the newly created node in a new tab (without focusing it)
       // This allows users to continue working while having the new node ready for later

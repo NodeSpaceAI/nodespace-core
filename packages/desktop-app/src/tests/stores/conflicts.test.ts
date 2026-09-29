@@ -25,6 +25,8 @@ vi.mock('$lib/utils/logger', () => ({
 
 import { conflictsStore, type ConflictRecord } from '$lib/stores/conflicts.svelte';
 import { backendAdapter } from '$lib/services/backend-adapter';
+import { sharedNodeStore } from '$lib/services/shared-node-store.svelte';
+import * as collectionRefresh from '$lib/utils/collection-refresh';
 import type { Node } from '$lib/types';
 
 function record(overrides: Partial<ConflictRecord> = {}): ConflictRecord {
@@ -225,6 +227,8 @@ describe('conflicts store', () => {
       const existing: Partial<Node> = { id: 'coll-1', version: 3 };
       vi.spyOn(backendAdapter, 'getNode').mockResolvedValueOnce(existing as Node);
       vi.spyOn(backendAdapter, 'updateNode').mockResolvedValueOnce({} as Node);
+      vi.spyOn(sharedNodeStore, 'setNode').mockReturnValue(true);
+      vi.spyOn(collectionRefresh, 'scheduleCollectionRefresh').mockImplementation(() => {});
       conflictsStore.records = [
         record({ id: 'c1', status: 'open', nodeIds: ['coll-1', 'coll-2'] })
       ];
@@ -241,6 +245,22 @@ describe('conflicts store', () => {
         resolution: { action: 'rename', renamed: 'coll-1', from: 'Work', to: 'Work (EU)' }
       });
       expect(conflictsStore.records[0].status).toBe('resolved');
+    });
+
+    it('applies the renamed node to the store and refreshes the collections sidebar', async () => {
+      const renamed = { id: 'coll-1', content: 'Work (EU)', version: 4 } as Node;
+      vi.spyOn(backendAdapter, 'getNode').mockResolvedValueOnce({ id: 'coll-1', version: 3 } as Node);
+      vi.spyOn(backendAdapter, 'updateNode').mockResolvedValueOnce(renamed);
+      const setNode = vi.spyOn(sharedNodeStore, 'setNode').mockReturnValue(true);
+      const refresh = vi
+        .spyOn(collectionRefresh, 'scheduleCollectionRefresh')
+        .mockImplementation(() => {});
+      mockInvoke.mockResolvedValueOnce(record({ id: 'c1', status: 'resolved' }));
+
+      await conflictsStore.rename('c1', 'coll-1', 'Work', 'Work (EU)');
+
+      expect(setNode).toHaveBeenCalledWith(renamed, expect.objectContaining({ type: 'database' }), true);
+      expect(refresh).toHaveBeenCalled();
     });
 
     it('throws without calling resolve_conflict when the node no longer exists', async () => {
