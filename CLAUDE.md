@@ -358,7 +358,7 @@ nodespace-core/
 │   ├── nodespace-types/          # Shared wire types (core + Tauri command layer)
 │   ├── core/                     # Knowledge graph data layer (NodeService, ops/)
 │   ├── nlp-engine/               # LLM inference and embedding (llama.cpp)
-│   ├── agent/                    # AI agent orchestration (ReAct loop, ACP client)
+│   ├── agent/                    # AI agent orchestration (local ReAct loop, PTY external-agent orchestration)
 │   ├── proto/                    # Generated gRPC proto types (client stubs only)
 │   ├── daemon/                   # gRPC daemon (nodespaced) — service definitions
 │   ├── cli/                      # `nodespace` CLI — a gRPC client for nodespaced
