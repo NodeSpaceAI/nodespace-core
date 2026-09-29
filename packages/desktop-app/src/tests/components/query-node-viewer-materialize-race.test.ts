@@ -31,7 +31,8 @@ vi.mock('$lib/services/navigation-service', () => ({
   })
 }));
 
-vi.mock('$lib/services/schema-authoring', () => ({
+vi.mock('$lib/services/schema-authoring', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('$lib/services/schema-authoring')>()),
   createSchemaInstance: vi.fn(),
   shouldIntegrateInstance: () => true
 }));

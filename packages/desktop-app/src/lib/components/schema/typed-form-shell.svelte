@@ -41,6 +41,7 @@
   import RelationshipField from '$lib/components/relationships/relationship-field.svelte';
   import NestedPropertyModal from './nested-property-modal.svelte';
   import { NodeRelationshipsState } from '$lib/services/node-relationships-state.svelte';
+  import { sharedNodeStore } from '$lib/services/shared-node-store.svelte';
   import WaypointsIcon from '@lucide/svelte/icons/waypoints';
 
   let {
@@ -69,7 +70,19 @@
   // has something left once those have moved out.
   let showRelationships = $state(false);
   const relationships = new NodeRelationshipsState();
-  $effect(() => relationships.load(nodeId));
+  // An unsaved placeholder has no backend row yet, so there is nothing to load.
+  // Once it is saved the load waits for the create to land (the store rewrites
+  // the node when it does, which re-runs this effect).
+  let wasUnsavedPlaceholder = false;
+  $effect(() => {
+    void sharedNodeStore.getNode(nodeId);
+    if (sharedNodeStore.isUnsavedPlaceholder(nodeId)) {
+      wasUnsavedPlaceholder = true;
+      return;
+    }
+    if (wasUnsavedPlaceholder && !sharedNodeStore.isNodePersisted(nodeId)) return;
+    relationships.load(nodeId);
+  });
   const promotedGroups = $derived(relationships.partitioned.promoted);
 
   // Promoted relationship fields count toward the badge like any other field.

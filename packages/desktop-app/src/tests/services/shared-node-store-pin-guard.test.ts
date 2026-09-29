@@ -87,6 +87,8 @@ const REACHABLE_WITHOUT_PIN: Record<string, string> = {
     'Writes a field on the node the calling property-form is already displaying (itself structureTree-reachable or the open tab root).',
   'lib/components/schema/generic-schema-form.svelte':
     "Property panel for the currently-open node's own nodeId.",
+  'lib/components/schema/typed-form-shell.svelte':
+    "Watches the property panel's own nodeId to time its relationships load — the open tab's node, same as the forms it wraps.",
   'lib/components/property-forms/task-schema-form.svelte':
     "Property panel for the currently-open node's own nodeId.",
   'lib/components/property-forms/person-schema-form.svelte':

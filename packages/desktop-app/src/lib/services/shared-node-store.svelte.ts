@@ -1073,7 +1073,21 @@ export class SharedNodeStore {
 
     if (!isFirstReport && SharedNodeStore.setsEqual(next, this.openDocumentRootIds)) return;
     this.openDocumentRootIds = next;
+    this.discardClosedPlaceholders(next);
     this.reconcileEvictionCandidates();
+  }
+
+  /**
+   * An unsaved placeholder lives only for as long as a tab shows it: once one
+   * has been open and no tab shows it any more, it is dropped silently.
+   */
+  private discardClosedPlaceholders(openRootIds: Set<string>): void {
+    const closed: string[] = [];
+    for (const [id, held] of this.unsavedPlaceholders) {
+      if (openRootIds.has(id)) held.seenOpen = true;
+      else if (held.seenOpen) closed.push(id);
+    }
+    for (const id of closed) this.discardUnsavedPlaceholder(id);
   }
 
   /**
@@ -1332,6 +1346,7 @@ export class SharedNodeStore {
     this.versions.delete(nodeId);
     this.pendingUpdates.delete(nodeId);
     this.persistedNodeIds.delete(nodeId);
+    this.unsavedPlaceholders.delete(nodeId);
     this.typedFieldWriteSeq.delete(nodeId);
     this.pendingTypedFields.delete(nodeId);
     this.resyncingNodes.delete(nodeId);
@@ -1791,6 +1806,13 @@ export class SharedNodeStore {
         ...options,
         skipPersistence: true
       };
+    }
+
+    // A held placeholder is not in the backend yet: edits stay local until the
+    // node is complete enough to be created.
+    if (!options.isComputedField && source.type !== 'database' && this.unsavedPlaceholders.has(nodeId)) {
+      this.applyUnsavedPlaceholderUpdate(nodeId, changes, source, options);
+      return;
     }
 
     // ========================================================================
@@ -3197,6 +3219,7 @@ export class SharedNodeStore {
       this.pendingTypedFields.delete(nodeId);
       this.cancelPendingEviction(nodeId); // Node is gone — nothing left to evict
       this.notifySubscribers(nodeId, node, source);
+      this.unsavedPlaceholders.delete(nodeId);
 
       log.debug(`Node deleted: ${nodeId}`);
 
@@ -3742,6 +3765,7 @@ export class SharedNodeStore {
     this.typedFieldWriteSeq.clear();
     this.pendingTypedFields.clear();
     this.persistedNodeIds.clear();
+    this.unsavedPlaceholders.clear();
     this.batchedNotifications.clear();
     this.activeBatches.clear();
     this.pendingTreeLoads.clear();
@@ -4039,6 +4063,97 @@ export class SharedNodeStore {
 
       throw error;
     }
+  }
+
+  // ========================================================================
+  // Unsaved placeholder instances
+  // ========================================================================
+
+  /**
+   * Store-only instances that must not reach the backend yet: a new instance of
+   * a type whose schema has required fields without a default is rejected by
+   * the backend's validator until those fields are filled. Each entry holds the
+   * completeness predicate that decides when the first write may happen.
+   * `seenOpen` records that an open tab has displayed the node at least once,
+   * so closing that tab (and only then) discards it.
+   *
+   * Reactive so a form can show "still needed" markers and drop them the moment
+   * the node is saved.
+   */
+  private unsavedPlaceholders = new SvelteMap<
+    string,
+    { isComplete: (_node: Node) => boolean; seenOpen: boolean }
+  >();
+
+  /**
+   * Add a node to the store without persisting it, and hold it there until
+   * `isComplete` accepts it. The first edit that completes the node is written
+   * through the store's normal create path (see `applyUnsavedPlaceholderUpdate`),
+   * so the store's persisted-id bookkeeping is never bypassed and no duplicate
+   * CREATE can follow. An incomplete placeholder that no open tab shows any
+   * longer is discarded without touching the backend.
+   */
+  createUnsavedPlaceholder(node: Node, isComplete: (_node: Node) => boolean): void {
+    this.unsavedPlaceholders.set(node.id, { isComplete, seenOpen: false });
+    this.setNode(node, { type: 'viewer', viewerId: 'unsaved-placeholder' }, true);
+  }
+
+  /** True while `nodeId` is a store-only placeholder that has not been saved yet. */
+  isUnsavedPlaceholder(nodeId: string): boolean {
+    return this.unsavedPlaceholders.has(nodeId);
+  }
+
+  /** Drop an unsaved placeholder from the store. No backend call is made. */
+  discardUnsavedPlaceholder(nodeId: string): void {
+    if (!this.unsavedPlaceholders.has(nodeId)) return;
+    // Delete while still marked as a placeholder so subscribers hearing the
+    // removal can tell it never belonged to any result set.
+    this.deleteNode(nodeId, { type: 'viewer', viewerId: 'unsaved-placeholder' }, true);
+    this.unsavedPlaceholders.delete(nodeId);
+  }
+
+  /**
+   * Apply an edit to a held placeholder. Local only until the edited node
+   * satisfies its completeness predicate; that edit releases the hold and is
+   * written as the node's first persisted state through `setNode`, whose
+   * viewer-sourced write of an id outside `persistedNodeIds` is the store's
+   * CREATE path.
+   */
+  private applyUnsavedPlaceholderUpdate(
+    nodeId: string,
+    changes: Partial<Node>,
+    source: UpdateSource,
+    options: UpdateOptions
+  ): void {
+    const held = this.unsavedPlaceholders.get(nodeId);
+    const existing = this.nodes.get(nodeId);
+    if (!held || !existing) {
+      this.unsavedPlaceholders.delete(nodeId);
+      return;
+    }
+    const properties = changes.properties
+      ? options.replaceProperties
+        ? changes.properties
+        : mergeProperties(existing.properties, changes.properties)
+      : existing.properties;
+    const updated: Node = {
+      ...existing,
+      ...changes,
+      ...(changes.properties ? { properties } : {}),
+      modifiedAt: new Date().toISOString()
+    };
+
+    const localOnly =
+      options.skipPersistence || options.persist === false || options.markAsPersistedOnly;
+    if (!localOnly && held.isComplete(updated)) {
+      this.unsavedPlaceholders.delete(nodeId);
+      this.setNode(updated, source);
+      return;
+    }
+
+    this.nodesSet(nodeId, updated);
+    this.versions.set(nodeId, this.getNextVersion(nodeId));
+    this.notifySubscribers(nodeId, updated, source);
   }
 
   /**
@@ -5175,6 +5290,7 @@ export class SharedNodeStore {
   __resetForTesting(): void {
     this.nodesClear();
     this.persistedNodeIds.clear();
+    this.unsavedPlaceholders.clear();
     this.subscriptions.clear();
     this.wildcardSubscriptions.clear();
     this.pendingUpdates.clear();
