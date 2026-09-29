@@ -9,7 +9,9 @@
 
     let { activeCategory, onCategoryChange }: Props = $props();
 
-    // "Account" is gated behind the Labs "Team synchronization" toggle
+    // "AI Models" is gated behind the Labs "AI Chat" toggle and "Playbooks"
+    // behind the Labs "Playbooks" toggle (both default OFF); the flags gate the
+    // UI only. "Account" is gated behind the Labs "Team synchronization" toggle
     // (default OFF) — the tab itself, not just its content, stays hidden
     // until a user opts in, so no "NodeSpace Pro" surface is reachable at
     // all until then. Reactive ($derived), same convention as
@@ -19,10 +21,10 @@
         { id: 'database', label: 'Database' },
         ...(labsFlags.syncEnabled ? [{ id: 'account', label: 'Account' }] : []),
         { id: 'display', label: 'Display' },
-        { id: 'ai-models', label: 'AI Models' },
+        ...(labsFlags.aiChatEnabled ? [{ id: 'ai-models', label: 'AI Models' }] : []),
         { id: 'import', label: 'Import Sources' },
         { id: 'integrations', label: 'Integrations' },
-        { id: 'methodology', label: 'Work Tracking' },
+        ...(labsFlags.playbooksEnabled ? [{ id: 'playbooks', label: 'Playbooks' }] : []),
         { id: 'labs', label: 'Labs' },
         { id: 'about', label: 'About' },
     ]);

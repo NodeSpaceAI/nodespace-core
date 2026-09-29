@@ -37,7 +37,7 @@ describe('Layout Store - Layout State Management', () => {
       sidebarCollapsed: false,
       activePane: 'today',
       collectionsExpanded: false,
-      schemaTypesExpanded: false,
+      nodeTypesExpanded: false,
       aiChatsExpanded: false
     };
   });
@@ -106,7 +106,7 @@ describe('Layout Store - Layout State Management', () => {
         sidebarCollapsed: true,
         activePane: 'today',
         collectionsExpanded: false,
-        schemaTypesExpanded: false,
+        nodeTypesExpanded: false,
         aiChatsExpanded: false
       };
 
@@ -120,7 +120,7 @@ describe('Layout Store - Layout State Management', () => {
         sidebarCollapsed: false,
         activePane: 'today',
         collectionsExpanded: false,
-        schemaTypesExpanded: false,
+        nodeTypesExpanded: false,
         aiChatsExpanded: false
       };
 
@@ -134,7 +134,7 @@ describe('Layout Store - Layout State Management', () => {
         sidebarCollapsed: false,
         activePane: 'custom-pane',
         collectionsExpanded: false,
-        schemaTypesExpanded: false,
+        nodeTypesExpanded: false,
         aiChatsExpanded: false
       };
 
@@ -169,7 +169,7 @@ describe('Layout Store - Layout State Management', () => {
         sidebarCollapsed: true,
         activePane: 'today',
         collectionsExpanded: false,
-        schemaTypesExpanded: false,
+        nodeTypesExpanded: false,
         aiChatsExpanded: false
       };
 
@@ -543,17 +543,17 @@ describe('Layout Store - Persistence Integration', () => {
     });
   });
 
-  describe('setSchemaTypesExpanded', () => {
-    it('should set schemaTypesExpanded to true', async () => {
-      const { setSchemaTypesExpanded, layoutStore } = await import('$lib/stores/layout.svelte');
-      setSchemaTypesExpanded(true);
-      expect(layoutStore.state.schemaTypesExpanded).toBe(true);
+  describe('setNodeTypesExpanded', () => {
+    it('should set nodeTypesExpanded to true', async () => {
+      const { setNodeTypesExpanded, layoutStore } = await import('$lib/stores/layout.svelte');
+      setNodeTypesExpanded(true);
+      expect(layoutStore.state.nodeTypesExpanded).toBe(true);
     });
 
-    it('should set schemaTypesExpanded to false', async () => {
-      const { setSchemaTypesExpanded, layoutStore } = await import('$lib/stores/layout.svelte');
-      setSchemaTypesExpanded(false);
-      expect(layoutStore.state.schemaTypesExpanded).toBe(false);
+    it('should set nodeTypesExpanded to false', async () => {
+      const { setNodeTypesExpanded, layoutStore } = await import('$lib/stores/layout.svelte');
+      setNodeTypesExpanded(false);
+      expect(layoutStore.state.nodeTypesExpanded).toBe(false);
     });
   });
 

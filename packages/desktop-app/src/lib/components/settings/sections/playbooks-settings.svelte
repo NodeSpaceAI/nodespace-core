@@ -11,7 +11,7 @@
     type Methodology
   } from '$lib/services/methodology-service';
 
-  const log = createLogger('MethodologySettings');
+  const log = createLogger('PlaybooksSettings');
 
   let methodologies = $state<Methodology[]>([]);
   let loading = $state(true);
@@ -47,7 +47,7 @@
 </script>
 
 <div>
-  <h2 class="text-foreground mb-1 text-lg font-semibold">Work Tracking</h2>
+  <h2 class="text-foreground mb-1 text-lg font-semibold">Playbooks</h2>
   <p class="text-muted-foreground mb-5 text-sm leading-relaxed">
     Install a ready-made setup for a workflow you already know. Each one adds node types, a few
     automations and some guidance — all ordinary content you can inspect, edit or delete

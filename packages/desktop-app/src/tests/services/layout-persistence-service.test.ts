@@ -30,7 +30,7 @@ describe('LayoutPersistenceService', () => {
     const mockState: LayoutState = {
       sidebarCollapsed: true,
       collectionsExpanded: false,
-      schemaTypesExpanded: false,
+      nodeTypesExpanded: false,
       aiChatsExpanded: false,
       activePane: 'dashboard'
     };
@@ -47,7 +47,7 @@ describe('LayoutPersistenceService', () => {
         version: 4,
         sidebarCollapsed: true,
         collectionsExpanded: false,
-        schemaTypesExpanded: false,
+        nodeTypesExpanded: false,
         aiChatsExpanded: false
       });
     });
@@ -68,7 +68,7 @@ describe('LayoutPersistenceService', () => {
       const collapsedState: LayoutState = {
         sidebarCollapsed: true,
         collectionsExpanded: false,
-        schemaTypesExpanded: false,
+        nodeTypesExpanded: false,
         aiChatsExpanded: false,
         activePane: 'today'
       };
@@ -84,7 +84,7 @@ describe('LayoutPersistenceService', () => {
       const expandedState: LayoutState = {
         sidebarCollapsed: false,
         collectionsExpanded: false,
-        schemaTypesExpanded: false,
+        nodeTypesExpanded: false,
         aiChatsExpanded: false,
         activePane: 'today'
       };
@@ -96,11 +96,11 @@ describe('LayoutPersistenceService', () => {
       expect(loaded?.sidebarCollapsed).toBe(false);
     });
 
-    it('persists sidebarCollapsed, collectionsExpanded, and schemaTypesExpanded, but not activePane', () => {
+    it('persists sidebarCollapsed, collectionsExpanded, and nodeTypesExpanded, but not activePane', () => {
       const state: LayoutState = {
         sidebarCollapsed: true,
         collectionsExpanded: false,
-        schemaTypesExpanded: true,
+        nodeTypesExpanded: true,
         aiChatsExpanded: false,
         activePane: 'some-custom-pane'
       };
@@ -113,7 +113,7 @@ describe('LayoutPersistenceService', () => {
         version: 4,
         sidebarCollapsed: true,
         collectionsExpanded: false,
-        schemaTypesExpanded: true,
+        nodeTypesExpanded: true,
         aiChatsExpanded: false
       });
       // activePane should NOT be in the persisted state
@@ -221,7 +221,7 @@ describe('LayoutPersistenceService', () => {
       expect(loaded?.version).toBe(4);
       expect(loaded?.sidebarCollapsed).toBe(false);
       expect(loaded?.collectionsExpanded).toBe(false);
-      expect(loaded?.schemaTypesExpanded).toBe(false);
+      expect(loaded?.nodeTypesExpanded).toBe(false);
       expect(loaded?.aiChatsExpanded).toBe(false);
     });
 
@@ -240,7 +240,7 @@ describe('LayoutPersistenceService', () => {
       expect(loaded?.version).toBe(4);
       expect(loaded?.sidebarCollapsed).toBe(true);
       expect(loaded?.collectionsExpanded).toBe(false);
-      expect(loaded?.schemaTypesExpanded).toBe(false);
+      expect(loaded?.nodeTypesExpanded).toBe(false);
       expect(loaded?.aiChatsExpanded).toBe(false);
     });
   });
@@ -252,7 +252,7 @@ describe('LayoutPersistenceService', () => {
       const state1: LayoutState = {
         sidebarCollapsed: true,
         collectionsExpanded: false,
-        schemaTypesExpanded: false,
+        nodeTypesExpanded: false,
         aiChatsExpanded: false,
         activePane: 'pane-1'
       };
@@ -260,7 +260,7 @@ describe('LayoutPersistenceService', () => {
       const state2: LayoutState = {
         sidebarCollapsed: false,
         collectionsExpanded: false,
-        schemaTypesExpanded: false,
+        nodeTypesExpanded: false,
         aiChatsExpanded: false,
         activePane: 'pane-2'
       };
@@ -268,7 +268,7 @@ describe('LayoutPersistenceService', () => {
       const state3: LayoutState = {
         sidebarCollapsed: true,
         collectionsExpanded: false,
-        schemaTypesExpanded: false,
+        nodeTypesExpanded: false,
         aiChatsExpanded: false,
         activePane: 'pane-3'
       };
@@ -297,7 +297,7 @@ describe('LayoutPersistenceService', () => {
       const mockState: LayoutState = {
         sidebarCollapsed: true,
         collectionsExpanded: false,
-        schemaTypesExpanded: false,
+        nodeTypesExpanded: false,
         aiChatsExpanded: false,
         activePane: 'today'
       };
@@ -325,7 +325,7 @@ describe('LayoutPersistenceService', () => {
       const mockState: LayoutState = {
         sidebarCollapsed: true,
         collectionsExpanded: false,
-        schemaTypesExpanded: false,
+        nodeTypesExpanded: false,
         aiChatsExpanded: false,
         activePane: 'today'
       };
@@ -347,7 +347,7 @@ describe('LayoutPersistenceService', () => {
       const mockState: LayoutState = {
         sidebarCollapsed: true,
         collectionsExpanded: false,
-        schemaTypesExpanded: false,
+        nodeTypesExpanded: false,
         aiChatsExpanded: false,
         activePane: 'today'
       };
@@ -399,7 +399,7 @@ describe('LayoutPersistenceService', () => {
       const mockState: LayoutState = {
         sidebarCollapsed: true,
         collectionsExpanded: false,
-        schemaTypesExpanded: false,
+        nodeTypesExpanded: false,
         aiChatsExpanded: false,
         activePane: 'today'
       };
@@ -442,7 +442,7 @@ describe('LayoutPersistenceService', () => {
       const mockState: LayoutState = {
         sidebarCollapsed: true,
         collectionsExpanded: false,
-        schemaTypesExpanded: false,
+        nodeTypesExpanded: false,
         aiChatsExpanded: false,
         activePane: 'today'
       };
@@ -466,7 +466,7 @@ describe('LayoutPersistenceService', () => {
       const mockState: LayoutState = {
         sidebarCollapsed: true,
         collectionsExpanded: false,
-        schemaTypesExpanded: false,
+        nodeTypesExpanded: false,
         aiChatsExpanded: false,
         activePane: 'today'
       };
@@ -487,7 +487,7 @@ describe('LayoutPersistenceService', () => {
       const state1: LayoutState = {
         sidebarCollapsed: true,
         collectionsExpanded: false,
-        schemaTypesExpanded: false,
+        nodeTypesExpanded: false,
         aiChatsExpanded: false,
         activePane: 'today'
       };
@@ -495,7 +495,7 @@ describe('LayoutPersistenceService', () => {
       const state2: LayoutState = {
         sidebarCollapsed: false,
         collectionsExpanded: false,
-        schemaTypesExpanded: false,
+        nodeTypesExpanded: false,
         aiChatsExpanded: false,
         activePane: 'dashboard'
       };
@@ -529,7 +529,7 @@ describe('LayoutPersistenceService', () => {
       const mockState: LayoutState = {
         sidebarCollapsed: true,
         collectionsExpanded: false,
-        schemaTypesExpanded: false,
+        nodeTypesExpanded: false,
         aiChatsExpanded: false,
         activePane: 'today'
       };
@@ -550,7 +550,7 @@ describe('LayoutPersistenceService', () => {
       const mockState: LayoutState = {
         sidebarCollapsed: true,
         collectionsExpanded: false,
-        schemaTypesExpanded: false,
+        nodeTypesExpanded: false,
         aiChatsExpanded: false,
         activePane: 'today'
       };
@@ -587,7 +587,7 @@ describe('LayoutPersistenceService', () => {
       const mockState: LayoutState = {
         sidebarCollapsed: true,
         collectionsExpanded: false,
-        schemaTypesExpanded: false,
+        nodeTypesExpanded: false,
         aiChatsExpanded: false,
         activePane: 'today'
       };
@@ -600,7 +600,7 @@ describe('LayoutPersistenceService', () => {
   });
 
   describe('migration', () => {
-    it('migrates version 1 state through v2, v3, to v4 with collectionsExpanded, schemaTypesExpanded, and aiChatsExpanded', () => {
+    it('migrates version 1 state through v2, v3, to v4 with collectionsExpanded, nodeTypesExpanded, and aiChatsExpanded', () => {
       const v1State = {
         version: 1,
         sidebarCollapsed: true
@@ -613,7 +613,7 @@ describe('LayoutPersistenceService', () => {
         version: 4,
         sidebarCollapsed: true,
         collectionsExpanded: false,
-        schemaTypesExpanded: false,
+        nodeTypesExpanded: false,
         aiChatsExpanded: false
       });
     });
@@ -630,11 +630,11 @@ describe('LayoutPersistenceService', () => {
       expect(loaded?.version).toBe(4);
       expect(loaded?.sidebarCollapsed).toBe(false);
       expect(loaded?.collectionsExpanded).toBe(false);
-      expect(loaded?.schemaTypesExpanded).toBe(false);
+      expect(loaded?.nodeTypesExpanded).toBe(false);
       expect(loaded?.aiChatsExpanded).toBe(false);
     });
 
-    it('migrates version 2 state to version 4 with schemaTypesExpanded and aiChatsExpanded', () => {
+    it('migrates version 2 state to version 4 with nodeTypesExpanded and aiChatsExpanded', () => {
       const v2State = {
         version: 2,
         sidebarCollapsed: true,
@@ -648,7 +648,7 @@ describe('LayoutPersistenceService', () => {
         version: 4,
         sidebarCollapsed: true,
         collectionsExpanded: true,
-        schemaTypesExpanded: false,
+        nodeTypesExpanded: false,
         aiChatsExpanded: false
       });
     });
@@ -658,7 +658,7 @@ describe('LayoutPersistenceService', () => {
         version: 3,
         sidebarCollapsed: true,
         collectionsExpanded: true,
-        schemaTypesExpanded: true
+        nodeTypesExpanded: true
       };
 
       localStorage.setItem('nodespace:layout-state', JSON.stringify(v3State));
@@ -668,7 +668,7 @@ describe('LayoutPersistenceService', () => {
         version: 4,
         sidebarCollapsed: true,
         collectionsExpanded: true,
-        schemaTypesExpanded: true,
+        nodeTypesExpanded: true,
         aiChatsExpanded: false
       });
     });
@@ -678,7 +678,7 @@ describe('LayoutPersistenceService', () => {
         version: 4,
         sidebarCollapsed: true,
         collectionsExpanded: true,
-        schemaTypesExpanded: true,
+        nodeTypesExpanded: true,
         aiChatsExpanded: true
       };
 
@@ -700,9 +700,9 @@ describe('LayoutPersistenceService', () => {
     it('handles multiple rapid save-flush cycles', () => {
       const spy = vi.spyOn(window.localStorage, 'setItem');
 
-      const state1: LayoutState = { sidebarCollapsed: true, collectionsExpanded: false, schemaTypesExpanded: false, aiChatsExpanded: false, activePane: 'today' };
-      const state2: LayoutState = { sidebarCollapsed: false, collectionsExpanded: false, schemaTypesExpanded: false, aiChatsExpanded: false, activePane: 'today' };
-      const state3: LayoutState = { sidebarCollapsed: true, collectionsExpanded: false, schemaTypesExpanded: false, aiChatsExpanded: false, activePane: 'today' };
+      const state1: LayoutState = { sidebarCollapsed: true, collectionsExpanded: false, nodeTypesExpanded: false, aiChatsExpanded: false, activePane: 'today' };
+      const state2: LayoutState = { sidebarCollapsed: false, collectionsExpanded: false, nodeTypesExpanded: false, aiChatsExpanded: false, activePane: 'today' };
+      const state3: LayoutState = { sidebarCollapsed: true, collectionsExpanded: false, nodeTypesExpanded: false, aiChatsExpanded: false, activePane: 'today' };
 
       LayoutPersistenceService.save(state1);
       LayoutPersistenceService.flush();
@@ -720,8 +720,8 @@ describe('LayoutPersistenceService', () => {
     it('handles alternating save and saveNow calls', () => {
       const spy = vi.spyOn(window.localStorage, 'setItem');
 
-      const state1: LayoutState = { sidebarCollapsed: true, collectionsExpanded: false, schemaTypesExpanded: false, aiChatsExpanded: false, activePane: 'today' };
-      const state2: LayoutState = { sidebarCollapsed: false, collectionsExpanded: false, schemaTypesExpanded: false, aiChatsExpanded: false, activePane: 'today' };
+      const state1: LayoutState = { sidebarCollapsed: true, collectionsExpanded: false, nodeTypesExpanded: false, aiChatsExpanded: false, activePane: 'today' };
+      const state2: LayoutState = { sidebarCollapsed: false, collectionsExpanded: false, nodeTypesExpanded: false, aiChatsExpanded: false, activePane: 'today' };
 
       LayoutPersistenceService.save(state1);
       LayoutPersistenceService.saveNow(state2);
@@ -735,7 +735,7 @@ describe('LayoutPersistenceService', () => {
       const state: LayoutState = {
         sidebarCollapsed: false,
         collectionsExpanded: false,
-        schemaTypesExpanded: false,
+        nodeTypesExpanded: false,
         aiChatsExpanded: false,
         activePane: 'today'
       };
@@ -751,7 +751,7 @@ describe('LayoutPersistenceService', () => {
       const state: LayoutState = {
         sidebarCollapsed: true,
         collectionsExpanded: false,
-        schemaTypesExpanded: false,
+        nodeTypesExpanded: false,
         aiChatsExpanded: false,
         activePane: 'today'
       };
@@ -766,7 +766,7 @@ describe('LayoutPersistenceService', () => {
 
   describe('persistence lifecycle', () => {
     it('maintains state across save-load cycles', () => {
-      const state1: LayoutState = { sidebarCollapsed: true, collectionsExpanded: false, schemaTypesExpanded: false, aiChatsExpanded: false, activePane: 'today' };
+      const state1: LayoutState = { sidebarCollapsed: true, collectionsExpanded: false, nodeTypesExpanded: false, aiChatsExpanded: false, activePane: 'today' };
 
       LayoutPersistenceService.save(state1);
       vi.advanceTimersByTime(500);
@@ -774,7 +774,7 @@ describe('LayoutPersistenceService', () => {
       const loaded1 = LayoutPersistenceService.load();
       expect(loaded1?.sidebarCollapsed).toBe(true);
 
-      const state2: LayoutState = { sidebarCollapsed: false, collectionsExpanded: false, schemaTypesExpanded: false, aiChatsExpanded: false, activePane: 'dashboard' };
+      const state2: LayoutState = { sidebarCollapsed: false, collectionsExpanded: false, nodeTypesExpanded: false, aiChatsExpanded: false, activePane: 'dashboard' };
 
       LayoutPersistenceService.save(state2);
       vi.advanceTimersByTime(500);
@@ -784,7 +784,7 @@ describe('LayoutPersistenceService', () => {
     });
 
     it('clear() followed by load() returns null', () => {
-      const state: LayoutState = { sidebarCollapsed: true, collectionsExpanded: false, schemaTypesExpanded: false, aiChatsExpanded: false, activePane: 'today' };
+      const state: LayoutState = { sidebarCollapsed: true, collectionsExpanded: false, nodeTypesExpanded: false, aiChatsExpanded: false, activePane: 'today' };
 
       LayoutPersistenceService.save(state);
       vi.advanceTimersByTime(500);
@@ -797,14 +797,14 @@ describe('LayoutPersistenceService', () => {
     });
 
     it('handles save after clear', () => {
-      const state1: LayoutState = { sidebarCollapsed: true, collectionsExpanded: false, schemaTypesExpanded: false, aiChatsExpanded: false, activePane: 'today' };
+      const state1: LayoutState = { sidebarCollapsed: true, collectionsExpanded: false, nodeTypesExpanded: false, aiChatsExpanded: false, activePane: 'today' };
 
       LayoutPersistenceService.save(state1);
       vi.advanceTimersByTime(500);
 
       LayoutPersistenceService.clear();
 
-      const state2: LayoutState = { sidebarCollapsed: false, collectionsExpanded: false, schemaTypesExpanded: false, aiChatsExpanded: false, activePane: 'dashboard' };
+      const state2: LayoutState = { sidebarCollapsed: false, collectionsExpanded: false, nodeTypesExpanded: false, aiChatsExpanded: false, activePane: 'dashboard' };
 
       LayoutPersistenceService.save(state2);
       vi.advanceTimersByTime(500);

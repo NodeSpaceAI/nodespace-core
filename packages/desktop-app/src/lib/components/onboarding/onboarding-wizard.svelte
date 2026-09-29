@@ -765,9 +765,9 @@
               </span>
               <span>
                 {#if methodologyChosen && methodologyReport !== null}
-                  Work tracking — {methodologyReport.playbookId}
+                  Playbooks — {methodologyReport.playbookId}
                 {:else}
-                  Work tracking
+                  Playbooks
                 {/if}
                 {#if !methodologyChosen}<span class="summary-note">(skipped)</span>{/if}
               </span>

@@ -30,7 +30,7 @@ const log = createLogger('AiChatsStore');
  * already excluded, silently hiding genuinely-recent ones. Fetching
  * everything and slicing after the sort mirrors `collectionsData.loadCollections()`,
  * which also fetches its full list with no limit. The list itself scrolls
- * past this cap, matching how Collections / Schema Types handle overflow.
+ * past this cap, matching how Collections / Node Types handle overflow.
  */
 const DISPLAY_LIMIT = 50;
 

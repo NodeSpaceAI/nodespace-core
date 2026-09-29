@@ -7,18 +7,21 @@ const LOCAL_STORAGE_KEY = 'nodespace-labs-flags';
 /**
  * Labs flags gate experimental surfaces that are wired up but not yet ready
  * for ordinary users — a pure per-device UI-visibility switch, not synced
- * data and not a security boundary. Both flags default to `false`: a fresh
+ * data and not a security boundary. All flags default to `false`: a fresh
  * install hides these surfaces until a user opts in via Settings → Labs.
  */
 export interface LabsFlags {
   aiChatEnabled: boolean;
   /** Owned/consumed by the companion "Team synchronization" Labs toggle. */
   syncEnabled: boolean;
+  /** Gates the Playbooks settings category only; installed playbooks keep running. */
+  playbooksEnabled: boolean;
 }
 
 const DEFAULT_LABS_FLAGS: LabsFlags = {
   aiChatEnabled: false,
   syncEnabled: false,
+  playbooksEnabled: false,
 };
 
 function readLocalFlags(): Partial<LabsFlags> {
@@ -61,6 +64,15 @@ class LabsFlagsStore {
   set syncEnabled(value: boolean) {
     this.flags.syncEnabled = value;
     writeLocalFlags({ syncEnabled: value });
+  }
+
+  get playbooksEnabled(): boolean {
+    return this.flags.playbooksEnabled;
+  }
+
+  set playbooksEnabled(value: boolean) {
+    this.flags.playbooksEnabled = value;
+    writeLocalFlags({ playbooksEnabled: value });
   }
 }
 

@@ -17,7 +17,7 @@ export interface PersistedLayoutState {
   version: number;
   sidebarCollapsed: boolean;
   collectionsExpanded?: boolean; // Added in version 2
-  schemaTypesExpanded?: boolean; // Added in version 3
+  nodeTypesExpanded?: boolean; // Added in version 3
   aiChatsExpanded?: boolean; // Added in version 4
 }
 
@@ -61,13 +61,13 @@ export class LayoutPersistenceService {
         version: 4,
         sidebarCollapsed: state.sidebarCollapsed,
         collectionsExpanded: state.collectionsExpanded,
-        schemaTypesExpanded: state.schemaTypesExpanded,
+        nodeTypesExpanded: state.nodeTypesExpanded,
         aiChatsExpanded: state.aiChatsExpanded
       };
 
       localStorage.setItem(this.STORAGE_KEY, JSON.stringify(persisted));
       log.debug(
-        `State saved: sidebarCollapsed=${state.sidebarCollapsed}, collectionsExpanded=${state.collectionsExpanded}, schemaTypesExpanded=${state.schemaTypesExpanded}, aiChatsExpanded=${state.aiChatsExpanded}`
+        `State saved: sidebarCollapsed=${state.sidebarCollapsed}, collectionsExpanded=${state.collectionsExpanded}, nodeTypesExpanded=${state.nodeTypesExpanded}, aiChatsExpanded=${state.aiChatsExpanded}`
       );
     } catch (error) {
       log.error('Failed to save state:', error);
@@ -106,7 +106,7 @@ export class LayoutPersistenceService {
       const migrated = this.migrate(parsed);
 
       log.debug(
-        `State loaded: sidebarCollapsed=${migrated.sidebarCollapsed}, collectionsExpanded=${migrated.collectionsExpanded}, schemaTypesExpanded=${migrated.schemaTypesExpanded}, aiChatsExpanded=${migrated.aiChatsExpanded}`
+        `State loaded: sidebarCollapsed=${migrated.sidebarCollapsed}, collectionsExpanded=${migrated.collectionsExpanded}, nodeTypesExpanded=${migrated.nodeTypesExpanded}, aiChatsExpanded=${migrated.aiChatsExpanded}`
       );
       return migrated;
     } catch (error) {
@@ -146,9 +146,9 @@ export class LayoutPersistenceService {
     if (s.version === 1) {
       s = { ...s, version: 2, collectionsExpanded: false };
     }
-    // Version 3 adds schemaTypesExpanded (defaults to false)
+    // Version 3 adds nodeTypesExpanded (defaults to false)
     if (s.version === 2) {
-      s = { ...s, version: 3, schemaTypesExpanded: false };
+      s = { ...s, version: 3, nodeTypesExpanded: false };
     }
     // Version 4 adds aiChatsExpanded (defaults to false)
     if (s.version === 3) {
