@@ -67,6 +67,7 @@
   import { Button } from '$lib/components/ui/button';
   import { Input } from '$lib/components/ui/input';
   import { databaseStore } from '$lib/stores/database.svelte';
+  import { collectionsData } from '$lib/stores/collections.svelte';
   import { backendAdapter } from '$lib/services/backend-adapter';
   import { createLogger } from '$lib/utils/logger';
   import { toError } from '$lib/types/errors';
@@ -248,6 +249,11 @@
           properties: { collection: { restrictedToMembers: true } }
         }));
         mintedCollectionId = collectionId;
+        // `create_node` is an echo-suppressed write: the daemon does not send
+        // this window its own `node:created`, and the mint bypasses
+        // `collectionsData.createCollection`, so the sidebar would never learn
+        // of "My Workspace". Reload it explicitly (swallows its own errors).
+        await collectionsData.loadCollections();
       }
 
       // BindTenant activates the sync session server-side (activate-on-bind,

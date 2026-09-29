@@ -1241,6 +1241,9 @@ pub async fn get_node_relationships(
 /// happened. `edge_data` carries the edge's `edge_fields` values as a JSON
 /// object; omit or pass `null` for a bare edge. The frontend reloads via
 /// `get_node_relationships` to see the new edge in context.
+///
+/// Typed-edge commands use the untagged client: the frontend store does not
+/// apply them, so their `relationship:*` events must reach this window.
 #[tauri::command]
 pub async fn create_relationship(
     client: State<'_, GrpcClient>,
@@ -1258,7 +1261,7 @@ pub async fn create_relationship(
         })?),
         _ => None,
     };
-    let mut c = client.echo_suppressed_client().await;
+    let mut c = client.client().await;
     let response = c
         .create_relationship(Request::new(CreateRelationshipRequest {
             source_id,
@@ -1295,7 +1298,7 @@ pub async fn delete_relationship(
     relationship_name: String,
     target_id: String,
 ) -> Result<(), CommandError> {
-    let mut c = client.echo_suppressed_client().await;
+    let mut c = client.client().await;
     c.delete_relationship(Request::new(DeleteRelationshipRequest {
         source_id,
         relationship_name,
@@ -1326,7 +1329,7 @@ pub async fn update_relationship_properties(
         details: None,
         conflict_data: None,
     })?;
-    let mut c = client.echo_suppressed_client().await;
+    let mut c = client.client().await;
     c.update_relationship_properties(Request::new(UpdateRelationshipPropertiesRequest {
         source_id,
         relationship_name,

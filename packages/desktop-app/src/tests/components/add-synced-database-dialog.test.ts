@@ -34,6 +34,7 @@ vi.mock('@tauri-apps/api/event', () => ({
 import AddSyncedDatabaseDialog from '$lib/components/settings/sections/add-synced-database-dialog.svelte';
 import { databaseStore, type DatabaseInfo } from '$lib/stores/database.svelte';
 import { backendAdapter } from '$lib/services/backend-adapter';
+import { collectionsData } from '$lib/stores/collections.svelte';
 
 function dbEntry(partial: Partial<DatabaseInfo> = {}): DatabaseInfo {
   return {
@@ -222,6 +223,34 @@ describe('AddSyncedDatabaseDialog', () => {
     // The dialog closes itself (sets the bindable `open` back to false) on success.
     openProp = false;
     await rerender({ open: openProp });
+  });
+
+  it('reloads the sidebar collections after minting the landing collection (its create_node echo is suppressed)', async () => {
+    vi.spyOn(databaseStore, 'create').mockResolvedValue(dbEntry());
+    vi.spyOn(databaseStore, 'switchTo').mockResolvedValue(undefined);
+    const createNodeSpy = vi
+      .spyOn(backendAdapter, 'createNode')
+      .mockResolvedValue({ id: 'coll-landing', placement: null });
+    const loadSpy = vi.spyOn(collectionsData, 'loadCollections').mockResolvedValue(undefined);
+
+    mockInvoke.mockImplementation((cmd: string) => {
+      if (cmd === 'pro_current_person') return Promise.resolve(SIGNED_IN);
+      if (cmd === 'pro_list_tenant_memberships') return Promise.resolve(ONE_ACTIVE_TENANT);
+      if (cmd === 'pro_bind_tenant') return Promise.resolve({ synced: true, schema: 'tenant_demo' });
+      throw new Error(`unexpected invoke: ${cmd}`);
+    });
+
+    render(AddSyncedDatabaseDialog, { props: { open: true } });
+    await waitFor(() => expect(screen.getByText('Create & sync')).toBeTruthy());
+    await fireEvent.click(screen.getByText('Create & sync'));
+
+    await waitFor(() =>
+      expect(mockInvoke).toHaveBeenCalledWith('pro_bind_tenant', expect.anything())
+    );
+    expect(loadSpy).toHaveBeenCalledTimes(1);
+    expect(createNodeSpy.mock.invocationCallOrder[0]).toBeLessThan(
+      loadSpy.mock.invocationCallOrder[0]
+    );
   });
 
   it('a failed bind leaves the dialog on an error step, database already switched to', async () => {
