@@ -74,12 +74,16 @@ pub struct ChatEngine {
 /// Uses the same lifetime-extension pattern as `embedding.rs::LlamaState`.
 /// The context is created with a transmuted `'static` lifetime because:
 /// 1. The context is stored alongside the model that owns it.
-/// 2. Drop order is guaranteed: context drops before model.
+/// 2. Drop order is guaranteed: fields drop in declaration order and `context`
+///    is declared before `model`, so the context drops first.
 /// 3. Access is serialized through the outer Mutex.
 #[cfg(feature = "chat-service")]
 struct ChatLlamaState {
-    model: LlamaModel,
+    // SAFETY: `context` must stay declared BEFORE `model` (fields drop in
+    // declaration order). Guarded by `llama_state_declares_context_before_model`
+    // in embedding.rs.
     context: Option<LlamaContext<'static>>,
+    model: LlamaModel,
     model_path: String,
     context_size: u32,
     n_threads: i32,
@@ -100,8 +104,8 @@ impl ChatLlamaState {
         type_v: Option<crate::chat::types::KvCacheQuantType>,
     ) -> Self {
         Self {
-            model,
             context: None,
+            model,
             model_path,
             context_size,
             n_threads,
@@ -151,7 +155,7 @@ impl ChatLlamaState {
             })?;
 
             // SAFETY: Same pattern as embedding.rs. The context is stored in this
-            // struct alongside model. Drop order is guaranteed (context before model).
+            // struct alongside model. Drop order is guaranteed (context declared before model).
             let ctx: LlamaContext<'static> = unsafe { std::mem::transmute(ctx) };
             self.context = Some(ctx);
 
