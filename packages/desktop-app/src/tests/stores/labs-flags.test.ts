@@ -27,11 +27,26 @@ describe('Labs flags store', () => {
     localStorage.clear();
   });
 
-  it('defaults both flags to false on a fresh profile (no localStorage entry)', async () => {
+  it('defaults all flags to false on a fresh profile (no localStorage entry)', async () => {
     const { labsFlags } = await import('$lib/stores/labs-flags.svelte');
 
     expect(labsFlags.aiChatEnabled).toBe(false);
     expect(labsFlags.syncEnabled).toBe(false);
+    expect(labsFlags.playbooksEnabled).toBe(false);
+  });
+
+  it('setting playbooksEnabled updates state, persists, and survives a fresh module load', async () => {
+    const { labsFlags } = await import('$lib/stores/labs-flags.svelte');
+
+    labsFlags.playbooksEnabled = true;
+
+    expect(labsFlags.playbooksEnabled).toBe(true);
+    expect(JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '{}').playbooksEnabled).toBe(true);
+
+    vi.resetModules();
+    const reloaded = await import('$lib/stores/labs-flags.svelte');
+    expect(reloaded.labsFlags.playbooksEnabled).toBe(true);
+    expect(reloaded.labsFlags.aiChatEnabled).toBe(false);
   });
 
   it('setting aiChatEnabled updates state and persists under the dedicated key', async () => {

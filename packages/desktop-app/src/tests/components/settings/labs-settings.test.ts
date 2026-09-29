@@ -20,24 +20,26 @@ describe('LabsSettings', () => {
     localStorage.clear();
     labsFlags.aiChatEnabled = false;
     labsFlags.syncEnabled = false;
+    labsFlags.playbooksEnabled = false;
   });
 
   afterEach(() => {
     localStorage.clear();
     labsFlags.aiChatEnabled = false;
     labsFlags.syncEnabled = false;
+    labsFlags.playbooksEnabled = false;
   });
 
-  it('renders exactly two entries: AI Chat, then Team synchronization', () => {
+  it('renders exactly three entries: AI Chat, Playbooks, then Team synchronization', () => {
     const { container } = render(LabsSettings);
 
     const cards = container.querySelectorAll('[data-slot="card"]');
-    expect(cards).toHaveLength(2);
+    expect(cards).toHaveLength(3);
 
     const headings = Array.from(cards).map(
       (card) => card.querySelector('.font-semibold')?.textContent?.trim()
     );
-    expect(headings).toEqual(['AI Chat', 'Team synchronization']);
+    expect(headings).toEqual(['AI Chat', 'Playbooks', 'Team synchronization']);
   });
 
   it('renders the AI Chat entry with a real Switch, unchecked by default', () => {
@@ -82,11 +84,29 @@ describe('LabsSettings', () => {
     expect(toggle?.getAttribute('data-state')).toBe('checked');
   });
 
+  it('renders the Playbooks entry with an operable Switch, off by default, that flips the flag', async () => {
+    const { container } = render(LabsSettings);
+
+    const cards = container.querySelectorAll('[data-slot="card"]');
+    const toggle = cards[1].querySelector('[data-slot="switch"]') as HTMLButtonElement;
+
+    expect(toggle.getAttribute('data-state')).toBe('unchecked');
+    expect(toggle.hasAttribute('disabled')).toBe(false);
+    expect(labsFlags.playbooksEnabled).toBe(false);
+
+    await fireEvent.click(toggle);
+
+    expect(labsFlags.playbooksEnabled).toBe(true);
+    expect(toggle.getAttribute('data-state')).toBe('checked');
+    // Independent of the AI Chat flag.
+    expect(labsFlags.aiChatEnabled).toBe(false);
+  });
+
   it('renders the Team synchronization entry with a real Switch, unchecked by default', () => {
     const { container } = render(LabsSettings);
 
     const cards = container.querySelectorAll('[data-slot="card"]');
-    const teamSyncCard = cards[1];
+    const teamSyncCard = cards[2];
     const toggle = teamSyncCard.querySelector('[data-slot="switch"]');
 
     expect(toggle).not.toBeNull();
@@ -101,7 +121,7 @@ describe('LabsSettings', () => {
     const { container } = render(LabsSettings);
 
     const cards = container.querySelectorAll('[data-slot="card"]');
-    const normalized = cards[1].textContent?.replace(/\s+/g, ' ').trim();
+    const normalized = cards[2].textContent?.replace(/\s+/g, ' ').trim();
     expect(normalized).toContain(
       'Team synchronization is under heavy development. To help us test this capability, contact us at developer@nodespace.ai'
     );
@@ -111,7 +131,7 @@ describe('LabsSettings', () => {
     const { container } = render(LabsSettings);
 
     const cards = container.querySelectorAll('[data-slot="card"]');
-    const link = cards[1].querySelector('a');
+    const link = cards[2].querySelector('a');
     expect(link?.getAttribute('href')).toBe('mailto:developer@nodespace.ai');
     expect(link?.textContent?.trim()).toBe('developer@nodespace.ai');
   });
@@ -120,7 +140,7 @@ describe('LabsSettings', () => {
     const { container } = render(LabsSettings);
 
     const cards = container.querySelectorAll('[data-slot="card"]');
-    const toggle = cards[1].querySelector('[data-slot="switch"]') as HTMLButtonElement;
+    const toggle = cards[2].querySelector('[data-slot="switch"]') as HTMLButtonElement;
 
     await fireEvent.click(toggle);
     await fireEvent.keyDown(toggle, { key: ' ' });
@@ -136,7 +156,7 @@ describe('LabsSettings', () => {
 
     const { container } = render(LabsSettings);
     const cards = container.querySelectorAll('[data-slot="card"]');
-    const toggle = cards[1].querySelector('[data-slot="switch"]');
+    const toggle = cards[2].querySelector('[data-slot="switch"]');
 
     expect(toggle?.getAttribute('data-state')).toBe('checked');
   });

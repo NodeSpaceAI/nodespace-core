@@ -30,6 +30,26 @@
     </CardHeader>
   </Card>
 
+  <!-- Playbooks -->
+  <Card class="mb-4 gap-0 rounded-lg py-0">
+    <CardHeader class="p-5 pb-4">
+      <div class="mb-1.5 flex items-center justify-between gap-2.5">
+        <div class="flex items-center gap-2.5">
+          <span class="text-foreground text-[0.9375rem] font-semibold">Playbooks</span>
+        </div>
+        <Switch
+          checked={labsFlags.playbooksEnabled}
+          onCheckedChange={(checked) => (labsFlags.playbooksEnabled = checked)}
+          aria-label={labsFlags.playbooksEnabled ? 'Disable Playbooks' : 'Enable Playbooks'}
+        />
+      </div>
+      <p class="text-muted-foreground m-0 text-sm leading-relaxed">
+        Show the Playbooks settings, where you install and manage playbooks. Playbooks you have
+        already installed keep running whether or not this is on.
+      </p>
+    </CardHeader>
+  </Card>
+
   <!-- Team synchronization -->
   <Card class="mb-4 gap-0 rounded-lg py-0">
     <CardHeader class="p-5 pb-4">

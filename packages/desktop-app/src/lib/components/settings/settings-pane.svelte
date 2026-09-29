@@ -10,7 +10,7 @@
     import DiagnosticsSettings from './sections/diagnostics-settings.svelte';
     import ModelManager from './model-manager.svelte';
     import IntegrationsSettings from './sections/integrations-settings.svelte';
-    import MethodologySettings from './sections/methodology-settings.svelte';
+    import PlaybooksSettings from './sections/playbooks-settings.svelte';
     import LabsSettings from './sections/labs-settings.svelte';
 
     const initial = settingsStore.initialCategory;
@@ -22,14 +22,18 @@
         loadSettings();
     });
 
-    // Defense in depth: settings-sidebar.svelte already hides the "Account"
-    // tab while the Labs "Team synchronization" flag is off, but that only
+    // Defense in depth: settings-sidebar.svelte already hides Labs-gated tabs
+    // (Account, AI Models, Playbooks) while their flag is off, but that only
     // stops a *click*. Fall back to Database if this view is ever reached
     // while off some other way (e.g. a future `settingsStore.initialCategory`
-    // caller, or the flag being turned off elsewhere) — no "NodeSpace Pro"
-    // surface may render while the flag is off, tab-click or not.
+    // caller, or the flag being turned off elsewhere) — no gated surface may
+    // render while its flag is off, tab-click or not.
     $effect(() => {
-        if (activeCategory === 'account' && !labsFlags.syncEnabled) {
+        const hidden =
+            (activeCategory === 'account' && !labsFlags.syncEnabled) ||
+            (activeCategory === 'ai-models' && !labsFlags.aiChatEnabled) ||
+            (activeCategory === 'playbooks' && !labsFlags.playbooksEnabled);
+        if (hidden) {
             activeCategory = 'database';
         }
     });
@@ -50,8 +54,8 @@
             <ModelManager />
         {:else if activeCategory === 'integrations'}
             <IntegrationsSettings />
-        {:else if activeCategory === 'methodology'}
-            <MethodologySettings />
+        {:else if activeCategory === 'playbooks'}
+            <PlaybooksSettings />
         {:else if activeCategory === 'labs'}
             <LabsSettings />
         {:else if activeCategory === 'about'}

@@ -7,7 +7,7 @@ export interface LayoutState {
   sidebarCollapsed: boolean;
   activePane: string;
   collectionsExpanded: boolean;
-  schemaTypesExpanded: boolean;
+  nodeTypesExpanded: boolean;
   aiChatsExpanded: boolean;
 }
 
@@ -24,7 +24,7 @@ const initialLayoutState: LayoutState = {
   sidebarCollapsed: false,
   activePane: 'today',
   collectionsExpanded: false,
-  schemaTypesExpanded: false,
+  nodeTypesExpanded: false,
   aiChatsExpanded: false,
 };
 
@@ -42,7 +42,7 @@ const initialNavigationItems: NavigationItem[] = [
   // "AI Chat" nav item is temporarily removed. The old item opened a single
   // ephemeral chat tab backed by the now-deleted chatStore singleton (pre-ADR-034).
   // Every conversation is now an `ai-chat` node, so this item will be reintroduced
-  // as an expandable list of recent ai-chat nodes (like Collections / Schema Types)
+  // as an expandable list of recent ai-chat nodes (like Collections / Node Types)
   // in a follow-up. Until then it is omitted rather than left inert.
   {
     id: 'search',
@@ -105,7 +105,7 @@ class LayoutStore {
         sidebarCollapsed: persisted.sidebarCollapsed,
         activePane: 'today', // Keep activePane at default for now (not persisted)
         collectionsExpanded: persisted.collectionsExpanded ?? false,
-        schemaTypesExpanded: persisted.schemaTypesExpanded ?? false,
+        nodeTypesExpanded: persisted.nodeTypesExpanded ?? false,
         aiChatsExpanded: persisted.aiChatsExpanded ?? false,
       };
     }
@@ -136,8 +136,8 @@ class LayoutStore {
     this.#persist();
   }
 
-  setSchemaTypesExpanded(expanded: boolean): void {
-    this.state = { ...this.state, schemaTypesExpanded: expanded };
+  setNodeTypesExpanded(expanded: boolean): void {
+    this.state = { ...this.state, nodeTypesExpanded: expanded };
     this.#persist();
   }
 
@@ -164,7 +164,7 @@ export const setActivePane = (paneId: string): void => layoutStore.setActivePane
 export const setCollectionsExpanded = (expanded: boolean): void =>
   layoutStore.setCollectionsExpanded(expanded);
 export const toggleCollectionsExpanded = (): void => layoutStore.toggleCollectionsExpanded();
-export const setSchemaTypesExpanded = (expanded: boolean): void =>
-  layoutStore.setSchemaTypesExpanded(expanded);
+export const setNodeTypesExpanded = (expanded: boolean): void =>
+  layoutStore.setNodeTypesExpanded(expanded);
 export const setAiChatsExpanded = (expanded: boolean): void =>
   layoutStore.setAiChatsExpanded(expanded);
