@@ -430,7 +430,7 @@ describe('SharedNodeStore - reachability tracking & eviction', () => {
       expect(structureTree.getChildren('doc-b-heading')).toEqual(['doc-b-item-1', 'doc-b-item-2']);
     });
 
-    it('keeps a subtree still open in another tab, minus its edge to the evicted parent', async () => {
+    it('keeps a subtree still open in another tab, plus its ancestor chain, and evicts the rest', async () => {
       seedDocument('doc-a');
 
       // Tab 1 shows doc-a, tab 2 is zoomed into doc-a-c1.
@@ -439,16 +439,48 @@ describe('SharedNodeStore - reachability tracking & eviction', () => {
 
       await wait(TEST_INACTIVITY_MS + 40);
 
-      expect(store.getNode('doc-a')).toBeUndefined();
+      // The sibling branch no open view shows is evicted.
       expect(store.getNode('doc-a-c2')).toBeUndefined();
+      expect(structureTree.getChildren('doc-a')).toEqual(['doc-a-c1']);
+      // The zoomed subtree stays, and so does its parent: outdenting a
+      // top-level item in tab 2 moves it under doc-a, which it can only do
+      // while structureTree still knows doc-a-c1's parent.
       expect(store.getNode('doc-a-c1')).toBeDefined();
       expect(store.getNode('doc-a-c1-x')).toBeDefined();
-
-      // The still-open subtree keeps its own edges; its edge to the evicted
-      // parent goes with the parent.
-      expect(structureTree.getChildren('doc-a-c1')).toEqual(['doc-a-c1-x']);
-      expect(structureTree.getParent('doc-a-c1')).toBeNull();
+      expect(store.getNode('doc-a')).toBeDefined();
+      expect(structureTree.getParent('doc-a-c1')).toBe('doc-a');
       expect(() => structureTree.assertInvariants(cachedIds())).not.toThrow();
+
+      // Closing tab 2 too releases the whole chain.
+      store.updateOpenDocumentRoots([]);
+      await wait(TEST_INACTIVITY_MS + 40);
+      expect(cachedIds().size).toBe(0);
+      expect(structureTree.children.size).toBe(0);
+    });
+
+    it("keeps a pinned node's ancestor chain, so it still resolves to its document", async () => {
+      seedDocument('doc-a');
+      store.pinNodes('query-view', ['doc-a-c1-x']);
+      store.updateOpenDocumentRoots(['some-other-root']);
+
+      await wait(TEST_INACTIVITY_MS + 40);
+
+      expect(store.getNode('doc-a-c2')).toBeUndefined();
+      expect(structureTree.getParent('doc-a-c1-x')).toBe('doc-a-c1');
+      expect(structureTree.getParent('doc-a-c1')).toBe('doc-a');
+      expect(() => structureTree.assertInvariants(cachedIds())).not.toThrow();
+    });
+
+    it('evicts a closed document in one structureTree batch, not one update per node', async () => {
+      seedDocument('doc-a');
+      store.updateOpenDocumentRoots(['doc-a']);
+      store.updateOpenDocumentRoots([]);
+      const runBatch = vi.spyOn(structureTree, 'runBatch');
+
+      await wait(TEST_INACTIVITY_MS + 40);
+
+      expect(cachedIds().size).toBe(0);
+      expect(runBatch).toHaveBeenCalledTimes(1);
     });
 
     it('defers evicting a parent while a cached child still has a pending write', async () => {

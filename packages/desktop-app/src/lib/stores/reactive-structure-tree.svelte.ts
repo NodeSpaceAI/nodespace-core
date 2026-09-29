@@ -29,7 +29,7 @@ export class ReactiveStructureTree {
   /**
    * Reverse child→parent index so getParent is O(1) instead of a scan over
    * every edge in the tree. Non-reactive bookkeeping: every mutator
-   * (addChildInternal, removeChild, clear, restore) keeps it consistent, and
+   * (addChildInternal, removeChild, removeNode, clear, restore) keeps it consistent, and
    * getParent verifies each hit against `children` (self-healing on a stale
    * entry), so an inconsistent entry can never leak out of the API.
    */
