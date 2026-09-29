@@ -220,6 +220,9 @@ pub async fn import_markdown_file(
                     archived: r.archived,
                 });
             }
+            // Step 9 is the terminal event: resolve now rather than waiting on
+            // the daemon to close the stream.
+            break;
         }
     }
 
@@ -280,6 +283,9 @@ pub async fn import_markdown_files(
                     archived: r.archived,
                 })
                 .collect();
+            // Step 9 is the terminal event: resolve now rather than waiting on
+            // the daemon to close the stream.
+            break;
         }
     }
 

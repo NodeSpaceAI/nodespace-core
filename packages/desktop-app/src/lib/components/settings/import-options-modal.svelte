@@ -227,6 +227,9 @@
             ? `, ${result.failed} failed`
             : ''}.
         </div>
+        <div class="text-muted-foreground">
+          Indexing for semantic search is running in the background.
+        </div>
       </div>
     {:else if phase === 'error'}
       <div
