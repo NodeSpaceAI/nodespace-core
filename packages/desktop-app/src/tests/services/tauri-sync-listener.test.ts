@@ -5,7 +5,6 @@ import { structureTree } from '$lib/stores/reactive-structure-tree.svelte';
 import type { Node } from '$lib/types';
 import type { SchemaNode } from '$lib/types/schema-node';
 import * as backendAdapterModule from '$lib/services/backend-adapter';
-import { proSync } from '$lib/stores/pro-sync.svelte';
 import { pluginRegistry } from '$lib/plugins/plugin-registry';
 import { aiChatsData } from '$lib/stores/ai-chats.svelte';
 import { clearAiChatRefreshTimer } from '$lib/utils/collection-refresh';
@@ -130,6 +129,9 @@ function mockTauriEnvironment(isTauri: boolean) {
     delete (global.window as WindowWithTauri).__TAURI__;
   }
 }
+
+/** Let the burst-coalescing window (one frame) fire and its flushes complete. */
+const settleCoalescer = () => new Promise<void>((resolve) => setTimeout(resolve, 40));
 
 describe('TauriSyncListener', () => {
   beforeEach(() => {
@@ -420,8 +422,7 @@ describe('TauriSyncListener', () => {
       expect(queryNodesSpy).not.toHaveBeenCalled();
     });
 
-    it('Pro coalesced path also refreshes the AI chats list', async () => {
-      proSync.tier = 'pro';
+    it('coalesced path also refreshes the AI chats list', async () => {
       const created = mockAiChatNode('chat-pro', 'From coalesced burst');
       registerMockNode(created);
       vi.spyOn(backendAdapterModule.backendAdapter, 'queryNodes').mockResolvedValue([created]);
@@ -434,21 +435,15 @@ describe('TauriSyncListener', () => {
         },
         { timeout: 1000 }
       );
-      proSync.tier = 'unknown';
     });
   });
 
   // When sync is active, a reconnect-replay burst of node events is
   // coalesced — collected over a short window, then applied in one synchronous
   // pass so the caught-up set renders once instead of once per node.
-  describe('Pro reconnect-replay render coalescing', () => {
+  describe('Node burst render coalescing', () => {
     beforeEach(async () => {
       await initializeTauriSyncListeners();
-      proSync.tier = 'pro'; // activate the Pro coalescing path
-    });
-
-    afterEach(() => {
-      proSync.tier = 'unknown'; // singleton — restore so other tests see community
     });
 
     it('defers a burst then applies every node in one pass', async () => {
@@ -472,18 +467,6 @@ describe('TauriSyncListener', () => {
       expect(sharedNodeStore.getNode('n2')?.content).toBe('content n2');
     });
 
-    it('community build (not Pro) still applies each event immediately', async () => {
-      proSync.tier = 'community';
-      registerMockNode(createTestNode('c1', 'community node'));
-
-      emitTauriEvent('node:updated', { id: 'c1' });
-
-      // No coalescing window — the existing per-event path applies right away.
-      await vi.waitFor(() => {
-        expect(sharedNodeStore.hasNode('c1')).toBe(true);
-      });
-    });
-
     it('a delete during the window wins — the queued upsert does not resurrect the node', async () => {
       // Node is updated (queued for coalesced re-fetch) then deleted before the
       // window flushes. Even though getNode would still return it, the delete
@@ -505,14 +488,9 @@ describe('TauriSyncListener', () => {
   // invalidation of the structure tree on the main thread. When sync is
   // active the has_child ops are buffered over the coalescing window and the
   // whole burst is applied inside one structureTree batch.
-  describe('Pro relationship-event coalescing', () => {
+  describe('Relationship-event coalescing', () => {
     beforeEach(async () => {
       await initializeTauriSyncListeners();
-      proSync.tier = 'pro'; // activate the Pro coalescing path
-    });
-
-    afterEach(() => {
-      proSync.tier = 'unknown'; // singleton — restore so other tests see community
     });
 
     function emitHasChildCreated(parentId: string, childId: string, order: number): void {
@@ -582,15 +560,6 @@ describe('TauriSyncListener', () => {
       expect(structureTree.getChildrenWithOrder('parent1')[0].order).toBe(2);
     });
 
-    it('community build (not Pro) still applies relationship events immediately', () => {
-      proSync.tier = 'community';
-
-      emitHasChildCreated('parent1', 'child1', 1);
-
-      // No coalescing window — the per-event path applied synchronously.
-      expect(structureTree.getChildren('parent1')).toEqual(['child1']);
-    });
-
     it('drops relationship ops buffered before a database switch', async () => {
       emitHasChildCreated('parent1', 'child1', 1); // buffered
 
@@ -604,17 +573,84 @@ describe('TauriSyncListener', () => {
     });
   });
 
+  describe('Large import burst', () => {
+    beforeEach(async () => {
+      await initializeTauriSyncListeners();
+    });
+
+    it('handles a 32k node + has_child burst without per-event work, in bounded fetch chunks', async () => {
+      const total = 32000;
+      for (let i = 0; i < total; i++) registerMockNode(createTestNode(`b${i}`, `c${i}`));
+      const getNodeSpy = vi.mocked(backendAdapterModule.backendAdapter.getNode);
+      const runBatchSpy = vi.spyOn(structureTree, 'runBatch');
+      let inFlight = 0;
+      let maxInFlight = 0;
+      getNodeSpy.mockImplementation(async (id: string) => {
+        inFlight++;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        await Promise.resolve();
+        inFlight--;
+        return mockNodes.get(id) || null;
+      });
+
+      for (let i = 0; i < total; i++) {
+        emitTauriEvent('node:created', { id: `b${i}` });
+        emitTauriEvent('relationship:created', {
+          id: `relationship:r${i}`,
+          fromId: `node:bp${Math.floor(i / 10)}`,
+          toId: `node:b${i}`,
+          relationshipType: 'has_child',
+          properties: { order: (i % 10) + 1 }
+        });
+      }
+
+      // Nothing was fetched or applied inside the event handlers: the whole
+      // burst is deferred, so the main thread is free right after the last event.
+      expect(getNodeSpy).not.toHaveBeenCalled();
+      expect(runBatchSpy).not.toHaveBeenCalled();
+      expect(sharedNodeStore.hasNode('b0')).toBe(false);
+
+      await vi.waitFor(() => expect(sharedNodeStore.hasNode(`b${total - 1}`)).toBe(true), {
+        timeout: 20000,
+        interval: 50
+      });
+      expect(getNodeSpy).toHaveBeenCalledTimes(total);
+      expect(maxInFlight).toBeLessThanOrEqual(200);
+      // One batch for all relationship ops, not one per edge.
+      expect(runBatchSpy).toHaveBeenCalledTimes(1);
+      expect(structureTree.getChildren('bp0')).toHaveLength(10);
+      expect(structureTree.getChildren(`bp${total / 10 - 1}`)).toHaveLength(10);
+    }, 60000);
+  });
+
+  describe('Flush error isolation', () => {
+    beforeEach(async () => {
+      await initializeTauriSyncListeners();
+    });
+
+    it('a node that throws while being applied does not drop the rest of the burst', async () => {
+      for (const id of ['e1', 'e2', 'e3']) registerMockNode(createTestNode(id));
+      const realSetNode = sharedNodeStore.setNode.bind(sharedNodeStore);
+      vi.spyOn(sharedNodeStore, 'setNode').mockImplementation((node, source, skip) => {
+        if (node.id === 'e2') throw new Error('boom');
+        return realSetNode(node, source, skip);
+      });
+
+      for (const id of ['e1', 'e2', 'e3']) emitTauriEvent('node:created', { id });
+      await settleCoalescer();
+
+      expect(sharedNodeStore.hasNode('e1')).toBe(true);
+      expect(sharedNodeStore.hasNode('e2')).toBe(false);
+      expect(sharedNodeStore.hasNode('e3')).toBe(true);
+    });
+  });
+
   // A coalesced node flush processes ids in chunks with a macrotask yield
   // between them, so a huge burst (initial pull) cannot monopolize the main
   // thread — and the database-switch guard is re-checked per chunk.
-  describe('Pro node-fetch flush chunking', () => {
+  describe('Node-fetch flush chunking', () => {
     beforeEach(async () => {
       await initializeTauriSyncListeners();
-      proSync.tier = 'pro';
-    });
-
-    afterEach(() => {
-      proSync.tier = 'unknown';
     });
 
     /** Mock getNode with per-id deferred promises so chunk boundaries are
@@ -708,38 +744,8 @@ describe('TauriSyncListener', () => {
       await initializeTauriSyncListeners();
     });
 
-    afterEach(() => {
-      proSync.tier = 'unknown'; // singleton — restore for later tests
-    });
-
-    it('community path drops a node:created fetch that resolves after a switch', async () => {
-      proSync.tier = 'community'; // direct fetchAndUpdateNode path
-
-      // getNode hangs so the database can switch while the read is in flight.
-      let resolveGet!: (node: Node | null) => void;
-      const pending = new Promise<Node | null>((resolve) => {
-        resolveGet = resolve;
-      });
-      vi.mocked(backendAdapterModule.backendAdapter.getNode).mockImplementation(() => pending);
-
-      // The event dispatches the fetch (now pending on the previous database).
-      emitTauriEvent('node:created', { id: 'node1' });
-
-      // The active database switches while the read is outstanding.
-      sharedNodeStore.clearAll();
-
-      // The read finally resolves with the previous database's row.
-      resolveGet(createTestNode('node1'));
-      await new Promise((resolve) => setTimeout(resolve, 0));
-
-      // Dropped — not written into the now-active store.
-      expect(sharedNodeStore.hasNode('node1')).toBe(false);
-    });
-
-    it('Pro coalescer drops a queued burst that resolves after a switch', async () => {
-      proSync.tier = 'pro'; // flushPendingNodeFetches path
-
-      let resolveGet!: (node: Node | null) => void;
+    it('coalescer drops a queued burst that resolves after a switch', async () => {
+            let resolveGet!: (node: Node | null) => void;
       const pending = new Promise<Node | null>((resolve) => {
         resolveGet = resolve;
       });
@@ -774,6 +780,7 @@ describe('TauriSyncListener', () => {
         properties: { order: 100 }
       });
 
+      await settleCoalescer();
       const children = structureTree.getChildrenWithOrder('parent1');
       expect(children).toHaveLength(1);
       expect(children[0].nodeId).toBe('child1');
@@ -799,6 +806,7 @@ describe('TauriSyncListener', () => {
         properties: { order: 100 }
       });
 
+      await settleCoalescer();
       // Should still only have one child
       const children = structureTree.getChildrenWithOrder('parent1');
       expect(children).toHaveLength(1);
@@ -822,6 +830,7 @@ describe('TauriSyncListener', () => {
         relationshipType: 'has_child'
       });
 
+      await settleCoalescer();
       expect(structureTree.getChildrenWithOrder('parent1')).toHaveLength(0);
     });
 
@@ -842,6 +851,7 @@ describe('TauriSyncListener', () => {
         properties: { order: 200 }
       });
 
+      await settleCoalescer();
       const children = structureTree.getChildrenWithOrder('parent1');
       expect(children[0].order).toBe(200);
     });
@@ -869,6 +879,7 @@ describe('TauriSyncListener', () => {
         properties: { order: 150 }
       });
 
+      await settleCoalescer();
       // structureTree must see bare ids. If stripNodePrefix were
       // removed, the key would be "node:parent1" and this lookup
       // against the bare-id key "parent1" would return empty.
@@ -897,6 +908,7 @@ describe('TauriSyncListener', () => {
         properties: { order: 250 }
       });
 
+      await settleCoalescer();
       const children = structureTree.getChildrenWithOrder('parent1');
       expect(children).toHaveLength(1);
       expect(children[0].order).toBe(250);
@@ -917,6 +929,7 @@ describe('TauriSyncListener', () => {
         relationshipType: 'has_child'
       });
 
+      await settleCoalescer();
       expect(structureTree.getChildrenWithOrder('parent1')).toHaveLength(0);
     });
 
@@ -933,6 +946,7 @@ describe('TauriSyncListener', () => {
         properties: { order: 100 }
       });
 
+      await settleCoalescer();
       const children = structureTree.getChildrenWithOrder('parent2');
       expect(children).toHaveLength(1);
       expect(children[0].nodeId).toBe('child2');
@@ -1104,6 +1118,7 @@ describe('TauriSyncListener', () => {
         properties: { order: 100 }
       });
 
+      await settleCoalescer();
       // Edge should be in structure tree
       expect(structureTree.getChildrenWithOrder('parent1')).toHaveLength(1);
 
@@ -1142,6 +1157,7 @@ describe('TauriSyncListener', () => {
         });
       }).not.toThrow();
 
+      await settleCoalescer();
       expect(structureTree.getChildrenWithOrder('parent1')).toHaveLength(0);
     });
 

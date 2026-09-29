@@ -36,24 +36,23 @@ import {
 import { registerSchemaPlugin, unregisterSchemaPlugin } from '$lib/plugins/schema-plugin-loader';
 import { applyHasChildCreated, applyHasChildUpdated, applyHasChildDeleted } from './hierarchy-sync';
 import { normalizeNodeData } from './node-normalize';
-import { proSync } from '$lib/stores/pro-sync.svelte';
 import { isActiveDatabaseEvent } from '$lib/stores/database.svelte';
 
 const log = createLogger('TauriSync');
 
 // ---------------------------------------------------------------------------
-// Pro-only reconnect-replay render coalescing
+// Burst render coalescing (all tiers)
 //
-// On reconnect the Pro daemon now flushes a caught-up batch of node events as a
-// single burst. Applied one-by-one, each `node:created/updated`
-// triggers its own async fetch + `setNode` → one re-render per node. To render
-// the burst in one pass, when sync is active we collect the node ids over a tiny
-// window, fetch them together, then apply them in a SYNCHRONOUS `setNode` loop —
-// Svelte batches synchronous store mutations into a single render.
-//
-// Gated on `proSync.isPro`: reconnect replay is a Pro-only flow, so the community
-// build never enters this path and its per-event behavior is byte-for-byte
-// unchanged.
+// Any large burst of node events — a folder import, a reconnect replay, an
+// initial cloud pull — applied one-by-one makes each `node:created/updated`
+// trigger its own async fetch + `setNode` → one re-render per node, freezing the
+// webview main thread and queueing every other IPC reply (an import command's
+// completion included) behind the flood. To render the burst in one pass we
+// collect the node ids over a tiny window, fetch them in bounded chunks, then
+// apply each chunk in a SYNCHRONOUS `setNode` loop — Svelte batches synchronous
+// store mutations into a single render. The path is tier-independent: it only
+// reorders when already-received local events are applied (one frame later),
+// never what is applied, and delete-wins ordering is preserved below.
 // ---------------------------------------------------------------------------
 
 /** How long to gather a burst before flushing. One frame (~16ms) is enough to
@@ -93,11 +92,17 @@ function resetNodeFetchCoalescer(): void {
   flushInProgress = false;
 }
 
-/** Queue a node id for the next coalesced flush (Pro path). */
+/** Queue a node id for the next coalesced flush . */
 function enqueueNodeFetch(nodeId: string): void {
   pendingNodeIds.add(nodeId);
   if (coalesceTimer !== null) return;
-  coalesceTimer = setTimeout(flushPendingNodeFetches, REPLAY_COALESCE_WINDOW_MS);
+  coalesceTimer = setTimeout(runNodeFlush, REPLAY_COALESCE_WINDOW_MS);
+}
+
+/** Timer entry point: the flush is async, so a rejection must be logged here
+ *  rather than escape as an unhandled promise rejection. */
+function runNodeFlush(): void {
+  flushPendingNodeFetches().catch((error) => log.error('burst-coalesce: flush failed', error));
 }
 
 /** Fetch all queued nodes in chunks, applying each chunk in one synchronous
@@ -111,7 +116,7 @@ async function flushPendingNodeFetches(): Promise<void> {
   // so this batch flushes after it completes. Two interleaved flushes would
   // share (and prematurely clear) the tombstone/in-progress state.
   if (flushInProgress) {
-    coalesceTimer = setTimeout(flushPendingNodeFetches, REPLAY_COALESCE_WINDOW_MS);
+    coalesceTimer = setTimeout(runNodeFlush, REPLAY_COALESCE_WINDOW_MS);
     return;
   }
   const ids = [...pendingNodeIds];
@@ -159,15 +164,20 @@ async function flushPendingNodeFetches(): Promise<void> {
       for (let i = 0; i < fetched.length; i++) {
         const node = fetched[i];
         if (!node || tombstonedDuringFlush.has(chunk[i])) continue;
-        const normalizedNode = normalizeNodeData(node);
-        sharedNodeStore.setNode(
-          normalizedNode,
-          { type: 'database', reason: 'domain-event' },
-          true
-        );
-        maybeRefreshSchemaPlugin(normalizedNode);
-        maybeRefreshAiChats(normalizedNode);
-        applied++;
+        // One node that fails to apply must not abort the rest of the burst.
+        try {
+          const normalizedNode = normalizeNodeData(node);
+          sharedNodeStore.setNode(
+            normalizedNode,
+            { type: 'database', reason: 'domain-event' },
+            true
+          );
+          maybeRefreshSchemaPlugin(normalizedNode);
+          maybeRefreshAiChats(normalizedNode);
+          applied++;
+        } catch (error) {
+          log.error('burst-coalesce: failed to apply node', { nodeId: chunk[i], error });
+        }
       }
     }
     log.info('replay-coalesce: applied node burst', {
@@ -212,7 +222,7 @@ function maybeRefreshSchemaPlugin(node: Node): void {
  * type here, rather than the event payload, is the only way to detect an
  * ai-chat *update* at all. It also naturally covers `node:created` for free,
  * since both event types route through this same fetch-then-apply path
- * (`fetchAndUpdateNode` / `flushPendingNodeFetches`), so one hook handles both
+ * (`flushPendingNodeFetches`), so one hook handles both
  * "an external chat was created" and "background titling updated a chat's
  * content" (mirrors `maybeRefreshSchemaPlugin`'s reasoning for `node:updated`).
  */
@@ -221,26 +231,16 @@ function maybeRefreshAiChats(node: Node): void {
   scheduleAiChatRefresh();
 }
 
-/** Route a node fetch through the Pro coalescer, or apply immediately in the
- *  community build (unchanged behavior). */
-function queueOrFetchNode(nodeId: string, eventType: string): void {
-  if (proSync.isPro) {
-    enqueueNodeFetch(nodeId);
-  } else {
-    fetchAndUpdateNode(nodeId, eventType);
-  }
-}
-
 // ---------------------------------------------------------------------------
-// Pro-only has_child relationship-event coalescing
+// has_child relationship-event coalescing (all tiers)
 //
-// The initial cloud-sync pull of a populated tenant floods the event stream
+// A large import or the initial cloud-sync pull of a populated tenant floods the event stream
 // with tens of thousands of relationship events. Applied one-by-one, each
 // `relationship:*` synchronously mutates the structure tree and triggers a
 // full reactive invalidation on the webview main thread, freezing the UI
 // (and backing up the daemon's WatchNodes stream until it drops events).
 //
-// When sync is active we instead buffer has_child ops over the same small
+// We instead buffer has_child ops over the same small
 // window the node coalescer uses, then apply the whole burst inside a single
 // structureTree.runBatch — one reactive notification per burst. Ops are
 // applied strictly in arrival order through the same per-event appliers, so
@@ -248,8 +248,6 @@ function queueOrFetchNode(nodeId: string, eventType: string): void {
 // as it would un-coalesced — the delete-wins/tombstone semantics fall out of
 // order preservation rather than a separate reconciliation pass.
 //
-// Gated on `proSync.isPro` like the node coalescer: the community build never
-// enters this path and its per-event behavior is unchanged.
 // ---------------------------------------------------------------------------
 
 interface HasChildOp {
@@ -275,7 +273,7 @@ function resetRelationshipCoalescer(): void {
   pendingHasChildOps = [];
 }
 
-/** Queue a has_child op for the next coalesced flush (Pro path). Arrival
+/** Queue a has_child op for the next coalesced flush . Arrival
  *  order is preserved so interleaved creates/deletes of the same edge resolve
  *  the same way they would applied one-by-one. */
 function enqueueHasChildOp(op: Omit<HasChildOp, 'epoch'>): void {
@@ -323,30 +321,6 @@ function flushPendingHasChildOps(): void {
   });
 }
 
-/** Route a has_child op through the Pro coalescer, or apply immediately in
- *  the community build (unchanged behavior). */
-function queueOrApplyHasChildOp(op: Omit<HasChildOp, 'epoch'>): void {
-  if (proSync.isPro) {
-    enqueueHasChildOp(op);
-    return;
-  }
-  if (op.kind === 'created') {
-    applyHasChildCreated(structureTree, {
-      parentId: op.parentId,
-      childId: op.childId,
-      order: op.order
-    });
-  } else if (op.kind === 'updated') {
-    applyHasChildUpdated(structureTree, {
-      parentId: op.parentId,
-      childId: op.childId,
-      order: op.order
-    });
-  } else {
-    applyHasChildDeleted(structureTree, { parentId: op.parentId, childId: op.childId });
-  }
-}
-
 /**
  * Strip the `node:` table prefix from a stored record id so it
  * matches the bare-id key shape `reactiveStructureTree` uses
@@ -358,35 +332,6 @@ function queueOrApplyHasChildOp(op: Omit<HasChildOp, 'epoch'>): void {
  */
 function stripNodePrefix(id: string): string {
   return id.startsWith('node:') ? id.slice('node:'.length) : id;
-}
-
-/**
- * Fetch full node data from API and update SharedNodeStore
- *
- * Events send only node_id. This function fetches the full
- * node data and updates the store.
- */
-async function fetchAndUpdateNode(nodeId: string, eventType: string): Promise<void> {
-  try {
-    // ADR-053: capture the database generation before the read so a switch
-    // mid-fetch drops the write rather than writing the previous database's row
-    // into the now-active store (isActiveDatabaseEvent gates before this async
-    // fetch dispatches, so it does not cover the in-flight window).
-    const epoch = sharedNodeStore.currentEpoch();
-    const node = await backendAdapter.getNode(nodeId);
-    if (sharedNodeStore.currentEpoch() !== epoch) return;
-    if (node) {
-      const normalizedNode = normalizeNodeData(node);
-      sharedNodeStore.setNode(normalizedNode, { type: 'database', reason: 'domain-event' }, true);
-      maybeRefreshSchemaPlugin(normalizedNode);
-      maybeRefreshAiChats(normalizedNode);
-      log.info(`${eventType}: store updated for node`, nodeId);
-    } else {
-      log.warn(`${eventType}: node not found`, nodeId);
-    }
-  } catch (error) {
-    log.error(`${eventType}: failed to fetch node`, { nodeId, error });
-  }
 }
 
 /**
@@ -433,16 +378,15 @@ export async function initializeTauriSyncListeners(): Promise<void> {
       }
 
       // Fetch full node data since the node might be in the current view.
-      // Pro: coalesce a reconnect-replay burst into one render; community:
-      // apply immediately (unchanged).
-      queueOrFetchNode(event.payload.id, 'node:created');
+      // Bursts are coalesced into one render per chunk.
+      enqueueNodeFetch(event.payload.id);
     });
 
     await listen<NodeEventData>('node:updated', (event) => {
       if (!isActiveDatabaseEvent(event.payload.databaseId)) return;
       const nodeId = event.payload.id;
       log.debug(`node:updated received`, { nodeId });
-      queueOrFetchNode(nodeId, 'node:updated');
+      enqueueNodeFetch(nodeId);
     });
 
     await listen<NodeEventData>('node:deleted', (event) => {
@@ -476,9 +420,8 @@ export async function initializeTauriSyncListeners(): Promise<void> {
 
       // Handle different relationship types
       if (rel.relationshipType === 'has_child') {
-        // Pro: coalesce a sync burst into one tree batch; community: apply
-        // immediately (unchanged).
-        queueOrApplyHasChildOp({
+        // Coalesce a burst into one tree batch.
+        enqueueHasChildOp({
           kind: 'created',
           parentId: stripNodePrefix(rel.fromId),
           childId: stripNodePrefix(rel.toId),
@@ -515,7 +458,7 @@ export async function initializeTauriSyncListeners(): Promise<void> {
       const rel = event.payload;
       log.debug(`Relationship updated: ${rel.relationshipType} (${rel.fromId} -> ${rel.toId})`);
       if (rel.relationshipType === 'has_child') {
-        queueOrApplyHasChildOp({
+        enqueueHasChildOp({
           kind: 'updated',
           parentId: stripNodePrefix(rel.fromId),
           childId: stripNodePrefix(rel.toId),
@@ -530,7 +473,7 @@ export async function initializeTauriSyncListeners(): Promise<void> {
       log.debug(`Relationship deleted: ${relationshipType} (${id}) from ${fromId} to ${toId}`);
 
       if (relationshipType === 'has_child') {
-        queueOrApplyHasChildOp({
+        enqueueHasChildOp({
           kind: 'deleted',
           parentId: stripNodePrefix(fromId),
           childId: stripNodePrefix(toId),
