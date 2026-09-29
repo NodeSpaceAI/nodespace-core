@@ -312,19 +312,22 @@ fn check_fits_context(token_count: usize, context_size: u32) -> Result<()> {
 /// This is safe because:
 /// 1. The context is only used while model is alive (owned by this struct)
 /// 2. The backend is a global singleton that lives for the entire process
-/// 3. Drop order is guaranteed: context drops before model
+/// 3. Drop order is guaranteed: `context` is declared before `model`, and fields
+///    drop in declaration order, so context drops before model
 /// 4. Access is serialized through a Mutex in EmbeddingService
 ///
 /// The context is created lazily on first embedding request and reused for all subsequent
 /// requests, avoiding the Metal kernel compilation overhead that was causing ~95% CPU usage.
 #[cfg(feature = "embedding-service")]
 struct LlamaState {
-    // SAFETY: Field order matters for drop order! Rust drops fields in declaration order.
-    // `context` must be declared AFTER `model` so it drops FIRST.
-    model: LlamaModel,
+    // SAFETY: Field order matters for drop order! Rust drops fields in declaration
+    // order (first declared, first dropped), so `context` must be declared BEFORE
+    // `model` to drop FIRST. `context` borrows `model` via a transmuted lifetime.
+    // Guarded by `llama_state_declares_context_before_model`.
     /// Persistent context for embedding generation.
     /// Uses transmuted lifetime - safe because we control drop order (see above).
     context: Option<LlamaContext<'static>>,
+    model: LlamaModel,
     /// Current batch size of the context (needed to check if recreation is required)
     current_batch_size: u32,
     /// Context parameters for lazy initialization
@@ -336,8 +339,8 @@ struct LlamaState {
 impl LlamaState {
     fn new(model: LlamaModel, context_size: u32, n_threads: i32) -> Self {
         Self {
-            model,
             context: None,
+            model,
             current_batch_size: 0,
             context_size,
             n_threads,
@@ -389,7 +392,7 @@ impl LlamaState {
             // SAFETY: We're extending the lifetime of the context to 'static.
             // This is safe because:
             // 1. The context is stored in this struct alongside model and backend
-            // 2. Rust's drop order guarantees context drops before model and backend
+            // 2. Field declaration order (context before model) makes the context drop first
             // 3. The Mutex ensures single-threaded access to the context
             let ctx: LlamaContext<'static> = unsafe { std::mem::transmute(ctx) };
             self.context = Some(ctx);
@@ -907,6 +910,38 @@ mod tests {
     #[test]
     fn test_embedding_dimension() {
         assert_eq!(EMBEDDING_DIMENSION, 768);
+    }
+
+    /// Struct fields drop in declaration order, and each state's `context` borrows
+    /// its `model` through a transmuted `'static` lifetime, so `context` must be
+    /// declared first. Constructing the real structs needs a GGUF model, so this
+    /// checks the declaration order in the source text.
+    #[test]
+    fn llama_state_declares_context_before_model() {
+        fn assert_context_first(source: &str, struct_header: &str) {
+            let start = source
+                .find(struct_header)
+                .unwrap_or_else(|| panic!("{struct_header} not found"));
+            let body = &source[start..];
+            let body = &body[..body.find("\n}").expect("struct body end")];
+            let field = |name: &str| {
+                body.find(&format!("\n    {name}: "))
+                    .unwrap_or_else(|| panic!("{struct_header}: field {name} not found"))
+            };
+            assert!(
+                field("context") < field("model"),
+                "{struct_header}: `context` must be declared before `model` so it drops first"
+            );
+        }
+
+        assert_context_first(
+            include_str!("embedding.rs"),
+            concat!("struct ", "LlamaState {"),
+        );
+        assert_context_first(
+            include_str!("chat/mod.rs"),
+            concat!("struct ", "ChatLlamaState {"),
+        );
     }
 
     /// The atexit registry must hold chat state alongside embedding state:
