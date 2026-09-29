@@ -568,6 +568,36 @@ describe('TauriSyncListener', () => {
     });
   });
 
+  describe('Node-fetch epoch stamping at enqueue', () => {
+    beforeEach(async () => {
+      await initializeTauriSyncListeners();
+    });
+
+    it('drops node ids queued before a database switch without fetching them', async () => {
+      registerMockNode(createTestNode('stale-id'));
+      emitTauriEvent('node:created', { id: 'stale-id' }); // queued under epoch A
+
+      // The active database switches before the coalescing window flushes.
+      sharedNodeStore.clearAll();
+
+      await new Promise((resolve) => setTimeout(resolve, 40));
+
+      expect(backendAdapterModule.backendAdapter.getNode).not.toHaveBeenCalled();
+      expect(sharedNodeStore.hasNode('stale-id')).toBe(false);
+    });
+
+    it('still applies ids queued after the switch in the same window', async () => {
+      registerMockNode(createTestNode('old-id'));
+      registerMockNode(createTestNode('new-id'));
+      emitTauriEvent('node:created', { id: 'old-id' });
+      sharedNodeStore.clearAll();
+      emitTauriEvent('node:created', { id: 'new-id' });
+
+      await vi.waitFor(() => expect(sharedNodeStore.hasNode('new-id')).toBe(true));
+      expect(sharedNodeStore.hasNode('old-id')).toBe(false);
+    });
+  });
+
   // A cloud-sync pull floods relationship events (tens of thousands for a
   // populated tenant). Applied one-by-one each event costs a full reactive
   // invalidation of the structure tree on the main thread. When sync is
@@ -830,7 +860,7 @@ describe('TauriSyncListener', () => {
     });
 
     it('coalescer drops a queued burst that resolves after a switch', async () => {
-            let resolveGet!: (node: Node | null) => void;
+      let resolveGet!: (node: Node | null) => void;
       const pending = new Promise<Node | null>((resolve) => {
         resolveGet = resolve;
       });
@@ -1092,7 +1122,9 @@ describe('TauriSyncListener', () => {
         false
       );
 
-      vi.spyOn(backendAdapterModule.backendAdapter, 'getMentioningContainers').mockResolvedValue([]);
+      vi.spyOn(backendAdapterModule.backendAdapter, 'getMentioningContainers').mockResolvedValue(
+        []
+      );
 
       emitTauriEvent('relationship:deleted', {
         id: 'relationship:mention:node1:node2',

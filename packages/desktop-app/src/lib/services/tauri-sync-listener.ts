@@ -66,7 +66,10 @@ const REPLAY_COALESCE_WINDOW_MS = 16;
  *  of thousands of nodes cannot monopolize the webview main thread. */
 const NODE_FETCH_CHUNK_SIZE = 200;
 
-const pendingNodeIds = new Set<string>();
+// Queued node id -> database epoch at enqueue time (ADR-053). Stamping at enqueue
+// (like enqueueHasChildOp) lets the flush drop ids queued before a database switch
+// even though the flush itself only runs after the switch.
+const pendingNodeIds = new Map<string, number>();
 let coalesceTimer: ReturnType<typeof setTimeout> | null = null;
 // Ids deleted while a flush is mid-fetch (between the snapshot and the apply
 // loop). The flush skips these so a delete that lands during the fetch wins over
@@ -96,7 +99,7 @@ function resetNodeFetchCoalescer(): void {
 
 /** Queue a node id for the next coalesced flush . */
 function enqueueNodeFetch(nodeId: string): void {
-  pendingNodeIds.add(nodeId);
+  pendingNodeIds.set(nodeId, sharedNodeStore.currentEpoch());
   if (coalesceTimer !== null) return;
   coalesceTimer = setTimeout(runNodeFlush, REPLAY_COALESCE_WINDOW_MS);
 }
@@ -121,8 +124,19 @@ async function flushPendingNodeFetches(): Promise<void> {
     coalesceTimer = setTimeout(runNodeFlush, REPLAY_COALESCE_WINDOW_MS);
     return;
   }
-  const ids = [...pendingNodeIds];
+  const queued = [...pendingNodeIds];
   pendingNodeIds.clear();
+  if (queued.length === 0) return;
+
+  // Drop ids enqueued under a previous database epoch: they belong to the old
+  // database and must not be fetched and applied under the new one.
+  const flushEpoch = sharedNodeStore.currentEpoch();
+  const ids = queued.filter(([, enqueuedEpoch]) => enqueuedEpoch === flushEpoch).map(([id]) => id);
+  if (ids.length < queued.length) {
+    log.info('replay-coalesce: dropped node ids queued before a database switch', {
+      dropped: queued.length - ids.length
+    });
+  }
   if (ids.length === 0) return;
 
   flushInProgress = true;
@@ -133,7 +147,7 @@ async function flushPendingNodeFetches(): Promise<void> {
     // database's rows into the now-active store. isActiveDatabaseEvent gates on
     // event arrival, before these async fetches dispatch, so it cannot close
     // this in-flight window on its own.
-    const epoch = sharedNodeStore.currentEpoch();
+    const epoch = flushEpoch;
     let applied = 0;
     for (let start = 0; start < ids.length; start += NODE_FETCH_CHUNK_SIZE) {
       if (start > 0) {
