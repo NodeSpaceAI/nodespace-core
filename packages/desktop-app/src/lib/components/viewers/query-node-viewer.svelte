@@ -3,9 +3,9 @@
 
   Serves two shapes from one component, branching on the node it was handed:
 
-  - schema node → the DEFAULT type view: all nodes of the type, unfiltered,
-    nothing persisted. The first divergence — a filter edit, a view/group-by
-    change, or a title rename — MATERIALIZES a real `nodeType: 'query'` node and
+  - schema node → the DEFAULT type view: all nodes of the type, unfiltered.
+    Its view and Kanban group-by are remembered per type without creating a
+    node. Renaming it MATERIALIZES a real `nodeType: 'query'` node and
     re-routes the tab to it, so subsequent edits persist.
   - query node → a SAVED query: reads the stored QueryDefinition + view config,
     executes with filters (client-side — queryNodes only filters by nodeType),
@@ -17,7 +17,7 @@
 -->
 
 <script lang="ts">
-  import { onMount, untrack } from 'svelte';
+  import { onMount } from 'svelte';
   import { v4 as uuidv4 } from 'uuid';
   import { backendAdapter } from '$lib/services/backend-adapter';
   import { MAX_QUERY_ROWS } from '$lib/services/adapter-core';
@@ -29,7 +29,12 @@
   import TableView from '$lib/components/query/table-view.svelte';
   import ListView from '$lib/components/query/list-view.svelte';
   import KanbanView from '$lib/components/query/kanban-view.svelte';
-  import QueryEditor from '$lib/components/query/query-editor.svelte';
+  import HeaderInput from '$lib/design/components/header-input.svelte';
+  import { eligibleGroupByFields } from '$lib/components/query/kanban-grouping';
+  import {
+    loadDefaultViewPrefs,
+    saveDefaultViewPrefs
+  } from '$lib/components/query/default-view-prefs';
   import { nodeToQueryNode, type QueryDefinition, type QueryNode } from '$lib/types/query';
   import type { SchemaNode, SchemaField } from '$lib/types/schema-node';
   import { createLogger } from '$lib/utils/logger';
@@ -42,6 +47,8 @@
     parseViewConfig,
     mergeViewConfig,
     buildMaterializedProperties,
+    resolveEffectiveView,
+    KANBAN_UNAVAILABLE_REASON,
     isResultTruncated,
     shouldShowCreatedNode,
     type QueryViewKind,
@@ -101,8 +108,6 @@
   // Sentinel to discard in-flight responses when nodeId changes rapidly (sidenav navigation)
   let currentLoadId = $state(0);
 
-  // Edit mode state
-  let isEditMode = $state(false);
   /** Error message shown to user when save/materialize fails */
   let saveError = $state<string | null>(null);
   /** Error message shown to user when creating a new instance fails */
@@ -113,12 +118,12 @@
   let materializing = $state(false);
 
   // View state. On the SAVED branch these are restored from the query node's
-  // viewConfig; on the DEFAULT branch they are in-memory only — changing either
-  // is a divergence that materializes a node.
+  // viewConfig; on the DEFAULT branch from per-type stored preferences.
   let activeView = $state<QueryViewKind>('table');
   let kanbanGroupBy = $state<string | undefined>(undefined);
 
-  // Title editing state
+  // Title editing state: while the title input is focused it shows the draft;
+  // otherwise it shows the derived display title.
   let isEditingTitle = $state(false);
   let titleDraft = $state('');
   // Set when the user presses Escape so the input's blur-triggered commit is a
@@ -131,6 +136,9 @@
   let fetchCapped = $state(false);
 
   const hasResults = $derived(loadedNodeIds.length > 0);
+
+  /** Kanban needs an enum property to group by; without one the tab is disabled. */
+  const kanbanAvailable = $derived(eligibleGroupByFields(schemaNode).length > 0);
 
   /** Header title: "Default" for the type view, the query's name when saved. */
   const displayTitle = $derived(
@@ -240,7 +248,6 @@
         const definition = parseQueryDefinition(saved);
         targetType = definition.targetType;
         const viewConfig = parseViewConfig(saved);
-        activeView = viewConfig.lastView;
         kanbanGroupBy = viewConfig.kanban?.groupBy;
 
         // Load the target type's schema for column / Kanban derivation. Tolerate
@@ -248,6 +255,10 @@
         // fall back to generic rendering.
         schemaNode = await safeGetSchema(targetType);
         if (loadId !== currentLoadId) return;
+        activeView = resolveEffectiveView(
+          viewConfig.lastView,
+          eligibleGroupByFields(schemaNode).length > 0
+        );
 
         // Execute the definition on the backend: QueryService applies the
         // filters, the ordering and the limit in SQL. The definition's own
@@ -274,15 +285,15 @@
         return;
       }
 
-      // DEFAULT branch: unfiltered fetch of all nodes of the schema's type, no
-      // persistence. View state resets to defaults (the default view has no node
-      // to restore config from).
-      activeView = 'table';
-      kanbanGroupBy = undefined;
+      // DEFAULT branch: unfiltered fetch of all nodes of the schema's type. The
+      // view is restored from the per-type stored preference (no node backs it).
       const schema = await backendAdapter.getSchema(id);
       if (loadId !== currentLoadId) return;
       schemaNode = schema;
       targetType = schema.id;
+      const prefs = loadDefaultViewPrefs(schema.id);
+      activeView = resolveEffectiveView(prefs.lastView, eligibleGroupByFields(schema).length > 0);
+      kanbanGroupBy = prefs.kanban?.groupBy;
       log.debug('Loaded schema node (default view)', { schemaId: id, content: schema.content });
 
       const nodes = await backendAdapter.queryNodes({ nodeType: schema.id, limit: FETCH_LIMIT });
@@ -358,9 +369,9 @@
 
   /**
    * Materialize a `nodeType: 'query'` node from the current DEFAULT view and
-   * re-route the tab to it. Called on the first divergence (filter edit, view /
-   * group-by change, or title rename). `targetType` and `generatedBy: 'user'`
-   * are fixed by the model; `content` defaults to "Untitled Query".
+   * re-route the tab to it. Called on the first real divergence (a title rename).
+   * `targetType` and `generatedBy: 'user'` are fixed by the model; `content`
+   * defaults to "Untitled Query".
    */
   async function materializeQuery(opts: {
     content?: string;
@@ -435,76 +446,13 @@
     }
   }
 
-  async function handleQuerySave(definition: QueryDefinition): Promise<void> {
-    saveError = null;
-    // targetType is inherited from the schema and never changed by the editor.
-    const filters = definition.filters;
-    const sorting = definition.sorting;
-    const limit = definition.limit;
-
-    if (mode === 'saved') {
-      if (!queryNode) {
-        log.warn('QueryNodeViewer: cannot save — query node not loaded');
-        return;
-      }
-      try {
-        // The edited definition replaces the stored one: a sorting or limit
-        // the editor no longer carries is cleared, not left behind.
-        const updated = await backendAdapter.updateQueryNode(queryNode.id, queryNode.version, {
-          filters,
-          sorting: sorting ?? null,
-          limit: limit ?? null
-        });
-        queryNode = nodeToQueryNode(updated);
-        sharedNodeStore.setNode(updated, {
-          type: 'database',
-          reason: 'query-node-viewer save'
-        });
-        isEditMode = false;
-        log.debug('QueryNodeViewer: query definition saved', { nodeId: updated.id });
-        // Re-execute with the updated definition.
-        untrack(() => loadAndQuery(nodeId));
-      } catch (e) {
-        const message = toError(e).message;
-        log.error('QueryNodeViewer: failed to save query definition', { error: message });
-        saveError = `Failed to save query: ${message}`;
-      }
-      return;
-    }
-
-    // DEFAULT branch: a filter edit is a divergence — materialize (the remount
-    // leaves edit mode behind). On failure the editor stays open with saveError.
-    await materializeQuery({ definition: { targetType, filters, sorting, limit } });
-  }
-
-  async function handleQueryPreview(definition: QueryDefinition): Promise<number> {
-    // Count what the *filters* select, not what the saved query would display:
-    // while authoring, "how many things match this?" is the question being
-    // asked, and the definition's own `limit` is a display choice applied
-    // afterwards. Sorting is irrelevant to a count, so it is not sent.
-    //
-    // `countQuery` rather than `executeQuery(...).length`: the backend answers
-    // with a scalar instead of transferring every match, so the total is exact
-    // at any size rather than saturating at the response's row cap.
-    return await backendAdapter.countQuery({
-      targetType: definition.targetType,
-      filters: definition.filters,
-    });
-  }
-
-  function handleQueryCancel(): void {
-    isEditMode = false;
-  }
-
   function handleViewChange(view: QueryViewKind): void {
-    if (view === activeView) return; // clicking the active view is not a divergence
+    if (view === activeView) return;
     activeView = view;
     if (mode === 'saved') {
       persistViewConfig({ lastView: view });
     } else {
-      materializeQuery({
-        viewConfig: { lastView: view, ...(kanbanGroupBy ? { kanban: { groupBy: kanbanGroupBy } } : {}) }
-      });
+      saveDefaultViewPrefs(targetType, currentViewConfig);
     }
   }
 
@@ -514,18 +462,12 @@
     if (mode === 'saved') {
       persistViewConfig({ kanban: { groupBy } });
     } else {
-      materializeQuery({ viewConfig: { lastView: activeView, kanban: { groupBy } } });
+      saveDefaultViewPrefs(targetType, currentViewConfig);
     }
   }
 
-  function focusOnMount(el: HTMLInputElement): void {
-    el.focus();
-    el.select();
-  }
-
-  function startEditTitle(): void {
-    // The default's placeholder "Default" is not a real name — start from empty.
-    titleDraft = mode === 'saved' ? (queryNode?.content ?? '') : '';
+  function handleTitleFocus(): void {
+    titleDraft = displayTitle;
     titleEditCancelled = false;
     isEditingTitle = true;
   }
@@ -542,8 +484,11 @@
     isEditingTitle = false;
     saveError = null;
 
+    // An empty or unchanged title is not a rename.
+    if (!name || name === displayTitle) return;
+
     if (mode === 'saved') {
-      if (!queryNode || !name || name === queryNode.content) return;
+      if (!queryNode) return;
       try {
         const updated = await backendAdapter.updateNode(queryNode.id, queryNode.version, {
           content: name
@@ -560,8 +505,8 @@
     }
 
     // DEFAULT branch: naming the default is a divergence — materialize with the
-    // typed name. An empty name leaves the default in place (no materialize).
-    if (name) await materializeQuery({ content: name });
+    // typed name.
+    await materializeQuery({ content: name });
   }
 
   function handleTitleKeydown(e: KeyboardEvent): void {
@@ -571,7 +516,7 @@
     } else if (e.key === 'Escape') {
       e.preventDefault();
       titleEditCancelled = true;
-      isEditingTitle = false;
+      (e.currentTarget as HTMLInputElement).blur();
     }
   }
 
@@ -635,27 +580,17 @@
 
 <div class="query-node-viewer">
   <header class="query-header">
-    {#if isEditingTitle}
-      <input
-        class="query-title-input"
-        bind:value={titleDraft}
-        onkeydown={handleTitleKeydown}
+    <div class="query-title">
+      <HeaderInput
+        value={isEditingTitle ? titleDraft : displayTitle}
+        placeholder={DEFAULT_QUERY_TITLE}
+        ariaLabel="Query name"
+        oninput={(value) => (titleDraft = value)}
+        onfocus={handleTitleFocus}
         onblur={commitTitle}
-        placeholder={displayTitle}
-        aria-label="Query name"
-        use:focusOnMount
+        onkeydown={handleTitleKeydown}
       />
-    {:else}
-      <button
-        class="query-title"
-        onclick={startEditTitle}
-        title="Rename query"
-        aria-label={`Query name: ${displayTitle}. Click to rename.`}
-      >{displayTitle}</button>
-    {/if}
-    {#if queryState === 'success'}
-      <span class="result-count">{loadedNodeIds.length} {loadedNodeIds.length === 1 ? 'item' : 'items'}</span>
-    {/if}
+    </div>
     <nav class="view-tabs" aria-label="View options">
       <button
         class="view-tab"
@@ -669,22 +604,22 @@
         onclick={() => handleViewChange('table')}
         aria-pressed={activeView === 'table'}
       >Table</button>
-      <button
-        class="view-tab"
-        class:active={activeView === 'kanban'}
-        onclick={() => handleViewChange('kanban')}
-        aria-pressed={activeView === 'kanban'}
-      >Kanban</button>
+      <span class="view-tab-wrap" title={kanbanAvailable ? undefined : KANBAN_UNAVAILABLE_REASON}>
+        <button
+          class="view-tab"
+          class:active={activeView === 'kanban'}
+          onclick={() => handleViewChange('kanban')}
+          aria-pressed={activeView === 'kanban'}
+          disabled={!kanbanAvailable}
+        >Kanban</button>
+      </span>
     </nav>
-    {#if schemaNode && queryState === 'success' && !isEditMode}
+    {#if schemaNode && queryState === 'success'}
       <button
         class="new-instance-button"
         onclick={handleCreateInstance}
         disabled={isCreating}
       >+ New</button>
-    {/if}
-    {#if schemaNode && queryState === 'success' && !isEditMode}
-      <button class="edit-query-button" onclick={() => { isEditMode = true; }}>Edit Query</button>
     {/if}
   </header>
 
@@ -692,30 +627,12 @@
     <p class="create-error" role="alert">{createError}</p>
   {/if}
 
-  {#if saveError && !isEditMode}
-    <!-- Surface materialize/rename/view-change failures outside the filter editor,
-         where the in-editor save-error banner (below) is not visible. -->
+  {#if saveError}
     <p class="create-error" role="alert">{saveError}</p>
   {/if}
 
   {#if queryState === 'success' && executionCaveat}
     <p class="query-caveat" role="status">{executionCaveat}</p>
-  {/if}
-
-  {#if isEditMode}
-    <div class="edit-mode-wrapper">
-      {#if saveError}
-        <p class="save-error" role="alert">{saveError}</p>
-      {/if}
-      <QueryEditor
-        query={currentDefinition}
-        fields={schemaNode?.fields ?? []}
-        {targetType}
-        onSave={handleQuerySave}
-        onCancel={handleQueryCancel}
-        onPreview={handleQueryPreview}
-      />
-    </div>
   {/if}
 
   <div class="query-content">
@@ -767,47 +684,8 @@
   }
 
   .query-title {
-    font-size: 1.5rem;
-    font-weight: 600;
-    margin: 0;
-    color: hsl(var(--foreground));
-    flex: 1;
-    text-align: left;
-    background: transparent;
-    border: 1px solid transparent;
-    border-radius: 0.375rem;
-    padding: 0.125rem 0.375rem;
-    cursor: text;
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .query-title:hover {
-    background: hsl(var(--muted) / 0.6);
-  }
-
-  .query-title-input {
-    font-size: 1.5rem;
-    font-weight: 600;
-    margin: 0;
-    color: hsl(var(--foreground));
     flex: 1;
     min-width: 0;
-    background: hsl(var(--background));
-    border: 1px solid hsl(var(--primary));
-    border-radius: 0.375rem;
-    padding: 0.125rem 0.375rem;
-    outline: none;
-  }
-
-  .result-count {
-    font-size: 0.875rem;
-    color: hsl(var(--muted-foreground));
-    padding: 0.25rem 0.5rem;
-    background: hsl(var(--muted));
-    border-radius: 9999px;
   }
 
   .query-content {
@@ -852,22 +730,6 @@
     font-size: 1rem;
   }
 
-  .edit-query-button {
-    padding: 0.25rem 0.625rem;
-    font-size: 0.8125rem;
-    font-weight: 500;
-    background: hsl(var(--secondary));
-    color: hsl(var(--secondary-foreground));
-    border: 1px solid hsl(var(--border));
-    border-radius: 0.375rem;
-    cursor: pointer;
-    flex-shrink: 0;
-  }
-
-  .edit-query-button:hover {
-    background: hsl(var(--muted));
-  }
-
   .new-instance-button {
     padding: 0.25rem 0.625rem;
     font-size: 0.8125rem;
@@ -907,21 +769,6 @@
     border-bottom: 1px solid hsl(var(--border));
   }
 
-  .edit-mode-wrapper {
-    padding: 1rem 2rem;
-    border-bottom: 1px solid hsl(var(--border));
-  }
-
-  .save-error {
-    margin: 0 0 0.75rem;
-    font-size: 0.8125rem;
-    color: hsl(var(--destructive));
-    padding: 0.5rem 0.75rem;
-    background: hsl(var(--destructive) / 0.1);
-    border: 1px solid hsl(var(--destructive) / 0.3);
-    border-radius: 0.375rem;
-  }
-
   .view-tabs {
     display: flex;
     gap: 0.125rem;
@@ -943,7 +790,16 @@
     white-space: nowrap;
   }
 
-  .view-tab:hover {
+  .view-tab-wrap {
+    display: inline-flex;
+  }
+
+  .view-tab:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .view-tab:hover:not(:disabled) {
     color: hsl(var(--foreground));
     background: hsl(var(--muted) / 0.6);
   }
