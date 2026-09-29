@@ -263,12 +263,9 @@ class BrowserSyncService {
 
       case 'nodeUpdated': {
         log.debug('Node updated:', event.nodeId);
-        // A rename or retarget of a query changes the sidebar entry, whether or
-        // not it is listed yet (a retarget can move it into a listed type).
-        if (
-          savedQueriesData.has(event.nodeId) ||
-          sharedNodeStore.getNode(event.nodeId)?.nodeType === 'query'
-        ) {
+        // A rename of a listed saved query changes its sidebar entry. (A retarget
+        // of an unlisted query is caught after the fetch below.)
+        if (savedQueriesData.has(event.nodeId)) {
           scheduleSavedQueryRefresh();
         }
         // Only fetch if node is already in the store (visible to user)
@@ -383,6 +380,11 @@ class BrowserSyncService {
           registerSchemaPlugin(normalizedNode.id).catch((err) =>
             log.error('Failed to refresh schema plugin on node event:', err)
           );
+        }
+        // Like `nodeType` on the payload, only the fetched node reveals that an
+        // update touched a query (e.g. a retarget into a listed type).
+        if (normalizedNode.nodeType === 'query') {
+          scheduleSavedQueryRefresh();
         }
         log.debug(`${eventType}: updated store for node`, nodeId);
       } else {
