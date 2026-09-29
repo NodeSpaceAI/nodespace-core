@@ -5,8 +5,8 @@
  * records hard line breaks (`\n`), not where the text wraps. To find which
  * visual row a caret position sits on, and its horizontal offset there, this
  * lays the text out in a hidden mirror element with the textarea's own
- * width, padding, font and wrapping rules, and measures a zero-width marker
- * placed at the position.
+ * width, padding, font and wrapping rules, and measures where the text from
+ * the position onward begins.
  */
 
 /** Caret location in the textarea's content box, in CSS pixels. */
@@ -61,19 +61,19 @@ export class TextareaCaretMirror {
     for (const property of MIRRORED_PROPERTIES) {
       mirrorStyle[property] = style[property];
     }
-    // clientWidth is the textarea's padding box: its width minus borders and
-    // any vertical scrollbar, which is the width its text wraps within.
+    // The textarea's text wraps within its padding box: its width minus
+    // borders and any vertical scrollbar. offsetWidth - clientWidth is
+    // exactly that chrome; the unrounded rect width keeps a fractional
+    // layout width, where a word that just fits must still fit.
+    const chrome = textarea.offsetWidth - textarea.clientWidth;
     mirrorStyle.boxSizing = 'border-box';
-    mirrorStyle.width = `${textarea.clientWidth}px`;
+    mirrorStyle.width = `${textarea.getBoundingClientRect().width - chrome}px`;
     mirrorStyle.border = '0';
     mirrorStyle.position = 'absolute';
     mirrorStyle.visibility = 'hidden';
     mirrorStyle.top = '0';
     mirrorStyle.left = '-9999px';
     mirrorStyle.overflow = 'hidden';
-    // A textarea always wraps (unless wrap="off"), whatever its computed
-    // white-space reports.
-    if (textarea.wrap !== 'off') mirrorStyle.whiteSpace = 'pre-wrap';
     document.body.appendChild(this.mirror);
   }
 
@@ -95,14 +95,22 @@ export class TextareaCaretMirror {
     return mirror;
   }
 
-  /** Caret location for `position` in the mirrored value, or null when the
-   * mirror produced no layout. */
+  /**
+   * Caret location for `position` in the mirrored value, or null when the
+   * mirror produced no layout.
+   *
+   * The whole value is laid out, with the text from `position` onward in a
+   * span whose first fragment starts where the caret sits. Laying out only
+   * the text before the caret would be wrong at every row start: the word
+   * the textarea wraps whole would be cut at the caret, and its prefix would
+   * still fit on the row above.
+   */
   pointAt(position: number): CaretPoint | null {
     const clamped = Math.max(0, Math.min(position, this.value.length));
     this.mirror.textContent = this.value.slice(0, clamped);
     const marker = document.createElement('span');
-    // Zero-width space: gives the marker a line box without taking width.
-    marker.textContent = '​';
+    // At the end of the value, a placeholder gives the span a line box.
+    marker.textContent = this.value.slice(clamped) || '.';
     this.mirror.appendChild(marker);
     if (marker.offsetHeight === 0) return null;
     return {

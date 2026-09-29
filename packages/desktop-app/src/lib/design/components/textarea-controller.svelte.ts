@@ -676,7 +676,6 @@ export class TextareaController {
       const lineIndex = direction === 'up' ? lines.length - 1 : 0;
       const targetLine = lines[lineIndex];
 
-      const relativePixelOffset = relativeOffset;
 
       // The pixelOffset represents the VISUAL cursor position from source's EDIT mode
       // But the target node displays in VIEW mode first, then switches to EDIT mode
@@ -688,7 +687,7 @@ export class TextareaController {
       const viewLine = stripAllMarkdown(targetLine);
 
       // Find column in view text that matches the pixel offset
-      const viewColumn = this.findColumnForPixelOffset(viewLine, relativePixelOffset);
+      const viewColumn = this.findColumnForPixelOffset(viewLine, relativeOffset);
 
       // Map view column to edit column (accounting for markdown syntax)
       const editColumn = mapViewPositionToEditPosition(viewColumn, viewLine, targetLine);

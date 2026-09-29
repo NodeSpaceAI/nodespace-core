@@ -14,7 +14,7 @@ import {
   TextareaController,
   type TextareaControllerEvents
 } from '$lib/design/components/textarea-controller';
-import { TextareaCaretMirror, isSameRow } from '$lib/design/components/textarea-caret-geometry';
+import { TextareaCaretMirror } from '$lib/design/components/textarea-caret-geometry';
 import { DEFAULT_PANE_ID } from '$lib/stores/navigation.svelte';
 
 const WORDS =
@@ -54,16 +54,55 @@ describe('Arrow navigation across soft-wrapped lines (Browser Mode)', () => {
   let controller: TextareaController;
   let navigateCalls: NavigateCall[];
 
-  /** Visual row index of each position, measured independently. */
+  /**
+   * Visual row of the caret at each position, from an oracle independent of
+   * the code under test: the same text in a plain div with the textarea's
+   * content width and font, where each character's own client rect gives
+   * the row it renders on. A caret at `p` sits before character `p` (after
+   * the last character at the end of a line).
+   */
   function rowTops(): number[] {
-    const mirror = TextareaCaretMirror.create(element);
-    if (!mirror) throw new Error('textarea has no layout');
+    const style = getComputedStyle(element);
+    const contentWidth =
+      element.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+    const div = document.createElement('div');
+    Object.assign(div.style, {
+      position: 'absolute',
+      left: '0',
+      top: '0',
+      width: `${contentWidth}px`,
+      font: style.font,
+      lineHeight: style.lineHeight,
+      whiteSpace: 'pre-wrap',
+      overflowWrap: 'break-word'
+    });
+    div.textContent = element.value;
+    document.body.appendChild(div);
+    const text = div.firstChild as Text;
+    const value = element.value;
+    const charTop = (i: number): number => {
+      const range = document.createRange();
+      range.setStart(text, i);
+      range.setEnd(text, i + 1);
+      return Math.round(range.getClientRects()[0].top);
+    };
     const tops: number[] = [];
-    for (let p = 0; p <= element.value.length; p++) {
-      tops.push(mirror.pointAt(p)?.top ?? NaN);
+    for (let p = 0; p <= value.length; p++) {
+      const atLineEnd = p === value.length || value[p] === '\n';
+      tops.push(atLineEnd ? charTop(p - 1) : charTop(p));
     }
-    mirror.dispose();
+    div.remove();
     return tops;
+  }
+
+  /** Positions where a new visual row begins. */
+  function rowStarts(tops: number[]): number[] {
+    const starts = [0];
+    for (let p = 1; p < tops.length; p++) {
+      if (tops[p] !== tops[p - 1] && element.value[p - 1] !== '\n') starts.push(p);
+      else if (element.value[p - 1] === '\n') starts.push(p);
+    }
+    return starts;
   }
 
   function setCaret(position: number): void {
@@ -109,13 +148,13 @@ describe('Arrow navigation across soft-wrapped lines (Browser Mode)', () => {
   it('the fixture really wraps: each hard line spans several rows', () => {
     const tops = rowTops();
     const firstLineEnd = TEXT.indexOf('\n');
-    expect(isSameRow({ top: tops[0], left: 0 }, { top: tops[firstLineEnd], left: 0 })).toBe(false);
+    expect(tops[firstLineEnd]).not.toBe(tops[0]);
     expect(new Set(tops).size).toBeGreaterThanOrEqual(4);
   });
 
   it('isAtFirstLine is true only on the first visual row', () => {
     const tops = rowTops();
-    for (let p = 0; p <= TEXT.length; p += 7) {
+    for (let p = 0; p <= TEXT.length; p++) {
       setCaret(p);
       expect(controller.isAtFirstLine(), `position ${p}`).toBe(tops[p] === tops[0]);
     }
@@ -124,7 +163,7 @@ describe('Arrow navigation across soft-wrapped lines (Browser Mode)', () => {
   it('isAtLastLine is true only on the last visual row', () => {
     const tops = rowTops();
     const lastTop = tops[TEXT.length];
-    for (let p = 0; p <= TEXT.length; p += 7) {
+    for (let p = 0; p <= TEXT.length; p++) {
       setCaret(p);
       expect(controller.isAtLastLine(), `position ${p}`).toBe(tops[p] === lastTop);
     }
@@ -158,6 +197,37 @@ describe('Arrow navigation across soft-wrapped lines (Browser Mode)', () => {
     await pressKey('ArrowDown');
     expect(navigateCalls).toHaveLength(1);
     expect(navigateCalls[0].direction).toBe('down');
+  });
+
+  it('treats each row start (where a whole word wrapped) as that row, not the row above', async () => {
+    const tops = rowTops();
+    const starts = rowStarts(tops);
+    expect(starts.length).toBeGreaterThanOrEqual(4);
+
+    // Start of the second row: ArrowUp moves up a row, it doesn't leave.
+    setCaret(starts[1]);
+    expect(controller.isAtFirstLine()).toBe(false);
+    await pressKey('ArrowUp');
+    expect(navigateCalls).toHaveLength(0);
+
+    // Start of the last row: ArrowDown leaves the node.
+    const lastStart = starts[starts.length - 1];
+    for (const p of [lastStart, lastStart + 1, lastStart + 2]) {
+      setCaret(p);
+      expect(controller.isAtLastLine(), `position ${p}`).toBe(true);
+    }
+    await pressKey('ArrowDown');
+    expect(navigateCalls).toHaveLength(1);
+  });
+
+  it('entering at the far left of the last row lands on that row start', () => {
+    const tops = rowTops();
+    const starts = rowStarts(tops);
+    const left = element.getBoundingClientRect().left + window.scrollX;
+
+    controller.enterFromArrowNavigation('up', left);
+
+    expect(element.selectionStart).toBe(starts[starts.length - 1]);
   });
 
   it("reports the caret's offset within its wrapped row", () => {
