@@ -583,6 +583,15 @@ describe('TauriSyncListener', () => {
       for (let i = 0; i < total; i++) registerMockNode(createTestNode(`b${i}`, `c${i}`));
       const getNodeSpy = vi.mocked(backendAdapterModule.backendAdapter.getNode);
       const runBatchSpy = vi.spyOn(structureTree, 'runBatch');
+      let inFlight = 0;
+      let maxInFlight = 0;
+      getNodeSpy.mockImplementation(async (id: string) => {
+        inFlight++;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        await Promise.resolve();
+        inFlight--;
+        return mockNodes.get(id) || null;
+      });
 
       for (let i = 0; i < total; i++) {
         emitTauriEvent('node:created', { id: `b${i}` });
@@ -606,11 +615,34 @@ describe('TauriSyncListener', () => {
         interval: 50
       });
       expect(getNodeSpy).toHaveBeenCalledTimes(total);
+      expect(maxInFlight).toBeLessThanOrEqual(200);
       // One batch for all relationship ops, not one per edge.
       expect(runBatchSpy).toHaveBeenCalledTimes(1);
       expect(structureTree.getChildren('bp0')).toHaveLength(10);
       expect(structureTree.getChildren(`bp${total / 10 - 1}`)).toHaveLength(10);
     }, 60000);
+  });
+
+  describe('Flush error isolation', () => {
+    beforeEach(async () => {
+      await initializeTauriSyncListeners();
+    });
+
+    it('a node that throws while being applied does not drop the rest of the burst', async () => {
+      for (const id of ['e1', 'e2', 'e3']) registerMockNode(createTestNode(id));
+      const realSetNode = sharedNodeStore.setNode.bind(sharedNodeStore);
+      vi.spyOn(sharedNodeStore, 'setNode').mockImplementation((node, source, skip) => {
+        if (node.id === 'e2') throw new Error('boom');
+        return realSetNode(node, source, skip);
+      });
+
+      for (const id of ['e1', 'e2', 'e3']) emitTauriEvent('node:created', { id });
+      await settleCoalescer();
+
+      expect(sharedNodeStore.hasNode('e1')).toBe(true);
+      expect(sharedNodeStore.hasNode('e2')).toBe(false);
+      expect(sharedNodeStore.hasNode('e3')).toBe(true);
+    });
   });
 
   // A coalesced node flush processes ids in chunks with a macrotask yield

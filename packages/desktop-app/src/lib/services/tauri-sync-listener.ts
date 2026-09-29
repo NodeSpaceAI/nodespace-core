@@ -96,7 +96,13 @@ function resetNodeFetchCoalescer(): void {
 function enqueueNodeFetch(nodeId: string): void {
   pendingNodeIds.add(nodeId);
   if (coalesceTimer !== null) return;
-  coalesceTimer = setTimeout(flushPendingNodeFetches, REPLAY_COALESCE_WINDOW_MS);
+  coalesceTimer = setTimeout(runNodeFlush, REPLAY_COALESCE_WINDOW_MS);
+}
+
+/** Timer entry point: the flush is async, so a rejection must be logged here
+ *  rather than escape as an unhandled promise rejection. */
+function runNodeFlush(): void {
+  flushPendingNodeFetches().catch((error) => log.error('burst-coalesce: flush failed', error));
 }
 
 /** Fetch all queued nodes in chunks, applying each chunk in one synchronous
@@ -110,7 +116,7 @@ async function flushPendingNodeFetches(): Promise<void> {
   // so this batch flushes after it completes. Two interleaved flushes would
   // share (and prematurely clear) the tombstone/in-progress state.
   if (flushInProgress) {
-    coalesceTimer = setTimeout(flushPendingNodeFetches, REPLAY_COALESCE_WINDOW_MS);
+    coalesceTimer = setTimeout(runNodeFlush, REPLAY_COALESCE_WINDOW_MS);
     return;
   }
   const ids = [...pendingNodeIds];
@@ -158,15 +164,20 @@ async function flushPendingNodeFetches(): Promise<void> {
       for (let i = 0; i < fetched.length; i++) {
         const node = fetched[i];
         if (!node || tombstonedDuringFlush.has(chunk[i])) continue;
-        const normalizedNode = normalizeNodeData(node);
-        sharedNodeStore.setNode(
-          normalizedNode,
-          { type: 'database', reason: 'domain-event' },
-          true
-        );
-        maybeRefreshSchemaPlugin(normalizedNode);
-        maybeRefreshAiChats(normalizedNode);
-        applied++;
+        // One node that fails to apply must not abort the rest of the burst.
+        try {
+          const normalizedNode = normalizeNodeData(node);
+          sharedNodeStore.setNode(
+            normalizedNode,
+            { type: 'database', reason: 'domain-event' },
+            true
+          );
+          maybeRefreshSchemaPlugin(normalizedNode);
+          maybeRefreshAiChats(normalizedNode);
+          applied++;
+        } catch (error) {
+          log.error('burst-coalesce: failed to apply node', { nodeId: chunk[i], error });
+        }
       }
     }
     log.info('replay-coalesce: applied node burst', {
