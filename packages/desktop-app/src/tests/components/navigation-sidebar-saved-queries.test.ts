@@ -34,8 +34,8 @@ function makeSchema(id: string, content: string, isCore = false): SchemaNode {
   return { id, content, isCore } as unknown as SchemaNode;
 }
 
-/** Set the queries the backend holds, then reload through the store, as a domain-event refresh does. */
-async function seedQueries(items: Array<[string, string, string]>) {
+/** Set the queries the backend holds; the sidebar's mount-time load reads them. */
+function setBackendQueries(items: Array<[string, string, string]>) {
   backend.queries = items.map(([id, name, targetType]) => ({
     id,
     nodeType: 'query',
@@ -43,6 +43,11 @@ async function seedQueries(items: Array<[string, string, string]>) {
     targetType,
     properties: {}
   }));
+}
+
+/** Change the backend queries and reload through the store, as a domain-event refresh does. */
+async function seedQueries(items: Array<[string, string, string]>) {
+  setBackendQueries(items);
   await savedQueriesData.loadSavedQueries();
 }
 
@@ -78,7 +83,7 @@ describe('NavigationSidebar — saved queries under Node Types', () => {
   });
 
   it('lists each query directly under the type it targets, ordered by name', async () => {
-    await seedQueries([
+    setBackendQueries([
       ['q-plan', 'Plans by Status', 'plan'],
       ['q-spec-b', 'Specs by Status', 'spec'],
       ['q-spec-a', 'Open specs', 'spec']
@@ -97,7 +102,7 @@ describe('NavigationSidebar — saved queries under Node Types', () => {
   });
 
   it('opens the query when a saved query is clicked, and the type Default view when the type is clicked', async () => {
-    await seedQueries([['q-spec', 'Specs by Status', 'spec']]);
+    setBackendQueries([['q-spec', 'Specs by Status', 'spec']]);
     const { getByText, findByText } = render(NavigationSidebar);
 
     await fireEvent.click(await findByText('Specs by Status'));
@@ -108,7 +113,7 @@ describe('NavigationSidebar — saved queries under Node Types', () => {
   });
 
   it('shows a type with no queries as a plain row', async () => {
-    await seedQueries([['q-spec', 'Specs by Status', 'spec']]);
+    setBackendQueries([['q-spec', 'Specs by Status', 'spec']]);
     const { container } = render(NavigationSidebar);
 
     await waitFor(() => expect(rows(container)).toHaveLength(3));
@@ -116,7 +121,7 @@ describe('NavigationSidebar — saved queries under Node Types', () => {
   });
 
   it('does not list queries whose target type has no entry in the list', async () => {
-    await seedQueries([['q-x', 'Orphan', 'unknown-type']]);
+    setBackendQueries([['q-x', 'Orphan', 'unknown-type']]);
     const { container, queryByText } = render(NavigationSidebar);
 
     await waitFor(() => expect(rows(container)).toEqual(['Spec', 'Plan']));

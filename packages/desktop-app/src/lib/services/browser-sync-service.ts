@@ -263,8 +263,12 @@ class BrowserSyncService {
 
       case 'nodeUpdated': {
         log.debug('Node updated:', event.nodeId);
-        // A rename or retarget of a listed saved query changes the sidebar entry.
-        if (savedQueriesData.has(event.nodeId)) {
+        // A rename or retarget of a query changes the sidebar entry, whether or
+        // not it is listed yet (a retarget can move it into a listed type).
+        if (
+          savedQueriesData.has(event.nodeId) ||
+          sharedNodeStore.getNode(event.nodeId)?.nodeType === 'query'
+        ) {
           scheduleSavedQueryRefresh();
         }
         // Only fetch if node is already in the store (visible to user)

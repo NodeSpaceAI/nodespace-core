@@ -37,15 +37,26 @@ class SavedQueriesStore {
   /** Saved queries that target one specific type. */
   queries = $state<SavedQueryListItem[]>([]);
 
+  /** Queries grouped by target type, each group ordered by name. Recomputed only when `queries` changes. */
+  #byType = $derived.by(() => {
+    const groups = new Map<string, SavedQueryListItem[]>();
+    for (const query of [...this.queries].sort(compareQueries)) {
+      const group = groups.get(query.targetType);
+      if (group) group.push(query);
+      else groups.set(query.targetType, [query]);
+    }
+    return groups;
+  });
+
   /** See `SchemasStore.#generation`. */
   #generation = 0;
 
   /** Saved queries targeting `typeId`, ordered by name. */
   forType(typeId: string): SavedQueryListItem[] {
-    return this.queries.filter((q) => q.targetType === typeId).sort(compareQueries);
+    return this.#byType.get(typeId) ?? [];
   }
 
-  /** True when `nodeId` is a query currently listed (used to react to deletes). */
+  /** True when `nodeId` is a query currently listed (used to react to renames and deletes). */
   has(nodeId: string): boolean {
     return this.queries.some((q) => q.id === nodeId);
   }

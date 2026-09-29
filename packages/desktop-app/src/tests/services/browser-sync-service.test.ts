@@ -11,6 +11,8 @@ import { getClientId } from '$lib/services/client-id';
 import type { SseEvent } from '$lib/types/sse-events';
 import type { Node } from '$lib/types';
 import * as backendAdapterModule from '$lib/services/backend-adapter';
+import { savedQueriesData } from '$lib/stores/saved-queries.svelte';
+import { clearSavedQueryRefreshTimer } from '$lib/utils/collection-refresh';
 
 /**
  * Type-safe test interface for accessing private methods.
@@ -111,6 +113,8 @@ describe('BrowserSyncService - SSE Event Ordering', () => {
     structureTree.children.clear();
     SharedNodeStore.resetInstance();
     mockNodes.clear();
+    savedQueriesData.reset();
+    clearSavedQueryRefreshTimer();
     vi.restoreAllMocks();
   });
 
@@ -470,6 +474,74 @@ describe('BrowserSyncService - SSE Event Ordering', () => {
 
       // Structure should be preserved
       expect(structureTree.getChildren('parent1')).toContain('node1');
+    });
+  });
+
+  describe('Saved queries sidebar refresh', () => {
+    function queryNode(id: string, name: string, targetType: string): Node {
+      return {
+        id,
+        nodeType: 'query',
+        content: name,
+        targetType,
+        properties: {},
+        mentions: [],
+        createdAt: new Date().toISOString(),
+        modifiedAt: new Date().toISOString(),
+        version: 1
+      } as unknown as Node;
+    }
+
+    it('lists a query when its nodeCreated event arrives', async () => {
+      const created = queryNode('q1', 'Specs by Status', 'spec');
+      registerMockNode(created);
+      vi.spyOn(backendAdapterModule.backendAdapter, 'queryNodes').mockResolvedValue([created]);
+
+      testableService.handleEvent({ type: 'nodeCreated', nodeId: 'q1', nodeType: 'query' });
+
+      await vi.waitFor(
+        () => expect(savedQueriesData.forType('spec').map((q) => q.id)).toEqual(['q1']),
+        { timeout: 1000 }
+      );
+    });
+
+    it('moves a query into a listed type when a nodeUpdated retargets it', async () => {
+      // Known to the store (so the update is fetched) but not yet listed.
+      sharedNodeStore.setNode(queryNode('q1', 'Q', '*'), { type: 'database', reason: 'sse-sync' });
+      const retargeted = queryNode('q1', 'Q', 'plan');
+      registerMockNode(retargeted);
+      vi.spyOn(backendAdapterModule.backendAdapter, 'queryNodes').mockResolvedValue([retargeted]);
+
+      testableService.handleEvent({ type: 'nodeUpdated', nodeId: 'q1' });
+
+      await vi.waitFor(
+        () => expect(savedQueriesData.forType('plan').map((q) => q.id)).toEqual(['q1']),
+        { timeout: 1000 }
+      );
+    });
+
+    it('drops a listed query when its nodeDeleted event arrives', async () => {
+      savedQueriesData.queries = [{ id: 'q1', name: 'Gone', targetType: 'spec' }];
+      vi.spyOn(backendAdapterModule.backendAdapter, 'queryNodes').mockResolvedValue([]);
+
+      testableService.handleEvent({ type: 'nodeDeleted', nodeId: 'q1' });
+
+      await vi.waitFor(() => expect(savedQueriesData.queries).toEqual([]), { timeout: 1000 });
+    });
+
+    it('does not reload saved queries for a non-query node event', async () => {
+      const queryNodesSpy = vi
+        .spyOn(backendAdapterModule.backendAdapter, 'queryNodes')
+        .mockResolvedValue([]);
+      sharedNodeStore.setNode(createTestNode('n1'), { type: 'database', reason: 'sse-sync' });
+      registerMockNode(createTestNode('n1', 'changed'));
+
+      testableService.handleEvent({ type: 'nodeCreated', nodeId: 'n2', nodeType: 'text' });
+      testableService.handleEvent({ type: 'nodeUpdated', nodeId: 'n1' });
+      testableService.handleEvent({ type: 'nodeDeleted', nodeId: 'n1' });
+
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      expect(queryNodesSpy).not.toHaveBeenCalled();
     });
   });
 
