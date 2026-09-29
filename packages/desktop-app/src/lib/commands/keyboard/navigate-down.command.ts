@@ -5,6 +5,7 @@
  * Implements smart navigation between nodes only at boundaries.
  *
  * Behavior:
+ * - Textarea (any node type): Navigate only from the last visual row
  * - For single-line nodes: Always navigate on ArrowDown
  * - For multiline nodes with actual multiple lines: Navigate only when at last line
  * - For multiline-capable nodes with single line: Always navigate
@@ -38,32 +39,29 @@ export class NavigateDownCommand implements KeyboardCommand {
       return false;
     }
 
-    // Determine if we should navigate between nodes
+    // A textarea (any node type) reports whether the caret is on its last
+    // VISUAL row, soft wraps included: a single-line node's text can wrap
+    // too, and the browser moves the caret between wrapped rows itself.
+    const element = controller.element;
+    if (element.tagName === 'TEXTAREA') {
+      return controller.isAtLastLine ? controller.isAtLastLine() : true;
+    }
+
+    // ContentEditable: decide from its line structure
     if (context.allowMultiline) {
-      // Check if this is a textarea or contenteditable
-      const element = controller.element;
-      const isTextarea = element.tagName === 'TEXTAREA';
+      // ContentEditable: Check if the node actually has multiple lines (DIVs exist)
+      const lineElements = Array.from(element.children).filter(
+        (child: Element) => child.tagName === 'DIV'
+      );
+      const hasMultipleLines = lineElements.length > 0;
 
-      if (isTextarea) {
-        // Textarea: Use isAtLastLine() method which checks for \n newlines
-        // Only navigate if cursor is on the last line
-        const atLastLine = controller.isAtLastLine ? controller.isAtLastLine() : true;
-        return atLastLine;
+      if (hasMultipleLines) {
+        // For nodes with actual multiple lines, navigate only when on last line
+        return this.isAtLastLine(context);
       } else {
-        // ContentEditable: Check if the node actually has multiple lines (DIVs exist)
-        const lineElements = Array.from(element.children).filter(
-          (child: Element) => child.tagName === 'DIV'
-        );
-        const hasMultipleLines = lineElements.length > 0;
-
-        if (hasMultipleLines) {
-          // For nodes with actual multiple lines, navigate only when on last line
-          return this.isAtLastLine(context);
-        } else {
-          // Node supports multiline but currently has only single line
-          // Allow navigation from anywhere (like single-line nodes)
-          return true;
-        }
+        // Node supports multiline but currently has only single line
+        // Allow navigation from anywhere (like single-line nodes)
+        return true;
       }
     } else {
       // For single-line nodes, always navigate on arrow down
