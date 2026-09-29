@@ -311,6 +311,17 @@ export class MembershipService {
 	}
 
 	/**
+	 * Remove a person from the active workspace: declines a pending admission
+	 * or removes an active member (owner / tenant admin only, server-gated; the
+	 * owner cannot be removed). The Rust command rewrites daemon errors into
+	 * actionable sentences.
+	 */
+	async removeFromTenant(personId: string): Promise<void> {
+		log.debug('removeFromTenant', { personId });
+		await invoke<void>('pro_remove_from_tenant', { personId });
+	}
+
+	/**
 	 * Invite someone to the active workspace by email. Creates a pending
 	 * admission that an owner or tenant admin then approves; the invitee must
 	 * already have a NodeSpace Pro account.

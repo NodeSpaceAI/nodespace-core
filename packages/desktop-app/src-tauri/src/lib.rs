@@ -733,6 +733,7 @@ pub fn run() {
             commands::pro_sync::pro_list_tenant_members,
             commands::pro_sync::pro_approve_admission,
             commands::pro_sync::pro_initiate_admission,
+            commands::pro_sync::pro_remove_from_tenant,
             commands::conflicts::list_conflicts,
             commands::conflicts::conflicts_for_node,
             commands::conflicts::resolve_conflict,

@@ -31,10 +31,11 @@ interface Setup {
   me: string;
   roster: Row[] | (() => Row[]);
   approve?: () => Promise<unknown>;
+  remove?: (args: { personId: string }) => Promise<unknown>;
   initiate?: (args: { email: string }) => Promise<unknown>;
 }
 
-function setup({ me, roster, approve, initiate }: Setup) {
+function setup({ me, roster, approve, remove, initiate }: Setup) {
   mockInvoke.mockImplementation((cmd: string, args?: Record<string, unknown>) => {
     switch (cmd) {
       case 'pro_current_person':
@@ -43,6 +44,8 @@ function setup({ me, roster, approve, initiate }: Setup) {
         return Promise.resolve(typeof roster === 'function' ? roster() : roster);
       case 'pro_approve_admission':
         return approve ? approve() : Promise.resolve(undefined);
+      case 'pro_remove_from_tenant':
+        return remove ? remove(args as { personId: string }) : Promise.resolve(undefined);
       case 'pro_initiate_admission':
         return initiate
           ? initiate(args as { email: string })
@@ -172,6 +175,131 @@ describe('WorkspaceMembersCard — approve', () => {
     setup({ me: OWNER.person_id, roster: [OWNER, { ...PENDING, email: '', person_id: 'abcdef123456' }] });
     render(WorkspaceMembersCard);
     expect(await screen.findByText('Unknown email (abcdef12)')).toBeTruthy();
+  });
+});
+
+describe('WorkspaceMembersCard — decline and remove', () => {
+  it('declines a pending admission only after a confirmation step, then reloads', async () => {
+    let declined = false;
+    setup({
+      me: OWNER.person_id,
+      roster: () => (declined ? [OWNER] : [OWNER, PENDING]),
+      remove: () => {
+        declined = true;
+        return Promise.resolve(undefined);
+      }
+    });
+    render(WorkspaceMembersCard);
+    await fireEvent.click(await screen.findByRole('button', { name: 'Decline new@ex.com' }));
+
+    // First click only arms the confirmation; nothing has been sent.
+    expect(invokedWith('pro_remove_from_tenant')).toHaveLength(0);
+    expect(screen.getByText('Decline new@ex.com?')).toBeTruthy();
+    // Approve is hidden while confirming so the two can't be mis-clicked.
+    expect(screen.queryByRole('button', { name: 'Approve new@ex.com' })).toBeNull();
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Confirm decline new@ex.com' }));
+    await waitFor(() =>
+      expect(mockInvoke).toHaveBeenCalledWith('pro_remove_from_tenant', { personId: 'p-pend' })
+    );
+    expect(await screen.findByText('No one is waiting for approval.')).toBeTruthy();
+    expect(invokedWith('pro_list_tenant_members').length).toBe(2);
+  });
+
+  it('cancelling the confirmation sends nothing and restores Approve', async () => {
+    setup({ me: OWNER.person_id, roster: [OWNER, PENDING] });
+    render(WorkspaceMembersCard);
+    await fireEvent.click(await screen.findByRole('button', { name: 'Decline new@ex.com' }));
+    await fireEvent.click(screen.getByRole('button', { name: 'Cancel decline new@ex.com' }));
+    expect(invokedWith('pro_remove_from_tenant')).toHaveLength(0);
+    expect(screen.getByRole('button', { name: 'Approve new@ex.com' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Decline new@ex.com' })).toBeTruthy();
+  });
+
+  it('shows the actionable decline error on that row and keeps it listed', async () => {
+    setup({
+      me: ADMIN.person_id,
+      roster: [ADMIN, PENDING],
+      remove: () => Promise.reject('That person is no longer in this workspace. Refresh the list.')
+    });
+    render(WorkspaceMembersCard);
+    await fireEvent.click(await screen.findByRole('button', { name: 'Decline new@ex.com' }));
+    await fireEvent.click(screen.getByRole('button', { name: 'Confirm decline new@ex.com' }));
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toContain('no longer in this workspace');
+    expect(screen.getAllByTestId('pending-admission')).toHaveLength(1);
+    // The confirmation is disarmed so a retry needs a fresh deliberate click.
+    expect(screen.getByRole('button', { name: 'Decline new@ex.com' })).toBeTruthy();
+  });
+
+  it('reloads after a failed decline so a stale row disappears', async () => {
+    let gone = false;
+    setup({
+      me: OWNER.person_id,
+      roster: () => (gone ? [OWNER] : [OWNER, PENDING]),
+      remove: () => {
+        gone = true;
+        return Promise.reject('That person is no longer in this workspace. Refresh the list.');
+      }
+    });
+    render(WorkspaceMembersCard);
+    await fireEvent.click(await screen.findByRole('button', { name: 'Decline new@ex.com' }));
+    await fireEvent.click(screen.getByRole('button', { name: 'Confirm decline new@ex.com' }));
+    expect(await screen.findByText('No one is waiting for approval.')).toBeTruthy();
+    expect(invokedWith('pro_list_tenant_members').length).toBe(2);
+  });
+
+  it('disables Decline while that row is being approved', async () => {
+    let release!: () => void;
+    setup({
+      me: OWNER.person_id,
+      roster: [OWNER, PENDING],
+      approve: () => new Promise((r) => (release = () => r(undefined)))
+    });
+    render(WorkspaceMembersCard);
+    await fireEvent.click(await screen.findByRole('button', { name: 'Approve new@ex.com' }));
+    expect(screen.getByRole('button', { name: 'Decline new@ex.com' })).toHaveProperty('disabled', true);
+    release();
+  });
+
+  it('lists active members for removal, excluding the owner and the caller', async () => {
+    setup({ me: ADMIN.person_id, roster: [OWNER, ADMIN, MEMBER, PENDING] });
+    render(WorkspaceMembersCard);
+    const rows = await screen.findAllByTestId('active-member');
+    expect(rows).toHaveLength(1);
+    expect(rows[0].textContent).toContain('member@ex.com');
+    expect(screen.queryByRole('button', { name: 'Remove owner@ex.com' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Remove admin@ex.com' })).toBeNull();
+    // Pending rows are declined, never "removed".
+    expect(screen.queryByRole('button', { name: 'Remove new@ex.com' })).toBeNull();
+  });
+
+  it('shows no Members section when nobody else is removable', async () => {
+    setup({ me: OWNER.person_id, roster: [OWNER, PENDING] });
+    render(WorkspaceMembersCard);
+    await screen.findByTestId('pending-admission');
+    expect(screen.queryByTestId('active-member')).toBeNull();
+    expect(screen.queryByText('Members')).toBeNull();
+  });
+
+  it('removes a member after confirmation and reloads the roster', async () => {
+    let removed = false;
+    setup({
+      me: OWNER.person_id,
+      roster: () => (removed ? [OWNER] : [OWNER, MEMBER]),
+      remove: () => {
+        removed = true;
+        return Promise.resolve(undefined);
+      }
+    });
+    render(WorkspaceMembersCard);
+    await fireEvent.click(await screen.findByRole('button', { name: 'Remove member@ex.com' }));
+    expect(invokedWith('pro_remove_from_tenant')).toHaveLength(0);
+    await fireEvent.click(screen.getByRole('button', { name: 'Confirm remove member@ex.com' }));
+    await waitFor(() =>
+      expect(mockInvoke).toHaveBeenCalledWith('pro_remove_from_tenant', { personId: 'p-member' })
+    );
+    await waitFor(() => expect(screen.queryByTestId('active-member')).toBeNull());
   });
 });
 
