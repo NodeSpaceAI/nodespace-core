@@ -33,20 +33,27 @@ use tonic::transport::Channel;
 /// different crate — the CLI's copy deliberately does not stamp
 /// `x-ns-client-id`; see its doc comment for why.
 ///
-/// `client_id` is always `Some` in production — generated once per
-/// `GrpcClient` (i.e. once per app process/window) in [`GrpcClient::from_channel`]
-/// and carried through every interceptor rebuild (database switches rebuild
-/// the routed clients but must keep the SAME client id, or the daemon would
-/// stop recognizing this window's own writes on echo suppression after every
-/// switch). Stamping it lets the daemon scope this connection's writes via
-/// `NodeService::with_client()` and drop their echo on this connection's own
-/// `WatchNodes` stream (see `watcher.rs`).
+/// The client id is generated once per `GrpcClient` (i.e. once per app
+/// process/window) in [`GrpcClient::from_channel`] and carried through every
+/// interceptor rebuild (database switches rebuild the routed clients but must
+/// keep the SAME client id, or the daemon would stop recognizing this window's
+/// own writes on echo suppression after every switch). Stamping it lets the
+/// daemon scope this connection's writes via `NodeService::with_client()` and
+/// drop their echo on this connection's own `WatchNodes` stream (see
+/// `watcher.rs`).
+///
+/// [`without_client_id`](Self::without_client_id) derives the variant that
+/// stamps only the routing header — see [`GrpcClient::client`] for why that is
+/// the default for writes.
 #[derive(Clone)]
 pub struct DatabaseIdInterceptor {
     // Some(id) → stamp header on every request; None → stamp nothing (daemon
     // uses its default database).
     database_id: Option<MetadataValue<Ascii>>,
-    client_id: MetadataValue<Ascii>,
+    // Some(id) → stamp `x-ns-client-id`, so the daemon suppresses this
+    // request's write echoes on the same client's watch stream; None → the
+    // writes echo back like any other client's.
+    client_id: Option<MetadataValue<Ascii>>,
 }
 
 impl DatabaseIdInterceptor {
@@ -56,7 +63,7 @@ impl DatabaseIdInterceptor {
     pub fn none(client_id: MetadataValue<Ascii>) -> Self {
         Self {
             database_id: None,
-            client_id,
+            client_id: Some(client_id),
         }
     }
 
@@ -83,7 +90,17 @@ impl DatabaseIdInterceptor {
         });
         Self {
             database_id,
-            client_id,
+            client_id: Some(client_id),
+        }
+    }
+
+    /// The same routing, without the `x-ns-client-id` header: writes made
+    /// through it are not attributed to this window, so the daemon delivers
+    /// their events on this window's own `WatchNodes` stream too.
+    pub fn without_client_id(&self) -> Self {
+        Self {
+            database_id: self.database_id.clone(),
+            client_id: None,
         }
     }
 }
@@ -93,8 +110,9 @@ impl Interceptor for DatabaseIdInterceptor {
         if let Some(id) = &self.database_id {
             req.metadata_mut().insert(DATABASE_ID_HEADER, id.clone());
         }
-        req.metadata_mut()
-            .insert(CLIENT_ID_HEADER, self.client_id.clone());
+        if let Some(id) = &self.client_id {
+            req.metadata_mut().insert(CLIENT_ID_HEADER, id.clone());
+        }
         Ok(req)
     }
 }
@@ -125,7 +143,11 @@ struct GrpcClientInner {
     // active database changes so their requests carry the routing header. The
     // daemon routes node/import/embeddings/agent_session/local_agent by
     // `x-ns-database-id`.
+    //
+    // `node` omits the client id, `node_echo_suppressed` stamps it — see
+    // `GrpcClient::client` / `GrpcClient::echo_suppressed_client`.
     node: NodeClient,
+    node_echo_suppressed: NodeClient,
     import: ImportClient,
     embeddings: EmbeddingsClient,
     agent_session: AgentSessionClient,
@@ -213,6 +235,10 @@ impl GrpcClient {
         let inner = GrpcClientInner {
             node: with_message_limits!(NodeServiceClient::with_interceptor(
                 channel.clone(),
+                interceptor.without_client_id()
+            )),
+            node_echo_suppressed: with_message_limits!(NodeServiceClient::with_interceptor(
+                channel.clone(),
                 interceptor.clone()
             )),
             import: with_message_limits!(ImportServiceClient::with_interceptor(
@@ -270,8 +296,31 @@ impl GrpcClient {
 
     /// Borrow a clone of the routed `NodeService` client (carries the active
     /// database's `x-ns-database-id` header).
+    ///
+    /// Does NOT stamp `x-ns-client-id`, so the events of any write made
+    /// through it come back to this window's own `WatchNodes` stream and reach
+    /// the frontend store via the watcher. That is the right default: a write
+    /// the frontend store did not apply itself (onboarding identity, a
+    /// playbook install, a merge, a collection edit, ...) is otherwise
+    /// invisible to this window until a restart. Use
+    /// [`echo_suppressed_client`](Self::echo_suppressed_client) only for a
+    /// write the store has already applied optimistically.
     pub async fn client(&self) -> NodeClient {
         self.inner.read().await.node.clone()
+    }
+
+    /// Borrow a clone of the routed `NodeService` client that also stamps this
+    /// window's `x-ns-client-id` (ADR-026's C5 extension). The daemon then
+    /// drops the echo of every write made through it from this window's own
+    /// `WatchNodes` stream.
+    ///
+    /// Only for writes the frontend store has already applied optimistically —
+    /// a late echo of those could overwrite newer local state — and for the
+    /// watcher's own `WatchNodes` subscription, which must carry the same id
+    /// for the daemon to recognize whose echoes to drop. A write through this
+    /// client that the store did not apply never reaches the UI.
+    pub async fn echo_suppressed_client(&self) -> NodeClient {
+        self.inner.read().await.node_echo_suppressed.clone()
     }
 
     /// Borrow a clone of the routed `ImportService` client, paired with the
@@ -341,6 +390,10 @@ impl GrpcClient {
             let interceptor = DatabaseIdInterceptor::for_id(id.as_deref(), inner.client_id.clone());
             let channel = inner.channel.clone();
             inner.node = with_message_limits!(NodeServiceClient::with_interceptor(
+                channel.clone(),
+                interceptor.without_client_id()
+            ));
+            inner.node_echo_suppressed = with_message_limits!(NodeServiceClient::with_interceptor(
                 channel.clone(),
                 interceptor.clone()
             ));
@@ -422,6 +475,10 @@ impl GrpcClient {
                 inner.client_id.clone(),
             );
             inner.node = with_message_limits!(NodeServiceClient::with_interceptor(
+                channel.clone(),
+                interceptor.without_client_id()
+            ));
+            inner.node_echo_suppressed = with_message_limits!(NodeServiceClient::with_interceptor(
                 channel.clone(),
                 interceptor.clone()
             ));
@@ -728,5 +785,36 @@ mod windows_tests {
             Some(v) => std::env::set_var("NODESPACED_SOCKET", v),
             None => std::env::remove_var("NODESPACED_SOCKET"),
         }
+    }
+}
+
+#[cfg(test)]
+mod interceptor_tests {
+    use super::{generate_client_id, DatabaseIdInterceptor};
+    use nodespace_proto::{CLIENT_ID_HEADER, DATABASE_ID_HEADER};
+    use tonic::service::Interceptor;
+
+    fn stamped(mut interceptor: DatabaseIdInterceptor) -> tonic::metadata::MetadataMap {
+        interceptor
+            .call(tonic::Request::new(()))
+            .expect("interceptor never rejects")
+            .metadata()
+            .clone()
+    }
+
+    /// The default `NodeService` client is built from `without_client_id()`:
+    /// it must keep the database routing but drop the client id, or the
+    /// daemon suppresses the echo of this window's non-store writes.
+    #[test]
+    fn without_client_id_keeps_routing_and_drops_the_client_id() {
+        let tagged = DatabaseIdInterceptor::for_id(Some("db-1"), generate_client_id());
+
+        let untagged = stamped(tagged.without_client_id());
+        assert_eq!(untagged.get(DATABASE_ID_HEADER).unwrap(), "db-1");
+        assert!(untagged.get(CLIENT_ID_HEADER).is_none());
+
+        let tagged = stamped(tagged);
+        assert_eq!(tagged.get(DATABASE_ID_HEADER).unwrap(), "db-1");
+        assert!(tagged.get(CLIENT_ID_HEADER).is_some());
     }
 }

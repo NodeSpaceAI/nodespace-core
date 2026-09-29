@@ -1,6 +1,8 @@
 import { invoke } from '@tauri-apps/api/core';
 import { createLogger } from '$lib/utils/logger';
 import { backendAdapter } from '$lib/services/backend-adapter';
+import { sharedNodeStore } from '$lib/services/shared-node-store.svelte';
+import { scheduleCollectionRefresh } from '$lib/utils/collection-refresh';
 
 const log = createLogger('Conflicts');
 
@@ -173,13 +175,20 @@ class ConflictsStore {
    * close naturally even without this call, but recording the resolution
    * here makes the "why" visible in the Conflicts view immediately rather
    * than waiting for the next reconciliation sweep.
+   *
+   * `update_node` is one of the writes whose echo the daemon suppresses for
+   * this window (the store usually applies it optimistically), so this
+   * caller applies the result itself: the store gets the new content and
+   * version, and the collections sidebar reloads the new name.
    */
   async rename(conflictId: string, renamed: string, from: string, to: string): Promise<void> {
     const node = await backendAdapter.getNode(renamed);
     if (!node) {
       throw new Error(`Cannot rename: node ${renamed} no longer exists`);
     }
-    await backendAdapter.updateNode(renamed, node.version, { content: to });
+    const updated = await backendAdapter.updateNode(renamed, node.version, { content: to });
+    sharedNodeStore.setNode(updated, { type: 'database', reason: 'conflict-rename' }, true);
+    scheduleCollectionRefresh();
     await this.resolve(conflictId, { action: 'rename', renamed, from, to });
   }
 

@@ -17,9 +17,12 @@
 //! - Opens a `WatchNodes` stream over the shared [`GrpcClient`], so the stream
 //!   carries the active database's `x-ns-database-id` routing header (ADR-053)
 //!   and rides the same h2 connection as every other data-plane request. The
-//!   same client also stamps `x-ns-client-id` (ADR-026's C5 extension) on every request
-//!   including this one, so the daemon recognizes and drops this window's own
-//!   write echoes before they ever reach this stream — see ADR-026 C5.
+//!   stream is opened through `GrpcClient::echo_suppressed_client`, which
+//!   stamps this window's `x-ns-client-id` (ADR-026's C5 extension), so the
+//!   daemon drops the echoes of writes this window made through that same
+//!   client (the frontend store's own optimistic writes) before they reach
+//!   this stream. Writes made through the default `GrpcClient::client` carry
+//!   no client id and are delivered here like any other client's.
 //! - Translates each proto `NodeEvent` to a Tauri event (id + optional
 //!   node_type + originating `database_id`).
 //! - On stream error or disconnection, reconnects with exponential backoff
@@ -165,7 +168,10 @@ pub async fn run<R: Runtime>(
 /// `Ok(())` on clean stream end, `Err` on transport or stream error.
 #[cfg(unix)]
 async fn stream_once<R: Runtime>(app: &AppHandle<R>, grpc_client: &GrpcClient) -> Result<()> {
-    let mut client = grpc_client.client().await;
+    // The subscription must carry this window's client id so the daemon knows
+    // which writes are this window's own (made via `echo_suppressed_client`)
+    // and drops only those echoes.
+    let mut client = grpc_client.echo_suppressed_client().await;
 
     let mut stream = client
         .watch_nodes(WatchRequest::default())
