@@ -676,7 +676,6 @@ export class TextareaController {
       const lineIndex = direction === 'up' ? lines.length - 1 : 0;
       const targetLine = lines[lineIndex];
 
-
       // The pixelOffset represents the VISUAL cursor position from source's EDIT mode
       // But the target node displays in VIEW mode first, then switches to EDIT mode
       // So we need to:

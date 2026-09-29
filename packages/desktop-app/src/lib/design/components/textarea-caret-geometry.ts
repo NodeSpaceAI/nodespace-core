@@ -51,7 +51,10 @@ export class TextareaCaretMirror {
   private readonly paddingTop: number;
   private readonly value: string;
 
-  private constructor(textarea: HTMLTextAreaElement, style: ReturnType<typeof window.getComputedStyle>) {
+  private constructor(
+    textarea: HTMLTextAreaElement,
+    style: ReturnType<typeof window.getComputedStyle>
+  ) {
     this.value = textarea.value;
     this.paddingLeft = parseFloat(style.paddingLeft) || 0;
     this.paddingTop = parseFloat(style.paddingTop) || 0;
