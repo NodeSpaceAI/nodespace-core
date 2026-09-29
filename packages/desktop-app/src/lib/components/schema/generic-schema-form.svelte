@@ -44,6 +44,10 @@
   import UniqueFieldSuggestion from './unique-field-suggestion.svelte';
   import { UniqueFieldCheck, isUniqueField } from './unique-field-check.svelte';
   import { isNestedField } from '$lib/utils/nested-property-ops';
+  import {
+    requiredFieldsWithoutDefault,
+    missingRequiredFields
+  } from '$lib/services/schema-authoring';
 
   let { nodeId, schema, autoOpen = false }: { nodeId: string; schema: SchemaNode; autoOpen?: boolean } = $props();
 
@@ -78,6 +82,17 @@
     }
     return { filled, total: visibleFields.length };
   });
+
+  // A new instance that is not saved yet lives only in the store; it is saved
+  // once every required field without a default has a value. These are the
+  // ones still missing (empty once saved).
+  const pendingFieldNames = $derived.by((): string[] => {
+    if (!node || !sharedNodeStore.isUnsavedPlaceholder(nodeId)) return [];
+    return missingRequiredFields(node, requiredFieldsWithoutDefault(schema));
+  });
+  const pendingFieldLabels = $derived(
+    visibleFields.filter((f) => pendingFieldNames.includes(f.name)).map(labelForField)
+  );
 
   function getFieldValue(fieldName: string): unknown {
     if (!node) return undefined;
@@ -141,6 +156,11 @@
     onFieldChange={updateField}
   >
     {#snippet fields(openNestedModal: (_field: SchemaField) => void)}
+      {#if pendingFieldLabels.length > 0}
+        <p class="mb-3 text-sm text-muted-foreground" role="status" data-testid="pending-fields-note">
+          Not saved yet. Fill in {pendingFieldLabels.join(', ')} to save this {schema.content.toLowerCase()}.
+        </p>
+      {/if}
       <div class="grid grid-cols-2 gap-4">
         {#each visibleFields as field (field.name)}
           {@const fieldId = `generic-${nodeId}-${field.name}`}
@@ -148,6 +168,11 @@
           <div class="space-y-2">
             <label for={fieldId} class="text-sm font-medium">
               {labelForField(field)}
+              {#if pendingFieldNames.includes(field.name)}
+                <span class="ml-1 text-xs font-normal text-destructive" data-testid="field-needed"
+                  >Needed to save</span
+                >
+              {/if}
             </label>
 
             {#if isNestedField(field)}

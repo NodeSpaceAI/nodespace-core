@@ -21,7 +21,12 @@
   import { v4 as uuidv4 } from 'uuid';
   import { backendAdapter } from '$lib/services/backend-adapter';
   import { MAX_QUERY_ROWS } from '$lib/services/adapter-core';
-  import { createSchemaInstance, shouldIntegrateInstance } from '$lib/services/schema-authoring';
+  import {
+    createSchemaInstance,
+    createInstancePlaceholder,
+    needsUnsavedPlaceholder,
+    shouldIntegrateInstance
+  } from '$lib/services/schema-authoring';
   import { getNavigationService } from '$lib/services/navigation-service';
   import { sharedNodeStore, isStoreEviction } from '$lib/services/shared-node-store.svelte';
   import { pinReachableNodes } from '$lib/utils/pin-node-reachability';
@@ -187,6 +192,9 @@
       // A database switch reports every evicted node — none of them is a node
       // created in the now-active database.
       if (isStoreEviction(source)) return;
+      // A new instance that is not saved yet is not a query result: it joins
+      // the view when an edit completes it and the store writes it.
+      if (sharedNodeStore.isUnsavedPlaceholder(node.id)) return;
       // `shouldShowCreatedNode` gates on the settled view, dedup, type, and the
       // query's filters. Gating on 'success' matters: during a (re)load
       // `loadedNodeIds` is reset and repopulated wholesale and the load's own
@@ -532,6 +540,18 @@
   async function handleCreateInstance(): Promise<void> {
     if (!schemaNode || isCreating) return;
     const typeId = schemaNode.id;
+    createError = null;
+
+    // A type with required fields that have no default cannot be created empty:
+    // open an unsaved placeholder, which the store writes once those fields are
+    // filled in.
+    if (needsUnsavedPlaceholder(schemaNode)) {
+      const placeholder = createInstancePlaceholder(schemaNode);
+      log.debug('QueryNodeViewer: opened unsaved placeholder', { typeId, newId: placeholder.id });
+      handleRowClick(placeholder.id);
+      return;
+    }
+
     // Capture the load generation + database epoch so a mid-flight database
     // switch or re-query drops the new node instead of injecting it into a
     // now-stale view — the same ADR-053 discipline loadAndQuery applies.

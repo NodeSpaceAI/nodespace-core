@@ -14,6 +14,11 @@ import { humanizeSchemaId } from '$lib/plugins/schema-plugin-loader';
 import { getDefaultAiChatModelProperties } from '$lib/services/ai-chat-default-model';
 import { UNTITLED_CHAT_TITLE } from '$lib/utils/ai-chat-title';
 import type { Node } from '$lib/types';
+import type { SchemaField, SchemaNode } from '$lib/types/schema-node';
+import { sharedNodeStore } from '$lib/services/shared-node-store.svelte';
+import { hasTypedCoreFields } from '$lib/types/typed-core-fields';
+import { resolveFieldValue } from '$lib/components/schema/schema-field-resolution';
+import { isUserVisibleField } from '$lib/utils/schema-field-visibility';
 
 /**
  * Core types whose `content` field IS the node's name, not body text — their
@@ -44,6 +49,77 @@ const NAME_AS_CONTENT_TYPES = new Set(['project', 'skill', 'collection', 'agent-
 const SEED_CONTENT_OVERRIDES = new Map<string, string>([['ai-chat', UNTITLED_CHAT_TITLE]]);
 
 /**
+ * The seed `content` a fresh instance of `typeId` starts with — shared by the
+ * immediate create and the unsaved placeholder so both start identically.
+ */
+function seedContent(typeId: string): string {
+  return (
+    SEED_CONTENT_OVERRIDES.get(typeId) ??
+    (NAME_AS_CONTENT_TYPES.has(typeId) ? `Untitled ${humanizeSchemaId(typeId)}` : '')
+  );
+}
+
+/**
+ * Fields a user must fill before the backend will accept an instance: required,
+ * with no default to fall back on, and editable by the user. This mirrors the
+ * backend validator, which rejects a node missing such a field.
+ */
+export function requiredFieldsWithoutDefault(schema: SchemaNode | null): SchemaField[] {
+  return (schema?.fields ?? []).filter(
+    (f) => f.required === true && f.default === undefined && isUserVisibleField(f)
+  );
+}
+
+function isFieldFilled(node: Node, field: SchemaField): boolean {
+  const value = resolveFieldValue(node, field.name);
+  if (value === null || value === undefined) return false;
+  return typeof value !== 'string' || value.trim() !== '';
+}
+
+/** The names of `required` fields still missing a value on `node`. */
+export function missingRequiredFields(node: Node, required: SchemaField[]): string[] {
+  return required.filter((f) => !isFieldFilled(node, f)).map((f) => f.name);
+}
+
+/**
+ * Whether "+ New" on this type must open an unsaved placeholder instead of
+ * creating the node right away: the schema has required fields without a
+ * default, so an empty instance would be rejected. Core types whose fields are
+ * typed top-level values keep the immediate create — their writes go through
+ * the type's typed update, which needs a persisted node.
+ */
+export function needsUnsavedPlaceholder(schema: SchemaNode | null): boolean {
+  if (!schema || hasTypedCoreFields(schema.id)) return false;
+  return requiredFieldsWithoutDefault(schema).length > 0;
+}
+
+/**
+ * Open a new instance of `schema`'s type that exists only in the store. It is
+ * written to the backend by the store once every required field without a
+ * default has a value (see `SharedNodeStore.createUnsavedPlaceholder`), and is
+ * dropped silently if the tab showing it closes first.
+ */
+export function createInstancePlaceholder(schema: SchemaNode): Node {
+  const required = requiredFieldsWithoutDefault(schema);
+  const now = new Date().toISOString();
+  const node: Node = {
+    id: uuidv4(),
+    nodeType: schema.id,
+    content: seedContent(schema.id),
+    version: 1,
+    createdAt: now,
+    modifiedAt: now,
+    properties: {},
+    mentions: []
+  };
+  sharedNodeStore.createUnsavedPlaceholder(
+    node,
+    (candidate) => missingRequiredFields(candidate, required).length === 0
+  );
+  return node;
+}
+
+/**
  * Mint a fresh instance of the given schema type and return the created node.
  *
  * The node is created as a root (`parentId: null`) with no properties; the
@@ -57,9 +133,7 @@ const SEED_CONTENT_OVERRIDES = new Map<string, string>([['ai-chat', UNTITLED_CHA
  */
 export async function createSchemaInstance(typeId: string): Promise<Node> {
   const newId = uuidv4();
-  const content =
-    SEED_CONTENT_OVERRIDES.get(typeId) ??
-    (NAME_AS_CONTENT_TYPES.has(typeId) ? `Untitled ${humanizeSchemaId(typeId)}` : '');
+  const content = seedContent(typeId);
   // A new ai-chat starts on the user's default model, written at creation so
   // the node records it from the first moment (no later write to race an echo).
   const properties: Record<string, unknown> =

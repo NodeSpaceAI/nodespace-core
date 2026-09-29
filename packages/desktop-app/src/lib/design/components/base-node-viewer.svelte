@@ -1225,6 +1225,8 @@
   const shouldShowPlaceholder = $derived.by(() => {
     if (!nodeId) return false;
     if (isPromoting) return false; // Block during promotion to prevent race
+    // A child could not be saved under a parent the backend does not have yet.
+    if (sharedNodeStore.isUnsavedPlaceholder(nodeId)) return false;
     const realChildren = visibleNodesFromStores;
     return realChildren.length === 0;
   });
@@ -1317,7 +1319,7 @@
       <GenericSchemaForm
         {nodeId}
         schema={schemaFormLoader.genericSchema}
-        autoOpen={schemaFormLoader.hasTitleTemplate}
+        autoOpen={schemaFormLoader.hasTitleTemplate || sharedNodeStore.isUnsavedPlaceholder(nodeId)}
       />
     </div>
   {/if}
