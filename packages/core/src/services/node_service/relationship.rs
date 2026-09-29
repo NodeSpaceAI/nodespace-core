@@ -737,6 +737,26 @@ impl NodeService {
         Ok(None)
     }
 
+    /// Whether `source_type`'s own nearest-first resolution of
+    /// `relationship_name` lands on the `declaring_type` declaration —
+    /// ownership *equality* (via `resolve_relationships`'s owners map), not
+    /// [`Self::type_satisfies`]'s ancestor-chain *membership*. The two diverge
+    /// when a nearer schema shadows an inherited declaration of the same name:
+    /// the ancestor is still in the chain, but this source's edges belong to
+    /// the shadowing declaration, so they must not be scoped into the
+    /// ancestor's reverse-cardinality check.
+    pub(super) async fn source_resolves_relationship_to(
+        &self,
+        source_type: &str,
+        relationship_name: &str,
+        declaring_type: &str,
+    ) -> Result<bool, NodeServiceError> {
+        let (_, owners) = self.resolve_relationships(source_type).await?;
+        Ok(owners
+            .get(relationship_name)
+            .is_some_and(|owner| owner == declaring_type))
+    }
+
     /// Whether `node_type` satisfies a declaration expecting `expected_type` —
     /// true when they match, or when `expected_type` is an ancestor of
     /// `node_type` (ADR-078).
@@ -1383,7 +1403,11 @@ impl NodeService {
                         continue;
                     }
                     if !self
-                        .type_satisfies(&existing_source_type, &declaring_type)
+                        .source_resolves_relationship_to(
+                            &existing_source_type,
+                            relationship_name,
+                            &declaring_type,
+                        )
                         .await?
                     {
                         continue;
@@ -1690,7 +1714,11 @@ impl NodeService {
                             continue;
                         }
                         if !self
-                            .type_satisfies(existing_source_type, &declaring_type)
+                            .source_resolves_relationship_to(
+                                existing_source_type,
+                                relationship_type,
+                                &declaring_type,
+                            )
                             .await?
                         {
                             continue;
@@ -2796,6 +2824,155 @@ mod required_in_last_edge_tests {
             .await
             .unwrap();
         assert_eq!(targets("a").await, ["y"]);
+    }
+
+    /// Builds `shadow_child extends shadow_base`, both declaring `owns`
+    /// (reverse cardinality one) toward `shadow_thing`, with the child's own
+    /// declaration shadowing the inherited one. Unreachable through
+    /// `create_schema` / `update_schema` (cross-chain collision validation
+    /// rejects it), so the shadow is written with the lower-level
+    /// `set_schema_relationships` (core#2909).
+    async fn shadowed_owns_fixture(svc: &Arc<NodeService>) {
+        let owns = |reverse_name: &str| {
+            json!({
+                "name": "owns",
+                "targetType": "shadow_thing",
+                "direction": "out",
+                "cardinality": "many",
+                "reverseName": reverse_name,
+                "reverseCardinality": "one"
+            })
+        };
+        crate::schema::handle_create_schema(
+            svc,
+            json!({ "name": "shadow_thing", "fields": [], "relationships": [] }),
+        )
+        .await
+        .expect("thing schema");
+        crate::schema::handle_create_schema(
+            svc,
+            json!({
+                "name": "shadow_base",
+                "fields": [],
+                "relationships": [owns("base_owner")]
+            }),
+        )
+        .await
+        .expect("base schema");
+        crate::schema::handle_create_schema(
+            svc,
+            json!({
+                "name": "shadow_child",
+                "extends": "shadow_base",
+                "fields": [],
+                "relationships": []
+            }),
+        )
+        .await
+        .expect("child schema");
+
+        // Shadow the inherited `owns` on the child, bypassing the collision
+        // validation the public schema paths run.
+        let mut declarations = svc
+            .store()
+            .get_schema_declarations("shadow_child")
+            .await
+            .unwrap();
+        declarations.push(serde_json::from_value(owns("child_owner")).unwrap());
+        svc.set_schema_relationships("shadow_child", &declarations)
+            .await
+            .unwrap();
+        let (_, owners) = svc.resolve_relationships("shadow_child").await.unwrap();
+        assert_eq!(owners.get("owns").map(String::as_str), Some("shadow_child"));
+    }
+
+    /// Reverse-cardinality-one scoping is ownership *equality*, not
+    /// ancestor-chain membership (core#2909). `shadow_child` extends
+    /// `shadow_base`; both end up declaring `owns` (reverse cardinality one)
+    /// toward `shadow_thing`, but `shadow_child`'s own declaration shadows the
+    /// inherited one. That state is unreachable through `create_schema` /
+    /// `update_schema` (cross-chain collision validation rejects it), so it is
+    /// built directly with the lower-level `set_schema_relationships`.
+    ///
+    /// An existing `shadow_child` edge resolves `owns` to `shadow_child`, so
+    /// it belongs to a different declaration than a `shadow_base` source's and
+    /// must NOT be evicted by it. Chain-membership (`type_satisfies`) wrongly
+    /// counted it because `shadow_base` is in `shadow_child`'s chain.
+    #[tokio::test]
+    async fn reverse_cardinality_scope_ignores_edges_owned_by_a_shadowing_declaration() {
+        let (svc, _tmp) = service().await;
+        shadowed_owns_fixture(&svc).await;
+
+        node(&svc, "thing", "shadow_thing").await;
+        node(&svc, "child", "shadow_child").await;
+        node(&svc, "base", "shadow_base").await;
+        node(&svc, "base2", "shadow_base").await;
+
+        svc.create_relationship("child", "owns", "thing", json!({}))
+            .await
+            .unwrap();
+        let created = svc
+            .create_relationship("base", "owns", "thing", json!({}))
+            .await
+            .unwrap();
+        assert!(
+            created.replaced.is_empty(),
+            "the child's edge belongs to the shadowing declaration, not base's: {:?}",
+            created.replaced
+        );
+        assert!(svc
+            .store()
+            .relationship_exists("child", "thing", "owns")
+            .await
+            .unwrap());
+
+        // Same-declaration edges are still replaced.
+        let replaced = svc
+            .create_relationship("base2", "owns", "thing", json!({}))
+            .await
+            .unwrap();
+        assert_eq!(replaced.replaced.len(), 1);
+        assert_eq!(replaced.replaced[0].source_id, "base");
+        assert!(svc
+            .store()
+            .relationship_exists("child", "thing", "owns")
+            .await
+            .unwrap());
+    }
+
+    /// Same ownership-equality scoping on the merge path
+    /// (`evict_reverse_collisions` re-pointing): merging thing `lost` into
+    /// `kept` re-points `base -> lost` onto `kept`, which already holds
+    /// `child -> kept`. Those belong to different declarations, so neither is
+    /// evicted.
+    #[tokio::test]
+    async fn merge_repoint_ignores_edges_owned_by_a_shadowing_declaration() {
+        let (svc, _tmp) = service().await;
+        shadowed_owns_fixture(&svc).await;
+        node(&svc, "kept", "shadow_thing").await;
+        node(&svc, "lost", "shadow_thing").await;
+        node(&svc, "child", "shadow_child").await;
+        node(&svc, "base", "shadow_base").await;
+        svc.create_relationship("child", "owns", "kept", json!({}))
+            .await
+            .unwrap();
+        svc.create_relationship("base", "owns", "lost", json!({}))
+            .await
+            .unwrap();
+
+        let outcome = svc.merge_nodes("kept", "lost", None).await.unwrap();
+        assert_eq!(outcome.edges_dropped, 0, "{outcome:?}");
+        assert_eq!(outcome.edges_repointed, 1, "{outcome:?}");
+        assert!(svc
+            .store()
+            .relationship_exists("child", "kept", "owns")
+            .await
+            .unwrap());
+        assert!(svc
+            .store()
+            .relationship_exists("base", "kept", "owns")
+            .await
+            .unwrap());
     }
 
     #[tokio::test]
