@@ -395,7 +395,7 @@ describe('TauriSyncListener', () => {
     it('refreshes the AI chats list when background titling updates a chat via node:updated', async () => {
       // node:updated's payload never carries nodeType (see NodeEventData) — the
       // refresh must be gated on the *fetched* node's type, not the event
-      // payload, or this case (the actual #2221 failure scenario) can't work
+      // payload, or this case (the actual failure scenario) can't work
       // at all.
       const titled = mockAiChatNode('chat-2', 'Quarterly Planning');
       registerMockNode(titled);

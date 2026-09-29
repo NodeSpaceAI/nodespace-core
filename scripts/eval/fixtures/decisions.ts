@@ -388,7 +388,7 @@ const FIXTURES: DecisionScenario[] = [
   // ("example of an existing type" vs "a kind of thing the user hasn't stored
   // before"), and retrieval still led with Node Creation for the second
   // scenario below during development. So these score embedding similarity,
-  // not instruction quality — the same class as ADR-038 Finding 4 and #1980.
+  // not instruction quality — the same class as ADR-038 Finding 4.
   {
     id: "skill-type-request-direct",
     scenario: "Skill: an explicit type request routes to Schema Creation",

@@ -1528,7 +1528,7 @@ export async function runEval(fixture: EvalFixture): Promise<never> {
   // Reported separately from `excluded`: both leave the scored set, but an
   // empty generation is an inference bug and this is a ROUTING miss. A reader
   // seeing a shrunken denominator needs to know which one they are looking at,
-  // and #2240/#2254 are the reason the distinction is worth a line.
+  // and past confusion between the two is the reason the distinction is worth a line.
   const toolNotOffered = reps.reduce(
     (n, r) => n + (r.summary.excludedToolNotOffered ?? 0),
     0,

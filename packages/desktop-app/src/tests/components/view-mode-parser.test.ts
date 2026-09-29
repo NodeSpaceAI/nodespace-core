@@ -1,5 +1,5 @@
 /**
- * Real parse-path coverage for the view-mode renderer (#1987 follow-up to #348).
+ * Real parse-path coverage for the view-mode renderer.
  *
  * Exercises the ACTUAL parser (`parseContent` + its token walk), not a simplified
  * re-implementation — so a routing regression (e.g. a bare `[[id]]` no longer

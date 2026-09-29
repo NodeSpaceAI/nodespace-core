@@ -79,8 +79,8 @@ const PROJECT_SCHEMA: SchemaNode = {
         { value: 'cancelled', label: 'Cancelled' }
       ],
       // protection: Core + extensible: true, matching core_schemas.rs exactly — this
-      // schema is meant to mirror the real one field-for-field, and #2132's planned
-      // protection-level filtering work needs a faithful fixture to test against.
+      // schema is meant to mirror the real one field-for-field, and protection-level
+      // filtering work needs a faithful fixture to test against.
       { required: true, default: 'planning', protection: 'core', extensible: true }
     ),
     enumField(

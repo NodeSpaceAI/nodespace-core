@@ -202,7 +202,7 @@ describe('pane-content daemon-reconnect hydration', () => {
     // considers this node's cache entry possibly-stale, because live updates
     // could have been missed for it while the connection was down — even
     // though the node was already present before the outage. This is the
-    // #1979 repro: a chat node cached before a daemon restart rendered
+    // failing case: a chat node cached before a daemon restart rendered
     // permanently empty/stale afterward because presence alone was trusted
     // forever, with no re-confirmation against the backend.
     h.staleIds.add(NODE_ID);

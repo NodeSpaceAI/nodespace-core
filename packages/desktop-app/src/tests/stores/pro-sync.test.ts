@@ -50,7 +50,7 @@ function db(id: string, overrides: Partial<DatabaseInfo> = {}): DatabaseInfo {
   };
 }
 
-describe('ProSync store — signed-in identity + sign-out (#199 S6)', () => {
+describe('ProSync store — signed-in identity + sign-out', () => {
   beforeEach(async () => {
     vi.clearAllMocks();
     mockInvoke.mockResolvedValue('pro');

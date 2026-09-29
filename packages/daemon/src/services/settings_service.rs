@@ -1447,7 +1447,7 @@ mod tests {
         );
     }
 
-    /// The bug this test guards against (found in code review on #1830): a
+    /// The bug this test guards against (found in code review): a
     /// single OpenAI-compat config can discover several served models
     /// (`openai-compat:<uuid>:<model>` — see `parse_openai_compat_id`), and a
     /// scalar verdict field would let one model's probe result leak onto

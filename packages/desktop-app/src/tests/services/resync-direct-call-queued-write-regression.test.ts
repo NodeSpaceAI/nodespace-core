@@ -29,7 +29,7 @@
  * anyway, but ONLY because the failing write's own `executingOperations`
  * entry hasn't cleared yet (self-referential — confirmed true even in an
  * isolated failure with nothing else queued at all, which is exactly the
- * false-positive #2066's review caught when this was first tried).
+ * false-positive that review caught when this was first tried).
  *
  * The fix: capture `PersistenceCoordinator.isQueued(nodeId)` in the OCC
  * handler BEFORE calling `clearQueued()`, and thread that captured boolean
@@ -63,7 +63,7 @@ const dbSource = { type: 'database' as const, reason: 'initial-load' };
 const viewerSource = { type: 'viewer' as const, viewerId: 'pane-1' };
 
 /** A VERSION_CONFLICT error with NO embedded current_node — forces the
- * fallback (resyncNodeFromServer) path rather than #2068's direct-hydration
+ * fallback (resyncNodeFromServer) path rather than the direct-hydration
  * path, which is what this issue is about. */
 const makeVersionConflictErrorNoCurrentNode = (nodeId: string) => ({
   message: `Version conflict on ${nodeId}`,
@@ -176,7 +176,7 @@ describe('resyncNodeFromServer direct call — queued-write regression', () => {
 
   it(
     'still applies the resync normally for an isolated OCC failure with nothing ' +
-      'else queued (no false-positive skip — regression check for the #2066 round-1 finding)',
+      'else queued (no false-positive skip — regression check for the isolated-failure false positive)',
     async () => {
       const nodeId = 'isolated-failure-1';
       store.setNode(makeNode(nodeId, 'seed', 1), dbSource);

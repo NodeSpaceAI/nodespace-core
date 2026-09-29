@@ -1024,7 +1024,8 @@ mod tests {
     /// and — critically — the `rowan` -> `search index corruption` mapping stay
     /// out. Knowing that an `incident_report` type exists with an `on_call`
     /// field tells the model how to ASK; it does not tell it which incident to
-    /// update. The read is still forced, which is the property #2248 asked for.
+    /// update. The read is still forced, which is the property the scenario needs (a forced
+    /// read before the update).
     ///
     /// SCOPE OF EACH HALF, because overstating exactly this is what went wrong
     /// three times in this area and a reader deserves to know which assertions
@@ -1092,7 +1093,7 @@ mod tests {
                 "'{absent}' is INSTANCE data and must never reach workspace \
                  context — if it does, scenario 13's referent is directly \
                  matchable from the system prompt and the scenario has \
-                 degraded into the defect #2242 and #2250 each found: {rendered}"
+                 degraded into the defect earlier scenarios 6 and 12 each had: {rendered}"
             );
         }
     }

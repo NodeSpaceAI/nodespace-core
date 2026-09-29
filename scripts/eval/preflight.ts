@@ -485,7 +485,7 @@ function readServedDatabasePath(env: EvalEnv): string {
  * packages/daemon/src/services/assembly.rs, which seeds
  * `PromptAssembler::seed_agent_guidance_nodes()` (root_node_type
  * "agent-guidance" — NOT "prompt"; the type was renamed under
- * ADR-064/#1699's markdown-children refactor) and `seed_skill_nodes()`
+ * ADR-064's markdown-children refactor) and `seed_skill_nodes()`
  * (root_node_type "skill"). Update here if a seeded root type changes again.
  */
 const SEEDED_GUIDANCE_TYPES = ["agent-guidance", "skill"];

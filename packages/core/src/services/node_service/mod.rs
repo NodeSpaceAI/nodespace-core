@@ -11351,7 +11351,7 @@ mod tests {
         );
     }
 
-    /// Regression test for #2006: unlike the generic update path
+    /// Regression test: unlike the generic update path
     /// (`update_with_version_check_returning_node`), `NodeService::update_task_node`
     /// never recomputed the indexed `title` column when `content` changed — it
     /// delegated straight to `SqliteStore::update_task_node`, which only ever wrote
@@ -11612,9 +11612,9 @@ mod tests {
             .unwrap();
     }
 
-    /// #2014: with a `title_template` set on the task schema, a property-only update
-    /// (no `content`) must recompute the indexed title from the template — the
-    /// #2006 content-only guard would leave it stale.
+    /// With a `title_template` set on the task schema, a property-only update
+    /// (no `content`) must recompute the indexed title from the template — a
+    /// content-only guard would leave it stale.
     #[tokio::test]
     async fn update_task_node_property_only_recomputes_templated_title() {
         use crate::models::{Priority, TaskNodeUpdate};

@@ -364,7 +364,7 @@ fn cycle_rollover_play() -> PlayStep {
 /// Refuse to close an issue that still has open sub-issues.
 ///
 /// Invariant class, so it runs synchronously inside the triggering
-/// transaction and can veto the write (#2642/#2643). A reactive rule could
+/// transaction and can veto the write (ADR-060). A reactive rule could
 /// only complain after the fact.
 ///
 /// Sub-issues are ordinary `has_child` children — no schema models them, and
@@ -408,8 +408,8 @@ fn sub_issue_completion_gate() -> PlayStep {
 
 /// Refuse to start an issue whose blockers are unresolved.
 ///
-/// Uses the `blocked_by` reverse edge (#2637 declares the pair on `task`;
-/// #2641 made reverse traversal resolvable in conditions). Fires on the
+/// Uses the `blocked_by` reverse edge (the `task` schema declares the pair, and
+/// conditions can traverse reverse edges). Fires on the
 /// transition into `in_progress` specifically — an issue may sit in `backlog`
 /// or `triage` behind a blocker quite legitimately.
 fn blocker_gate() -> PlayStep {

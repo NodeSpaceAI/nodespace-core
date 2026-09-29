@@ -2137,7 +2137,7 @@ async fn reactive_update_rule_still_fires_asynchronously_post_commit() -> Result
 // unlike the generic tests above) since `update_task_node` requires the
 // target node's `node_type` to literally be `"task"` (see
 // `NodeService::validate_task_status` and `SqliteStore::node_to_task_node`).
-// Triggers are scoped to `task.status` — the exact property ADR-060/#2642's
+// Triggers are scoped to `task.status` — the exact property ADR-060's
 // own motivating example turns on ("reject this status change to
 // done/in_progress while sub-issues are open") — and augmenting actions
 // stamp `priority`, a real built-in task field, rather than an invented one:
@@ -2223,7 +2223,7 @@ async fn invariant_task_update_rule_executes_synchronously_in_same_transaction()
     Ok(())
 }
 
-/// The motivating example from ADR-060/#2642 itself: a reject firing on a
+/// The motivating example from ADR-060 itself: a reject firing on a
 /// `task.status` transition to `done` prevents the triggering
 /// `update_task_node` call from taking effect at all — the node's status
 /// stays at its pre-update value, not a mix of "some fields updated, some

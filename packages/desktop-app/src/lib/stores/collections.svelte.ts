@@ -646,7 +646,7 @@ export function buildCollectionsTree(
   // member_of for visibility — filtering it as a parent (above) un-nests its
   // children, and dropping it here hides the root node, which otherwise renders
   // as a visible top-level collection whenever it has direct content members
-  // (the #1967 symptom on the per-install minted "My Workspace" root; the legacy
+  // (the symptom on the per-install minted "My Workspace" root; the legacy
   // default root was hidden the same way).
   const topLevel = collections
     .filter((c) => c.id !== rootCollectionId && !childIds.has(c.id))

@@ -2432,7 +2432,7 @@ export class SharedNodeStore {
                     // on a node the user is actively editing — where the
                     // daemon's response happens to embed `current_node` —
                     // would silently clobber the optimistic, actively-edited
-                    // content, exactly the class of bug #2066 closed for the
+                    // content, exactly the class of bug already closed for the
                     // fallback (`resyncNodeFromServer`) path.
                     //
                     // `hasPending` here is `hadQueuedWrite` (captured above,

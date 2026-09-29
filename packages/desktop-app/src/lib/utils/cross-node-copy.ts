@@ -1,5 +1,5 @@
 /**
- * Cross-node copy (#278 Part 2).
+ * Cross-node copy.
  *
  * A page of nodes is ordinary DOM — only the focused node is a textarea, the
  * rest are plain view `<div>`s (see base-node.svelte) — so a text selection can
