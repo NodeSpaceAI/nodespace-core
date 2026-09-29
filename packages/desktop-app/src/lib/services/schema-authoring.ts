@@ -11,6 +11,7 @@
 import { v4 as uuidv4 } from 'uuid';
 import { backendAdapter } from '$lib/services/backend-adapter';
 import { humanizeSchemaId } from '$lib/plugins/schema-plugin-loader';
+import { getDefaultAiChatModelProperties } from '$lib/services/ai-chat-default-model';
 import { UNTITLED_CHAT_TITLE } from '$lib/utils/ai-chat-title';
 import type { Node } from '$lib/types';
 
@@ -46,7 +47,8 @@ const SEED_CONTENT_OVERRIDES = new Map<string, string>([['ai-chat', UNTITLED_CHA
  * Mint a fresh instance of the given schema type and return the created node.
  *
  * The node is created as a root (`parentId: null`) with no properties; the
- * schema-driven form UI fills in the fields once the node is opened. `nodeType`
+ * schema-driven form UI fills in the fields once the node is opened. An
+ * `ai-chat` is the exception: it is seeded with the user's default model, if any. `nodeType`
  * is the schema's id — the same key `QueryNodeViewer` queries on — so the new
  * node matches that type's result list. Body-content types start empty ("start
  * typing"); name-as-content Core types (see `NAME_AS_CONTENT_TYPES`) seed
@@ -58,11 +60,15 @@ export async function createSchemaInstance(typeId: string): Promise<Node> {
   const content =
     SEED_CONTENT_OVERRIDES.get(typeId) ??
     (NAME_AS_CONTENT_TYPES.has(typeId) ? `Untitled ${humanizeSchemaId(typeId)}` : '');
+  // A new ai-chat starts on the user's default model, written at creation so
+  // the node records it from the first moment (no later write to race an echo).
+  const properties: Record<string, unknown> =
+    typeId === 'ai-chat' ? { ...getDefaultAiChatModelProperties() } : {};
   await backendAdapter.createNode({
     id: newId,
     nodeType: typeId,
     content,
-    properties: {},
+    properties,
     mentions: [],
     parentId: null,
   });
