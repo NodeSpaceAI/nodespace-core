@@ -310,3 +310,18 @@ export function shouldShowCreatedNode(node: Node, gate: CreatedNodeGate): boolea
   if (gate.targetType !== '*' && node.nodeType !== gate.targetType) return false;
   return (gate.definition.filters ?? []).every((filter) => matchesFilter(node, filter));
 }
+
+/** Tooltip on the disabled Kanban tab when the type has nothing to group by. */
+export const KANBAN_UNAVAILABLE_REASON =
+  'No properties to build a Kanban board from. Kanban groups by a choice (enum) property.';
+
+/**
+ * The view actually shown for a requested one: Kanban needs a groupable
+ * property, so a stored/saved `kanban` on a type without one opens in List.
+ */
+export function resolveEffectiveView(
+  requested: QueryViewKind,
+  kanbanAvailable: boolean
+): QueryViewKind {
+  return requested === 'kanban' && !kanbanAvailable ? 'list' : requested;
+}

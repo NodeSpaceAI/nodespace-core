@@ -38,6 +38,12 @@ vi.mock('$lib/services/backend-adapter', () => ({
   }
 }));
 
+vi.mock('$lib/utils/pin-node-reachability', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('$lib/utils/pin-node-reachability')>();
+  return { ...actual, pinReachableNodes: vi.fn(actual.pinReachableNodes) };
+});
+
+import { pinReachableNodes } from '$lib/utils/pin-node-reachability';
 import QueryNodeViewer from '$lib/components/viewers/query-node-viewer.svelte';
 import { sharedNodeStore } from '$lib/services/shared-node-store.svelte';
 
@@ -106,19 +112,24 @@ describe('QueryNodeViewer — store eviction', () => {
     // Cached in the store (previous database) but not part of this view's results.
     sharedNodeStore.setNode(widget('w-unloaded'), seed);
 
-    const { getByText } = render(QueryNodeViewer, {
+    render(QueryNodeViewer, {
       props: { nodeId: QUERY_ID, onNodeIdChange: () => {} }
     });
-    await waitFor(() => expect(getByText('1 item')).toBeTruthy());
+    // The viewer pins exactly its result set, so the pinned ids are its loaded ids.
+    const loadedIds = () => {
+      const calls = vi.mocked(pinReachableNodes).mock.calls;
+      return [...((calls[calls.length - 1]?.[1] as string[] | undefined) ?? [])].sort();
+    };
+    await waitFor(() => expect(loadedIds()).toEqual(['w1']));
 
     // Positive control: a genuinely new matching node IS live-appended, so the
     // assertion below is not passing merely because the handler never fires.
     sharedNodeStore.setNode(widget('w-created'), seed);
-    await waitFor(() => expect(getByText('2 items')).toBeTruthy());
+    await waitFor(() => expect(loadedIds()).toEqual(['w-created', 'w1']));
 
     sharedNodeStore.clearAll();
     await Promise.resolve();
 
-    expect(getByText('2 items')).toBeTruthy();
+    expect(loadedIds()).toEqual(['w-created', 'w1']);
   });
 });

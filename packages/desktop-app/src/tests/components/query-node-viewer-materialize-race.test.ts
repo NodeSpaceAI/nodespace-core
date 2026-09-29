@@ -1,9 +1,8 @@
 /**
  * QueryNodeViewer — materialize-then-remount race.
  *
- * Clicking a view tab (or changing the Kanban group-by) on the default,
- * unsaved type view materializes a real `nodeType: 'query'` node and reroutes
- * the tab to it. pane-content.svelte remounts the viewer against the new
+ * Renaming the default, unsaved type view materializes a real
+ * `nodeType: 'query'` node and reroutes the tab to it. pane-content.svelte remounts the viewer against the new
  * nodeId ({#key ...content.nodeId}), so the freshly mounted instance starts
  * from its own state defaults (activeView: 'table') and must reload before it
  * knows any better.
@@ -108,6 +107,7 @@ function materializedQueryNode(id: string): QueryNode & Node {
 
 describe('QueryNodeViewer — materialize race', () => {
   beforeEach(() => {
+    localStorage.clear();
     sharedNodeStore.clearAll();
     vi.clearAllMocks();
     mockGetSchema.mockResolvedValue(schema());
@@ -120,7 +120,18 @@ describe('QueryNodeViewer — materialize race', () => {
     sharedNodeStore.clearAll();
   });
 
-  it('clicking Kanban on the default view materializes a query node and reroutes the tab', async () => {
+  const widgetRow = (id: string) => ({
+    id,
+    nodeType: SCHEMA_ID,
+    content: 'Widget One',
+    createdAt: '2026-01-01T00:00:00Z',
+    modifiedAt: '2026-01-01T00:00:00Z',
+    version: 1,
+    properties: { status: 'open' },
+    mentions: []
+  });
+
+  it('renaming the default view materializes a query node and reroutes the tab', async () => {
     mockGetNode.mockResolvedValue(null); // fresh default-view load: no query node exists yet
     mockCreateNode.mockImplementation(async (input: { id: string }) => ({
       id: input.id,
@@ -128,7 +139,7 @@ describe('QueryNodeViewer — materialize race', () => {
     }));
 
     let reroutedTo = '';
-    const { getByRole } = render(QueryNodeViewer, {
+    const { getByLabelText } = render(QueryNodeViewer, {
       props: {
         nodeId: SCHEMA_ID,
         onNodeIdChange: (id: string) => {
@@ -138,12 +149,14 @@ describe('QueryNodeViewer — materialize race', () => {
     });
 
     await waitFor(() => expect(mockGetSchema).toHaveBeenCalledWith(SCHEMA_ID));
-
     // materializeQuery's own getNode(newId) read-back, right after create —
     // this is what seeds sharedNodeStore before the reroute.
     mockGetNode.mockImplementation(async (id: string) => materializedQueryNode(id));
 
-    await fireEvent.click(getByRole('button', { name: 'Kanban' }));
+    const title = getByLabelText('Query name') as HTMLInputElement;
+    await fireEvent.focus(title);
+    await fireEvent.input(title, { target: { value: 'My Board' } });
+    await fireEvent.blur(title);
 
     await waitFor(() => expect(mockCreateNode).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(reroutedTo).toBeTruthy());
@@ -151,9 +164,11 @@ describe('QueryNodeViewer — materialize race', () => {
 
     // Created under the query schema's storage keys, with one target key
     // holding the schema's own type — never the schema default '*'.
-    const { properties } = mockCreateNode.mock.calls[0][0] as {
+    const { properties, content } = mockCreateNode.mock.calls[0][0] as {
       properties: Record<string, unknown>;
+      content: string;
     };
+    expect(content).toBe('My Board');
     expect(Object.keys(properties).sort()).toEqual([
       'filters',
       'generated_by',
@@ -161,7 +176,158 @@ describe('QueryNodeViewer — materialize race', () => {
       'view_config'
     ]);
     expect(properties.target_type).toBe(SCHEMA_ID);
-    expect(properties.view_config).toEqual({ lastView: 'kanban' });
+  });
+
+  it('switching view or group-by on the default view creates no node, keeps the title "Default", and persists per type', async () => {
+    mockGetNode.mockResolvedValue(null);
+    mockQueryNodes.mockResolvedValue([widgetRow('w1')]);
+
+    const { getByRole, getByLabelText, unmount } = render(QueryNodeViewer, {
+      props: { nodeId: SCHEMA_ID, onNodeIdChange: () => {} }
+    });
+    await waitFor(() => expect(mockGetSchema).toHaveBeenCalledWith(SCHEMA_ID));
+    await waitFor(() => expect(getByRole('button', { name: '+ New' })).toBeTruthy());
+
+    await fireEvent.click(getByRole('button', { name: 'List' }));
+    expect(getByRole('button', { name: 'List' }).getAttribute('aria-pressed')).toBe('true');
+    await fireEvent.click(getByRole('button', { name: 'Kanban' }));
+    expect(getByRole('button', { name: 'Kanban' }).getAttribute('aria-pressed')).toBe('true');
+    expect((getByLabelText('Query name') as HTMLInputElement).value).toBe('Default');
+
+    expect(mockCreateNode).not.toHaveBeenCalled();
+    expect(mockUpdateQueryNode).not.toHaveBeenCalled();
+
+    await fireEvent.change(getByLabelText('Group by'), { target: { value: 'status' } });
+    expect(mockCreateNode).not.toHaveBeenCalled();
+
+    // A fresh mount of the same type restores the choice.
+    unmount();
+    const remounted = render(QueryNodeViewer, {
+      props: { nodeId: SCHEMA_ID, onNodeIdChange: () => {} }
+    });
+    await waitFor(() => {
+      expect(remounted.getByRole('button', { name: 'Kanban' }).getAttribute('aria-pressed')).toBe(
+        'true'
+      );
+    });
+    await waitFor(() => {
+      expect((remounted.getByLabelText('Group by') as HTMLSelectElement).value).toBe('status');
+    });
+    expect((remounted.getByLabelText('Query name') as HTMLInputElement).value).toBe('Default');
+    expect(mockCreateNode).not.toHaveBeenCalled();
+  });
+
+  it('clicking the default title starts from empty so typing does not append to "Default"', async () => {
+    mockGetNode.mockResolvedValue(null);
+    const { getByLabelText } = render(QueryNodeViewer, {
+      props: { nodeId: SCHEMA_ID, onNodeIdChange: () => {} }
+    });
+    await waitFor(() => expect(mockGetSchema).toHaveBeenCalledWith(SCHEMA_ID));
+    const title = getByLabelText('Query name') as unknown as { value: string };
+    await fireEvent.focus(title as unknown as Element);
+    expect(title.value).toBe('');
+  });
+
+  it('Escape cancels a title edit without creating a node', async () => {
+    mockGetNode.mockResolvedValue(null);
+    const { getByLabelText } = render(QueryNodeViewer, {
+      props: { nodeId: SCHEMA_ID, onNodeIdChange: () => {} }
+    });
+    await waitFor(() => expect(mockGetSchema).toHaveBeenCalledWith(SCHEMA_ID));
+    const title = getByLabelText('Query name') as unknown as HTMLInputElement;
+    title.focus();
+    await new Promise((resolve) => setTimeout(resolve, 0)); // let the focus event settle
+    await fireEvent.input(title, { target: { value: 'Discard me' } });
+    await fireEvent.keyDown(title, { key: 'Escape' });
+    await waitFor(() => expect(document.activeElement).not.toBe(title));
+    expect(mockCreateNode).not.toHaveBeenCalled();
+    expect(title.value).toBe('Default');
+  });
+
+  it('Enter commits a title edit', async () => {
+    mockGetNode.mockResolvedValue(null);
+    mockCreateNode.mockImplementation(async (input: { id: string }) => ({
+      id: input.id,
+      placement: null
+    }));
+    mockGetNode.mockImplementation(async (id: string) => (id === SCHEMA_ID ? null : materializedQueryNode(id)));
+    const { getByLabelText, getByRole } = render(QueryNodeViewer, {
+      props: { nodeId: SCHEMA_ID, onNodeIdChange: () => {} }
+    });
+    await waitFor(() => expect(getByRole('button', { name: '+ New' })).toBeTruthy());
+    const title = getByLabelText('Query name') as unknown as HTMLInputElement;
+    title.focus();
+    await new Promise((resolve) => setTimeout(resolve, 0)); // let the focus event settle
+    await fireEvent.input(title, { target: { value: 'Sprint' } });
+    await fireEvent.keyDown(title, { key: 'Enter' });
+    await waitFor(() => expect(mockCreateNode).toHaveBeenCalledTimes(1));
+    expect((mockCreateNode.mock.calls[0][0] as { content: string }).content).toBe('Sprint');
+  });
+
+  it('blurring the default title without changing it is not a rename', async () => {
+    mockGetNode.mockResolvedValue(null);
+    const { getByLabelText } = render(QueryNodeViewer, {
+      props: { nodeId: SCHEMA_ID, onNodeIdChange: () => {} }
+    });
+    await waitFor(() => expect(mockGetSchema).toHaveBeenCalledWith(SCHEMA_ID));
+    const title = getByLabelText('Query name');
+    await fireEvent.focus(title);
+    await fireEvent.blur(title);
+    expect(mockCreateNode).not.toHaveBeenCalled();
+  });
+
+  it('shows no item-count pill and no Edit Query button', async () => {
+    mockGetNode.mockResolvedValue(null);
+    mockQueryNodes.mockResolvedValue([widgetRow('w1')]);
+    const { queryByText, queryByRole, getByRole } = render(QueryNodeViewer, {
+      props: { nodeId: SCHEMA_ID, onNodeIdChange: () => {} }
+    });
+    await waitFor(() => expect(getByRole('button', { name: '+ New' })).toBeTruthy());
+    expect(queryByText(/^\d+ items?$/)).toBeNull();
+    expect(queryByRole('button', { name: 'Edit Query' })).toBeNull();
+  });
+
+  describe('Kanban gating', () => {
+    const noEnumSchema = (): SchemaNode => ({ ...schema(), fields: [] });
+
+    it('disables the Kanban tab with an explanation when the type has no enum field', async () => {
+      mockGetNode.mockResolvedValue(null);
+      mockGetSchema.mockResolvedValue(noEnumSchema());
+      const { getByRole, container } = render(QueryNodeViewer, {
+        props: { nodeId: SCHEMA_ID, onNodeIdChange: () => {} }
+      });
+      await waitFor(() => expect(getByRole('button', { name: '+ New' })).toBeTruthy());
+      const kanban = getByRole('button', { name: 'Kanban' }) as unknown as { disabled: boolean };
+      expect(kanban.disabled).toBe(true);
+      expect(container.querySelector('.view-tab-wrap')?.getAttribute('title')).toContain(
+        'No properties to build a Kanban board from'
+      );
+    });
+
+    it('enables the Kanban tab when an enum field exists', async () => {
+      mockGetNode.mockResolvedValue(null);
+      const { getByRole } = render(QueryNodeViewer, {
+        props: { nodeId: SCHEMA_ID, onNodeIdChange: () => {} }
+      });
+      await waitFor(() => expect(getByRole('button', { name: '+ New' })).toBeTruthy());
+      expect((getByRole('button', { name: 'Kanban' }) as unknown as { disabled: boolean }).disabled).toBe(false);
+    });
+
+    it('a saved query with lastView kanban on a type with no enum field opens in List', async () => {
+      const savedId = 'saved-no-enum';
+      mockGetSchema.mockResolvedValue(noEnumSchema());
+      mockGetNode.mockResolvedValue({
+        ...materializedQueryNode(savedId),
+        content: 'Board',
+        viewConfig: { lastView: 'kanban' }
+      });
+      const { getByRole } = render(QueryNodeViewer, {
+        props: { nodeId: savedId, onNodeIdChange: () => {} }
+      });
+      await waitFor(() => expect(getByRole('button', { name: '+ New' })).toBeTruthy());
+      expect(getByRole('button', { name: 'List' }).getAttribute('aria-pressed')).toBe('true');
+      expect(getByRole('button', { name: 'Kanban' }).getAttribute('aria-pressed')).toBe('false');
+    });
   });
 
   it('the remounted instance restores Kanban from sharedNodeStore even if the network fetch would race behind the create', async () => {
@@ -193,65 +359,6 @@ describe('QueryNodeViewer — materialize race', () => {
     expect(mockGetNode).not.toHaveBeenCalled();
   });
 
-  it('choosing a Kanban group-by field on the default view materializes with that group-by and restores it on remount', async () => {
-    mockGetNode.mockResolvedValue(null);
-    mockCreateNode.mockImplementation(async (input: { id: string }) => ({
-      id: input.id,
-      placement: null
-    }));
-
-    let reroutedTo = '';
-    const { getByRole } = render(QueryNodeViewer, {
-      props: { nodeId: SCHEMA_ID, onNodeIdChange: (id: string) => (reroutedTo = id) }
-    });
-
-    await waitFor(() => expect(mockGetSchema).toHaveBeenCalledWith(SCHEMA_ID));
-
-    // First switch to Kanban (no group-by chosen yet — no board renders).
-    mockGetNode.mockImplementation(async (id: string) => materializedQueryNode(id));
-    await fireEvent.click(getByRole('button', { name: 'Kanban' }));
-    await waitFor(() => expect(reroutedTo).toBeTruthy());
-
-    const materializedId = reroutedTo;
-    const groupByChanged = {
-      ...materializedQueryNode(materializedId),
-      viewConfig: { lastView: 'kanban', kanban: { groupBy: 'status' } }
-    };
-
-    // Remount against the materialized id (as pane-content would), with the
-    // network unavailable — sharedNodeStore must already carry the node the
-    // group-by pick materialized, groupBy included.
-    sharedNodeStore.setNode(groupByChanged, { type: 'database', reason: 'test seed' });
-    mockGetNode.mockRejectedValue(new Error('network should not be needed'));
-    // The remount lands on the saved branch, which executes the definition via
-    // executeQuery; queryNodes is stubbed too so the assertion is about the
-    // restored group-by, not about which fetch the branch happened to take.
-    const widgets = [
-      {
-        id: 'w1',
-        nodeType: SCHEMA_ID,
-        content: 'Widget One',
-        createdAt: '2026-01-01T00:00:00Z',
-        modifiedAt: '2026-01-01T00:00:00Z',
-        version: 1,
-        properties: { status: 'open' },
-        mentions: []
-      }
-    ];
-    mockQueryNodes.mockResolvedValue(widgets);
-    mockExecuteQuery.mockResolvedValue(widgets);
-
-    cleanup();
-    const { getByLabelText } = render(QueryNodeViewer, {
-      props: { nodeId: materializedId, onNodeIdChange: () => {} }
-    });
-
-    await waitFor(() => {
-      const select = getByLabelText('Group by') as HTMLSelectElement;
-      expect(select.value).toBe('status');
-    });
-  });
-
   it('does not disturb an already-saved query switching views (no regression)', async () => {
     const savedId = 'saved-query-1';
     const saved = {
@@ -272,9 +379,8 @@ describe('QueryNodeViewer — materialize race', () => {
       props: { nodeId: savedId, onNodeIdChange: () => {} }
     });
 
-    await waitFor(() => {
-      expect(getByRole('button', { name: 'Table' }).getAttribute('aria-pressed')).toBe('true');
-    });
+    await waitFor(() => expect(getByRole('button', { name: '+ New' })).toBeTruthy());
+    expect(getByRole('button', { name: 'Table' }).getAttribute('aria-pressed')).toBe('true');
 
     await fireEvent.click(getByRole('button', { name: 'Kanban' }));
 

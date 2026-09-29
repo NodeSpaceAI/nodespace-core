@@ -10,6 +10,7 @@
   import { onMount, onDestroy, getContext, tick } from 'svelte';
   import { htmlToMarkdown } from '$lib/utils/markdown.js';
   import BacklinksPanel from '$lib/design/components/backlinks-panel.svelte';
+  import HeaderInput from '$lib/design/components/header-input.svelte';
   import GenericSchemaForm from '$lib/components/schema/generic-schema-form.svelte';
   import NodeRow from '$lib/design/components/node-row.svelte';
   import { createLogger } from '$lib/utils/logger';
@@ -1276,14 +1277,10 @@
   {:else}
     <!-- Default editable header (no custom snippet provided) -->
     <div class="viewer-editable-header">
-      <input
-        type="text"
+      <HeaderInput
         id="viewer-header-{paneId}-{nodeId ?? 'default'}"
-        class="header-input"
-        class:header-input--readonly={schemaFormLoader.hasTitleTemplate}
         value={isHeaderBeingEdited ? currentViewedNode?.content || '' : headerDisplayValue}
-        oninput={(e) =>
-          !schemaFormLoader.hasTitleTemplate && handleHeaderInput(e.currentTarget.value)}
+        oninput={(value) => !schemaFormLoader.hasTitleTemplate && handleHeaderInput(value)}
         onfocus={() => {
           if (!schemaFormLoader.hasTitleTemplate) isHeaderBeingEdited = true;
         }}
@@ -1292,7 +1289,7 @@
         placeholder={schemaFormLoader.hasTitleTemplate
           ? (schemaFormLoader.genericSchema?.titleTemplate ?? 'Untitled')
           : 'Untitled'}
-        aria-label="Page title"
+        ariaLabel="Page title"
       />
     </div>
   {/if}
@@ -1378,33 +1375,6 @@
     padding: 1rem;
     border-bottom: 1px solid hsl(var(--border));
     background: hsl(var(--background));
-  }
-
-  .header-input {
-    width: 100%;
-    font-size: 2rem;
-    font-weight: 500;
-    color: hsl(var(--muted-foreground));
-    background: transparent;
-    border: none;
-    outline: none;
-    padding: 0;
-    margin: 0;
-    font-family: inherit;
-  }
-
-  .header-input::placeholder {
-    color: hsl(var(--muted-foreground) / 0.5);
-  }
-
-  .header-input--readonly {
-    cursor: default;
-    color: hsl(var(--foreground));
-  }
-
-  .header-input--readonly::placeholder {
-    color: hsl(var(--muted-foreground) / 0.5);
-    font-style: italic;
   }
 
   /* Custom header section - fixed at top, doesn't scroll */
