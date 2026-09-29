@@ -280,6 +280,16 @@ message Member {
 }
 message ListMembersResponse {
   repeated Member members = 1;
+  // Whether the open-collection stakeholder limit (ADR-037 §2a) lets the CALLER
+  // add another person, change their tier or create an invite: true on a
+  // restricted collection (its admin rule governs there), and on an open one only
+  // for a stakeholder — its creator or an active tenant owner/tenant_admin. A
+  // client offers those controls when the caller is a collection admin AND this
+  // is true, which is the server's rule on both kinds. Unset when unknown (the
+  // tenant schema predates the check, or it failed): a client must then not hide
+  // anything on its account and rely on the server's refusal instead. Advisory
+  // only; the tenant schema enforces the rule.
+  optional bool stakeholder_gate_allows_caller = 2;
 }
 message CreateInviteRequest {
   string collection_id = 1;

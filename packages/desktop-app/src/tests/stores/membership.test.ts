@@ -36,6 +36,11 @@ vi.mock('$lib/plugins/ui-extensions.svelte', () => ({
 
 import { membership } from '$lib/stores/membership.svelte';
 
+/** A `listMembers` result: the roster plus the caller's stakeholder gate. */
+function roster(members: { personId: string; permission: string }[], gate: boolean | null = null) {
+	return { members, stakeholderGateAllowsCaller: gate };
+}
+
 describe('MembershipStore', () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
@@ -43,16 +48,16 @@ describe('MembershipStore', () => {
 		membership.reset();
 		// Sensible defaults; individual tests override.
 		svc.currentPerson.mockResolvedValue({ personId: 'me', email: 'me@x.com' });
-		svc.listMembers.mockResolvedValue([]);
+		svc.listMembers.mockResolvedValue(roster([]));
 		svc.listInvites.mockResolvedValue([]);
 		svc.listRequests.mockResolvedValue([]);
 	});
 
 	it('loads roster, derives admin role, and fetches invites+requests for an admin', async () => {
-		svc.listMembers.mockResolvedValue([
+		svc.listMembers.mockResolvedValue(roster([
 			{ personId: 'me', permission: 'admin' },
 			{ personId: 'bob', permission: 'modify' }
-		]);
+		]));
 		svc.listInvites.mockResolvedValue([
 			{ id: 'i1', code: 'c', email: '', permission: 'modify', expiresAt: '' }
 		]);
@@ -71,7 +76,7 @@ describe('MembershipStore', () => {
 	});
 
 	it('does NOT fetch invites/requests for a non-admin', async () => {
-		svc.listMembers.mockResolvedValue([{ personId: 'me', permission: 'readOnly' }]);
+		svc.listMembers.mockResolvedValue(roster([{ personId: 'me', permission: 'readOnly' }]));
 
 		await membership.loadCollection('c1');
 
@@ -80,6 +85,18 @@ describe('MembershipStore', () => {
 		expect(svc.listInvites).not.toHaveBeenCalled();
 		expect(svc.listRequests).not.toHaveBeenCalled();
 		expect(membership.get('c1').invites).toEqual([]);
+	});
+
+	it('stores the stakeholder gate from the roster load (true / false / unknown)', async () => {
+		for (const gate of [true, false, null]) {
+			svc.listMembers.mockResolvedValue(roster([{ personId: 'me', permission: 'admin' }], gate));
+			await membership.loadCollection('c1');
+			expect(membership.get('c1').stakeholderGate).toBe(gate);
+		}
+	});
+
+	it('an unloaded collection has an unknown stakeholder gate', () => {
+		expect(membership.get('never-loaded').stakeholderGate).toBeNull();
 	});
 
 	it('is inert in community mode (never touches the service)', async () => {
@@ -174,7 +191,7 @@ describe('MembershipStore', () => {
 
 	it('currentUserRole is null when the caller identity is unknown', async () => {
 		svc.currentPerson.mockResolvedValue({ personId: '', email: '' });
-		svc.listMembers.mockResolvedValue([{ personId: 'someone', permission: 'admin' }]);
+		svc.listMembers.mockResolvedValue(roster([{ personId: 'someone', permission: 'admin' }]));
 
 		await membership.loadCollection('c1');
 
@@ -184,7 +201,7 @@ describe('MembershipStore', () => {
 	});
 
 	it('a mutation refreshes the affected collection', async () => {
-		svc.listMembers.mockResolvedValue([{ personId: 'me', permission: 'admin' }]);
+		svc.listMembers.mockResolvedValue(roster([{ personId: 'me', permission: 'admin' }]));
 		await membership.loadCollection('c1');
 		expect(svc.listMembers).toHaveBeenCalledTimes(1);
 
@@ -194,7 +211,7 @@ describe('MembershipStore', () => {
 	});
 
 	it('leaving a collection drops its cache entry', async () => {
-		svc.listMembers.mockResolvedValue([{ personId: 'me', permission: 'modify' }]);
+		svc.listMembers.mockResolvedValue(roster([{ personId: 'me', permission: 'modify' }]));
 		await membership.loadCollection('c1');
 		expect(membership.get('c1').members).toHaveLength(1);
 
@@ -204,7 +221,7 @@ describe('MembershipStore', () => {
 	});
 
 	it('reset clears cache and identity', async () => {
-		svc.listMembers.mockResolvedValue([{ personId: 'me', permission: 'admin' }]);
+		svc.listMembers.mockResolvedValue(roster([{ personId: 'me', permission: 'admin' }]));
 		await membership.loadCollection('c1');
 		expect(membership.currentPerson).not.toBeNull();
 
@@ -215,7 +232,7 @@ describe('MembershipStore', () => {
 
 	describe('invalidateForDatabaseSwitch', () => {
 		it('drops the per-collection roster cache but keeps the caller identity', async () => {
-			svc.listMembers.mockResolvedValue([{ personId: 'me', permission: 'admin' }]);
+			svc.listMembers.mockResolvedValue(roster([{ personId: 'me', permission: 'admin' }]));
 			await membership.loadCollection('c1');
 			expect(membership.get('c1').members).toHaveLength(1);
 			expect(membership.currentPerson).not.toBeNull();
