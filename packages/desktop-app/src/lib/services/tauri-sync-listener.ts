@@ -369,7 +369,7 @@ export async function initializeTauriSyncListeners(): Promise<void> {
         scheduleCollectionRefresh();
       }
 
-      // If a schema node is created, refresh the schema types sidebar
+      // If a schema node is created, refresh the node types sidebar
       if (event.payload.nodeType === 'schema') {
         scheduleSchemaRefresh();
         registerSchemaPlugin(event.payload.id).catch((err) =>

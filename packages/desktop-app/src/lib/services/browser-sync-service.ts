@@ -217,7 +217,7 @@ class BrowserSyncService {
           scheduleCollectionRefresh();
         }
 
-        // If a schema node is created, refresh the schema types sidebar
+        // If a schema node is created, refresh the node types sidebar
         if (event.nodeType === 'schema') {
           scheduleSchemaRefresh();
           registerSchemaPlugin(event.nodeId).catch((err) =>

@@ -66,7 +66,7 @@ export function clearCollectionRefreshTimer(): void {
 let schemaRefreshTimer: ReturnType<typeof setTimeout> | null = null;
 
 /**
- * Debounced refresh of the schema types sidebar.
+ * Debounced refresh of the node types sidebar.
  *
  * Called when a schema node is created or deleted externally (e.g. via MCP).
  */

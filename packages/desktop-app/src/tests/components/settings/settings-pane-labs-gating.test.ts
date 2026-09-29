@@ -74,4 +74,14 @@ describe('SettingsPane — Labs routing guard for AI Models and Playbooks', () =
     await waitFor(() => expect(getByText('Databases')).toBeTruthy());
     expect(queryByText('AI Models')).toBeNull();
   });
+
+  it('stays on "ai-models" (no redirect to Database) when AI Chat is on', async () => {
+    labsFlags.aiChatEnabled = true;
+    settingsStore.initialCategory = 'ai-models';
+    const { queryByText, getAllByText } = render(SettingsPane);
+
+    // The sidebar lists it and the Database page never renders.
+    await waitFor(() => expect(getAllByText('AI Models').length).toBeGreaterThan(0));
+    expect(queryByText('Databases')).toBeNull();
+  });
 });

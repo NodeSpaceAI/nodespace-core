@@ -118,7 +118,7 @@
     createError = '';
   }
 
-  // Schema types from global store (reactive — updates when schemas are created/deleted externally)
+  // Node types from global store (reactive — updates when schemas are created/deleted externally)
   let builtInSchemas = $derived(schemasStore.builtInSchemas);
   let customSchemas = $derived(schemasStore.customSchemas);
 
