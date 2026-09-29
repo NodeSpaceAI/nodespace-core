@@ -771,7 +771,7 @@ mod tests {
         assert_eq!(input.limit, Some(25));
     }
 
-    // -- Unknown-field rejection (acceptance criterion, #1816) --
+    // -- Unknown-field rejection (acceptance criterion) --
 
     #[test]
     fn agent_filter_item_rejects_unknown_field() {

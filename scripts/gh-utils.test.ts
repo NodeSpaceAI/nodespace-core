@@ -93,7 +93,7 @@ describe("NodeSpaceGitHubManager.unassignIssues", () => {
 // `bun run gh:status <n> "..."` call on it failed with "Issue not found in
 // project" — including the ones CLAUDE.md's startup sequence makes mandatory.
 // Nothing in the tooling added issues to the board, so this hit every newly
-// filed issue (#2376, #2384, #2389, #2390, #2396 were all missing).
+// filed issue.
 //
 // Two halves are covered here: creation now places the issue on the board, and
 // a status update self-heals a missing row instead of refusing. The second

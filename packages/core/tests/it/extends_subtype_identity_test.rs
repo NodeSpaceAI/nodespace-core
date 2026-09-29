@@ -577,7 +577,7 @@ async fn an_unprojected_read_round_trips_without_losing_fields() {
 }
 
 // ============================================================================
-// Write-path regressions found in review of PR #2739
+// Write-path regressions found in review
 // ============================================================================
 
 #[tokio::test]

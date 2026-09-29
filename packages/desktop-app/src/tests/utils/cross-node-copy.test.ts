@@ -1,5 +1,5 @@
 /**
- * Cross-node copy tests (#278 Part 2).
+ * Cross-node copy tests.
  *
  * Exercises the pure selection→markdown builder against real (Happy-DOM) node
  * fixtures: partial-first/partial-last clipping, full middle nodes, hierarchy

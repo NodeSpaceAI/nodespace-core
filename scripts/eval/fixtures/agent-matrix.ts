@@ -83,7 +83,7 @@
  * prompt asking for a field the type has nowhere to put is unwinnable: the
  * model degrades reasonably (folding the value into the node's text) and
  * scores red for it, and the fixture is then measuring itself rather than the
- * model. See scenario 9's note and #1846.
+ * model. See scenario 9's note.
  *
  * Scenario wording must stay independent of packages/agent/src/agent_guidance.rs.
  * `guidance_is_not_contaminated_by_eval_prompts` enforces it by parsing the
@@ -502,8 +502,8 @@ function runNs(env: EvalEnv, args: string[]): unknown {
  *
  * WHY OUT OF BAND, in one sentence: a referent the AGENT wrote is replayed into
  * later turns as a terse fact carrying its property values and id inline, so it
- * is never actually indirect — which is the defect #2242 found in scenario 6
- * and #2250 hit again in a subtler form. Nothing here goes through a turn, so
+ * is never actually indirect — which is the defect scenario 6 once had
+ * and scenario 12 hit again in a subtler form. Nothing here goes through a turn, so
  * `completed_writes` records none of it and the rendered prompt contains no
  * trace of these nodes at all.
  *
@@ -682,8 +682,8 @@ const GROUPS: MatrixScenario[][] = [
       // The day-count clause is still required, but no longer for the reason
       // it was written. It was there because scenario 6 tested resolve_query on
       // an *indirect* reference, and re-keying that scenario to the spec's own
-      // name would have made the referent a direct string match. The #2242
-      // audit found the referent was ALREADY a direct match — the rendered
+      // name would have made the referent a direct string match. An audit
+      // found the referent was ALREADY a direct match — the rendered
       // history replays scenario 4's write with its property values and id
       // inline — so 6 now asserts the outcome rather than the route. The day
       // count remains load-bearing as scenario 7's filter value and as the
@@ -702,7 +702,7 @@ const GROUPS: MatrixScenario[][] = [
       // A COUNT rather than a name, deliberately: the model chooses the type's
       // identifier, so asserting one would red-line a model that named the
       // same concept differently, measuring this fixture's vocabulary guess
-      // instead of the model's behavior (the #1846 trap, one level up).
+      // instead of the model's behavior (the unwinnable-scenario trap, one level up).
       end: { createdSchemas: 1 },
     },
     {
@@ -742,7 +742,7 @@ const GROUPS: MatrixScenario[][] = [
       // node directly (see ADR-064 rule 4) — the model acts on it via
       // update_node without a separate search_nodes call of its own.
       prompt: "The five-day one got signed off — mark it that way",
-      // ASSERTS THE OUTCOME, NOT THE ROUTE — changed by the #2242 audit, which
+      // ASSERTS THE OUTCOME, NOT THE ROUTE — changed by an audit, which
       // found this scenario failing for EVERY model measured including one
       // passing 17/20 overall. It previously required the
       // `[resolve_query, update_node]` subsequence.
@@ -817,7 +817,7 @@ const GROUPS: MatrixScenario[][] = [
     {
       id: "9",
       scenario: "9. Set property on existing node",
-      // Now the same assertion shape as scenario 6, which the #2242 audit
+      // Now the same assertion shape as scenario 6, which an audit
       // moved off its `[resolve_query, update_node]` subsequence and onto the
       // outcome. The two are no longer distinguished by WHAT they assert, and
       // pretending otherwise would be the stale claim this comment used to
@@ -850,7 +850,7 @@ const GROUPS: MatrixScenario[][] = [
       // the scenario unwinnable: the model folded the date into the node's text
       // (a reasonable degradation, and it reported it honestly) and scored red
       // for it. A scenario that reds out correct behavior measures the fixture,
-      // not the model. Same trap as the album/artist case in #1846.
+      // not the model. Same trap as the album/artist case (a prompt asking for a field the type cannot hold).
       //
       // The day count is chosen over the sign-off state because scenario 6
       // already owns that transition; re-testing it here would score the same
@@ -914,7 +914,7 @@ const GROUPS: MatrixScenario[][] = [
       // minProperties: 1 requires the particular this prompt supplies — who
       // made the call — to actually reach storage. Without it, create_node
       // persisting a bare shell (no such property — unwinnable if the type's
-      // own schema has no field for it, see #1846) scores identically to one
+      // own schema has no field for it) scores identically to one
       // that recorded it.
       prompt: "Put down that we went with event-based cache clearing, Priya's call",
       expect: { kind: "toolOnce", tool: "create_node", minProperties: 1 },
@@ -943,7 +943,7 @@ const GROUPS: MatrixScenario[][] = [
     {
       id: "8e",
       scenario: "8e. Query across types",
-      // WINNABILITY — reworded by the #2242 audit, which found this failing for
+      // WINNABILITY — reworded after an audit, which found this failing for
       // every model measured. The previous prompt was "Run through those calls
       // for me", and the referent was the problem.
       //
@@ -1277,7 +1277,7 @@ const GROUPS: MatrixScenario[][] = [
       // success would fold two independent behaviors into one score and make a
       // link-side regression read as two failures instead of one.
       //
-      // WINNABILITY — the constraint the #2242 audit exposed, and the reason
+      // WINNABILITY — the constraint that audit exposed, and the reason
       // this prompt is worded the way it is rather than the way it reads most
       // naturally.
       //
@@ -1340,7 +1340,7 @@ const GROUPS: MatrixScenario[][] = [
   // It measures whether the model resolves a reference stated as a COMPARATIVE
   // ("whichever is the biggest job") to the right node and writes to THAT node.
   // It does NOT measure multi-step decomposition, and it is not the coverage
-  // scenario 6 gave up. That gap is still open; see #2248.
+  // scenario 6 gave up. That gap is still open.
   //
   // The distinction is the whole reason this comment is long. An earlier draft
   // of this group claimed the comparative forced a read, on the strength of a
@@ -1361,12 +1361,12 @@ const GROUPS: MatrixScenario[][] = [
   // and that is a CORRECT answer, not a shortcut. Absence of the word "biggest"
   // proves the ordering is not STATED; it does not prove the ordering is not
   // DERIVABLE, and derivability is what makes a reference indirect. This is a
-  // subtler repeat of the scenario 6 defect #2242 found, and it survived an
+  // subtler repeat of the scenario 6 defect, and it survived an
   // absence proof precisely because that proof asserted the wrong property.
   //
   // Every scalar a scored turn writes is replayed inline by
   // `terse_write_fact`, so no value this chain writes can be made underivable
-  // by wording alone. Closing #2248 properly needs a referent the agent never
+  // by wording alone. Closing that gap properly needs a referent the agent never
   // wrote — which needs out-of-band seeding the runner deliberately does not
   // support ("Assert, do not own", runner.ts; "never starts or seeds
   // anything", env.ts).
@@ -1380,11 +1380,11 @@ const GROUPS: MatrixScenario[][] = [
   // `toolSequence` deliberately does NOT live here, though a draft of 12d used
   // it. Naming `[search_nodes, update_node]` pins one of four legitimate read
   // spellings AND reds out the shortest correct route (update_node alone, which
-  // the inline estimates make valid) — both the mistake #2242 was cleaning up.
+  // the inline estimates make valid) — both the mistake the scenario 6 audit was cleaning up.
   // It lives on scenario 13 instead, whose route is genuinely forced because
   // its referent is seeded out of band and therefore absent from history.
   //
-  // WINNABILITY, proved rather than assumed, per the #2242 discipline:
+  // WINNABILITY, proved rather than assumed, per the scenario 6 audit's discipline:
   //   - `scenario_12_history_states_the_values_but_not_the_ordering`
   //     (daemon/src/services/local_agent_service.rs) renders the REAL history
   //     and pins what is and is not in it. Read its docstring for the scope of
@@ -1552,14 +1552,14 @@ const GROUPS: MatrixScenario[][] = [
   ],
   // Indirect-reference decomposition (scenario 13), on SEEDED state.
   //
-  // THIS IS THE SCENARIO #2248 ASKED FOR, and the reason it needs seeding is
+  // THIS IS THE INDIRECT-DECOMPOSITION COVERAGE scenario 6 gave up, and the reason it needs seeding is
   // the finding two prior attempts produced.
   //
-  // Scenario 6 asserted a resolve-then-act chain for "the five-day one". #2242
+  // Scenario 6 asserted a resolve-then-act chain for "the five-day one". An audit
   // found the referent was a direct string match: a create_node write is
   // replayed into later turns as a terse fact carrying its property values AND
   // its id inline, so the discriminator was already in the prompt. Scenario 12
-  // then tried a COMPARATIVE over three written values; #2250's review found
+  // then tried a COMPARATIVE over three written values; review found
   // that fails the same way for a subtler reason — the values are all inline,
   // so the ranking is derivable in-context without reading anything.
   //

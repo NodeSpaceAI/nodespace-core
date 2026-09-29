@@ -59,7 +59,7 @@ function buttonByText(root: HTMLElement, text: string): HTMLElement {
   return btn;
 }
 
-describe('OnboardingWizard (focus-trap, #1414)', () => {
+describe('OnboardingWizard (focus-trap)', () => {
   let onClose: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {

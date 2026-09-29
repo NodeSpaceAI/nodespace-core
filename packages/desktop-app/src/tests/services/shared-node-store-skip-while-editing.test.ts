@@ -586,7 +586,7 @@ describe('SharedNodeStore — skip-while-editing guard', () => {
       expect(notifications).toHaveLength(1);
     });
 
-    // #2069 fixed resyncNodeFromServer's direct call (the fallback branch
+    // resyncNodeFromServer's direct call was fixed (the fallback branch
     // above this guard) to stop discarding a genuinely queued second write.
     // This guard's `hasPending` was the identical hardcoded-`false` bug on
     // the DIRECT-HYDRATION branch (this describe block) — sharing the exact
@@ -731,7 +731,7 @@ describe('SharedNodeStore — skip-while-editing guard', () => {
       await new Promise((resolve) => setTimeout(resolve, 50));
 
       const after = store.getNode('t-occ-1') as unknown as TaskLikeNode | undefined;
-      // As of #2088, updateTaskNode()'s catch handler matches updateNode()'s:
+      // updateTaskNode()'s catch handler matches updateNode()'s:
       // it leaves the optimistic edit in place on any failure (no unconditional
       // revert to the pre-edit existingNode snapshot) — so the guard here is
       // protecting the user's own in-progress optimistic edit ("in-progress")
@@ -797,7 +797,7 @@ describe('SharedNodeStore — skip-while-editing guard', () => {
       expect(notifications).toHaveLength(1);
     });
 
-    // #2088: updateTaskNode()'s catch handler used to do an unconditional
+    // updateTaskNode()'s catch handler used to do an unconditional
     // `this.nodesSet(nodeId, existingNode)` BEFORE this guard ever ran (on
     // ANY failure, OCC or not) — unlike updateNode(), whose rollbackUpdate()
     // never touches node content. A write A failure could clobber a later
@@ -807,7 +807,7 @@ describe('SharedNodeStore — skip-while-editing guard', () => {
     // no-op-on-content behavior); this test proves write B's value survives
     // both A's failure-path handling and the direct-hydration guard's own
     // skip decision.
-    it('#2088: does not discard a genuinely queued second write when an earlier write fails (unconditional existingNode rollback clobbers it)', async () => {
+    it('does not discard a genuinely queued second write when an earlier write fails (unconditional existingNode rollback clobbers it)', async () => {
       const nodeId = 't-occ-queued-1';
       seedPersistedTask(nodeId, 'server-old', 1);
       // Not focused: hasPending (write B still queued) is the mechanism

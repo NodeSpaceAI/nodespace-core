@@ -662,7 +662,7 @@ describe('Collections Store', () => {
       expect(tree.every((c) => (c.children?.length ?? 0) === 0)).toBe(true);
     });
 
-    it('excludes the workspace root NODE from top-level even when it has content members (#1967 symptom)', () => {
+    it('excludes the workspace root NODE from top-level even when it has content members', () => {
       // get_all_collections returns the root node itself; with content member_of
       // edges (memberCount > 0) it survives pruning, so filtering it only as a
       // parent would still leave it visible as a top-level peer — the exact bug.
@@ -681,7 +681,7 @@ describe('Collections Store', () => {
       expect(tree.map((c) => c.id)).toEqual(['design', 'engineering']);
     });
 
-    it('would WRONGLY nest them under the root when the stale legacy constant is used (the #1967 bug)', () => {
+    it('would WRONGLY nest them under the root when the stale legacy constant is used', () => {
       // get_all_collections returns the per-install root node itself, so with the
       // wrong root id it is treated as a real display parent that swallows the
       // user's collections — exactly the regression this issue fixes.

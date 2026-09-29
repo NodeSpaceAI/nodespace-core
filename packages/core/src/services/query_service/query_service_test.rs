@@ -150,7 +150,7 @@ mod tests {
 
     /// A scalar `in` value fails loudly rather than matching nothing.
     ///
-    /// #2182 was reported as a silent zero-result — the failure mode that is
+    /// It was once reported as a silent zero-result — the failure mode that is
     /// indistinguishable from a genuinely empty search and therefore invisible
     /// to the user. It is not: `build_filter_condition` rejects a non-array `in`
     /// value outright, so the tool call errors and the model has to recover.

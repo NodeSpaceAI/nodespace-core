@@ -7,7 +7,8 @@
 // references are not: the patterns once missed the most common shape, a
 // bare `#NNNN` in prose ("see #990", "the #2242 audit"), so the backlog of
 // those went uncounted while the baseline read 0. The issue-number baseline
-// is the real remaining count; paying it down means inlining each
+// is the real remaining count (all in packages/agent, pending its owner's
+// sign-off; every other package is at 0); paying it down means inlining each
 // constraint-bearing comment's constraint before dropping the reference, and
 // deleting provenance-only citations outright.
 //
@@ -95,7 +96,7 @@ const DOC_PATH_PATTERN = /nodespace-docs\/|\bdocs\/(?:architecture|components|de
 
 // Ratchet baselines. See the file-level comment: lower on paydown, never raise.
 export const BASELINES = {
-  issueNumberReferences: 143,
+  issueNumberReferences: 71,
   docPathReferences: 0,
 };
 

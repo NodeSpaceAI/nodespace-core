@@ -100,7 +100,7 @@ async fn spawn_test_daemon() -> (
 /// reaching `search_ops::search_semantic`. Also returns the underlying
 /// `CoreNodeService` handle so tests can create nodes out-of-band (i.e.
 /// without going through any search/agent code path) and assert search finds
-/// them, per #1940's acceptance criteria.
+/// them.
 async fn spawn_test_daemon_with_embeddings() -> (
     NodeServiceClient<tonic::transport::Channel>,
     Arc<CoreNodeService>,
@@ -399,7 +399,7 @@ async fn search_nodes_returns_unavailable_without_embedding_service() {
     let _ = shutdown.send(());
 }
 
-/// #1940 regression, CLI/gRPC path: `nodespace search "*" --type invoice`
+/// Regression, CLI/gRPC path: `nodespace search "*" --type invoice`
 /// must enumerate every pre-existing instance of the type, not silently
 /// return `count: 0`. Creates the node directly through `NodeService`
 /// (out-of-band — not via any search/agent code path) per the issue's

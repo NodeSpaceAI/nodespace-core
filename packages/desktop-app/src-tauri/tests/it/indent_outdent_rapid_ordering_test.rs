@@ -211,7 +211,7 @@ async fn concurrent_reorders_of_distinct_nodes_all_succeed() {
 /// block the suite; un-ignore once the read+compute+write is wrapped in a
 /// transaction per parent.
 #[tokio::test]
-#[ignore = "known race — see #1561"]
+#[ignore = "known race: non-transactional sibling reorder"]
 async fn concurrent_reorders_produce_correct_final_order() {
     let daemon = SpawnedDaemon::spawn();
     let harness = TauriTestApp::connect(&daemon, DAEMON_CONNECT_TIMEOUT).await;

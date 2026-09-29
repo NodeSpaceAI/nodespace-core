@@ -48,7 +48,7 @@ describe('ProReloginModal', () => {
     expect(onSignIn).not.toHaveBeenCalled();
   });
 
-  it('moves focus into the dialog on open and dismisses on Escape from inside (focus-trap, #1414)', async () => {
+  it('moves focus into the dialog on open and dismisses on Escape from inside (focus-trap)', async () => {
     render(ProReloginModal, { props: { open: true, onSignIn, onWorkOffline } });
     const dialog = screen.getByRole('dialog');
     // focusTrap moves focus inside the dialog on open — real keyboard focus,

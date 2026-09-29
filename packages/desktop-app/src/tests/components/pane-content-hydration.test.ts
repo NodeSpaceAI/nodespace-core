@@ -64,7 +64,7 @@ function createHydrationHarness(
   };
 }
 
-describe('pane-content hydration (event-driven, #1564/#1566)', () => {
+describe('pane-content hydration (event-driven)', () => {
   beforeEach(() => {
     vi.useRealTimers();
   });

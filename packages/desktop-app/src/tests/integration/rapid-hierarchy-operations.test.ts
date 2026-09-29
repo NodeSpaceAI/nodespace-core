@@ -249,7 +249,7 @@ describe('Rapid Hierarchy Operations - Stress Tests', () => {
     });
   });
 
-  describe('Edge Cases from PR #861', () => {
+  describe('Edge Cases: rapid create/indent/outdent races', () => {
     it('should handle node creation followed by immediate indent', () => {
       // This is the Enter→Tab race condition scenario
       // 1. User presses Enter (creates new node)

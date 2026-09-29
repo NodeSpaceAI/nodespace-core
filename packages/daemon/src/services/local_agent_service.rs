@@ -5165,7 +5165,7 @@ mod tests {
         assert_eq!(assistant.reasoning.as_deref(), Some("I reasoned about it."));
     }
 
-    /// #1930: a `route_clarify` turn's structured question/options must
+    /// A `route_clarify` turn's structured question/options must
     /// persist onto the node alongside the flattened `content` text, not only
     /// as markdown prose — that structure is what the frontend renders as
     /// clickable options instead of parsed-out bullets.
@@ -6237,7 +6237,7 @@ model = "model-b"
         );
     }
 
-    /// #2123 regression: the wire parameter carrying field values on
+    /// Regression: the wire parameter carrying field values on
     /// create_node/update_node was renamed from `properties` to `field_values`
     /// (a parameter literally named `properties` collides with JSON Schema's
     /// own `properties` keyword and is silently dropped by the Gemma-4 chat
@@ -6276,7 +6276,7 @@ model = "model-b"
         assert!(
             assistant.content.contains("status") && assistant.content.contains("paid"),
             "the terse fact must surface the field value recorded under \
-             'field_values' — production's actual wire key since #2123 — \
+             'field_values' — production's actual wire key — \
              instead of silently omitting it the way it would if this still \
              read the old 'properties' key: {:?}",
             assistant.content
@@ -6513,7 +6513,7 @@ model = "model-b"
     /// anything back. Scenario 12 is therefore a test of comparative reference
     /// RESOLUTION, not of decomposition; the group header in
     /// scripts/eval/fixtures/agent-matrix.ts carries the full reasoning, and
-    /// #2248 tracks the decomposition gap that remains open.
+    /// the decomposition gap remains open.
     ///
     /// The negative assertion is kept anyway, because it still pins something
     /// real: if a future change to `terse_write_fact` started emitting a
@@ -6629,9 +6629,9 @@ model = "model-b"
     /// This is the test scenarios 6 and 12 could not have passed, and it is the
     /// point of seeding 13's state out of band.
     ///
-    /// 6 named "the five-day one" and #2242 found `estimated_days 5` and the id
+    /// 6 named "the five-day one" and an audit found `estimated_days 5` and the id
     /// both rendered inline. 12 named a comparative over three written values,
-    /// and #2250's review found the values themselves inline, so the ranking was
+    /// and review found the values themselves inline, so the ranking was
     /// derivable without a read. Both failed for one underlying reason: every
     /// scalar a scored turn writes is replayed by `terse_write_fact`, so a
     /// referent the AGENT wrote is always in the prompt as literal text.

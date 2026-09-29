@@ -2241,7 +2241,7 @@ Some content"#;
         result
     }
 
-    // -- Unknown-field rejection (acceptance criterion, #1816) --
+    // -- Unknown-field rejection (acceptance criterion) --
     //
     // Neither struct is reachable from raw tool-call JSON today (see their doc
     // comments), but both sit on the same Value-deserialization boundary as

@@ -1399,7 +1399,7 @@ async fn test_create_schema_stores_description_as_child_subtree() {
         .expect("schema node not found");
     assert!(
         node.properties.get("description").is_none(),
-        "description should not be in properties after #1351"
+        "description should not be in properties (it is stored as child text nodes)"
     );
 
     // Description must be stored as child text node(s)
@@ -2672,7 +2672,7 @@ async fn test_update_schema_user_defined_type_allows_bare_names() {
 }
 
 // ============================================================================
-// Unknown-field rejection (acceptance criterion, #1816)
+// Unknown-field rejection (acceptance criterion)
 // ============================================================================
 
 /// `update_schema` is `create_schema`'s sibling — same silent-discard risk the
