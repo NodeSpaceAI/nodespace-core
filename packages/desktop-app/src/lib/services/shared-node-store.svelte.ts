@@ -1033,9 +1033,13 @@ export class SharedNodeStore {
    * than a scan over every owner. */
   private pinnedNodeRefCounts = new Map<string, number>();
 
-  /** nodeId -> scheduled eviction timer, for a node currently unreachable
-   * from every open tab/pane and waiting out `evictionInactivityMs`. */
-  private evictionTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  /** nodeId -> scheduled eviction timer and the time it is due, for a node
+   * currently unreachable from every open tab/pane and waiting out
+   * `evictionInactivityMs`. */
+  private evictionTimers = new Map<
+    string,
+    { timer: ReturnType<typeof setTimeout>; dueAt: number }
+  >();
 
   /**
    * How long a node must stay unreachable from every open tab/pane before
@@ -1046,6 +1050,10 @@ export class SharedNodeStore {
    * real seconds.
    */
   private evictionInactivityMs = 30_000;
+
+  /** Window within which due eviction candidates are handled together. See
+   * `attemptEviction`. */
+  private static readonly EVICTION_COALESCE_MS = 1_000;
 
   /**
    * Replace the set of open-tab/pane document roots and re-evaluate every
@@ -1147,8 +1155,9 @@ export class SharedNodeStore {
    * eviction for one that just became reachable again.
    */
   private reconcileEvictionCandidates(): void {
+    const anchorAncestors = this.collectAnchorAncestors();
     for (const nodeId of this.nodes.keys()) {
-      if (this.isReachable(nodeId)) {
+      if (this.isReachable(nodeId, anchorAncestors)) {
         this.cancelPendingEviction(nodeId);
       } else if (!this.evictionTimers.has(nodeId)) {
         this.scheduleEviction(nodeId);
@@ -1159,7 +1168,9 @@ export class SharedNodeStore {
   /**
    * True when `nodeId` is explicitly pinned (see `pinNodes`), or when
    * `nodeId` — or an ancestor reached by walking `structureTree` parent
-   * edges — is the root document of a currently open tab/pane.
+   * edges — is the root document of a currently open tab/pane, or when
+   * `nodeId` is an ancestor of an open root or a pinned node (see
+   * `collectAnchorAncestors`).
    *
    * Before the first `updateOpenDocumentRoots` report (i.e. every caller
    * that isn't `navigation.svelte.ts` — most unit tests included), the
@@ -1167,10 +1178,14 @@ export class SharedNodeStore {
    * stays fully dormant until navigation actually starts reporting real tab
    * state, rather than evicting nodes no caller ever declared "open".
    */
-  private isReachable(nodeId: string): boolean {
+  private isReachable(
+    nodeId: string,
+    anchorAncestors: ReadonlySet<string>
+  ): boolean {
     if (!this.hasOpenDocumentReport) return true;
     if (this.pinnedNodeRefCounts.has(nodeId)) return true;
     if (!structureTree) return true;
+    if (anchorAncestors.has(nodeId)) return true;
 
     let current: string | null = nodeId;
     const visited = new Set<string>();
@@ -1183,15 +1198,39 @@ export class SharedNodeStore {
     return false;
   }
 
+  /**
+   * Every cached ancestor of an open tab/pane root or a pinned node. These
+   * stay cached even though no open view displays them: their edges are the
+   * only record of where a zoomed-in or pinned node sits in its document,
+   * which outdent (moving a top-level item to its root's parent) and
+   * navigation-ancestor resolution both read from `structureTree`. Keeping
+   * the chain costs one node per level, not the ancestors' other subtrees.
+   */
+  private collectAnchorAncestors(): Set<string> {
+    const ancestors = new Set<string>();
+    if (!structureTree) return ancestors;
+    const walkUp = (anchorId: string) => {
+      let current = structureTree.getParent(anchorId);
+      while (current !== null && !ancestors.has(current)) {
+        ancestors.add(current);
+        current = structureTree.getParent(current);
+      }
+    };
+    for (const rootId of this.openDocumentRootIds) walkUp(rootId);
+    for (const pinnedId of this.pinnedNodeRefCounts.keys()) walkUp(pinnedId);
+    return ancestors;
+  }
+
   private scheduleEviction(nodeId: string): void {
+    const dueAt = performance.now() + this.evictionInactivityMs;
     const timer = setTimeout(() => this.attemptEviction(nodeId), this.evictionInactivityMs);
-    this.evictionTimers.set(nodeId, timer);
+    this.evictionTimers.set(nodeId, { timer, dueAt });
   }
 
   private cancelPendingEviction(nodeId: string): void {
-    const timer = this.evictionTimers.get(nodeId);
-    if (timer !== undefined) {
-      clearTimeout(timer);
+    const entry = this.evictionTimers.get(nodeId);
+    if (entry !== undefined) {
+      clearTimeout(entry.timer);
       this.evictionTimers.delete(nodeId);
     }
   }
@@ -1210,18 +1249,67 @@ export class SharedNodeStore {
    *   is strictly worse than a delayed eviction. Re-schedule rather than
    *   drop candidacy so a long-running write doesn't permanently pin the
    *   node in memory once it finally settles.
+   *
+   * Closing a document schedules every one of its nodes in the same sweep,
+   * so their timers come due within moments of each other. The first to
+   * fire handles every candidate due within `EVICTION_COALESCE_MS` of it, in
+   * one `structureTree` batch, so a closed document costs one reactive tree
+   * update rather than one per node. Evicting a candidate that little early
+   * is harmless: each is still re-checked by `evictIfSettled`.
    */
   private attemptEviction(nodeId: string): void {
+    const firing = this.evictionTimers.get(nodeId);
     this.evictionTimers.delete(nodeId);
+    const due = [nodeId];
+    if (firing) {
+      for (const [id, entry] of this.evictionTimers) {
+        if (entry.dueAt > firing.dueAt + SharedNodeStore.EVICTION_COALESCE_MS) continue;
+        clearTimeout(entry.timer);
+        this.evictionTimers.delete(id);
+        due.push(id);
+      }
+    }
 
-    if (this.isReachable(nodeId)) return; // reopened — nothing to do
+    const anchorAncestors = this.collectAnchorAncestors();
+    const evictDue = () => {
+      for (const id of due) this.evictIfSettled(id, anchorAncestors);
+    };
+    if (structureTree) {
+      structureTree.runBatch(evictDue);
+    } else {
+      evictDue();
+    }
+  }
 
-    if (PersistenceCoordinator.getInstance().hasPending(nodeId) || this.activeBatches.has(nodeId)) {
+  private evictIfSettled(nodeId: string, anchorAncestors: ReadonlySet<string>): void {
+    if (!this.nodes.has(nodeId)) return; // deleted meanwhile
+    if (this.isReachable(nodeId, anchorAncestors)) return; // reopened — nothing to do
+
+    if (this.hasPendingWrite(nodeId) || this.hasCachedChildWithPendingWrite(nodeId)) {
       this.scheduleEviction(nodeId);
       return;
     }
 
     this.evictNode(nodeId);
+  }
+
+  private hasPendingWrite(nodeId: string): boolean {
+    return PersistenceCoordinator.getInstance().hasPending(nodeId) || this.activeBatches.has(nodeId);
+  }
+
+  /**
+   * Evicting a node drops its children's parent edges (see `evictNode`),
+   * and a child's pending CREATE resolves its parent from `structureTree`
+   * when it fires. So a parent stays cached until every cached child's
+   * write has settled; the child's own eviction is deferred the same way.
+   */
+  private hasCachedChildWithPendingWrite(nodeId: string): boolean {
+    if (!structureTree) return false;
+    // The `nodes.has` filter is defensive: eviction keeps the tree free of
+    // uncached children, but a tree edge can still arrive ahead of its node.
+    return structureTree
+      .getChildren(nodeId)
+      .some((childId) => this.nodes.has(childId) && this.hasPendingWrite(childId));
   }
 
   /**
@@ -1231,8 +1319,15 @@ export class SharedNodeStore {
    * up). Purely a local cache decision: the node still exists in the
    * database, just no longer cached in memory — the next `ensureNode` for
    * it fetches fresh.
+   *
+   * Its `structureTree` edges go too (its entry under its parent and its
+   * own child list): the tree must only reference cached nodes, or every
+   * later invariant check sees orphan edges. Children still cached (pending
+   * their own eviction, or reachable through another tab or a pin) become
+   * parentless until this node's children are next loaded.
    */
   private evictNode(nodeId: string): void {
+    structureTree?.removeNode(nodeId);
     this.nodesDelete(nodeId);
     this.versions.delete(nodeId);
     this.pendingUpdates.delete(nodeId);
@@ -1243,6 +1338,19 @@ export class SharedNodeStore {
     this.resyncQueued.delete(nodeId);
     this.inFlightEnsures.delete(nodeId);
     log.debug(`Evicted unreachable node from cache: ${nodeId}`);
+  }
+
+  /**
+   * Whether `doLoadChildrenTree` runs `structureTree.assertInvariants` after
+   * hydrating. Off under test by default: the `structureTree` singleton
+   * accumulates state across tests. See `__setHierarchyInvariantChecksForTesting`.
+   */
+  private hierarchyInvariantChecksEnabled = !isTestEnvironment();
+
+  /** Test-only: run the post-load hierarchy invariant check under test, for
+   * a test that controls `structureTree` state itself. */
+  __setHierarchyInvariantChecksForTesting(enabled: boolean): void {
+    this.hierarchyInvariantChecksEnabled = enabled;
   }
 
   /** Test-only: override the inactivity threshold so eviction tests don't
@@ -3639,7 +3747,7 @@ export class SharedNodeStore {
     this.pendingTreeLoads.clear();
     this.resyncingNodes.clear();
     this.resyncQueued.clear();
-    for (const timer of this.evictionTimers.values()) {
+    for (const { timer } of this.evictionTimers.values()) {
       clearTimeout(timer);
     }
     this.evictionTimers.clear();
@@ -3908,16 +4016,18 @@ export class SharedNodeStore {
       // Run invariant check after hydration completes (skipped in test environment
       // because the structureTree singleton accumulates state across tests and
       // produces false-positive orphan violations).
-      if (!isTestEnvironment()) {
+      if (this.hierarchyInvariantChecksEnabled) {
         const nodeIdSet = new Set(this.nodes.keys());
         // Allowlist __root__ sentinel plus any date nodes currently in the tree
         // that aren't in this.nodes (e.g. when loading a child of a date node
         // before the date node itself has been added to the store).
         const virtualIds = new Set<string>(['__root__']);
-        for (const parentId of structureTree.children.keys()) {
-          if (isValidDateId(parentId)) virtualIds.add(parentId);
+        for (const treeParentId of structureTree.children.keys()) {
+          if (isValidDateId(treeParentId)) virtualIds.add(treeParentId);
         }
-        structureTree.assertInvariants(nodeIdSet, virtualIds);
+        // Scoped to the subtree this load wrote: an inconsistency elsewhere
+        // in the global tree is not this load's doing and must not fail it.
+        structureTree.assertInvariants(nodeIdSet, virtualIds, parentId);
       }
 
       return allNodes;
@@ -5078,7 +5188,7 @@ export class SharedNodeStore {
     }
     this.activeBatches.clear();
 
-    for (const timer of this.evictionTimers.values()) {
+    for (const { timer } of this.evictionTimers.values()) {
       clearTimeout(timer);
     }
     this.evictionTimers.clear();

@@ -29,7 +29,7 @@ export class ReactiveStructureTree {
   /**
    * Reverse child→parent index so getParent is O(1) instead of a scan over
    * every edge in the tree. Non-reactive bookkeeping: every mutator
-   * (addChildInternal, removeChild, clear, restore) keeps it consistent, and
+   * (addChildInternal, removeChild, removeNode, clear, restore) keeps it consistent, and
    * getParent verifies each hit against `children` (self-healing on a stale
    * entry), so an inconsistent entry can never leak out of the API.
    */
@@ -241,6 +241,47 @@ export class ReactiveStructureTree {
   }
 
   /**
+   * Drop every edge that references `nodeId`: its entry in its parent's
+   * children list, and its own children list. Used when a node leaves the
+   * node cache without being deleted (cache eviction). The tree's edges must
+   * stay consistent with the cached node set, because `assertInvariants`
+   * treats an edge to an uncached node as an orphan.
+   *
+   * The node's former children stay in the tree as parentless entries
+   * (their own child lists are untouched); they are either evicted in turn
+   * or re-linked by the next load of this node's children.
+   */
+  removeNode(nodeId: string): void {
+    let changed = false;
+
+    const parentId = this.getParent(nodeId);
+    if (parentId !== null) {
+      const siblings = this.children.get(parentId) ?? [];
+      const filtered = siblings.filter((c) => c.nodeId !== nodeId);
+      if (filtered.length === 0) {
+        this.children.delete(parentId);
+      } else {
+        this.children.set(parentId, filtered);
+      }
+      this.parentIndex.delete(nodeId);
+      changed = true;
+    }
+
+    const ownChildren = this.children.get(nodeId);
+    if (ownChildren) {
+      for (const child of ownChildren) {
+        if (this.parentIndex.get(child.nodeId) === nodeId) {
+          this.parentIndex.delete(child.nodeId);
+        }
+      }
+      this.children.delete(nodeId);
+      changed = true;
+    }
+
+    if (changed) this.notifyChange();
+  }
+
+  /**
    * Binary search to find insertion position to maintain sort by order
    * @param children - sorted array of ChildInfo
    * @param order - order value to insert
@@ -389,15 +430,26 @@ export class ReactiveStructureTree {
    * Call once after batchAddRelationships completes during hydration.
    * In dev mode throws on violation; in prod logs only.
    *
+   * With `rootId`, only the edges of the subtree rooted at `rootId` are
+   * checked: the region a load just wrote. A load must not fail because of
+   * edges it never touched, elsewhere in the global tree. I2 is then checked
+   * within that subtree only. Without `rootId`, the whole tree is checked
+   * (tests and diagnostics).
+   *
    * @param nodeIds - Set of all known node IDs (from SharedNodeStore.nodes)
    * @param virtualIds - Additional allowed IDs not in nodeIds (e.g. '__root__', virtual date nodes)
+   * @param rootId - Restrict the check to the subtree rooted here
    */
-  assertInvariants(nodeIds: Set<string>, virtualIds: Set<string> = new Set()): void {
+  assertInvariants(
+    nodeIds: Set<string>,
+    virtualIds: Set<string> = new Set(),
+    rootId?: string
+  ): void {
     const isKnown = (id: string) => nodeIds.has(id) || virtualIds.has(id);
     const seen = new Map<string, string>(); // childId -> parentId
     const violations: string[] = [];
 
-    for (const [parentId, childInfos] of this.children) {
+    for (const [parentId, childInfos] of this.edgesToCheck(rootId)) {
       if (!isKnown(parentId)) {
         violations.push(`I1: orphan parentId "${parentId}" not in nodeIds`);
       }
@@ -431,6 +483,27 @@ export class ReactiveStructureTree {
     if (import.meta.env.DEV) {
       throw new Error(`HierarchyInvariant violations:\n${violations.join('\n')}`);
     }
+  }
+
+  /**
+   * The parent→children entries `assertInvariants` checks: every entry, or
+   * only those in the subtree rooted at `rootId` (cycle-safe walk).
+   */
+  private edgesToCheck(rootId?: string): Array<[string, ChildInfo[]]> {
+    if (rootId === undefined) return [...this.children];
+    const entries: Array<[string, ChildInfo[]]> = [];
+    const visited = new Set<string>();
+    const stack = [rootId];
+    while (stack.length > 0) {
+      const parentId = stack.pop() as string;
+      if (visited.has(parentId)) continue;
+      visited.add(parentId);
+      const childInfos = this.children.get(parentId);
+      if (!childInfos) continue;
+      entries.push([parentId, childInfos]);
+      for (const child of childInfos) stack.push(child.nodeId);
+    }
+    return entries;
   }
 
   /**
