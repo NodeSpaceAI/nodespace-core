@@ -1346,6 +1346,7 @@ export class SharedNodeStore {
     this.versions.delete(nodeId);
     this.pendingUpdates.delete(nodeId);
     this.persistedNodeIds.delete(nodeId);
+    this.unsavedPlaceholders.delete(nodeId);
     this.typedFieldWriteSeq.delete(nodeId);
     this.pendingTypedFields.delete(nodeId);
     this.resyncingNodes.delete(nodeId);

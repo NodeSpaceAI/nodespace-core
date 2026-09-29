@@ -62,7 +62,9 @@ function seedContent(typeId: string): string {
 /**
  * Fields a user must fill before the backend will accept an instance: required,
  * with no default to fall back on, and editable by the user. This mirrors the
- * backend validator, which rejects a node missing such a field.
+ * backend validator, which rejects a node missing such a field. Keep it in step
+ * with the required-field check in the backend's node validation: if the two
+ * disagree, a create the frontend allows is rejected.
  */
 export function requiredFieldsWithoutDefault(schema: SchemaNode | null): SchemaField[] {
   return (schema?.fields ?? []).filter(
