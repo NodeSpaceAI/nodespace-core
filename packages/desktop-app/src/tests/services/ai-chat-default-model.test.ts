@@ -85,9 +85,14 @@ describe('getDefaultAiChatModelProperties', () => {
     });
   });
 
-  it('maps a pty default to the agent id', () => {
+  it('does not seed a pty default (its view has no model selector)', () => {
     saveDefaultModelSelection({ provider: 'pty', modelId: 'claude-code' });
-    expect(getDefaultAiChatModelProperties()).toEqual({ provider: 'pty', model: 'claude-code' });
+    expect(getDefaultAiChatModelProperties()).toBeNull();
+  });
+
+  it('ignores a native default with an empty model id', () => {
+    saveDefaultModelSelection({ provider: 'native', modelId: '' });
+    expect(getDefaultAiChatModelProperties()).toBeNull();
   });
 
   it('treats a default pointing at a removed openai-compat config as no default', () => {

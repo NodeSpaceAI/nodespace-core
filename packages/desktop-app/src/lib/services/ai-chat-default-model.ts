@@ -53,6 +53,11 @@ export function getDefaultAiChatModelProperties(): AiChatModelProperties | null 
   const props = selectionToAiChatProperties(selection);
   if (!props) return null;
 
+  // A pty chat opens straight into the terminal view, which has no model
+  // selector, so seeding it would leave the user unable to pick another model
+  // before the first message. Only message-based providers are seeded.
+  if (props.provider === 'pty') return null;
+
   if (props.provider === 'openai-compat') {
     const configId = props.model.slice('openai-compat:'.length).split(':')[0];
     if (!getOpenAiConfigs().some((c) => c.id === configId)) return null;

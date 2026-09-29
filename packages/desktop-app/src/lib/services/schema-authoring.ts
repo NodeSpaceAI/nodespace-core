@@ -48,9 +48,9 @@ const SEED_CONTENT_OVERRIDES = new Map<string, string>([['ai-chat', UNTITLED_CHA
  *
  * The node is created as a root (`parentId: null`) with no properties; the
  * schema-driven form UI fills in the fields once the node is opened. An
- * `ai-chat` is the exception: it is seeded with the user's default model, if any. `nodeType`
- * is the schema's id — the same key `QueryNodeViewer` queries on — so the new
- * node matches that type's result list. Body-content types start empty ("start
+ * `ai-chat` is the exception: it is seeded with the user's default model, if
+ * any. `nodeType` is the schema's id — the same key `QueryNodeViewer` queries
+ * on — so the new node matches that type's result list. Body-content types start empty ("start
  * typing"); name-as-content Core types (see `NAME_AS_CONTENT_TYPES`) seed
  * `"Untitled {Type}"` so they pass their non-empty-content validation; types in
  * `SEED_CONTENT_OVERRIDES` seed a fixed string instead.
