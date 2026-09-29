@@ -393,7 +393,7 @@ pub async fn create_node(
     client: State<'_, GrpcClient>,
     node: CreateNodeInput,
 ) -> Result<CreatedNodeOutput, CommandError> {
-    let mut c = client.client().await;
+    let mut c = client.echo_suppressed_client().await;
     validate_node_type(&node.node_type, &mut c).await?;
 
     let properties_str = node.properties.to_string();
@@ -432,7 +432,7 @@ pub async fn create_root_node(
     client: State<'_, GrpcClient>,
     input: CreateRootNodeInput,
 ) -> Result<String, CommandError> {
-    let mut c = client.client().await;
+    let mut c = client.echo_suppressed_client().await;
     validate_node_type(&input.node_type, &mut c).await?;
 
     let properties_str = input.properties.to_string();
@@ -473,7 +473,7 @@ pub async fn create_node_mention(
     mentioning_node_id: String,
     mentioned_node_id: String,
 ) -> Result<(), CommandError> {
-    let mut c = client.client().await;
+    let mut c = client.echo_suppressed_client().await;
     c.create_mention(Request::new(CreateMentionRequest {
         mentioning_node_id,
         mentioned_node_id,
@@ -614,7 +614,7 @@ pub async fn update_node(
     version: i64,
     update: NodeUpdate,
 ) -> Result<Value, CommandError> {
-    let mut c = client.client().await;
+    let mut c = client.echo_suppressed_client().await;
 
     let content_preview = update.content.as_ref().map(|c| {
         if c.len() > 50 {
@@ -666,7 +666,7 @@ pub async fn delete_node(
     id: String,
     version: i64,
 ) -> Result<DeleteResult, CommandError> {
-    let mut c = client.client().await;
+    let mut c = client.echo_suppressed_client().await;
     let resp = c
         .delete_node(Request::new(DeleteNodeRequest {
             node_id: id,
@@ -692,7 +692,7 @@ pub async fn move_node(
     new_parent_id: Option<String>,
     insert_position: Option<InsertPositionInput>,
 ) -> Result<MovedNodeOutput, CommandError> {
-    let mut c = client.client().await;
+    let mut c = client.echo_suppressed_client().await;
     let position = insert_position.and_then(InsertPositionInput::into_move_proto_position);
     let mut resp = c
         .move_node(Request::new(MoveNodeRequest {
@@ -721,7 +721,7 @@ pub async fn reorder_node(
     version: i64,
     insert_position: Option<InsertPositionInput>,
 ) -> Result<(), CommandError> {
-    let mut c = client.client().await;
+    let mut c = client.echo_suppressed_client().await;
     let position = insert_position.and_then(InsertPositionInput::into_reorder_proto_position);
     c.reorder_node(Request::new(ReorderNodeRequest {
         node_id,
@@ -740,7 +740,7 @@ pub async fn move_children_to_parent(
     new_parent_id: String,
     children: Vec<ChildMoveInput>,
 ) -> Result<MovedChildrenOutput, CommandError> {
-    let mut c = client.client().await;
+    let mut c = client.echo_suppressed_client().await;
     let resp = c
         .move_children_to_parent(Request::new(MoveChildrenToParentRequest {
             new_parent_id,
@@ -1091,7 +1091,7 @@ pub async fn update_task_node(
     version: i64,
     update: TaskNodeUpdate,
 ) -> Result<Value, CommandError> {
-    let mut c = client.client().await;
+    let mut c = client.echo_suppressed_client().await;
     let req = task_update_to_proto(&id, version, update);
     let resp = c
         .update_task_node(Request::new(req))
@@ -1127,7 +1127,7 @@ pub async fn update_person_node(
     version: i64,
     update: PersonNodeUpdate,
 ) -> Result<Value, CommandError> {
-    let mut c = client.client().await;
+    let mut c = client.echo_suppressed_client().await;
     let req = UpdatePersonNodeRequest {
         node_id: id,
         version,
@@ -1152,7 +1152,7 @@ pub async fn update_project_node(
     version: i64,
     update: ProjectNodeUpdate,
 ) -> Result<Value, CommandError> {
-    let mut c = client.client().await;
+    let mut c = client.echo_suppressed_client().await;
     let req = UpdateProjectNodeRequest {
         node_id: id,
         version,
@@ -1179,7 +1179,7 @@ pub async fn update_query_node(
     version: i64,
     update: QueryNodeUpdate,
 ) -> Result<Value, CommandError> {
-    let mut c = client.client().await;
+    let mut c = client.echo_suppressed_client().await;
     let update_json = serde_json::to_string(&update).map_err(|e| CommandError {
         message: format!("Failed to serialize query update: {}", e),
         code: "SERIALIZE_ERROR".to_string(),
@@ -1258,7 +1258,7 @@ pub async fn create_relationship(
         })?),
         _ => None,
     };
-    let mut c = client.client().await;
+    let mut c = client.echo_suppressed_client().await;
     let response = c
         .create_relationship(Request::new(CreateRelationshipRequest {
             source_id,
@@ -1295,7 +1295,7 @@ pub async fn delete_relationship(
     relationship_name: String,
     target_id: String,
 ) -> Result<(), CommandError> {
-    let mut c = client.client().await;
+    let mut c = client.echo_suppressed_client().await;
     c.delete_relationship(Request::new(DeleteRelationshipRequest {
         source_id,
         relationship_name,
@@ -1326,7 +1326,7 @@ pub async fn update_relationship_properties(
         details: None,
         conflict_data: None,
     })?;
-    let mut c = client.client().await;
+    let mut c = client.echo_suppressed_client().await;
     c.update_relationship_properties(Request::new(UpdateRelationshipPropertiesRequest {
         source_id,
         relationship_name,
@@ -1345,7 +1345,7 @@ pub async fn delete_node_mention(
     mentioning_node_id: String,
     mentioned_node_id: String,
 ) -> Result<(), CommandError> {
-    let mut c = client.client().await;
+    let mut c = client.echo_suppressed_client().await;
     c.delete_mention(Request::new(DeleteMentionRequest {
         mentioning_node_id,
         mentioned_node_id,

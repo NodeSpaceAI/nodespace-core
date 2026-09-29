@@ -7,7 +7,8 @@ import type { SchemaNode } from '$lib/types/schema-node';
 import * as backendAdapterModule from '$lib/services/backend-adapter';
 import { pluginRegistry } from '$lib/plugins/plugin-registry';
 import { aiChatsData } from '$lib/stores/ai-chats.svelte';
-import { clearAiChatRefreshTimer } from '$lib/utils/collection-refresh';
+import { clearAiChatRefreshTimer, clearSchemaRefreshTimer } from '$lib/utils/collection-refresh';
+import { schemasStore } from '$lib/stores/schemas.svelte';
 
 /**
  * Tests for Tauri Domain Event Listener
@@ -1047,6 +1048,67 @@ describe('TauriSyncListener', () => {
       // refresh (see `refreshMentionedIn`'s cache guard).
       await new Promise((resolve) => setTimeout(resolve, 0));
       expect(getMentioningContainersSpy).not.toHaveBeenCalled();
+    });
+  });
+
+  // A write that reaches the database without going through sharedNodeStore
+  // (onboarding's identity step, a playbook install, the CLI, an agent) is
+  // visible to the UI only through these events. The store may already hold
+  // a stale copy of the node from before the write.
+  describe('Out-of-band backend writes', () => {
+    beforeEach(async () => {
+      await initializeTauriSyncListeners();
+    });
+
+    afterEach(() => {
+      clearSchemaRefreshTimer();
+      schemasStore.schemas = [];
+    });
+
+    it('node:updated replaces a stale cached copy with the backend version', async () => {
+      const stale = { ...createTestNode('person-1', ''), nodeType: 'person' };
+      sharedNodeStore.setNode(stale, { type: 'database', reason: 'test' }, true);
+
+      registerMockNode({
+        ...stale,
+        title: 'Ada Lovelace',
+        properties: { first_name: 'Ada', last_name: 'Lovelace', email: 'ada@example.com' },
+        version: 2
+      } as Node);
+
+      emitTauriEvent('node:updated', { id: 'person-1' });
+
+      await vi.waitFor(() => {
+        const node = sharedNodeStore.getNode('person-1');
+        expect(node?.version).toBe(2);
+        expect(node?.title).toBe('Ada Lovelace');
+      });
+    });
+
+    it('node:created for a schema adds it to the sidebar type list', async () => {
+      const spec: SchemaNode = {
+        id: 'spec',
+        content: 'Spec',
+        createdAt: new Date().toISOString(),
+        modifiedAt: new Date().toISOString(),
+        version: 1,
+        isCore: false,
+        schemaVersion: 1,
+        description: '',
+        fields: []
+      };
+      vi.spyOn(backendAdapterModule.backendAdapter, 'getAllSchemas').mockResolvedValue([spec]);
+      vi.spyOn(backendAdapterModule.backendAdapter, 'getSchema').mockResolvedValue(spec);
+      expect(schemasStore.customSchemas).toEqual([]);
+
+      emitTauriEvent('node:created', { id: 'spec', nodeType: 'schema' });
+
+      await vi.waitFor(
+        () => {
+          expect(schemasStore.customSchemas.map((s) => s.id)).toEqual(['spec']);
+        },
+        { timeout: 1000 }
+      );
     });
   });
 
