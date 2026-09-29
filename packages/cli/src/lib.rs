@@ -325,6 +325,8 @@ const ERROR_PIPE_BUSY: i32 = 231;
 
 /// How many times a busy pipe is re-tried, and the pause between tries. The
 /// budget (~1s) only applies to `ERROR_PIPE_BUSY`; an absent pipe fails at once.
+/// `pub` so the cross-platform tests and the Windows dial share one budget without
+/// a dead-code warning on Unix builds.
 pub const PIPE_BUSY_RETRIES: u32 = 20;
 pub const PIPE_BUSY_DELAY: std::time::Duration = std::time::Duration::from_millis(50);
 
@@ -747,8 +749,22 @@ mod connect_failure_tests {
     #[test]
     fn classify_connect_error_distinguishes_busy_from_absent() {
         const ERROR_FILE_NOT_FOUND: i32 = 2;
-        let busy = anyhow::Error::new(std::io::Error::from_raw_os_error(ERROR_PIPE_BUSY))
-            .context("transport error");
+        // Mirror tonic's real shape: a wrapper error whose `source()` is the io error.
+        #[derive(Debug)]
+        struct Transport(std::io::Error);
+        impl std::fmt::Display for Transport {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(f, "transport error")
+            }
+        }
+        impl std::error::Error for Transport {
+            fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+                Some(&self.0)
+            }
+        }
+        let busy = anyhow::Error::new(Transport(std::io::Error::from_raw_os_error(
+            ERROR_PIPE_BUSY,
+        )));
         assert_eq!(classify_connect_error(&busy), ConnectFailure::DaemonBusy);
 
         let absent = anyhow::Error::new(std::io::Error::from_raw_os_error(ERROR_FILE_NOT_FOUND));
