@@ -11,6 +11,7 @@
 import { collectionsData, collectionsState } from '$lib/stores/collections.svelte';
 import { schemasData } from '$lib/stores/schemas.svelte';
 import { aiChatsData } from '$lib/stores/ai-chats.svelte';
+import { savedQueriesData } from '$lib/stores/saved-queries.svelte';
 import { createLogger } from '$lib/utils/logger';
 
 const log = createLogger('CollectionRefresh');
@@ -124,5 +125,35 @@ export function clearAiChatRefreshTimer(): void {
   if (aiChatRefreshTimer) {
     clearTimeout(aiChatRefreshTimer);
     aiChatRefreshTimer = null;
+  }
+}
+
+// Debounce timer for saved-query refreshes
+let savedQueryRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+
+/**
+ * Debounced refresh of the saved queries listed under each node type in the
+ * sidebar. Called when a query node is created, updated or deleted, including
+ * out-of-band writes such as a playbook install.
+ */
+export function scheduleSavedQueryRefresh(): void {
+  if (savedQueryRefreshTimer) {
+    clearTimeout(savedQueryRefreshTimer);
+  }
+
+  savedQueryRefreshTimer = setTimeout(async () => {
+    savedQueryRefreshTimer = null;
+    log.debug('Refreshing saved queries after change');
+    await savedQueriesData.loadSavedQueries();
+  }, COLLECTION_REFRESH_DEBOUNCE_MS);
+}
+
+/**
+ * Clear any pending saved-query refresh timer.
+ */
+export function clearSavedQueryRefreshTimer(): void {
+  if (savedQueryRefreshTimer) {
+    clearTimeout(savedQueryRefreshTimer);
+    savedQueryRefreshTimer = null;
   }
 }

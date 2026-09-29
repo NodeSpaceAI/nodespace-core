@@ -31,11 +31,13 @@ import { createLogger } from '$lib/utils/logger';
 import {
   scheduleCollectionRefresh,
   scheduleSchemaRefresh,
-  scheduleAiChatRefresh
+  scheduleAiChatRefresh,
+  scheduleSavedQueryRefresh
 } from '$lib/utils/collection-refresh';
 import { registerSchemaPlugin, unregisterSchemaPlugin } from '$lib/plugins/schema-plugin-loader';
 import { applyHasChildCreated, applyHasChildUpdated, applyHasChildDeleted } from './hierarchy-sync';
 import { normalizeNodeData } from './node-normalize';
+import { savedQueriesData } from '$lib/stores/saved-queries.svelte';
 import { isActiveDatabaseEvent } from '$lib/stores/database.svelte';
 
 const log = createLogger('TauriSync');
@@ -174,6 +176,7 @@ async function flushPendingNodeFetches(): Promise<void> {
           );
           maybeRefreshSchemaPlugin(normalizedNode);
           maybeRefreshAiChats(normalizedNode);
+          maybeRefreshSavedQueries(normalizedNode);
           applied++;
         } catch (error) {
           log.error('burst-coalesce: failed to apply node', { nodeId: chunk[i], error });
@@ -229,6 +232,16 @@ function maybeRefreshSchemaPlugin(node: Node): void {
 function maybeRefreshAiChats(node: Node): void {
   if (node.nodeType !== 'ai-chat') return;
   scheduleAiChatRefresh();
+}
+
+/**
+ * If the given (already-fetched) node is a query, schedule a debounced refresh
+ * of the saved queries listed in the sidebar. Gated on the fetched node's type
+ * for the same reason as `maybeRefreshAiChats`: `node:updated` carries no type.
+ */
+function maybeRefreshSavedQueries(node: Node): void {
+  if (node.nodeType !== 'query') return;
+  scheduleSavedQueryRefresh();
 }
 
 // ---------------------------------------------------------------------------
@@ -377,6 +390,11 @@ export async function initializeTauriSyncListeners(): Promise<void> {
         );
       }
 
+      // If a query node is created, refresh the saved queries in the sidebar
+      if (event.payload.nodeType === 'query') {
+        scheduleSavedQueryRefresh();
+      }
+
       // Fetch full node data since the node might be in the current view.
       // Bursts are coalesced into one render per chunk.
       enqueueNodeFetch(event.payload.id);
@@ -406,6 +424,12 @@ export async function initializeTauriSyncListeners(): Promise<void> {
       // For simplicity, we rely on the UI to handle stale data gracefully
       // A more robust solution would cache node types or include type in delete events
       unregisterSchemaPlugin(event.payload.id);
+
+      // The delete event carries no node type, so refresh only when the
+      // deleted node is a listed saved query.
+      if (savedQueriesData.has(event.payload.id)) {
+        scheduleSavedQueryRefresh();
+      }
     });
 
     // ========================================================================

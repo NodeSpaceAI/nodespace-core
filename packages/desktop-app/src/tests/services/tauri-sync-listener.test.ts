@@ -7,8 +7,13 @@ import type { SchemaNode } from '$lib/types/schema-node';
 import * as backendAdapterModule from '$lib/services/backend-adapter';
 import { pluginRegistry } from '$lib/plugins/plugin-registry';
 import { aiChatsData } from '$lib/stores/ai-chats.svelte';
-import { clearAiChatRefreshTimer, clearSchemaRefreshTimer } from '$lib/utils/collection-refresh';
 import { schemasStore } from '$lib/stores/schemas.svelte';
+import { savedQueriesData } from '$lib/stores/saved-queries.svelte';
+import {
+  clearAiChatRefreshTimer,
+  clearSavedQueryRefreshTimer,
+  clearSchemaRefreshTimer
+} from '$lib/utils/collection-refresh';
 
 /**
  * Tests for Tauri Domain Event Listener
@@ -159,6 +164,8 @@ describe('TauriSyncListener', () => {
     vi.restoreAllMocks();
     aiChatsData.reset();
     clearAiChatRefreshTimer();
+    savedQueriesData.reset();
+    clearSavedQueryRefreshTimer();
     // This file installs the Tauri bridge markers; clear them rather than relying on a
     // later file's setup to do it, which only works by accident of ordering.
     Reflect.deleteProperty(window, '__TAURI__');
@@ -436,6 +443,83 @@ describe('TauriSyncListener', () => {
         },
         { timeout: 1000 }
       );
+    });
+  });
+
+  // Saved queries are listed under their node type in the sidebar; a query
+  // created, renamed or deleted out-of-band (e.g. a playbook install) must
+  // reach that list without a reload.
+  describe('saved queries sidebar refresh', () => {
+    beforeEach(async () => {
+      await initializeTauriSyncListeners();
+    });
+
+    function mockQueryNode(id: string, name: string, targetType: string): Node {
+      return {
+        id,
+        nodeType: 'query',
+        content: name,
+        targetType,
+        properties: {},
+        mentions: [],
+        createdAt: new Date().toISOString(),
+        modifiedAt: new Date().toISOString(),
+        version: 1
+      } as unknown as Node;
+    }
+
+    it('lists a query created externally under its target type', async () => {
+      const created = mockQueryNode('q1', 'Specs by Status', 'spec');
+      registerMockNode(created);
+      vi.spyOn(backendAdapterModule.backendAdapter, 'queryNodes').mockResolvedValue([created]);
+
+      emitTauriEvent('node:created', { id: 'q1', nodeType: 'query' });
+
+      await vi.waitFor(
+        () => {
+          expect(savedQueriesData.forType('spec').map((q) => q.name)).toEqual(['Specs by Status']);
+        },
+        { timeout: 1000 }
+      );
+    });
+
+    it('reflects a rename delivered as node:updated (payload has no nodeType)', async () => {
+      const renamed = mockQueryNode('q1', 'Renamed', 'spec');
+      registerMockNode(renamed);
+      vi.spyOn(backendAdapterModule.backendAdapter, 'queryNodes').mockResolvedValue([renamed]);
+
+      emitTauriEvent('node:updated', { id: 'q1' });
+
+      await vi.waitFor(
+        () => {
+          expect(savedQueriesData.forType('spec').map((q) => q.name)).toEqual(['Renamed']);
+        },
+        { timeout: 1000 }
+      );
+    });
+
+    it('drops a listed query when it is deleted', async () => {
+      savedQueriesData.queries = [{ id: 'q1', name: 'Gone', targetType: 'spec' }];
+      vi.spyOn(backendAdapterModule.backendAdapter, 'queryNodes').mockResolvedValue([]);
+
+      emitTauriEvent('node:deleted', { id: 'q1' });
+
+      await vi.waitFor(() => expect(savedQueriesData.queries).toEqual([]), { timeout: 1000 });
+    });
+
+    it('does not reload saved queries for a non-query node update', async () => {
+      registerMockNode(createTestNode('node1', 'Just a text node'));
+      const queryNodesSpy = vi
+        .spyOn(backendAdapterModule.backendAdapter, 'queryNodes')
+        .mockResolvedValue([]);
+
+      emitTauriEvent('node:updated', { id: 'node1' });
+
+      await vi.waitFor(() => {
+        expect(sharedNodeStore.hasNode('node1')).toBe(true);
+      });
+      await new Promise((resolve) => setTimeout(resolve, 350));
+      expect(queryNodesSpy).not.toHaveBeenCalled();
     });
   });
 

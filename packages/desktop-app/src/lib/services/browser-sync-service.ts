@@ -23,7 +23,12 @@ import { structureTree } from '$lib/stores/reactive-structure-tree.svelte';
 import type { ModelLoadProgressSseEvent, SseEvent } from '$lib/types/sse-events';
 import { backendAdapter } from './backend-adapter';
 import { createLogger } from '$lib/utils/logger';
-import { scheduleCollectionRefresh, scheduleSchemaRefresh } from '$lib/utils/collection-refresh';
+import {
+  scheduleCollectionRefresh,
+  scheduleSchemaRefresh,
+  scheduleSavedQueryRefresh
+} from '$lib/utils/collection-refresh';
+import { savedQueriesData } from '$lib/stores/saved-queries.svelte';
 import { registerSchemaPlugin, unregisterSchemaPlugin } from '$lib/plugins/schema-plugin-loader';
 import { applyHasChildCreated, applyHasChildUpdated, applyHasChildDeleted } from './hierarchy-sync';
 import { normalizeNodeData } from './node-normalize';
@@ -225,6 +230,11 @@ class BrowserSyncService {
           );
         }
 
+        // If a query node is created, refresh the saved queries in the sidebar
+        if (event.nodeType === 'query') {
+          scheduleSavedQueryRefresh();
+        }
+
         // Fetch full node data only if we need to display it — for a node
         // this session hasn't seen before, always fetch, since it might
         // belong in the current view (sidebar list, tree, ...).
@@ -253,6 +263,11 @@ class BrowserSyncService {
 
       case 'nodeUpdated': {
         log.debug('Node updated:', event.nodeId);
+        // A rename of a listed saved query changes its sidebar entry. (A retarget
+        // of an unlisted query is caught after the fetch below.)
+        if (savedQueriesData.has(event.nodeId)) {
+          scheduleSavedQueryRefresh();
+        }
         // Only fetch if node is already in the store (visible to user)
         // This avoids unnecessary API calls for nodes not in the current view
         if (sharedNodeStore.hasNode(event.nodeId)) {
@@ -270,6 +285,9 @@ class BrowserSyncService {
         // but if we have it cached in collectionsData, we should refresh
         // For simplicity, we rely on the UI to handle stale data gracefully
         unregisterSchemaPlugin(event.nodeId);
+        if (savedQueriesData.has(event.nodeId)) {
+          scheduleSavedQueryRefresh();
+        }
         break;
 
       // ======================================================================
@@ -362,6 +380,11 @@ class BrowserSyncService {
           registerSchemaPlugin(normalizedNode.id).catch((err) =>
             log.error('Failed to refresh schema plugin on node event:', err)
           );
+        }
+        // Like `nodeType` on the payload, only the fetched node reveals that an
+        // update touched a query (e.g. a retarget into a listed type).
+        if (normalizedNode.nodeType === 'query') {
+          scheduleSavedQueryRefresh();
         }
         log.debug(`${eventType}: updated store for node`, nodeId);
       } else {

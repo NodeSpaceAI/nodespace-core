@@ -19,11 +19,13 @@
   import { onMount, onDestroy } from 'svelte';
   import { schemasStore, schemasData } from '$lib/stores/schemas.svelte';
   import { aiChatsData } from '$lib/stores/ai-chats.svelte';
+  import { savedQueriesData } from '$lib/stores/saved-queries.svelte';
   import { labsFlags } from '$lib/stores/labs-flags.svelte';
   import {
     clearCollectionRefreshTimer,
     clearSchemaRefreshTimer,
-    clearAiChatRefreshTimer
+    clearAiChatRefreshTimer,
+    clearSavedQueryRefreshTimer
   } from '$lib/utils/collection-refresh';
   import { aiChatDisplayTitle } from '$lib/utils/ai-chat-title';
 
@@ -136,6 +138,7 @@
     collectionsData.loadCollections();
     schemasData.loadSchemas();
     aiChatsData.loadAiChats();
+    savedQueriesData.loadSavedQueries();
   });
 
   // Cancel any pending debounced refreshes when the sidebar is destroyed
@@ -144,6 +147,7 @@
     clearCollectionRefreshTimer();
     clearSchemaRefreshTimer();
     clearAiChatRefreshTimer();
+    clearSavedQueryRefreshTimer();
   });
 
   // Element references for click-outside detection
@@ -228,8 +232,12 @@
     // `nodeType: 'query'` routes the tab to QueryNodeViewer; the viewer itself
     // branches on the loaded node (schema id → default type view, query id →
     // saved query) rather than trusting this decorative flag.
-    // TODO: nest materialized saved queries under their type here.
     getNavigationService().focusOrOpenNode(schemaId, { nodeType: 'query' });
+  }
+
+  /** Open (or focus) a saved query node listed under its target type. */
+  function handleSavedQueryClick(queryId: string) {
+    getNavigationService().focusOrOpenNode(queryId, { nodeType: 'query' });
   }
 
   /**
@@ -561,6 +569,7 @@
                 <button class="schema-type-item" onclick={() => handleSchemaClick(schema.id)}>
                   <span class="schema-type-name">{schema.content}</span>
                 </button>
+                {@render savedQueries(schema.id)}
               {/each}
 
               {#if customSchemas.length > 0}
@@ -571,6 +580,7 @@
                   <button class="schema-type-item" onclick={() => handleSchemaClick(schema.id)}>
                     <span class="schema-type-name">{schema.content}</span>
                   </button>
+                  {@render savedQueries(schema.id)}
                 {/each}
               {/if}
             {/if}
@@ -743,6 +753,18 @@
   </div>
 
 </nav>
+
+{#snippet savedQueries(typeId: string)}
+  {#each savedQueriesData.forType(typeId) as query (query.id)}
+    <button
+      class="schema-type-item saved-query-item"
+      data-testid="saved-query-item"
+      onclick={() => handleSavedQueryClick(query.id)}
+    >
+      <span class="schema-type-name">{query.name}</span>
+    </button>
+  {/each}
+{/snippet}
 
 <style>
   .sidebar {
@@ -1093,6 +1115,11 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  /* Saved query nested under its type: indented one step past the type name. */
+  .saved-query-item {
+    padding-left: 4.75rem;
   }
 
   .schema-type-separator {

@@ -5,12 +5,14 @@ const {
   mockLoadMembers,
   mockLoadSchemas,
   mockLoadAiChats,
+  mockLoadSavedQueries,
   mockCollectionsState
 } = vi.hoisted(() => {
   const mockLoadCollections = vi.fn().mockResolvedValue(undefined);
   const mockLoadMembers = vi.fn().mockResolvedValue(undefined);
   const mockLoadSchemas = vi.fn().mockResolvedValue(undefined);
   const mockLoadAiChats = vi.fn().mockResolvedValue(undefined);
+  const mockLoadSavedQueries = vi.fn().mockResolvedValue(undefined);
 
   // Minimal rune-store-like mock: exposes a reactive-style `state` field.
   // `set` is a test helper to configure that field.
@@ -26,6 +28,7 @@ const {
     mockLoadMembers,
     mockLoadSchemas,
     mockLoadAiChats,
+    mockLoadSavedQueries,
     mockCollectionsState
   };
 });
@@ -41,6 +44,12 @@ vi.mock('$lib/stores/collections.svelte', () => ({
 vi.mock('$lib/stores/schemas.svelte', () => ({
   schemasData: {
     loadSchemas: (...args: unknown[]) => mockLoadSchemas(...args)
+  }
+}));
+
+vi.mock('$lib/stores/saved-queries.svelte', () => ({
+  savedQueriesData: {
+    loadSavedQueries: (...args: unknown[]) => mockLoadSavedQueries(...args)
   }
 }));
 
@@ -65,7 +74,9 @@ import {
   scheduleSchemaRefresh,
   clearSchemaRefreshTimer,
   scheduleAiChatRefresh,
-  clearAiChatRefreshTimer
+  clearAiChatRefreshTimer,
+  scheduleSavedQueryRefresh,
+  clearSavedQueryRefreshTimer
 } from '$lib/utils/collection-refresh';
 
 describe('Collection Refresh', () => {
@@ -213,6 +224,33 @@ describe('Collection Refresh', () => {
       await vi.advanceTimersByTimeAsync(300);
 
       expect(mockLoadAiChats).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('scheduleSavedQueryRefresh', () => {
+    afterEach(() => {
+      clearSavedQueryRefreshTimer();
+    });
+
+    it('refreshes saved queries once after the debounce delay, coalescing bursts', async () => {
+      scheduleSavedQueryRefresh();
+      scheduleSavedQueryRefresh();
+      scheduleSavedQueryRefresh();
+
+      expect(mockLoadSavedQueries).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(300);
+
+      expect(mockLoadSavedQueries).toHaveBeenCalledTimes(1);
+    });
+
+    it('clearSavedQueryRefreshTimer cancels a pending refresh', async () => {
+      scheduleSavedQueryRefresh();
+      clearSavedQueryRefreshTimer();
+
+      await vi.advanceTimersByTimeAsync(300);
+
+      expect(mockLoadSavedQueries).not.toHaveBeenCalled();
     });
   });
 
