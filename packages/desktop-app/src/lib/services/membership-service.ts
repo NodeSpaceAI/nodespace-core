@@ -69,6 +69,42 @@ export interface JoinableCollection {
 	restricted: boolean;
 }
 
+/**
+ * One row of the active workspace's (tenant's) roster. `status === 'pending'`
+ * rows are admissions waiting for an owner or tenant admin to approve them.
+ */
+export interface TenantMember {
+	/** Person node id — the handle {@link MembershipService.approveAdmission} takes. */
+	personId: string;
+	/** Signed-in email; `''` when the cloud has none on file. */
+	email: string;
+	/** `'owner' | 'tenant_admin' | 'member'` (open set). */
+	role: string;
+	/** `'pending' | 'active'`. */
+	status: string;
+}
+
+/** Result of {@link MembershipService.initiateAdmission}. */
+export interface AdmissionResult {
+	/** `'initiated'` (a new pending admission) or `'already_member'`. */
+	outcome: string;
+	personId: string;
+	/** The invitee's admission status after the call. */
+	status: string;
+}
+
+/** Tenant roles allowed to approve admissions (the cloud enforces the same set). */
+const TENANT_ADMIN_ROLES = new Set(['owner', 'tenant_admin']);
+
+/**
+ * Whether `member` may approve admissions and manage the workspace roster: an
+ * ACTIVE owner or tenant admin. A pending owner/admin row (never expected, but
+ * the status is authoritative) does not qualify.
+ */
+export function isTenantAdmin(member: TenantMember | undefined): boolean {
+	return !!member && member.status === 'active' && TENANT_ADMIN_ROLES.has(member.role);
+}
+
 // Raw wire shapes (snake_case, as serialized by the Rust command DTOs).
 interface RawMember {
 	person_id: string;
@@ -89,6 +125,17 @@ interface RawRequest {
 interface RawPerson {
 	person_id: string;
 	email: string;
+}
+interface RawTenantMember {
+	person_id: string;
+	email: string;
+	role: string;
+	status: string;
+}
+interface RawAdmission {
+	outcome: string;
+	person_id: string;
+	status: string;
 }
 interface RawJoinableCollection {
 	id: string;
@@ -240,6 +287,38 @@ export class MembershipService {
 	async currentPerson(): Promise<Person> {
 		const p = await invoke<RawPerson>('pro_current_person');
 		return { personId: p.person_id, email: p.email };
+	}
+
+	/**
+	 * The active workspace's roster, pending admissions included. Readable by
+	 * any active member; the Rust command rewrites daemon errors into
+	 * actionable sentences, so callers can surface the rejection message as-is.
+	 */
+	async listTenantMembers(): Promise<TenantMember[]> {
+		const rows = await invoke<RawTenantMember[]>('pro_list_tenant_members');
+		return rows.map((r) => ({
+			personId: r.person_id,
+			email: r.email,
+			role: r.role,
+			status: r.status
+		}));
+	}
+
+	/** Approve a pending admission (owner / tenant admin only, server-gated). */
+	async approveAdmission(personId: string): Promise<void> {
+		log.debug('approveAdmission', { personId });
+		await invoke<void>('pro_approve_admission', { personId });
+	}
+
+	/**
+	 * Invite someone to the active workspace by email. Creates a pending
+	 * admission that an owner or tenant admin then approves; the invitee must
+	 * already have a NodeSpace Pro account.
+	 */
+	async initiateAdmission(email: string): Promise<AdmissionResult> {
+		log.debug('initiateAdmission');
+		const r = await invoke<RawAdmission>('pro_initiate_admission', { email });
+		return { outcome: r.outcome, personId: r.person_id, status: r.status };
 	}
 }
 

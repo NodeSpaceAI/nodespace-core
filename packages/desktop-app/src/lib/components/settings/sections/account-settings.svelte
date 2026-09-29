@@ -32,6 +32,8 @@
   import { Button } from '$lib/components/ui/button';
   import { Card, CardHeader, CardContent } from '$lib/components/ui/card';
   import InvitationsInbox from '$lib/components/collaboration/invitations-inbox.svelte';
+  import WorkspaceMembersCard from './workspace-members-card.svelte';
+  import { databaseStore } from '$lib/stores/database.svelte';
   import { createLogger } from '$lib/utils/logger';
   import { toError } from '$lib/types/errors';
 
@@ -71,6 +73,7 @@
     try {
       const identity = await invoke<{ personId: string; email: string }>('pro_current_person');
       identityEmail = identity.email;
+      if (identityEmail) void loadPendingWorkspaces();
     } catch (err) {
       log.warn('pro_current_person invoke failed', { error: toError(err) });
       identityEmail = '';
@@ -82,6 +85,31 @@
   $effect(() => {
     void loadIdentity();
   });
+
+  // Workspaces the signed-in user has joined but not yet been approved into.
+  // `pro_list_tenant_memberships` is global (every tenant the account belongs
+  // to, with its authoritative status), so this is accurate whichever
+  // database is active. Best-effort: a failure just omits the notice.
+  let pendingWorkspaces = $state<string[]>([]);
+
+  async function loadPendingWorkspaces(): Promise<void> {
+    try {
+      const result = await invoke<{ memberships: { schema: string; status: string }[] }>(
+        'pro_list_tenant_memberships'
+      );
+      pendingWorkspaces = result.memberships
+        .filter((m) => m.status === 'pending')
+        .map((m) => workspaceLabel(m.schema));
+    } catch (err) {
+      log.warn('pro_list_tenant_memberships invoke failed', { error: toError(err) });
+      pendingWorkspaces = [];
+    }
+  }
+
+  function workspaceLabel(schema: string): string {
+    const bare = schema.replace(/^tenant_/, '').replace(/_/g, ' ').trim();
+    return bare.length ? bare.charAt(0).toUpperCase() + bare.slice(1) : 'a workspace';
+  }
 
   let signingOut = $state(false);
   let inboxOpen = $state(false);
@@ -96,6 +124,7 @@
       // sign-out handler — identity is per-session).
       membership.reset();
       identityEmail = '';
+      pendingWorkspaces = [];
       log.info('signed out');
     } finally {
       signingOut = false;
@@ -135,6 +164,12 @@
         <p class="text-muted-foreground m-0 text-sm leading-relaxed">
           Signed in as <span class="text-foreground font-medium">{identityEmail}</span>.
         </p>
+        {#each pendingWorkspaces as workspace, i (i)}
+          <p class="text-foreground mt-2 mb-0 text-sm leading-relaxed" data-testid="pending-approval">
+            Waiting for approval to join <span class="font-medium">{workspace}</span>. A workspace
+            owner or admin needs to approve you — you'll get access as soon as they do.
+          </p>
+        {/each}
       {:else}
         <p class="text-muted-foreground m-0 text-sm leading-relaxed">
           Not signed in.
@@ -183,6 +218,12 @@
       </CardContent>
     {/if}
   </Card>
+
+  {#if syncUiEnabled && signedIn}
+    {#key databaseStore.activeDatabaseId}
+      <WorkspaceMembersCard />
+    {/key}
+  {/if}
 </div>
 
 {#if syncUiEnabled}

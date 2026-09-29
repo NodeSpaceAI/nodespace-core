@@ -293,6 +293,17 @@ class DatabaseStore {
   private proActivateChain: Promise<void> = Promise.resolve();
 
   /**
+   * Resolves once every `pro_activate_database` re-target queued so far has
+   * settled (never rejects). A view that queries the daemon's CURRENT tenant
+   * right after a switch — e.g. the workspace-members card, which re-mounts
+   * on `activeDatabaseId` — awaits this first; otherwise its query can reach
+   * the daemon while it still points at the previous database's tenant.
+   */
+  proSyncSettled(): Promise<void> {
+    return this.proActivateChain.catch(() => {});
+  }
+
+  /**
    * Re-target the Pro cloud-sync session to `id` (ADR-053 single-active sync).
    * Called both from `load()`'s first resolution (so a fresh launch's default
    * selection is the daemon's sync target from the start, not just after the

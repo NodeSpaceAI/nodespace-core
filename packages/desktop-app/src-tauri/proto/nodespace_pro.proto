@@ -122,6 +122,18 @@ service CloudSyncService {
   rpc ListTenantMembers (ListTenantMembersRequest) returns (ListTenantMembersResponse);
   rpc SetTenantRole (SetTenantRoleRequest) returns (MembershipAck);
   rpc TransferOwnership (TransferOwnershipRequest) returns (MembershipAck);
+
+  // Tenant-admission "initiate" half. Any ACTIVE
+  // tenant member (any role) may invite a new person by email. The invitee's
+  // Supabase uid — the identity `initiate_admission` actually keys on, never
+  // email (ADR-066) — is resolved first via a dedicated cloud-worker endpoint
+  // backed by the Admin API; the daemon adds no authorization of its own
+  // beyond forwarding the caller's JWT to both calls.
+  rpc InitiateAdmission (InitiateAdmissionRequest) returns (InitiateAdmissionResponse);
+  // Tenant-admission "approve" half. An active tenant admin flips a pending
+  // admission to active. Thin JWT-forwarding call over the cloud
+  // `approve_admission` RPC, which enforces the admin gate server-side.
+  rpc ApproveAdmission (ApproveAdmissionRequest) returns (MembershipAck);
 }
 
 // --- Messages -----------------------------------------------------
@@ -389,4 +401,17 @@ message SetTenantRoleRequest {
 }
 message TransferOwnershipRequest {
   string person_id = 1;  // the person to make the new sole owner
+}
+
+// --- Tenant-admission initiate/approve -------
+message InitiateAdmissionRequest {
+  string email = 1;  // invitee's email — resolved to a Supabase uid server-side
+}
+message InitiateAdmissionResponse {
+  string outcome = 1;         // "initiated" | "already_member"
+  string person_node_id = 2;  // the invitee's (new or existing) person node id
+  string status = 3;          // "pending" | "active" | "suspended" | "removed"
+}
+message ApproveAdmissionRequest {
+  string person_id = 1;  // target person node (a pending admission)
 }
