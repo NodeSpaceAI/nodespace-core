@@ -77,6 +77,8 @@ const STORE_IMPLEMENTATION = 'lib/services/shared-node-store.svelte.ts';
  * reason means and why it doesn't need a same-file pin call.
  */
 const REACHABLE_WITHOUT_PIN: Record<string, string> = {
+  'lib/services/mention-node-service.ts':
+    'Caches the node it just created; its id becomes the root of the tab base-node.svelte opens for it immediately after, which is the open-tab root the eviction design carves out.',
   'lib/design/components/base-node-viewer.svelte':
     'Reads the viewer\'s own nodeId and its structureTree children/descendants — the document tree it renders.',
   'lib/design/components/person-node.svelte':

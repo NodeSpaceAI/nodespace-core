@@ -16,7 +16,10 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use nodespace_app_lib::commands::methodology::install_methodology;
-use nodespace_app_lib::commands::nodes::{create_node, update_node, CreateNodeInput};
+use nodespace_app_lib::commands::nodes::{
+    create_node, create_relationship, delete_relationship, update_node,
+    update_relationship_properties, CreateNodeInput,
+};
 use nodespace_app_lib::commands::onboarding::set_local_identity;
 use nodespace_app_lib::types::NodeUpdate;
 use nodespace_app_lib::watcher;
@@ -189,6 +192,110 @@ async fn a_windows_store_writes_still_do_not_echo_back() {
         own_echoes.is_empty(),
         "the window's own store writes echoed back: {own_echoes:?}"
     );
+
+    cancel_token.cancel();
+    let _ = tokio::time::timeout(Duration::from_secs(5), watcher_handle).await;
+}
+
+/// `relationship:*` events (name, relationship type) the window saw.
+type SeenRels = Arc<Mutex<Vec<(String, String)>>>;
+
+fn record_relationship_events(handle: &AppHandle<tauri::test::MockRuntime>) -> SeenRels {
+    let seen: SeenRels = Arc::new(Mutex::new(Vec::new()));
+    for name in [
+        "relationship:created",
+        "relationship:updated",
+        "relationship:deleted",
+    ] {
+        let seen = seen.clone();
+        handle.listen(name, move |event| {
+            if let Ok(v) = serde_json::from_str::<Value>(event.payload()) {
+                if let Some(t) = v["relationshipType"].as_str() {
+                    seen.lock().unwrap().push((name.to_string(), t.to_string()));
+                }
+            }
+        });
+    }
+    seen
+}
+
+/// The relationship viewer's typed-edge commands are not applied by the
+/// frontend store, so their events must reach this window (the listener, not
+/// the store, is the only thing that can react to them).
+#[tokio::test]
+async fn a_windows_typed_relationship_edits_reach_its_own_watcher() {
+    let daemon = SpawnedDaemon::spawn();
+    let window = TauriTestApp::connect(&daemon, DAEMON_CONNECT_TIMEOUT).await;
+    let state = window.client_state();
+    let handle = window.handle();
+    let _socket_guard = hold_connect_mutex_and_socket_env(&daemon).await;
+
+    let seen = record_relationship_events(&handle);
+    let cancel_token = CancellationToken::new();
+    let watcher_handle = tokio::spawn(watcher::run(
+        handle.clone(),
+        (*state).clone(),
+        cancel_token.child_token(),
+    ));
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    // `blocks` is declared on the core `task` schema.
+    let (a, b) = (
+        uuid::Uuid::new_v4().to_string(),
+        uuid::Uuid::new_v4().to_string(),
+    );
+    for id in [&a, &b] {
+        let mut input = text_input(id, "task");
+        input.node_type = "task".to_string();
+        create_node(state.clone(), input)
+            .await
+            .expect("create task failed");
+    }
+
+    let wait_for = |what: &'static str, name: &'static str| {
+        let seen = seen.clone();
+        async move {
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+            loop {
+                if seen
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|(n, t)| n == name && t == "blocks")
+                {
+                    return;
+                }
+                if tokio::time::Instant::now() >= deadline {
+                    panic!(
+                        "timed out waiting for {what}; saw {:?}",
+                        seen.lock().unwrap()
+                    );
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        }
+    };
+
+    create_relationship(state.clone(), a.clone(), "blocks".into(), b.clone(), None)
+        .await
+        .expect("create_relationship failed");
+    wait_for("relationship:created for blocks", "relationship:created").await;
+
+    update_relationship_properties(
+        state.clone(),
+        a.clone(),
+        "blocks".into(),
+        b.clone(),
+        json!({}),
+    )
+    .await
+    .expect("update_relationship_properties failed");
+    wait_for("relationship:updated for blocks", "relationship:updated").await;
+
+    delete_relationship(state.clone(), a.clone(), "blocks".into(), b.clone())
+        .await
+        .expect("delete_relationship failed");
+    wait_for("relationship:deleted for blocks", "relationship:deleted").await;
 
     cancel_token.cancel();
     let _ = tokio::time::timeout(Duration::from_secs(5), watcher_handle).await;

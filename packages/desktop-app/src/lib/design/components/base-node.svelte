@@ -48,6 +48,7 @@
   } from '$lib/services/slash-command-service';
   import { getIconConfig, resolveNodeState, type NodeType } from '$lib/design/icons/registry';
   import { backendAdapter } from '$lib/services/backend-adapter';
+  import { createMentionTargetNode } from '$lib/services/mention-node-service';
   import { getNodeServices } from '$lib/contexts/node-service-context.svelte';
   import { focusManager } from '$lib/services/focus-manager.svelte';
   import type { Node as NodeData } from '$lib/types/node';
@@ -394,22 +395,7 @@
         return null;
       }
 
-      const { v4: uuidv4 } = await import('uuid');
-
-      const newNodeId = uuidv4();
-
-      // Create node via backendAdapter (TauriAdapter in desktop, HttpAdapter in browser dev)
-      // Note: Sibling ordering is now handled by the backend via sibling_order column,
-      // so we don't need to pass beforeSiblingId here.
-      await backendAdapter.createNode({
-        id: newNodeId,
-        content: title,
-        nodeType: 'text',
-        properties: {}
-      });
-
-      // The store does not get this node from an event (the daemon suppresses
-      // this window's own create_node echo); the tab opened below loads it.
+      const newNodeId = await createMentionTargetNode(title);
 
       // Open the newly created node in a new tab (without focusing it)
       // This allows users to continue working while having the new node ready for later
