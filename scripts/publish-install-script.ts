@@ -27,6 +27,10 @@
  *   bun run scripts/publish-install-script.ts <version> --push      # pushes to nodespace-website's
  *                                                                    # main branch
  *
+ *   bun run scripts/publish-install-script.ts drift-check          # compares the pin in the website
+ *                                                                   # repo AND on the live site against
+ *                                                                   # the latest release; exits 1 on mismatch
+ *
  * WEBSITE_DEPLOY_TOKEN is required either way: a PAT (or fine-grained token)
  * with `contents: write` on NodeSpaceAI/nodespace-website, set as a repo
  * secret once this is wired into the release flow -- `secrets.GITHUB_TOKEN`
@@ -191,14 +195,116 @@ async function pushInstallScriptUpdate(version: string, token: string): Promise<
   }
 }
 
+export const LIVE_INSTALL_SCRIPT_URL = "https://nodespace.ai/install.sh";
+
+/** Extracts the pinned tag from install.sh content, or null if there is no
+ * pin line. Pure -- no network. */
+export function extractPin(installShContent: string): string | null {
+  const line = installShContent.match(VERSION_PIN_RE)?.[0];
+  if (!line) return null;
+  return line.match(/"([^"]+)"/)?.[1] ?? null;
+}
+
+export type InstallScriptDrift =
+  | { kind: "ok" }
+  | { kind: "repo-stale"; repoPin: string | null; livePin: string | null }
+  | { kind: "deploy-stale"; repoPin: string; livePin: string | null };
+
+/** Pure decision logic. Two distinct failures, because the fix differs:
+ * `repo-stale` means the release sync never advanced the pin in the website
+ * repo (rerun this script with --push); `deploy-stale` means the repo is
+ * current but the live site serves something older (the website's hosting
+ * is not deploying its main branch -- nothing to fix from this repo).
+ * `repoPin` is null when the repo copy could not be checked (no token), in
+ * which case only the live copy is compared. */
+export function classifyInstallScriptDrift(
+  repoPin: string | null | undefined,
+  livePin: string | null,
+  latestTag: string,
+): InstallScriptDrift {
+  const latest = normalizeTag(latestTag);
+  const norm = (p: string | null | undefined) => (p ? normalizeTag(p) : null);
+  if (repoPin !== undefined && norm(repoPin) !== latest) {
+    return { kind: "repo-stale", repoPin: norm(repoPin), livePin: norm(livePin) };
+  }
+  if (norm(livePin) !== latest) {
+    return { kind: "deploy-stale", repoPin: latest, livePin: norm(livePin) };
+  }
+  return { kind: "ok" };
+}
+
+async function fetchLiveInstallScript(): Promise<string> {
+  // Cache-buster + no-store: the whole point is to see what a fresh
+  // `curl | sh` would get, not a cached copy.
+  const res = await fetch(`${LIVE_INSTALL_SCRIPT_URL}?drift-check=${Date.now()}`, {
+    cache: "no-store",
+  });
+  if (!res.ok) throw new Error(`failed to fetch ${LIVE_INSTALL_SCRIPT_URL}: HTTP ${res.status}`);
+  return res.text();
+}
+
+async function runDriftCheck(): Promise<void> {
+  // Genuine drift and "the check itself failed to run" both exit 1 but are
+  // worded differently so an auto-filed issue can be triaged from its text.
+  let repoPin: string | null | undefined;
+  let livePin: string | null;
+  let latest: string;
+  try {
+    const token = process.env.WEBSITE_DEPLOY_TOKEN;
+    const [latestOut, live, repo] = await Promise.all([
+      $`gh release list --repo ${CORE_REPO} --json tagName,isLatest --jq '.[] | select(.isLatest) | .tagName'`.text(),
+      fetchLiveInstallScript(),
+      // The website repo is private, so its copy is only checkable with a
+      // token; without one, only the live copy is compared.
+      token ? fetchWebsiteInstallScript(token) : Promise.resolve(undefined),
+    ]);
+    latest = latestOut.trim();
+    if (!latest) throw new Error("could not determine the latest release from `gh release list`");
+    livePin = extractPin(live);
+    repoPin = repo === undefined ? undefined : extractPin(repo);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`DRIFT CHECK ERROR (not necessarily drift -- the check itself failed to run): ${message}`);
+    process.exit(1);
+  }
+
+  const r = classifyInstallScriptDrift(repoPin, livePin, latest);
+  if (r.kind === "ok") {
+    console.log(`install.sh in sync: ${normalizeTag(latest)}`);
+    return;
+  }
+  if (r.kind === "repo-stale") {
+    console.error(
+      `INSTALL.SH PIN DRIFT: ${WEBSITE_REPO}'s install.sh is pinned to ${r.repoPin ?? "(no pin found)"}, ` +
+        `but the latest published release is ${normalizeTag(latest)}.\n` +
+        `Fix: bun run scripts/publish-install-script.ts ${latest} --push (requires WEBSITE_DEPLOY_TOKEN)`,
+    );
+  } else {
+    console.error(
+      `INSTALL.SH DEPLOY DRIFT: ${WEBSITE_REPO}'s install.sh is pinned correctly to ${r.repoPin}` +
+        `${repoPin === undefined ? " (assumed; repo copy not checked, no token)" : ""}, ` +
+        `but ${LIVE_INSTALL_SCRIPT_URL} serves ${r.livePin ?? "(no pin found)"}. ` +
+        "The site's hosting is not deploying the repo's main branch -- check the Cloudflare Pages " +
+        "project's Git integration (Settings -> Builds & deployments). Nothing to fix in nodespace-core.",
+    );
+  }
+  process.exit(1);
+}
+
 function usage(): void {
   console.log(`Usage:
-  bun run scripts/publish-install-script.ts <version> [--push]`);
+  bun run scripts/publish-install-script.ts <version> [--push]
+  bun run scripts/publish-install-script.ts drift-check`);
 }
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
   const command = args[0];
+
+  if (command === "drift-check") {
+    await runDriftCheck();
+    return;
+  }
 
   if (!command || !/^v?\d+\.\d+\.\d+(-[a-zA-Z0-9.]+)?$/.test(command)) {
     usage();
