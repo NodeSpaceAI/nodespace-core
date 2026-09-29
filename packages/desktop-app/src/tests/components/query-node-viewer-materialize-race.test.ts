@@ -217,6 +217,53 @@ describe('QueryNodeViewer — materialize race', () => {
     expect(mockCreateNode).not.toHaveBeenCalled();
   });
 
+  it('clicking the default title starts from empty so typing does not append to "Default"', async () => {
+    mockGetNode.mockResolvedValue(null);
+    const { getByLabelText } = render(QueryNodeViewer, {
+      props: { nodeId: SCHEMA_ID, onNodeIdChange: () => {} }
+    });
+    await waitFor(() => expect(mockGetSchema).toHaveBeenCalledWith(SCHEMA_ID));
+    const title = getByLabelText('Query name') as unknown as { value: string };
+    await fireEvent.focus(title as unknown as Element);
+    expect(title.value).toBe('');
+  });
+
+  it('Escape cancels a title edit without creating a node', async () => {
+    mockGetNode.mockResolvedValue(null);
+    const { getByLabelText } = render(QueryNodeViewer, {
+      props: { nodeId: SCHEMA_ID, onNodeIdChange: () => {} }
+    });
+    await waitFor(() => expect(mockGetSchema).toHaveBeenCalledWith(SCHEMA_ID));
+    const title = getByLabelText('Query name') as unknown as HTMLInputElement;
+    title.focus();
+    await new Promise((resolve) => setTimeout(resolve, 0)); // let the focus event settle
+    await fireEvent.input(title, { target: { value: 'Discard me' } });
+    await fireEvent.keyDown(title, { key: 'Escape' });
+    await waitFor(() => expect(document.activeElement).not.toBe(title));
+    expect(mockCreateNode).not.toHaveBeenCalled();
+    expect(title.value).toBe('Default');
+  });
+
+  it('Enter commits a title edit', async () => {
+    mockGetNode.mockResolvedValue(null);
+    mockCreateNode.mockImplementation(async (input: { id: string }) => ({
+      id: input.id,
+      placement: null
+    }));
+    mockGetNode.mockImplementation(async (id: string) => (id === SCHEMA_ID ? null : materializedQueryNode(id)));
+    const { getByLabelText, getByRole } = render(QueryNodeViewer, {
+      props: { nodeId: SCHEMA_ID, onNodeIdChange: () => {} }
+    });
+    await waitFor(() => expect(getByRole('button', { name: '+ New' })).toBeTruthy());
+    const title = getByLabelText('Query name') as unknown as HTMLInputElement;
+    title.focus();
+    await new Promise((resolve) => setTimeout(resolve, 0)); // let the focus event settle
+    await fireEvent.input(title, { target: { value: 'Sprint' } });
+    await fireEvent.keyDown(title, { key: 'Enter' });
+    await waitFor(() => expect(mockCreateNode).toHaveBeenCalledTimes(1));
+    expect((mockCreateNode.mock.calls[0][0] as { content: string }).content).toBe('Sprint');
+  });
+
   it('blurring the default title without changing it is not a rename', async () => {
     mockGetNode.mockResolvedValue(null);
     const { getByLabelText } = render(QueryNodeViewer, {

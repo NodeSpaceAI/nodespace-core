@@ -370,14 +370,10 @@
   /**
    * Materialize a `nodeType: 'query'` node from the current DEFAULT view and
    * re-route the tab to it. Called on the first real divergence (a title rename).
-   * `targetType` and `generatedBy: 'user'` are fixed by the model; `content`
-   * defaults to "Untitled Query".
+   * `targetType` and `generatedBy: 'user'` are fixed by the model; `content` is
+   * the name the user typed.
    */
-  async function materializeQuery(opts: {
-    content?: string;
-    definition?: QueryDefinition;
-    viewConfig?: QueryViewConfigState;
-  }): Promise<void> {
+  async function materializeQuery(content: string): Promise<void> {
     if (materializing) return;
     if (!schemaNode) {
       log.warn('QueryNodeViewer: cannot materialize — schema not loaded');
@@ -389,11 +385,10 @@
     try {
       const properties = buildMaterializedProperties({
         targetType,
-        definition: opts.definition ?? currentDefinition,
-        viewConfig: opts.viewConfig ?? currentViewConfig
+        definition: currentDefinition,
+        viewConfig: currentViewConfig
       });
       const newId = uuidv4();
-      const content = opts.content ?? MATERIALIZED_QUERY_TITLE;
       await backendAdapter.createNode({
         id: newId,
         nodeType: 'query',
@@ -451,7 +446,7 @@
     activeView = view;
     if (mode === 'saved') {
       persistViewConfig({ lastView: view });
-    } else {
+    } else if (targetType) {
       saveDefaultViewPrefs(targetType, currentViewConfig);
     }
   }
@@ -461,13 +456,15 @@
     kanbanGroupBy = groupBy;
     if (mode === 'saved') {
       persistViewConfig({ kanban: { groupBy } });
-    } else {
+    } else if (targetType) {
       saveDefaultViewPrefs(targetType, currentViewConfig);
     }
   }
 
   function handleTitleFocus(): void {
-    titleDraft = displayTitle;
+    // The default view's "Default" is a placeholder, not a name: typing starts
+    // from empty. A saved query starts from its current name.
+    titleDraft = mode === 'saved' ? displayTitle : '';
     titleEditCancelled = false;
     isEditingTitle = true;
   }
@@ -506,7 +503,7 @@
 
     // DEFAULT branch: naming the default is a divergence — materialize with the
     // typed name.
-    await materializeQuery({ content: name });
+    await materializeQuery(name);
   }
 
   function handleTitleKeydown(e: KeyboardEvent): void {
