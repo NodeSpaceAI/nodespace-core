@@ -458,13 +458,23 @@ fn main() -> Result<()> {
 
     // Take the single-instance lock before anything else touches state the
     // daemons share: the registry and databases, the model, the socket, and
-    // the stdout/stderr log that `stdio_log_rotation` rolls below. A daemon
-    // that still finds the lock held after a bounded wait exits with status 0,
-    // a deliberate stop, so a service manager registered with
-    // `KeepAlive { SuccessfulExit = false }` leaves the daemon that holds it
-    // alone. The wait covers a restart, where the old daemon is still draining
-    // when the new one starts: exiting 0 at once would leave no daemon at all.
-    // The lock lives as long as `main` does.
+    // the stdout/stderr log that `stdio_log_rotation` rolls below.
+    //
+    // A restart starts the new daemon while the old one may still be draining,
+    // so a daemon that finds the lock held first waits for it (a bounded time).
+    // Exiting with status 0 straight away would leave no daemon at all: 0 is a
+    // deliberate stop, which a `KeepAlive { SuccessfulExit = false }`
+    // registration never restarts.
+    //
+    // What a daemon does when the wait ends depends on whether the holder
+    // serves. If the socket answers, a peer really serves it and this daemon
+    // exits 0, leaving that one alone. If nothing answers, the holder is still
+    // starting or stuck in a slow drain, so this daemon exits with an error and
+    // the service manager tries again after its throttle.
+    //
+    // No signal handler exists yet, so a stop signal that arrives during the
+    // wait ends the process by signal, as it would any process that has not
+    // started serving. The lock lives as long as `main` does.
     #[cfg(unix)]
     let _instance_lock = {
         use nodespace_daemon::single_instance::{acquire, Acquire};
@@ -472,12 +482,20 @@ fn main() -> Result<()> {
         match acquire(&sock).context("take the single-instance lock")? {
             Acquire::Held(lock) => lock,
             Acquire::HeldByAnother { holder_pid } => {
-                tracing::info!(
-                    sock = %sock.display(),
-                    holder_pid = ?holder_pid,
-                    "another nodespaced still holds the lock for this socket after waiting; exiting"
+                if std::os::unix::net::UnixStream::connect(&sock).is_ok() {
+                    tracing::info!(
+                        sock = %sock.display(),
+                        holder_pid = ?holder_pid,
+                        "another nodespaced still holds the lock for this socket after waiting; exiting"
+                    );
+                    return Ok(());
+                }
+                anyhow::bail!(
+                    "the single-instance lock for {} is still held (holder pid {holder_pid:?}) \
+                     after waiting, but nothing answers on the socket; exiting with an error so \
+                     the service manager tries again",
+                    sock.display()
                 );
-                return Ok(());
             }
         }
     };

@@ -266,7 +266,10 @@ fn remove_socket_if_stale(socket_path: &Path, grace: Duration) {
 ///
 /// `-a` is what makes this "holders of `socket_path`": lsof ORs its selectors
 /// unless told otherwise, so without it the answer is every process on the
-/// machine with any Unix socket open, whichever path it holds.
+/// machine with any Unix socket open, whichever path it holds. lsof matches the
+/// path string the socket was bound with, not the file's identity, so pass
+/// exactly the path the daemon was told to bind: a symlinked or otherwise
+/// differently spelled path (`/tmp` against `/private/tmp`) finds nobody.
 ///
 /// Shared by every caller here that needs "whichever process is currently
 /// serving this socket" without assuming who started it — launchd, a

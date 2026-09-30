@@ -1,5 +1,6 @@
 //! At most one daemon serves a socket, a second one leaves it alone, and a new
-//! daemon started while the old one is still draining waits for it.
+//! daemon started while the old one is still draining waits for it, and exits
+//! with an error rather than 0 if nothing ever serves.
 //!
 //! Both serve loops delete an existing socket file before they bind, so
 //! without the lock a second daemon silently takes the socket over while the
@@ -221,10 +222,16 @@ fn a_second_daemon_on_a_served_socket_exits_zero_and_leaves_the_socket_alone() {
         "the second daemon must not delete and rebind the socket"
     );
     UnixStream::connect(&socket).expect("the first daemon still accepts connections");
+    // The line it exits on, not an earlier one, must name the holder: the pid
+    // is read again at the end of the wait.
     let second_log = std::fs::read_to_string(home.log("second")).expect("read second log");
+    let exit_line = second_log
+        .lines()
+        .find(|line| line.contains("after waiting; exiting"))
+        .unwrap_or_else(|| panic!("the second daemon logged no exit line; log: {second_log}"));
     assert!(
-        second_log.contains(&first.pid().to_string()),
-        "the second daemon should log the holder's pid {}; log: {second_log}",
+        exit_line.contains(&format!("Some({})", first.pid())),
+        "the exit line should name the holder, pid {}; line: {exit_line}",
         first.pid()
     );
 
@@ -283,4 +290,30 @@ fn a_daemon_started_while_the_lock_is_held_waits_for_it_and_then_serves() {
     successor.wait_until_serving(&socket);
 
     assert!(successor.is_running());
+}
+
+#[test]
+fn a_daemon_that_finds_the_lock_held_but_nothing_serving_exits_with_an_error() {
+    let home = Home::new();
+    // A holder that never serves: still starting, or stuck in a slow drain. A
+    // status of 0 would be a deliberate stop that launchd never restarts, and
+    // the user would be left with no daemon.
+    let _stuck = home.hold_lock();
+
+    let mut successor = home.spawn_giving_up_after("successor", Duration::from_millis(500));
+    let status = successor.wait_for_exit();
+
+    assert!(
+        !status.success(),
+        "a daemon that finds nothing serving must not exit as if a peer did: {status}"
+    );
+    let log = std::fs::read_to_string(home.log("successor")).expect("read successor log");
+    assert!(
+        log.contains("nothing answers on the socket"),
+        "the exit should say why; log: {log}"
+    );
+    assert!(
+        !home.socket().exists(),
+        "a daemon that never held the lock must not create the socket"
+    );
 }

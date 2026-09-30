@@ -34,7 +34,6 @@
 //! holds whichever daemon a launcher registers.
 
 use std::fs::{File, OpenOptions, TryLockError};
-use std::io::Read;
 use std::os::unix::fs::{FileExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -44,9 +43,16 @@ use anyhow::{Context, Result};
 use crate::create_dir_owner_only_blocking;
 
 /// How long [`acquire`] waits for a lock another process holds before it reports
-/// [`Acquire::HeldByAnother`]. It must stay comfortably above the time a daemon
-/// takes to drain after a stop signal (the daemon's shutdown watchdog is 15 s),
-/// or a restart during a slow drain still ends with no daemon.
+/// [`Acquire::HeldByAnother`].
+///
+/// An old daemon that has been told to stop keeps the lock until it exits. The
+/// daemon's shutdown runs two 15 s watchdogs one after the other (draining the
+/// server, then the databases and the GPU), so a daemon whose drain stalls can
+/// hold the lock for up to about 30 s. Twenty seconds outlasts every ordinary
+/// drain and a full stall of either phase alone. It stays well under the desktop
+/// app's 30 s wait for the daemon to come up, which a longer wait would outrun.
+/// A daemon that reaches the end of the wait with nothing serving decides for
+/// itself what to do next; see the daemon binary's `main`.
 pub const DEFAULT_LOCK_WAIT: Duration = Duration::from_secs(20);
 
 /// How often a waiting daemon retries the lock.
@@ -60,7 +66,7 @@ pub const LOCK_WAIT_ENV_VAR: &str = "NODESPACED_LOCK_WAIT_MS";
 
 /// The most bytes read back from a lock file to recover the holder's pid. A pid
 /// has at most ten digits, so this leaves room for a newline and nothing else.
-const PID_READ_LIMIT: u64 = 32;
+const PID_READ_LIMIT: usize = 32;
 
 /// The lock file that guards `socket`: the socket path with the extension
 /// `lock`, so it sits in the same directory.
@@ -158,8 +164,9 @@ pub fn acquire_waiting(socket: &Path, max_wait: Duration) -> Result<Acquire> {
                 }
                 if !announced {
                     announced = true;
+                    let holder_pid = read_holder_pid(&file);
                     tracing::info!(
-                        holder_pid = ?read_holder_pid(&file),
+                        holder_pid = ?holder_pid,
                         max_wait_secs = max_wait.as_secs_f32(),
                         "waiting for the single-instance lock: another nodespaced holds it"
                     );
@@ -189,12 +196,18 @@ fn wait_from_override(millis: Option<&str>) -> Duration {
 
 /// The pid recorded in a lock file another process holds, or `None` if it is
 /// empty, unreadable or not a pid.
+///
+/// Reads at a fixed offset, so it can be called any number of times on one
+/// open file: a read that moved the file's shared position would leave every
+/// later call at end of file.
 fn read_holder_pid(file: &File) -> Option<u32> {
-    let mut recorded = String::new();
-    file.take(PID_READ_LIMIT)
-        .read_to_string(&mut recorded)
-        .ok()?;
-    recorded.trim().parse().ok()
+    let mut recorded = [0u8; PID_READ_LIMIT];
+    let read = file.read_at(&mut recorded, 0).ok()?;
+    std::str::from_utf8(&recorded[..read])
+        .ok()?
+        .trim()
+        .parse()
+        .ok()
 }
 
 #[cfg(test)]
@@ -294,6 +307,18 @@ mod tests {
             waited >= wait,
             "gave up after {waited:?}, before the {wait:?} wait was over"
         );
+    }
+
+    #[test]
+    fn the_holder_pid_can_be_read_more_than_once_from_one_open_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("d.lock");
+        std::fs::write(&path, "4242").unwrap();
+        let file = File::open(&path).unwrap();
+
+        // The wait reads it once to log it and again when it gives up.
+        assert_eq!(read_holder_pid(&file), Some(4242));
+        assert_eq!(read_holder_pid(&file), Some(4242));
     }
 
     #[test]
