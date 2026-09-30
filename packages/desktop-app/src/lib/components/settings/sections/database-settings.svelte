@@ -115,10 +115,8 @@
     </div>
   </div>
   <p class="text-muted-foreground mb-6 text-sm leading-relaxed">
-    A <span class="text-foreground font-medium">database</span> is a local store on this
-    machine — <span class="text-foreground font-medium">not</span> a tenant. Each database
-    can sync to one cloud <span class="text-foreground font-medium">tenant</span> (its
-    workspace) or stay local-only. Opening a database also switches which tenant syncs.
+    A <span class="text-foreground font-medium">database</span> is a separate local store on this
+    machine. Opening one switches the app to it.
   </p>
 
   {#if databaseStore.error}
@@ -157,18 +155,14 @@
           </div>
           <div class="text-muted-foreground mt-1 break-all font-mono text-xs">{db.path}</div>
           <div class="text-muted-foreground mt-1 text-xs">{statusLabel(db.status)}</div>
-          <div class="mt-1.5 text-xs">
-            {#if db.boundTenantSchema}
+          {#if db.boundTenantSchema}
+            <div class="mt-1.5 text-xs">
               <span class="text-primary bg-primary/10 rounded px-1.5 py-0.5 font-medium">
                 Syncs to tenant · {tenantLabel(db.boundTenantSchema)}
               </span>
               <span class="text-muted-foreground/60 ml-1 font-mono">{db.boundTenantSchema}</span>
-            {:else}
-              <span class="text-muted-foreground bg-muted rounded px-1.5 py-0.5">
-                Local only · not synced
-              </span>
-            {/if}
-          </div>
+            </div>
+          {/if}
         </div>
 
         <div class="flex shrink-0 flex-col gap-1.5">
