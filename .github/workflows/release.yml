@@ -559,7 +559,18 @@ jobs:
               test -x "${bin}" || { echo "::error::${bin} is missing or not executable"; exit 1; }
             done
 
-            echo "    /Applications/NodeSpace.app (incl. all Contents/MacOS/* executables), nodespace, nodespaced all present"
+            # The installed bundle must declare the free product. The
+            # installer's pre-install guard and Distribution check read this
+            # key from whatever is already at /Applications/NodeSpace.app to
+            # tell the products apart. A bundle that lost it would be judged
+            # by which daemon sits beside the app instead, and one that
+            # declared another product would make the second install below
+            # refuse.
+            local product
+            product="$(plutil -extract NodeSpaceProduct raw -o - /Applications/NodeSpace.app/Contents/Info.plist)" || { echo "::error::/Applications/NodeSpace.app/Contents/Info.plist has no NodeSpaceProduct key"; exit 1; }
+            test "${product}" = "community" || { echo "::error::NodeSpaceProduct is '${product}' in the installed Info.plist, expected 'community'"; exit 1; }
+
+            echo "    /Applications/NodeSpace.app (incl. all Contents/MacOS/* executables), nodespace, nodespaced all present, NodeSpaceProduct = community"
           }
 
           # Install once against a clean runner (the common case), then install
