@@ -26,12 +26,59 @@ mod fixture_tests;
 /// the two must stay equal.
 pub const EXTENSION_API_VERSION: (u32, u32) = (1, 0);
 
-/// Names of the Tauri plugins core registers itself.
+/// Core's own Tauri plugins, in the order they are registered.
 ///
-/// A plugin registered under an existing name replaces the earlier one without
-/// a warning, so an extension plugin that reused one of these names would
-/// replace core's plugin. [`assemble`] skips such a plugin instead.
-pub(crate) const CORE_PLUGIN_NAMES: &[&str] = &["single-instance", "opener", "dialog"];
+/// This is the only list of them. [`register_core_plugins`] applies it to the
+/// builder `run` starts from, and [`core_plugin_names`] reads the names off it
+/// for [`assemble`], which skips an extension plugin that reuses one. A plugin
+/// registered under an existing name replaces the earlier one without a
+/// warning, so an extension plugin with a core plugin's name would replace
+/// core's. `run` registers no plugin of its own, so a plugin added here is
+/// protected the moment it exists, with no second list to update.
+///
+/// The single-instance plugin comes first, because it must be registered
+/// before any other plugin.
+pub(crate) fn core_plugins<R: Runtime>() -> Vec<Box<dyn Plugin<R>>> {
+    let mut plugins: Vec<Box<dyn Plugin<R>>> = Vec::new();
+
+    // The daemon's tray always spawns a fresh UI process when a database is
+    // picked (see `nodespace_daemon::tray::TrayState::open_ui`) — it has no
+    // reliable way to know whether a UI process from an earlier launch is still
+    // alive, and none at all when the app was started outside the tray. Rather
+    // than the daemon tracking liveness, this plugin makes any second launch
+    // detect the running instance, forward its argv to it, and exit
+    // immediately, so a real UI process almost never survives alongside an
+    // existing one regardless of launch path. Note this plugin's macOS backend
+    // claims the lock with a connect-then-bind probe rather than one atomic OS
+    // primitive (unlike its Windows/Linux backends), so it is not an absolute
+    // guarantee there — see the doc comment on `TrayState::open_ui` in the
+    // daemon crate.
+    #[cfg(desktop)]
+    plugins.push(Box::new(tauri_plugin_single_instance::init::<R, _>(
+        |app, argv, _cwd| {
+            crate::handle_relaunch(app, &argv);
+        },
+    )));
+
+    plugins.push(Box::new(tauri_plugin_opener::init::<R>()));
+    plugins.push(Box::new(tauri_plugin_dialog::init::<R>()));
+    plugins
+}
+
+/// The names of [`core_plugins`], in registration order.
+pub(crate) fn core_plugin_names<R: Runtime>() -> Vec<&'static str> {
+    core_plugins::<R>()
+        .iter()
+        .map(|plugin| plugin.name())
+        .collect()
+}
+
+/// Registers [`core_plugins`] on `builder`, in order.
+pub(crate) fn register_core_plugins<R: Runtime>(builder: Builder<R>) -> Builder<R> {
+    core_plugins::<R>()
+        .into_iter()
+        .fold(builder, |builder, plugin| builder.plugin_boxed(plugin))
+}
 
 /// What an extension contributes to the desktop app.
 ///
@@ -79,9 +126,10 @@ impl<R: Runtime> Default for AppExtensions<R> {
 ///
 /// # Plugins
 ///
-/// * The caller registers core's own plugins on `builder` first, with the
-///   single-instance plugin before any other, as that plugin requires.
-///   `assemble` registers the extension plugins after them.
+/// * The caller registers core's own plugins on `builder` first, with
+///   [`register_core_plugins`], which puts the single-instance plugin before
+///   any other, as that plugin requires. `assemble` registers the extension
+///   plugins after them.
 /// * A plugin's setup runs inside `Builder::build`, before core's setup.
 /// * A plugin's commands are invoked from the frontend as
 ///   `plugin:<name>|<command>`. Tauri always checks them against the
@@ -100,10 +148,11 @@ impl<R: Runtime> Default for AppExtensions<R> {
 /// contributes through `tauri::test::MockRuntime`.
 #[must_use]
 pub fn assemble<R: Runtime>(mut builder: Builder<R>, extensions: AppExtensions<R>) -> Builder<R> {
+    let core_names = core_plugin_names::<R>();
     let mut registered: HashSet<&'static str> = HashSet::new();
     for plugin in extensions.plugins {
         let name = plugin.name();
-        if CORE_PLUGIN_NAMES.contains(&name) {
+        if core_names.contains(&name) {
             tracing::error!(
                 plugin = name,
                 "extension plugin skipped: its name belongs to a plugin core registers"
