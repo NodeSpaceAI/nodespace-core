@@ -4,7 +4,7 @@
 //! local PersonNode (the local user). On Pro upgrade this node is bound to a
 //! Supabase identity, not recreated. These tests verify:
 //! 1. Constructing a NodeService on a fresh database seeds exactly one person.
-//! 2. The seeded person has no auth_status (that lives on DatabaseSettingsNode).
+//! 2. The seeded person carries no `person` properties until the user fills them in.
 //! 3. Re-opening the same database does NOT create a second person (idempotent).
 
 #[cfg(test)]
@@ -28,14 +28,15 @@ mod person_seed_tests {
             1,
             "a fresh install must seed exactly one local PersonNode"
         );
-        // auth_status lives on DatabaseSettingsNode, not on PersonNode
+        // Name and email stay absent until the user fills them in.
+        let person_bucket = match people[0].properties.get("person") {
+            None => true,
+            Some(bucket) => bucket.as_object().is_some_and(|props| props.is_empty()),
+        };
         assert!(
-            people[0]
-                .properties
-                .get("person")
-                .and_then(|p| p.get("auth_status"))
-                .is_none(),
-            "seeded PersonNode must not carry auth_status — that belongs on DatabaseSettingsNode"
+            person_bucket,
+            "seeded PersonNode must carry no `person` properties, got {:?}",
+            people[0].properties
         );
 
         Ok(())

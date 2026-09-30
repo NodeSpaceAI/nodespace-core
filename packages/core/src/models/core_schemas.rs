@@ -18,7 +18,7 @@
 //! - **horizontal-line** - Horizontal rule / thematic break
 //! - **table** - GFM markdown table
 //! - **person** - Identity primitive (name, email)
-//! - **database-settings** - Singleton container for database-level config (sync state, roles)
+//! - **database-settings** - Singleton anchor for database-level configuration and the owner role edge
 //!
 //! ## Usage
 //!
@@ -1552,11 +1552,10 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             title_template: None,
             properties_header_summary_template: None,
         },
-        // Database Settings schema — a singleton container for database-level
-        // configuration. `sync_enabled` is user intent; `auth_status` is
-        // system-managed cloud bind state. ADR-037 moved role and auth_status off
-        // PersonNode: role now lives on the has_role edge (person → this node) and
-        // auth_status lives here.
+        // Database Settings schema — the singleton anchor for database-level
+        // configuration and for the owner `has_role` edge (person → this node).
+        // Core declares no fields on it: extensions keep their own namespaced
+        // keys in its bucket (ADR-083, ADR-063).
         SchemaNode {
             id: "database-settings".to_string(),
             content: "Database Settings".to_string(),
@@ -1565,104 +1564,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             modified_at: now,
             is_core: true,
             schema_version: 1,
-            fields: vec![
-                SchemaField {
-                    name: "sync_enabled".to_string(),
-                    friendly_name: "Sync enabled".to_string(),
-                    field_type: "boolean".to_string(),
-                    local_only: false,
-                    protection: SchemaProtectionLevel::Core,
-                    core_values: None,
-                    user_values: None,
-                    indexed: false,
-                    required: Some(false),
-                    extensible: None,
-                    default: Some(serde_json::json!(false)),
-                    description: Some(
-                        "User intent to sync this database to the cloud. Inert on the \
-                         free/community tier; the Pro sync daemon reads it to gate sync."
-                            .to_string(),
-                    ),
-                    item_type: None,
-                    fields: None,
-                    item_fields: None,
-                    unique: None,
-                    unique_case_insensitive: None,
-                },
-                SchemaField {
-                    name: "auth_status".to_string(),
-                    friendly_name: "Auth status".to_string(),
-                    field_type: "enum".to_string(),
-                    local_only: false,
-                    protection: SchemaProtectionLevel::Core,
-                    core_values: Some(vec![
-                        EnumValue::new("local".to_string(), "Local".to_string()),
-                        EnumValue::new("connected".to_string(), "Connected".to_string()),
-                    ]),
-                    user_values: Some(vec![]),
-                    indexed: true,
-                    required: Some(true),
-                    extensible: Some(false),
-                    default: Some(serde_json::json!("local")),
-                    description: Some(
-                        "System-managed cloud bind state. Default local; the Pro sync \
-                         daemon sets connected after a Supabase identity bind."
-                            .to_string(),
-                    ),
-                    item_type: None,
-                    fields: None,
-                    item_fields: None,
-                    unique: None,
-                    unique_case_insensitive: None,
-                },
-                SchemaField {
-                    name: "bound_tenant_schema".to_string(),
-                    friendly_name: "Bound tenant schema".to_string(),
-                    field_type: "string".to_string(),
-                    local_only: false,
-                    protection: SchemaProtectionLevel::Core,
-                    core_values: None,
-                    user_values: None,
-                    indexed: false,
-                    required: Some(false),
-                    extensible: None,
-                    default: None,
-                    description: Some(
-                        "The cloud tenant this database binds to (ADR-053 per-database \
-                         cloud sync), as a Supabase schema name. Empty until the Pro sync \
-                         daemon binds the database; inert on the free/community tier."
-                            .to_string(),
-                    ),
-                    item_type: None,
-                    fields: None,
-                    item_fields: None,
-                    unique: None,
-                    unique_case_insensitive: None,
-                },
-                SchemaField {
-                    name: "bound_tenant_collection".to_string(),
-                    friendly_name: "Bound tenant collection".to_string(),
-                    field_type: "string".to_string(),
-                    local_only: false,
-                    protection: SchemaProtectionLevel::Core,
-                    core_values: None,
-                    user_values: None,
-                    indexed: false,
-                    required: Some(false),
-                    extensible: None,
-                    default: None,
-                    description: Some(
-                        "The default collection id within the bound tenant (ADR-053 \
-                         per-database cloud sync). Empty until the database is bound."
-                            .to_string(),
-                    ),
-                    item_type: None,
-                    fields: None,
-                    item_fields: None,
-                    unique: None,
-                    unique_case_insensitive: None,
-                },
-            ],
+            fields: vec![],
             relationships: vec![],
             title_template: None,
             properties_header_summary_template: None,
@@ -1974,50 +1876,25 @@ mod tests {
     }
 
     #[test]
-    fn test_database_settings_schema_has_fields() {
-        // ADR-037: database-settings is a Core singleton carrying sync_enabled
-        // (boolean) and auth_status (Core-protected enum: local/connected).
-        // ADR-053 added bound_tenant_schema/bound_tenant_collection (per-database
-        // cloud tenant binding).
+    fn test_database_settings_schema_declares_no_fields() {
+        // database-settings is a Core singleton anchor. Core declares no fields
+        // on it; extensions store their own namespaced keys in its bucket.
         let schemas = get_core_schemas();
         let settings = schemas
             .iter()
             .find(|s| s.id == "database-settings")
-            .unwrap();
+            .expect("database-settings core schema exists");
 
-        assert_eq!(settings.fields.len(), 4);
-
-        let sync_enabled = settings
-            .get_field("sync_enabled")
-            .expect("database-settings has sync_enabled");
-        assert_eq!(sync_enabled.field_type, "boolean");
-        assert_eq!(sync_enabled.protection, SchemaProtectionLevel::Core);
-        assert_eq!(sync_enabled.default, Some(serde_json::json!(false)));
-
-        let auth_status = settings
-            .get_field("auth_status")
-            .expect("database-settings has auth_status");
-        assert_eq!(auth_status.field_type, "enum");
-        assert_eq!(auth_status.protection, SchemaProtectionLevel::Core);
-        assert_eq!(auth_status.default, Some(serde_json::json!("local")));
-        let values: Vec<&str> = auth_status
-            .core_values
-            .as_ref()
-            .unwrap()
-            .iter()
-            .map(|ev| ev.value.as_str())
-            .collect();
-        assert_eq!(values, vec!["local", "connected"]);
-
-        for name in ["bound_tenant_schema", "bound_tenant_collection"] {
-            let field = settings
-                .get_field(name)
-                .unwrap_or_else(|| panic!("database-settings has {name}"));
-            assert_eq!(field.field_type, "string");
-            assert_eq!(field.protection, SchemaProtectionLevel::Core);
-            assert_eq!(field.required, Some(false));
-            assert_eq!(field.default, None);
-        }
+        assert!(settings.is_core);
+        assert!(
+            settings.fields.is_empty(),
+            "core declares no fields on database-settings, found {:?}",
+            settings
+                .fields
+                .iter()
+                .map(|f| f.name.as_str())
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]

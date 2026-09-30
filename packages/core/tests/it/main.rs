@@ -18,6 +18,7 @@ mod conflict_reconciliation_test;
 mod core_task_link_relationships_test;
 mod create_node_property_persistence_test;
 mod create_schema_result_reflects_persisted_state_test;
+mod database_settings_extension_keys_test;
 mod embedding_service_test;
 mod entity_resolution_test;
 mod entity_type_descriptor_extends_chain_test;
