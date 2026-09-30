@@ -5,7 +5,7 @@
 // exercised here -- this suite runs as part of `bun run test:scripts` /
 // `test:all` (the merge gate), which must stay fast and deterministic,
 // not depend on network or `gh` auth.
-import { afterAll, describe, expect, setDefaultTimeout, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -258,13 +258,15 @@ describe("renderCask other-product check", () => {
     expect(script).toContain('[ -e "$1/Contents/MacOS/nodespaced-pro" ]');
   });
 
-  test("the script survives an interpolating Ruby heredoc: no # and no backslash", () => {
+  test("the script reaches the shell unchanged: no #, no backslash, no {{", () => {
     // `<<~SH` (not `<<~'SH'`, which brew style rejects as redundant) still
-    // interpolates `#{...}` and processes escapes, so either character would
-    // change what the shell receives.
+    // interpolates `#{...}` and processes escapes, and Homebrew expands
+    // `{{token}}` in every `run` argument, so any of these would change what
+    // the shell receives.
     const script = scriptOf("preflight_steps");
     expect(script).not.toContain("#");
     expect(script).not.toContain("\\");
+    expect(script).not.toContain("{{");
   });
 
   test("both stanzas sit after binary and before zap, the order brew style requires", () => {
@@ -291,7 +293,14 @@ describe("renderCask other-product check", () => {
   // script from the rendered cask against real fixture bundles, with a scrubbed
   // environment.
   describe.skipIf(process.platform !== "darwin")("against fixture bundles", () => {
-    const tmp = mkdtempSync(join(tmpdir(), "cask-preflight-"));
+    // The space is deliberate: an appdir can contain one, and an unquoted
+    // expansion in the script would then split the path and let a refusal pass.
+    // Created in beforeAll because a skipped describe still runs its body but
+    // not its hooks, so nothing is left behind off macOS.
+    let tmp = "";
+    beforeAll(() => {
+      tmp = mkdtempSync(join(tmpdir(), "cask preflight "));
+    });
     afterAll(() => rmSync(tmp, { recursive: true, force: true }));
     let counter = 0;
 

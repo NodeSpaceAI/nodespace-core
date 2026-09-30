@@ -192,7 +192,8 @@ const OTHER_PRODUCT_MESSAGE_TAIL = "(NodeSpace → Uninstall NodeSpace Pro…). 
 // the `NodeSpaceProduct` key in the bundle's Info.plist, or, for a bundle built
 // before that key existed, whether the other product's daemon sits beside the
 // CLI -- and never runs anything inside the bundle. It sits in an interpolating
-// Ruby heredoc, so it must contain no `#` and no backslash.
+// Ruby heredoc and is a `run` argument, so it must contain no `#`, no
+// backslash and no `{{`: Homebrew expands `{{token}}` in every such argument.
 //
 // This generator is one of the three places that may name the other product's
 // daemon, and only in that fallback.
