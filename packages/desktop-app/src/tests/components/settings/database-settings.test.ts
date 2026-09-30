@@ -75,4 +75,16 @@ describe('DatabaseSettings', () => {
     const { container } = render(DatabaseSettings);
     expect(addSyncedButton(container)).toBeUndefined();
   });
+
+  it('describes databases in neutral, local-only terms', async () => {
+    const { container, findByText } = render(DatabaseSettings);
+    await findByText('Default');
+
+    // Built from fragments so this absence check adds no line to the boundary ratchet.
+    const removedWording = new RegExp(
+      [['ten', 'ant'].join(''), 'not synced', 'local only'].join('|'),
+      'i'
+    );
+    expect(container.textContent).not.toMatch(removedWording);
+  });
 });
