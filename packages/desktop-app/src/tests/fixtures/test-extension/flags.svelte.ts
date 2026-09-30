@@ -13,7 +13,15 @@ export const testExtensionFlags = $state({
   /** Makes the `throwing-when` contribution's `when()` throw. */
   throwingWhen: false,
   /** Shows the contribution whose component throws while rendering. */
-  throwingComponent: false
+  throwingComponent: false,
+  /** Shows the settings section. */
+  section: false,
+  /** Shows the Databases-header action. */
+  databaseActions: false,
+  /** Shows the per-database row content. */
+  databaseRow: false,
+  /** Shows a row contribution whose component throws while rendering. */
+  databaseRowThrowing: false
 });
 
 /** How many times each fixture component has mounted, by component name. */
@@ -32,5 +40,9 @@ export function resetTestExtension(): void {
   testExtensionFlags.tabSecondary = false;
   testExtensionFlags.throwingWhen = false;
   testExtensionFlags.throwingComponent = false;
+  testExtensionFlags.section = false;
+  testExtensionFlags.databaseActions = false;
+  testExtensionFlags.databaseRow = false;
+  testExtensionFlags.databaseRowThrowing = false;
   for (const name of Object.keys(testExtensionMounts)) delete testExtensionMounts[name];
 }

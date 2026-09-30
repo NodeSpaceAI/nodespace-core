@@ -25,10 +25,14 @@ import {
   uiExtensionRegistry,
   type ChromeContribution,
   type NodespaceExtension,
+  type SettingsSectionContribution,
+  type SettingsSlotContribution,
   type ViewerTabContribution
 } from '$lib/plugins/ui-extensions';
 import {
   getActiveChromeContributions,
+  getActiveSettingsSections,
+  getActiveSettingsSlot,
   getActiveViewerTabs,
   isContributionActive
 } from '$lib/plugins/ui-extensions.svelte';
@@ -50,6 +54,21 @@ function chrome(
 
 function tab(id: string, extra: Partial<ViewerTabContribution> = {}): ViewerTabContribution {
   return { id, nodeType: 'collection', label: id, load: noComponent, ...extra };
+}
+
+function section(
+  id: string,
+  extra: Partial<SettingsSectionContribution> = {}
+): SettingsSectionContribution {
+  return { id, label: id, load: noComponent, ...extra };
+}
+
+function slotContribution(
+  id: string,
+  slot: SettingsSlotContribution['slot'],
+  extra: { priority?: number; when?: () => boolean } = {}
+): SettingsSlotContribution {
+  return { id, slot, load: noComponent, ...extra } as SettingsSlotContribution;
 }
 
 function ext(id: string, rest: Partial<NodespaceExtension> = {}): NodespaceExtension {
@@ -229,6 +248,162 @@ describe('UiExtensionRegistry registration', () => {
       expect.stringContaining('registration failed'),
       expect.anything()
     );
+  });
+});
+
+describe('UiExtensionRegistry settings contributions', () => {
+  let registry: UiExtensionRegistry;
+
+  beforeEach(() => {
+    registry = new UiExtensionRegistry();
+  });
+
+  it('lists sections in registration order, ignoring priority', () => {
+    registry.register(
+      ext('a', { settingsSections: [section('a-low'), section('a-high', { priority: 9 })] })
+    );
+    registry.register(ext('b', { settingsSections: [section('b-negative', { priority: -1 })] }));
+
+    expect(keysOf(registry.settingsSections())).toEqual(['a/a-low', 'a/a-high', 'b/b-negative']);
+  });
+
+  it('keys a section as <extension id>/<section id> and keeps its label and anchor', () => {
+    registry.register(
+      ext('ext', { settingsSections: [section('one', { label: 'One', after: 'display' })] })
+    );
+
+    expect(registry.settingsSections()[0]).toMatchObject({
+      id: 'one',
+      key: 'ext/one',
+      extensionId: 'ext',
+      label: 'One',
+      after: 'display'
+    });
+  });
+
+  it('selects slot contributions by slot', () => {
+    registry.register(
+      ext('a', {
+        settingsSlots: [
+          slotContribution('action', 'database.actions'),
+          slotContribution('row', 'database.row')
+        ]
+      })
+    );
+
+    expect(keysOf(registry.settingsSlotFor('database.actions'))).toEqual(['a/action']);
+    expect(keysOf(registry.settingsSlotFor('database.row'))).toEqual(['a/row']);
+  });
+
+  it('orders a slot by descending priority, ties in registration order', () => {
+    registry.register(
+      ext('a', {
+        settingsSlots: [
+          slotContribution('a-plain', 'database.row'),
+          slotContribution('a-boosted', 'database.row', { priority: 4 })
+        ]
+      })
+    );
+    registry.register(
+      ext('b', {
+        settingsSlots: [
+          slotContribution('b-boosted', 'database.row', { priority: 4 }),
+          slotContribution('b-negative', 'database.row', { priority: -2 })
+        ]
+      })
+    );
+
+    expect(keysOf(registry.settingsSlotFor('database.row'))).toEqual([
+      'a/a-boosted',
+      'b/b-boosted',
+      'a/a-plain',
+      'b/b-negative'
+    ]);
+  });
+
+  it('drops a repeated id, keeping the first, across sections and slots', () => {
+    registry.register(
+      ext('a', {
+        settingsSections: [section('shared')],
+        settingsSlots: [slotContribution('shared', 'database.actions')]
+      })
+    );
+
+    expect(keysOf(registry.settingsSections())).toEqual(['a/shared']);
+    expect(registry.settingsSlotFor('database.actions')).toEqual([]);
+    expect(log.error).toHaveBeenCalledTimes(1);
+    expect(log.error).toHaveBeenCalledWith(expect.stringContaining('Duplicate contribution id'), {
+      extensionId: 'a',
+      contributionId: 'shared'
+    });
+  });
+
+  it('lets two extensions use the same section id; both are listed, each under its own key', () => {
+    registry.register(ext('a', { settingsSections: [section('same')] }));
+    registry.register(ext('b', { settingsSections: [section('same')] }));
+
+    expect(keysOf(registry.settingsSections())).toEqual(['a/same', 'b/same']);
+    expect(log.error).not.toHaveBeenCalled();
+  });
+
+  it('drops a section or slot whose key another extension already holds', () => {
+    registry.register(ext('a/b', { settingsSections: [section('c')] }));
+    registry.register(
+      ext('a', {
+        settingsSections: [section('b/c'), section('other')],
+        settingsSlots: [slotContribution('b/c', 'database.row')]
+      })
+    );
+
+    expect(keysOf(registry.settingsSections())).toEqual(['a/b/c', 'a/other']);
+    expect(registry.settingsSlotFor('database.row')).toEqual([]);
+    expect(log.error).toHaveBeenCalledWith(expect.stringContaining('already held'), {
+      key: 'a/b/c'
+    });
+  });
+
+  it('drops malformed entries and non-array lists without throwing', () => {
+    const malformed = {
+      id: 'bad',
+      apiVersion: 1,
+      settingsSections: [null, { id: 'no-load', label: 'x' }, { label: 'no-id', load: noComponent }],
+      settingsSlots: 'not an array'
+    } as unknown as NodespaceExtension;
+
+    expect(() => registry.register(malformed)).not.toThrow();
+
+    expect(registry.has('bad')).toBe(true);
+    expect(registry.settingsSections()).toEqual([]);
+    expect(registry.settingsSlotFor('database.actions')).toEqual([]);
+    expect(log.error).toHaveBeenCalled();
+  });
+
+  it('forgets an extension’s sections and slots when it is unregistered', () => {
+    registry.register(
+      ext('a', {
+        settingsSections: [section('one')],
+        settingsSlots: [slotContribution('row', 'database.row')]
+      })
+    );
+    registry.unregister('a');
+
+    expect(registry.settingsSections()).toEqual([]);
+    expect(registry.settingsSlotFor('database.row')).toEqual([]);
+  });
+
+  it('never evaluates when()', () => {
+    const when = vi.fn(() => true);
+    registry.register(
+      ext('a', {
+        settingsSections: [section('one', { when })],
+        settingsSlots: [slotContribution('row', 'database.row', { when })]
+      })
+    );
+
+    registry.settingsSections();
+    registry.settingsSlotFor('database.row');
+
+    expect(when).not.toHaveBeenCalled();
   });
 });
 
@@ -479,5 +654,68 @@ describe('active contribution accessors over the fixture extension', () => {
     testExtensionFlags.throwingWhen = true;
     getActiveChromeContributions('app-shell-modal');
     expect(log.warn).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('active settings accessors over the fixture extension', () => {
+  beforeEach(() => {
+    uiExtensionRegistry.register(createTestExtension());
+  });
+
+  afterEach(() => {
+    uiExtensionRegistry.unregister(TEST_EXTENSION_ID);
+    resetTestExtension();
+  });
+
+  it('returns a section only while its when() holds', () => {
+    expect(getActiveSettingsSections()).toEqual([]);
+
+    testExtensionFlags.section = true;
+    expect(keysOf(getActiveSettingsSections())).toEqual([`${TEST_EXTENSION_ID}/test-section`]);
+
+    testExtensionFlags.section = false;
+    expect(getActiveSettingsSections()).toEqual([]);
+  });
+
+  it('returns slot contributions only while their when() holds, per slot', () => {
+    expect(getActiveSettingsSlot('database.actions')).toEqual([]);
+    expect(getActiveSettingsSlot('database.row')).toEqual([]);
+
+    testExtensionFlags.databaseActions = true;
+    expect(keysOf(getActiveSettingsSlot('database.actions'))).toEqual([
+      `${TEST_EXTENSION_ID}/database-action`
+    ]);
+    expect(getActiveSettingsSlot('database.row')).toEqual([]);
+
+    testExtensionFlags.databaseRow = true;
+    expect(keysOf(getActiveSettingsSlot('database.row'))).toEqual([
+      `${TEST_EXTENSION_ID}/database-row`
+    ]);
+  });
+
+  it('filters out a section whose when() throws, and warns once', () => {
+    const throwing = ext('throwing-section', {
+      settingsSections: [
+        section('boom', {
+          when: () => {
+            throw new Error('when failed');
+          }
+        })
+      ]
+    });
+    uiExtensionRegistry.register(throwing);
+    testExtensionFlags.section = true;
+
+    try {
+      expect(keysOf(getActiveSettingsSections())).toEqual([`${TEST_EXTENSION_ID}/test-section`]);
+      getActiveSettingsSections();
+      expect(log.warn).toHaveBeenCalledTimes(1);
+      expect(log.warn).toHaveBeenCalledWith(
+        expect.stringContaining('when() threw'),
+        expect.objectContaining({ key: 'throwing-section/boom' })
+      );
+    } finally {
+      uiExtensionRegistry.unregister('throwing-section');
+    }
   });
 });

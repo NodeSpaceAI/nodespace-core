@@ -14,7 +14,27 @@ export { testExtensionFlags, testExtensionMounts, resetTestExtension } from './f
 
 export const TEST_EXTENSION_ID = 'test-extension';
 
-export function createTestExtension(overrides: Partial<NodespaceExtension> = {}): NodespaceExtension {
+/** How the fixture's settings section is identified and placed; each field defaults as shown. */
+export interface TestSectionOptions {
+  /** Default `test-section`. Also its navigation id. */
+  id?: string;
+  /** Default `Test section`. */
+  label?: string;
+  /** Default: absent, so the section is placed before About. */
+  after?: string;
+  /** Default: absent. */
+  priority?: number;
+}
+
+export interface TestExtensionOptions {
+  section?: TestSectionOptions;
+}
+
+export function createTestExtension(
+  overrides: Partial<NodespaceExtension> = {},
+  options: TestExtensionOptions = {}
+): NodespaceExtension {
+  const section = options.section ?? {};
   return {
     id: TEST_EXTENSION_ID,
     apiVersion: 1,
@@ -70,6 +90,36 @@ export function createTestExtension(overrides: Partial<NodespaceExtension> = {})
         priority: -1,
         when: () => testExtensionFlags.tabSecondary,
         load: () => import('./test-viewer-tab.svelte')
+      }
+    ],
+    settingsSections: [
+      {
+        id: section.id ?? 'test-section',
+        label: section.label ?? 'Test section',
+        ...(section.after !== undefined && { after: section.after }),
+        ...(section.priority !== undefined && { priority: section.priority }),
+        when: () => testExtensionFlags.section,
+        load: () => import('./test-settings-section.svelte')
+      }
+    ],
+    settingsSlots: [
+      {
+        id: 'database-action',
+        slot: 'database.actions',
+        when: () => testExtensionFlags.databaseActions,
+        load: () => import('./test-database-action.svelte')
+      },
+      {
+        id: 'database-row',
+        slot: 'database.row',
+        when: () => testExtensionFlags.databaseRow,
+        load: () => import('./test-database-row.svelte')
+      },
+      {
+        id: 'database-row-throwing',
+        slot: 'database.row',
+        when: () => testExtensionFlags.databaseRowThrowing,
+        load: () => import('./test-throwing-row.svelte')
       }
     ],
     ...overrides

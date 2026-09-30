@@ -3,11 +3,12 @@
  * =============================
  *
  * The registry behind NodeSpace's frontend extension API (ADR-082). An
- * extension is a plain object, `{ id, apiVersion, chrome?, viewerTabs? }`, whose
- * contributions each carry an `id`, an optional `when()` predicate, an optional
- * `priority` and a lazy `load()` for the component they mount. Shared hosts
- * (`app-shell.svelte`, `collection-node-viewer.svelte`) import nothing from an
- * extension; they render whatever the registry contributes.
+ * extension is a plain object, `{ id, apiVersion, chrome?, viewerTabs?,
+ * settingsSections?, settingsSlots? }`, whose contributions each carry an `id`,
+ * an optional `when()` predicate, an optional `priority` and a lazy `load()` for
+ * the component they mount. Shared hosts (`app-shell.svelte`,
+ * `collection-node-viewer.svelte`, the Settings pane and Databases page) import
+ * nothing from an extension; they render whatever the registry contributes.
  *
  * Registration:
  *   - `registerExtensions([...])` is what a build entry calls with the
@@ -25,7 +26,10 @@
  *     so a contribution whose key an earlier extension already holds is dropped
  *     (a repeated key would throw in a keyed `{#each}`).
  *   - Lookups return contributions in descending `priority` (default 0), ties in
- *     registration order (extension first, then contribution order).
+ *     registration order (extension first, then contribution order). The one
+ *     exception is `settingsSections()`, which returns registration order: the
+ *     Settings category list places a section by its `after` and applies priority
+ *     only among sections that share an anchor.
  *
  * Lookups never evaluate `when`. This class is plain data with no `$state` and
  * no reactivity; the reactive filtering by `when` lives in the sibling
@@ -70,11 +74,47 @@ export type ViewerTabContribution = Contribution<{ nodeId: string }> & {
   label: string;
 };
 
+// --- Settings extension points (ADR-082 §2.2) --------------------------------
+
+/**
+ * A category in the Settings sidebar and the pane it opens. Its `id` is also its
+ * navigation id, sharing one namespace with the core categories, so `after`,
+ * `navigate(id)` and `settingsStore.initialCategory` all take core and
+ * contributed ids alike. The section is placed after the entry `after` names, or
+ * before About when `after` is absent or names nothing that exists. The
+ * component receives `navigate` to switch the pane to another category.
+ */
+export type SettingsSectionContribution = Contribution<{
+  navigate: (sectionId: string) => void;
+}> & { label: string; after?: string };
+
+/** The places inside the Databases settings page a contribution can target. */
+export type SettingsSlot = 'database.actions' | 'database.row';
+
+/**
+ * Content mounted into a Databases-page slot: `database.actions` sits in the
+ * header beside the New and Open buttons and takes no props; `database.row` sits
+ * inside each database's row and receives that row's database id.
+ */
+export type SettingsSlotContribution =
+  | (Contribution & { slot: 'database.actions' })
+  | (Contribution<{ databaseId: string }> & { slot: 'database.row' });
+
+/** The contributions of `SettingsSlotContribution` that target `S`. */
+export type SettingsSlotContributionFor<S extends SettingsSlot> = Extract<
+  SettingsSlotContribution,
+  { slot: S }
+>;
+
+// --- End of settings extension points -----------------------------------------
+
 export interface NodespaceExtension {
   id: string;
   apiVersion: typeof EXTENSION_API_VERSION.major;
   chrome?: ChromeContribution[];
   viewerTabs?: ViewerTabContribution[];
+  settingsSections?: SettingsSectionContribution[];
+  settingsSlots?: SettingsSlotContribution[];
 }
 
 /** A contribution as a host sees it; `key` is `${extensionId}/${id}`. */
@@ -84,14 +124,19 @@ interface RegisteredExtension {
   extension: NodespaceExtension;
   chrome: Keyed<ChromeContribution>[];
   viewerTabs: Keyed<ViewerTabContribution>[];
+  settingsSections: Keyed<SettingsSectionContribution>[];
+  settingsSlots: Keyed<SettingsSlotContribution>[];
 }
 
 function priorityOf(c: { priority?: number }): number {
   return typeof c.priority === 'number' && Number.isFinite(c.priority) ? c.priority : 0;
 }
 
-/** Descending priority. `Array.prototype.sort` is stable, so ties keep their incoming order. */
-function byPriority<C extends { priority?: number }>(list: C[]): C[] {
+/**
+ * Sorts `list` in place by descending priority and returns it. `Array.prototype.sort`
+ * is stable, so ties keep their incoming order.
+ */
+export function byPriority<C extends { priority?: number }>(list: C[]): C[] {
   return list.sort((a, b) => priorityOf(b) - priorityOf(a));
 }
 
@@ -194,7 +239,15 @@ export class UiExtensionRegistry {
     this.extensions.set(ext.id, {
       extension: ext,
       chrome: keyContributions(ext.id, ext.chrome, 'chrome', seenIds, takenKeys),
-      viewerTabs: keyContributions(ext.id, ext.viewerTabs, 'viewerTabs', seenIds, takenKeys)
+      viewerTabs: keyContributions(ext.id, ext.viewerTabs, 'viewerTabs', seenIds, takenKeys),
+      settingsSections: keyContributions(
+        ext.id,
+        ext.settingsSections,
+        'settingsSections',
+        seenIds,
+        takenKeys
+      ),
+      settingsSlots: keyContributions(ext.id, ext.settingsSlots, 'settingsSlots', seenIds, takenKeys)
     });
     log.debug('Registered extension', { id: ext.id });
   }
@@ -205,6 +258,8 @@ export class UiExtensionRegistry {
     for (const entry of this.extensions.values()) {
       for (const c of entry.chrome) keys.add(c.key);
       for (const t of entry.viewerTabs) keys.add(t.key);
+      for (const s of entry.settingsSections) keys.add(s.key);
+      for (const s of entry.settingsSlots) keys.add(s.key);
     }
     return keys;
   }
@@ -250,6 +305,34 @@ export class UiExtensionRegistry {
       }
     }
     return byPriority(out);
+  }
+
+  /**
+   * Every settings section, across all extensions, in registration order
+   * (extension first, then contribution order). Not sorted by priority: a
+   * section's place comes from `after`, and priority only orders sections that
+   * share an anchor, which the Settings category list resolves. Does NOT
+   * evaluate `when`.
+   */
+  settingsSections(): Keyed<SettingsSectionContribution>[] {
+    const out: Keyed<SettingsSectionContribution>[] = [];
+    for (const entry of this.extensions.values()) out.push(...entry.settingsSections);
+    return out;
+  }
+
+  /**
+   * Every contribution to the Databases-page `slot`, across all extensions, in
+   * descending priority with ties in registration order. Does NOT evaluate `when`.
+   */
+  settingsSlotFor<S extends SettingsSlot>(slot: S): Keyed<SettingsSlotContributionFor<S>>[] {
+    const out: Keyed<SettingsSlotContribution>[] = [];
+    for (const entry of this.extensions.values()) {
+      for (const c of entry.settingsSlots) {
+        if (c.slot === slot) out.push(c);
+      }
+    }
+    // Every entry above has `slot === S`, which the union filter cannot express.
+    return byPriority(out) as Keyed<SettingsSlotContributionFor<S>>[];
   }
 }
 

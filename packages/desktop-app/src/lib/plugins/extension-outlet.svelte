@@ -1,9 +1,10 @@
 <!--
   ExtensionOutlet — mounts one lazily-loaded UI-extension component.
 
-  Generic host part of the extension API: the app shell (chrome slots) and node
-  viewers (viewer tabs) render a registry contribution through it without
-  importing the component directly. The dynamic import runs once per `load`
+  Generic host part of the extension API: the app shell (chrome slots), node
+  viewers (viewer tabs) and the Settings pane and Databases page (sections and
+  slots) render a registry contribution through it without importing the
+  component directly. The dynamic import runs once per `load`
   value, and callers key their {#each} by the contribution key
   (`<extension id>/<contribution id>`) so a contribution that goes away, or
   changes, mounts a fresh outlet (ADR-082 §2.3).
