@@ -429,10 +429,10 @@ fn create_owner_only_pipe(
 const SHUTDOWN_WATCHDOG_TIMEOUT: Duration = Duration::from_secs(15);
 
 fn main() -> Result<()> {
-    // Argument handling happens before tracing and the runtime start, so a
-    // probe such as the Homebrew formula's `test` (or a caller that passes a
-    // flag this daemon does not know) never spins up the full daemon or binds
-    // the socket. `args_os` keeps a non-UTF-8 argument on the same
+    // Argument handling happens before tracing and the runtime start, so
+    // neither `--version` (the Homebrew formula's `test` runs it) nor a flag
+    // this daemon does not know ever spins up the full daemon or binds the
+    // socket. `args_os` keeps a non-UTF-8 argument on the same
     // reject-with-status-2 path instead of panicking inside `args`.
     let args: Vec<String> = std::env::args_os()
         .map(|a| a.to_string_lossy().into_owned())

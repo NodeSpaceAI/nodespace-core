@@ -16,11 +16,14 @@ The daemon defaults to `~/.nodespace/database/nodespace.db` — the user's actua
 notes. Two traps, both of which have bitten before:
 
 1. **A bare `nodespaced` starts a daemon against the real database.**
-   `nodespaced --help` does not print help: any argument other than `--tray`
-   and `--version` is refused with a one-line error and exit status 2 before
-   anything starts, so probing the binary that way is safe but tells you
-   nothing. Read `packages/daemon/src/lib.rs` for the flags and environment it
-   honours.
+   `nodespaced --help` does not print help. A binary built from a current
+   checkout refuses any argument other than `--tray` and `--version` with a
+   one-line error and exit status 2 before anything starts, but an older one
+   (the installed `/usr/local/bin` or Homebrew daemon, or a stale
+   `target/debug/nodespaced` that step 1 reuses) ignores unknown flags and
+   starts serving. Do not probe a binary you did not just build. The flags are
+   constants in `packages/daemon/src/main.rs`; the environment variables it
+   honours are resolved in `packages/daemon/src/lib.rs`.
 2. **`NODESPACED_DB_PATH` alone is not isolation.** The source says so directly
    (`resolve_db_path` doc comment): setting it while inheriting the real home
    "would seed the real `~/.nodespace/databases.toml` with a throwaway path
