@@ -281,16 +281,20 @@ function preRecordFiles(config: AgentConfig): string[] {
  * pre-record files, plus every reference the skill being uninstalled ships
  * (`packageRoot`), which may name ones the pre-record list does not.
  *
- * A `references/` that cannot be read is treated as shipping none: the
- * pre-record list is still worth removing, and an uninstall should not abort
- * over the state of a directory it only reads.
+ * A `references/` that cannot be read is treated as shipping none, with a
+ * warning: the pre-record list is still worth removing, and an uninstall should
+ * not abort over the state of a directory it only reads.
  */
 function filesWithoutRecord(config: AgentConfig, packageRoot: string): string[] {
   let shipped: string[] = [];
   try {
     shipped = listReferenceFiles(packageRoot);
-  } catch {
-    // See above.
+  } catch (err) {
+    const reason = (err as NodeJS.ErrnoException).code ?? (err as Error).message;
+    process.stderr.write(
+      `WARNING: could not read the skill's references (${reason}); ` +
+      'any it ships that the pre-record list does not name are left in place.\n',
+    );
   }
   return [...new Set([...preRecordFiles(config), ...shipped])];
 }
@@ -356,6 +360,10 @@ function removeRecordedFile(installDir: string, rel: string): string | undefined
 function pruneEmptyParents(installDir: string, file: string): void {
   for (let dir = dirname(file); dir !== installDir && isWithin(installDir, dir); dir = dirname(dir)) {
     try {
+      // A symlinked directory is the user's link, not something this installer
+      // made, and never its to remove: on Windows rmdir would take the link
+      // itself even though the directory it points at is not empty.
+      if (lstatSync(dir).isSymbolicLink()) return;
       rmdirSync(dir);
     } catch {
       // Not empty, or unreadable. Either way, the directories above it stay too.

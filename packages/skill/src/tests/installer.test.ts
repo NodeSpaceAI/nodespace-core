@@ -1,5 +1,15 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdirSync, rmSync, existsSync, readFileSync, readdirSync, writeFileSync, symlinkSync } from 'node:fs';
+import {
+  mkdirSync,
+  rmSync,
+  rmdirSync,
+  existsSync,
+  readFileSync,
+  readdirSync,
+  writeFileSync,
+  symlinkSync,
+  lstatSync,
+} from 'node:fs';
 import { join, basename } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -1036,11 +1046,45 @@ describe('references and the install record', () => {
         readdirSync: failingOn(actual.readdirSync, path => path.endsWith('references') && path.startsWith(FAKE_PKG_ROOT)),
       }));
 
-      const [result] = failingUninstall(['claude-code'], FAKE_PKG_ROOT);
+      const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+      let result;
+      try {
+        [result] = failingUninstall(['claude-code'], FAKE_PKG_ROOT);
+        // The cleanup is partial by construction, so it says so.
+        expect(stderr).toHaveBeenCalledWith(expect.stringContaining("could not read the skill's references"));
+      } finally {
+        stderr.mockRestore();
+      }
 
-      expect(result.removed).toHaveLength(1 + PRE_RECORD_REFERENCES.length);
+      expect(result!.removed).toHaveLength(1 + PRE_RECORD_REFERENCES.length);
       expect(existsSync(claude.installDir)).toBe(false);
     });
+
+    // On Windows, rmdir on a directory symlink removes the link even though the
+    // directory behind it is not empty, unlike POSIX (ENOTDIR). This emulates
+    // that, so the guard is exercised on every platform the tests run on.
+    it.skipIf(process.platform === 'win32')(
+      'never prunes a symlinked directory, even where rmdir would remove the link',
+      async () => {
+        installClaude();
+        const elsewhere = join(TMP, 'elsewhere-references');
+        mkdirSync(elsewhere, { recursive: true });
+        for (const rel of readRecord(claude).files.filter(rel => rel.startsWith('references/'))) {
+          plant(elsewhere, rel.slice('references/'.length));
+        }
+        rmSync(join(claude.installDir, 'references'), { recursive: true });
+        symlinkSync(elsewhere, join(claude.installDir, 'references'));
+        const { uninstall: windowsUninstall } = await importInstallerWithFs(actual => ({
+          rmdirSync: ((path: string) =>
+            actual.lstatSync(path).isSymbolicLink() ? actual.unlinkSync(path) : actual.rmdirSync(path)) as typeof rmdirSync,
+        }));
+
+        windowsUninstall(['claude-code'], FAKE_PKG_ROOT);
+
+        expect(lstatSync(join(claude.installDir, 'references')).isSymbolicLink()).toBe(true);
+        expect(readdirSync(elsewhere).length).toBeGreaterThan(0);
+      }
+    );
   });
 
   describe('Claude Code plugin-managed reconciliation', () => {
