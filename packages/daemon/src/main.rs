@@ -98,7 +98,7 @@ async fn open_default_database(
     let default_id = manager
         .ensure_default_registered("Default".to_string(), db_path.to_path_buf())
         .await?;
-    let marker = incompatible_database::marker_path(is_pro_build())?;
+    let marker = incompatible_database::marker_path(false)?;
     let bundle = incompatible_database::open_default_or_record_refusal(
         &manager,
         &default_id,
@@ -114,13 +114,6 @@ async fn open_default_database(
     Ok((manager, bundle))
 }
 
-/// True when this daemon was built as the Pro edition. The sibling
-/// `nodespace-sync` repo compiles `nodespaced-pro` with `--features pro`; a
-/// community build leaves it off. Same discriminator `edition()` reports.
-fn is_pro_build() -> bool {
-    cfg!(feature = "pro")
-}
-
 /// The socket this daemon binds.
 ///
 /// `NODESPACED_SOCKET` overrides it, but the fallback must resolve to the same
@@ -133,7 +126,7 @@ fn socket_path() -> std::path::PathBuf {
     if let Ok(p) = std::env::var(nodespace_proto::socket::SOCKET_ENV_VAR) {
         return std::path::PathBuf::from(p);
     }
-    default_socket_path_for(cfg!(debug_assertions), is_pro_build())
+    default_socket_path_for(cfg!(debug_assertions), false)
 }
 
 /// The socket [`socket_path`] falls back to when `NODESPACED_SOCKET` is absent,
@@ -436,16 +429,23 @@ fn create_owner_only_pipe(
 const SHUTDOWN_WATCHDOG_TIMEOUT: Duration = Duration::from_secs(15);
 
 fn main() -> Result<()> {
-    // Early-exit flags — handled before tracing/runtime init so the installer
-    // postinstall script can query these without spinning up the full daemon.
-    let args: Vec<String> = std::env::args().collect();
-    if args.iter().any(|a| a == "--edition") {
-        println!("{}", edition());
-        return Ok(());
-    }
-    if args.iter().any(|a| a == "--version") {
+    // Argument handling happens before tracing and the runtime start, so
+    // neither `--version` (the Homebrew formula's `test` runs it) nor a flag
+    // this daemon does not know ever spins up the full daemon or binds the
+    // socket. `args_os` keeps a non-UTF-8 argument on the same
+    // reject-with-status-2 path instead of panicking inside `args`.
+    let args: Vec<String> = std::env::args_os()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
+    if args.iter().any(|a| a == VERSION_FLAG) {
         println!("{}", env!("CARGO_PKG_VERSION"));
         return Ok(());
+    }
+    if let Some(arg) = first_unrecognized_arg(&args) {
+        eprintln!(
+            "nodespaced: unrecognized argument '{arg}' (supported: {TRAY_FLAG}, {VERSION_FLAG})"
+        );
+        std::process::exit(UNRECOGNIZED_ARG_EXIT_CODE);
     }
 
     tracing_subscriber::fmt()
@@ -1133,6 +1133,31 @@ mod watch_for_shutdown_signal_tests {
 /// `daemon_setup.rs`; the two crates share no dependency, so keep them in step.
 const TRAY_FLAG: &str = "--tray";
 
+/// Command-line flag that prints the package version and exits. `main`
+/// answers it before [`first_unrecognized_arg`] runs, so it is not part of
+/// [`ACCEPTED_ARGS`].
+const VERSION_FLAG: &str = "--version";
+
+/// Every argument the daemon acts on once [`VERSION_FLAG`] has been handled.
+const ACCEPTED_ARGS: &[&str] = &[TRAY_FLAG];
+
+/// Exit status for an argument the daemon does not recognise. Matches the
+/// usage-error status the standard command-line tools use.
+const UNRECOGNIZED_ARG_EXIT_CODE: i32 = 2;
+
+/// The first argument after argv[0] that is not in [`ACCEPTED_ARGS`].
+///
+/// Anything unknown is refused rather than ignored, because the fallback for
+/// an unknown argument would be to start a full daemon. A caller that runs
+/// `nodespaced <some-flag>` inside a `$(...)`, expecting a one-line answer,
+/// would then hang on a server that never exits.
+fn first_unrecognized_arg(args: &[String]) -> Option<&str> {
+    args.iter()
+        .skip(1)
+        .map(String::as_str)
+        .find(|arg| !ACCEPTED_ARGS.contains(arg))
+}
+
 /// Whether `main` should hand the main thread to `tray::run`'s
 /// `tao`/`NSApplication` event loop instead of taking the plain async
 /// [`serve_headless`] path.
@@ -1161,7 +1186,7 @@ fn tray_mode(args: &[String]) -> bool {
 mod tray_mode_tests {
     use super::*;
 
-    fn argv(extra: &[&str]) -> Vec<String> {
+    pub(super) fn argv(extra: &[&str]) -> Vec<String> {
         std::iter::once("nodespaced")
             .chain(extra.iter().copied())
             .map(String::from)
@@ -1179,12 +1204,58 @@ mod tray_mode_tests {
     }
 }
 
-/// Returns the build edition: "pro" when compiled with `--features pro`, otherwise "community".
-fn edition() -> &'static str {
-    if is_pro_build() {
-        "pro"
-    } else {
-        "community"
+#[cfg(test)]
+mod unrecognized_arg_tests {
+    use super::tray_mode_tests::argv;
+    use super::*;
+
+    /// A flag an earlier release answered and this one refuses. Built from
+    /// fragments so this file's own text does not contain it: the boundary
+    /// ratchet counts occurrences of the literal, and a test that guards
+    /// against the flag must not add one.
+    const RETIRED_EDITION_FLAG: &str = concat!("--", "edition");
+
+    #[test]
+    fn bare_launch_has_nothing_unrecognized() {
+        assert_eq!(first_unrecognized_arg(&argv(&[])), None);
+    }
+
+    #[test]
+    fn tray_flag_is_recognized() {
+        assert_eq!(first_unrecognized_arg(&argv(&[TRAY_FLAG])), None);
+    }
+
+    #[test]
+    fn argv0_is_never_judged() {
+        let only_program_name = vec!["--not-an-argument".to_string()];
+        assert_eq!(first_unrecognized_arg(&only_program_name), None);
+    }
+
+    #[test]
+    fn unknown_flags_are_reported() {
+        for flag in ["--help", "--no-such-flag", "-h", "stray-positional"] {
+            assert_eq!(first_unrecognized_arg(&argv(&[flag])), Some(flag));
+        }
+    }
+
+    #[test]
+    fn the_retired_flag_is_reported_alone_and_beside_a_valid_one() {
+        assert_eq!(
+            first_unrecognized_arg(&argv(&[RETIRED_EDITION_FLAG])),
+            Some(RETIRED_EDITION_FLAG)
+        );
+        assert_eq!(
+            first_unrecognized_arg(&argv(&[TRAY_FLAG, RETIRED_EDITION_FLAG])),
+            Some(RETIRED_EDITION_FLAG)
+        );
+    }
+
+    #[test]
+    fn the_first_of_several_unknown_arguments_is_reported() {
+        assert_eq!(
+            first_unrecognized_arg(&argv(&[TRAY_FLAG, "--first", "--second"])),
+            Some("--first")
+        );
     }
 }
 
@@ -2050,7 +2121,7 @@ mod socket_fallback_variant_tests {
         std::env::remove_var("NODESPACED_SOCKET");
         assert_eq!(
             super::socket_path(),
-            super::default_socket_path_for(cfg!(debug_assertions), super::is_pro_build()),
+            super::default_socket_path_for(cfg!(debug_assertions), false),
             "with no override, socket_path must be exactly this build's scoped default"
         );
 
