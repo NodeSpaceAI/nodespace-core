@@ -98,7 +98,12 @@ describe('ExtensionOutlet', () => {
       props: { load: (() => undefined) as never }
     });
 
-    await waitFor(() => expect(log.error).toHaveBeenCalled());
+    await waitFor(() =>
+      expect(log.error).toHaveBeenCalledWith(
+        expect.stringContaining('failed to load'),
+        expect.objectContaining({ error: expect.any(TypeError) })
+      )
+    );
     expect(container.querySelector('[data-testid]')).toBeNull();
   });
 
