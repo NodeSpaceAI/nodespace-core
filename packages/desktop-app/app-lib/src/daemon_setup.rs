@@ -221,8 +221,42 @@ pub fn kill_stale_daemon_sync() {
         }
     }
 
-    // Remove stale socket so the health check in ensure_daemon_running sees NotRunning
-    let _ = std::fs::remove_file(&socket_path);
+    // Drop the killed daemon's socket file so the health check in
+    // ensure_daemon_running sees NotRunning. SIGKILL is asynchronous, so allow
+    // the daemon a moment to let go of it; a socket something still answers on
+    // is not ours to delete.
+    remove_socket_if_stale(&socket_path, STALE_DAEMON_KILL_GRACE);
+}
+
+/// How long [`kill_stale_daemon_sync`] waits for a SIGKILLed daemon to stop
+/// answering on its socket before it concludes something else is serving it.
+#[cfg(unix)]
+const STALE_DAEMON_KILL_GRACE: Duration = Duration::from_millis(500);
+
+/// Deletes the socket file at `socket_path` once nothing accepts connections
+/// on it, and leaves it alone if something still does after `grace`.
+///
+/// A file nothing answers on is stale, and the daemon that replaces it deletes
+/// it before binding. A file something does answer on is not ours to delete: a
+/// daemon this module does not own (a Homebrew service, one started by hand)
+/// may still be serving it, and every daemon takes a single-instance lock, so a
+/// replacement started beside it exits without serving. Deleting the file
+/// would leave that daemon alive, holding the lock and unreachable; leaving it
+/// lets the app keep using that daemon.
+///
+/// Staleness is decided by connecting, as [`check_daemon_socket`] does, and not
+/// by probing the lock: taking the lock would make a daemon that starts at that
+/// moment see it held and exit without serving.
+#[cfg(unix)]
+fn remove_socket_if_stale(socket_path: &Path, grace: Duration) {
+    let deadline = std::time::Instant::now() + grace;
+    while std::os::unix::net::UnixStream::connect(socket_path).is_ok() {
+        if std::time::Instant::now() >= deadline {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let _ = std::fs::remove_file(socket_path);
 }
 
 /// PIDs of every process currently holding the Unix socket at `socket_path`
@@ -653,6 +687,13 @@ pub async fn ensure_daemon_running(app: &AppHandle) -> Result<DaemonStatus> {
 /// clients or unrelated processes that happen to share the socket.
 #[cfg(unix)]
 async fn kill_running_daemon(socket_path: &Path) {
+    kill_running_daemon_within(socket_path, Duration::from_secs(5)).await;
+}
+
+/// [`kill_running_daemon`] with the time it waits for the daemon to exit made a
+/// parameter, so a test need not sit out the full grace period.
+#[cfg(unix)]
+async fn kill_running_daemon_within(socket_path: &Path, exit_grace: Duration) {
     if !should_attempt_kill(&check_daemon_socket(socket_path).await) {
         return;
     }
@@ -673,8 +714,8 @@ async fn kill_running_daemon(socket_path: &Path) {
         }
     }
 
-    // Give the daemon up to 5 s to exit cleanly before proceeding.
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    // Give the daemon up to `exit_grace` to exit cleanly before proceeding.
+    let deadline = tokio::time::Instant::now() + exit_grace;
     while tokio::time::Instant::now() < deadline {
         tokio::time::sleep(Duration::from_millis(200)).await;
         if check_daemon_socket(socket_path).await == DaemonStatus::NotRunning {
@@ -682,8 +723,9 @@ async fn kill_running_daemon(socket_path: &Path) {
         }
     }
 
-    // Remove a stale socket file so launchd can bind the new one.
-    let _ = std::fs::remove_file(socket_path);
+    // Remove the socket file only if nothing answers on it any more. A daemon
+    // this function did not signal may still be serving it.
+    remove_socket_if_stale(socket_path, Duration::ZERO);
 }
 
 /// Kill the running daemon on Windows via taskkill and wait for it to exit.
@@ -3571,5 +3613,87 @@ mod wait_for_daemon_or_refusal_tests {
 
         assert_eq!(status, DaemonStatus::NotRunning);
         assert!(started.elapsed() >= Duration::from_millis(600));
+    }
+}
+
+/// The app deletes a daemon's socket file only once nothing answers on it. A
+/// daemon it did not start (a Homebrew service, one started by hand) may still
+/// be serving that file, and every daemon holds a single-instance lock beside
+/// its socket, so the daemon the app then starts would exit without serving:
+/// deleting a live daemon's socket strands it, alive but unreachable.
+///
+/// Uses real Unix sockets held by this test process, so nothing here depends on
+/// any other process being alive on the machine `cargo test` runs on.
+#[cfg(all(test, unix))]
+mod stale_socket_removal_tests {
+    use super::{kill_running_daemon_within, remove_socket_if_stale};
+    use std::os::unix::net::UnixListener;
+    use std::path::PathBuf;
+    use std::time::Duration;
+
+    fn socket_in(dir: &tempfile::TempDir) -> PathBuf {
+        dir.path().join("d.sock")
+    }
+
+    #[test]
+    fn a_socket_something_answers_on_is_left_alone() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let socket = socket_in(&dir);
+        let _serving = UnixListener::bind(&socket).expect("bind test socket");
+
+        remove_socket_if_stale(&socket, Duration::ZERO);
+
+        assert!(
+            socket.exists(),
+            "a live daemon's socket must not be deleted"
+        );
+    }
+
+    #[test]
+    fn a_socket_nothing_answers_on_is_removed() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let socket = socket_in(&dir);
+        // Dropping a std listener closes it but leaves the file behind, which
+        // is what a stopped daemon leaves.
+        drop(UnixListener::bind(&socket).expect("bind test socket"));
+        assert!(socket.exists(), "the stale file should still be on disk");
+
+        remove_socket_if_stale(&socket, Duration::ZERO);
+
+        assert!(!socket.exists());
+    }
+
+    #[test]
+    fn a_socket_that_stops_answering_within_the_grace_is_removed() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let socket = socket_in(&dir);
+        let serving = UnixListener::bind(&socket).expect("bind test socket");
+        // A daemon that was just killed lets go of its socket a moment later.
+        let dying = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            drop(serving);
+        });
+
+        remove_socket_if_stale(&socket, Duration::from_secs(5));
+
+        dying.join().expect("dying-daemon thread");
+        assert!(!socket.exists());
+    }
+
+    #[tokio::test]
+    async fn kill_running_daemon_leaves_the_socket_of_a_daemon_it_cannot_stop() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let socket = socket_in(&dir);
+        // This test process holds the socket, and its argv[0] is not the
+        // installed daemon's, so `kill_running_daemon` signals nobody: the same
+        // position a Homebrew-run daemon is in.
+        let _foreign = UnixListener::bind(&socket).expect("bind test socket");
+
+        kill_running_daemon_within(&socket, Duration::from_millis(300)).await;
+
+        assert!(
+            socket.exists(),
+            "the socket of a daemon that is still serving must not be deleted"
+        );
     }
 }

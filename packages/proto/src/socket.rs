@@ -101,12 +101,18 @@ pub const DAEMON_PIPE_NAME: &str = r"\\.\pipe\nodespace-daemon";
 /// the Windows autorun entry is a bare command line with no way to carry one.
 pub const TRAY_FLAG: &str = "--tray";
 
-/// The arguments every launcher passes to the daemon it registers: the launchd
-/// plist, the systemd unit, the Windows spawn and the Windows autorun entry.
+/// The arguments the desktop app's launchers pass to the daemon they register:
+/// the launchd plist, the systemd unit, the Windows spawn and the Windows
+/// autorun entry. The static plist the `.pkg` installs repeats them by hand.
+/// A headless registration, such as the Homebrew formula's service, passes
+/// none.
 ///
 /// A daemon registered under core's service identity must accept each entry.
 /// Adding an argument is an extension-API change, because a daemon built
 /// elsewhere on this crate has to accept it too (ADR-082 section 6).
+///
+/// Each entry is one plain word: the systemd `ExecStart` line and the Windows
+/// autorun value join the entries with spaces and quote nothing.
 pub const LAUNCHER_ARGS: [&str; 1] = [TRAY_FLAG];
 
 /// Every UI pid-file filename, in the same build-variant order as
@@ -250,6 +256,17 @@ mod tests {
             assert_ne!(
                 ui_pid_name(is_debug, is_pro),
                 daemon_socket_name(is_debug, is_pro)
+            );
+        }
+    }
+
+    #[test]
+    fn launcher_args_survive_an_unquoted_command_line() {
+        for arg in LAUNCHER_ARGS {
+            assert!(
+                !arg.is_empty() && !arg.contains(|c: char| c.is_whitespace() || "\"'".contains(c)),
+                "launcher argument {arg:?} would be split or mangled by a launcher that joins \
+                 the entries with spaces and quotes nothing"
             );
         }
     }
