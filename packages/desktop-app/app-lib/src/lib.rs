@@ -38,6 +38,10 @@ pub mod update_check;
 // Shared atomic write-to-temp-then-rename helper for JSON config files.
 mod atomic_file;
 
+// Extension points for an app crate built on this library.
+pub mod extensions;
+pub use extensions::{assemble, AppExtensions, EXTENSION_API_VERSION};
+
 // Window <-> database routing: window label/pin tracking and the
 // emit-routing helper that replaces every hardcoded "main" window emit.
 pub mod window_routing;
