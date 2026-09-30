@@ -32,7 +32,7 @@ import { proSync } from '$lib/stores/pro-sync.svelte';
 import { labsFlags } from '$lib/stores/labs-flags.svelte';
 import { membership } from '$lib/stores/membership.svelte';
 import { SharedNodeStore } from '$lib/services/shared-node-store.svelte';
-import { DATABASE_SETTINGS_NODE_ID } from '$lib/plugins/ui-extensions';
+import { DATABASE_SETTINGS_NODE_ID } from '$lib/constants/database-settings';
 
 const SIGNED_IN = { personId: 'person-1', email: 'alice@example.com' };
 const SIGNED_OUT = { personId: '', email: '' };
@@ -46,7 +46,7 @@ function mockIdentity(identity: { personId: string; email: string }) {
 }
 
 /** Seeds the active database's settings singleton, same shape `resolveProSyncVariant`
- *  (via `activeDatabaseSettings`) reads — see ui-extensions.test.ts's identical helper. */
+ *  (via `activeDatabaseSettings`) reads — see pro-sync-variant.test.ts's identical helper. */
 function seedSettings(props: { sync_enabled?: boolean; auth_status?: string }): void {
   const node: Node = {
     id: DATABASE_SETTINGS_NODE_ID,

@@ -17,7 +17,7 @@
 -->
 <script lang="ts">
   import { proSync } from '$lib/stores/pro-sync.svelte';
-  import { resolveProSyncVariant } from '$lib/plugins/ui-extensions.svelte';
+  import { resolveProSyncVariant } from '$lib/plugins/pro-sync-variant.svelte';
 
   let { nodeId }: { nodeId: string } = $props();
 

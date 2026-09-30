@@ -43,9 +43,8 @@ import { proSync } from '$lib/stores/pro-sync.svelte';
 import { sharedNodeStore, SharedNodeStore } from '$lib/services/shared-node-store.svelte';
 import * as backendAdapterModule from '$lib/services/backend-adapter';
 import { initializeTauriSyncListeners } from '$lib/services/tauri-sync-listener';
+import { resolveProSyncVariant, isProSyncActive } from '$lib/plugins/pro-sync-variant.svelte';
 import {
-  resolveProSyncVariant,
-  isProSyncActive,
   getActiveChromeContributions,
   getActiveViewerExtensions
 } from '$lib/plugins/ui-extensions.svelte';

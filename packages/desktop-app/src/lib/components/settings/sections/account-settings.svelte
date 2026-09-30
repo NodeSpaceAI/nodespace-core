@@ -27,7 +27,7 @@
   import { proSync } from '$lib/stores/pro-sync.svelte';
   import { labsFlags } from '$lib/stores/labs-flags.svelte';
   import { membership } from '$lib/stores/membership.svelte';
-  import { resolveProSyncVariant } from '$lib/plugins/ui-extensions.svelte';
+  import { resolveProSyncVariant } from '$lib/plugins/pro-sync-variant.svelte';
   import { Badge } from '$lib/components/ui/badge';
   import { Button } from '$lib/components/ui/button';
   import { Card, CardHeader, CardContent } from '$lib/components/ui/card';

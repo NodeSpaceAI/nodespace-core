@@ -230,7 +230,7 @@ class ProSyncStore {
    * Axis 1 only: "this daemon binary CAN sync" (the capability probe found
    * a Pro daemon). This is NOT "sync is active" — whether sync is enabled and
    * authenticated for the *active database* is axis 2, held on that database's
-   * DatabaseSettingsNode. Use `isProSyncActive()` from `ui-extensions.svelte` for
+   * DatabaseSettingsNode. Use `isProSyncActive()` from `pro-sync-variant.svelte` for
    * the combined two-axis gate (what the membership store keys off).
    */
   isPro = $derived(this.tier === 'pro');

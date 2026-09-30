@@ -25,7 +25,7 @@ import {
 	type Permission,
 	type Person
 } from '$lib/services/membership-service';
-import { isProSyncActive } from '$lib/plugins/ui-extensions.svelte';
+import { isProSyncActive } from '$lib/plugins/pro-sync-variant.svelte';
 import { backendAdapter } from '$lib/services/backend-adapter';
 import { createLogger } from '$lib/utils/logger';
 import { toError } from '$lib/types/errors';

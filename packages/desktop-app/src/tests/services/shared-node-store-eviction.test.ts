@@ -25,7 +25,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { SharedNodeStore, SimplePersistenceCoordinator } from '../../lib/services/shared-node-store.svelte';
 import { structureTree } from '../../lib/stores/reactive-structure-tree.svelte';
-import { DATABASE_SETTINGS_NODE_ID } from '../../lib/plugins/ui-extensions';
+import { DATABASE_SETTINGS_NODE_ID } from '../../lib/constants/database-settings';
 import { createTestNode } from '../helpers';
 import type { UpdateSource } from '../../lib/types/update-protocol';
 import type { NodeWithChildren } from '../../lib/types';
@@ -322,7 +322,7 @@ describe('SharedNodeStore - reachability tracking & eviction', () => {
   describe('DATABASE_SETTINGS_NODE_ID — always-mounted app chrome outside any open tab', () => {
     // Reproduces the real bug found in review: DATABASE_SETTINGS_NODE_ID
     // (database.svelte.ts) is a global singleton read continuously by
-    // always-mounted Pro-sync chrome (ui-extensions.svelte.ts's
+    // always-mounted Pro-sync chrome (pro-sync-variant.svelte.ts's
     // resolveProSyncVariant/activeDatabaseSettings, membership.svelte.ts) —
     // it has no structureTree relationship to any open tab and is never
     // itself a tab root. Without a pin, it is

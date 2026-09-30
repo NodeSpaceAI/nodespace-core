@@ -125,7 +125,7 @@ import {
   isActiveDatabaseEvent,
   type DatabaseInfo
 } from '$lib/stores/database.svelte';
-import { DATABASE_SETTINGS_NODE_ID } from '$lib/plugins/ui-extensions';
+import { DATABASE_SETTINGS_NODE_ID } from '$lib/constants/database-settings';
 import type { Node } from '$lib/types';
 
 function db(id: string, overrides: Partial<DatabaseInfo> = {}): DatabaseInfo {

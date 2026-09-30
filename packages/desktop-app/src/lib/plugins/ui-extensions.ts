@@ -15,36 +15,19 @@
  *      settings edit).
  *
  * The registry itself is a plain data class (mirrors `PluginRegistry`); the
- * reactivity that resolves the active variant and filters contributions lives in
- * the sibling `ui-extensions.svelte.ts` wrapper, never baked into this class
+ * reactivity that filters contributions by the resolved variant lives in the
+ * sibling `ui-extensions.svelte.ts` wrapper, never baked into this class
  * (ADR-049).
  */
 
 import type { Component } from 'svelte';
 import { createLogger } from '$lib/utils/logger';
+import type { ProSyncVariant } from './pro-sync-variant.svelte';
 
 const log = createLogger('UiExtensionRegistry');
 
-/**
- * The reserved id of the per-database `DatabaseSettingsNode` singleton. Core seeds
- * exactly one such node per database under this id (`node_service`'s
- * `DATABASE_SETTINGS_NODE_ID`); its `database-settings`-namespaced properties carry
- * `sync_enabled` (user intent) and `auth_status` (`local` | `connected`). The
- * schema/nodeType slug is the bare `database-settings` — this instance id is
- * deliberately distinct so the two never collide.
- */
-export const DATABASE_SETTINGS_NODE_ID = 'database-settings-singleton';
-
 /** The chrome slots a contribution can target in the app shell. */
 export type ChromeSlot = 'app-shell-overlay' | 'app-shell-modal';
-
-/**
- * The states the Pro-sync surface can be in (the variant state machine). Ordered
- * by the sign-in-first flow: a Pro user signs in (`sign-in`), consents to the
- * public-workspace publish (`consent`), then syncs (`connected`); `relogin` is
- * the re-auth state for an already-enabled database whose session expired.
- */
-export type ProSyncVariant = 'teaser' | 'sign-in' | 'consent' | 'relogin' | 'connected';
 
 /**
  * One chrome contribution: a lazily-loaded component mounted into `slot` when the
