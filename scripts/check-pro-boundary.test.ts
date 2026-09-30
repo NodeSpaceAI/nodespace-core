@@ -20,6 +20,7 @@ import {
   MARKERS,
   TEST_PATH,
   baselineFailures,
+  baselineNotices,
   changedFilesSinceMain,
   countMarkers,
   exemptionProblems,
@@ -818,6 +819,7 @@ describe("baselineFailures", () => {
     expect(message).toContain("EXEMPTIONS");
     expect(message).toContain("accepted raise classes in CLAUDE.md ('Pro / Sync Boundary')");
     expect(message).toContain("PR description must name them");
+    expect(message).toContain(`set \`BASELINES.proCommands\` to ${BASELINES.proCommands + 1}`);
   });
 
   test("above the baseline: lists hits in changed files first, then every hit", () => {
@@ -860,43 +862,101 @@ describe("baselineFailures", () => {
     expect(baselineFailures(countsWith({ proCommands: BASELINES.proCommands + 1 }))[0]).not.toContain("fully removed");
   });
 
-  test("below the baseline: says to lower it, with the marker and both numbers", () => {
-    const failures = baselineFailures(countsWith({ tenantWording: BASELINES.tenantWording - 3 }));
-    expect(failures[0]).toBe(
-      `\`tenantWording\` is now ${BASELINES.tenantWording - 3}, below its baseline ${BASELINES.tenantWording}: lower \`BASELINES.tenantWording\` to ${BASELINES.tenantWording - 3} in scripts/check-pro-boundary.ts in this change.`,
-    );
-    expect(failures[0]).not.toContain("fragments");
+  test("below the baseline never fails, however far below", () => {
+    expect(baselineFailures(countsWith({ tenantWording: BASELINES.tenantWording - 3 }))).toEqual([]);
+    expect(baselineFailures(countsWith({ tenantWording: 0, proCommands: 0, proNamedFiles: 0 }))).toEqual([]);
   });
 
-  test("appends the paste block after the messages, and it equals formatBaselines(counts)", () => {
-    const counts = countsWith({ tenantWording: BASELINES.tenantWording - 3 });
-    const failures = baselineFailures(counts);
-    expect(failures).toHaveLength(2);
-    expect(failures[1]).toBe(`Paste over BASELINES in scripts/check-pro-boundary.ts:\n${formatBaselines(counts)}`);
+  test("appends no paste block: raising a baseline is never suggested as a block to paste", () => {
+    const failures = baselineFailures(countsWith({ tenantWording: BASELINES.tenantWording + 3 }));
+    expect(failures).toHaveLength(1);
+    expect(failures.join("\n")).not.toContain("Paste over BASELINES");
   });
 
-  test("pasting the block changes only the value lines that moved", () => {
-    const counts = countsWith({ tenantWording: BASELINES.tenantWording - 3, proWording: BASELINES.proWording - 1 });
-    const before = formatBaselines(BASELINES).split("\n");
-    const after = formatBaselines(counts).split("\n");
-    const changed = after.filter((line, i) => line !== before[i]);
-    expect(changed).toEqual([`  tenantWording: ${counts.tenantWording},`, `  proWording: ${counts.proWording},`]);
-  });
-
-  test("reports one message per marker that is off, in either direction, in MARKERS order", () => {
+  test("reports one message per marker above its baseline, in MARKERS order, and none for a marker below", () => {
     const counts = countsWith({ proWording: BASELINES.proWording + 2, proCommands: BASELINES.proCommands - 1, proNamedFiles: BASELINES.proNamedFiles + 1 });
     const failures = baselineFailures(counts);
-    expect(failures).toHaveLength(4);
-    expect(failures[0]).toContain("proCommands");
-    expect(failures[1]).toContain("proWording");
-    expect(failures[2]).toContain("proNamedFiles");
-    expect(failures[3]).toStartWith("Paste over BASELINES");
+    expect(failures).toHaveLength(2);
+    expect(failures[0]).toContain("proWording");
+    expect(failures[1]).toContain("proNamedFiles");
+    expect(failures.join("\n")).not.toContain("proCommands");
+  });
+
+  test("a baseline of 0 is the strict check: any hit fails, none passes", () => {
+    const zeros = Object.fromEntries(ALL_MARKERS.map((name) => [name, 0])) as MarkerCounts;
+    expect(baselineFailures(zeros, zeros)).toEqual([]);
+    for (const name of ALL_MARKERS) {
+      const failures = baselineFailures({ ...zeros, [name]: 1 }, zeros);
+      expect(failures).toHaveLength(1);
+      expect(failures[0]).toContain(name);
+      expect(failures[0]).toContain("fully removed from core");
+    }
   });
 
   test("compares against the baselines it is given, not the checked-in ones", () => {
     const custom = { ...BASELINES, proCommands: 5 };
     expect(baselineFailures(countsWith({ proCommands: 5 }), custom)).toEqual([]);
     expect(baselineFailures(countsWith({ proCommands: 6 }), custom)).not.toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// baselineNotices
+// ---------------------------------------------------------------------------
+
+describe("baselineNotices", () => {
+  test("is empty when every count equals its baseline", () => {
+    expect(baselineNotices(countsWith())).toEqual([]);
+  });
+
+  test("is empty when counts are above their baselines: raising is a failure's business, not a notice", () => {
+    expect(baselineNotices(countsWith({ proCommands: BASELINES.proCommands + 5 }))).toEqual([]);
+  });
+
+  test("names the marker and both numbers, and says it is optional", () => {
+    const notices = baselineNotices(countsWith({ tenantWording: BASELINES.tenantWording - 3 }));
+    expect(notices[0]).toBe(
+      `\`tenantWording\` is now ${BASELINES.tenantWording - 3}, below its baseline ${BASELINES.tenantWording}. Optional, not a failure: lower \`BASELINES.tenantWording\` to ${BASELINES.tenantWording - 3} in scripts/check-pro-boundary.ts.`,
+    );
+  });
+
+  test("ends with the block to paste, which equals formatBaselines of the tightened counts", () => {
+    const counts = countsWith({ tenantWording: BASELINES.tenantWording - 3 });
+    const notices = baselineNotices(counts);
+    expect(notices).toHaveLength(2);
+    expect(notices[1]).toBe(`To tighten every lowered baseline at once, paste over BASELINES in scripts/check-pro-boundary.ts:\n${formatBaselines(counts)}`);
+  });
+
+  test("one notice per lowered marker, in MARKERS order, then one block", () => {
+    const counts = countsWith({ proWording: BASELINES.proWording - 2, proCommands: BASELINES.proCommands - 1, proNamedFiles: BASELINES.proNamedFiles - 1 });
+    const notices = baselineNotices(counts);
+    expect(notices).toHaveLength(4);
+    expect(notices[0]).toContain("`proCommands` is now");
+    expect(notices[1]).toContain("`proWording` is now");
+    expect(notices[2]).toContain("`proNamedFiles` is now");
+    expect(notices[3]).toContain("paste over BASELINES");
+  });
+
+  test("the block never raises a baseline: a marker above its baseline keeps it while a lowered one is tightened", () => {
+    const counts = countsWith({ proWording: BASELINES.proWording + 4, tenantWording: BASELINES.tenantWording - 3 });
+    const block = baselineNotices(counts).at(-1) ?? "";
+    expect(block).toContain(`  tenantWording: ${BASELINES.tenantWording - 3},`);
+    expect(block).toContain(`  proWording: ${BASELINES.proWording},`);
+    expect(block).not.toContain(`  proWording: ${BASELINES.proWording + 4},`);
+  });
+
+  test("pasting the block changes only the value lines that moved", () => {
+    const counts = countsWith({ tenantWording: BASELINES.tenantWording - 3, proWording: BASELINES.proWording - 1 });
+    const block = (baselineNotices(counts).at(-1) ?? "").split("\n").slice(1); // drop the introduction line
+    const before = formatBaselines(BASELINES).split("\n");
+    const changed = block.filter((line, i) => line !== before[i]);
+    expect(changed).toEqual([`  tenantWording: ${counts.tenantWording},`, `  proWording: ${counts.proWording},`]);
+  });
+
+  test("compares against the baselines it is given, not the checked-in ones", () => {
+    const custom = { ...BASELINES, proCommands: 5 };
+    expect(baselineNotices(countsWith({ proCommands: 5 }), custom)).toEqual([]);
+    expect(baselineNotices(countsWith({ proCommands: 4 }), custom)).not.toEqual([]);
   });
 });
 
@@ -910,20 +970,20 @@ describe("CLI", () => {
     return { status: result.status ?? -1, stdout: result.stdout, stderr: result.stderr };
   }
 
-  test("with no arguments prints all 12 markers with count and baseline, and exits 0 on the checked-in baselines", () => {
+  test("with no arguments prints all 12 markers with count and baseline, and exits 0 when no count is above its baseline", () => {
     const { status, stdout, stderr } = run();
     expect({ status, stderr }).toEqual({ status: 0, stderr: "" });
-    for (const name of ALL_MARKERS) expect(stdout).toMatch(new RegExp(`^${name} +${BASELINES[name]} +${BASELINES[name]}$`, "m"));
+    // The count column is whatever main holds today: it may sit below the
+    // baseline while other changes land, so only the baseline is pinned.
+    for (const name of ALL_MARKERS) expect(stdout).toMatch(new RegExp(`^${name} +\\d+ +${BASELINES[name]}$`, "m"));
     expect(ALL_MARKERS).toHaveLength(12);
   });
 
-  test("--list <marker> prints the hits grouped by file", () => {
+  test("--list <marker> prints one path per Pro-named file", () => {
     const { status, stdout } = run("--list", "proNamedFiles");
     expect(status).toBe(0);
-    expect(stdout.trim().split("\n")).toHaveLength(BASELINES.proNamedFiles);
-    const grouped = run("--list", "proSyncModule");
-    expect(grouped.status).toBe(0);
-    expect(grouped.stdout).toMatch(/^packages\/.+\n {2}\d+: /m);
+    const { counts } = countMarkers(listScannedFiles());
+    expect(stdout.split("\n").filter((line) => line !== "")).toHaveLength(counts.proNamedFiles);
   });
 
   test("--changed prints a line per marker", () => {
@@ -934,7 +994,7 @@ describe("CLI", () => {
 
   // The checker locates its repository from its own path, so a copy placed
   // in a fixture repository scans that repository. The baselines are the real
-  // ones, so a small fixture is far below them and the default run must fail.
+  // ones, so a small fixture is far below them and the default run reports notices.
   function runInFixture(...args: string[]): { status: number; stdout: string; stderr: string } {
     mkdirSync(join(dir, "scripts"), { recursive: true });
     copyFileSync(CHECKER_PATH, join(dir, "scripts/check-pro-boundary.ts"));
@@ -942,16 +1002,31 @@ describe("CLI", () => {
     return { status: result.status ?? -1, stdout: result.stdout, stderr: result.stderr };
   }
 
-  test("exits 1 below the baselines, naming the marker, the paste block and a stale exemption", () => {
+  // The one exempted file, so a fixture's exemption is live and only the counts are in question.
+  function writeAgentFixture(): void {
+    write("packages/agent/tests/it/live_embedding_prefix_measurement.rs", "a replacement tenant\n");
+  }
+
+  test("exits 0 below the baselines, printing a notice and the tightened block, and nothing on stderr", () => {
     repoWithOriginMain();
+    writeAgentFixture();
     write("packages/a/x.ts", "pro_x();\n");
     const { status, stdout, stderr } = runInFixture();
-    expect(status).toBe(1);
+    expect({ status, stderr }).toEqual({ status: 0, stderr: "" });
     expect(stdout).toMatch(new RegExp(`^proCommands +1 +${BASELINES.proCommands}$`, "m"));
-    expect(stderr).toContain(`\`proCommands\` is now 1, below its baseline ${BASELINES.proCommands}`);
-    expect(stderr).toContain("Paste over BASELINES in scripts/check-pro-boundary.ts:");
-    expect(stderr).toContain("EXEMPTIONS entry for packages/agent/tests/it/live_embedding_prefix_measurement.rs");
+    expect(stdout).toContain(`\`proCommands\` is now 1, below its baseline ${BASELINES.proCommands}. Optional, not a failure`);
+    expect(stdout).toContain("paste over BASELINES in scripts/check-pro-boundary.ts:");
+    expect(stdout).toContain("  proCommands: 1,");
+    expect(stdout).toContain("No count is above its baseline");
     expect(stdout).not.toContain("equals its baseline");
+  });
+
+  test("exits 1 on a stale exemption even when every count is below its baseline", () => {
+    repoWithOriginMain();
+    write("packages/a/x.ts", "pro_x();\n");
+    const { status, stderr } = runInFixture();
+    expect(status).toBe(1);
+    expect(stderr).toContain("EXEMPTIONS entry for packages/agent/tests/it/live_embedding_prefix_measurement.rs");
   });
 
   test("exits 1 above a baseline, listing the new lines under \"In files this branch changed\"", () => {
@@ -1009,13 +1084,16 @@ describe("CLI", () => {
 // ---------------------------------------------------------------------------
 
 describe("real-repo ratchet", () => {
-  test("every count equals its checked-in baseline, and every exemption is live", () => {
+  test("no count is above its checked-in baseline, and every exemption is live", () => {
     // The enforcement path (bun test scripts/ -> test:scripts -> the merge
-    // gate). A bare toBe() would fail with "Expected: N, Received: M" and no
-    // hint of what to do, so this throws the message the CLI prints.
+    // gate). A bare toBeLessThanOrEqual() would fail with "Expected: <= N,
+    // Received: M" and no hint of what to do, so this throws the message the
+    // CLI prints. A count below its baseline passes and only logs a notice.
     const { counts, hits } = countMarkers(listScannedFiles());
     const messages = [...exemptionProblems(), ...baselineFailures(counts, BASELINES, changedFilesSinceMain(), hits)];
     if (messages.length > 0) throw new Error(messages.join("\n\n"));
+    const notices = baselineNotices(counts);
+    if (notices.length > 0) console.log(notices.join("\n\n"));
   });
 
   test("BASELINES has one entry per marker, in MARKERS order, then proNamedFiles", () => {

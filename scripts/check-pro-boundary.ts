@@ -6,15 +6,22 @@
 //
 // It counts Pro/sync markers (see MARKERS) line by line across `packages/`,
 // `scripts/` and the root README, plus the files whose basename has a `pro`
-// segment. Each count has an exact baseline in BASELINES. A count above its
-// baseline is new Pro code. A count below it is a change that removed Pro code
-// without saying so: the check fails until BASELINES is lowered in that same
-// change, and prints the block to paste. That is deliberate. A ratchet that
-// passes silently on a decrease lets the headroom a migration frees up be
-// spent on new Pro code later. Baselines are lowered in the change that
-// removes the code and are never raised to land Pro code.
+// segment. Each count has a ceiling in BASELINES, and the check fails only when
+// a count rises above its ceiling: that is new Pro code. A count below its
+// ceiling does not fail. Many removal changes land in parallel, and failing on
+// a decrease would make every merge force every other open change to rebase
+// just to edit BASELINES. Instead the check prints a notice with the exact
+// tightened block to paste, so anyone can lower the ceilings.
 //
-// Only three kinds of change may raise a baseline, and tests that assert Pro
+// The one-way ratchet is loose only while Pro code remains: headroom between a
+// count and its ceiling can be spent by new Pro code until someone tightens
+// it, so tighten in the change that removes code whenever it is cheap. At the
+// end state every ceiling is 0, and a ceiling of 0 fails on any hit, which is
+// the strict check. A change that must temporarily raise a ceiling edits
+// BASELINES in its own diff and justifies it in its description; ceilings are
+// never raised to land new Pro code.
+//
+// Only three kinds of change may raise a ceiling, and tests that assert Pro
 // code is absent must build their needle from fragments (or carry a per-file
 // EXEMPTIONS entry) so they do not add the marker they guard against. Both
 // rules live in CLAUDE.md, under "Pro / Sync Boundary". This file only
@@ -159,9 +166,9 @@ export const EXEMPTIONS: readonly Exemption[] = [
   },
 ];
 
-// Ratchet baselines. See the file-level comment: exact, lowered in the change
-// that removes the code, never raised to land Pro code. The layout is
-// formatBaselines(BASELINES); a test holds it there.
+// Ratchet ceilings. See the file-level comment: a count above its ceiling fails,
+// a count below it prints a notice, and a ceiling is never raised to land Pro
+// code. The layout is formatBaselines(BASELINES); a test holds it there.
 export const BASELINES = {
   // pro_* Tauri commands, the pro_sync / pro_client modules, pro_env
   proCommands: 275,
@@ -359,10 +366,10 @@ function hitFile(hit: string): string {
 }
 
 /**
- * One actionable message per marker that is off its baseline, in either
- * direction, then one block to paste over BASELINES when any message exists.
- * `hits` is what `countMarkers` returns beside the counts; it feeds the hit
- * listing of an above-baseline message, which puts hits in changed files first.
+ * One actionable message per marker whose count is above its ceiling; a count
+ * at or below its ceiling never fails. `hits` is what `countMarkers` returns
+ * beside the counts; it feeds the hit listing, which puts hits in changed
+ * files first.
  */
 export function baselineFailures(
   counts: MarkerCounts,
@@ -375,25 +382,47 @@ export function baselineFailures(
   for (const name of MARKER_NAMES) {
     const count = counts[name];
     const baseline = baselines[name];
-    if (count > baseline) {
-      const lines = [`${name} (${summaryOf(name)}): ${count}, above its baseline of ${baseline}.`];
-      if (baseline === 0) lines.push(`${name} is fully removed from core, so no hit may appear.`);
-      lines.push(RAISE_GUIDANCE);
-      const all = hits[name] ?? [];
-      const inChangedFiles = all.filter((hit) => changed.has(hitFile(hit)));
-      if (inChangedFiles.length > 0) lines.push("In files this branch changed:", ...inChangedFiles);
-      if (all.length > 0) lines.push("All hits:", ...all);
-      failures.push(lines.join("\n"));
-    } else if (count < baseline) {
-      failures.push(
-        `\`${name}\` is now ${count}, below its baseline ${baseline}: lower \`BASELINES.${name}\` to ${count} in scripts/check-pro-boundary.ts in this change.`,
+    if (count <= baseline) continue;
+    const lines = [`${name} (${summaryOf(name)}): ${count}, above its baseline of ${baseline}.`];
+    if (baseline === 0) lines.push(`${name} is fully removed from core, so no hit may appear.`);
+    lines.push(RAISE_GUIDANCE);
+    lines.push(
+      `Under an accepted raise class only, set \`BASELINES.${name}\` to ${count} in scripts/check-pro-boundary.ts in this change and justify it in the PR description.`,
+    );
+    const all = hits[name] ?? [];
+    const inChangedFiles = all.filter((hit) => changed.has(hitFile(hit)));
+    if (inChangedFiles.length > 0) lines.push("In files this branch changed:", ...inChangedFiles);
+    if (all.length > 0) lines.push("All hits:", ...all);
+    failures.push(lines.join("\n"));
+  }
+  return failures;
+}
+
+/** Each ceiling lowered to its count where the count is below it. A ceiling is never raised. */
+function tightenedBaselines(counts: MarkerCounts, baselines: MarkerCounts): MarkerCounts {
+  return Object.fromEntries(MARKER_NAMES.map((name) => [name, Math.min(counts[name], baselines[name])])) as MarkerCounts;
+}
+
+/**
+ * The non-failing counterpart of `baselineFailures`: one notice per marker
+ * whose count is below its ceiling, then the exact block to paste over
+ * BASELINES. The block lowers only the markers that are below, and leaves every
+ * other ceiling as it is, so pasting it can never raise one. Empty when no
+ * count is below its ceiling.
+ */
+export function baselineNotices(counts: MarkerCounts, baselines: MarkerCounts = BASELINES): string[] {
+  const notices: string[] = [];
+  for (const name of MARKER_NAMES) {
+    if (counts[name] < baselines[name]) {
+      notices.push(
+        `\`${name}\` is now ${counts[name]}, below its baseline ${baselines[name]}. Optional, not a failure: lower \`BASELINES.${name}\` to ${counts[name]} in scripts/check-pro-boundary.ts.`,
       );
     }
   }
-  if (failures.length > 0) {
-    failures.push(`Paste over BASELINES in scripts/check-pro-boundary.ts:\n${formatBaselines(counts)}`);
+  if (notices.length > 0) {
+    notices.push(`To tighten every lowered baseline at once, paste over BASELINES in scripts/check-pro-boundary.ts:\n${formatBaselines(tightenedBaselines(counts, baselines))}`);
   }
-  return failures;
+  return notices;
 }
 
 function printTable(counts: MarkerCounts): void {
@@ -423,7 +452,7 @@ function usage(): never {
   console.error(
     [
       "Usage: bun run scripts/check-pro-boundary.ts [--list <marker> | --changed]",
-      "  (no arguments)   print counts against baselines; exit 1 if any is off",
+      "  (no arguments)   print counts against baselines; exit 1 if any is above, notice if any is below",
       "  --list <marker>  print every hit for one marker, grouped by file",
       "  --changed        print, per marker, the hits in files this branch changed",
       `Markers: ${MARKER_NAMES.join(", ")}`,
@@ -451,8 +480,10 @@ if (import.meta.main) {
     printTable(counts);
     const problems = [...exemptionProblems(), ...baselineFailures(counts, BASELINES, changedFilesSinceMain(), hits)];
     for (const problem of problems) console.error(`\n❌ ${problem}`);
+    const notices = baselineNotices(counts);
+    for (const notice of notices) console.log(`\nℹ️  ${notice}`);
     if (problems.length > 0) process.exit(1);
-    console.log("\n✅ Every Pro-boundary count equals its baseline.");
+    console.log(notices.length > 0 ? "\n✅ No count is above its baseline (some are below: see the notice above)." : "\n✅ Every Pro-boundary count equals its baseline.");
   } else {
     usage();
   }
