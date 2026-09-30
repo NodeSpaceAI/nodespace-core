@@ -38,17 +38,22 @@ export function seedSettings(props: SettingsSeed): void {
   SharedNodeStore.getInstance().setNode(node, { type: 'database', reason: 'seed' }, true);
 }
 
+/** Turn the Labs sync toggle on or off; while it is off every variant resolves to `teaser`. */
+export function setSyncToggle(on: boolean): void {
+  labsFlags.syncEnabled = on;
+}
+
 /** Put the stores in the state that resolves to `variant`. Safe to call again to move to another variant. */
 export function seedVariant(variant: Exclude<ProSyncVariant, 'teaser'>): void {
-  labsFlags.syncEnabled = true;
+  setSyncToggle(true);
   proSync.tier = 'pro';
   seedSettings(SETTINGS_FOR_VARIANT[variant]);
 }
 
 /** Back to the default state, which resolves to the teaser variant. */
-export function resetProSyncState(): void {
+export function resetSyncVariantState(): void {
   proSync.tier = 'unknown';
   proSync.userEmail = '';
-  labsFlags.syncEnabled = false;
+  setSyncToggle(false);
   SharedNodeStore.resetInstance();
 }

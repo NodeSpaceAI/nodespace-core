@@ -1,6 +1,6 @@
 /**
  * A test extension that exercises every contribution kind of the extension
- * API without importing anything Pro. Each contribution is gated by a flag in
+ * API without importing any edition-specific code. Each contribution is gated by a flag in
  * `flags.svelte.ts`, so a test turns surfaces on and off by flipping state.
  *
  * Register it with `uiExtensionRegistry.register(createTestExtension())` and

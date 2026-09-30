@@ -1,5 +1,5 @@
 /**
- * CollectionNodeViewer with the built-in Pro extension: the Collaboration tab is
+ * CollectionNodeViewer with the built-in sync extension: the Collaboration tab is
  * one contribution, so a selected tab survives every variant change (for
  * example "Turn on sync", consent accepted, connected) instead of dropping
  * back to Contents.
@@ -31,25 +31,24 @@ vi.mock('@tauri-apps/api/core', () =>
 );
 
 import CollectionNodeViewer from '$lib/components/viewers/collection-node-viewer.svelte';
-import { labsFlags } from '$lib/stores/labs-flags.svelte';
-import { seedVariant, resetProSyncState } from '../helpers/sync-variant-fixtures';
+import { seedVariant, setSyncToggle, resetSyncVariantState } from '../helpers/sync-variant-fixtures';
 import { COLLECTION_ID, COLLECTION_NAME } from '../helpers/collection-viewer-mocks';
 
 describe('CollectionNodeViewer Collaboration tab', () => {
   beforeEach(() => {
     mockInvoke.mockReset();
-    resetProSyncState();
+    resetSyncVariantState();
   });
 
   afterEach(() => {
     cleanup();
-    resetProSyncState();
+    resetSyncVariantState();
     vi.restoreAllMocks();
   });
 
   it('shows no tab strip while the Labs toggle is off, even for a synced database', async () => {
     seedVariant('connected');
-    labsFlags.syncEnabled = false;
+    setSyncToggle(false);
     const view = render(CollectionNodeViewer, { props: { nodeId: COLLECTION_ID } });
     await view.findByText(COLLECTION_NAME);
 
@@ -85,7 +84,7 @@ describe('CollectionNodeViewer Collaboration tab', () => {
     await fireEvent.click(await findByRole('tab', { name: 'Collaboration' }));
     await findByTestId('stub-collaboration-view');
 
-    labsFlags.syncEnabled = false;
+    setSyncToggle(false);
 
     await waitFor(() => expect(queryByTestId('stub-collaboration-view')).toBeNull());
     expect(queryByRole('tablist')).toBeNull();

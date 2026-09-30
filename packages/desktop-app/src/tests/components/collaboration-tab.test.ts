@@ -22,19 +22,19 @@ vi.mock('@tauri-apps/api/core', () =>
 );
 
 import CollaborationTab from '$lib/components/collaboration/collaboration-tab.svelte';
-import { seedVariant, resetProSyncState } from '../helpers/sync-variant-fixtures';
+import { seedVariant, resetSyncVariantState } from '../helpers/sync-variant-fixtures';
 
 const NODE_ID = 'col-7';
 
 describe('CollaborationTab', () => {
   beforeEach(() => {
     mockInvoke.mockReset();
-    resetProSyncState();
+    resetSyncVariantState();
   });
 
   afterEach(() => {
     cleanup();
-    resetProSyncState();
+    resetSyncVariantState();
     vi.restoreAllMocks();
   });
 
