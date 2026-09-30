@@ -34,6 +34,10 @@
  * Lookups never evaluate `when`. This class is plain data with no `$state` and
  * no reactivity; the reactive filtering by `when` lives in the sibling
  * `ui-extensions.svelte.ts` wrapper (ADR-049).
+ *
+ * Lifecycle: an extension may also carry `lifecycle` hooks and a `debugDump`.
+ * They are invoked by `extension-lifecycle.ts`, not by this registry, so the
+ * registry stays free of any host wiring.
  */
 
 import type { Component } from 'svelte';
@@ -43,6 +47,30 @@ const log = createLogger('UiExtensionRegistry');
 
 /** The extension API version this build implements. */
 export const EXTENSION_API_VERSION = { major: 1, minor: 0 } as const;
+
+// --- Lifecycle hooks (ADR-082 §2.5) ---------------------------------------------
+
+/**
+ * Callbacks the host invokes at fixed points in the app's life. Where exactly,
+ * and what each guarantees, is part of the versioned extension API and is
+ * documented in `extension-lifecycle.ts`, which also implements the dispatch.
+ */
+export interface ExtensionLifecycle {
+  /**
+   * Runs once per webview load, when the app shell mounts, and only when the
+   * Tauri bridge is present. May return a cleanup, directly or through a
+   * promise; the host runs it when the shell unmounts.
+   */
+  start?(): void | (() => void) | Promise<void | (() => void)>;
+  /**
+   * Called synchronously each time a database becomes the active one, after the
+   * previous database's caches have been evicted. Async work belongs to the
+   * extension, which serializes it itself.
+   */
+  onDatabaseActivated?(databaseId: string): void;
+}
+
+// --- End of lifecycle hooks -----------------------------------------------------
 
 /**
  * One contribution: a lazily-loaded component plus the conditions under which a
@@ -111,6 +139,14 @@ export type SettingsSlotContributionFor<S extends SettingsSlot> = Extract<
 export interface NodespaceExtension {
   id: string;
   apiVersion: typeof EXTENSION_API_VERSION.major;
+  /** Host-invoked callbacks; see {@link ExtensionLifecycle}. */
+  lifecycle?: ExtensionLifecycle;
+  /**
+   * A synchronous, JSON-representable snapshot of the extension's state for the
+   * debug channel's store dump, keyed there by the extension id. May include
+   * user content and personal data.
+   */
+  debugDump?: () => unknown;
   chrome?: ChromeContribution[];
   viewerTabs?: ViewerTabContribution[];
   settingsSections?: SettingsSectionContribution[];

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 const mockInvoke = vi.fn();
 import { mockTauriCore } from '../helpers/mock-tauri-core';
@@ -12,8 +12,15 @@ import {
   isChannelEnabledSync,
   isChannelEnabled,
   captureDomSnapshot,
-  captureStoreDump
+  captureStoreDump,
+  collectStoreDump
 } from '$lib/services/debug-channel';
+import { uiExtensionRegistry } from '$lib/plugins/ui-extensions';
+import { TEST_EXTENSION_ID, createTestExtension } from '../fixtures/test-extension';
+import {
+  TEST_EXTENSION_DUMP,
+  createTestLifecycleParts
+} from '../fixtures/test-extension/lifecycle';
 
 describe('debug-channel', () => {
   beforeEach(() => {
@@ -87,6 +94,86 @@ describe('debug-channel', () => {
     it('resolves without throwing and does not invoke the Tauri bridge under VITEST', async () => {
       await expect(captureStoreDump()).resolves.toBeUndefined();
       expect(mockInvoke).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('collectStoreDump extensions', () => {
+    afterEach(() => {
+      uiExtensionRegistry.unregister(TEST_EXTENSION_ID);
+      uiExtensionRegistry.unregister('other-extension');
+    });
+
+    function registerWithDump(debugDump: () => unknown, id = TEST_EXTENSION_ID): void {
+      uiExtensionRegistry.register({
+        ...createTestExtension(createTestLifecycleParts().parts),
+        id,
+        debugDump
+      });
+    }
+
+    it('holds each extension dump under extensions[<id>]', async () => {
+      uiExtensionRegistry.register(createTestExtension(createTestLifecycleParts().parts));
+
+      const stores = await collectStoreDump();
+
+      expect(stores.extensions).toEqual({ [TEST_EXTENSION_ID]: TEST_EXTENSION_DUMP });
+    });
+
+    it('is an empty object when no extension has a dump', async () => {
+      uiExtensionRegistry.register(createTestExtension());
+
+      const stores = await collectStoreDump();
+
+      expect(stores.extensions).toEqual({});
+    });
+
+    it('records a throwing dump as an error string and keeps the rest of the dump', async () => {
+      registerWithDump(() => {
+        throw new Error('dump failed');
+      });
+      registerWithDump(() => ({ ok: true }), 'other-extension');
+
+      const stores = await collectStoreDump();
+
+      expect(stores.extensions).toEqual({
+        [TEST_EXTENSION_ID]: 'error: dump failed',
+        'other-extension': { ok: true }
+      });
+      expect(stores.databaseStore).toBeDefined();
+    });
+
+    it('records a circular dump as an error string that names the cycle, and the dump stays serializable', async () => {
+      registerWithDump(() => {
+        const cycle: Record<string, unknown> = {};
+        cycle.self = cycle;
+        return cycle;
+      });
+      registerWithDump(() => ({ ok: true }), 'other-extension');
+
+      const stores = await collectStoreDump();
+
+      const entries = stores.extensions as Record<string, unknown>;
+      expect(entries[TEST_EXTENSION_ID]).toMatch(/^error: .*circular/i);
+      expect(entries['other-extension']).toEqual({ ok: true });
+      expect(() => JSON.stringify(stores)).not.toThrow();
+    });
+
+    it('converts Map and Set inside a dump, like the other stores', async () => {
+      registerWithDump(() => ({ byKey: new Map([['k', 1]]), members: new Set(['a', 'b']) }));
+
+      const stores = await collectStoreDump();
+
+      expect(stores.extensions).toEqual({
+        [TEST_EXTENSION_ID]: { byKey: { k: 1 }, members: ['a', 'b'] }
+      });
+    });
+
+    it('records a dump with no JSON form as null', async () => {
+      registerWithDump(() => undefined);
+
+      const stores = await collectStoreDump();
+
+      expect(stores.extensions).toEqual({ [TEST_EXTENSION_ID]: null });
     });
   });
 });

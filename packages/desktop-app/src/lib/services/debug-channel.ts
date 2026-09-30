@@ -113,15 +113,39 @@ function toDumpable(value: unknown): unknown {
 }
 
 /**
+ * Serialize one extension's `debugDump()` result on its own, so a value that
+ * cannot be serialized (a cycle, a BigInt) costs only that extension's entry and
+ * never the rest of the dump. `undefined` has no JSON form and becomes `null`.
+ */
+function toExtensionDumpEntry(dump: unknown): unknown {
+  try {
+    const json = JSON.stringify(dump, (_k, v) => toDumpable(v));
+    return json === undefined ? null : JSON.parse(json);
+  } catch (error) {
+    return `error: ${error instanceof Error ? error.message : String(error)}`;
+  }
+}
+
+/**
  * Capture a snapshot of the highest-value global stores as one debug-channel
  * event. On-demand only — dynamic imports keep this from pulling every store
  * into the eagerly-loaded module graph.
  *
- * May include user content and PII (e.g. `proSync.userEmail`) verbatim —
- * same dev-only/opt-in/local-file-only tradeoff as `captureDomSnapshot`
- * above. Never enable this channel in shipped builds.
+ * May include user content and PII (e.g. `proSync.userEmail`, and anything an
+ * extension's `debugDump` reports under `extensions`) verbatim — same
+ * dev-only/opt-in/local-file-only tradeoff as `captureDomSnapshot` above. Never
+ * enable this channel in shipped builds.
  */
 export async function captureStoreDump(): Promise<void> {
+  debugChannelWrite({
+    kind: 'store_dump',
+    timestamp: new Date().toISOString(),
+    stores: await collectStoreDump()
+  });
+}
+
+/** Gather the store snapshot that `captureStoreDump` writes. */
+export async function collectStoreDump(): Promise<Record<string, unknown>> {
   const stores: Record<string, unknown> = {};
   try {
     // sharedNodeStore is node-graph-shaped and much larger than the other
@@ -159,10 +183,19 @@ export async function captureStoreDump(): Promise<void> {
   } catch {
     /* store unavailable in this context */
   }
+  try {
+    const { collectExtensionDebugDumps } = await import('$lib/plugins/extension-lifecycle');
+    // fromEntries defines own properties, so an extension id such as `__proto__`
+    // stays a key instead of rewriting the object's prototype.
+    stores.extensions = Object.fromEntries(
+      Object.entries(collectExtensionDebugDumps()).map(([id, dump]) => [
+        id,
+        toExtensionDumpEntry(dump)
+      ])
+    );
+  } catch {
+    /* extension registry unavailable in this context */
+  }
 
-  debugChannelWrite({
-    kind: 'store_dump',
-    timestamp: new Date().toISOString(),
-    stores
-  });
+  return stores;
 }

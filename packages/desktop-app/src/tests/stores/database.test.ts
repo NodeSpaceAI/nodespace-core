@@ -126,7 +126,10 @@ import {
   type DatabaseInfo
 } from '$lib/stores/database.svelte';
 import { DATABASE_SETTINGS_NODE_ID } from '$lib/constants/database-settings';
+import { uiExtensionRegistry } from '$lib/plugins/ui-extensions';
 import type { Node } from '$lib/types';
+import { TEST_EXTENSION_ID, createTestExtension } from '../fixtures/test-extension';
+import { createTestLifecycleParts } from '../fixtures/test-extension/lifecycle';
 
 function db(id: string, overrides: Partial<DatabaseInfo> = {}): DatabaseInfo {
   return {
@@ -852,6 +855,191 @@ describe('Database Store', () => {
 
       expect(mockGetNode).toHaveBeenCalledWith(DATABASE_SETTINGS_NODE_ID);
       expect(setNode).toHaveBeenCalledOnce();
+    });
+  });
+
+  describe('extension lifecycle hooks', () => {
+    // The database each activation saw as active when the hook ran, so a test
+    // can tell "after the commit" from "before it".
+    let activeAtHook: (string | null)[];
+    let onDatabaseActivated: ReturnType<typeof vi.fn>;
+
+    beforeEach(() => {
+      activeAtHook = [];
+      onDatabaseActivated = vi.fn(() => {
+        activeAtHook.push(databaseStore.activeDatabaseId);
+      });
+      uiExtensionRegistry.register(
+        createTestExtension(createTestLifecycleParts({ onDatabaseActivated }).parts)
+      );
+    });
+
+    afterEach(() => {
+      uiExtensionRegistry.unregister(TEST_EXTENSION_ID);
+    });
+
+    /** `list_databases` answers `a` and `b` with `b` as the default; everything else resolves. */
+    function listing(): void {
+      mockInvoke.mockImplementation((cmd: string) => {
+        if (cmd === 'list_databases') {
+          return Promise.resolve({
+            databases: [db('a'), db('b', { isDefault: true })],
+            defaultDatabaseId: 'b'
+          });
+        }
+        return Promise.resolve(undefined);
+      });
+    }
+
+    it('load() restoring a non-default database fires the hook once, after the caches are evicted', async () => {
+      localStorage.setItem('nodespace.activeDatabaseId', 'a');
+      listing();
+
+      await databaseStore.load();
+
+      expect(onDatabaseActivated).toHaveBeenCalledOnce();
+      expect(onDatabaseActivated).toHaveBeenCalledWith('a');
+      // The selection is committed before the hook, and the whole eviction has
+      // run: `pinNodes` is the last step of `evictAndReloadActiveDatabase`.
+      expect(activeAtHook).toEqual(['a']);
+      expect(clearAll).toHaveBeenCalledOnce();
+      expect(clearAll.mock.invocationCallOrder[0]).toBeLessThan(
+        onDatabaseActivated.mock.invocationCallOrder[0]
+      );
+      expect(pinNodes.mock.invocationCallOrder[0]).toBeLessThan(
+        onDatabaseActivated.mock.invocationCallOrder[0]
+      );
+    });
+
+    it('load() on the default database fires the hook once, with nothing evicted', async () => {
+      listing();
+
+      await databaseStore.load();
+
+      expect(onDatabaseActivated).toHaveBeenCalledOnce();
+      expect(onDatabaseActivated).toHaveBeenCalledWith('b');
+      expect(activeAtHook).toEqual(['b']);
+      expect(clearAll).not.toHaveBeenCalled();
+    });
+
+    it('switchTo fires the hook once, after clearAll and before clearAllTabs', async () => {
+      databaseStore.databases = [db('a'), db('b')];
+      databaseStore.activeDatabaseId = 'a';
+      mockInvoke.mockResolvedValue(undefined);
+
+      await databaseStore.switchTo('b');
+
+      expect(onDatabaseActivated).toHaveBeenCalledOnce();
+      expect(onDatabaseActivated).toHaveBeenCalledWith('b');
+      expect(activeAtHook).toEqual(['b']);
+      const hookOrder = onDatabaseActivated.mock.invocationCallOrder[0];
+      expect(clearAll.mock.invocationCallOrder[0]).toBeLessThan(hookOrder);
+      expect(hookOrder).toBeLessThan(clearAllTabs.mock.invocationCallOrder[0]);
+    });
+
+    it('fires only for the winning switch when a switch is superseded', async () => {
+      databaseStore.databases = [db('a'), db('b'), db('c')];
+      databaseStore.activeDatabaseId = 'a';
+      mockInvoke.mockResolvedValue(undefined);
+
+      await Promise.all([databaseStore.switchTo('b'), databaseStore.switchTo('c')]);
+
+      expect(onDatabaseActivated.mock.calls).toEqual([['c']]);
+    });
+
+    it('does not fire for a load() a tray switch superseded, only for the switch', async () => {
+      let releaseRouting: () => void = () => {};
+      mockInvoke.mockImplementation((cmd: string, args?: { id?: string }) => {
+        if (cmd === 'list_databases') {
+          return Promise.resolve({
+            databases: [db('a'), db('b', { isDefault: true })],
+            defaultDatabaseId: 'b'
+          });
+        }
+        if (cmd === 'set_active_database' && args?.id === 'b') {
+          return new Promise<void>((resolve) => (releaseRouting = resolve));
+        }
+        return Promise.resolve(undefined);
+      });
+
+      const loading = databaseStore.load();
+      await vi.waitFor(() =>
+        expect(mockInvoke).toHaveBeenCalledWith('set_active_database', { id: 'b' })
+      );
+      await databaseStore.switchTo('a');
+      releaseRouting();
+      await loading;
+
+      expect(onDatabaseActivated.mock.calls).toEqual([['a']]);
+    });
+
+    it('does not fire when the switch never commits', async () => {
+      databaseStore.databases = [db('a'), db('b')];
+      databaseStore.activeDatabaseId = 'a';
+      mockInvoke.mockRejectedValue(new Error('daemon unavailable'));
+
+      await databaseStore.switchTo('b');
+
+      expect(databaseStore.activeDatabaseId).toBe('a');
+      expect(onDatabaseActivated).not.toHaveBeenCalled();
+    });
+
+    it('does not fire when switching to the database that is already active', async () => {
+      databaseStore.databases = [db('a'), db('b')];
+      databaseStore.activeDatabaseId = 'a';
+
+      await databaseStore.switchTo('a');
+
+      expect(onDatabaseActivated).not.toHaveBeenCalled();
+    });
+
+    it('does not fire in browser dev mode', async () => {
+      delete (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__;
+
+      await databaseStore.load();
+
+      expect(databaseStore.activeDatabaseId).not.toBeNull();
+      expect(onDatabaseActivated).not.toHaveBeenCalled();
+    });
+
+    it('does not fire again for a later load() that keeps the selection', async () => {
+      listing();
+
+      await databaseStore.load();
+      await databaseStore.load();
+
+      expect(onDatabaseActivated).toHaveBeenCalledOnce();
+    });
+
+    it('a throwing hook does not abort load()', async () => {
+      localStorage.setItem('nodespace.activeDatabaseId', 'a');
+      listing();
+      onDatabaseActivated.mockImplementation(() => {
+        throw new Error('hook failed');
+      });
+
+      await databaseStore.load();
+
+      expect(databaseStore.activeDatabaseId).toBe('a');
+      expect(databaseStore.error).toBeNull();
+      expect(databaseStore.loading).toBe(false);
+    });
+
+    it('a throwing hook does not abort the switch', async () => {
+      databaseStore.databases = [db('a'), db('b')];
+      databaseStore.activeDatabaseId = 'a';
+      mockInvoke.mockResolvedValue(undefined);
+      onDatabaseActivated.mockImplementation(() => {
+        throw new Error('hook failed');
+      });
+
+      await databaseStore.switchTo('b');
+
+      expect(onDatabaseActivated).toHaveBeenCalledOnce();
+      expect(databaseStore.activeDatabaseId).toBe('b');
+      expect(databaseStore.error).toBeNull();
+      expect(clearAllTabs).toHaveBeenCalledOnce();
+      expect(addTab).toHaveBeenCalledOnce();
     });
   });
 
