@@ -19,7 +19,9 @@
 // end state every ceiling is 0, and a ceiling of 0 fails on any hit, which is
 // the strict check. A change that must temporarily raise a ceiling edits
 // BASELINES in its own diff and justifies it in its description; ceilings are
-// never raised to land new Pro code.
+// never raised to land new Pro code. Headroom below a ceiling is not permission
+// either: a change that adds Pro lines needs an accepted class whether or not
+// the count still fits under its ceiling.
 //
 // Only three kinds of change may raise a ceiling, and tests that assert Pro
 // code is absent must build their needle from fragments (or carry a per-file
@@ -461,22 +463,35 @@ function usage(): never {
   process.exit(2);
 }
 
+type Invocation = { mode: "check" } | { mode: "changed" } | { mode: "list"; marker: MarkerName };
+
+/** The parsed command line, or null when it is not one of the three forms usage() lists. */
+function parseArguments(args: readonly string[]): Invocation | null {
+  if (args.length === 0) return { mode: "check" };
+  if (args.length === 1 && args[0] === "--changed") return { mode: "changed" };
+  if (args.length === 2 && args[0] === "--list" && (MARKER_NAMES as readonly string[]).includes(args[1])) {
+    return { mode: "list", marker: args[1] as MarkerName };
+  }
+  return null;
+}
+
 if (import.meta.main) {
-  const args = process.argv.slice(2);
+  // Validate the command line before the scan: a usage error must not pay for
+  // reading every file in the repository, or need a git checkout at all.
+  const invocation = parseArguments(process.argv.slice(2));
+  if (invocation === null) usage();
   const { counts, hits } = countMarkers(listScannedFiles());
 
-  if (args[0] === "--list" && args.length === 2) {
-    const marker = args[1];
-    if (!(MARKER_NAMES as readonly string[]).includes(marker)) usage();
-    printGrouped(hits[marker as MarkerName]);
-  } else if (args[0] === "--changed" && args.length === 1) {
+  if (invocation.mode === "list") {
+    printGrouped(hits[invocation.marker]);
+  } else if (invocation.mode === "changed") {
     const changed = new Set(changedFilesSinceMain());
     for (const name of MARKER_NAMES) {
       const inChangedFiles = hits[name].filter((hit) => changed.has(hitFile(hit)));
       console.log(`${name}: ${inChangedFiles.length}`);
       for (const hit of inChangedFiles) console.log(`  ${hit}`);
     }
-  } else if (args.length === 0) {
+  } else {
     printTable(counts);
     const problems = [...exemptionProblems(), ...baselineFailures(counts, BASELINES, changedFilesSinceMain(), hits)];
     for (const problem of problems) console.error(`\n❌ ${problem}`);
@@ -484,7 +499,5 @@ if (import.meta.main) {
     for (const notice of notices) console.log(`\nℹ️  ${notice}`);
     if (problems.length > 0) process.exit(1);
     console.log(notices.length > 0 ? "\n✅ No count is above its baseline (some are below: see the notice above)." : "\n✅ Every Pro-boundary count equals its baseline.");
-  } else {
-    usage();
   }
 }

@@ -8,7 +8,7 @@
 //
 // DOM-free on purpose: this file runs under `bun test scripts/`, which
 // bypasses the Happy-DOM vitest config (see CLAUDE.md).
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -32,6 +32,11 @@ import {
   type MarkerCounts,
   type MarkerName,
 } from "./check-pro-boundary";
+
+// Many tests spawn git or bun processes. Bun's 5s default per-test timeout is
+// tight on the loaded machines these tests run on (the merge gate shares them
+// with Rust builds), and a timeout here would eject an unrelated PR.
+setDefaultTimeout(30_000);
 
 const CHECKER_PATH = join(dirname(new URL(import.meta.url).pathname), "check-pro-boundary.ts");
 const LINE_MARKERS = Object.keys(MARKERS) as LineMarkerName[];
@@ -998,7 +1003,9 @@ describe("CLI", () => {
   function runInFixture(...args: string[]): { status: number; stdout: string; stderr: string } {
     mkdirSync(join(dir, "scripts"), { recursive: true });
     copyFileSync(CHECKER_PATH, join(dir, "scripts/check-pro-boundary.ts"));
-    const result = spawnSync("bun", ["run", join(dir, "scripts/check-pro-boundary.ts"), ...args], { encoding: "utf8", env: gitEnv() });
+    // The ceiling keeps git from finding a repository above a fixture that has none.
+    const env = { ...gitEnv(), GIT_CEILING_DIRECTORIES: dirname(dir) };
+    const result = spawnSync("bun", ["run", join(dir, "scripts/check-pro-boundary.ts"), ...args], { encoding: "utf8", env });
     return { status: result.status ?? -1, stdout: result.stdout, stderr: result.stderr };
   }
 
@@ -1071,11 +1078,28 @@ describe("CLI", () => {
   });
 
   test("an unknown marker or option prints usage and exits 2", () => {
-    for (const args of [["--list", "bogus"], ["--list"], ["--nope"], ["--changed", "extra"]]) {
+    for (const args of [["--list", "bogus"], ["--list"], ["--nope"], ["--changed", "extra"], ["--list", "proCommands", "extra"]]) {
       const { status, stderr } = run(...args);
       expect(status).toBe(2);
       expect(stderr).toContain("Usage:");
     }
+  });
+
+  test("a usage error is reported before the repository is scanned, so it needs no git checkout", () => {
+    // The fixture is not a git repository, so scanning it throws. Exit 2 with
+    // the usage text proves the command line was validated first.
+    for (const args of [["--nope"], ["--list", "bogus"], ["--list"], ["--changed", "extra"]]) {
+      const { status, stderr } = runInFixture(...args);
+      expect({ args, status }).toEqual({ args, status: 2 });
+      expect(stderr).toContain("Usage:");
+      expect(stderr).not.toContain("needs a git checkout");
+    }
+  });
+
+  test("a valid command outside a git checkout fails with the clear error, not a silent pass", () => {
+    const { status, stderr } = runInFixture();
+    expect(status).not.toBe(0);
+    expect(stderr).toContain("needs a git checkout");
   });
 });
 
