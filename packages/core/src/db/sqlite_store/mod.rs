@@ -2049,9 +2049,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_get_embeddings_roundtrip_and_modified_since() -> Result<()> {
-        // read-API: vectors must round-trip out of the le-f32 blob, both
-        // chunks come back in order, and the modified-since cursor filters.
+    async fn test_get_embeddings_roundtrip() -> Result<()> {
+        // read-API: vectors must round-trip out of the le-f32 blob and both
+        // chunks come back in order.
         let (store, _tmp) = create_test_store().await?;
         let node = store
             .create_node(
@@ -2078,59 +2078,21 @@ mod tests {
         assert_eq!(got[1].chunk_index, 1);
         assert_eq!(got[1].vector[5], 1.0, "axis-5 unit vector round-trips");
 
-        // Cursor: epoch returns everything (local-origin), a far-future cursor none.
-        let epoch = DateTime::<Utc>::from_timestamp(0, 0).unwrap();
-        assert_eq!(store.embeddings_modified_since(epoch).await?.len(), 2);
-        let future = Utc::now() + chrono::Duration::days(1);
-        assert!(store.embeddings_modified_since(future).await?.is_empty());
-
-        // Provenance: a node's REMOTE (pulled) embedding must NOT show
-        // up in the push sweep, so a received vector is never re-pushed.
-        let other = store
-            .create_node(
-                Node::new("text".to_string(), "remote node".to_string(), json!({})),
-                None,
-                None,
-            )
-            .await?;
-        store
-            .apply_remote_embeddings(&other.id, vec![unit_embedding(&other.id, 7)])
-            .await?;
-        // get_embeddings still returns it locally (it IS stored)...
-        assert_eq!(store.get_embeddings(&other.id).await?.len(), 1);
-        // ...but the push sweep only sees the 2 local-origin chunks, not the remote one.
-        assert_eq!(
-            store.embeddings_modified_since(epoch).await?.len(),
-            2,
-            "remote-origin embeddings are excluded from the push sweep"
-        );
-
-        // The recurring sweep must ride idx_emb_modified, not full-scan + filesort
-        // (review concern): assert the query plan uses the index and the
-        // ORDER BY is index-covered.
-        let mut plan = store
+        // The legacy `origin` column is not in the insert list, so a new row
+        // takes the column default.
+        let mut rows = store
             .read()
             .await?
             .query(
-                "EXPLAIN QUERY PLAN SELECT id FROM embedding WHERE origin = 'local' AND modified_at >= ?1 \
-                 ORDER BY modified_at, node_id, chunk_index",
-                libsql::params!["1970-01-01T00:00:00+00:00".to_string()],
+                "SELECT origin FROM embedding WHERE node_id = ?1",
+                libsql::params![node.id.clone()],
             )
             .await?;
-        let mut detail = String::new();
-        while let Some(row) = plan.next().await? {
-            let d: String = row.get(3)?; // EXPLAIN QUERY PLAN: (id, parent, notused, detail)
-            detail.push_str(&d);
-            detail.push(' ');
+        let mut origins = Vec::new();
+        while let Some(row) = rows.next().await? {
+            origins.push(row.get::<String>(0)?);
         }
-        assert!(
-            detail.contains("idx_emb_modified"),
-            "sweep must use idx_emb_modified; plan was: {detail}"
-        );
-        assert!(
-            !detail.to_uppercase().contains("TEMP B-TREE"),
-            "ORDER BY must be index-covered (no filesort); plan was: {detail}"
-        );
+        assert_eq!(origins, vec!["local", "local"], "new rows store 'local'");
 
         // A node with no embeddings reads back empty (not an error).
         let other = store

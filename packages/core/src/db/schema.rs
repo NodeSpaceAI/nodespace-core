@@ -46,6 +46,8 @@ CREATE TABLE IF NOT EXISTS node (
     title            TEXT,
     lifecycle_status TEXT    NOT NULL DEFAULT 'active',
     version          INTEGER NOT NULL DEFAULT 1,
+    -- Legacy column: never written and its value never read. Kept so the shape
+    -- check accepts databases an earlier build created.
     sync_seq         INTEGER,
     created_at       TEXT    NOT NULL,
     modified_at      TEXT    NOT NULL
@@ -122,9 +124,9 @@ CREATE TABLE IF NOT EXISTS embedding (
     stale        INTEGER NOT NULL DEFAULT 1,
     error_count  INTEGER NOT NULL DEFAULT 0,
     last_error   TEXT,
-    -- 'local' = generated on this device, 'remote' = pulled from another device
-    -- via cloud sync. The cloud-push sweep reads only 'local' rows, so a pulled
-    -- vector never gets re-pushed (no cross-device re-push loop).
+    -- Legacy provenance column: every write stores the default and nothing reads
+    -- it. Kept because create_schema's shape check compares column names, so
+    -- dropping it would refuse every database an earlier build created.
     origin       TEXT    NOT NULL DEFAULT 'local',
     created_at   TEXT    NOT NULL,
     modified_at  TEXT    NOT NULL
@@ -133,11 +135,6 @@ CREATE TABLE IF NOT EXISTS embedding (
 CREATE INDEX IF NOT EXISTS idx_emb_node      ON embedding (node_id);
 CREATE INDEX IF NOT EXISTS idx_emb_stale_mod ON embedding (stale, modified_at);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_emb_unique ON embedding (node_id, model_name, chunk_index);
--- `SqliteStore::embeddings_modified_since` does an `origin = 'local' AND
--- modified_at >= ?` range scan ORDER BY modified_at, node_id, chunk_index.
--- Leading on `origin` (equality) then `modified_at` (range) makes the recurring
--- cloud-push sweep an index range scan that also covers the ORDER BY.
-CREATE INDEX IF NOT EXISTS idx_emb_modified ON embedding (origin, modified_at, node_id, chunk_index);
 
 -- Local-only conflict journal (ADR-068): a durable, resolvable record of a
 -- convergence conflict. `conflict` holds one row per detected conflict, keyed

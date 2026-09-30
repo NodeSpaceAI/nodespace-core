@@ -66,10 +66,21 @@ async fn fresh_database_gets_the_complete_current_schema() {
         );
     }
 
-    assert!(columns_of(&conn, "embedding")
-        .await
-        .iter()
-        .any(|c| c == "origin"));
+    assert!(
+        columns_of(&conn, "embedding")
+            .await
+            .iter()
+            .any(|c| c == "origin"),
+        "embedding.origin is kept so databases created by earlier builds pass the shape check"
+    );
+
+    assert!(
+        columns_of(&conn, "node")
+            .await
+            .iter()
+            .any(|c| c == "sync_seq"),
+        "node.sync_seq is kept so databases created by earlier builds pass the shape check"
+    );
 
     assert!(
         columns_of(&conn, "relationship")
@@ -98,7 +109,6 @@ async fn fresh_database_gets_the_complete_current_schema() {
         "idx_emb_node",
         "idx_emb_stale_mod",
         "idx_emb_unique",
-        "idx_emb_modified",
         "idx_conflict_status",
         "idx_conflict_participant_node",
     ] {
@@ -121,28 +131,30 @@ async fn fresh_database_gets_the_complete_current_schema() {
     }
 }
 
-/// `idx_emb_modified` must lead on `origin`, so the cloud-push sweep's
-/// `origin = 'local' AND modified_at >= ?` stays an index range scan. The old
-/// ladder built this index twice (v001, then rebuilt in v002); the bootstrap
-/// must land on the v002 shape, not the v001 one.
+/// A database created by an earlier build still carries `idx_emb_modified`,
+/// an index the current DDL no longer creates. Opening it must succeed and
+/// leave the index alone.
 #[tokio::test]
-async fn embedding_modified_index_leads_on_origin() {
+async fn a_database_that_still_has_idx_emb_modified_opens() {
     let temp_dir = tempfile::TempDir::new().unwrap();
-    let conn = open_raw(&temp_dir.path().join("index.db")).await;
+    let conn = open_raw(&temp_dir.path().join("legacy-index.db")).await;
 
     schema::create_schema(&conn).await.expect("create schema");
+    conn.execute(
+        "CREATE INDEX idx_emb_modified ON embedding (origin, modified_at, node_id, chunk_index)",
+        (),
+    )
+    .await
+    .expect("create the legacy index by hand");
 
-    let mut rows = conn
-        .query(
-            "SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_emb_modified'",
-            (),
-        )
+    schema::create_schema(&conn)
         .await
-        .unwrap();
-    let sql: String = rows.next().await.unwrap().unwrap().get(0).unwrap();
+        .expect("a database with the legacy index must still pass create_schema");
+
+    let indexes = names_of(&conn, "index").await;
     assert!(
-        sql.contains("(origin, modified_at, node_id, chunk_index)"),
-        "idx_emb_modified must lead on origin: {sql}"
+        indexes.iter().any(|i| i == "idx_emb_modified"),
+        "create_schema leaves the legacy index in place; got {indexes:?}"
     );
 }
 

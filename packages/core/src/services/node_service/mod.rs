@@ -4009,7 +4009,8 @@ mod tests {
         let kept = |id: &'static str| {
             let svc = &svc;
             async move {
-                svc.get_embeddings(id)
+                svc.store()
+                    .get_embeddings(id)
                     .await
                     .unwrap()
                     .iter()
@@ -4887,33 +4888,6 @@ mod tests {
         let retrieved = service.get_node(&id).await.unwrap().unwrap();
         assert_eq!(retrieved.node_type, "date");
         assert_eq!(retrieved.id, "2025-01-03");
-    }
-
-    #[tokio::test]
-    async fn test_embedding_write_wrappers_upsert_read_delete() {
-        // Pull-apply path: the non-nlp NodeService write wrappers must
-        // round-trip a received vector into the local store and clear it.
-        let (service, _temp) = create_test_service().await;
-        let id = service
-            .create_node(Node::new(
-                "text".to_string(),
-                "vec node".to_string(),
-                json!({}),
-            ))
-            .await
-            .unwrap();
-
-        let mut vector = vec![0.0f32; 768];
-        vector[3] = 1.0;
-        let emb = crate::models::NewEmbedding::single_chunk(id.clone(), vector, "hash-3", 10, 4);
-        service.upsert_embeddings(&id, vec![emb]).await.unwrap();
-
-        let got = service.get_embeddings(&id).await.unwrap();
-        assert_eq!(got.len(), 1);
-        assert_eq!(got[0].vector[3], 1.0, "applied vector round-trips");
-
-        service.delete_embeddings(&id).await.unwrap();
-        assert!(service.get_embeddings(&id).await.unwrap().is_empty());
     }
 
     #[tokio::test]

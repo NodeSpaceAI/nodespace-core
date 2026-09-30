@@ -2,36 +2,14 @@
 use super::*;
 
 impl SqliteStore {
-    /// Replace a node's embeddings with locally-generated vectors (`origin =
-    /// 'local'`). This is what the embedding generation path uses; the cloud-push
-    /// sweep reads only `'local'` rows.
+    /// Replace a node's embeddings wholesale with the given vectors, atomically
+    /// across `embedding` and the `vec_embeddings` vec0 mirror. Empty
+    /// `embeddings` is a no-op (use `delete_embeddings` to clear). This is what
+    /// the embedding generation path uses.
     pub async fn upsert_embeddings(
         &self,
         node_id: &str,
         embeddings: Vec<crate::models::NewEmbedding>,
-    ) -> Result<()> {
-        self.upsert_embeddings_with_origin(node_id, embeddings, "local")
-            .await
-    }
-
-    /// Replace a node's embeddings with vectors PULLED from another device
-    /// (`origin = 'remote'`). Identical to `upsert_embeddings` except
-    /// for the provenance tag, which keeps the push sweep from re-pushing a vector
-    /// this device merely received (no cross-device re-push loop).
-    pub async fn apply_remote_embeddings(
-        &self,
-        node_id: &str,
-        embeddings: Vec<crate::models::NewEmbedding>,
-    ) -> Result<()> {
-        self.upsert_embeddings_with_origin(node_id, embeddings, "remote")
-            .await
-    }
-
-    async fn upsert_embeddings_with_origin(
-        &self,
-        node_id: &str,
-        embeddings: Vec<crate::models::NewEmbedding>,
-        origin: &str,
     ) -> Result<()> {
         if embeddings.is_empty() {
             return Ok(());
@@ -85,7 +63,6 @@ impl SqliteStore {
                     libsql::Value::Integer(emb.total_chunks as i64),
                     libsql::Value::Text(emb.content_hash),
                     libsql::Value::Integer(emb.token_count as i64),
-                    libsql::Value::Text(origin.to_string()),
                     libsql::Value::Text(now.clone()),
                     libsql::Value::Text(now.clone()),
                 ];
@@ -96,13 +73,13 @@ impl SqliteStore {
 
         // Batch into multi-row INSERTs, chunked so each statement's bound
         // parameter count stays under SQLite's compiled SQLITE_MAX_VARIABLE_NUMBER (32766).
-        const EMBEDDING_CHUNK: usize = 60; // 14 params/row
+        const EMBEDDING_CHUNK: usize = 60; // 13 params/row
         for chunk in rows.chunks(EMBEDDING_CHUNK) {
             let placeholders: Vec<String> = (0..chunk.len())
                 .map(|i| {
-                    let base = i * 14;
+                    let base = i * 13;
                     format!(
-                        "(?{}, ?{}, ?{}, ?{}, ?{}, ?{}, ?{}, ?{}, ?{}, ?{}, ?{}, 0, 0, NULL, ?{}, ?{}, ?{})",
+                        "(?{}, ?{}, ?{}, ?{}, ?{}, ?{}, ?{}, ?{}, ?{}, ?{}, ?{}, 0, 0, NULL, ?{}, ?{})",
                         base + 1,
                         base + 2,
                         base + 3,
@@ -115,13 +92,12 @@ impl SqliteStore {
                         base + 10,
                         base + 11,
                         base + 12,
-                        base + 13,
-                        base + 14
+                        base + 13
                     )
                 })
                 .collect();
             let sql = format!(
-                "INSERT INTO embedding (id, node_id, vector, dimension, model_name, chunk_index, chunk_start, chunk_end, total_chunks, content_hash, token_count, stale, error_count, last_error, origin, created_at, modified_at) VALUES {}",
+                "INSERT INTO embedding (id, node_id, vector, dimension, model_name, chunk_index, chunk_start, chunk_end, total_chunks, content_hash, token_count, stale, error_count, last_error, created_at, modified_at) VALUES {}",
                 placeholders.join(", ")
             );
             let params: Vec<libsql::Value> = chunk.iter().flat_map(|(_, _, p)| p.clone()).collect();
@@ -215,9 +191,9 @@ impl SqliteStore {
         })
     }
 
-    /// Read all locally-stored embedding records for a node (one per chunk),
-    /// ordered by chunk index. Used by the Pro daemon's cloud push to
-    /// mirror a node's vectors into Supabase pgvector.
+    /// Read all stored embedding records for a node (one per chunk), ordered by
+    /// chunk index. Reads the persisted `embedding` table, so it works whether or
+    /// not embedding generation is compiled in.
     pub async fn get_embeddings(&self, node_id: &str) -> Result<Vec<crate::models::Embedding>> {
         let mut rows = self
             .read()
@@ -231,47 +207,6 @@ impl SqliteStore {
             )
             .await
             .context("Failed to query embeddings for node")?;
-
-        let mut out = Vec::new();
-        while let Some(row) = rows.next().await? {
-            out.push(Self::row_to_embedding(&row)?);
-        }
-        Ok(out)
-    }
-
-    /// Read **locally-generated** (`origin = 'local'`) embedding records modified
-    /// at or after `since`, across all nodes, ordered by `modified_at`. Drives the
-    /// Pro daemon's cloud-push sweep: the daemon keeps a cursor over
-    /// `modified_at` and pushes newly (re)computed vectors. Stale rows are
-    /// included — the caller decides whether to skip them.
-    ///
-    /// The `origin = 'local'` filter excludes vectors PULLED from
-    /// other devices, so a received vector is never re-pushed — without it, a
-    /// pull's `modified_at = now` would re-arm this sweep and bounce the vector
-    /// back to cloud, amplifying writes and (on heterogeneous devices) looping.
-    ///
-    /// INVARIANT: assumes every writer stores `modified_at` as a UTC rfc3339
-    /// string (`Utc::now().to_rfc3339()`, as `upsert_embeddings` does). The cursor
-    /// compares lexicographically, which equals chronological order ONLY for that
-    /// fixed `+00:00`-offset form; a `Z`-suffixed or non-UTC timestamp would break
-    /// ordering and make the sweep skip rows. Served by `idx_emb_modified`.
-    pub async fn embeddings_modified_since(
-        &self,
-        since: DateTime<Utc>,
-    ) -> Result<Vec<crate::models::Embedding>> {
-        let mut rows = self
-            .read()
-            .await?
-            .query(
-                "SELECT id, node_id, vector, dimension, model_name, chunk_index, chunk_start, \
-                 chunk_end, total_chunks, content_hash, token_count, stale, error_count, \
-                 last_error, created_at, modified_at \
-                 FROM embedding WHERE origin = 'local' AND modified_at >= ?1 \
-                 ORDER BY modified_at, node_id, chunk_index",
-                libsql::params![since.to_rfc3339()],
-            )
-            .await
-            .context("Failed to query embeddings modified since")?;
 
         let mut out = Vec::new();
         while let Some(row) = rows.next().await? {
