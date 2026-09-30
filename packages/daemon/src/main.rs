@@ -459,9 +459,12 @@ fn main() -> Result<()> {
     // Take the single-instance lock before anything else touches state the
     // daemons share: the registry and databases, the model, the socket, and
     // the stdout/stderr log that `stdio_log_rotation` rolls below. A daemon
-    // that loses the lock exits with status 0, a deliberate stop, so a service
-    // manager registered with `KeepAlive { SuccessfulExit = false }` leaves
-    // the daemon that holds it alone. The lock lives as long as `main` does.
+    // that still finds the lock held after a bounded wait exits with status 0,
+    // a deliberate stop, so a service manager registered with
+    // `KeepAlive { SuccessfulExit = false }` leaves the daemon that holds it
+    // alone. The wait covers a restart, where the old daemon is still draining
+    // when the new one starts: exiting 0 at once would leave no daemon at all.
+    // The lock lives as long as `main` does.
     #[cfg(unix)]
     let _instance_lock = {
         use nodespace_daemon::single_instance::{acquire, Acquire};
@@ -472,7 +475,7 @@ fn main() -> Result<()> {
                 tracing::info!(
                     sock = %sock.display(),
                     holder_pid = ?holder_pid,
-                    "another nodespaced already serves this socket; exiting"
+                    "another nodespaced still holds the lock for this socket after waiting; exiting"
                 );
                 return Ok(());
             }
