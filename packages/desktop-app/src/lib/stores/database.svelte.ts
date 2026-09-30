@@ -47,6 +47,9 @@ export interface DatabaseInfo {
    * null on the public/legacy tenant, where the collections store falls back to
    * the well-known root id. */
   boundTenantCollection: string | null;
+  /** Opaque per-database keys the registry stores for extensions. Core never
+   * reads them; an extension that owns a key reads it from here. */
+  extensions: Record<string, string>;
 }
 
 interface DatabaseListing {
@@ -81,7 +84,8 @@ const IMPLICIT_BROWSER_DATABASE: DatabaseInfo = {
   createdAt: '',
   lastOpenedAt: null,
   boundTenantSchema: null,
-  boundTenantCollection: null
+  boundTenantCollection: null,
+  extensions: {}
 };
 
 /**

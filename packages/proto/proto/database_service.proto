@@ -75,6 +75,9 @@ message DatabaseInfo {
   // per-install minted "My Workspace" root (sync#297); absent/empty on the
   // public/legacy tenant, where the client falls back to the well-known root id.
   optional string bound_tenant_collection = 9;
+  // Per-database keys the registry stores for extensions, copied verbatim.
+  // Core interprets none of them. Only string values are carried.
+  map<string, string> extensions = 10;
 }
 
 message ListDatabasesRequest {}

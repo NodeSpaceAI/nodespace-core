@@ -53,6 +53,9 @@ pub struct DatabaseEntry {
     /// per-install root; `None` on the public/legacy tenant, where the
     /// frontend falls back to the well-known root id for tree filtering.
     pub bound_tenant_collection: Option<String>,
+    /// Opaque per-database keys the registry stores for extensions. Core reads
+    /// none of them; they pass through to the frontend unchanged.
+    pub extensions: std::collections::BTreeMap<String, String>,
 }
 
 /// The full registry listing plus the daemon-wide default id.
@@ -86,6 +89,7 @@ fn to_entry(info: DatabaseInfo) -> DatabaseEntry {
         last_opened_at: info.last_opened_at,
         bound_tenant_schema: info.bound_tenant_schema,
         bound_tenant_collection: info.bound_tenant_collection,
+        extensions: info.extensions.into_iter().collect(),
     }
 }
 
@@ -223,4 +227,39 @@ pub async fn set_active_database(
 ) -> Result<(), String> {
     grpc_client.set_active_database(id).await;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::{BTreeMap, HashMap};
+
+    /// The daemon's extension keys reach the frontend DTO unchanged, and the DTO
+    /// serializes them under the camelCase `extensions` key the frontend type
+    /// declares.
+    #[test]
+    fn to_entry_passes_extensions_through() {
+        let info = DatabaseInfo {
+            id: "01J00000000000000000000000".into(),
+            name: "Work".into(),
+            extensions: HashMap::from([
+                ("plugin_state".to_string(), "keep".to_string()),
+                ("plugin_label".to_string(), "blue".to_string()),
+            ]),
+            ..Default::default()
+        };
+
+        let entry = to_entry(info);
+
+        assert_eq!(
+            entry.extensions,
+            BTreeMap::from([
+                ("plugin_label".to_string(), "blue".to_string()),
+                ("plugin_state".to_string(), "keep".to_string()),
+            ])
+        );
+        let json = serde_json::to_value(&entry).unwrap();
+        assert_eq!(json["extensions"]["plugin_state"], "keep");
+        assert_eq!(json["extensions"]["plugin_label"], "blue");
+    }
 }
