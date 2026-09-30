@@ -2,6 +2,11 @@
 import { defineConfig } from 'vitest/config';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { nodespaceExtensions } from './vite-plugins/nodespace-extensions.js';
+import {
+  EXTENSIONS_ENV,
+  resolveExtensionsEntry
+} from './vite-plugins/nodespace-extensions-entry.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -19,9 +24,17 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  *   E2E_VERBOSE        — set to any value to print daemon/proxy stdout
  */
 export default defineConfig({
+  plugins: [
+    nodespaceExtensions({
+      root: __dirname,
+      entry: resolveExtensionsEntry(process.env[EXTENSIONS_ENV], __dirname)
+    })
+  ],
+
   resolve: {
     alias: {
-      $lib: path.resolve(__dirname, 'src/lib')
+      $lib: path.resolve(__dirname, 'src/lib'),
+      '@nodespace/extension-api': path.resolve(__dirname, 'src/lib/extension-api')
     }
   },
 

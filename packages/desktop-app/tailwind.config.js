@@ -1,3 +1,11 @@
+import { dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import {
+  EXTENSIONS_ENV,
+  extensionContentGlobs,
+  resolveExtensionsEntry
+} from './vite-plugins/nodespace-extensions-entry.js';
+
 /**
  * Colour for a token whose value may carry its own alpha channel.
  *
@@ -20,7 +28,13 @@ const withTokenAlpha = (token) => (/** @type {{ opacityValue?: string }} */ { op
 
 /** @type {import('tailwindcss').Config} */
 export default {
-  content: ["./src/**/*.{html,js,svelte,ts}"],
+  content: [
+    "./src/**/*.{html,js,svelte,ts}",
+    // Classes used only by an injected extension would otherwise be purged.
+    ...extensionContentGlobs(
+      resolveExtensionsEntry(process.env[EXTENSIONS_ENV], dirname(fileURLToPath(import.meta.url)))
+    )
+  ],
   theme: {
     container: {
       center: true,

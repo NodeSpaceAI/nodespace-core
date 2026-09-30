@@ -3,6 +3,11 @@ import { defineConfig } from 'vitest/config';
 import { sveltekit } from '@sveltejs/kit/vite';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { nodespaceExtensions } from './vite-plugins/nodespace-extensions.js';
+import {
+  EXTENSIONS_ENV,
+  resolveExtensionsEntry
+} from './vite-plugins/nodespace-extensions-entry.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -33,7 +38,13 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  * same way.
  */
 export default defineConfig({
-  plugins: [sveltekit()],
+  plugins: [
+    nodespaceExtensions({
+      root: __dirname,
+      entry: resolveExtensionsEntry(process.env[EXTENSIONS_ENV], __dirname)
+    }),
+    sveltekit()
+  ],
 
   // Configure path aliases
   resolve: {
