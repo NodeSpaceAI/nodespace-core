@@ -593,7 +593,9 @@ jobs:
           # gets guarded), which would quietly turn the GUI refusal off. It
           # logs through system.log, and Installer writes that to
           # install.log, so fail the build if the check ever reported a
-          # failure. A missing or unreadable log matches nothing and passes.
+          # failure, including an Info.plist it could not read (the bundle
+          # here is freshly built, so that means a broken Installer API or
+          # bundle). A missing or unreadable log matches nothing and passes.
           if grep -a -q "NodeSpace installation check failed" /var/log/install.log 2>/dev/null; then
             echo "::error::The Distribution installation check threw during install (see /var/log/install.log); the GUI refusal would be silently off"
             grep -a "NodeSpace installation check failed" /var/log/install.log | tail -5

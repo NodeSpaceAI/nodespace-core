@@ -224,8 +224,10 @@ function nodespaceInstallationCheck() {
             info = system.files.plistAtPath(app + '/Contents/Info.plist');
         } catch (plistError) {
             // Same as preinstall when the plist cannot be read: no key, so
-            // the decision falls to the daemon-file check below.
-            system.log('NodeSpace installation check could not read Info.plist: ' + plistError);
+            // the decision falls to the daemon-file check below. Logged under
+            // the same prefix as the outer catch, which the release workflow
+            // greps for.
+            system.log('NodeSpace installation check failed reading Info.plist: ' + plistError);
         }
         var product = (info && info.NodeSpaceProduct) ? String(info.NodeSpaceProduct) : '';
         if (product === '') {

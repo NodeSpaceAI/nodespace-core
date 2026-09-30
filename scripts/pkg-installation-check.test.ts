@@ -80,6 +80,17 @@ function extractScript(xml: string): string {
   return match[1];
 }
 
+/** The install-log tripwire from release.yml: the `if grep ... /var/log/install.log ...; then ... fi` block, dedented. */
+function tripwireBlock(): string {
+  const workflow = readFileSync(RELEASE_WORKFLOW, "utf8");
+  const match = /^( *)if grep [^\n]*\/var\/log\/install\.log[^\n]*; then\n[\s\S]*?\n\1fi\n/m.exec(workflow);
+  if (match === null) throw new Error(`could not find the install-log tripwire in ${RELEASE_WORKFLOW}`);
+  return match[0]
+    .split("\n")
+    .map((line) => (line.startsWith(match[1]) ? line.slice(match[1].length) : line))
+    .join("\n");
+}
+
 interface Scenario {
   /** Whether the app bundle exists. Defaults to true. */
   app?: boolean;
@@ -227,7 +238,7 @@ describe("the installation check's decision", () => {
     expect(withoutDaemon.returned).toBe(true);
     expect(withoutDaemon.result).toEqual({});
     expect(withoutDaemon.logs.length).toBe(1);
-    expect(withoutDaemon.logs[0]).toContain("could not read Info.plist");
+    expect(withoutDaemon.logs[0]).toContain("failed reading Info.plist");
 
     const withDaemon = runCheck(script, { plistThrows: true, otherDaemon: true, env: {} });
     expect(withDaemon.returned).toBe(false);
@@ -242,12 +253,39 @@ describe("the installation check's decision", () => {
     expect(logs[0]).toContain("NodeSpace installation check failed");
   });
 
-  test("the release workflow's install-log tripwire greps for the text the check logs on failure", () => {
-    const workflow = readFileSync(RELEASE_WORKFLOW, "utf8");
-    const match = /grep -a -q "([^"]+)" \/var\/log\/install\.log/.exec(workflow);
-    expect(match).not.toBeNull();
-    const { logs } = runCheck(script, { existsThrows: true });
-    expect(logs[0]).toContain((match as RegExpExecArray)[1]);
+  test("the release workflow's install-log tripwire fails on every failure line the check logs, and passes otherwise", () => {
+    const dir = mkdtempSync(join(tmpdir(), "pkg-installation-check-tripwire-"));
+    try {
+      const runTripwire = (logContents: string | null) => {
+        const logPath = join(dir, "install.log");
+        rmSync(logPath, { force: true });
+        if (logContents !== null) writeFileSync(logPath, logContents);
+        // Run it the way `shell: bash` does in the workflow.
+        const result = Bun.spawnSync(["/bin/bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", tripwireBlock().replaceAll("/var/log/install.log", logPath)], {
+          env: { PATH: "/usr/bin:/bin" },
+          stdout: "pipe",
+          stderr: "pipe",
+        });
+        return { exitCode: result.exitCode, stdout: result.stdout.toString() };
+      };
+      const installerLine = (message: string) => `Sep 30 12:00:00 runner installer[123]: JS: ${message}\n`;
+
+      expect(runTripwire("Sep 30 12:00:00 runner installer[123]: JS: unrelated line\n").exitCode).toBe(0);
+      expect(runTripwire(null).exitCode).toBe(0);
+
+      // Every line the real check logs when it fails must trip it: the outer
+      // catch and the plist-read catch.
+      for (const scenario of [{ existsThrows: true }, { plistThrows: true }]) {
+        const { logs } = runCheck(script, scenario);
+        expect(logs.length).toBe(1);
+        const tripped = runTripwire(installerLine(logs[0]));
+        expect(tripped.exitCode).toBe(1);
+        expect(tripped.stdout).toContain("::error::");
+        expect(tripped.stdout).toContain(logs[0]);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   test.skipIf(!onMac)("refuses with exactly the text preinstall prints", () => {
