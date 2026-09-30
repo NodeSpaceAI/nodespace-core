@@ -522,11 +522,23 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             modified_at: now,
             is_core: true,
             schema_version: 1,
-            // ADR-037: opt-in restriction. A Core-protected boolean; the Pro
-            // RLS layer reads `properties->>'restrictedToMembers'` to gate access.
-            // Default/absent = false = open (organizational). member_of edge
-            // `permission` (admin/modify/readOnly) is a free-form edge property the
-            // RLS reads directly — no schema field needed.
+            // `restrictedToMembers` (ADR-037 opt-in restriction) is stored at
+            // `properties.collection.restrictedToMembers` as a JSON boolean;
+            // absent or false means open (organizational). Locally it bounds
+            // embedding roots and marks the personal AI-chat collection. This
+            // path and type are a storage contract: access-control layers
+            // outside core read this exact path and treat any value whose text
+            // form is not `true` as unrestricted. Do not rename the field, move
+            // it out of the `collection` bucket, or store a non-boolean.
+            //
+            // A person's `member_of` edge to a collection carries
+            // `properties.permission`, one of `admin`, `modify` or `readOnly`;
+            // a content node's membership edge carries none. Core stores it as
+            // a free-form edge property (no schema field) and does not validate
+            // it; it reads `admin` back to find the personal AI-chat collection.
+            // This path and these values are a storage contract: access-control
+            // layers outside core read them directly and treat an absent value
+            // as `modify`.
             fields: vec![
                 SchemaField {
                     name: "restrictedToMembers".to_string(),
@@ -1782,6 +1794,8 @@ mod tests {
     #[test]
     fn test_collection_has_restricted_to_members_field() {
         // ADR-037: opt-in restriction is a Core-protected boolean on collection.
+        // Its name, bucket and type are a storage contract (see the schema
+        // comment); this test pins them.
         let schemas = get_core_schemas();
         let collection = schemas.iter().find(|s| s.id == "collection").unwrap();
         let field = collection
