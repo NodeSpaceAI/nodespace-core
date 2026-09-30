@@ -19,9 +19,9 @@
 # passes: $1 package path, $2 target location, $3 target volume, $4 startup
 # disk.
 #
-# NODESPACE_FORCE_COMMUNITY=1 overrides the refusal for scripted installs.
-# Whether the variable reaches this script depends on how Installer was
-# launched; it is not guaranteed under `sudo installer`.
+# A scripted install can override the refusal with the variable checked at the
+# bottom of this script. Whether it reaches this script depends on how
+# Installer was launched; it is not guaranteed under `sudo installer`.
 
 set -euo pipefail
 

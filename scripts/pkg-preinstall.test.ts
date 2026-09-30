@@ -109,7 +109,7 @@ function check(options: FixtureOptions, env: Record<string, string> = {}): RunRe
 }
 
 describe.skipIf(!onMac)("preinstall refusal matrix", () => {
-  test("no app installed on the target volume proceeds, whatever is at the running system's /Applications", () => {
+  test("no app on the target volume proceeds", () => {
     expect(check({ app: false }).exitCode).toBe(0);
   });
 

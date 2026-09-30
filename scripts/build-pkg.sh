@@ -219,7 +219,14 @@ function nodespaceInstallationCheck() {
         if (!system.files.fileExistsAtPath(app)) {
             return true;
         }
-        var info = system.files.plistAtPath(app + '/Contents/Info.plist');
+        var info = null;
+        try {
+            info = system.files.plistAtPath(app + '/Contents/Info.plist');
+        } catch (plistError) {
+            // Same as preinstall when the plist cannot be read: no key, so
+            // the decision falls to the daemon-file check below.
+            system.log('NodeSpace installation check could not read Info.plist: ' + plistError);
+        }
         var product = (info && info.NodeSpaceProduct) ? String(info.NodeSpaceProduct) : '';
         if (product === '') {
             // No key: a bundle built before NodeSpaceProduct existed. The

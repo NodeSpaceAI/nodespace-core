@@ -26,6 +26,7 @@ setDefaultTimeout(30_000);
 const REPO = join(dirname(new URL(import.meta.url).pathname), "..");
 const BUILD_PKG_SH = join(REPO, "scripts", "build-pkg.sh");
 const PREINSTALL = join(REPO, "scripts", "pkg-resources", "preinstall");
+const RELEASE_WORKFLOW = join(REPO, ".github", "workflows", "release.yml");
 
 const BEGIN_MARKER = "# --- BEGIN distribution-xml";
 const END_MARKER = "# --- END distribution-xml ---";
@@ -90,6 +91,8 @@ interface Scenario {
   env?: Record<string, string>;
   /** Makes plistAtPath throw. */
   plistThrows?: boolean;
+  /** Makes fileExistsAtPath throw. */
+  existsThrows?: boolean;
 }
 
 interface Outcome {
@@ -109,7 +112,10 @@ function runCheck(script: string, scenario: Scenario): Outcome {
     env: scenario.env,
     log: (message: string) => logs.push(message),
     files: {
-      fileExistsAtPath: (path: string) => existing.has(path),
+      fileExistsAtPath: (path: string) => {
+        if (scenario.existsThrows) throw new Error("unreadable volume");
+        return existing.has(path);
+      },
       plistAtPath: (path: string) => {
         if (scenario.plistThrows) throw new Error("unreadable plist");
         return path === `${APP}/Contents/Info.plist` && existing.has(APP) ? plist : null;
@@ -216,12 +222,32 @@ describe("the installation check's decision", () => {
     expect(logs).toEqual([]);
   });
 
-  test("an unreadable bundle logs and proceeds, leaving the decision to preinstall", () => {
-    const { returned, result, logs } = runCheck(script, { plistThrows: true });
+  test("an unreadable Info.plist logs and falls back to the daemon-file check, as preinstall does", () => {
+    const withoutDaemon = runCheck(script, { plistThrows: true });
+    expect(withoutDaemon.returned).toBe(true);
+    expect(withoutDaemon.result).toEqual({});
+    expect(withoutDaemon.logs.length).toBe(1);
+    expect(withoutDaemon.logs[0]).toContain("could not read Info.plist");
+
+    const withDaemon = runCheck(script, { plistThrows: true, otherDaemon: true, env: {} });
+    expect(withDaemon.returned).toBe(false);
+    expect(withDaemon.result.type).toBe("Fatal");
+  });
+
+  test("any other exception logs the failure and proceeds, leaving the decision to preinstall", () => {
+    const { returned, result, logs } = runCheck(script, { existsThrows: true });
     expect(returned).toBe(true);
     expect(result).toEqual({});
     expect(logs.length).toBe(1);
-    expect(logs[0]).toContain("installation check failed");
+    expect(logs[0]).toContain("NodeSpace installation check failed");
+  });
+
+  test("the release workflow's install-log tripwire greps for the text the check logs on failure", () => {
+    const workflow = readFileSync(RELEASE_WORKFLOW, "utf8");
+    const match = /grep -a -q "([^"]+)" \/var\/log\/install\.log/.exec(workflow);
+    expect(match).not.toBeNull();
+    const { logs } = runCheck(script, { existsThrows: true });
+    expect(logs[0]).toContain((match as RegExpExecArray)[1]);
   });
 
   test.skipIf(!onMac)("refuses with exactly the text preinstall prints", () => {
