@@ -167,7 +167,7 @@ pub fn acquire_waiting(socket: &Path, max_wait: Duration) -> Result<Acquire> {
                     let holder_pid = read_holder_pid(&file);
                     tracing::info!(
                         holder_pid = ?holder_pid,
-                        max_wait_secs = max_wait.as_secs_f32(),
+                        max_wait = ?max_wait,
                         "waiting for the single-instance lock: another nodespaced holds it"
                     );
                 }

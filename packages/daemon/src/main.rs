@@ -490,8 +490,10 @@ fn main() -> Result<()> {
                     );
                     return Ok(());
                 }
+                let holder =
+                    holder_pid.map_or_else(|| "unknown".to_string(), |pid| pid.to_string());
                 anyhow::bail!(
-                    "the single-instance lock for {} is still held (holder pid {holder_pid:?}) \
+                    "the single-instance lock for {} is still held (holder pid {holder}) \
                      after waiting, but nothing answers on the socket; exiting with an error so \
                      the service manager tries again",
                     sock.display()
