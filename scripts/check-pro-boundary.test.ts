@@ -16,6 +16,7 @@ import { dirname, join } from "node:path";
 import {
   BASELINES,
   EXCLUDED_FILES,
+  EXEMPTIBLE_NON_TEST_FILES,
   EXEMPTIONS,
   MARKERS,
   TEST_PATH,
@@ -507,6 +508,63 @@ describe("exemptionProblems", () => {
     const problems = exemptionProblems([{ ...valid, file: "packages/x/src/lib.rs" }], dir);
     expect(problems).toHaveLength(1);
     expect(problems[0]).toContain("only test files");
+  });
+
+  describe("installer recognition points", () => {
+    const RECOGNITION_POINTS = [
+      "scripts/update-homebrew-cask.ts",
+      "scripts/pkg-resources/preinstall",
+      "scripts/pkg-resources/postinstall",
+      "scripts/build-pkg.sh",
+    ];
+    const installer = (file: string): Exemption => ({ file, markers: ["proWording"], reason: "names the other NodeSpace product it refuses to install over" });
+
+    test("the allowlist is exactly the four installer recognition points", () => {
+      expect([...EXEMPTIBLE_NON_TEST_FILES].sort()).toEqual([...RECOGNITION_POINTS].sort());
+      for (const file of EXEMPTIBLE_NON_TEST_FILES) expect(TEST_PATH.test(file)).toBe(false);
+    });
+
+    for (const file of RECOGNITION_POINTS) {
+      test(`accepts a live entry on ${file}, which is not a test path`, () => {
+        fixture({ [file]: "refuse to install over NodeSpace Pro\n" });
+        expect(exemptionProblems([installer(file)], dir)).toEqual([]);
+      });
+
+      test(`the entry on ${file} hides only its own marker`, () => {
+        write(file, "refuse to install over NodeSpace Pro\na tenant\n");
+        const { counts } = countMarkers([file], dir, [installer(file)]);
+        expect(counts.proWording).toBe(0);
+        expect(counts.tenantWording).toBe(1);
+      });
+    }
+
+    test("an allowlisted file still needs a live hit, a reason and a marker", () => {
+      const file = "scripts/update-homebrew-cask.ts";
+      fixture({ [file]: "a plain installer line\n" });
+      expect(exemptionProblems([installer(file)], dir).join("\n")).toContain("proWording has no hit left");
+      expect(exemptionProblems([{ ...installer(file), reason: "" }], dir).join("\n")).toContain("reason is empty");
+      expect(exemptionProblems([{ ...installer(file), markers: [] }], dir).join("\n")).toContain("names no marker");
+    });
+
+    test("does not cover a same-named file in another directory: the match is on the whole path", () => {
+      const others = ["packages/x/scripts/update-homebrew-cask.ts", "scripts/other/update-homebrew-cask.ts", "scripts/pkg-resources/other/postinstall"];
+      fixture(Object.fromEntries(others.map((file) => [file, "refuse to install over NodeSpace Pro\n"])));
+      for (const file of others) {
+        const problems = exemptionProblems([installer(file)], dir);
+        expect({ file, problems: problems.length }).toEqual({ file, problems: 1 });
+        expect(problems[0]).toContain("only test files");
+      }
+    });
+
+    test("any other non-test file is still rejected, including a sibling installer script", () => {
+      const others = ["scripts/build-pkg.ts", "scripts/pkg-resources/app.nodespace.daemon.plist", "scripts/refresh-pro-proto.ts", "packages/x/src/lib.rs"];
+      fixture(Object.fromEntries(others.map((file) => [file, "refuse to install over NodeSpace Pro\n"])));
+      for (const file of others) {
+        const problems = exemptionProblems([installer(file)], dir);
+        expect({ file, problems: problems.length }).toEqual({ file, problems: 1 });
+        expect(problems[0]).toContain("EXEMPTIBLE_NON_TEST_FILES");
+      }
+    });
   });
 
   test("reports an empty reason, including a whitespace-only one", () => {

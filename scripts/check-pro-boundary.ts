@@ -29,6 +29,13 @@
 // rules live in CLAUDE.md, under "Pro / Sync Boundary". This file only
 // enforces them.
 //
+// Exemptions are per file and per marker, and only two kinds of file may carry
+// one: test files, and the installer recognition points that ADR-081 (section
+// 2d) lets core keep and ADR-084 assigns to it (EXEMPTIBLE_NON_TEST_FILES).
+// Those scripts must name other NodeSpace products to refuse installing over
+// them. An exemption on any other non-test file is a problem exemptionProblems
+// reports; such a file builds the name from fragments or drops the wording.
+//
 // Files come from `git ls-files`, not a filesystem walk. A walk also reads
 // gitignored output: the staged copy of the skill package under the Tauri
 // resources directory would add machine-dependent lines, and the Pro daemon
@@ -80,6 +87,20 @@ export const EXCLUDED_FILES: readonly string[] = ["scripts/check-pro-boundary.ts
 // Paths an EXEMPTIONS entry may name. Inline Rust test modules in product
 // files do not match, so they use fragments.
 export const TEST_PATH = /(^|\/)(tests?|__tests__)\/|\.(test|spec)\.ts$|_tests?\.rs$|(^|\/)tests\.rs$/;
+
+// The only non-test files an EXEMPTIONS entry may name: the installer
+// recognition points. ADR-081 (section 2d) lets core keep them and ADR-084
+// assigns them to core: the installer and cask guards must be able to name
+// other NodeSpace products in order to refuse installing over them, so that
+// naming is the file's job rather than Pro code. Whole paths, not basenames, so
+// a file of the same name elsewhere is not covered. Any other non-test file uses
+// fragments or moves the Pro wording out.
+export const EXEMPTIBLE_NON_TEST_FILES: readonly string[] = [
+  "scripts/update-homebrew-cask.ts",
+  "scripts/pkg-resources/preinstall",
+  "scripts/pkg-resources/postinstall",
+  "scripts/build-pkg.sh",
+];
 
 // The pattern is tested once per line, so a line counts at most once per
 // marker, and one line can count under several markers. The summary is the
@@ -154,8 +175,9 @@ export function isProNamedFile(path: string): boolean {
   return PRO_NAMED_FILE.test(path.slice(path.lastIndexOf("/") + 1));
 }
 
-// One narrow, per-file, per-marker exemption for a test file whose Pro-looking
-// text is not Pro code. It hides only its own markers, only in its own file.
+// One narrow, per-file, per-marker exemption for a test file, or an installer
+// recognition point (EXEMPTIBLE_NON_TEST_FILES), whose Pro-looking text is not
+// Pro code. It hides only its own markers, only in its own file.
 // `proNamedFiles` can't be exempted: an absence test must not have a
 // Pro-named file name.
 export type Exemption = { file: string; markers: readonly LineMarkerName[]; reason: string };
@@ -307,8 +329,10 @@ export function exemptionProblems(exemptions: readonly Exemption[] = EXEMPTIONS,
     if (!inScan) {
       problems.push(`${label}: the file is missing from the scan (deleted, ignored, or outside the scanned paths). Remove the entry.`);
     }
-    if (!TEST_PATH.test(entry.file)) {
-      problems.push(`${label}: only test files (TEST_PATH) may be exempted. Use fragments in anything else.`);
+    if (!TEST_PATH.test(entry.file) && !EXEMPTIBLE_NON_TEST_FILES.includes(entry.file)) {
+      problems.push(
+        `${label}: only test files (TEST_PATH) and the installer recognition points (EXEMPTIBLE_NON_TEST_FILES) may be exempted. Use fragments in anything else.`,
+      );
     }
     if (entry.reason.trim() === "") problems.push(`${label}: the reason is empty.`);
     if (entry.markers.length === 0) problems.push(`${label}: it names no marker.`);
