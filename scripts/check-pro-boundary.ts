@@ -30,11 +30,15 @@
 // enforces them.
 //
 // Exemptions are per file and per marker, and only two kinds of file may carry
-// one: test files, and the installer recognition points that ADR-081 (section
-// 2d) lets core keep and ADR-084 assigns to it (EXEMPTIBLE_NON_TEST_FILES).
-// Those scripts must name other NodeSpace products to refuse installing over
-// them. An exemption on any other non-test file is a problem exemptionProblems
-// reports; such a file builds the name from fragments or drops the wording.
+// one: test files, and the installer recognition points (EXEMPTIBLE_NON_TEST_FILES).
+// ADR-084 (section 5) lists three such files and ADR-081 (sections 2d and 8)
+// lets core keep them: the installation check in build-pkg.sh, the .pkg
+// preinstall script and the cask preflight. They must name other NodeSpace
+// products to refuse installing over them. The .pkg postinstall script is also
+// allowlisted for now, but ADR-084 does not list it: its old guard moves to the
+// pre-install stage, and the slot goes when that guard does. An exemption on any
+// other non-test file is a problem exemptionProblems reports; such a file builds
+// the name from fragments or drops the wording.
 //
 // Files come from `git ls-files`, not a filesystem walk. A walk also reads
 // gitignored output: the staged copy of the skill package under the Tauri
@@ -89,11 +93,15 @@ export const EXCLUDED_FILES: readonly string[] = ["scripts/check-pro-boundary.ts
 export const TEST_PATH = /(^|\/)(tests?|__tests__)\/|\.(test|spec)\.ts$|_tests?\.rs$|(^|\/)tests\.rs$/;
 
 // The only non-test files an EXEMPTIONS entry may name: the installer
-// recognition points. ADR-081 (section 2d) lets core keep them and ADR-084
-// assigns them to core: the installer and cask guards must be able to name
+// recognition points. ADR-084 (section 5) lists build-pkg.sh, preinstall (a new
+// script that work adds) and update-homebrew-cask.ts, and ADR-081 (sections 2d
+// and 8) lets core keep them: the installer and cask guards must be able to name
 // other NodeSpace products in order to refuse installing over them, so that
-// naming is the file's job rather than Pro code. Whole paths, not basenames, so
-// a file of the same name elsewhere is not covered. Any other non-test file uses
+// naming is the file's job rather than Pro code. postinstall is not in ADR-084's
+// list: it still carries the old post-payload guard that ADR-084 moves to the
+// pre-install stage, so it is allowlisted only until that guard is gone, and
+// should be dropped from this list then. Whole paths, not basenames, so a file
+// of the same name elsewhere is not covered. Any other non-test file uses
 // fragments or moves the Pro wording out.
 export const EXEMPTIBLE_NON_TEST_FILES: readonly string[] = [
   "scripts/update-homebrew-cask.ts",

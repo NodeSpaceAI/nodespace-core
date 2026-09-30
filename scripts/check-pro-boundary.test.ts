@@ -557,7 +557,15 @@ describe("exemptionProblems", () => {
     });
 
     test("any other non-test file is still rejected, including a sibling installer script", () => {
-      const others = ["scripts/build-pkg.ts", "scripts/pkg-resources/app.nodespace.daemon.plist", "scripts/refresh-pro-proto.ts", "packages/x/src/lib.rs"];
+      // The two "-old" names are extensionless, so they are scanned, and each begins with an allowlisted path: a prefix match would let them through.
+      const others = [
+        "scripts/build-pkg.ts",
+        "scripts/pkg-resources/app.nodespace.daemon.plist",
+        "scripts/refresh-pro-proto.ts",
+        "packages/x/src/lib.rs",
+        "scripts/pkg-resources/preinstall-old",
+        "scripts/pkg-resources/postinstall-old",
+      ];
       fixture(Object.fromEntries(others.map((file) => [file, "refuse to install over NodeSpace Pro\n"])));
       for (const file of others) {
         const problems = exemptionProblems([installer(file)], dir);
@@ -1136,7 +1144,7 @@ describe("CLI", () => {
   });
 
   test("an unknown marker or option prints usage and exits 2", () => {
-    for (const args of [["--list", "bogus"], ["--list"], ["--nope"], ["--changed", "extra"], ["--list", "proCommands", "extra"]]) {
+    for (const args of [["--list", "bogus"], ["--list"], ["--nope"], ["--changed", "extra"], ["--list", "proCommands", "extra"], [""], ["--list", ""]]) {
       const { status, stderr } = run(...args);
       expect(status).toBe(2);
       expect(stderr).toContain("Usage:");
