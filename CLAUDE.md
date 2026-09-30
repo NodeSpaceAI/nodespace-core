@@ -95,6 +95,8 @@ When creating or modifying issues, follow the [Issue Workflow Guide](../nodespac
 
 **Never assign an issue at creation time.** An assignee means *work is in progress* — it is set in the startup sequence (`bun run gh:assign <N> "@me"`), at the moment work actually begins, and nowhere else. Do not pass `--assignees` to `gh:create`, and do not assign someone to a newly filed issue to indicate intent, ownership, or triage. A backlog issue is unassigned; that is how the backlog stays readable. (`gh:create` does not assign by default — this only happens when the flag is passed explicitly.)
 
+**Pro and sync issues belong in nodespace-sync** (ADR-081): anything about Pro UI, Pro commands, tenants, membership invites or admission, Supabase, or the Pro installer or update channel. Don't file them here. A generic extension point that the Pro app uses is core work and is filed here.
+
 Issue priority: `foundation` (highest) > `design-system` > `ui` > `backend`
 
 ## Architecture & Docs
@@ -104,6 +106,22 @@ Issue priority: `foundation` (highest) > `design-system` > `ui` > `backend`
 - Node storage / data models / DB queries: read [`data-layer.md`](../nodespace-docs/architecture/data-layer.md)
 - Frontend state / persistence: read [`frontend-state-and-persistence.md`](../nodespace-docs/architecture/frontend-state-and-persistence.md)
 - Full architecture: `../nodespace-docs/architecture/system-overview.md`, `technology-stack.md`
+
+## Pro / Sync Boundary (CRITICAL)
+
+Core is the complete free product. NodeSpace Pro is a separate app that nodespace-sync builds on top of core; it replaces the installed app and keeps the same local database ([ADR-081](../nodespace-docs/decisions/081-pro-is-a-separate-app-core-ships-no-pro-code.md)).
+
+- **Pro and sync features go in nodespace-sync, not here:** Pro UI (components, stores, settings sections, modals), Pro Tauri commands and their client, the Pro proto, tenant / invite / admission logic, cloud identity, and the Pro build config, installer and update channel.
+- **Core may contain only what ADR-081 lists:** generic extension points, the "Share / Sync this database" entry that opens the website, and local features that sync also uses (echo suppression, event batching, OCC and the conflict journal, collections, `member_of`, the person model). Name an extension point for what it does, not for who uses it: no "Pro daemon", Supabase, tenant or nodespace-sync wording in new core code or comments.
+- **`scripts/check-pro-boundary.ts` enforces this.** It counts Pro markers in `packages/`, `scripts/` and `README.md`, and runs in `bun run test:scripts` (every merge gate). Its baselines are exact and only go down: a change that removes Pro code lowers them in the same PR. The check fails until it does, and prints the `BASELINES` block to paste.
+- **Never raise a baseline to land Pro code.** Only three kinds of change may raise one, and the PR description names the class, each raised marker (old → new) and its lines (`bun run scripts/check-pro-boundary.ts --changed`):
+  1. the core side of the ADR-084 upgrade flow: the "Share / Sync this database" entry and its copy, and the installer and CLI guards ADR-084 assigns to core;
+  2. a fix to Pro code that has not moved to nodespace-sync yet (prefer a net-zero edit);
+  3. a planned move of Pro code already in core, by a Pro-boundary migration issue, that adds no behaviour (for example, splitting Pro gating into its own file so a later issue deletes it whole). Name the issue that will delete the moved code.
+
+  A false positive gets a narrow, tested fix in the checker (a pattern change or an `EXEMPTIONS` entry), never a raise.
+- **A test that asserts Pro code is absent must not contain the marker it looks for.** Build the needle from fragments (`["pro", "tier"].join("_")`, `new RegExp(["ten", "ant"].join(""), "i")`, `concat!("--edi", "tion")`). Where that is impractical in a test file, add a per-file, per-marker `EXEMPTIONS` entry with its reason. Fragments belong only in absence tests; in product code they hide Pro code, and review rejects them.
+- `bun run test:changed` skips the scripts tier for frontend-only and `.md`-only diffs, so run `bun run scripts/check-pro-boundary.ts` before pushing any change near Pro code.
 
 ## Node Type System & Schema Architecture (CRITICAL)
 
