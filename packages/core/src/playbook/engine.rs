@@ -1518,8 +1518,8 @@ pub(crate) async fn rule_processor_loop(
 /// all), and enumerating them would be both impractical and the wrong
 /// direction to fail in — an unrecognized *local* id would be silently
 /// dropped instead of a genuinely sync-applied one slipping through. This
-/// mirrors the existing `push_forward_allowed` precedent in
-/// `services::node_service` (`push_excluded_origin`), which excludes by
+/// mirrors the existing `passes_origin_filter` precedent in
+/// `services::node_service` (`excluded_event_origin`), which excludes by
 /// origin match for the same reason.
 pub(crate) fn is_sync_originated(envelope: &EventEnvelope) -> bool {
     envelope.metadata.source_client_id.as_deref() == Some(crate::db::events::SYNC_SERVICE_CLIENT_ID)
