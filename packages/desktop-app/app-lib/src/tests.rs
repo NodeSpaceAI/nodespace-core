@@ -357,8 +357,11 @@ mod cfg_alias_tests {
     /// alias compiles out silently, so nothing else would notice it going.
     #[test]
     fn desktop_cfg_alias_is_set() {
+        // Bound to a local so the assertion reads as a runtime check rather
+        // than a constant one (`clippy::assertions_on_constants`).
+        let desktop_alias_set = cfg!(desktop);
         assert!(
-            cfg!(desktop),
+            desktop_alias_set,
             "the `desktop` cfg alias is not set: app-lib/build.rs must define it, or \
              `#[cfg(desktop)]` code (the single-instance guard) is compiled out"
         );
