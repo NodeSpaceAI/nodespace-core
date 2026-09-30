@@ -47,7 +47,12 @@ export const CORE_SETTINGS_CATEGORIES: readonly CoreSettingsCategory[] = [
   { id: 'about', label: 'About' }
 ];
 
-/** A section whose `after` is absent, or names nothing that exists, is listed before this category. */
+/**
+ * A section whose `after` is absent, or names nothing that exists, is listed just
+ * before this category, after any sections anchored to the entry above it. It must
+ * name an entry of `CORE_SETTINGS_CATEGORIES`: those sections are emitted when the
+ * list reaches it.
+ */
 const FALLBACK_BEFORE_ID = 'about';
 
 /** One row of the sidebar. */
@@ -61,7 +66,11 @@ export interface SettingsCategoryEntry {
   section?: Keyed<SettingsSectionContribution>;
 }
 
-/** Section keys already reported as unusable, so a re-derived list does not repeat the warning. */
+/**
+ * Section keys already reported as unusable, so a re-derived list does not repeat
+ * the warning. It lives for the process: a test that asserts a warning uses an
+ * extension id no other test uses.
+ */
 const warnedKeys = new Set<string>();
 
 function warnOnce(key: string, message: string, context: Record<string, unknown>): void {
@@ -138,7 +147,8 @@ function anchorsOf(
  *   3. Insert each section after the entry its `after` names, which may be a core
  *      category or another section; sections sharing an anchor go in descending
  *      priority, then registration order. Without a usable `after`, a section
- *      goes before About.
+ *      goes before About, after any sections anchored to the entry above About
+ *      (whatever their priorities).
  *   4. Drop hidden core entries and sections whose `when()` is false or throws.
  */
 export function settingsCategories(): SettingsCategoryEntry[] {

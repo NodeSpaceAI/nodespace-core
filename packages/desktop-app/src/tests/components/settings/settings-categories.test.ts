@@ -42,7 +42,11 @@ function section(
 
 const registered: string[] = [];
 
-/** Register an extension carrying `sections`; it is unregistered after the test. */
+/**
+ * Register an extension carrying `sections`; it is unregistered after the test.
+ * A test that asserts a warning uses an extension id no other test uses: the
+ * category list warns once per section key for the life of the process.
+ */
 function register(extensionId: string, sections: SettingsSectionContribution[]): void {
   const extension: NodespaceExtension = {
     id: extensionId,
@@ -290,20 +294,29 @@ describe('id collisions', () => {
 });
 
 describe('anchor cycles', () => {
-  it('lists a section that names itself before About instead of losing it', () => {
-    register('ext', [section('selfish', { after: 'selfish' })]);
+  it('lists a section that names itself before About instead of losing it, and logs it', () => {
+    register('cycle-self', [section('selfish', { after: 'selfish' })]);
 
     expect(ids()).toEqual(['database', 'display', 'import', 'integrations', 'labs', 'selfish', 'about']);
+    expect(log.warn).toHaveBeenCalledWith(
+      expect.stringContaining('cycle'),
+      expect.objectContaining({ key: 'cycle-self/selfish' })
+    );
   });
 
-  it('lists every section of a cycle, the first-registered one before About', () => {
-    register('ext', [section('a', { after: 'b' }), section('b', { after: 'a' })]);
+  it('lists every section of a cycle, the first-registered one before About, and logs it', () => {
+    register('cycle-two', [section('a', { after: 'b' }), section('b', { after: 'a' })]);
 
     expect(ids()).toEqual(['database', 'display', 'import', 'integrations', 'labs', 'a', 'b', 'about']);
+    expect(log.warn).toHaveBeenCalledTimes(1);
+    expect(log.warn).toHaveBeenCalledWith(
+      expect.stringContaining('cycle'),
+      expect.objectContaining({ key: 'cycle-two/a' })
+    );
   });
 
   it('lists a section that leads into a cycle after its anchor, in registration order', () => {
-    register('ext', [
+    register('cycle-tail', [
       section('a', { after: 'b' }),
       section('b', { after: 'a' }),
       section('tail', { after: 'a' })

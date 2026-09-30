@@ -26,7 +26,10 @@
  *     so a contribution whose key an earlier extension already holds is dropped
  *     (a repeated key would throw in a keyed `{#each}`).
  *   - Lookups return contributions in descending `priority` (default 0), ties in
- *     registration order (extension first, then contribution order).
+ *     registration order (extension first, then contribution order). The one
+ *     exception is `settingsSections()`, which returns registration order: the
+ *     Settings category list places a section by its `after` and applies priority
+ *     only among sections that share an anchor.
  *
  * Lookups never evaluate `when`. This class is plain data with no `$state` and
  * no reactivity; the reactive filtering by `when` lives in the sibling
@@ -129,7 +132,10 @@ function priorityOf(c: { priority?: number }): number {
   return typeof c.priority === 'number' && Number.isFinite(c.priority) ? c.priority : 0;
 }
 
-/** Descending priority. `Array.prototype.sort` is stable, so ties keep their incoming order. */
+/**
+ * Sorts `list` in place by descending priority and returns it. `Array.prototype.sort`
+ * is stable, so ties keep their incoming order.
+ */
 export function byPriority<C extends { priority?: number }>(list: C[]): C[] {
   return list.sort((a, b) => priorityOf(b) - priorityOf(a));
 }
