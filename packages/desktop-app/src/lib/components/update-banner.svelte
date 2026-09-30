@@ -2,8 +2,9 @@
   /**
    * Non-blocking "an update is available" banner. Renders only when the update
    * store says a newer version exists and the user hasn't dismissed it. "Download"
-   * opens the release page (the app ships no in-app installer — see
-   * `update-status.svelte.ts`); dismissal is per-version.
+   * opens the location the update source named (the app ships no in-app installer —
+   * see `update-status.svelte.ts`) and is shown only when the source named one;
+   * "Later" is always shown, and dismissal is per-version.
    */
   import { updateStatus } from '$lib/stores/update-status.svelte';
 
@@ -26,9 +27,11 @@
       <span class="cur">(you have {updateStatus.current})</span>
     </span>
     <span class="actions">
-      <button class="download" onclick={onDownload} disabled={downloading}>
-        {downloading ? 'Opening…' : 'Download'}
-      </button>
+      {#if updateStatus.canDownload}
+        <button class="download" onclick={onDownload} disabled={downloading}>
+          {downloading ? 'Opening…' : 'Download'}
+        </button>
+      {/if}
       <button class="dismiss" onclick={() => updateStatus.dismiss()} aria-label="Dismiss update notice">
         Later
       </button>

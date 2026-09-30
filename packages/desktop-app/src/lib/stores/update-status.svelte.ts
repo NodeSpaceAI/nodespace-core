@@ -1,10 +1,12 @@
 /**
  * App-update status store.
  *
- * The Rust side (`update_check.rs`) checks GitHub Releases at startup and emits
- * `update://available` only when a newer NodeSpace version exists; it also exposes
- * the `check_for_update_command` for an on-demand / post-reload check. This store
- * surfaces that as a dismissible, non-blocking banner (see `update-banner.svelte`).
+ * The Rust side (`update_check.rs`) checks this build's release source at startup and
+ * emits `update://available` only when a newer NodeSpace version exists; it also
+ * exposes the `check_for_update_command` for an on-demand / post-reload check. The
+ * payload names where to download the update (`download_url`), or `null` when the
+ * source names none. This store surfaces that as a dismissible, non-blocking banner
+ * (see `update-banner.svelte`).
  *
  * The app bundle is not code-signed and ships no auto-updater, so "update" means
  * "open the release download" — the user installs it and their data is untouched
@@ -24,8 +26,6 @@ const log = createLogger('UpdateStatus');
 
 /** Mirrors the Rust `UPDATE_AVAILABLE_EVENT`. */
 export const UPDATE_AVAILABLE_EVENT = 'update://available';
-/** Where a user gets the new build (both free and Pro releases are published here). */
-export const RELEASES_URL = 'https://github.com/NodeSpaceAI/nodespace-core/releases/latest';
 const DISMISSED_KEY = 'ns:update-dismissed-version';
 
 /** Mirrors the Rust `UpdateStatus` payload. */
@@ -33,6 +33,8 @@ export interface UpdateStatus {
   current: string;
   latest: string | null;
   update_available: boolean;
+  /** Where the source that found the update sends the user; `null` when it names none. */
+  download_url: string | null;
 }
 
 function readDismissed(): string | null {
@@ -47,6 +49,8 @@ class UpdateStore {
   current = $state('');
   latest = $state<string | null>(null);
   available = $state(false);
+  /** Where to get the update, as named by the source that found it; `null` when none. */
+  downloadUrl = $state<string | null>(null);
   /** The version the user last dismissed (persisted); banner stays hidden for it. */
   dismissedVersion = $state<string | null>(null);
   private unlisten: UnlistenFn | null = null;
@@ -60,10 +64,16 @@ class UpdateStore {
     return this.available && this.latest !== null && this.dismissedVersion !== this.latest;
   }
 
+  /** Whether the update source named a download location to open. */
+  get canDownload(): boolean {
+    return this.downloadUrl !== null;
+  }
+
   private apply(status: UpdateStatus): void {
     this.current = status.current;
     this.latest = status.latest;
     this.available = status.update_available && status.latest !== null;
+    this.downloadUrl = status.download_url ?? null;
   }
 
   /**
@@ -98,9 +108,16 @@ class UpdateStore {
     this.dismissedVersion = this.latest;
   }
 
-  /** Open the release download page (no in-app install — see the module doc). */
+  /**
+   * Open the download location the update source named (no in-app install — see the
+   * module doc). Does nothing when the source named none.
+   */
   async download(): Promise<void> {
-    await openUrl(RELEASES_URL);
+    if (this.downloadUrl === null) {
+      log.warn('download requested but the update source named no download location');
+      return;
+    }
+    await openUrl(this.downloadUrl);
   }
 
   stop(): void {

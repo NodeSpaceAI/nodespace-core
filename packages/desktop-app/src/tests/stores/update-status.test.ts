@@ -1,6 +1,6 @@
 /**
  * App-update status store: banner surfaces only on a real, un-dismissed update;
- * dismissal is per-version; download opens the release page.
+ * dismissal is per-version; download opens the location the payload names.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 // Type-only, so it is erased before `vi.mock` hoisting and cannot pull the
@@ -28,7 +28,8 @@ const mockInvoke = vi.fn(
   async (..._args: unknown[]): Promise<UpdateStatus> => ({
     current: '0.2.0',
     latest: null,
-    update_available: false
+    update_available: false,
+    download_url: null
   })
 );
 import { mockTauriCore } from '../helpers/mock-tauri-core';
@@ -42,10 +43,12 @@ vi.mock('@tauri-apps/api/core', () =>
 const mockOpenUrl = vi.fn(async (..._args: unknown[]) => {});
 vi.mock('$lib/utils/external-links', () => ({ openUrl: (...a: unknown[]) => mockOpenUrl(...a) }));
 
-import { updateStatus, RELEASES_URL } from '$lib/stores/update-status.svelte';
+import { updateStatus } from '$lib/stores/update-status.svelte';
 
-function fireUpdate(current: string, latest: string) {
-  eventCb?.({ payload: { current, latest, update_available: true } });
+const DOWNLOAD_URL = 'https://example.test/releases/latest';
+
+function fireUpdate(current: string, latest: string, download_url: string | null = DOWNLOAD_URL) {
+  eventCb?.({ payload: { current, latest, update_available: true, download_url } });
 }
 
 describe('updateStatus store', () => {
@@ -55,6 +58,7 @@ describe('updateStatus store', () => {
     updateStatus.current = '';
     updateStatus.latest = null;
     updateStatus.available = false;
+    updateStatus.downloadUrl = null;
     updateStatus.dismissedVersion = null;
     eventCb = null;
     mockOpenUrl.mockClear();
@@ -98,14 +102,51 @@ describe('updateStatus store', () => {
   });
 
   it('surfaces an available update reported by the on-demand check (post-reload)', async () => {
-    mockInvoke.mockResolvedValueOnce({ current: '0.2.0', latest: '0.3.0', update_available: true });
+    mockInvoke.mockResolvedValueOnce({
+      current: '0.2.0',
+      latest: '0.3.0',
+      update_available: true,
+      download_url: DOWNLOAD_URL
+    });
     await updateStatus.init();
     expect(updateStatus.showBanner).toBe(true);
     expect(updateStatus.latest).toBe('0.3.0');
+    expect(updateStatus.downloadUrl).toBe(DOWNLOAD_URL);
   });
 
-  it('download opens the releases page', async () => {
+  it("download opens the payload's download_url", async () => {
+    await updateStatus.init();
+    fireUpdate('0.2.0', '0.3.0', 'https://example.test/somewhere-else');
+    expect(updateStatus.canDownload).toBe(true);
     await updateStatus.download();
-    expect(mockOpenUrl).toHaveBeenCalledWith(RELEASES_URL);
+    expect(mockOpenUrl).toHaveBeenCalledTimes(1);
+    expect(mockOpenUrl).toHaveBeenCalledWith('https://example.test/somewhere-else');
+  });
+
+  it('download is a no-op without a download_url', async () => {
+    await updateStatus.init();
+    fireUpdate('0.2.0', '0.3.0', null);
+    expect(updateStatus.showBanner).toBe(true);
+    expect(updateStatus.canDownload).toBe(false);
+    await updateStatus.download();
+    expect(mockOpenUrl).not.toHaveBeenCalled();
+  });
+
+  it('a payload that omits download_url is treated as having none', async () => {
+    await updateStatus.init();
+    eventCb?.({ payload: { current: '0.2.0', latest: '0.3.0', update_available: true } });
+    expect(updateStatus.showBanner).toBe(true);
+    expect(updateStatus.downloadUrl).toBeNull();
+    expect(updateStatus.canDownload).toBe(false);
+  });
+
+  it('a later payload without a download_url clears the earlier one', async () => {
+    await updateStatus.init();
+    fireUpdate('0.2.0', '0.3.0');
+    expect(updateStatus.canDownload).toBe(true);
+    fireUpdate('0.2.0', '0.4.0', null);
+    expect(updateStatus.canDownload).toBe(false);
+    await updateStatus.download();
+    expect(mockOpenUrl).not.toHaveBeenCalled();
   });
 });
