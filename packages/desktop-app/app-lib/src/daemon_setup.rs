@@ -132,16 +132,6 @@ fn daemon_binary_name() -> &'static str {
     daemon_profile::active().binary_name
 }
 
-/// Flag every launcher in this file passes so the daemon runs in tray mode.
-///
-/// The daemon is headless unless told otherwise (a headless launcher that
-/// forgot to opt out used to land in tray mode and hang on SIGTERM). The
-/// desktop app's daemon is the one deployment that wants the tray icon, so it
-/// opts in here. A flag rather than an environment variable, because the
-/// Windows HKCU autorun entry is a bare command line. Must equal the daemon's
-/// own `TRAY_FLAG` (`packages/daemon/src/main.rs`).
-const DAEMON_TRAY_FLAG: &str = "--tray";
-
 /// Relative path from HOME to the daemon socket, scoped by build variant.
 ///
 /// Scoping prevents dev builds from colliding with the production app and prevents
@@ -231,14 +221,55 @@ pub fn kill_stale_daemon_sync() {
         }
     }
 
-    // Remove stale socket so the health check in ensure_daemon_running sees NotRunning
-    let _ = std::fs::remove_file(&socket_path);
+    // Drop the killed daemon's socket file so the health check in
+    // ensure_daemon_running sees NotRunning. SIGKILL is asynchronous, so allow
+    // the daemon a moment to let go of it; a socket something still answers on
+    // is not ours to delete.
+    remove_socket_if_stale(&socket_path, STALE_DAEMON_KILL_GRACE);
+}
+
+/// How long [`kill_stale_daemon_sync`] waits for a SIGKILLed daemon to stop
+/// answering on its socket before it concludes something else is serving it.
+#[cfg(unix)]
+const STALE_DAEMON_KILL_GRACE: Duration = Duration::from_millis(500);
+
+/// Deletes the socket file at `socket_path` once nothing accepts connections
+/// on it, and leaves it alone if something still does after `grace`.
+///
+/// A file nothing answers on is stale, and the daemon that replaces it deletes
+/// it before binding. A file something does answer on is not ours to delete: a
+/// daemon this module does not own (a Homebrew service, one started by hand)
+/// may still be serving it, and every daemon takes a single-instance lock, so a
+/// replacement started beside it exits without serving. Deleting the file
+/// would leave that daemon alive, holding the lock and unreachable; leaving it
+/// lets the app keep using that daemon.
+///
+/// Staleness is decided by connecting, as [`check_daemon_socket`] does, and not
+/// by probing the lock: taking the lock would make a daemon that starts at that
+/// moment see it held and exit without serving.
+#[cfg(unix)]
+fn remove_socket_if_stale(socket_path: &Path, grace: Duration) {
+    let deadline = std::time::Instant::now() + grace;
+    while std::os::unix::net::UnixStream::connect(socket_path).is_ok() {
+        if std::time::Instant::now() >= deadline {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let _ = std::fs::remove_file(socket_path);
 }
 
 /// PIDs of every process currently holding the Unix socket at `socket_path`
-/// open, resolved via `lsof -F pn -U`. Parses `-F pn` output (a `p<pid>` line
+/// open, resolved via `lsof -a -F pn -U`. Parses `-F pn` output (a `p<pid>` line
 /// followed by one or more `n<name>` lines) into the set of unique PIDs,
 /// regardless of how many file descriptors any one of them has open on it.
+///
+/// `-a` is what makes this "holders of `socket_path`": lsof ORs its selectors
+/// unless told otherwise, so without it the answer is every process on the
+/// machine with any Unix socket open, whichever path it holds. lsof matches the
+/// path string the socket was bound with, not the file's identity, so pass
+/// exactly the path the daemon was told to bind: a symlinked or otherwise
+/// differently spelled path (`/tmp` against `/private/tmp`) finds nobody.
 ///
 /// Shared by every caller here that needs "whichever process is currently
 /// serving this socket" without assuming who started it — launchd, a
@@ -248,7 +279,7 @@ fn pids_holding_unix_socket(socket_path: &Path) -> HashSet<i32> {
     let mut pids = HashSet::new();
     let sock = socket_path.to_string_lossy();
     let Ok(out) = std::process::Command::new("lsof")
-        .args(["-F", "pn", "-U", sock.as_ref()])
+        .args(["-a", "-F", "pn", "-U", sock.as_ref()])
         .output()
     else {
         return pids;
@@ -663,6 +694,13 @@ pub async fn ensure_daemon_running(app: &AppHandle) -> Result<DaemonStatus> {
 /// clients or unrelated processes that happen to share the socket.
 #[cfg(unix)]
 async fn kill_running_daemon(socket_path: &Path) {
+    kill_running_daemon_within(socket_path, Duration::from_secs(5)).await;
+}
+
+/// [`kill_running_daemon`] with the time it waits for the daemon to exit made a
+/// parameter, so a test need not sit out the full grace period.
+#[cfg(unix)]
+async fn kill_running_daemon_within(socket_path: &Path, exit_grace: Duration) {
     if !should_attempt_kill(&check_daemon_socket(socket_path).await) {
         return;
     }
@@ -677,14 +715,20 @@ async fn kill_running_daemon(socket_path: &Path) {
         .unwrap_or_default();
     for pid in pids_holding_unix_socket(socket_path) {
         if process_argv0_matches(pid, &installed) {
-            // SAFETY: kill() is always safe to call with a valid pid and signal.
-            unsafe { libc::kill(pid, libc::SIGTERM) };
+            // Compiled out under `cfg(test)`, as in `signal_daemon_to_stop`: it
+            // is an irreversible action against whichever process holds the
+            // socket on the machine `cargo test` runs on.
+            #[cfg(not(test))]
+            {
+                // SAFETY: kill() is always safe to call with a valid pid and signal.
+                unsafe { libc::kill(pid, libc::SIGTERM) };
+            }
             tracing::info!("Sent SIGTERM to old nodespaced (pid {})", pid);
         }
     }
 
-    // Give the daemon up to 5 s to exit cleanly before proceeding.
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    // Give the daemon up to `exit_grace` to exit cleanly before proceeding.
+    let deadline = tokio::time::Instant::now() + exit_grace;
     while tokio::time::Instant::now() < deadline {
         tokio::time::sleep(Duration::from_millis(200)).await;
         if check_daemon_socket(socket_path).await == DaemonStatus::NotRunning {
@@ -692,8 +736,14 @@ async fn kill_running_daemon(socket_path: &Path) {
         }
     }
 
-    // Remove a stale socket file so launchd can bind the new one.
-    let _ = std::fs::remove_file(socket_path);
+    // Remove the socket file only if nothing answers on it any more. A daemon
+    // this function did not signal may still be serving it. The connect that
+    // decides this blocks, so it runs off the async workers.
+    let socket_path = socket_path.to_owned();
+    let _ = tokio::task::spawn_blocking(move || {
+        remove_socket_if_stale(&socket_path, Duration::ZERO);
+    })
+    .await;
 }
 
 /// Kill the running daemon on Windows via taskkill and wait for it to exit.
@@ -1194,6 +1244,14 @@ fn write_plist(
         })
         .collect();
 
+    // One `<string>` per launcher argument, after the binary's. The daemon
+    // is headless unless the launcher passes the tray flag, so these are what
+    // gives the app's daemon its tray icon.
+    let launcher_args: String = nodespace_proto::socket::LAUNCHER_ARGS
+        .iter()
+        .map(|arg| format!("        <string>{}</string>\n", xml_escape(arg)))
+        .collect();
+
     let plist = format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -1204,8 +1262,7 @@ fn write_plist(
     <key>ProgramArguments</key>
     <array>
         <string>{bin}</string>
-        <string>{tray_flag}</string>
-    </array>
+{launcher_args}    </array>
     <key>EnvironmentVariables</key>
     <dict>
         <key>NODESPACED_SOCKET</key>
@@ -1229,7 +1286,7 @@ fn write_plist(
 "#,
         label = label_escaped,
         bin = bin_escaped,
-        tray_flag = DAEMON_TRAY_FLAG,
+        launcher_args = launcher_args,
         socket = socket_path,
         ui_binary = ui_binary,
         service_env = service_env,
@@ -1488,7 +1545,7 @@ fn write_systemd_service(home: &Path, service_path: &Path, daemon_bin: &Path) ->
          \n\
          [Service]\n\
          Type=simple\n\
-         ExecStart={bin} {tray_flag}\n\
+         ExecStart={bin} {launcher_args}\n\
          Environment=NODESPACED_SOCKET='{socket}'\n\
          Environment=NODESPACE_UI_BINARY='{ui_binary}'\n\
          StandardOutput=append:{log_out}\n\
@@ -1498,7 +1555,7 @@ fn write_systemd_service(home: &Path, service_path: &Path, daemon_bin: &Path) ->
          [Install]\n\
          WantedBy=default.target\n",
         bin = bin_str,
-        tray_flag = DAEMON_TRAY_FLAG,
+        launcher_args = nodespace_proto::socket::LAUNCHER_ARGS.join(" "),
         socket = sq_escape(&socket_path),
         ui_binary = sq_escape(&ui_binary),
         log_out = log_out,
@@ -1937,7 +1994,7 @@ fn spawn_daemon_windows(daemon_bin: &Path, log_dir: &Path) -> Result<()> {
 
     let mut command = Command::new(daemon_bin);
     command
-        .arg(DAEMON_TRAY_FLAG)
+        .args(nodespace_proto::socket::LAUNCHER_ARGS)
         .creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP)
         .stdin(Stdio::null())
         .stdout(daemon_log_stdio(&stdout_path))
@@ -1980,7 +2037,11 @@ fn register_autorun_windows(daemon_bin: &Path) {
     let bin_str = daemon_bin.to_string_lossy().to_string();
     // Wrap the path in quotes so the Windows Run registry evaluator handles
     // paths with spaces (e.g. C:\Users\John Smith\AppData\...) correctly.
-    let quoted = format!("\"{}\" {}", bin_str, DAEMON_TRAY_FLAG);
+    let quoted = format!(
+        "\"{}\" {}",
+        bin_str,
+        nodespace_proto::socket::LAUNCHER_ARGS.join(" ")
+    );
     let result = std::process::Command::new("reg")
         .args([
             "add",
@@ -2360,7 +2421,8 @@ mod macos_codesign_tests {
 /// checking the plist parses.
 #[cfg(all(test, target_os = "macos"))]
 mod macos_plist_keepalive_tests {
-    use super::{write_plist, DaemonProfile, DAEMON_TRAY_FLAG};
+    use super::{write_plist, DaemonProfile};
+    use nodespace_proto::socket::LAUNCHER_ARGS;
     use std::path::{Path, PathBuf};
 
     fn scratch_dir(tag: &str) -> PathBuf {
@@ -2437,7 +2499,8 @@ mod macos_plist_keepalive_tests {
     }
 
     /// The daemon defaults to headless; the app's launchd-started daemon only
-    /// gets its tray icon because the plist passes the opt-in flag.
+    /// gets its tray icon because the plist passes the launcher arguments, and
+    /// a daemon registered under core's identity must accept every one.
     #[test]
     fn plist_opts_the_daemon_into_tray_mode() {
         let home = scratch_dir("trayflag");
@@ -2448,13 +2511,17 @@ mod macos_plist_keepalive_tests {
             .expect("write_plist should succeed");
         let contents = std::fs::read_to_string(&plist_path).expect("plist should be written");
 
+        let launcher_args: String = LAUNCHER_ARGS
+            .iter()
+            .map(|arg| format!("        <string>{arg}</string>\n"))
+            .collect();
         assert!(
             contents.contains(&format!(
-                "<array>\n        <string>{}</string>\n        <string>{DAEMON_TRAY_FLAG}</string>\n    </array>",
+                "<array>\n        <string>{}</string>\n{launcher_args}    </array>",
                 daemon_bin.display()
             )),
-            "ProgramArguments must pass {DAEMON_TRAY_FLAG}, or the app's daemon runs headless \
-             with no tray icon: {contents}"
+            "ProgramArguments must be the binary followed by every launcher argument \
+             {LAUNCHER_ARGS:?}, or the app's daemon runs headless with no tray icon: {contents}"
         );
 
         let _ = std::fs::remove_dir_all(&home);
@@ -2640,13 +2707,17 @@ mod pkg_plist_matches_app_plist_tests {
     #[test]
     fn pkg_plist_opts_the_daemon_into_tray_mode() {
         let contents = pkg_plist_contents();
+        let launcher_args: String = nodespace_proto::socket::LAUNCHER_ARGS
+            .iter()
+            .map(|arg| format!("\n        <string>{arg}</string>"))
+            .collect();
         assert!(
             contents.contains(&format!(
-                "<string>/usr/local/bin/nodespaced</string>\n        <string>{}</string>",
-                super::DAEMON_TRAY_FLAG
+                "<string>/usr/local/bin/nodespaced</string>{launcher_args}\n    </array>"
             )),
-            "the .pkg's plist must pass the tray flag like write_plist does, or the daemon \
-             it starts runs headless with no tray icon: {contents}"
+            "the .pkg's plist must pass every launcher argument {:?} like write_plist does, \
+             or the daemon it starts runs headless with no tray icon: {contents}",
+            nodespace_proto::socket::LAUNCHER_ARGS
         );
     }
 
@@ -3036,6 +3107,26 @@ mod unix_quit_signal_tests {
             pids.contains(&(std::process::id() as i32)),
             "the process currently holding the socket (this test binary) must be found; got {pids:?}"
         );
+    }
+
+    /// lsof ORs its selectors unless given `-a`, which turns "holders of this
+    /// path" into "every process with any Unix socket open". The stale file
+    /// here has no holder, but this process holds a different socket, so an
+    /// OR-ing query would name this very process, and the app would go on to
+    /// signal whichever of those matches the installed daemon's path.
+    #[test]
+    fn pids_holding_unix_socket_ignores_processes_holding_other_sockets() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let _other_socket =
+            UnixListener::bind(dir.path().join("other.sock")).expect("bind other socket");
+        let stale_path = dir.path().join("stale.sock");
+        drop(UnixListener::bind(&stale_path).expect("bind stale socket"));
+        assert!(
+            stale_path.exists(),
+            "the stale file should still be on disk"
+        );
+
+        assert!(super::pids_holding_unix_socket(&stale_path).is_empty());
     }
 
     #[test]
@@ -3560,5 +3651,88 @@ mod wait_for_daemon_or_refusal_tests {
 
         assert_eq!(status, DaemonStatus::NotRunning);
         assert!(started.elapsed() >= Duration::from_millis(600));
+    }
+}
+
+/// The app deletes a daemon's socket file only once nothing answers on it. A
+/// daemon it did not start (a Homebrew service, one started by hand) may still
+/// be serving that file, and every daemon holds a single-instance lock beside
+/// its socket, so the daemon the app then starts would exit without serving:
+/// deleting a live daemon's socket strands it, alive but unreachable.
+///
+/// Uses real Unix sockets held by this test process, so nothing here depends on
+/// any other process being alive on the machine `cargo test` runs on.
+#[cfg(all(test, unix))]
+mod stale_socket_removal_tests {
+    use super::{kill_running_daemon_within, remove_socket_if_stale};
+    use std::os::unix::net::UnixListener;
+    use std::path::PathBuf;
+    use std::time::Duration;
+
+    fn socket_in(dir: &tempfile::TempDir) -> PathBuf {
+        dir.path().join("d.sock")
+    }
+
+    #[test]
+    fn a_socket_something_answers_on_is_left_alone() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let socket = socket_in(&dir);
+        let _serving = UnixListener::bind(&socket).expect("bind test socket");
+
+        remove_socket_if_stale(&socket, Duration::ZERO);
+
+        assert!(
+            socket.exists(),
+            "a live daemon's socket must not be deleted"
+        );
+    }
+
+    #[test]
+    fn a_socket_nothing_answers_on_is_removed() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let socket = socket_in(&dir);
+        // Dropping a std listener closes it but leaves the file behind, which
+        // is what a stopped daemon leaves.
+        drop(UnixListener::bind(&socket).expect("bind test socket"));
+        assert!(socket.exists(), "the stale file should still be on disk");
+
+        remove_socket_if_stale(&socket, Duration::ZERO);
+
+        assert!(!socket.exists());
+    }
+
+    #[test]
+    fn a_socket_that_stops_answering_within_the_grace_is_removed() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let socket = socket_in(&dir);
+        let serving = UnixListener::bind(&socket).expect("bind test socket");
+        // A daemon that was just killed lets go of its socket a moment later.
+        let dying = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            drop(serving);
+        });
+
+        remove_socket_if_stale(&socket, Duration::from_secs(5));
+
+        dying.join().expect("dying-daemon thread");
+        assert!(!socket.exists());
+    }
+
+    #[tokio::test]
+    async fn kill_running_daemon_leaves_the_socket_of_a_daemon_it_cannot_stop() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let socket = socket_in(&dir);
+        // This test process holds the socket, and its argv[0] is not the
+        // installed daemon's, so `kill_running_daemon` finds nobody to signal:
+        // the same position a Homebrew-run daemon is in. (Its kill is compiled
+        // out under `cfg(test)` regardless.)
+        let _foreign = UnixListener::bind(&socket).expect("bind test socket");
+
+        kill_running_daemon_within(&socket, Duration::from_millis(300)).await;
+
+        assert!(
+            socket.exists(),
+            "the socket of a daemon that is still serving must not be deleted"
+        );
     }
 }

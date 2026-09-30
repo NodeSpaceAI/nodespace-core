@@ -19,4 +19,5 @@ mod per_db_compute;
 mod per_db_subtree_gate;
 mod scenario6_update_node_properties;
 mod sigterm_during_model_load;
+mod single_instance;
 mod unrecognized_flag;

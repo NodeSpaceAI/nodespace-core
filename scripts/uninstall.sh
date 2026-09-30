@@ -7,6 +7,7 @@ set -e
 # ── Constants ──────────────────────────────────────────────────────────────────
 INSTALL_DIR="$HOME/.nodespace/bin"
 SOCKET_PATH="$HOME/.nodespace/daemon.sock"
+LOCK_PATH="$HOME/.nodespace/daemon.lock"
 PLIST_PATH="$HOME/Library/LaunchAgents/app.nodespace.daemon.plist"
 SYSTEMD_SERVICE="$HOME/.config/systemd/user/nodespace.service"
 LAUNCHD_LABEL="app.nodespace.daemon"
@@ -59,10 +60,14 @@ if [ -d "$INSTALL_DIR" ]; then
     printf 'Removed binaries from %s\n' "$INSTALL_DIR"
 fi
 
-# ── Remove socket ─────────────────────────────────────────────────────────────
+# ── Remove socket and its single-instance lock file ───────────────────────────
 if [ -e "$SOCKET_PATH" ]; then
     rm -f "$SOCKET_PATH"
     printf 'Removed socket %s\n' "$SOCKET_PATH"
+fi
+if [ -e "$LOCK_PATH" ]; then
+    rm -f "$LOCK_PATH"
+    printf 'Removed lock file %s\n' "$LOCK_PATH"
 fi
 
 # ── Remove installed skills ───────────────────────────────────────────────────

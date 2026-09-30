@@ -29,6 +29,14 @@
 //! endpoint without it, or losing the variable (a `launchctl kickstart -k` that
 //! reuses a stale job definition, say) leaves a healthy daemon serving a socket
 //! nobody dials.
+//!
+//! A daemon also takes an exclusive advisory lock on a lock file beside its
+//! socket, named `<socket stem>.lock` (`daemon.sock` -> `daemon.lock`,
+//! `daemon-dev.sock` -> `daemon-dev.lock`), so at most one daemon serves a
+//! socket. The lock follows the socket rather than sitting at a fixed path:
+//! an isolated daemon that sets its own `NODESPACED_SOCKET` never contends
+//! with the user's daemon. The library function that takes it is
+//! `nodespace_daemon::single_instance::acquire`.
 
 /// Environment variable that overrides the daemon endpoint on every side —
 /// the daemon's bind address, the desktop app's dial target, the CLI's default.
@@ -84,6 +92,28 @@ pub const fn daemon_socket_relative(is_debug: bool, is_pro: bool) -> &'static st
 /// desktop app spawns the daemon directly there instead of registering a
 /// long-lived service, so there is no plist-equivalent to drift out of sync.
 pub const DAEMON_PIPE_NAME: &str = r"\\.\pipe\nodespace-daemon";
+
+/// The command-line flag that opts the daemon into tray mode.
+///
+/// The daemon is headless unless told otherwise, so the desktop app's daemon,
+/// the one deployment that wants a tray icon, passes this through
+/// [`LAUNCHER_ARGS`]. It is a flag rather than an environment variable because
+/// the Windows autorun entry is a bare command line with no way to carry one.
+pub const TRAY_FLAG: &str = "--tray";
+
+/// The arguments the desktop app's launchers pass to the daemon they register:
+/// the launchd plist, the systemd unit, the Windows spawn and the Windows
+/// autorun entry. The static plist the `.pkg` installs repeats them by hand.
+/// A headless registration, such as the Homebrew formula's service, passes
+/// none.
+///
+/// A daemon registered under core's service identity must accept each entry.
+/// Adding an argument is an extension-API change, because a daemon built
+/// elsewhere on this crate has to accept it too (ADR-082 section 6).
+///
+/// Each entry is one plain word: the systemd `ExecStart` line and the Windows
+/// autorun value join the entries with spaces and quote nothing.
+pub const LAUNCHER_ARGS: [&str; 1] = [TRAY_FLAG];
 
 /// Every UI pid-file filename, in the same build-variant order as
 /// [`DAEMON_SOCKET_NAMES`].
@@ -226,6 +256,17 @@ mod tests {
             assert_ne!(
                 ui_pid_name(is_debug, is_pro),
                 daemon_socket_name(is_debug, is_pro)
+            );
+        }
+    }
+
+    #[test]
+    fn launcher_args_survive_an_unquoted_command_line() {
+        for arg in LAUNCHER_ARGS {
+            assert!(
+                !arg.is_empty() && !arg.contains(|c: char| c.is_whitespace() || "\"'".contains(c)),
+                "launcher argument {arg:?} would be split or mangled by a launcher that joins \
+                 the entries with spaces and quotes nothing"
             );
         }
     }
