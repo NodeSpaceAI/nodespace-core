@@ -228,8 +228,8 @@ impl TrayController {
 
 /// One database as rendered in the tray submenu.
 ///
-/// Kept separate from the menu objects so the labelling rules — which is
-/// open, which syncs, which cannot be opened — are decided in a plain
+/// Kept separate from the menu objects so the labelling rules — which is the
+/// default, which is open, which cannot be opened — are decided in a plain
 /// function that tests can call without a display.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DatabaseMenuEntry {
@@ -242,17 +242,14 @@ pub(crate) struct DatabaseMenuEntry {
 
 /// Render a registry snapshot into tray entries, in registry order.
 ///
-/// The label carries the facts the registry persists — which database is the
-/// default, and which sync to a cloud tenant. Those change only when the user
-/// explicitly changes them, so a menu rendered once survives them better than
-/// it would runtime state. Deliberately NOT whether a database is currently
-/// *open*: the idle reaper closes databases minutes into
-/// normal use, and this menu is only refreshed when the daemon pushes a new
-/// snapshot, so an open marker would be confidently wrong most of the time. A
-/// live open indicator belongs with live refresh, tracked separately.
+/// The label carries the persisted default flag, the live open state and a
+/// missing-file state. The open marker is live, so the submenu is rebuilt on
+/// every registry or open-set change rather than rendered once. Keys a
+/// registry entry stores for extensions add nothing to the label: core reads
+/// none of them.
 ///
-/// A missing file replaces the other markers, since neither is meaningful once
-/// the file is gone.
+/// A missing file replaces the default and open markers, since neither is
+/// meaningful once the file is gone.
 pub(crate) fn database_menu_entries(snapshot: &RegistrySnapshot) -> Vec<DatabaseMenuEntry> {
     snapshot
         .databases
@@ -272,9 +269,6 @@ pub(crate) fn database_menu_entries(snapshot: &RegistrySnapshot) -> Vec<Database
                 // databases and in-app switching opens others.
                 if listing.status == DatabaseStatus::Open {
                     markers.push("open");
-                }
-                if listing.entry.bound_tenant_schema.is_some() {
-                    markers.push("synced");
                 }
             }
 
@@ -803,7 +797,6 @@ mod tests {
     fn listing_with_default(
         name: &str,
         status: DatabaseStatus,
-        tenant: Option<&str>,
         is_default: bool,
     ) -> DatabaseListing {
         DatabaseListing {
@@ -813,16 +806,17 @@ mod tests {
                 path: PathBuf::from(format!("/tmp/{name}.db")),
                 created_at: chrono::Utc::now(),
                 last_opened_at: None,
-                bound_tenant_schema: tenant.map(str::to_string),
+                bound_tenant_schema: None,
                 bound_tenant_collection: None,
+                extensions: toml::Table::new(),
             },
             status,
             is_default,
         }
     }
 
-    fn listing(name: &str, status: DatabaseStatus, tenant: Option<&str>) -> DatabaseListing {
-        listing_with_default(name, status, tenant, false)
+    fn listing(name: &str, status: DatabaseStatus) -> DatabaseListing {
+        listing_with_default(name, status, false)
     }
 
     fn snapshot(databases: Vec<DatabaseListing>) -> RegistrySnapshot {
@@ -832,28 +826,38 @@ mod tests {
         }
     }
 
-    /// The two facts the submenu conveys — which database is the default, and
-    /// which sync — with a plain name when neither applies.
+    /// The persisted fact the submenu conveys is which database is the default,
+    /// with a plain name when it does not apply.
     #[test]
-    fn labels_carry_default_and_synced_state() {
+    fn labels_carry_default_state() {
         let entries = database_menu_entries(&snapshot(vec![
-            listing_with_default("Both", DatabaseStatus::Closed, Some("tenant_demo"), true),
-            listing_with_default("DefaultOnly", DatabaseStatus::Closed, None, true),
-            listing("SyncedOnly", DatabaseStatus::Closed, Some("tenant_demo")),
-            listing("Plain", DatabaseStatus::Closed, None),
+            listing_with_default("DefaultOne", DatabaseStatus::Closed, true),
+            listing("Plain", DatabaseStatus::Closed),
         ]));
 
         let labels: Vec<&str> = entries.iter().map(|e| e.label.as_str()).collect();
-        assert_eq!(
-            labels,
-            vec![
-                "Both — default · synced",
-                "DefaultOnly — default",
-                "SyncedOnly — synced",
-                "Plain",
-            ]
-        );
+        assert_eq!(labels, vec!["DefaultOne — default", "Plain"]);
         assert!(entries.iter().all(|e| e.enabled));
+    }
+
+    /// Keys an entry stores for extensions never reach the label: core reads
+    /// none of them, so a database that carries them renders as its plain name.
+    #[test]
+    fn extension_keys_add_no_marker() {
+        let mut with_keys = listing("Plain", DatabaseStatus::Closed);
+        with_keys
+            .entry
+            .extensions
+            .insert("plugin_state".into(), toml::Value::String("keep".into()));
+        with_keys
+            .entry
+            .extensions
+            .insert("plugin_flag".into(), toml::Value::Boolean(true));
+
+        let entries = database_menu_entries(&snapshot(vec![with_keys]));
+
+        assert_eq!(entries[0].label, "Plain");
+        assert!(entries[0].enabled);
     }
 
     /// Which database is open now IS shown. It was omitted while the submenu was
@@ -864,12 +868,34 @@ mod tests {
     #[test]
     fn open_state_is_reflected_in_the_label() {
         let entries = database_menu_entries(&snapshot(vec![
-            listing("Alpha", DatabaseStatus::Closed, None),
-            listing("Beta", DatabaseStatus::Open, None),
+            listing("Alpha", DatabaseStatus::Closed),
+            listing("Beta", DatabaseStatus::Open),
         ]));
 
         assert_eq!(entries[0].label, "Alpha");
         assert_eq!(entries[1].label, "Beta — open");
+    }
+
+    /// An entry whose registry file still records a cloud binding renders as its
+    /// plain name: the tray no longer labels a database "synced". The key is built
+    /// from fragments because this is an absence test.
+    #[test]
+    fn a_recorded_binding_adds_no_marker() {
+        let key = ["bound_", "ten", "ant_schema"].concat();
+        let mut bound = listing("Plain", DatabaseStatus::Closed);
+        bound.entry = toml::from_str(&format!(
+            "id = \"id-Plain\"\nname = \"Plain\"\npath = \"/tmp/Plain.db\"\n\
+             created_at = \"2026-01-02T03:04:05Z\"\n{key} = \"demo\"\n"
+        ))
+        .unwrap();
+        assert!(
+            bound.entry.extensions.is_empty(),
+            "the key must load into its typed field, which is what a label could read"
+        );
+
+        let entries = database_menu_entries(&snapshot(vec![bound]));
+
+        assert_eq!(entries[0].label, "Plain");
     }
 
     /// Marker order is fixed so a label does not reshuffle between refreshes,
@@ -879,11 +905,10 @@ mod tests {
         let entries = database_menu_entries(&snapshot(vec![listing_with_default(
             "All",
             DatabaseStatus::Open,
-            Some("tenant_demo"),
             true,
         )]));
 
-        assert_eq!(entries[0].label, "All — default · open · synced");
+        assert_eq!(entries[0].label, "All — default · open");
     }
 
     /// A missing entry never gains an open marker: its file is gone, so "open"
@@ -893,7 +918,6 @@ mod tests {
         let entries = database_menu_entries(&snapshot(vec![listing_with_default(
             "Gone",
             DatabaseStatus::Missing,
-            Some("tenant_demo"),
             true,
         )]));
 
@@ -903,14 +927,11 @@ mod tests {
 
     /// A registry entry whose file is gone is still listed — silently dropping it
     /// would leave the user wondering where the database went — but it cannot be
-    /// opened, and neither open nor synced is meaningful for it.
+    /// opened, and neither default nor open is meaningful for it.
     #[test]
     fn missing_database_is_shown_but_not_selectable() {
-        let entries = database_menu_entries(&snapshot(vec![listing(
-            "Gone",
-            DatabaseStatus::Missing,
-            Some("tenant_demo"),
-        )]));
+        let entries =
+            database_menu_entries(&snapshot(vec![listing("Gone", DatabaseStatus::Missing)]));
 
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].label, "Gone — missing");
@@ -922,8 +943,8 @@ mod tests {
     #[test]
     fn entries_keep_registry_order_and_ids() {
         let entries = database_menu_entries(&snapshot(vec![
-            listing("First", DatabaseStatus::Closed, None),
-            listing("Second", DatabaseStatus::Closed, None),
+            listing("First", DatabaseStatus::Closed),
+            listing("Second", DatabaseStatus::Closed),
         ]));
 
         let ids: Vec<&str> = entries.iter().map(|e| e.id.as_str()).collect();

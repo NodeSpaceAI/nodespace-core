@@ -9,6 +9,7 @@
 //! create, register, remove, rename, and choose the default database that
 //! header-less requests fall back to.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -67,7 +68,18 @@ fn listing_to_info(listing: &DatabaseListing) -> DatabaseInfo {
         status: proto_status(listing.status) as i32,
         bound_tenant_schema: entry.bound_tenant_schema.clone(),
         bound_tenant_collection: entry.bound_tenant_collection.clone(),
+        extensions: string_extensions(&entry.extensions),
     }
+}
+
+/// The string-valued entries of a registry entry's extension keys. The wire
+/// map carries strings only, so a value of any other type (integer, boolean,
+/// array, table) stays in the registry and is left out of the response.
+fn string_extensions(extensions: &toml::Table) -> HashMap<String, String> {
+    extensions
+        .iter()
+        .filter_map(|(key, value)| Some((key.clone(), value.as_str()?.to_string())))
+        .collect()
 }
 
 /// Translate the manager's runtime status enum into the generated proto enum.
@@ -165,6 +177,7 @@ impl GrpcDatabaseService for DatabaseServiceImpl {
 mod tests {
     use super::*;
     use crate::services::assembly::SharedContext;
+    use crate::services::database_manager::DatabaseEntry;
     use nodespace_agent::pty::PtySessionManager;
     use nodespace_core::services::EmbeddingScheduler;
     use nodespace_nlp_engine::EmbeddingService;
@@ -197,6 +210,39 @@ mod tests {
             .await
             .unwrap();
         (DatabaseServiceImpl::new(Arc::new(manager)), dir)
+    }
+
+    /// Extension keys ride the wire as strings only: the map is `string -> string`,
+    /// so an integer, boolean or table value stays in the registry and is left
+    /// out of the response rather than being stringified.
+    #[test]
+    fn listing_to_info_carries_string_extensions_only() {
+        let entry: DatabaseEntry = toml::from_str(
+            r#"
+id = "01J00000000000000000000000"
+name = "Work"
+path = "/tmp/work.db"
+created_at = "2026-01-02T03:04:05Z"
+plugin_state = "keep"
+plugin_count = 3
+plugin_flag = true
+
+[extra]
+level = 3
+"#,
+        )
+        .unwrap();
+
+        let info = listing_to_info(&DatabaseListing {
+            entry,
+            status: DatabaseStatus::Closed,
+            is_default: false,
+        });
+
+        assert_eq!(
+            info.extensions,
+            HashMap::from([("plugin_state".to_string(), "keep".to_string())])
+        );
     }
 
     #[tokio::test]

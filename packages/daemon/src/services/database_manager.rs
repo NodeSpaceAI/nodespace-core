@@ -92,17 +92,22 @@ pub struct DatabaseEntry {
     /// When the entry was registered.
     pub created_at: DateTime<Utc>,
     /// Last time the database was opened, if ever.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_opened_at: Option<DateTime<Utc>>,
     /// The cloud tenant schema this database binds to (ADR-053 per-database cloud
     /// sync), mirrored from the database's DatabaseSettingsNode so the bound
     /// tenant can be shown before the database is opened. Empty until bound.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bound_tenant_schema: Option<String>,
     /// The default collection id within the bound tenant, mirrored alongside
     /// `bound_tenant_schema`. Empty until bound.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bound_tenant_collection: Option<String>,
+    /// Keys of this entry that the registry does not define, kept verbatim
+    /// through every load and save. Core interprets none of them; an extension
+    /// stores its per-database values here (ADR-083).
+    #[serde(flatten)]
+    pub extensions: toml::Table,
 }
 
 /// Runtime status of a registered database, derived at read time.
@@ -776,6 +781,7 @@ impl DatabaseManager {
                     last_opened_at: None,
                     bound_tenant_schema: None,
                     bound_tenant_collection: None,
+                    extensions: toml::Table::new(),
                 });
                 next.default_database = Some(id.clone());
                 next
@@ -861,6 +867,7 @@ impl DatabaseManager {
                     last_opened_at: None,
                     bound_tenant_schema: None,
                     bound_tenant_collection: None,
+                    extensions: toml::Table::new(),
                 });
                 next.default_database = Some(id.clone());
                 next
@@ -1167,6 +1174,7 @@ impl DatabaseManager {
             last_opened_at: None,
             bound_tenant_schema: None,
             bound_tenant_collection: None,
+            extensions: toml::Table::new(),
         };
         self.mutate_and_save(registry, {
             let entry = entry.clone();
@@ -1499,12 +1507,100 @@ mod tests {
             snap.databases[0].entry.bound_tenant_schema.as_deref(),
             Some("tenant_demo")
         );
+        assert!(
+            snap.databases[0].entry.extensions.is_empty(),
+            "keys the registry defines must load into their typed fields, not into extensions"
+        );
 
         // Unbind clears the mirror.
         mgr.set_bound_tenant(&id, None, None).await.unwrap();
         let snap = mgr.list().await;
         assert_eq!(snap.databases[0].entry.bound_tenant_schema, None);
         assert_eq!(snap.databases[0].entry.bound_tenant_collection, None);
+    }
+
+    /// A `databases.toml` whose one entry carries keys the registry does not
+    /// define: a string, a table sorted before it, and a native TOML datetime.
+    /// They stand in for an extension's per-database values.
+    const REGISTRY_WITH_EXTENSION_KEYS: &str = r#"
+default_database = "01J00000000000000000000000"
+
+[[databases]]
+id = "01J00000000000000000000000"
+name = "Work"
+path = "/tmp/work.db"
+created_at = "2026-01-02T03:04:05Z"
+plugin_state = "keep"
+plugin_seen = 2026-02-03T04:05:06Z
+
+[databases.extra]
+level = 3
+labels = ["a", "b"]
+"#;
+
+    /// An entry may carry keys the registry does not define. They load into
+    /// `extensions` verbatim, leave the defined fields intact, and survive a
+    /// save and reload — a save used to drop them silently.
+    #[tokio::test]
+    async fn registry_round_trips_entry_keys_it_does_not_define() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("databases.toml");
+        std::fs::write(&path, REGISTRY_WITH_EXTENSION_KEYS).unwrap();
+
+        let loaded = Registry::load(&path).await.unwrap();
+        let entry = &loaded.databases[0];
+        assert_eq!(entry.id.as_str(), "01J00000000000000000000000");
+        assert_eq!(entry.name, "Work");
+        assert_eq!(entry.path, PathBuf::from("/tmp/work.db"));
+        assert_eq!(entry.created_at.to_rfc3339(), "2026-01-02T03:04:05+00:00");
+        assert_eq!(
+            entry.extensions.get("plugin_state"),
+            Some(&toml::Value::String("keep".into()))
+        );
+        assert_eq!(entry.extensions["extra"]["level"].as_integer(), Some(3));
+        assert!(entry.extensions["plugin_seen"].is_datetime());
+        assert_eq!(
+            entry.extensions.len(),
+            3,
+            "defined keys must not also appear in extensions"
+        );
+
+        loaded.save(&path).await.unwrap();
+        let saved = std::fs::read_to_string(&path).unwrap();
+        let reloaded = Registry::load(&path).await.unwrap();
+        assert_eq!(reloaded.databases[0].extensions, entry.extensions);
+        assert_eq!(reloaded.databases[0].id, entry.id);
+        assert_eq!(reloaded.databases[0].created_at, entry.created_at);
+        assert_eq!(reloaded.default_database, loaded.default_database);
+
+        // A second save of what was just loaded writes the same file.
+        reloaded.save(&path).await.unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), saved);
+    }
+
+    /// A registry mutation rewrites the whole file; the extension keys of the
+    /// entry it touches (and of the others) come through unchanged.
+    #[tokio::test]
+    async fn a_rename_keeps_extension_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("databases.toml");
+        std::fs::write(&path, REGISTRY_WITH_EXTENSION_KEYS).unwrap();
+        let before = Registry::load(&path).await.unwrap();
+        let mgr = DatabaseManager::load(path.clone(), test_context())
+            .await
+            .unwrap();
+
+        mgr.rename(&before.databases[0].id, "Renamed".into())
+            .await
+            .unwrap();
+
+        let after = Registry::load(&path).await.unwrap();
+        assert_eq!(after.databases[0].name, "Renamed");
+        assert_eq!(
+            after.databases[0].extensions,
+            before.databases[0].extensions
+        );
+        assert_eq!(mgr.list().await.databases[0].entry.extensions.len(), 3);
     }
 
     /// Put a directory at `registry_path`, so any subsequent `Registry::save`

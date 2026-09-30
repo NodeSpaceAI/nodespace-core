@@ -46,6 +46,7 @@ function db(id: string, overrides: Partial<DatabaseInfo> = {}): DatabaseInfo {
     lastOpenedAt: null,
     boundTenantSchema: null,
     boundTenantCollection: null,
+    extensions: {},
     ...overrides
   };
 }
