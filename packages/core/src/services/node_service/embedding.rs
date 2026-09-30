@@ -3,82 +3,6 @@
 use super::*;
 
 impl NodeService {
-    /// Read all locally-stored embedding records for a node (one per chunk).
-    ///
-    /// Read-only and **independent of the `nlp` feature**: it queries the
-    /// persisted `embedding` table, which exists whether or not embedding
-    /// *generation* (llama-cpp) is compiled in. The Pro daemon uses this to
-    /// mirror a node's vectors into Supabase pgvector.
-    pub async fn get_embeddings(
-        &self,
-        node_id: &str,
-    ) -> Result<Vec<crate::models::Embedding>, NodeServiceError> {
-        self.store.get_embeddings(node_id).await.map_err(|e| {
-            NodeServiceError::query_failed(format!("Failed to read embeddings: {}", e))
-        })
-    }
-
-    /// Read embedding records modified at or after `since`, across all nodes,
-    /// ordered by `modified_at`. Drives the Pro daemon's cloud-push sweep:
-    /// it advances a cursor over `modified_at` and pushes newly (re)computed
-    /// vectors. Also independent of the `nlp` feature.
-    pub async fn embeddings_modified_since(
-        &self,
-        since: chrono::DateTime<chrono::Utc>,
-    ) -> Result<Vec<crate::models::Embedding>, NodeServiceError> {
-        self.store
-            .embeddings_modified_since(since)
-            .await
-            .map_err(|e| {
-                NodeServiceError::query_failed(format!(
-                    "Failed to read embeddings since cursor: {}",
-                    e
-                ))
-            })
-    }
-
-    /// Replace a node's embeddings with locally-generated vectors (`origin =
-    /// 'local'`, wholesale). **Independent of the `nlp` feature** (it's a plain
-    /// store write). Empty `embeddings` is a no-op (use [`Self::delete_embeddings`]
-    /// to clear).
-    pub async fn upsert_embeddings(
-        &self,
-        node_id: &str,
-        embeddings: Vec<crate::models::NewEmbedding>,
-    ) -> Result<(), NodeServiceError> {
-        self.store
-            .upsert_embeddings(node_id, embeddings)
-            .await
-            .map_err(|e| {
-                NodeServiceError::query_failed(format!("Failed to upsert embeddings: {}", e))
-            })
-    }
-
-    /// Apply embeddings PULLED from another device (`origin = 'remote'`).
-    /// The Pro daemon's cloud pull uses this instead of
-    /// [`Self::upsert_embeddings`] so the push sweep won't re-push a vector this
-    /// device merely received. Also independent of the `nlp` feature.
-    pub async fn apply_remote_embeddings(
-        &self,
-        node_id: &str,
-        embeddings: Vec<crate::models::NewEmbedding>,
-    ) -> Result<(), NodeServiceError> {
-        self.store
-            .apply_remote_embeddings(node_id, embeddings)
-            .await
-            .map_err(|e| {
-                NodeServiceError::query_failed(format!("Failed to apply remote embeddings: {}", e))
-            })
-    }
-
-    /// Delete all of a node's embeddings. Used by the Pro daemon's cloud pull to
-    /// apply a remote embeddings delete. Also independent of the `nlp` feature.
-    pub async fn delete_embeddings(&self, node_id: &str) -> Result<(), NodeServiceError> {
-        self.store.delete_embeddings(node_id).await.map_err(|e| {
-            NodeServiceError::query_failed(format!("Failed to delete embeddings: {}", e))
-        })
-    }
-
     /// Set the embedding waker for event-driven processing.
     ///
     /// Silently ignored if called more than once. Works on `Arc<NodeService>`
@@ -385,18 +309,20 @@ mod former_embedding_root_tests {
 
     async fn embed_fresh(svc: &NodeService, ids: &[&str]) {
         for id in ids {
-            svc.upsert_embeddings(
-                id,
-                vec![NewEmbedding::single_chunk(*id, vec![0.5; 768], "h", 1, 1)],
-            )
-            .await
-            .unwrap();
+            svc.store()
+                .upsert_embeddings(
+                    id,
+                    vec![NewEmbedding::single_chunk(*id, vec![0.5; 768], "h", 1, 1)],
+                )
+                .await
+                .unwrap();
             assert!(!is_stale(svc, id).await, "{id} must start fresh");
         }
     }
 
     async fn is_stale(svc: &NodeService, id: &str) -> bool {
-        svc.get_embeddings(id)
+        svc.store()
+            .get_embeddings(id)
             .await
             .unwrap()
             .iter()
@@ -522,7 +448,7 @@ mod former_embedding_root_tests {
 
         assert!(result.is_err());
         assert!(!is_stale(&svc, ROOT_A).await, "nothing committed");
-        assert!(svc.get_embeddings(LINE).await.unwrap().is_empty());
+        assert!(svc.store().get_embeddings(LINE).await.unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -545,7 +471,7 @@ mod former_embedding_root_tests {
         assert!(!is_stale(&svc, ROOT_B).await, "an uninvolved tree");
         for id in [LINE, SIBLING] {
             assert!(
-                svc.get_embeddings(id).await.unwrap().is_empty(),
+                svc.store().get_embeddings(id).await.unwrap().is_empty(),
                 "{id} is a child and is never queued"
             );
         }
