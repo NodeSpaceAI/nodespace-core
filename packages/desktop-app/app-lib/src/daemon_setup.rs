@@ -260,9 +260,13 @@ fn remove_socket_if_stale(socket_path: &Path, grace: Duration) {
 }
 
 /// PIDs of every process currently holding the Unix socket at `socket_path`
-/// open, resolved via `lsof -F pn -U`. Parses `-F pn` output (a `p<pid>` line
+/// open, resolved via `lsof -a -F pn -U`. Parses `-F pn` output (a `p<pid>` line
 /// followed by one or more `n<name>` lines) into the set of unique PIDs,
 /// regardless of how many file descriptors any one of them has open on it.
+///
+/// `-a` is what makes this "holders of `socket_path`": lsof ORs its selectors
+/// unless told otherwise, so without it the answer is every process on the
+/// machine with any Unix socket open, whichever path it holds.
 ///
 /// Shared by every caller here that needs "whichever process is currently
 /// serving this socket" without assuming who started it — launchd, a
@@ -272,7 +276,7 @@ fn pids_holding_unix_socket(socket_path: &Path) -> HashSet<i32> {
     let mut pids = HashSet::new();
     let sock = socket_path.to_string_lossy();
     let Ok(out) = std::process::Command::new("lsof")
-        .args(["-F", "pn", "-U", sock.as_ref()])
+        .args(["-a", "-F", "pn", "-U", sock.as_ref()])
         .output()
     else {
         return pids;
@@ -708,8 +712,14 @@ async fn kill_running_daemon_within(socket_path: &Path, exit_grace: Duration) {
         .unwrap_or_default();
     for pid in pids_holding_unix_socket(socket_path) {
         if process_argv0_matches(pid, &installed) {
-            // SAFETY: kill() is always safe to call with a valid pid and signal.
-            unsafe { libc::kill(pid, libc::SIGTERM) };
+            // Compiled out under `cfg(test)`, as in `signal_daemon_to_stop`: it
+            // is an irreversible action against whichever process holds the
+            // socket on the machine `cargo test` runs on.
+            #[cfg(not(test))]
+            {
+                // SAFETY: kill() is always safe to call with a valid pid and signal.
+                unsafe { libc::kill(pid, libc::SIGTERM) };
+            }
             tracing::info!("Sent SIGTERM to old nodespaced (pid {})", pid);
         }
     }
@@ -724,8 +734,13 @@ async fn kill_running_daemon_within(socket_path: &Path, exit_grace: Duration) {
     }
 
     // Remove the socket file only if nothing answers on it any more. A daemon
-    // this function did not signal may still be serving it.
-    remove_socket_if_stale(socket_path, Duration::ZERO);
+    // this function did not signal may still be serving it. The connect that
+    // decides this blocks, so it runs off the async workers.
+    let socket_path = socket_path.to_owned();
+    let _ = tokio::task::spawn_blocking(move || {
+        remove_socket_if_stale(&socket_path, Duration::ZERO);
+    })
+    .await;
 }
 
 /// Kill the running daemon on Windows via taskkill and wait for it to exit.
@@ -3091,6 +3106,26 @@ mod unix_quit_signal_tests {
         );
     }
 
+    /// lsof ORs its selectors unless given `-a`, which turns "holders of this
+    /// path" into "every process with any Unix socket open". The stale file
+    /// here has no holder, but this process holds a different socket, so an
+    /// OR-ing query would name this very process, and the app would go on to
+    /// signal whichever of those matches the installed daemon's path.
+    #[test]
+    fn pids_holding_unix_socket_ignores_processes_holding_other_sockets() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let _other_socket =
+            UnixListener::bind(dir.path().join("other.sock")).expect("bind other socket");
+        let stale_path = dir.path().join("stale.sock");
+        drop(UnixListener::bind(&stale_path).expect("bind stale socket"));
+        assert!(
+            stale_path.exists(),
+            "the stale file should still be on disk"
+        );
+
+        assert!(super::pids_holding_unix_socket(&stale_path).is_empty());
+    }
+
     #[test]
     fn pids_holding_unix_socket_is_empty_for_an_unbound_path() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -3685,8 +3720,9 @@ mod stale_socket_removal_tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let socket = socket_in(&dir);
         // This test process holds the socket, and its argv[0] is not the
-        // installed daemon's, so `kill_running_daemon` signals nobody: the same
-        // position a Homebrew-run daemon is in.
+        // installed daemon's, so `kill_running_daemon` finds nobody to signal:
+        // the same position a Homebrew-run daemon is in. (Its kill is compiled
+        // out under `cfg(test)` regardless.)
         let _foreign = UnixListener::bind(&socket).expect("bind test socket");
 
         kill_running_daemon_within(&socket, Duration::from_millis(300)).await;
