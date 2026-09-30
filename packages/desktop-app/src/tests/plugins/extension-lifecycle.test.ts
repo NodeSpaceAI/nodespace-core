@@ -40,6 +40,18 @@ function register(...extensions: NodespaceExtension[]): void {
   for (const e of extensions) uiExtensionRegistry.register(e);
 }
 
+/** An extension whose `prop` getter throws, as a stand-in for a hostile or buggy object. */
+function withThrowingGetter(id: string, prop: 'lifecycle' | 'debugDump'): NodespaceExtension {
+  const extension = ext(id);
+  Object.defineProperty(extension, prop, {
+    enumerable: true,
+    get() {
+      throw new Error('getter failed');
+    }
+  });
+  return extension;
+}
+
 /** Let promise reactions (and the rejections they log) run. */
 async function flush(): Promise<void> {
   for (let i = 0; i < 5; i++) await Promise.resolve();
@@ -210,6 +222,43 @@ describe('startExtensions', () => {
     );
   });
 
+  it('logs a cleanup that returns a rejected promise instead of leaving it unhandled', async () => {
+    const last = vi.fn();
+    register(
+      ext('last', { lifecycle: { start: () => last } }),
+      ext('rejects', {
+        lifecycle: {
+          start: () => async () => {
+            throw new Error('async cleanup failed');
+          }
+        }
+      })
+    );
+
+    const stop = startExtensions();
+    stop();
+    await flush();
+
+    expect(last).toHaveBeenCalledOnce();
+    expect(log.error).toHaveBeenCalledWith(
+      'Extension cleanup rejected',
+      expect.objectContaining({ extensionId: 'rejects' })
+    );
+  });
+
+  it('isolates an extension whose lifecycle getter throws', () => {
+    const started = vi.fn();
+    register(withThrowingGetter('hostile', 'lifecycle'), ext('fine', { lifecycle: { start: started } }));
+
+    expect(() => startExtensions()).not.toThrow();
+
+    expect(started).toHaveBeenCalledOnce();
+    expect(log.error).toHaveBeenCalledWith(
+      'Extension start threw',
+      expect.objectContaining({ extensionId: 'hostile' })
+    );
+  });
+
   it('ignores a start() whose result is not a cleanup function', () => {
     const lifecycle = { start: () => 'not a function' } as unknown as ExtensionLifecycle;
     register(ext('odd', { lifecycle }));
@@ -287,6 +336,22 @@ describe('notifyDatabaseActivated', () => {
     );
   });
 
+  it('isolates an extension whose lifecycle getter throws', () => {
+    const after = vi.fn();
+    register(
+      withThrowingGetter('hostile', 'lifecycle'),
+      ext('fine', { lifecycle: { onDatabaseActivated: after } })
+    );
+
+    expect(() => notifyDatabaseActivated('db-1')).not.toThrow();
+
+    expect(after).toHaveBeenCalledWith('db-1');
+    expect(log.error).toHaveBeenCalledWith(
+      'Extension onDatabaseActivated threw',
+      expect.objectContaining({ extensionId: 'hostile' })
+    );
+  });
+
   it('calls the hook as a method of the lifecycle object', () => {
     // The hook reads its own state through `this`; a detached call would throw.
     class RecordingLifecycle implements ExtensionLifecycle {
@@ -335,6 +400,29 @@ describe('collectExtensionDebugDumps', () => {
     expect(collectExtensionDebugDumps()).toEqual({ throws: 'error: dump failed', fine: 42 });
   });
 
+  it('records a debugDump getter that throws as an error string', () => {
+    register(withThrowingGetter('hostile', 'debugDump'), ext('fine', { debugDump: () => 42 }));
+
+    expect(collectExtensionDebugDumps()).toEqual({ hostile: 'error: getter failed', fine: 42 });
+  });
+
+  it('records an async debugDump as an error and logs its rejection', async () => {
+    register(
+      ext('async', { debugDump: () => Promise.reject(new Error('async dump failed')) }),
+      ext('fine', { debugDump: () => 42 })
+    );
+
+    expect(collectExtensionDebugDumps()).toEqual({
+      async: 'error: debugDump must be synchronous',
+      fine: 42
+    });
+    await flush();
+    expect(log.error).toHaveBeenCalledWith(
+      'Extension debugDump rejected',
+      expect.objectContaining({ extensionId: 'async' })
+    );
+  });
+
   it('keeps an extension id of __proto__ as a key rather than a prototype', () => {
     register(ext('__proto__', { debugDump: () => ({ marker: true }) }));
 
@@ -352,17 +440,35 @@ describe('collectExtensionDebugDumps', () => {
 describe('wiring and import graph', () => {
   const read = (relative: string): string => fs.readFileSync(path.join(srcRoot, relative), 'utf8');
 
-  it('mounts extensions from the app shell and disposes them on unmount', () => {
+  /** The `{ … }` block whose opening brace is at `open`, matched by brace depth. */
+  function blockAt(source: string, open: number): string {
+    expect(source[open]).toBe('{');
+    let depth = 0;
+    for (let i = open; i < source.length; i++) {
+      if (source[i] === '{') depth++;
+      else if (source[i] === '}' && --depth === 0) return source.slice(open, i + 1);
+    }
+    throw new Error('unbalanced braces');
+  }
+
+  it('starts extensions inside the app shell Tauri-bridge branch and disposes them in its unmount cleanup', () => {
     const shell = read('lib/components/layout/app-shell.svelte');
 
-    expect(shell).toMatch(/stopExtensions\s*=\s*startExtensions\(\)/);
-    expect(shell).toContain('stopExtensions?.()');
-  });
+    // The branch that runs only when the Tauri bridge is present, and the cleanup
+    // the mount returns after it.
+    const branch = /\.__TAURI_INTERNALS__\s*\)\s*\{/.exec(shell);
+    expect(branch).not.toBeNull();
+    const branchOpen = branch!.index + branch![0].length - 1;
+    const branchBlock = blockAt(shell, branchOpen);
+    const cleanupStart = shell.indexOf('return async () => {', branchOpen + branchBlock.length);
+    expect(cleanupStart).toBeGreaterThan(-1);
+    const cleanupBlock = blockAt(shell, shell.indexOf('{', cleanupStart));
 
-  it('notifies extensions from the database store', () => {
-    const store = read('lib/stores/database.svelte.ts');
-
-    expect(store.match(/notifyDatabaseActivated\(/g)).toHaveLength(2);
+    expect(branchBlock).toMatch(/stopExtensions\s*=\s*startExtensions\(\)/);
+    expect(cleanupBlock).toContain('stopExtensions?.()');
+    // Neither call exists anywhere else in the shell.
+    expect(shell.match(/startExtensions\(\)/g)).toHaveLength(1);
+    expect(shell.match(/stopExtensions\?\.\(\)/g)).toHaveLength(1);
   });
 
   it('imports only the registry and the logger, never the reactive wrapper', () => {

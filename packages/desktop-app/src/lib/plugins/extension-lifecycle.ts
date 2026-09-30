@@ -24,7 +24,8 @@
  *   - May return a cleanup, synchronously or through a promise. The cleanups run
  *     when the shell unmounts, in reverse registration order, whichever order the
  *     `start()` calls settled in. A `start()` that settles after that has already
- *     happened has its cleanup run at once.
+ *     happened has its cleanup run at once. A cleanup that returns a rejected
+ *     promise has the rejection logged.
  *
  * `lifecycle.onDatabaseActivated(databaseId)`
  *   - Synchronous, called once per committed activation of a database:
@@ -39,13 +40,25 @@
  *     per-database caches here.
  *   - It does not fire in browser dev mode, for a switch a newer switch
  *     superseded, for a `switchTo()` to the database already active, or for a
- *     later `load()` that keeps the current selection.
+ *     later `load()` that keeps the current selection. Nor does it fire when
+ *     evicting the previous database's caches throws; the store then records the
+ *     error, since the hook's guarantee is that the eviction has completed.
  *   - A returned promise is ignored apart from logging its rejection: the
  *     extension serializes its own async work.
  *
  * `debugDump()`
  *   - Called on demand when the debug channel captures a store dump. The result
- *     is recorded under `stores.extensions[<extension id>]`.
+ *     is recorded under `stores.extensions[<extension id>]`. It must be
+ *     synchronous: a returned promise is recorded as an error, not awaited.
+ *
+ * Ordering between hooks
+ * ----------------------
+ *   - Nothing orders `start()` against the first `onDatabaseActivated`. The
+ *     database store loads independently of the app shell's mount, and an async
+ *     `start()` is not awaited, so an extension must cope with either order.
+ *   - `start()` reads the registry once, when the shell mounts. An extension must
+ *     be registered before then; one registered later receives activations but
+ *     never `start()`.
  */
 
 import { createLogger } from '$lib/utils/logger';
@@ -65,10 +78,15 @@ function isThenable(value: unknown): value is PromiseLike<unknown> {
   );
 }
 
-/** Run one extension's cleanup; a throw is logged, never propagated. */
+/** Run one extension's cleanup; a throw or a rejection is logged, never propagated. */
 function runCleanup(extensionId: string, cleanup: () => void): void {
   try {
-    cleanup();
+    const result: unknown = cleanup();
+    if (isThenable(result)) {
+      result.then(undefined, (error: unknown) =>
+        log.error('Extension cleanup rejected', { extensionId, error })
+      );
+    }
   } catch (error) {
     log.error('Extension cleanup threw', { extensionId, error });
   }
@@ -84,7 +102,7 @@ export function startExtensions(): () => void {
   const extensions = uiExtensionRegistry.all();
   // One slot per extension, so cleanups run in registration order's reverse even
   // when async `start()` calls settle out of order.
-  const cleanups: (() => void)[] = new Array<() => void>(extensions.length);
+  const cleanups = new Array<(() => void) | undefined>(extensions.length);
   let disposed = false;
 
   const accept = (index: number, extension: NodespaceExtension, value: unknown): void => {
@@ -95,9 +113,11 @@ export function startExtensions(): () => void {
   };
 
   extensions.forEach((extension, index) => {
-    const lifecycle = extension.lifecycle;
-    if (typeof lifecycle?.start !== 'function') return;
+    // Every read of extension-owned state sits inside the try, so a throwing
+    // getter is isolated like a throwing hook.
     try {
+      const lifecycle = extension.lifecycle;
+      if (typeof lifecycle?.start !== 'function') return;
       const result: unknown = lifecycle.start();
       if (isThenable(result)) {
         result.then(
@@ -128,9 +148,9 @@ export function startExtensions(): () => void {
  */
 export function notifyDatabaseActivated(databaseId: string): void {
   for (const extension of uiExtensionRegistry.all()) {
-    const lifecycle = extension.lifecycle;
-    if (typeof lifecycle?.onDatabaseActivated !== 'function') continue;
     try {
+      const lifecycle = extension.lifecycle;
+      if (typeof lifecycle?.onDatabaseActivated !== 'function') continue;
       const result: unknown = lifecycle.onDatabaseActivated(databaseId);
       if (isThenable(result)) {
         result.then(undefined, (error: unknown) =>
@@ -146,14 +166,23 @@ export function notifyDatabaseActivated(databaseId: string): void {
 /**
  * Every registered extension's `debugDump()` result, keyed by extension id.
  * Extensions without a `debugDump` are absent; one whose `debugDump` throws is
- * recorded as the string `error: <message>`.
+ * recorded as the string `error: <message>`, and one that returns a promise (the
+ * dump must be synchronous) as `error: debugDump must be synchronous`.
  */
 export function collectExtensionDebugDumps(): Record<string, unknown> {
   const entries: [string, unknown][] = [];
   for (const extension of uiExtensionRegistry.all()) {
-    if (typeof extension.debugDump !== 'function') continue;
     try {
-      entries.push([extension.id, extension.debugDump()]);
+      if (typeof extension.debugDump !== 'function') continue;
+      const dump: unknown = extension.debugDump();
+      if (isThenable(dump)) {
+        dump.then(undefined, (error: unknown) =>
+          log.error('Extension debugDump rejected', { extensionId: extension.id, error })
+        );
+        entries.push([extension.id, 'error: debugDump must be synchronous']);
+      } else {
+        entries.push([extension.id, dump]);
+      }
     } catch (error) {
       entries.push([extension.id, `error: ${errorMessage(error)}`]);
     }

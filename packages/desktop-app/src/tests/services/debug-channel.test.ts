@@ -101,6 +101,7 @@ describe('debug-channel', () => {
     afterEach(() => {
       uiExtensionRegistry.unregister(TEST_EXTENSION_ID);
       uiExtensionRegistry.unregister('other-extension');
+      uiExtensionRegistry.unregister('__proto__');
     });
 
     function registerWithDump(debugDump: () => unknown, id = TEST_EXTENSION_ID): void {
@@ -156,6 +157,28 @@ describe('debug-channel', () => {
       expect(entries[TEST_EXTENSION_ID]).toMatch(/^error: .*circular/i);
       expect(entries['other-extension']).toEqual({ ok: true });
       expect(() => JSON.stringify(stores)).not.toThrow();
+    });
+
+    it('records a dump that cannot be serialized as JSON at all (a BigInt) as an error string', async () => {
+      registerWithDump(() => ({ count: 10n }));
+      registerWithDump(() => ({ ok: true }), 'other-extension');
+
+      const stores = await collectStoreDump();
+
+      const entries = stores.extensions as Record<string, unknown>;
+      expect(entries[TEST_EXTENSION_ID]).toMatch(/^error: .*BigInt/i);
+      expect(entries['other-extension']).toEqual({ ok: true });
+    });
+
+    it('keeps an extension id of __proto__ as a key rather than rewriting the prototype', async () => {
+      registerWithDump(() => ({ marker: true }), '__proto__');
+
+      const stores = await collectStoreDump();
+
+      const entries = stores.extensions as Record<string, unknown>;
+      expect(Object.getPrototypeOf(entries)).toBe(Object.prototype);
+      expect(Object.keys(entries)).toEqual(['__proto__']);
+      expect(Object.getOwnPropertyDescriptor(entries, '__proto__')?.value).toEqual({ marker: true });
     });
 
     it('converts Map and Set inside a dump, like the other stores', async () => {

@@ -137,11 +137,8 @@ function toExtensionDumpEntry(dump: unknown): unknown {
  * enable this channel in shipped builds.
  */
 export async function captureStoreDump(): Promise<void> {
-  debugChannelWrite({
-    kind: 'store_dump',
-    timestamp: new Date().toISOString(),
-    stores: await collectStoreDump()
-  });
+  const stores = await collectStoreDump();
+  debugChannelWrite({ kind: 'store_dump', timestamp: new Date().toISOString(), stores });
 }
 
 /** Gather the store snapshot that `captureStoreDump` writes. */
