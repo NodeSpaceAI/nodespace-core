@@ -23,19 +23,19 @@
   import type { Node, CollectionNode } from '$lib/types';
   import { getNavigationService } from '$lib/services/navigation-service';
   import { createLogger } from '$lib/utils/logger';
-  import { getActiveViewerExtensions } from '$lib/plugins/ui-extensions.svelte';
+  import { getActiveViewerTabs } from '$lib/plugins/ui-extensions.svelte';
   import ExtensionOutlet from '$lib/plugins/extension-outlet.svelte';
 
   // Collection sub-views: the built-in "contents" tab (member nodes, always shown)
-  // plus any registry-contributed tabs (e.g. the Pro "Collaboration" tab). The
-  // active tab is 'contents' or a contributed tab's id.
+  // plus any registry-contributed tabs. `activeView` is 'contents' or a
+  // contributed tab's key (`<extension id>/<contribution id>`).
   let activeView = $state<string>('contents');
 
-  // Viewer extensions contributed for the current Pro-sync variant. Empty in the
-  // community build (variant `teaser`), so the tab strip and the collaboration
-  // view never appear — the collection viewer imports nothing Pro.
-  const collabExtensions = $derived(getActiveViewerExtensions('collection'));
-  const activeExtension = $derived(collabExtensions.find((e) => e.tab.id === activeView));
+  // Registry-contributed tabs whose `when()` currently holds. Empty when nothing
+  // contributes, so the tab strip never appears. A selected tab that stops being
+  // contributed falls back to Contents.
+  const tabs = $derived(getActiveViewerTabs('collection'));
+  const activeTab = $derived(tabs.find((t) => t.key === activeView));
 
   const log = createLogger('CollectionNodeViewer');
 
@@ -259,34 +259,33 @@
       <p class="collection-description">{collection.properties.description}</p>
     {/if}
 
-    {#if collabExtensions.length > 0}
-      <!-- Registry-contributed tabs (e.g. the Pro "Collaboration" tab) alongside
-           the built-in contents view; the strip only appears when something
-           contributes for the active variant. -->
+    {#if tabs.length > 0}
+      <!-- Registry-contributed tabs alongside the built-in contents view; the
+           strip only appears when something contributes. -->
       <div class="collection-tabs" role="tablist">
         <button
           class="tab"
-          class:active={activeView === 'contents'}
+          class:active={!activeTab}
           role="tab"
-          aria-selected={activeView === 'contents'}
+          aria-selected={!activeTab}
           onclick={() => (activeView = 'contents')}>Contents</button
         >
-        {#each collabExtensions as ext (ext.tab.id)}
+        {#each tabs as t (t.key)}
           <button
             class="tab"
-            class:active={activeView === ext.tab.id}
+            class:active={activeView === t.key}
             role="tab"
-            aria-selected={activeView === ext.tab.id}
-            onclick={() => (activeView = ext.tab.id)}>{ext.tab.label}</button
+            aria-selected={activeView === t.key}
+            onclick={() => (activeView = t.key)}>{t.label}</button
           >
         {/each}
       </div>
     {/if}
   </div>
 
-  {#if activeExtension}
-    {#key activeExtension.variant}
-      <ExtensionOutlet load={activeExtension.lazyLoad} props={{ nodeId }} />
+  {#if activeTab}
+    {#key activeTab.key}
+      <ExtensionOutlet load={activeTab.load} props={{ nodeId }} />
     {/key}
   {:else}
   <!-- Content -->

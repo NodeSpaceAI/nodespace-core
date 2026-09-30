@@ -2,35 +2,59 @@
  * Reactive wrapper over {@link UiExtensionRegistry}
  * ========================================================
  *
- * The registry (`ui-extensions.ts`) holds declarative, non-reactive data. This
- * module layers reactivity on top (ADR-049): it returns only the contributions
- * matching the active Pro-sync variant. The variant state machine lives in
- * `pro-sync-variant.svelte.ts`; its reads are reactive, so these functions
- * re-run when called inside a `$derived`/template.
+ * The registry (`ui-extensions.ts`) holds declarative, non-reactive data and
+ * never evaluates a contribution's `when()`. This module layers reactivity on
+ * top (ADR-049): it returns only the contributions whose `when()` currently
+ * holds. Reactivity comes from whatever the predicates read, so hosts call
+ * these accessors inside a `$derived` or a template and re-run when that state
+ * changes.
  *
- * Importing this module also registers the built-in Pro UI extension (side-effect
- * import of `./pro-plugin`), so any consumer of the wrapper sees the contributions
- * without a separate init call.
+ * A throwing `when()` counts as false and is logged once per contribution key
+ * (ADR-082 §2.4); it is logged again only after it has returned normally in
+ * between.
  */
 
+// Transitional: the built-in extension registers itself as a side effect of this
+// import. Removed once builds inject extensions through
+// `virtual:nodespace-extensions` (ADR-082 §2.1).
 import './pro-plugin';
 
 import {
   uiExtensionRegistry,
   type ChromeSlot,
   type ChromeContribution,
-  type ViewerExtension
+  type Keyed,
+  type ViewerTabContribution
 } from './ui-extensions';
-import { resolveProSyncVariant } from './pro-sync-variant.svelte';
+import { createLogger } from '$lib/utils/logger';
 
-/** Chrome contributions for `slot` that match the currently-resolved variant. */
-export function getActiveChromeContributions(slot: ChromeSlot): ChromeContribution[] {
-  const variant = resolveProSyncVariant();
-  return uiExtensionRegistry.chromeFor(slot).filter((c) => c.variant === variant);
+const log = createLogger('UiExtensions');
+
+/** Keys whose `when()` threw and has not returned normally since. */
+const warnedKeys = new Set<string>();
+
+/** Whether a contribution should be shown now: no `when` means always. */
+export function isContributionActive(c: Pick<Keyed<ChromeContribution>, 'key' | 'when'>): boolean {
+  if (!c.when) return true;
+  try {
+    const active = Boolean(c.when());
+    warnedKeys.delete(c.key);
+    return active;
+  } catch (error) {
+    if (!warnedKeys.has(c.key)) {
+      warnedKeys.add(c.key);
+      log.warn('Contribution when() threw; treating it as false', { key: c.key, error });
+    }
+    return false;
+  }
 }
 
-/** Viewer extensions for `nodeType` that match the currently-resolved variant. */
-export function getActiveViewerExtensions(nodeType: string): ViewerExtension[] {
-  const variant = resolveProSyncVariant();
-  return uiExtensionRegistry.viewersFor(nodeType).filter((e) => e.variant === variant);
+/** Chrome contributions for `slot` whose `when()` currently holds. */
+export function getActiveChromeContributions(slot: ChromeSlot): Keyed<ChromeContribution>[] {
+  return uiExtensionRegistry.chromeFor(slot).filter(isContributionActive);
+}
+
+/** Viewer tabs for `nodeType` whose `when()` currently holds. */
+export function getActiveViewerTabs(nodeType: string): Keyed<ViewerTabContribution>[] {
+  return uiExtensionRegistry.viewerTabsFor(nodeType).filter(isContributionActive);
 }
