@@ -1,8 +1,9 @@
 <script lang="ts">
     import { onMount } from 'svelte';
     import { loadSettings, settingsStore } from '$lib/stores/settings.svelte';
-    import { labsFlags } from '$lib/stores/labs-flags.svelte';
+    import ExtensionOutlet from '$lib/plugins/extension-outlet.svelte';
     import SettingsSidebar from './settings-sidebar.svelte';
+    import { findSettingsSection, isSettingsCategoryVisible } from './settings-categories';
     import DatabaseSettings from './sections/database-settings.svelte';
     import AccountSettings from './sections/account-settings.svelte';
     import DisplaySettings from './sections/display-settings.svelte';
@@ -22,21 +23,22 @@
         loadSettings();
     });
 
-    // Defense in depth: settings-sidebar.svelte already hides Labs-gated tabs
-    // (Account, AI Models, Playbooks) while their flag is off, but that only
-    // stops a *click*. Fall back to Database if this view is ever reached
-    // while off some other way (e.g. a future `settingsStore.initialCategory`
-    // caller, or the flag being turned off elsewhere) — no gated surface may
-    // render while its flag is off, tab-click or not.
+    // The sidebar only stops a *click* on a hidden category. Fall back to Database
+    // whenever the active one is not listed: a Labs flag that is off, a section
+    // whose `when()` turned false while open, or an id nothing registered
+    // (a `settingsStore.initialCategory` caller, or `navigate()` from a section).
+    // No hidden surface may render, tab-click or not.
     $effect(() => {
-        const hidden =
-            (activeCategory === 'account' && !labsFlags.syncEnabled) ||
-            (activeCategory === 'ai-models' && !labsFlags.aiChatEnabled) ||
-            (activeCategory === 'playbooks' && !labsFlags.playbooksEnabled);
-        if (hidden) {
+        if (!isSettingsCategoryVisible(activeCategory)) {
             activeCategory = 'database';
         }
     });
+
+    const activeSection = $derived(findSettingsSection(activeCategory));
+
+    function navigate(category: string) {
+        activeCategory = category;
+    }
 </script>
 
 <div class="settings-container">
@@ -60,6 +62,10 @@
             <LabsSettings />
         {:else if activeCategory === 'about'}
             <DiagnosticsSettings />
+        {:else if activeSection}
+            {#key activeSection.key}
+                <ExtensionOutlet load={activeSection.load} props={{ navigate }} />
+            {/key}
         {/if}
     </div>
 </div>

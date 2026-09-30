@@ -9,12 +9,16 @@
   import { databaseStore, type DatabaseInfo } from '$lib/stores/database.svelte';
   import { proSync } from '$lib/stores/pro-sync.svelte';
   import { labsFlags } from '$lib/stores/labs-flags.svelte';
+  import ExtensionOutlet from '$lib/plugins/extension-outlet.svelte';
+  import { getActiveSettingsSlot } from '$lib/plugins/ui-extensions.svelte';
   import { createLogger } from '$lib/utils/logger';
 
   const log = createLogger('DatabaseSettings');
 
   const databases = $derived(databaseStore.databases);
   const activeDatabaseId = $derived(databaseStore.activeDatabaseId);
+  const actionContributions = $derived(getActiveSettingsSlot('database.actions'));
+  const rowContributions = $derived(getActiveSettingsSlot('database.row'));
 
   let newDialogOpen = $state(false);
   let addSyncedDialogOpen = $state(false);
@@ -112,6 +116,9 @@
           Add synced database…
         </Button>
       {/if}
+      {#each actionContributions as action (action.key)}
+        <ExtensionOutlet load={action.load} />
+      {/each}
     </div>
   </div>
   <p class="text-muted-foreground mb-6 text-sm leading-relaxed">
@@ -163,6 +170,9 @@
               <span class="text-muted-foreground/60 ml-1 font-mono">{db.boundTenantSchema}</span>
             </div>
           {/if}
+          {#each rowContributions as row (row.key)}
+            <ExtensionOutlet load={row.load} props={{ databaseId: db.id }} />
+          {/each}
         </div>
 
         <div class="flex shrink-0 flex-col gap-1.5">

@@ -25,6 +25,9 @@ import {
   type ChromeContribution,
   type Contribution,
   type Keyed,
+  type SettingsSectionContribution,
+  type SettingsSlot,
+  type SettingsSlotContributionFor,
   type ViewerTabContribution
 } from './ui-extensions';
 import { createLogger } from '$lib/utils/logger';
@@ -58,4 +61,16 @@ export function getActiveChromeContributions(slot: ChromeSlot): Keyed<ChromeCont
 /** Viewer tabs for `nodeType` whose `when()` currently holds. */
 export function getActiveViewerTabs(nodeType: string): Keyed<ViewerTabContribution>[] {
   return uiExtensionRegistry.viewerTabsFor(nodeType).filter(isContributionActive);
+}
+
+/** Settings sections whose `when()` currently holds, in registration order. */
+export function getActiveSettingsSections(): Keyed<SettingsSectionContribution>[] {
+  return uiExtensionRegistry.settingsSections().filter(isContributionActive);
+}
+
+/** Contributions to the Databases-page `slot` whose `when()` currently holds. */
+export function getActiveSettingsSlot<S extends SettingsSlot>(
+  slot: S
+): Keyed<SettingsSlotContributionFor<S>>[] {
+  return uiExtensionRegistry.settingsSlotFor(slot).filter(isContributionActive);
 }

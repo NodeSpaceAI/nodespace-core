@@ -1,6 +1,6 @@
 <script lang="ts">
     import { cn } from '$lib/utils';
-    import { labsFlags } from '$lib/stores/labs-flags.svelte';
+    import { settingsCategories } from './settings-categories';
 
     interface Props {
         activeCategory: string;
@@ -9,30 +9,15 @@
 
     let { activeCategory, onCategoryChange }: Props = $props();
 
-    // "AI Models" is gated behind the Labs "AI Chat" toggle and "Playbooks"
-    // behind the Labs "Playbooks" toggle (both default OFF); the flags gate the
-    // UI only. "Account" is gated behind the Labs "Team synchronization" toggle
-    // (default OFF) — the tab itself, not just its content, stays hidden
-    // until a user opts in, so no "NodeSpace Pro" surface is reachable at
-    // all until then. Reactive ($derived), same convention as
-    // navigation-sidebar.svelte's `{#if labsFlags.aiChatEnabled}` gating of
-    // its AI Chats section.
-    const categories = $derived([
-        { id: 'database', label: 'Database' },
-        ...(labsFlags.syncEnabled ? [{ id: 'account', label: 'Account' }] : []),
-        { id: 'display', label: 'Display' },
-        ...(labsFlags.aiChatEnabled ? [{ id: 'ai-models', label: 'AI Models' }] : []),
-        { id: 'import', label: 'Import Sources' },
-        { id: 'integrations', label: 'Integrations' },
-        ...(labsFlags.playbooksEnabled ? [{ id: 'playbooks', label: 'Playbooks' }] : []),
-        { id: 'labs', label: 'Labs' },
-        { id: 'about', label: 'About' },
-    ]);
+    // Reactive ($derived), same convention as navigation-sidebar.svelte's
+    // `{#if labsFlags.aiChatEnabled}` gating of its AI Chats section: the list
+    // re-derives when a Labs flag or a section's `when()` changes.
+    const categories = $derived(settingsCategories());
 </script>
 
 <nav class="border-border bg-muted/30 min-w-[200px] w-[200px] border-r py-4">
     <h2 class="text-muted-foreground px-4 py-2 text-xs font-semibold uppercase tracking-widest">Settings</h2>
-    {#each categories as category}
+    {#each categories as category (category.key)}
         <button
             class={cn(
                 'block w-full cursor-pointer border-none bg-transparent px-4 py-2 text-left text-sm',
