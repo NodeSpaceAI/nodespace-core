@@ -207,15 +207,15 @@ export const BASELINES = {
   // Pro build, daemon, socket, launchd and installer branching
   editionBranching: 113,
   // tenant binding, sync_enabled and auth_status state
-  cloudBindState: 321,
+  cloudBindState: 203,
   // cloud embedding and membership-edge sync hooks
   cloudSyncHooks: 15,
   // Supabase, RLS, pgvector, nodespace-sync and "Pro daemon" wording
-  cloudWording: 87,
+  cloudWording: 82,
   // the word tenant (one fixture exempt, see EXEMPTIONS)
-  tenantWording: 504,
+  tenantWording: 463,
   // the word Pro, except chip and model names such as "M2 Pro", "DeepSeek V4 Pro"
-  proWording: 310,
+  proWording: 300,
   // files whose basename has a pro segment
   proNamedFiles: 18,
 } satisfies Record<MarkerName, number>;
