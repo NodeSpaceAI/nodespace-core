@@ -194,7 +194,9 @@ Examples:
     // mean "the installer ran to completion," not "every single agent
     // succeeded."
   } else if (command === 'uninstall') {
-    const results = uninstall(targetAgents);
+    // The resource root only matters for an install made before installs kept
+    // a record of their files; see `uninstall`.
+    const results = uninstall(targetAgents, resourceRoot);
 
     if (results.length === 0) {
       console.log('No installed NodeSpace skills found.');

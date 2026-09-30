@@ -4,6 +4,16 @@ export interface AgentConfig {
   name: AgentName;
   detectionDir: string;
   installDir: string;
+  /**
+   * Files copied from the package root into `installDir`, as paths relative to
+   * that root: `SKILL.md` plus the agent's harness shim, which installs flat
+   * under its basename.
+   *
+   * The skill's `references/*.md` files are deliberately not listed here. The
+   * installer copies every one it finds in the package root's `references/`
+   * directory (`listReferenceFiles`), so adding or dropping a reference is a
+   * change to that directory alone.
+   */
   shims: string[];
   /**
    * Frontmatter to prepend to `SKILL.md` when installing for this agent.

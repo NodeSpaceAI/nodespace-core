@@ -5,7 +5,7 @@
 // which must stay fast and deterministic, not depend on network or a real
 // SKILL_REPO_TOKEN.
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { SHARED_SKILL_FRONTMATTER } from "../packages/skill/src/agents";
 import {
@@ -19,6 +19,18 @@ import {
 } from "./publish-skill-repo";
 
 const REPO_ROOT = join(dirname(new URL(import.meta.url).pathname), "..");
+
+// Every reference file under packages/skill/references/, spelled out. The three
+// playbooks were not published until the file list came from the directory
+// instead of each agent's `shims`, so naming them here pins that change.
+const REFERENCES = [
+  "references/cli.md",
+  "references/graph-authored-guidance.md",
+  "references/jira-playbook.md",
+  "references/linear-playbook.md",
+  "references/shared-workspaces.md",
+  "references/spec-driven-playbook.md",
+];
 
 describe("normalizeVersion", () => {
   test("strips a leading v", () => {
@@ -37,31 +49,23 @@ describe("SKILL_REPO", () => {
 });
 
 describe("readSkillSource", () => {
-  test("reads the live packages/skill/SKILL.md, references/cli.md, references/shared-workspaces.md, and references/graph-authored-guidance.md off disk", () => {
-    const { body, referenceCli, referenceSharedWorkspaces, referenceGraphAuthoredGuidance } =
-      readSkillSource();
+  test("reads the live packages/skill/SKILL.md and every references/*.md off disk", () => {
+    const { body, references } = readSkillSource();
     // Read independently (not via the function under test) so this actually
     // catches the function reading a stale/wrong path, not just echoing it.
     const expectedBody = readFileSync(
       join(REPO_ROOT, "packages", "skill", "SKILL.md"),
       "utf8",
     );
-    const expectedReferenceCli = readFileSync(
-      join(REPO_ROOT, "packages", "skill", "references", "cli.md"),
-      "utf8",
-    );
-    const expectedReferenceSharedWorkspaces = readFileSync(
-      join(REPO_ROOT, "packages", "skill", "references", "shared-workspaces.md"),
-      "utf8",
-    );
-    const expectedReferenceGraphAuthoredGuidance = readFileSync(
-      join(REPO_ROOT, "packages", "skill", "references", "graph-authored-guidance.md"),
-      "utf8",
+    const referencesDir = join(REPO_ROOT, "packages", "skill", "references");
+    const expectedReferences = Object.fromEntries(
+      readdirSync(referencesDir)
+        .filter((name) => name.endsWith(".md"))
+        .map((name) => [`references/${name}`, readFileSync(join(referencesDir, name), "utf8")]),
     );
     expect(body).toBe(expectedBody);
-    expect(referenceCli).toBe(expectedReferenceCli);
-    expect(referenceSharedWorkspaces).toBe(expectedReferenceSharedWorkspaces);
-    expect(referenceGraphAuthoredGuidance).toBe(expectedReferenceGraphAuthoredGuidance);
+    expect(Object.keys(expectedReferences).length).toBeGreaterThan(0);
+    expect(references).toEqual(expectedReferences);
   });
 
   // The checked-in SKILL.md body carries no frontmatter (renderPublishFiles
@@ -76,18 +80,22 @@ describe("readSkillSource", () => {
 describe("sharedShimPaths", () => {
   // Guards the drift class packages/skill/src/tests/installer.test.ts's
   // "publishes every directory the agents install from" test guards
-  // elsewhere: this derives the published file set from AGENTS instead of a
-  // hardcoded list, so a shared file added to (or removed from) every
-  // agent's shims here gets picked up automatically -- and this test fails
-  // loudly if that derivation ever stops matching what today's AGENTS
-  // actually declares as shared.
-  test("is exactly SKILL.md, references/cli.md, references/shared-workspaces.md, and references/graph-authored-guidance.md today", () => {
-    expect(sharedShimPaths().sort()).toEqual([
-      "SKILL.md",
-      "references/cli.md",
-      "references/graph-authored-guidance.md",
-      "references/shared-workspaces.md",
-    ]);
+  // elsewhere: this derives the published file set from the shims every agent
+  // shares plus the references directory instead of a hardcoded list, so a
+  // reference added to (or removed from) packages/skill/references/ is picked
+  // up automatically -- and this test fails loudly if that derivation ever
+  // stops matching what the skill actually contains.
+  test("is exactly SKILL.md plus every reference in packages/skill/references/ today", () => {
+    expect(sharedShimPaths().sort()).toEqual(["SKILL.md", ...REFERENCES]);
+  });
+
+  test("includes every reference file the installer would install, and nothing else from references/", () => {
+    const referencesDir = join(REPO_ROOT, "packages", "skill", "references");
+    const onDisk = readdirSync(referencesDir)
+      .filter((name) => name.endsWith(".md"))
+      .map((name) => `references/${name}`);
+    const published = sharedShimPaths().filter((path) => path.startsWith("references/"));
+    expect(published.sort()).toEqual(onDisk.sort());
   });
 
   test("excludes every harness-specific shim", () => {
@@ -102,14 +110,11 @@ describe("sharedShimPaths", () => {
 });
 
 describe("renderPublishFiles", () => {
-  test("publishes exactly SKILL.md, references/cli.md, references/shared-workspaces.md, and references/graph-authored-guidance.md under skills/nodespace/", () => {
+  test("publishes exactly SKILL.md plus every reference under skills/nodespace/", () => {
     const files = renderPublishFiles("v0.2.2");
-    expect(files.map((f) => f.relPath).sort()).toEqual([
-      "skills/nodespace/SKILL.md",
-      "skills/nodespace/references/cli.md",
-      "skills/nodespace/references/graph-authored-guidance.md",
-      "skills/nodespace/references/shared-workspaces.md",
-    ]);
+    expect(files.map((f) => f.relPath).sort()).toEqual(
+      ["SKILL.md", ...REFERENCES].map((path) => `skills/nodespace/${path}`),
+    );
   });
 
   test("SKILL.md is spec-compliant frontmatter + the unmodified body", () => {
@@ -158,29 +163,14 @@ describe("renderPublishFiles", () => {
     expect(withV.content).toBe(withoutV.content);
   });
 
-  test("references/cli.md is copied through verbatim", () => {
+  test("every reference is copied through verbatim", () => {
     const files = renderPublishFiles("v0.2.2");
-    const referenceCli = files.find((f) => f.relPath === "skills/nodespace/references/cli.md")!;
-    const { referenceCli: expected } = readSkillSource();
-    expect(referenceCli.content).toBe(expected);
-  });
-
-  test("references/shared-workspaces.md is copied through verbatim", () => {
-    const files = renderPublishFiles("v0.2.2");
-    const referenceSharedWorkspaces = files.find(
-      (f) => f.relPath === "skills/nodespace/references/shared-workspaces.md",
-    )!;
-    const { referenceSharedWorkspaces: expected } = readSkillSource();
-    expect(referenceSharedWorkspaces.content).toBe(expected);
-  });
-
-  test("references/graph-authored-guidance.md is copied through verbatim", () => {
-    const files = renderPublishFiles("v0.2.2");
-    const referenceGraphAuthoredGuidance = files.find(
-      (f) => f.relPath === "skills/nodespace/references/graph-authored-guidance.md",
-    )!;
-    const { referenceGraphAuthoredGuidance: expected } = readSkillSource();
-    expect(referenceGraphAuthoredGuidance.content).toBe(expected);
+    const { references } = readSkillSource();
+    expect(Object.keys(references).sort()).toEqual(REFERENCES);
+    for (const [path, expected] of Object.entries(references)) {
+      const published = files.find((f) => f.relPath === `skills/nodespace/${path}`);
+      expect(published?.content, path).toBe(expected);
+    }
   });
 
   // SKILL.md's stub for the moved section must still name the file it points
@@ -198,6 +188,21 @@ describe("renderPublishFiles", () => {
     const files = renderPublishFiles("v0.2.2");
     const skillMd = files.find((f) => f.relPath === "skills/nodespace/SKILL.md")!;
     expect(skillMd.content).toContain("references/graph-authored-guidance.md");
+  });
+
+  // The public copy of the skill must not link to a file the public repo does
+  // not carry: the work-tracking playbooks SKILL.md points at were linked but
+  // never published while the file list was hand-kept.
+  test("every references/... link in the published SKILL.md resolves to a published file", () => {
+    const files = renderPublishFiles("v0.2.2");
+    const skillMd = files.find((f) => f.relPath === "skills/nodespace/SKILL.md")!;
+    const published = new Set(files.map((f) => f.relPath));
+
+    const links = [...new Set(skillMd.content.match(/references\/[A-Za-z0-9._-]+\.md/g))];
+    expect(links.length).toBeGreaterThan(0);
+    for (const link of links) {
+      expect(published.has(`skills/nodespace/${link}`), `SKILL.md links ${link}`).toBe(true);
+    }
   });
 });
 

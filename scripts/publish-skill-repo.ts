@@ -15,12 +15,14 @@
  *
  * It never hand-writes the skill body: it copies `packages/skill/SKILL.md`
  * (the body -- the checked-in file carries no frontmatter, see
- * packages/skill/src/types.ts) and every shared `references/*.md` file
- * (see `sharedShimPaths`) verbatim, whatever they currently are. If a future change to
- * `packages/skill` shrinks SKILL.md to a stub with guidance fetched from the
- * graph at runtime instead, this script keeps working unmodified -- it has
- * no assumption baked in about the body's size or shape, only about where it
- * lives on disk.
+ * packages/skill/src/types.ts) and every `references/*.md` file in
+ * `packages/skill` (see `sharedShimPaths`) verbatim, whatever they currently
+ * are. The reference list comes from that directory, the same rule the
+ * installer applies, so what is published is what is installed. If a future
+ * change to `packages/skill` shrinks SKILL.md to a stub with guidance fetched
+ * from the graph at runtime instead, this script keeps working unmodified --
+ * it has no assumption baked in about the body's size or shape, only about
+ * where it lives on disk.
  *
  * The published SKILL.md gets the same shared frontmatter every installer
  * target uses (`buildSkillFrontmatter` in packages/skill/src/agents.ts:
@@ -83,6 +85,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { AGENTS, buildSkillFrontmatter, SHARED_SKILL_FRONTMATTER } from "../packages/skill/src/agents";
+import { listReferenceFiles } from "../packages/skill/src/installer";
 import { pushFilesToRepo, type RepoFile } from "./push-to-external-repo";
 
 export const SKILL_REPO = "NodeSpaceAI/nodespace-skill";
@@ -94,45 +97,44 @@ export function normalizeVersion(version: string): string {
   return version.replace(/^v/, "");
 }
 
-/** The harness-agnostic files every installer target ships -- the
- * intersection of every agent's `shims` list in packages/skill/src/agents.ts
- * (today: SKILL.md, references/cli.md, references/shared-workspaces.md, and
- * references/graph-authored-guidance.md). Harness-specific shims (the
- * `shims/claude-code/nodespace-hook.ts` family) are deliberately excluded:
- * they're per-harness integration glue the installer places into each
- * agent's own hook/plugin system, not part of a generic Agent Skills folder
- * a user can drop into any of them.
+/** The harness-agnostic files every installer target ships: the shims every
+ * agent's `shims` list in packages/skill/src/agents.ts has in common (today
+ * just SKILL.md), plus every `references/*.md` in `packages/skill` -- the
+ * files the installer copies for every agent (`listReferenceFiles`).
+ * Harness-specific shims (the `shims/claude-code/nodespace-hook.ts` family)
+ * are deliberately excluded: they're per-harness integration glue the
+ * installer places into each agent's own hook/plugin system, not part of a
+ * generic Agent Skills folder a user can drop into any of them.
  *
- * Derived from AGENTS rather than hardcoded, on purpose: this is the same
- * "several separate places enumerate what the skill is made of" drift class
+ * Derived rather than hardcoded, on purpose: this is the same "several
+ * separate places enumerate what the skill is made of" drift class
  * `packages/skill/src/tests/installer.test.ts` guards against for
- * build-skill.ts, the installer, and the PTY path -- a hardcoded list
- * here would be exactly the kind of copy that silently stops matching AGENTS
- * if a shared reference is ever added or removed. */
+ * build-skill.ts, the installer, and the PTY path -- a hardcoded list here
+ * would be exactly the kind of copy that silently stops matching the
+ * installer if a reference is ever added or removed.
+ */
 export function sharedShimPaths(): string[] {
   const [first, ...rest] = AGENTS.map((a) => new Set(a.shims));
-  return [...first].filter((path) => rest.every((shims) => shims.has(path)));
+  const common = [...first].filter((path) => rest.every((shims) => shims.has(path)));
+  return [...common, ...listReferenceFiles(SKILL_DIR)];
 }
 
 /** Reads packages/skill's current build inputs from disk -- never a cached
  * or previously-rendered copy, so this always reflects whatever
- * `packages/skill` produces *right now*, drift-free by construction. */
+ * `packages/skill` produces *right now*, drift-free by construction.
+ * `references` maps each reference's path relative to `packages/skill`
+ * (`references/cli.md`) to its content. */
 export function readSkillSource(): {
   body: string;
-  referenceCli: string;
-  referenceSharedWorkspaces: string;
-  referenceGraphAuthoredGuidance: string;
+  references: Record<string, string>;
 } {
   return {
     body: readFileSync(join(SKILL_DIR, "SKILL.md"), "utf8"),
-    referenceCli: readFileSync(join(SKILL_DIR, "references", "cli.md"), "utf8"),
-    referenceSharedWorkspaces: readFileSync(
-      join(SKILL_DIR, "references", "shared-workspaces.md"),
-      "utf8",
-    ),
-    referenceGraphAuthoredGuidance: readFileSync(
-      join(SKILL_DIR, "references", "graph-authored-guidance.md"),
-      "utf8",
+    references: Object.fromEntries(
+      listReferenceFiles(SKILL_DIR).map((path) => [
+        path,
+        readFileSync(join(SKILL_DIR, path), "utf8"),
+      ]),
     ),
   };
 }
@@ -140,9 +142,8 @@ export function readSkillSource(): {
 /** Renders every shared file this script publishes -- the SKILL.md
  * frontmatter is generated here (`compatibility` needs the release version,
  * which `packages/skill`'s own build doesn't know at compile time); every
- * other shared file (currently `references/cli.md`,
- * `references/shared-workspaces.md`, and
- * `references/graph-authored-guidance.md`) is copied through unmodified. */
+ * other shared file (each `references/*.md` in `packages/skill`) is copied
+ * through unmodified. */
 export function renderPublishFiles(version: string): RepoFile[] {
   const v = normalizeVersion(version);
   const frontmatter = buildSkillFrontmatter({

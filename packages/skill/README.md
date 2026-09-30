@@ -41,8 +41,8 @@ consumed two ways, both inside this monorepo's own tooling:
 2. **Published to `NodeSpaceAI/nodespace-skill`.** The release pipeline runs
    `scripts/publish-skill-repo.ts`, which renders the same frontmatter this
    package builds (via `buildSkillFrontmatter` in `src/agents.ts`) plus
-   `SKILL.md`'s body and `references/cli.md`, and pushes them to the public
-   repo — the channel for a harness the app didn't launch.
+   `SKILL.md`'s body and every `references/*.md` file, and pushes them to the
+   public repo — the channel for a harness the app didn't launch.
 
 ## Manual usage (from a source checkout)
 
@@ -66,6 +66,13 @@ directory — it has no source-relative sibling directory to find
 | Antigravity CLI | `~/.gemini/antigravity-cli/` exists | `~/.gemini/antigravity-cli/skills/nodespace/SKILL.md` |
 | OpenCode | `~/.opencode/` exists | `~/.opencode/skills/nodespace/SKILL.md` |
 | Pi | `~/.pi/agent/` exists | `~/.pi/agent/skills/nodespace/SKILL.md` |
+
+Each install copies `SKILL.md`, the agent's harness shim (where it has one) and
+every `references/*.md` file in the package, and writes
+`.nodespace-install.json` beside them listing exactly the files it wrote.
+Uninstall removes the files that record lists, and a reinstall removes any
+listed file the new skill no longer ships. An install from before the record
+existed is cleaned up from the fixed file list the installer wrote back then.
 
 ## Prerequisites
 
