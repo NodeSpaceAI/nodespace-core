@@ -2,13 +2,12 @@
  * Pro-sync variant machine + the built-in Pro UI-extension registration.
  *
  * Exercises the two-signal state machine (`proSync.tier` × the active database's
- * DatabaseSettingsNode) and the registry filtering that resolves which chrome /
- * viewer contributions are active for each variant. The flow is sign-in-first:
- * sign-in → consent → connected, with relogin as the re-auth state for an
- * already-enabled database.
+ * DatabaseSettingsNode) and the `when()` predicates that resolve which chrome /
+ * viewer-tab contributions are active for each variant. The flow is
+ * sign-in-first: sign-in → consent → connected, with relogin as the re-auth
+ * state for an already-enabled database.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import type { Node } from '$lib/types';
 
 vi.mock('$lib/utils/logger', () => ({
   createLogger: () => ({ debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() })
@@ -29,29 +28,18 @@ import { SharedNodeStore } from '$lib/services/shared-node-store.svelte';
 import { resolveProSyncVariant, isProSyncActive } from '$lib/plugins/pro-sync-variant.svelte';
 import {
   getActiveChromeContributions,
-  getActiveViewerExtensions
+  getActiveViewerTabs
 } from '$lib/plugins/ui-extensions.svelte';
 import { uiExtensionRegistry } from '$lib/plugins/ui-extensions';
-import { DATABASE_SETTINGS_NODE_ID } from '$lib/constants/database-settings';
+import proExtensions, { proSyncExtension } from '$lib/plugins/pro-plugin';
+import FirstProConsentSlot from '$lib/components/first-pro-consent-slot.svelte';
+import ProReloginSlot from '$lib/components/pro-relogin-slot.svelte';
+import CollaborationTab from '$lib/components/collaboration/collaboration-tab.svelte';
+import { seedSettings, seedVariant } from '../helpers/sync-variant-fixtures';
 
-/**
- * Seed the active database's settings singleton with the given props. The daemon
- * serializes DatabaseSettingsNode with FLAT properties (`sync_enabled`/`auth_status`
- * directly on `properties`), so mirror that shape here.
- */
-function seedSettings(props: { sync_enabled?: boolean; auth_status?: string }): void {
-  const node: Node = {
-    id: DATABASE_SETTINGS_NODE_ID,
-    nodeType: 'database-settings',
-    content: '',
-    properties: props,
-    mentions: [],
-    createdAt: new Date().toISOString(),
-    modifiedAt: new Date().toISOString(),
-    version: 1
-  };
-  SharedNodeStore.getInstance().setNode(node, { type: 'database', reason: 'seed' }, true);
-}
+/** The host key of one of the built-in extension's contributions. */
+const key = (contributionId: string) => `${proSyncExtension.id}/${contributionId}`;
+const keysOf = (list: { key: string }[]) => list.map((c) => c.key);
 
 describe('UI-extension registry', () => {
   beforeEach(() => {
@@ -83,9 +71,16 @@ describe('UI-extension registry', () => {
       expect(uiExtensionRegistry.chromeFor('app-shell-overlay')).toEqual([]);
       // 3 modals (consent / relogin / connected) — no modal for teaser or sign-in.
       expect(uiExtensionRegistry.chromeFor('app-shell-modal')).toHaveLength(3);
-      // 4 collaboration viewer extensions (sign-in / consent / relogin / connected).
-      expect(uiExtensionRegistry.viewersFor('collection')).toHaveLength(4);
-      expect(uiExtensionRegistry.viewersFor('text')).toEqual([]);
+      // One Collaboration tab: a variant change keeps its key, so the selected
+      // tab survives it. The locked-vs-live choice lives inside the component.
+      expect(uiExtensionRegistry.viewerTabsFor('collection')).toHaveLength(1);
+      expect(uiExtensionRegistry.viewerTabsFor('text')).toEqual([]);
+    });
+
+    it('exports the registered extension as the default extension list for a build entry', () => {
+      expect(proExtensions).toEqual([proSyncExtension]);
+      // The exported object is the one that is registered.
+      expect(uiExtensionRegistry.all()).toContain(proExtensions[0]);
     });
   });
 
@@ -177,55 +172,61 @@ describe('UI-extension registry', () => {
       proSync.tier = 'community';
       expect(getActiveChromeContributions('app-shell-overlay')).toEqual([]);
       expect(getActiveChromeContributions('app-shell-modal')).toEqual([]);
-      expect(getActiveViewerExtensions('collection')).toEqual([]);
+      expect(getActiveViewerTabs('collection')).toEqual([]);
     });
 
-    it('sign-in: no overlay, no modal, a locked collab tab', () => {
+    it('sign-in: no overlay, no modal, the collab tab', async () => {
       proSync.tier = 'pro';
       seedSettings({ sync_enabled: false, auth_status: 'local' });
       expect(getActiveChromeContributions('app-shell-overlay')).toEqual([]);
       // No consent modal before sign-in.
       expect(getActiveChromeContributions('app-shell-modal')).toEqual([]);
-      const viewers = getActiveViewerExtensions('collection');
-      expect(viewers).toHaveLength(1);
-      expect(viewers[0].variant).toBe('sign-in');
-      expect(viewers[0].tab.id).toBe('collaboration');
+      const tabs = getActiveViewerTabs('collection');
+      expect(keysOf(tabs)).toEqual([key('collaboration')]);
+      expect(tabs[0].label).toBe('Collaboration');
+      expect((await tabs[0].load()).default).toBe(CollaborationTab);
     });
 
-    it('consent: no overlay, the consent modal, a locked collab tab', () => {
+    it('consent: no overlay, the consent modal, the collab tab', async () => {
       proSync.tier = 'pro';
       seedSettings({ sync_enabled: false, auth_status: 'connected' });
       expect(getActiveChromeContributions('app-shell-overlay')).toEqual([]);
       const modal = getActiveChromeContributions('app-shell-modal');
-      expect(modal).toHaveLength(1);
-      expect(modal[0].variant).toBe('consent');
-      const viewers = getActiveViewerExtensions('collection');
-      expect(viewers).toHaveLength(1);
-      expect(viewers[0].variant).toBe('consent');
+      expect(keysOf(modal)).toEqual([key('consent-modal')]);
+      expect((await modal[0].load()).default).toBe(FirstProConsentSlot);
+      expect(keysOf(getActiveViewerTabs('collection'))).toEqual([key('collaboration')]);
     });
 
-    it('relogin: no overlay, the relogin modal, the live collab tab', () => {
+    it('relogin: no overlay, the relogin modal, the collab tab', async () => {
       proSync.tier = 'pro';
       seedSettings({ sync_enabled: true, auth_status: 'local' });
       expect(getActiveChromeContributions('app-shell-overlay')).toEqual([]);
       const modal = getActiveChromeContributions('app-shell-modal');
-      expect(modal).toHaveLength(1);
-      expect(modal[0].variant).toBe('relogin');
-      const viewers = getActiveViewerExtensions('collection');
-      expect(viewers).toHaveLength(1);
-      expect(viewers[0].variant).toBe('relogin');
+      expect(keysOf(modal)).toEqual([key('relogin-modal-relogin')]);
+      expect((await modal[0].load()).default).toBe(ProReloginSlot);
+      expect(keysOf(getActiveViewerTabs('collection'))).toEqual([key('collaboration')]);
     });
 
-    it('connected: no overlay, the relogin modal, the live collab tab', () => {
+    it('connected: no overlay, the relogin modal, the collab tab', async () => {
       proSync.tier = 'pro';
       seedSettings({ sync_enabled: true, auth_status: 'connected' });
       expect(getActiveChromeContributions('app-shell-overlay')).toEqual([]);
       const modal = getActiveChromeContributions('app-shell-modal');
-      expect(modal).toHaveLength(1);
-      expect(modal[0].variant).toBe('connected');
-      const viewers = getActiveViewerExtensions('collection');
-      expect(viewers).toHaveLength(1);
-      expect(viewers[0].variant).toBe('connected');
+      expect(keysOf(modal)).toEqual([key('relogin-modal-connected')]);
+      expect((await modal[0].load()).default).toBe(ProReloginSlot);
+      expect(keysOf(getActiveViewerTabs('collection'))).toEqual([key('collaboration')]);
+    });
+
+    it('the collab tab keeps one key across sign-in → consent → connected', () => {
+      seedVariant('sign-in');
+      const signIn = keysOf(getActiveViewerTabs('collection'));
+      seedVariant('consent');
+      const consent = keysOf(getActiveViewerTabs('collection'));
+      seedVariant('connected');
+      const connected = keysOf(getActiveViewerTabs('collection'));
+      expect(signIn).toEqual([key('collaboration')]);
+      expect(consent).toEqual(signIn);
+      expect(connected).toEqual(signIn);
     });
   });
 
@@ -241,7 +242,7 @@ describe('UI-extension registry', () => {
       expect(resolveProSyncVariant()).toBe('teaser');
       expect(isProSyncActive()).toBe(false);
       expect(getActiveChromeContributions('app-shell-modal')).toEqual([]);
-      expect(getActiveViewerExtensions('collection')).toEqual([]);
+      expect(getActiveViewerTabs('collection')).toEqual([]);
     });
 
     it('flipping the flag back on reveals exactly the pre-existing variant, unchanged', () => {

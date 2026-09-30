@@ -1,8 +1,8 @@
 /**
  * AccountSettings — Settings → Account.
  *
- * Owns the two account-access affordances the removed top-right
- * `pro-sync-pill` overlay used to be the sole home for: signing out and
+ * Owns the two account-access affordances the removed top-right sync-status
+ * pill overlay used to be the sole home for: signing out and
  * opening the Invitations inbox manually. Sign-in itself is NOT
  * reimplemented here (it lives in `add-synced-database-dialog.svelte`); a
  * signed-out user is only pointed there.

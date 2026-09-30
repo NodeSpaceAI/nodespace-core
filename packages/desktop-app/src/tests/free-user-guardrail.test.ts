@@ -46,7 +46,7 @@ import { initializeTauriSyncListeners } from '$lib/services/tauri-sync-listener'
 import { resolveProSyncVariant, isProSyncActive } from '$lib/plugins/pro-sync-variant.svelte';
 import {
   getActiveChromeContributions,
-  getActiveViewerExtensions
+  getActiveViewerTabs
 } from '$lib/plugins/ui-extensions.svelte';
 import AccountSettings from '$lib/components/settings/sections/account-settings.svelte';
 
@@ -147,7 +147,7 @@ describe('Free-user guardrail: Pro features stay inert in the community build', 
 
     it('the modal slot and the collaboration tab contribute nothing in community', () => {
       expect(getActiveChromeContributions('app-shell-modal')).toEqual([]);
-      expect(getActiveViewerExtensions('collection')).toEqual([]);
+      expect(getActiveViewerTabs('collection')).toEqual([]);
     });
 
     it("the default 'unknown' tier (pre-probe) is teaser-only too — no Pro surface flashes", () => {
@@ -155,7 +155,7 @@ describe('Free-user guardrail: Pro features stay inert in the community build', 
       expect(resolveProSyncVariant()).toBe('teaser');
       expect(getActiveChromeContributions('app-shell-overlay')).toEqual([]);
       expect(getActiveChromeContributions('app-shell-modal')).toEqual([]);
-      expect(getActiveViewerExtensions('collection')).toEqual([]);
+      expect(getActiveViewerTabs('collection')).toEqual([]);
     });
   });
 

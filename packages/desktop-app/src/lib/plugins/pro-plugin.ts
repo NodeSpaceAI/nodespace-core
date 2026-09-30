@@ -2,9 +2,9 @@
  * Built-in Pro UI extension
  * =================================
  *
- * The single {@link UiExtensionDefinition} for the Pro-sync surface. It maps each
- * variant of the two-signal state machine (see `pro-sync-variant.svelte.ts`) to the
- * component that renders it:
+ * The single {@link NodespaceExtension} for the Pro-sync surface. Each
+ * contribution's `when()` selects the variants of the two-signal state machine
+ * (see `pro-sync-variant.svelte.ts`) it renders for:
  *
  *   | variant     | modal              | collection tab       |
  *   |-------------|--------------------|----------------------|
@@ -14,12 +14,19 @@
  *   | relogin     | pro-relogin-slot   | collaboration-tab    |
  *   | connected   | pro-relogin-slot   | collaboration-tab    |
  *
+ * The four variants that show a Collaboration tab are ONE contribution
+ * (`collaboration`): the host keys a tab by its contribution key, so keeping the
+ * key constant keeps the selected tab across a variant change (for example
+ * "Turn on sync", then consent accepted, then connected). The locked-vs-live
+ * choice lives inside `collaboration-tab.svelte`. The modal has one contribution
+ * per variant so the re-login slot still remounts when the variant moves between
+ * `relogin` and `connected`.
+ *
  * There is no `app-shell-overlay` chrome anymore: the top-right sync-status
- * pill (`pro-sync-pill`), the community-build upsell teaser (`pro-teaser-pill`),
- * and the turn-on-sync nudge (`enable-sync-pill`) were all removed. Account
- * access now lives in Settings → Account (signed-in email, sign out, opening
- * Invitations), sign-in lives in Settings → Database → "Add synced database…",
- * and reopening the publish-consent modal after a decline lives in
+ * pill, the community-build upsell teaser, and the turn-on-sync nudge were all
+ * removed. Account access now lives in Settings → Account (signed-in email, sign
+ * out, opening Invitations), sign-in lives in Settings → Database → "Add synced
+ * database…", and reopening the publish-consent modal after a decline lives in
  * `collaboration-locked.svelte`'s "Turn on sync" button (shown for the
  * `consent` variant) — so no top-right pill is needed for any of the three.
  *
@@ -35,65 +42,65 @@
  * mounted unchanged; the small wrappers (`pro-relogin-slot`,
  * `collaboration-tab`) exist only to move their mounting behind the registry.
  *
- * Registration is a module-load side effect so the contributions are present
- * before the first render (the registry is static config, not reactive state).
+ * The default export is the extension list a build entry hands to
+ * `registerExtensions()`. Until builds inject extensions that way, this module
+ * also registers itself as a load-time side effect, so the contributions are
+ * present before the first render (the registry is static config, not reactive
+ * state).
  */
 
-import { uiExtensionRegistry, type UiExtensionDefinition } from './ui-extensions';
+import { uiExtensionRegistry, type NodespaceExtension } from './ui-extensions';
+import { resolveProSyncVariant, type ProSyncVariant } from './pro-sync-variant.svelte';
 
-const COLLABORATION_TAB = { appliesTo: 'collection', id: 'collaboration', label: 'Collaboration' };
+/** A `when()` that holds while the resolved variant is one of `variants`. */
+const whenVariant =
+  (...variants: ProSyncVariant[]) =>
+  () =>
+    variants.includes(resolveProSyncVariant());
 
-export const proSyncUiExtension: UiExtensionDefinition = {
+export const proSyncExtension: NodespaceExtension = {
   id: 'pro-sync',
-  name: 'NodeSpace Pro Sync',
-  version: '1.0.0',
+  apiVersion: 1,
   chrome: [
     // First-Pro data-sharing consent modal — shown once the user has signed in but
     // not yet opted into sync. The gate that keeps local data from reaching the
     // public workspace without an explicit, irreversible choice.
     {
+      id: 'consent-modal',
       slot: 'app-shell-modal',
-      variant: 'consent',
-      lazyLoad: () => import('$lib/components/first-pro-consent-slot.svelte')
+      when: whenVariant('consent'),
+      load: () => import('$lib/components/first-pro-consent-slot.svelte')
     },
     // Re-login modal — only meaningful once sync is enabled for the database; the
     // wrapper itself only shows the modal on an AUTH_REQUIRED transition.
     {
+      id: 'relogin-modal-relogin',
       slot: 'app-shell-modal',
-      variant: 'relogin',
-      lazyLoad: () => import('$lib/components/pro-relogin-slot.svelte')
+      when: whenVariant('relogin'),
+      load: () => import('$lib/components/pro-relogin-slot.svelte')
     },
     {
+      id: 'relogin-modal-connected',
       slot: 'app-shell-modal',
-      variant: 'connected',
-      lazyLoad: () => import('$lib/components/pro-relogin-slot.svelte')
+      when: whenVariant('connected'),
+      load: () => import('$lib/components/pro-relogin-slot.svelte')
     }
   ],
-  viewerExtensions: [
+  viewerTabs: [
     // Collaboration tab. Locked placeholder while sync is disabled for this
     // database (Pro daemon, sync_enabled: false — whether or not signed in); the
-    // live view once enabled.
+    // live view once enabled. The wrapper picks which.
     {
-      tab: COLLABORATION_TAB,
-      variant: 'sign-in',
-      lazyLoad: () => import('$lib/components/collaboration/collaboration-locked.svelte')
-    },
-    {
-      tab: COLLABORATION_TAB,
-      variant: 'consent',
-      lazyLoad: () => import('$lib/components/collaboration/collaboration-locked.svelte')
-    },
-    {
-      tab: COLLABORATION_TAB,
-      variant: 'relogin',
-      lazyLoad: () => import('$lib/components/collaboration/collaboration-tab.svelte')
-    },
-    {
-      tab: COLLABORATION_TAB,
-      variant: 'connected',
-      lazyLoad: () => import('$lib/components/collaboration/collaboration-tab.svelte')
+      id: 'collaboration',
+      nodeType: 'collection',
+      label: 'Collaboration',
+      when: whenVariant('sign-in', 'consent', 'relogin', 'connected'),
+      load: () => import('$lib/components/collaboration/collaboration-tab.svelte')
     }
   ]
 };
 
-uiExtensionRegistry.register(proSyncUiExtension);
+export default [proSyncExtension];
+
+// Transitional self-registration; removed once builds register extensions themselves.
+uiExtensionRegistry.register(proSyncExtension);

@@ -34,8 +34,7 @@
   } from '$lib/utils/external-links';
   import OnboardingWizard from '$lib/components/onboarding/onboarding-wizard.svelte';
   import { proSync } from '$lib/stores/pro-sync.svelte';
-  import { getActiveChromeContributions } from '$lib/plugins/ui-extensions.svelte';
-  import ExtensionOutlet from '$lib/plugins/extension-outlet.svelte';
+  import ChromeSlotOutlet from '$lib/plugins/chrome-slot-outlet.svelte';
   import ConflictToast from '$lib/components/conflict-toast.svelte';
   import NodeRefPreview from '$lib/components/references/node-ref-preview.svelte';
   import { nodeRefPreview } from '$lib/services/node-ref-preview.svelte';
@@ -689,16 +688,10 @@
           {/if}
         </div>
 
-        <!-- Overlay chrome slot — registry-driven, floats top-right of the
-             app-shell content. Currently empty: the Pro sync-status pill,
-             upgrade teaser, and turn-on-sync nudge that used to render here
-             were removed (account access now lives in Settings → Account,
-             sign-in in Settings → Database). Left wired up for any future
-             `app-shell-overlay` chrome contribution. -->
-        <div class="pro-sync-pill-slot">
-          {#each getActiveChromeContributions('app-shell-overlay') as c (c.variant)}
-            <ExtensionOutlet load={c.lazyLoad} />
-          {/each}
+        <!-- Generic overlay slot — extension-driven, floats top-right of the
+             app-shell content. Core contributes nothing to it. -->
+        <div class="extension-overlay-slot">
+          <ChromeSlotOutlet name="app-shell-overlay" />
         </div>
       </div>
 
@@ -729,11 +722,8 @@
          and Settings → Import Sources both open this single instance). -->
     <ImportOptionsModal bind:open={importModalStore.open} />
 
-    <!-- Pro chrome modal slot (re-login prompt when the daemon's session can't be
-         refreshed, T18) — registry-driven. -->
-    {#each getActiveChromeContributions('app-shell-modal') as c (c.variant)}
-      <ExtensionOutlet load={c.lazyLoad} />
-    {/each}
+    <!-- Generic modal slot — extension-driven; core contributes nothing to it. -->
+    <ChromeSlotOutlet name="app-shell-modal" />
   </NodeServiceContext>
 </ThemeProvider>
 
@@ -801,12 +791,12 @@
     flex: 1;
     min-height: 0;
     overflow: hidden;
-    position: relative; /* anchor for .pro-sync-pill-slot */
+    position: relative; /* anchor for .extension-overlay-slot */
   }
 
   /* Overlay chrome anchor (floats over the content grid, top-right).
-     Currently empty — see the template comment above. */
-  .pro-sync-pill-slot {
+     Empty unless an extension contributes to `app-shell-overlay`. */
+  .extension-overlay-slot {
     position: absolute;
     top: 8px;
     right: 12px;

@@ -3,7 +3,7 @@
 
   Owns the account-access affordances that used to be reachable ONLY through
   now-removed always-mounted app chrome: signing out and opening the
-  Invitations inbox manually (formerly the top-right `pro-sync-pill`), and
+  Invitations inbox manually (formerly the top-right sync-status pill), and
   reopening the first-Pro publish-consent modal after a decline (formerly the
   top-right `enable-sync-pill`, which had no per-collection scoping —
   `collaboration-locked.svelte`'s own "Turn on sync" button only reaches a
