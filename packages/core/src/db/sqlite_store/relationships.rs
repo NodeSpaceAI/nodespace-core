@@ -922,37 +922,53 @@ impl SqliteStore {
         Ok(ids)
     }
 
-    /// Every `member_of` edge belonging to a node that is a member of MORE THAN
-    /// ONE collection, as `(member_id, collection_id)` pairs. A node's first
-    /// membership rides its atomic cloud node insert, so only these SECONDARY
-    /// memberships need a separate push; the cloud-sync membership sweep uses this
-    /// to converge them. Bounding to multi-membership nodes keeps the sweep cheap
-    /// — the single-membership majority (already covered atomically) is never
-    /// enumerated. Idempotent re-push of the one atomic-covered edge among a
-    /// multi-membership node's edges is a benign no-op on the cloud side.
-    ///
-    /// `person` members are excluded: their collection memberships are RBAC state
-    /// managed server-side by the membership RPCs (invite / set_member) and are
-    /// not the sweep's concern — re-asserting them would bypass those gates and
-    /// waste round-trips. Content and nested-collection memberships are kept.
-    pub async fn get_multi_membership_edges(&self) -> Result<Vec<(String, String)>> {
+    /// Every `member_of` edge, as `(member_id, collection_id)`, whose member node
+    /// has at least `min_memberships` `member_of` edges and whose `node_type` is
+    /// not in `exclude_member_types`. A `min_memberships` below 1 behaves as 1;
+    /// an unknown type excludes nothing. The order is unspecified.
+    pub async fn member_of_edges(
+        &self,
+        min_memberships: usize,
+        exclude_member_types: &[&str],
+    ) -> Result<Vec<(String, String)>> {
+        // Every member has at least one edge, so a threshold of 0 already
+        // matches what 1 does. The clamp only states the documented contract.
+        let mut params: Vec<libsql::Value> = vec![libsql::Value::Integer(
+            i64::try_from(min_memberships.max(1)).unwrap_or(i64::MAX),
+        )];
+
+        // `?1` is the threshold; the excluded types bind to `?2..`.
+        let mut exclusion = String::new();
+        if !exclude_member_types.is_empty() {
+            let placeholders: Vec<String> = (2..=exclude_member_types.len() + 1)
+                .map(|i| format!("?{i}"))
+                .collect();
+            exclusion = format!("AND n.node_type NOT IN ({}) ", placeholders.join(", "));
+            params.extend(
+                exclude_member_types
+                    .iter()
+                    .map(|node_type| libsql::Value::Text((*node_type).to_string())),
+            );
+        }
+
+        let sql = format!(
+            "SELECT r.in_node, r.out_node FROM relationship r \
+             JOIN node n ON n.id = r.in_node \
+             WHERE r.relationship_type = 'member_of' \
+               {exclusion}\
+               AND r.in_node IN ( \
+                 SELECT in_node FROM relationship \
+                 WHERE relationship_type = 'member_of' \
+                 GROUP BY in_node HAVING COUNT(*) >= ?1 \
+               )"
+        );
+
         let mut rows = self
             .read()
             .await?
-            .query(
-                "SELECT r.in_node, r.out_node FROM relationship r \
-                 JOIN node n ON n.id = r.in_node \
-                 WHERE r.relationship_type = 'member_of' \
-                   AND n.node_type != 'person' \
-                   AND r.in_node IN ( \
-                     SELECT in_node FROM relationship \
-                     WHERE relationship_type = 'member_of' \
-                     GROUP BY in_node HAVING COUNT(*) > 1 \
-                   )",
-                (),
-            )
+            .query(&sql, params)
             .await
-            .context("Failed to get multi-membership edges")?;
+            .context("Failed to read member_of edges")?;
 
         let mut edges = Vec::new();
         while let Some(row) = rows.next().await? {

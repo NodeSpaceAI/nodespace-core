@@ -807,6 +807,7 @@ impl<'a> CollectionService<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashSet;
 
     // ========================================================================
     // parse_collection_path tests
@@ -1092,6 +1093,20 @@ mod tests {
         (ns, dir)
     }
 
+    /// `member_of_edges` as a set, because the query's order is unspecified.
+    async fn member_of_edge_set(
+        ns: &crate::services::NodeService,
+        min_memberships: usize,
+        exclude_member_types: &[&str],
+    ) -> HashSet<(String, String)> {
+        ns.store()
+            .member_of_edges(min_memberships, exclude_member_types)
+            .await
+            .unwrap()
+            .into_iter()
+            .collect()
+    }
+
     /// The core of the dedup fix: two INDEPENDENT stores (two devices / re-import
     /// runs) creating the same-named collection converge on ONE id, so sync upserts
     /// them into a single node instead of accumulating duplicates.
@@ -1197,12 +1212,11 @@ mod tests {
         );
     }
 
-    /// The membership sweep only replicates SECONDARY memberships.
-    /// `get_multi_membership_edges` returns every edge of a node in >1 collection
-    /// and excludes single-membership nodes (their one membership rides the atomic
-    /// node insert), so the sweep stays bounded to the nodes that actually need it.
+    /// With a threshold of two, `member_of_edges` returns every edge of a node
+    /// that is a member of more than one collection and none of the edges of a
+    /// node that is a member of only one.
     #[tokio::test]
-    async fn get_multi_membership_edges_only_multi_membership_nodes() {
+    async fn member_of_edges_with_threshold_two_skips_single_memberships() {
         let (ns, _dir) = test_node_service().await;
         let svc = CollectionService::new(ns.store(), &ns);
         let default = svc.resolve_path("Default").await.unwrap().leaf.id;
@@ -1230,18 +1244,126 @@ mod tests {
             .unwrap();
         svc.add_to_collection(&single, &default).await.unwrap();
 
-        let edges = ns.store().get_multi_membership_edges().await.unwrap();
+        let edges = member_of_edge_set(&ns, 2, &[]).await;
+        let expected: HashSet<(String, String)> = [
+            (multi.clone(), default.clone()),
+            (multi.clone(), topic.clone()),
+        ]
+        .into_iter()
+        .collect();
         assert_eq!(
-            edges.len(),
-            2,
-            "only the multi-membership node's two edges, not the single node's: {edges:?}"
+            edges, expected,
+            "only the multi-membership node's two edges, not the single node's"
+        );
+    }
+
+    /// `exclude_member_types` drops every edge whose member has a listed
+    /// `node_type` and leaves all other edges alone. The exclusion is applied
+    /// to the member, not the collection, and it takes any number of types.
+    #[tokio::test]
+    async fn member_of_edges_excludes_listed_member_types() {
+        let (ns, _dir) = test_node_service().await;
+        let svc = CollectionService::new(ns.store(), &ns);
+        let default = svc.resolve_path("Default").await.unwrap().leaf.id;
+        let topic = svc.resolve_path("Architecture").await.unwrap().leaf.id;
+
+        let person = ns
+            .get_local_person()
+            .await
+            .unwrap()
+            .expect("the seeded local person");
+        svc.add_to_collection(&person.id, &default).await.unwrap();
+        svc.add_to_collection(&person.id, &topic).await.unwrap();
+
+        let content = ns
+            .create_node(Node::new(
+                "text".to_string(),
+                "content".to_string(),
+                json!({}),
+            ))
+            .await
+            .unwrap();
+        svc.add_to_collection(&content, &default).await.unwrap();
+        svc.add_to_collection(&content, &topic).await.unwrap();
+
+        let person_edges: HashSet<(String, String)> = [
+            (person.id.clone(), default.clone()),
+            (person.id.clone(), topic.clone()),
+        ]
+        .into_iter()
+        .collect();
+        let content_edges: HashSet<(String, String)> = [
+            (content.clone(), default.clone()),
+            (content.clone(), topic.clone()),
+        ]
+        .into_iter()
+        .collect();
+
+        let unfiltered = member_of_edge_set(&ns, 2, &[]).await;
+        assert!(
+            person_edges.is_subset(&unfiltered) && content_edges.is_subset(&unfiltered),
+            "with nothing excluded both nodes' edges appear: {unfiltered:?}"
+        );
+
+        let without_persons = member_of_edge_set(&ns, 2, &["person"]).await;
+        assert!(
+            without_persons.is_disjoint(&person_edges),
+            "the person's edges are absent when `person` is excluded: {without_persons:?}"
         );
         assert!(
-            edges.iter().all(|(m, _)| m == &multi),
-            "the single-membership node is excluded entirely"
+            content_edges.is_subset(&without_persons),
+            "the content node's edges remain: {without_persons:?}"
         );
-        let colls: std::collections::HashSet<&str> =
-            edges.iter().map(|(_, c)| c.as_str()).collect();
-        assert!(colls.contains(default.as_str()) && colls.contains(topic.as_str()));
+        let expected: HashSet<(String, String)> = unfiltered
+            .iter()
+            .filter(|(member, _)| member != &person.id)
+            .cloned()
+            .collect();
+        assert_eq!(
+            without_persons, expected,
+            "excluding `person` removes exactly the person's edges"
+        );
+
+        assert_eq!(
+            member_of_edge_set(&ns, 2, &["not-a-node-type"]).await,
+            unfiltered,
+            "an unknown type excludes nothing"
+        );
+
+        let without_persons_or_text = member_of_edge_set(&ns, 2, &["person", "text"]).await;
+        assert!(
+            without_persons_or_text.is_disjoint(&person_edges)
+                && without_persons_or_text.is_disjoint(&content_edges),
+            "every listed type is excluded, not only the first: {without_persons_or_text:?}"
+        );
+    }
+
+    /// A threshold below one behaves as one: `(0, ..)` and `(1, ..)` return the
+    /// same edges, and those include the edge of a node with a single
+    /// membership.
+    #[tokio::test]
+    async fn member_of_edges_threshold_below_one_behaves_as_one() {
+        let (ns, _dir) = test_node_service().await;
+        let svc = CollectionService::new(ns.store(), &ns);
+        let default = svc.resolve_path("Default").await.unwrap().leaf.id;
+
+        let single = ns
+            .create_node(Node::new(
+                "text".to_string(),
+                "single".to_string(),
+                json!({}),
+            ))
+            .await
+            .unwrap();
+        svc.add_to_collection(&single, &default).await.unwrap();
+
+        let at_zero = member_of_edge_set(&ns, 0, &[]).await;
+        let at_one = member_of_edge_set(&ns, 1, &[]).await;
+
+        assert_eq!(at_zero, at_one, "a threshold of 0 behaves as 1");
+        assert!(
+            at_one.contains(&(single, default)),
+            "a threshold of 1 includes a single-membership node's edge: {at_one:?}"
+        );
     }
 }
