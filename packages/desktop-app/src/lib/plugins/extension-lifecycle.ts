@@ -24,8 +24,9 @@
  *   - May return a cleanup, synchronously or through a promise. The cleanups run
  *     when the shell unmounts, in reverse registration order, whichever order the
  *     `start()` calls settled in. A `start()` that settles after that has already
- *     happened has its cleanup run at once. A cleanup that returns a rejected
- *     promise has the rejection logged.
+ *     happened has its cleanup run at once. A cleanup that returns a promise is
+ *     not awaited: its rejection is logged, and the next cleanup starts at once,
+ *     so the reverse order holds for each cleanup's synchronous part only.
  *
  * `lifecycle.onDatabaseActivated(databaseId)`
  *   - Synchronous, called once per committed activation of a database:
@@ -113,7 +114,7 @@ export function startExtensions(): () => void {
   };
 
   extensions.forEach((extension, index) => {
-    // Every read of extension-owned state sits inside the try, so a throwing
+    // The reads of `lifecycle` and its hooks sit inside the try, so a throwing
     // getter is isolated like a throwing hook.
     try {
       const lifecycle = extension.lifecycle;

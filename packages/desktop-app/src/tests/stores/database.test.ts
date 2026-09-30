@@ -1025,6 +1025,34 @@ describe('Database Store', () => {
       expect(databaseStore.loading).toBe(false);
     });
 
+    it('load() does not fire the hook when evicting the previous caches throws, and records the error', async () => {
+      localStorage.setItem('nodespace.activeDatabaseId', 'a');
+      listing();
+      clearAll.mockImplementationOnce(() => {
+        throw new Error('evict failed');
+      });
+
+      await databaseStore.load();
+
+      expect(onDatabaseActivated).not.toHaveBeenCalled();
+      expect(databaseStore.error).toBe('evict failed');
+    });
+
+    it('switchTo does not fire the hook when evicting the previous caches throws, and records the error', async () => {
+      databaseStore.databases = [db('a'), db('b')];
+      databaseStore.activeDatabaseId = 'a';
+      mockInvoke.mockResolvedValue(undefined);
+      clearAll.mockImplementationOnce(() => {
+        throw new Error('evict failed');
+      });
+
+      await databaseStore.switchTo('b');
+
+      expect(onDatabaseActivated).not.toHaveBeenCalled();
+      expect(databaseStore.error).toBe('evict failed');
+      expect(clearAllTabs).not.toHaveBeenCalled();
+    });
+
     it('a throwing hook does not abort the switch', async () => {
       databaseStore.databases = [db('a'), db('b')];
       databaseStore.activeDatabaseId = 'a';

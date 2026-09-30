@@ -452,7 +452,12 @@ describe('wiring and import graph', () => {
   }
 
   it('starts extensions inside the app shell Tauri-bridge branch and disposes them in its unmount cleanup', () => {
-    const shell = read('lib/components/layout/app-shell.svelte');
+    // Comments are stripped so a call that is commented out cannot satisfy the
+    // assertions below. The `//` guard keeps `https://…` in strings intact.
+    const shell = read('lib/components/layout/app-shell.svelte').replace(
+      /\/\*[\s\S]*?\*\/|(?<![:'"])\/\/[^\n]*/g,
+      ''
+    );
 
     // The branch that runs only when the Tauri bridge is present, and the cleanup
     // the mount returns after it.
