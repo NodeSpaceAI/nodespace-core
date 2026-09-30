@@ -68,6 +68,8 @@ export function extensionContentGlobs(entry) {
   // Not escaped, unlike the test glob: Tailwind splits a glob into its base
   // directory and the rest and escapes the base itself, and its path
   // normalization would turn a backslash escape added here into a separator.
+  // The cost is Tailwind's own limit: a directory whose name is itself brace,
+  // extglob or backslash syntax is not matched.
   return [`${toPosix(dirname(entry))}/**/*.{html,js,svelte,ts}`];
 }
 

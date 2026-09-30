@@ -107,9 +107,15 @@ describe('nodespace extensions build entry', () => {
     });
 
     it('escapes glob syntax in the directory of the test glob, which Vitest matches literally', () => {
-      expect(extensionTestGlobs('/work/ext (1)/[team]/{a,b}/index.ts')).toEqual([
-        '/work/ext \\(1\\)/\\[team\\]/\\{a,b\\}/**/*.test.ts'
+      const entry = '/work/ext (1)/[team]/{a,b}/d!(x)/e+(x)/f@(x)/m|x/g*?/index.ts';
+      expect(extensionTestGlobs(entry)).toEqual([
+        '/work/ext \\(1\\)/\\[team\\]/\\{a,b\\}/d\\!\\(x\\)/e\\+\\(x\\)/f\\@\\(x\\)/m\\|x/g\\*\\?/**/*.test.ts'
       ]);
+    });
+
+    // A backslash is the path separator on Windows, where toPosix turns it into a slash first.
+    it.skipIf(process.platform === 'win32')('escapes a backslash in the directory name', () => {
+      expect(extensionTestGlobs('/work/n\\x/index.ts')).toEqual(['/work/n\\\\x/**/*.test.ts']);
     });
 
     it('leaves the content glob unescaped, because Tailwind escapes the base directory itself', () => {
