@@ -15,8 +15,8 @@ resolver = "2"
 
 [workspace.package]
 # Canonical version for every workspace member crate below (agent, cli, core,
-# daemon, nlp-engine, nodespace-types, proto) via `version.workspace = true` in
-# each crate's [package] section — a member crate must never hardcode its own
+# daemon, nlp-engine, nodespace-types, proto, nodespace-app-lib) via
+# `version.workspace = true` in each crate's [package] section — a member crate must never hardcode its own
 # version, or it silently drifts from the app version that `scripts/release.ts`
 # bumps (packages/desktop-app/src-tauri/tauri.conf.json is the ultimate
 # canonical source; `scripts/release.ts`'s `release:bump` writes this field too,

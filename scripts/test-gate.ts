@@ -279,7 +279,7 @@ await run({
 // headless in ~2s at full parallelism, so `rust:test` (above) runs them
 // alongside every other crate's. Narrowing this step is what leaves them free
 // to do that — both a bare `cargo test -p nodespace-app-lib` and `--tests` would
-// additionally re-run the lib/bin unittest targets here, needlessly, under the
+// additionally re-run the lib unittest target here, needlessly, under the
 // =1 cap only this suite requires. (`--tests` means "every target with
 // test = true", not "the tests/ directory".)
 //
