@@ -177,7 +177,7 @@ export const BASELINES = {
   // the Pro proto, CloudSyncService, ProClient / ProTier, Pro Worker URLs
   proProtocol: 95,
   // quoted pro:tier-detected, sync:status and sync:error event names
-  proEvents: 87,
+  proEvents: 81,
   // the Pro membership service
   membershipService: 54,
   // Pro build, daemon, socket, launchd and installer branching
@@ -187,11 +187,11 @@ export const BASELINES = {
   // cloud embedding and membership-edge sync hooks
   cloudSyncHooks: 15,
   // Supabase, RLS, pgvector, nodespace-sync and "Pro daemon" wording
-  cloudWording: 89,
+  cloudWording: 88,
   // the word tenant (one fixture exempt, see EXEMPTIONS)
   tenantWording: 507,
   // the word Pro, except chip and model names such as "M2 Pro", "DeepSeek V4 Pro"
-  proWording: 314,
+  proWording: 312,
   // files whose basename has a pro segment
   proNamedFiles: 16,
 } satisfies Record<MarkerName, number>;
