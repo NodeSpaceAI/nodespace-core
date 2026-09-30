@@ -21,6 +21,18 @@ function toPosix(path) {
 }
 
 /**
+ * Escape glob syntax in a literal path, so a directory named `ext (1)` matches
+ * itself instead of being read as a pattern (which would silently match
+ * nothing).
+ *
+ * @param {string} path a forward-slash path
+ * @returns {string}
+ */
+function escapeGlob(path) {
+  return path.replace(/[()[\]{}*?!+@|\\]/g, '\\$&');
+}
+
+/**
  * Resolve the extensions entry from the raw variable value.
  *
  * @param {string | undefined} raw the value of {@link EXTENSIONS_ENV}
@@ -53,6 +65,9 @@ export function resolveExtensionsEntry(raw, root) {
  */
 export function extensionContentGlobs(entry) {
   if (entry === null) return [];
+  // Not escaped, unlike the test glob: Tailwind splits a glob into its base
+  // directory and the rest and escapes the base itself, and its path
+  // normalization would turn a backslash escape added here into a separator.
   return [`${toPosix(dirname(entry))}/**/*.{html,js,svelte,ts}`];
 }
 
@@ -65,5 +80,5 @@ export function extensionContentGlobs(entry) {
  */
 export function extensionTestGlobs(entry) {
   if (entry === null) return [];
-  return [`${toPosix(dirname(entry))}/**/*.test.ts`];
+  return [`${escapeGlob(toPosix(dirname(entry)))}/**/*.test.ts`];
 }

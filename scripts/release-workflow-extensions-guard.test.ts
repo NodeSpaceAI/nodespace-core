@@ -23,6 +23,7 @@ interface Step {
   run?: string;
   shell?: string;
   if?: string;
+  "continue-on-error"?: unknown;
   env?: Record<string, unknown>;
 }
 interface Job {
@@ -73,11 +74,12 @@ describe("release workflow extensions guard", () => {
         expect(guardIndex).toBeLessThan(buildIndex);
       });
 
-      test("the guard runs under bash and is never skipped", () => {
+      test("the guard runs under bash, is never skipped and its failure stops the job", () => {
         const guard = steps[guardIndex];
         // Windows runners default to PowerShell, which has no printenv.
         expect(guard?.shell).toBe("bash");
         expect(guard?.if).toBeUndefined();
+        expect(guard?.["continue-on-error"]).toBeUndefined();
       });
 
       test("no step other than the guard mentions the variable in a script", () => {

@@ -103,6 +103,18 @@ describe('nodespace extensions build entry', () => {
       expect(extensionContentGlobs(entryOutside)).toEqual([`${dir}/**/*.{html,js,svelte,ts}`]);
       expect(extensionTestGlobs(entryOutside)).toEqual([`${dir}/**/*.test.ts`]);
     });
+
+    it('escapes glob syntax in the directory of the test glob, which Vitest matches literally', () => {
+      expect(extensionTestGlobs('/work/ext (1)/[team]/{a,b}/index.ts')).toEqual([
+        '/work/ext \\(1\\)/\\[team\\]/\\{a,b\\}/**/*.test.ts'
+      ]);
+    });
+
+    it('leaves the content glob unescaped, because Tailwind escapes the base directory itself', () => {
+      expect(extensionContentGlobs('/work/ext (1)/src/index.ts')).toEqual([
+        '/work/ext (1)/src/**/*.{html,js,svelte,ts}'
+      ]);
+    });
   });
 
   describe('nodespaceExtensions plugin', () => {
@@ -216,6 +228,7 @@ describe('nodespace extensions build entry', () => {
     it('resolves @nodespace/extension-api under the unit-tier config, exposing the registration API', async () => {
       const api = await import('@nodespace/extension-api');
       // Explicit export list, no `export *`: the runtime surface is exactly the version.
+      // Update this list when the barrel gains a runtime export.
       expect(Object.keys(api)).toEqual(['EXTENSION_API_VERSION']);
       expect(api.EXTENSION_API_VERSION).toBe(EXTENSION_API_VERSION);
     });
