@@ -1,9 +1,16 @@
 import { defineConfig } from "vite";
 import { sveltekit } from "@sveltejs/kit/vite";
 import { readFileSync } from "node:fs";
+import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { nodespaceExtensions } from "./vite-plugins/nodespace-extensions.js";
+import {
+  EXTENSIONS_ENV,
+  resolveExtensionsEntry,
+} from "./vite-plugins/nodespace-extensions-entry.js";
 
 const host = process.env.TAURI_DEV_HOST;
+const root = dirname(fileURLToPath(import.meta.url));
 
 // Single source of truth for the frontend's own version: read it straight from
 // this package's package.json (kept in lockstep with tauri.conf.json and the
@@ -15,7 +22,12 @@ const pkg = JSON.parse(
 
 // https://vitejs.dev/config/
 export default defineConfig(async () => ({
-  plugins: [sveltekit()],
+  plugins: [
+    // Injects the extensions a build names in NODESPACE_EXTENSIONS as
+    // `virtual:nodespace-extensions`; without it the module is an empty list.
+    nodespaceExtensions({ root, entry: resolveExtensionsEntry(process.env[EXTENSIONS_ENV], root) }),
+    sveltekit(),
+  ],
 
   define: {
     __APP_VERSION__: JSON.stringify(pkg.version),

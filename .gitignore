@@ -35,6 +35,8 @@ dist/
 dist-ssr/
 *.local
 build/
+# Tests of the frontend build configuration live in a directory named build.
+!packages/desktop-app/src/tests/build/
 out/
 
 # Editor directories and files

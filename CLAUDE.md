@@ -171,6 +171,8 @@ Full docs: [`component-architecture.md`](../nodespace-docs/components/component-
 
 When building components: read the architecture guide first, determine type (Node vs Viewer), follow naming, use provided templates, register in plugin system with correct lazy loading paths.
 
+A build injects extensions with `NODESPACE_EXTENSIONS=<module path>` (a relative path resolves against `packages/desktop-app`); core ships none, its release workflow refuses the variable, and core's own test runs must not set it (ADR-082).
+
 ## Sub-Agent Commissioning
 
 When commissioning a specialized sub-agent, you MUST include these instructions verbatim:

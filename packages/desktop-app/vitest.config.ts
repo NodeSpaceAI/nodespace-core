@@ -5,10 +5,20 @@ import { defineConfig } from 'vitest/config';
 import { sveltekit } from '@sveltejs/kit/vite';
 import { svelte } from '@sveltejs/vite-plugin-svelte';
 import { injectRuneMocks } from './src/tests/vite-plugin-inject-runes';
+import { nodespaceExtensions } from './vite-plugins/nodespace-extensions.js';
+import {
+  EXTENSIONS_ENV,
+  extensionTestGlobs,
+  resolveExtensionsEntry
+} from './vite-plugins/nodespace-extensions-entry.js';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+// The module a build injects extensions from, if any. Its own tests run under
+// this config, so they get the same setup files and rune mocks as core's.
+const extensionsEntry = resolveExtensionsEntry(process.env[EXTENSIONS_ENV], __dirname);
 
 // Early Svelte 5 rune mocks - must be defined BEFORE any module imports
 function createMockState<T>(initialValue: T): T {
@@ -131,6 +141,7 @@ if (typeof globalThis !== 'undefined' && 'global' in globalThis) {
 export default defineConfig({
   plugins: [
     injectRuneMocks(), // MUST run first - injects globals
+    nodespaceExtensions({ root: __dirname, entry: extensionsEntry }),
     // Use svelte plugin directly in test mode to control preprocessing
     // Use sveltekit plugin in dev/build mode for full SvelteKit features
     process.env.VITEST
@@ -151,7 +162,9 @@ export default defineConfig({
   resolve: {
     alias: {
       $lib: path.resolve(__dirname, 'src/lib'),
-      $app: path.resolve(__dirname, 'node_modules/@sveltejs/kit/src/runtime/app')
+      $app: path.resolve(__dirname, 'node_modules/@sveltejs/kit/src/runtime/app'),
+      // kit.alias does not apply here: this tier uses svelte(), not sveltekit()
+      '@nodespace/extension-api': path.resolve(__dirname, 'src/lib/extension-api')
     },
     // Force browser conditions to load client-side Svelte runtime
     conditions: ['browser', 'import']
@@ -163,7 +176,10 @@ export default defineConfig({
   },
 
   test: {
-    include: ['src/tests/**/*.{test,spec}.{js,ts}'],
+    include: [
+      'src/tests/**/*.{test,spec}.{js,ts}',
+      ...extensionTestGlobs(extensionsEntry)
+    ],
     exclude: [
       'src/tests/browser/**', // Browser tests run separately with test:browser
       // Wall-clock performance benchmarks assert hard timing thresholds. Under

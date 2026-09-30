@@ -14,6 +14,11 @@ const config = {
   }),
   kit: {
     adapter: adapter(),
+    // The host API for build-time extensions. SvelteKit writes the alias into its
+    // generated tsconfig, so svelte-check resolves it and its subpaths too.
+    alias: {
+      "@nodespace/extension-api": "src/lib/extension-api",
+    },
   },
 };
 

@@ -2,6 +2,8 @@
   import { onMount } from 'svelte';
   import '../app.css';
   import '$lib/styles/noderef.css';
+  import extensions from 'virtual:nodespace-extensions';
+  import { registerExtensions } from '$lib/plugins/ui-extensions';
   import AppShell from '$lib/components/layout/app-shell.svelte';
   import DiagnosticPanel from '$lib/design/components/diagnostic-panel.svelte';
   import DeleteConfirmationModal from '$lib/components/delete-confirmation-modal.svelte';
@@ -17,6 +19,11 @@
     captureStoreDump
   } from '$lib/services/debug-channel';
   import { toError } from '$lib/types/errors';
+
+  // The extensions import is static and registration is synchronous, so every
+  // contribution exists before AppShell renders (ADR-082 §2.1). Core registers
+  // none: the list is whatever the build injected, empty by default.
+  registerExtensions(extensions);
 
   let isInitialized = false;
   let initError: string | null = null;
