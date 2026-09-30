@@ -10,7 +10,7 @@
 // bypasses the Happy-DOM vitest config (see CLAUDE.md).
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import {
@@ -85,6 +85,17 @@ function withEnv<T>(vars: Record<string, string>, fn: () => T): T {
   }
 }
 
+// A repository whose `origin/main` is its first commit, as in a PR worktree.
+function repoWithOriginMain(): void {
+  initRepo();
+  write(".gitignore", "ignored/\n");
+  write("packages/a/old.ts", "x\n");
+  write("packages/a/edited.ts", "x\n");
+  expect(git(dir, "add", "-A").status).toBe(0);
+  expect(git(dir, "commit", "--quiet", "-m", "base").status).toBe(0);
+  expect(git(dir, "update-ref", "refs/remotes/origin/main", "HEAD").status).toBe(0);
+}
+
 function countsWith(overrides: Partial<MarkerCounts> = {}): MarkerCounts {
   return { ...BASELINES, ...overrides };
 }
@@ -100,7 +111,13 @@ const PATTERN_CASES: Record<LineMarkerName, { match: string[]; noMatch: string[]
     noMatch: ["is_pro_build()", "approve_request", "macro_rules!"],
   },
   proSyncModule: {
-    match: ["import { proSync } from '$lib/stores/pro-sync.svelte'", "resolveProSyncVariant()", "isProSyncActive()"],
+    match: [
+      "import { proSync } from '$lib/stores/pro-sync.svelte'",
+      "resolveProSyncVariant()",
+      "isProSyncActive()",
+      "import { x } from './pro-sync.svelte'",
+      "type ProSyncState = {};",
+    ],
     noMatch: ["project-sync", "prosync"],
   },
   proProtocol: {
@@ -116,11 +133,16 @@ const PATTERN_CASES: Record<LineMarkerName, { match: string[]; noMatch: string[]
     noMatch: ["use nodespace_proto::socket;", "ProcessTier", "ProClientele"],
   },
   proEvents: {
-    match: ["listen('pro:tier-detected', cb)", 'app.emit("sync:status", p)', "listen(`sync:error`, cb)"],
+    match: ["listen('pro:tier-detected', cb)", 'app.emit("sync:status", p)', "listen(`sync:error`, cb)", "listen('sync:status', cb)", 'emit("sync:error")'],
     noMatch: ["sync:status updates", "the sync:error path", "sync:statuses"],
   },
   membershipService: {
-    match: ["import { membershipService } from '$lib/services/membership-service'", "class MembershipService {}"],
+    match: [
+      "import { membershipService } from '$lib/services/membership-service'",
+      "class MembershipService {}",
+      "import { svc } from '$lib/services/membership-service';",
+      "const x = membershipService.list();",
+    ],
     noMatch: ["collection membership", "member_of"],
   },
   editionBranching: {
@@ -241,11 +263,12 @@ describe("isProNamedFile", () => {
 describe("listScannedFiles", () => {
   test("lists tracked files and untracked files that are not ignored", () => {
     initRepo();
-    write("packages/a/z-tracked.ts", "x\n");
-    expect(git(dir, "add", "packages/a/z-tracked.ts").status).toBe(0);
+    write("packages/a/b-tracked.ts", "x\n");
+    expect(git(dir, "add", "packages/a/b-tracked.ts").status).toBe(0);
     write("packages/a/a-untracked.ts", "x\n");
-    // Sorted, so the order does not depend on which files git has indexed.
-    expect(listScannedFiles(dir)).toEqual(["packages/a/a-untracked.ts", "packages/a/z-tracked.ts"]);
+    write("packages/a/z-untracked.ts", "x\n");
+    // Sorted, whichever of the tracked and untracked groups git prints first.
+    expect(listScannedFiles(dir)).toEqual(["packages/a/a-untracked.ts", "packages/a/b-tracked.ts", "packages/a/z-untracked.ts"]);
   });
 
   test("leaves out gitignored paths: a directory, and an extensionless binary name", () => {
@@ -709,17 +732,6 @@ describe("formatBaselines", () => {
 // ---------------------------------------------------------------------------
 
 describe("changedFilesSinceMain", () => {
-  // A repository whose `origin/main` is its first commit, as in a PR worktree.
-  function repoWithOriginMain(): void {
-    initRepo();
-    write(".gitignore", "ignored/\n");
-    write("packages/a/old.ts", "x\n");
-    write("packages/a/edited.ts", "x\n");
-    expect(git(dir, "add", "-A").status).toBe(0);
-    expect(git(dir, "commit", "--quiet", "-m", "base").status).toBe(0);
-    expect(git(dir, "update-ref", "refs/remotes/origin/main", "HEAD").status).toBe(0);
-  }
-
   test("lists what was committed since origin/main, edited, staged or left untracked, and nothing else", () => {
     repoWithOriginMain();
     write("packages/a/committed.ts", "x\n");
@@ -736,6 +748,22 @@ describe("changedFilesSinceMain", () => {
       "packages/a/staged.ts",
       "packages/a/untracked.ts",
     ]);
+  });
+
+  test("diffs from the merge-base, so files that only origin/main changed since the branch forked are not listed", () => {
+    repoWithOriginMain();
+    const fork = git(dir, "rev-parse", "HEAD").stdout.trim();
+    // main moves on after the branch forked...
+    write("packages/a/main-only.ts", "x\n");
+    expect(git(dir, "add", "packages/a/main-only.ts").status).toBe(0);
+    expect(git(dir, "commit", "--quiet", "-m", "main moves on").status).toBe(0);
+    expect(git(dir, "update-ref", "refs/remotes/origin/main", "HEAD").status).toBe(0);
+    // ...while the branch adds its own commit on top of the fork point.
+    expect(git(dir, "checkout", "--quiet", "--detach", fork).status).toBe(0);
+    write("packages/a/branch-only.ts", "x\n");
+    expect(git(dir, "add", "packages/a/branch-only.ts").status).toBe(0);
+    expect(git(dir, "commit", "--quiet", "-m", "branch work").status).toBe(0);
+    expect(changedFilesSinceMain(dir)).toEqual(["packages/a/branch-only.ts"]);
   });
 
   test("lists nothing on a clean checkout of origin/main", () => {
@@ -902,6 +930,69 @@ describe("CLI", () => {
     const { status, stdout } = run("--changed");
     expect(status).toBe(0);
     for (const name of ALL_MARKERS) expect(stdout).toMatch(new RegExp(`^${name}: \\d+$`, "m"));
+  });
+
+  // The checker locates its repository from its own path, so a copy placed
+  // in a fixture repository scans that repository. The baselines are the real
+  // ones, so a small fixture is far below them and the default run must fail.
+  function runInFixture(...args: string[]): { status: number; stdout: string; stderr: string } {
+    mkdirSync(join(dir, "scripts"), { recursive: true });
+    copyFileSync(CHECKER_PATH, join(dir, "scripts/check-pro-boundary.ts"));
+    const result = spawnSync("bun", ["run", join(dir, "scripts/check-pro-boundary.ts"), ...args], { encoding: "utf8", env: gitEnv() });
+    return { status: result.status ?? -1, stdout: result.stdout, stderr: result.stderr };
+  }
+
+  test("exits 1 below the baselines, naming the marker, the paste block and a stale exemption", () => {
+    repoWithOriginMain();
+    write("packages/a/x.ts", "pro_x();\n");
+    const { status, stdout, stderr } = runInFixture();
+    expect(status).toBe(1);
+    expect(stdout).toMatch(new RegExp(`^proCommands +1 +${BASELINES.proCommands}$`, "m"));
+    expect(stderr).toContain(`\`proCommands\` is now 1, below its baseline ${BASELINES.proCommands}`);
+    expect(stderr).toContain("Paste over BASELINES in scripts/check-pro-boundary.ts:");
+    expect(stderr).toContain("EXEMPTIONS entry for packages/agent/tests/it/live_embedding_prefix_measurement.rs");
+    expect(stdout).not.toContain("equals its baseline");
+  });
+
+  test("exits 1 above a baseline, listing the new lines under \"In files this branch changed\"", () => {
+    repoWithOriginMain();
+    write("packages/a/big.ts", "pro_x();\n".repeat(BASELINES.proCommands + 25));
+    const { status, stderr } = runInFixture();
+    expect(status).toBe(1);
+    expect(stderr).toContain(`above its baseline of ${BASELINES.proCommands}`);
+    expect(stderr).toContain("In files this branch changed:\npackages/a/big.ts:1: pro_x();");
+  });
+
+  test("--list <marker> prints a fixture's hits grouped by file", () => {
+    repoWithOriginMain();
+    write("packages/a/x.ts", "clean\npro_x();\npro_y();\n");
+    write("packages/a/y.ts", "pro_z();\n");
+    const { status, stdout } = runInFixture("--list", "proCommands");
+    expect(status).toBe(0);
+    expect(stdout).toBe("packages/a/x.ts\n  2: pro_x();\n  3: pro_y();\npackages/a/y.ts\n  1: pro_z();\n");
+  });
+
+  test("--list proNamedFiles prints bare paths", () => {
+    repoWithOriginMain();
+    write("packages/a/pro-plugin.ts", "clean\n");
+    const { status, stdout } = runInFixture("--list", "proNamedFiles");
+    expect(status).toBe(0);
+    expect(stdout).toBe("packages/a/pro-plugin.ts\n");
+  });
+
+  test("--changed prints only the hits in files this branch changed", () => {
+    repoWithOriginMain();
+    write("packages/a/old.ts", "pro_committed();\n");
+    expect(git(dir, "add", "packages/a/old.ts").status).toBe(0);
+    expect(git(dir, "commit", "--quiet", "-m", "before the fork").status).toBe(0);
+    expect(git(dir, "update-ref", "refs/remotes/origin/main", "HEAD").status).toBe(0);
+    write("packages/a/new.ts", "pro_added();\nNodeSpace Pro\n");
+    const { status, stdout } = runInFixture("--changed");
+    expect(status).toBe(0);
+    expect(stdout).toContain("proCommands: 1\n  packages/a/new.ts:1: pro_added();\n");
+    expect(stdout).toContain("proWording: 1\n  packages/a/new.ts:2: NodeSpace Pro\n");
+    expect(stdout).not.toContain("pro_committed");
+    expect(stdout).toMatch(/^tenantWording: 0$/m);
   });
 
   test("an unknown marker or option prints usage and exits 2", () => {
