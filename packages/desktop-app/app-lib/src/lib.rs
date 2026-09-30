@@ -333,7 +333,8 @@ fn parse_relaunch_database_arg(argv: &[String]) -> Option<String> {
 /// Call `run` from a plain `fn main`, never from inside a tokio runtime: it
 /// builds a runtime of its own and blocks on it, which panics when one is
 /// already running. Nothing that spawns a task or touches Tauri's async runtime
-/// may run before it.
+/// may run before it, evaluating its arguments included, because Tauri panics
+/// when `run` sets its runtime after one has already been initialised.
 ///
 /// # What an app crate must do
 ///
@@ -358,11 +359,11 @@ pub fn run(extensions: AppExtensions, context: tauri::Context<tauri::Wry>) {
     // attribute on the app crate's `main.rs`), so `eprintln!`/`println!`
     // anywhere in this process — notably `SchemaNode::from_node`'s
     // fields-parse-failure diagnostic, called directly by `commands::schemas`'s
-    // Tauri commands — would otherwise be silently discarded. Redirect this process's own stdio to
-    // log files before anything else runs, so nothing before this point has
-    // already tried (and lost) a diagnostic write. Debug builds keep their
-    // attached console (no `windows_subsystem = "windows"` there), so this is
-    // gated to release-on-Windows only to avoid silently moving a
+    // Tauri commands — would otherwise be silently discarded. Redirect this
+    // process's own stdio to log files before the runtime and the app are
+    // built, so none of their diagnostics has already been lost. Debug builds
+    // keep their attached console (no `windows_subsystem = "windows"` there),
+    // so this is gated to release-on-Windows only to avoid silently moving a
     // developer's live terminal output into a log file during `tauri dev`.
     // See `daemon_setup::redirect_gui_stdio_to_log_files`'s doc comment for
     // the real-Windows verification behind this.
@@ -1581,12 +1582,23 @@ mod run_wiring_tests {
             runtime_set < block_on,
             "the runtime is set before anything runs inside it"
         );
+        assert!(
+            run.contains("runtime.block_on(async move { run_app(extensions, context) })"),
+            "the app is built and run inside the runtime, so the main thread stays in it"
+        );
     }
 
     #[test]
     fn run_redirects_stdio_before_the_runtime_starts() {
         let run = run_source();
-        let redirect = position(run, "daemon_setup::redirect_gui_stdio_to_log_files();");
+        // The gate is part of the needle: only a Windows release build compiles
+        // this call, and dropping `not(debug_assertions)` would move a
+        // developer's terminal output into a log file during `tauri dev`.
+        let redirect = position(
+            run,
+            "#[cfg(all(windows, not(debug_assertions)))]\n    \
+             daemon_setup::redirect_gui_stdio_to_log_files();",
+        );
         let runtime_built = position(run, "tokio::runtime::Builder::new_multi_thread()");
 
         assert!(

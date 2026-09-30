@@ -28,16 +28,22 @@ pub const EXTENSION_API_VERSION: (u32, u32) = (1, 0);
 
 /// Core's own Tauri plugins, in the order they are registered.
 ///
-/// This is the only list of them. [`register_core_plugins`] applies it to the
-/// builder `run` starts from, and [`core_plugin_names`] reads the names off it
-/// for [`assemble`], which skips an extension plugin that reuses one. A plugin
-/// registered under an existing name replaces the earlier one without a
-/// warning, so an extension plugin with a core plugin's name would replace
-/// core's. `run` registers no plugin of its own, so a plugin added here is
-/// protected the moment it exists, with no second list to update.
+/// This is the only list of them. [`register_core_plugins`] registers it for
+/// `run`, and [`core_plugin_names`] reads the names off it for [`assemble`],
+/// which skips an extension plugin that reuses one. A plugin registered under
+/// an existing name replaces the earlier one without a warning, so an
+/// extension plugin with a core plugin's name would replace core's. `run`
+/// registers no plugin of its own, so a plugin added here is protected the
+/// moment it exists, with no second list to update.
 ///
 /// The single-instance plugin comes first, because it must be registered
 /// before any other plugin.
+///
+/// Building the list must have no effects: [`core_plugin_names`] builds it to
+/// read the names and [`register_core_plugins`] builds it again to register
+/// them, so a plugin's constructor only describes the plugin. Anything with an
+/// effect (opening a file, starting a thread, claiming a resource) belongs in
+/// its setup hook, which runs once when the app is built.
 pub(crate) fn core_plugins<R: Runtime>() -> Vec<Box<dyn Plugin<R>>> {
     let mut plugins: Vec<Box<dyn Plugin<R>>> = Vec::new();
 
@@ -126,10 +132,9 @@ impl<R: Runtime> Default for AppExtensions<R> {
 ///
 /// # Plugins
 ///
-/// * The caller registers core's own plugins on `builder` first, with
-///   [`register_core_plugins`], which puts the single-instance plugin before
-///   any other, as that plugin requires. `assemble` registers the extension
-///   plugins after them.
+/// * The caller registers core's own plugins on `builder` first, with the
+///   single-instance plugin before any other, as that plugin requires. `run`
+///   does this. `assemble` registers the extension plugins after them.
 /// * A plugin's setup runs inside `Builder::build`, before core's setup.
 /// * A plugin's commands are invoked from the frontend as
 ///   `plugin:<name>|<command>`. Tauri always checks them against the
