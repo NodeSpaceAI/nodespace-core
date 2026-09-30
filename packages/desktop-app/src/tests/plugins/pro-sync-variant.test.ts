@@ -8,7 +8,6 @@
  * state for an already-enabled database.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import type { Node } from '$lib/types';
 
 vi.mock('$lib/utils/logger', () => ({
   createLogger: () => ({ debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() })
@@ -36,30 +35,11 @@ import proExtensions, { proSyncExtension } from '$lib/plugins/pro-plugin';
 import FirstProConsentSlot from '$lib/components/first-pro-consent-slot.svelte';
 import ProReloginSlot from '$lib/components/pro-relogin-slot.svelte';
 import CollaborationTab from '$lib/components/collaboration/collaboration-tab.svelte';
-import { DATABASE_SETTINGS_NODE_ID } from '$lib/constants/database-settings';
+import { seedSettings } from '../helpers/sync-variant-fixtures';
 
 /** The host key of one of the built-in extension's contributions. */
 const key = (contributionId: string) => `${proSyncExtension.id}/${contributionId}`;
 const keysOf = (list: { key: string }[]) => list.map((c) => c.key);
-
-/**
- * Seed the active database's settings singleton with the given props. The daemon
- * serializes DatabaseSettingsNode with FLAT properties (`sync_enabled`/`auth_status`
- * directly on `properties`), so mirror that shape here.
- */
-function seedSettings(props: { sync_enabled?: boolean; auth_status?: string }): void {
-  const node: Node = {
-    id: DATABASE_SETTINGS_NODE_ID,
-    nodeType: 'database-settings',
-    content: '',
-    properties: props,
-    mentions: [],
-    createdAt: new Date().toISOString(),
-    modifiedAt: new Date().toISOString(),
-    version: 1
-  };
-  SharedNodeStore.getInstance().setNode(node, { type: 'database', reason: 'seed' }, true);
-}
 
 describe('UI-extension registry', () => {
   beforeEach(() => {

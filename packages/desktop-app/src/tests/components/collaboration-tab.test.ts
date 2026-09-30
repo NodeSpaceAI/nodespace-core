@@ -6,7 +6,6 @@
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { render, cleanup, waitFor } from '@testing-library/svelte';
-import type { Node } from '$lib/types';
 
 vi.mock('$lib/utils/logger', () => ({
   createLogger: () => ({ debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() })
@@ -23,56 +22,24 @@ vi.mock('@tauri-apps/api/core', () =>
 );
 
 import CollaborationTab from '$lib/components/collaboration/collaboration-tab.svelte';
-import { proSync } from '$lib/stores/pro-sync.svelte';
-import { labsFlags } from '$lib/stores/labs-flags.svelte';
-import { SharedNodeStore } from '$lib/services/shared-node-store.svelte';
-import { DATABASE_SETTINGS_NODE_ID } from '$lib/constants/database-settings';
-
-/** Seed the active database's settings singleton (FLAT properties, as the daemon serializes them). */
-function seedSettings(props: { sync_enabled?: boolean; auth_status?: string }): void {
-  const node: Node = {
-    id: DATABASE_SETTINGS_NODE_ID,
-    nodeType: 'database-settings',
-    content: '',
-    properties: props,
-    mentions: [],
-    createdAt: new Date().toISOString(),
-    modifiedAt: new Date().toISOString(),
-    version: 1
-  };
-  SharedNodeStore.getInstance().setNode(node, { type: 'database', reason: 'seed' }, true);
-}
-
-const SIGN_IN = { sync_enabled: false, auth_status: 'local' };
-const CONSENT = { sync_enabled: false, auth_status: 'connected' };
-const RELOGIN = { sync_enabled: true, auth_status: 'local' };
-const CONNECTED = { sync_enabled: true, auth_status: 'connected' };
+import { seedVariant, resetProSyncState } from '../helpers/sync-variant-fixtures';
 
 const NODE_ID = 'col-7';
 
 describe('CollaborationTab', () => {
   beforeEach(() => {
     mockInvoke.mockReset();
-    SharedNodeStore.resetInstance();
-    labsFlags.syncEnabled = true;
-    proSync.tier = 'pro';
-    proSync.userEmail = '';
+    resetProSyncState();
   });
 
   afterEach(() => {
     cleanup();
-    proSync.tier = 'unknown';
-    proSync.userEmail = '';
-    labsFlags.syncEnabled = false;
-    SharedNodeStore.resetInstance();
+    resetProSyncState();
     vi.restoreAllMocks();
   });
 
-  it.each([
-    ['sign-in', SIGN_IN],
-    ['consent', CONSENT]
-  ])('%s renders the locked placeholder for the collection', (_variant, settings) => {
-    seedSettings(settings);
+  it.each(['sign-in', 'consent'] as const)('%s renders the locked placeholder for the collection', (variant) => {
+    seedVariant(variant);
     const { container, queryByTestId } = render(CollaborationTab, { props: { nodeId: NODE_ID } });
 
     const locked = container.querySelector('.collab-locked');
@@ -80,11 +47,8 @@ describe('CollaborationTab', () => {
     expect(queryByTestId('stub-collaboration-view')).toBeNull();
   });
 
-  it.each([
-    ['relogin', RELOGIN],
-    ['connected', CONNECTED]
-  ])('%s renders the live view for the collection', (_variant, settings) => {
-    seedSettings(settings);
+  it.each(['relogin', 'connected'] as const)('%s renders the live view for the collection', (variant) => {
+    seedVariant(variant);
     const { container, getByTestId } = render(CollaborationTab, { props: { nodeId: NODE_ID } });
 
     expect(getByTestId('stub-collaboration-view').getAttribute('data-collection-id')).toBe(NODE_ID);
@@ -92,22 +56,22 @@ describe('CollaborationTab', () => {
   });
 
   it('swaps the locked placeholder for the live view when sync is turned on', async () => {
-    seedSettings(CONSENT);
+    seedVariant('consent');
     const { container, findByTestId } = render(CollaborationTab, { props: { nodeId: NODE_ID } });
     expect(container.querySelector('.collab-locked')).not.toBeNull();
 
-    seedSettings(CONNECTED);
+    seedVariant('connected');
 
     await findByTestId('stub-collaboration-view');
     expect(container.querySelector('.collab-locked')).toBeNull();
   });
 
   it('remounts the live view on a change from relogin to connected', async () => {
-    seedSettings(RELOGIN);
+    seedVariant('relogin');
     const { getByTestId } = render(CollaborationTab, { props: { nodeId: NODE_ID } });
     const before = getByTestId('stub-collaboration-view');
 
-    seedSettings(CONNECTED);
+    seedVariant('connected');
 
     await waitFor(() => expect(before.isConnected).toBe(false));
     const after = getByTestId('stub-collaboration-view');
@@ -116,12 +80,12 @@ describe('CollaborationTab', () => {
   });
 
   it('leaves the content mounted while the variant does not change', async () => {
-    seedSettings(CONNECTED);
+    seedVariant('connected');
     const { getByTestId } = render(CollaborationTab, { props: { nodeId: NODE_ID } });
     const before = getByTestId('stub-collaboration-view');
 
     // A settings write that resolves to the same variant.
-    seedSettings({ ...CONNECTED });
+    seedVariant('connected');
     await new Promise((resolve) => setTimeout(resolve, 20));
 
     expect(getByTestId('stub-collaboration-view')).toBe(before);

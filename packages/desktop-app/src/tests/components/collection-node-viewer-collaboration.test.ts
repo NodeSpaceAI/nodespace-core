@@ -6,7 +6,6 @@
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { render, fireEvent, cleanup, waitFor } from '@testing-library/svelte';
-import type { Node } from '$lib/types';
 
 vi.mock('$lib/utils/logger', () => ({
   createLogger: () => ({ debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() })
@@ -32,46 +31,25 @@ vi.mock('@tauri-apps/api/core', () =>
 );
 
 import CollectionNodeViewer from '$lib/components/viewers/collection-node-viewer.svelte';
-import { proSync } from '$lib/stores/pro-sync.svelte';
 import { labsFlags } from '$lib/stores/labs-flags.svelte';
-import { SharedNodeStore } from '$lib/services/shared-node-store.svelte';
-import { DATABASE_SETTINGS_NODE_ID } from '$lib/constants/database-settings';
+import { seedVariant, resetProSyncState } from '../helpers/sync-variant-fixtures';
 import { COLLECTION_ID, COLLECTION_NAME } from '../helpers/collection-viewer-mocks';
-
-function seedSettings(props: { sync_enabled?: boolean; auth_status?: string }): void {
-  const node: Node = {
-    id: DATABASE_SETTINGS_NODE_ID,
-    nodeType: 'database-settings',
-    content: '',
-    properties: props,
-    mentions: [],
-    createdAt: new Date().toISOString(),
-    modifiedAt: new Date().toISOString(),
-    version: 1
-  };
-  SharedNodeStore.getInstance().setNode(node, { type: 'database', reason: 'seed' }, true);
-}
 
 describe('CollectionNodeViewer Collaboration tab', () => {
   beforeEach(() => {
     mockInvoke.mockReset();
-    SharedNodeStore.resetInstance();
-    labsFlags.syncEnabled = true;
-    proSync.tier = 'pro';
-    proSync.userEmail = '';
+    resetProSyncState();
   });
 
   afterEach(() => {
     cleanup();
-    proSync.tier = 'unknown';
-    proSync.userEmail = '';
-    labsFlags.syncEnabled = false;
-    SharedNodeStore.resetInstance();
+    resetProSyncState();
     vi.restoreAllMocks();
   });
 
-  it('shows no tab strip in the community build', async () => {
-    proSync.tier = 'community';
+  it('shows no tab strip while the Labs toggle is off, even for a synced database', async () => {
+    seedVariant('connected');
+    labsFlags.syncEnabled = false;
     const view = render(CollectionNodeViewer, { props: { nodeId: COLLECTION_ID } });
     await view.findByText(COLLECTION_NAME);
 
@@ -79,7 +57,7 @@ describe('CollectionNodeViewer Collaboration tab', () => {
   });
 
   it('keeps the Collaboration tab selected from consent through to connected', async () => {
-    seedSettings({ sync_enabled: false, auth_status: 'connected' });
+    seedVariant('consent');
     const { container, getByRole, findByRole, findByTestId, queryByRole } = render(
       CollectionNodeViewer,
       { props: { nodeId: COLLECTION_ID } }
@@ -89,7 +67,7 @@ describe('CollectionNodeViewer Collaboration tab', () => {
     await waitFor(() => expect(container.querySelector('.collab-locked')).not.toBeNull());
 
     // Sync is turned on: same tab, now showing the live view.
-    seedSettings({ sync_enabled: true, auth_status: 'connected' });
+    seedVariant('connected');
 
     await findByTestId('stub-collaboration-view');
     expect(container.querySelector('.collab-locked')).toBeNull();
@@ -99,7 +77,7 @@ describe('CollectionNodeViewer Collaboration tab', () => {
   });
 
   it('drops back to Contents when sync is switched off in Labs', async () => {
-    seedSettings({ sync_enabled: true, auth_status: 'connected' });
+    seedVariant('connected');
     const { getByRole, findByRole, findByTestId, queryByRole, queryByTestId } = render(
       CollectionNodeViewer,
       { props: { nodeId: COLLECTION_ID } }
