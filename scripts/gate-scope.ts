@@ -42,6 +42,7 @@ const RUST_DIRS = [
   "packages/nodespace-types/",
   "packages/desktop-app/src-tauri/",
   "packages/desktop-app/app-lib/",
+  "packages/desktop-app/app-build/",
 ];
 
 /** Workspace-wide Rust inputs outside any one crate. */

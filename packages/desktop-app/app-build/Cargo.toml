@@ -1,0 +1,14 @@
+[package]
+name = "nodespace-app-build"
+version.workspace = true
+edition.workspace = true
+publish = false
+description = "Build-script helpers for an app crate built on core's Tauri library"
+
+[lib]
+name = "nodespace_app_build"
+
+# No `tauri` dependency: this crate compiles and tests on every platform in the
+# ordinary workspace run, and an app crate takes it as a build dependency.
+[dependencies]
+serde_json = { workspace = true }

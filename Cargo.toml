@@ -7,6 +7,7 @@ members = [
     "packages/proto",
     "packages/daemon",
     "packages/cli",
+    "packages/desktop-app/app-build",
     "packages/desktop-app/app-lib",
     "packages/desktop-app/app-lib/test-support",
     "packages/desktop-app/src-tauri"
@@ -15,7 +16,8 @@ resolver = "2"
 
 [workspace.package]
 # Canonical version for every workspace member crate below (agent, cli, core,
-# daemon, nlp-engine, nodespace-types, proto, nodespace-app-lib) via
+# daemon, nlp-engine, nodespace-types, proto, nodespace-app-lib,
+# nodespace-app-build) via
 # `version.workspace = true` in each crate's [package] section — a member crate must never hardcode its own
 # version, or it silently drifts from the app version that `scripts/release.ts`
 # bumps (packages/desktop-app/src-tauri/tauri.conf.json is the ultimate

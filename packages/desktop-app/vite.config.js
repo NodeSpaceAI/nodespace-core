@@ -119,8 +119,8 @@ export default defineConfig(async () => ({
         }
       : undefined,
     watch: {
-      // 3. tell vite to ignore watching `src-tauri` and `app-lib`
-      ignored: ["**/src-tauri/**", "**/app-lib/**"],
+      // 3. tell vite to ignore watching `src-tauri`, `app-lib` and `app-build`
+      ignored: ["**/src-tauri/**", "**/app-lib/**", "**/app-build/**"],
     },
   },
 }));

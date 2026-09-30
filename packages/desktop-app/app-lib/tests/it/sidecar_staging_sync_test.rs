@@ -14,8 +14,8 @@
 //!
 //! `build.rs` now calls `sync_stale_sidecar` immediately before
 //! `tauri_build::build()` so the two files agree on the newer content first
-//! — see `build_support.rs`'s module doc for the full mechanism. These cases
-//! drive that same function (re-exported by
+//! — see `nodespace-app-build`'s `sidecar_staging` module doc for the full
+//! mechanism. These cases drive that same function (re-exported by
 //! `nodespace-app-test-support` for exactly this purpose) against synthetic
 //! trees rather than the real workspace, for the same reason
 //! `daemon_binary_freshness_test.rs` does: the real answer depends on

@@ -3438,13 +3438,20 @@ dependencies = [
 name = "nodespace-app"
 version = "0.3.2"
 dependencies = [
+ "nodespace-app-build",
  "nodespace-app-lib",
- "serde_json",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
  "tauri-plugin-opener",
  "tokio",
+]
+
+[[package]]
+name = "nodespace-app-build"
+version = "0.3.2"
+dependencies = [
+ "serde_json",
 ]
 
 [[package]]
@@ -3490,6 +3497,7 @@ dependencies = [
 name = "nodespace-app-test-support"
 version = "0.1.0"
 dependencies = [
+ "nodespace-app-build",
  "nodespace-app-lib",
  "tauri",
  "tempfile",

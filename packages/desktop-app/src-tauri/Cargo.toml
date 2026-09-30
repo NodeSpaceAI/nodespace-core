@@ -8,9 +8,8 @@ default-run = "nodespace-app"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
-# Reads tauri.conf.json's bundle lists (build.rs `drop_unstaged_skill`).
-# Already compiled for the build host as a tauri-build dependency.
-serde_json = { workspace = true }
+# The bundle-staging helpers `build.rs` runs before `tauri_build::build()`.
+nodespace-app-build = { path = "../app-build" }
 
 [[bin]]
 name = "nodespace-app"

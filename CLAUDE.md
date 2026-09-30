@@ -372,6 +372,7 @@ nodespace-core/
 │   │   │   ├── lib/design/       # Design system: components, tokens.ts, theme.ts
 │   │   │   └── app.css           # Semantic color tokens (light + dark)
 │   │   ├── app-lib/              # Tauri app library (`nodespace-app-lib`): commands, services, entry point
+│   │   ├── app-build/            # Build-script helpers for an app crate (`nodespace-app-build`): unstaged bundle entries, stale sidecars
 │   │   ├── src-tauri/            # Tauri app crate (`nodespace-app`): main.rs, build.rs, config, icons, sidecars
 │   │   └── [configs]             # App-specific configurations
 │   ├── nodespace-types/          # Shared wire types (core + Tauri command layer)
