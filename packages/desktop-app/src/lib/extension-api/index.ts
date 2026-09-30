@@ -16,5 +16,9 @@ export type {
   ChromeSlot,
   Contribution,
   NodespaceExtension,
+  SettingsSectionContribution,
+  SettingsSlot,
+  SettingsSlotContribution,
+  SettingsSlotContributionFor,
   ViewerTabContribution
 } from '$lib/plugins/ui-extensions';

@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { searchForWorkspaceRoot, type ConfigEnv, type UserConfig } from 'vite';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, expectTypeOf, it } from 'vitest';
 import { nodespaceExtensions } from '../../../vite-plugins/nodespace-extensions.js';
 import {
   EXTENSIONS_ENV,
@@ -17,6 +17,8 @@ import {
   resolveExtensionsEntry
 } from '../../../vite-plugins/nodespace-extensions-entry.js';
 import { EXTENSION_API_VERSION } from '$lib/plugins/ui-extensions';
+import type * as host from '$lib/plugins/ui-extensions';
+import type * as api from '@nodespace/extension-api';
 
 const APP_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 const VIRTUAL_ID = 'virtual:nodespace-extensions';
@@ -231,6 +233,21 @@ describe('nodespace extensions build entry', () => {
       // Update this list when the barrel gains a runtime export.
       expect(Object.keys(api)).toEqual(['EXTENSION_API_VERSION']);
       expect(api.EXTENSION_API_VERSION).toBe(EXTENSION_API_VERSION);
+    });
+
+    it('re-exports the contribution types an extension is written against, unchanged', () => {
+      // Compile-time only, enforced by svelte-check: it fails if the barrel drops or reshapes one.
+      expectTypeOf<api.NodespaceExtension>().toEqualTypeOf<host.NodespaceExtension>();
+      expectTypeOf<api.Contribution>().toEqualTypeOf<host.Contribution>();
+      expectTypeOf<api.ChromeSlot>().toEqualTypeOf<host.ChromeSlot>();
+      expectTypeOf<api.ChromeContribution>().toEqualTypeOf<host.ChromeContribution>();
+      expectTypeOf<api.ViewerTabContribution>().toEqualTypeOf<host.ViewerTabContribution>();
+      expectTypeOf<api.SettingsSectionContribution>().toEqualTypeOf<host.SettingsSectionContribution>();
+      expectTypeOf<api.SettingsSlot>().toEqualTypeOf<host.SettingsSlot>();
+      expectTypeOf<api.SettingsSlotContribution>().toEqualTypeOf<host.SettingsSlotContribution>();
+      expectTypeOf<api.SettingsSlotContributionFor<'database.row'>>().toEqualTypeOf<
+        host.SettingsSlotContributionFor<'database.row'>
+      >();
     });
 
     it('registers the injected extensions synchronously in the root layout', () => {
