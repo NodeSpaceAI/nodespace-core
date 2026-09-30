@@ -76,6 +76,8 @@ describe('ChromeSlotOutlet', () => {
 
   it('renders nothing for an empty slot', async () => {
     uiExtensionRegistry.register(createTestExtension());
+    // Warm the fixture chunk, so a wrongly started load would land within the wait below.
+    await import('../fixtures/test-extension/test-chrome.svelte');
     const { container } = render(ChromeSlotOutlet, { props: { name: 'app-shell-modal' } });
 
     // Give any (wrongly) started load a chance to land.
@@ -102,6 +104,25 @@ describe('ChromeSlotOutlet', () => {
     // The sibling is the same element, never remounted.
     expect(container.querySelector('[data-testid="test-chrome"]')).toBe(survivor);
     expect(testExtensionMounts.chrome).toBe(1);
+  });
+
+  it('a contribution whose when() throws is left out while its siblings keep rendering', async () => {
+    uiExtensionRegistry.register(createTestExtension());
+    testExtensionFlags.modal = true;
+    testExtensionFlags.throwingWhen = true;
+
+    const { container, findByTestId } = render(ChromeSlotOutlet, {
+      props: { name: 'app-shell-modal' }
+    });
+
+    await findByTestId('test-chrome');
+    expect(markers(container)).toEqual(['test-chrome']);
+
+    // The predicate recovers: it is false again, so still nothing extra, and no error surfaced.
+    testExtensionFlags.throwingWhen = false;
+    testExtensionFlags.modalSecondary = true;
+    await findByTestId('test-chrome-secondary');
+    expect(markers(container)).toEqual(['test-chrome-secondary', 'test-chrome']);
   });
 
   it('shows a contribution added while others are already mounted without remounting them', async () => {

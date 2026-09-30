@@ -74,6 +74,48 @@ describe('ExtensionOutlet', () => {
     expect(load).toHaveBeenCalledTimes(1);
   });
 
+  it('renders nothing, and logs, when load() throws synchronously', async () => {
+    const failure = new Error('load threw');
+    const { container } = render(ExtensionOutlet, {
+      props: {
+        load: () => {
+          throw failure;
+        }
+      }
+    });
+
+    await waitFor(() =>
+      expect(log.error).toHaveBeenCalledWith(
+        expect.stringContaining('failed to load'),
+        expect.objectContaining({ error: failure })
+      )
+    );
+    expect(container.querySelector('[data-testid]')).toBeNull();
+  });
+
+  it('renders nothing, and logs, when load() returns something that is not a promise', async () => {
+    const { container } = render(ExtensionOutlet, {
+      props: { load: (() => undefined) as never }
+    });
+
+    await waitFor(() => expect(log.error).toHaveBeenCalled());
+    expect(container.querySelector('[data-testid]')).toBeNull();
+  });
+
+  it('renders nothing, and logs, when the loaded module has no default component', async () => {
+    const { container } = render(ExtensionOutlet, {
+      props: { load: (() => Promise.resolve({})) as never }
+    });
+
+    await waitFor(() =>
+      expect(log.error).toHaveBeenCalledWith(
+        expect.stringContaining('failed to load'),
+        expect.objectContaining({ error: expect.any(TypeError) })
+      )
+    );
+    expect(container.querySelector('[data-testid]')).toBeNull();
+  });
+
   it('renders nothing, and logs, when the loaded component throws while rendering', async () => {
     const { container } = render(ExtensionOutlet, {
       props: { load: () => import('../fixtures/test-extension/test-throwing.svelte') }

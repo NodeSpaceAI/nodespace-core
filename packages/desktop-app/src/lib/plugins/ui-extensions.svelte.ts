@@ -23,6 +23,7 @@ import {
   uiExtensionRegistry,
   type ChromeSlot,
   type ChromeContribution,
+  type Contribution,
   type Keyed,
   type ViewerTabContribution
 } from './ui-extensions';
@@ -34,7 +35,7 @@ const log = createLogger('UiExtensions');
 const warnedKeys = new Set<string>();
 
 /** Whether a contribution should be shown now: no `when` means always. */
-export function isContributionActive(c: Pick<Keyed<ChromeContribution>, 'key' | 'when'>): boolean {
+export function isContributionActive(c: Pick<Keyed<Contribution>, 'key' | 'when'>): boolean {
   if (!c.when) return true;
   try {
     const active = Boolean(c.when());

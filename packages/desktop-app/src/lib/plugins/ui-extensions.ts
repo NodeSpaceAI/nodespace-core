@@ -21,7 +21,9 @@
  * Keys and ordering:
  *   - A host sees each contribution as `Keyed`: `key` is
  *     `<extension id>/<contribution id>`, unique across extensions, and is what
- *     hosts key their `{#each}` blocks and tab selection by.
+ *     hosts key their `{#each}` blocks and tab selection by. Ids may contain `/`,
+ *     so a contribution whose key an earlier extension already holds is dropped
+ *     (a repeated key would throw in a keyed `{#each}`).
  *   - Lookups return contributions in descending `priority` (default 0), ties in
  *     registration order (extension first, then contribution order).
  *
@@ -96,13 +98,15 @@ function byPriority<C extends { priority?: number }>(list: C[]): C[] {
 /**
  * Validate one contribution list and attach keys. A malformed or repeated
  * contribution is logged and dropped, never thrown. `seenIds` is shared across
- * an extension's lists because ids are unique across all of them.
+ * an extension's lists because ids are unique across all of them; `takenKeys`
+ * holds every key registered so far, across extensions.
  */
 function keyContributions<C extends { id: string; load: unknown }>(
   extensionId: string,
   list: readonly C[] | undefined,
   listName: string,
-  seenIds: Set<string>
+  seenIds: Set<string>,
+  takenKeys: Set<string>
 ): Keyed<C>[] {
   if (list === undefined) return [];
   if (!Array.isArray(list)) {
@@ -134,8 +138,14 @@ function keyContributions<C extends { id: string; load: unknown }>(
       });
       continue;
     }
+    const key = `${extensionId}/${c.id}`;
+    if (takenKeys.has(key)) {
+      log.error('Contribution key is already held by another extension; dropped', { key });
+      continue;
+    }
     seenIds.add(c.id);
-    out.push({ ...c, extensionId, key: `${extensionId}/${c.id}` });
+    takenKeys.add(key);
+    out.push({ ...c, extensionId, key });
   }
   return out;
 }
@@ -180,12 +190,23 @@ export class UiExtensionRegistry {
       return;
     }
     const seenIds = new Set<string>();
+    const takenKeys = this.registeredKeys();
     this.extensions.set(ext.id, {
       extension: ext,
-      chrome: keyContributions(ext.id, ext.chrome, 'chrome', seenIds),
-      viewerTabs: keyContributions(ext.id, ext.viewerTabs, 'viewerTabs', seenIds)
+      chrome: keyContributions(ext.id, ext.chrome, 'chrome', seenIds, takenKeys),
+      viewerTabs: keyContributions(ext.id, ext.viewerTabs, 'viewerTabs', seenIds, takenKeys)
     });
     log.debug('Registered extension', { id: ext.id });
+  }
+
+  /** Every key held by a registered extension. */
+  private registeredKeys(): Set<string> {
+    const keys = new Set<string>();
+    for (const entry of this.extensions.values()) {
+      for (const c of entry.chrome) keys.add(c.key);
+      for (const t of entry.viewerTabs) keys.add(t.key);
+    }
+    return keys;
   }
 
   /** Remove an extension by id. */

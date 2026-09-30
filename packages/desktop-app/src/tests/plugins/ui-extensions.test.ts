@@ -158,6 +158,10 @@ describe('UiExtensionRegistry registration', () => {
     expect(keysOf(registry.chromeFor('app-shell-modal'))).toEqual(['a/shared']);
     expect(registry.viewerTabsFor('collection')).toEqual([]);
     expect(log.error).toHaveBeenCalledTimes(1);
+    expect(log.error).toHaveBeenCalledWith(expect.stringContaining('Duplicate contribution id'), {
+      extensionId: 'a',
+      contributionId: 'shared'
+    });
   });
 
   it('lets two extensions use the same contribution id, since keys carry the extension id', () => {
@@ -166,6 +170,18 @@ describe('UiExtensionRegistry registration', () => {
 
     expect(keysOf(registry.chromeFor('app-shell-modal'))).toEqual(['a/same', 'b/same']);
     expect(log.error).not.toHaveBeenCalled();
+  });
+
+  it('drops a contribution whose key another extension already holds (ids may contain "/")', () => {
+    registry.register(ext('a/b', { chrome: [chrome('c')] }));
+    registry.register(ext('a', { chrome: [chrome('b/c'), chrome('other')] }));
+
+    expect(keysOf(registry.chromeFor('app-shell-modal'))).toEqual(['a/b/c', 'a/other']);
+    expect(registry.has('a')).toBe(true);
+    expect(log.error).toHaveBeenCalledTimes(1);
+    expect(log.error).toHaveBeenCalledWith(expect.stringContaining('already held'), {
+      key: 'a/b/c'
+    });
   });
 
   it('never throws on malformed input, and logs it', () => {

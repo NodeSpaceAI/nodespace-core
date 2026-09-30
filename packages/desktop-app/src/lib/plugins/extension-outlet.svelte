@@ -27,11 +27,23 @@
     props?: Props;
   } = $props();
 
+  // The Promise constructor turns a `load()` that throws synchronously, or returns
+  // a plain value, into the same rejection path as a failed import, so neither can
+  // escape from the outlet's own block (the boundary below only covers the component).
+  // A module without a default component is rejected the same way, so it is logged
+  // instead of silently rendering nothing.
   const loaded = $derived(
-    load().catch((error: unknown) => {
-      log.error('Extension component failed to load', { error });
-      return null;
-    })
+    new Promise<{ default: Component<Props> }>((resolve) => resolve(load()))
+      .then((mod) => {
+        if (typeof mod?.default !== 'function') {
+          throw new TypeError('load() must resolve to a module with a default component');
+        }
+        return mod;
+      })
+      .catch((error: unknown) => {
+        log.error('Extension component failed to load', { error });
+        return null;
+      })
   );
 </script>
 

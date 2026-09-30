@@ -6,6 +6,7 @@
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { render, cleanup, waitFor } from '@testing-library/svelte';
+import { tick } from 'svelte';
 
 vi.mock('$lib/utils/logger', () => ({
   createLogger: () => ({ debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() })
@@ -86,7 +87,7 @@ describe('CollaborationTab', () => {
 
     // A settings write that resolves to the same variant.
     seedVariant('connected');
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await tick();
 
     expect(getByTestId('stub-collaboration-view')).toBe(before);
   });
