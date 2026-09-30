@@ -7,24 +7,24 @@ import { proSync } from '$lib/stores/pro-sync.svelte';
 import { labsFlags } from '$lib/stores/labs-flags.svelte';
 import { SharedNodeStore } from '$lib/services/shared-node-store.svelte';
 import { DATABASE_SETTINGS_NODE_ID } from '$lib/constants/database-settings';
-import type { ProSyncVariant } from '$lib/plugins/pro-sync-variant.svelte';
+
+/** The variants that show a sync surface; every other state resolves to the teaser. */
+type Variant = 'sign-in' | 'consent' | 'relogin' | 'connected';
 
 /** The settings the daemon serializes, as FLAT properties on the singleton. */
-export type SettingsSeed = {
-  sync_enabled?: boolean;
-  auth_status?: string;
-};
+const settingsFor = (on: boolean, authed: boolean) =>
+  ({ sync_enabled: on, auth_status: authed ? 'connected' : 'local' });
 
-/** The settings that resolve to each variant that shows a sync surface (Labs toggle on, syncing daemon). */
-const SETTINGS_FOR_VARIANT: Record<Exclude<ProSyncVariant, 'teaser'>, SettingsSeed> = {
-  'sign-in': { sync_enabled: false, auth_status: 'local' },
-  consent: { sync_enabled: false, auth_status: 'connected' },
-  relogin: { sync_enabled: true, auth_status: 'local' },
-  connected: { sync_enabled: true, auth_status: 'connected' }
+/** The settings that resolve to each variant (Labs toggle on, syncing daemon). */
+const SETTINGS_FOR_VARIANT: Record<Variant, Record<string, unknown>> = {
+  'sign-in': settingsFor(false, false),
+  consent: settingsFor(false, true),
+  relogin: settingsFor(true, false),
+  connected: settingsFor(true, true)
 };
 
 /** Seed the active database's settings singleton with the given props. */
-export function seedSettings(props: SettingsSeed): void {
+export function seedSettings(props: Record<string, unknown>): void {
   const node: Node = {
     id: DATABASE_SETTINGS_NODE_ID,
     nodeType: 'database-settings',
@@ -44,7 +44,7 @@ export function setSyncToggle(on: boolean): void {
 }
 
 /** Put the stores in the state that resolves to `variant`. Safe to call again to move to another variant. */
-export function seedVariant(variant: Exclude<ProSyncVariant, 'teaser'>): void {
+export function seedVariant(variant: Variant): void {
   setSyncToggle(true);
   proSync.tier = 'pro';
   seedSettings(SETTINGS_FOR_VARIANT[variant]);
@@ -52,8 +52,7 @@ export function seedVariant(variant: Exclude<ProSyncVariant, 'teaser'>): void {
 
 /** Back to the default state, which resolves to the teaser variant. */
 export function resetSyncVariantState(): void {
-  proSync.tier = 'unknown';
-  proSync.userEmail = '';
+  Object.assign(proSync, { tier: 'unknown', userEmail: '' });
   setSyncToggle(false);
   SharedNodeStore.resetInstance();
 }

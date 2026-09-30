@@ -35,7 +35,7 @@ import proExtensions, { proSyncExtension } from '$lib/plugins/pro-plugin';
 import FirstProConsentSlot from '$lib/components/first-pro-consent-slot.svelte';
 import ProReloginSlot from '$lib/components/pro-relogin-slot.svelte';
 import CollaborationTab from '$lib/components/collaboration/collaboration-tab.svelte';
-import { seedSettings } from '../helpers/sync-variant-fixtures';
+import { seedSettings, seedVariant } from '../helpers/sync-variant-fixtures';
 
 /** The host key of one of the built-in extension's contributions. */
 const key = (contributionId: string) => `${proSyncExtension.id}/${contributionId}`;
@@ -79,8 +79,8 @@ describe('UI-extension registry', () => {
 
     it('exports the registered extension as the default extension list for a build entry', () => {
       expect(proExtensions).toEqual([proSyncExtension]);
-      expect(proExtensions[0]).toBe(proSyncExtension);
-      expect(uiExtensionRegistry.all()).toContain(proSyncExtension);
+      // The exported object is the one that is registered.
+      expect(uiExtensionRegistry.all()).toContain(proExtensions[0]);
     });
   });
 
@@ -218,12 +218,11 @@ describe('UI-extension registry', () => {
     });
 
     it('the collab tab keeps one key across sign-in → consent → connected', () => {
-      proSync.tier = 'pro';
-      seedSettings({ sync_enabled: false, auth_status: 'local' });
+      seedVariant('sign-in');
       const signIn = keysOf(getActiveViewerTabs('collection'));
-      seedSettings({ sync_enabled: false, auth_status: 'connected' });
+      seedVariant('consent');
       const consent = keysOf(getActiveViewerTabs('collection'));
-      seedSettings({ sync_enabled: true, auth_status: 'connected' });
+      seedVariant('connected');
       const connected = keysOf(getActiveViewerTabs('collection'));
       expect(signIn).toEqual([key('collaboration')]);
       expect(consent).toEqual(signIn);

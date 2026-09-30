@@ -205,7 +205,7 @@ export const BASELINES = {
   // pro_* Tauri commands, the pro_sync / pro_client modules, pro_env
   proCommands: 275,
   // the proSync store, resolveProSyncVariant, isProSyncActive, pro-sync imports
-  proSyncModule: 370,
+  proSyncModule: 368,
   // the Pro proto, CloudSyncService, ProClient / ProTier, Pro Worker URLs
   proProtocol: 95,
   // quoted pro:tier-detected, sync:status and sync:error event names
@@ -223,7 +223,7 @@ export const BASELINES = {
   // the word tenant (one fixture exempt, see EXEMPTIONS)
   tenantWording: 463,
   // the word Pro, except chip and model names such as "M2 Pro", "DeepSeek V4 Pro"
-  proWording: 294,
+  proWording: 282,
   // files whose basename has a pro segment
   proNamedFiles: 18,
 } satisfies Record<MarkerName, number>;
