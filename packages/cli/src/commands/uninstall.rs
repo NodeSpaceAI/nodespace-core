@@ -128,16 +128,50 @@ fn remove_bin_dir(home: &Path) {
 /// `nodespace` binary uninstalls whichever app is installed, and it cannot tell
 /// from its own build which variant left a socket behind — a stale Pro or dev
 /// socket file would otherwise survive an uninstall.
+///
+/// Each socket's single-instance lock file goes with it. Windows has no lock
+/// files: its named pipe admits one server by itself.
 fn remove_sock(home: &Path) {
     let dir = home.join(nodespace_proto::socket::STATE_DIR);
     for name in nodespace_proto::socket::DAEMON_SOCKET_NAMES {
-        let _ = fs::remove_file(dir.join(name));
+        let socket = dir.join(name);
+        let _ = fs::remove_file(&socket);
+        #[cfg(unix)]
+        let _ = fs::remove_file(nodespace_daemon::single_instance::lock_path_for(&socket));
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every variant's socket and lock file must go, and nothing beside them.
+    /// The daemon leaves its lock file behind on every exit, so a lock that
+    /// survived an uninstall would sit in `~/.nodespace` forever.
+    #[cfg(unix)]
+    #[test]
+    fn remove_sock_removes_every_variants_socket_and_lock_file_only() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let state_dir = home.path().join(nodespace_proto::socket::STATE_DIR);
+        fs::create_dir_all(&state_dir).expect("create state dir");
+        let bystander = state_dir.join("databases.toml");
+        fs::write(&bystander, "").expect("write bystander");
+        let mut leftovers = Vec::new();
+        for name in nodespace_proto::socket::DAEMON_SOCKET_NAMES {
+            let socket = state_dir.join(name);
+            let lock = nodespace_daemon::single_instance::lock_path_for(&socket);
+            fs::write(&socket, "").expect("write socket stand-in");
+            fs::write(&lock, "1234").expect("write lock file");
+            leftovers.extend([socket, lock]);
+        }
+
+        remove_sock(home.path());
+
+        for leftover in leftovers {
+            assert!(!leftover.exists(), "{} survived", leftover.display());
+        }
+        assert!(bystander.exists(), "unrelated state must be left alone");
+    }
 
     /// Writes an executable shell script at `dir/installer.sh` and wraps it
     /// as an `Installer::Compiled` — a fake standing in for the real

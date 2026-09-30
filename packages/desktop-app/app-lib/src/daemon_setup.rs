@@ -132,16 +132,6 @@ fn daemon_binary_name() -> &'static str {
     daemon_profile::active().binary_name
 }
 
-/// Flag every launcher in this file passes so the daemon runs in tray mode.
-///
-/// The daemon is headless unless told otherwise (a headless launcher that
-/// forgot to opt out used to land in tray mode and hang on SIGTERM). The
-/// desktop app's daemon is the one deployment that wants the tray icon, so it
-/// opts in here. A flag rather than an environment variable, because the
-/// Windows HKCU autorun entry is a bare command line. Must equal the daemon's
-/// own `TRAY_FLAG` (`packages/daemon/src/main.rs`).
-const DAEMON_TRAY_FLAG: &str = "--tray";
-
 /// Relative path from HOME to the daemon socket, scoped by build variant.
 ///
 /// Scoping prevents dev builds from colliding with the production app and prevents
@@ -1194,6 +1184,14 @@ fn write_plist(
         })
         .collect();
 
+    // One `<string>` per launcher argument, after the binary's. The daemon
+    // is headless unless the launcher passes the tray flag, so these are what
+    // gives the app's daemon its tray icon.
+    let launcher_args: String = nodespace_proto::socket::LAUNCHER_ARGS
+        .iter()
+        .map(|arg| format!("        <string>{}</string>\n", xml_escape(arg)))
+        .collect();
+
     let plist = format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -1204,8 +1202,7 @@ fn write_plist(
     <key>ProgramArguments</key>
     <array>
         <string>{bin}</string>
-        <string>{tray_flag}</string>
-    </array>
+{launcher_args}    </array>
     <key>EnvironmentVariables</key>
     <dict>
         <key>NODESPACED_SOCKET</key>
@@ -1229,7 +1226,7 @@ fn write_plist(
 "#,
         label = label_escaped,
         bin = bin_escaped,
-        tray_flag = DAEMON_TRAY_FLAG,
+        launcher_args = launcher_args,
         socket = socket_path,
         ui_binary = ui_binary,
         service_env = service_env,
@@ -1488,7 +1485,7 @@ fn write_systemd_service(home: &Path, service_path: &Path, daemon_bin: &Path) ->
          \n\
          [Service]\n\
          Type=simple\n\
-         ExecStart={bin} {tray_flag}\n\
+         ExecStart={bin} {launcher_args}\n\
          Environment=NODESPACED_SOCKET='{socket}'\n\
          Environment=NODESPACE_UI_BINARY='{ui_binary}'\n\
          StandardOutput=append:{log_out}\n\
@@ -1498,7 +1495,7 @@ fn write_systemd_service(home: &Path, service_path: &Path, daemon_bin: &Path) ->
          [Install]\n\
          WantedBy=default.target\n",
         bin = bin_str,
-        tray_flag = DAEMON_TRAY_FLAG,
+        launcher_args = nodespace_proto::socket::LAUNCHER_ARGS.join(" "),
         socket = sq_escape(&socket_path),
         ui_binary = sq_escape(&ui_binary),
         log_out = log_out,
@@ -1937,7 +1934,7 @@ fn spawn_daemon_windows(daemon_bin: &Path, log_dir: &Path) -> Result<()> {
 
     let mut command = Command::new(daemon_bin);
     command
-        .arg(DAEMON_TRAY_FLAG)
+        .args(nodespace_proto::socket::LAUNCHER_ARGS)
         .creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP)
         .stdin(Stdio::null())
         .stdout(daemon_log_stdio(&stdout_path))
@@ -1980,7 +1977,11 @@ fn register_autorun_windows(daemon_bin: &Path) {
     let bin_str = daemon_bin.to_string_lossy().to_string();
     // Wrap the path in quotes so the Windows Run registry evaluator handles
     // paths with spaces (e.g. C:\Users\John Smith\AppData\...) correctly.
-    let quoted = format!("\"{}\" {}", bin_str, DAEMON_TRAY_FLAG);
+    let quoted = format!(
+        "\"{}\" {}",
+        bin_str,
+        nodespace_proto::socket::LAUNCHER_ARGS.join(" ")
+    );
     let result = std::process::Command::new("reg")
         .args([
             "add",
@@ -2360,7 +2361,8 @@ mod macos_codesign_tests {
 /// checking the plist parses.
 #[cfg(all(test, target_os = "macos"))]
 mod macos_plist_keepalive_tests {
-    use super::{write_plist, DaemonProfile, DAEMON_TRAY_FLAG};
+    use super::{write_plist, DaemonProfile};
+    use nodespace_proto::socket::LAUNCHER_ARGS;
     use std::path::{Path, PathBuf};
 
     fn scratch_dir(tag: &str) -> PathBuf {
@@ -2437,7 +2439,8 @@ mod macos_plist_keepalive_tests {
     }
 
     /// The daemon defaults to headless; the app's launchd-started daemon only
-    /// gets its tray icon because the plist passes the opt-in flag.
+    /// gets its tray icon because the plist passes the launcher arguments, and
+    /// a daemon registered under core's identity must accept every one.
     #[test]
     fn plist_opts_the_daemon_into_tray_mode() {
         let home = scratch_dir("trayflag");
@@ -2448,13 +2451,17 @@ mod macos_plist_keepalive_tests {
             .expect("write_plist should succeed");
         let contents = std::fs::read_to_string(&plist_path).expect("plist should be written");
 
+        let launcher_args: String = LAUNCHER_ARGS
+            .iter()
+            .map(|arg| format!("        <string>{arg}</string>\n"))
+            .collect();
         assert!(
             contents.contains(&format!(
-                "<array>\n        <string>{}</string>\n        <string>{DAEMON_TRAY_FLAG}</string>\n    </array>",
+                "<array>\n        <string>{}</string>\n{launcher_args}    </array>",
                 daemon_bin.display()
             )),
-            "ProgramArguments must pass {DAEMON_TRAY_FLAG}, or the app's daemon runs headless \
-             with no tray icon: {contents}"
+            "ProgramArguments must be the binary followed by every launcher argument \
+             {LAUNCHER_ARGS:?}, or the app's daemon runs headless with no tray icon: {contents}"
         );
 
         let _ = std::fs::remove_dir_all(&home);
@@ -2640,13 +2647,17 @@ mod pkg_plist_matches_app_plist_tests {
     #[test]
     fn pkg_plist_opts_the_daemon_into_tray_mode() {
         let contents = pkg_plist_contents();
+        let launcher_args: String = nodespace_proto::socket::LAUNCHER_ARGS
+            .iter()
+            .map(|arg| format!("\n        <string>{arg}</string>"))
+            .collect();
         assert!(
             contents.contains(&format!(
-                "<string>/usr/local/bin/nodespaced</string>\n        <string>{}</string>",
-                super::DAEMON_TRAY_FLAG
+                "<string>/usr/local/bin/nodespaced</string>{launcher_args}\n    </array>"
             )),
-            "the .pkg's plist must pass the tray flag like write_plist does, or the daemon \
-             it starts runs headless with no tray icon: {contents}"
+            "the .pkg's plist must pass every launcher argument {:?} like write_plist does, \
+             or the daemon it starts runs headless with no tray icon: {contents}",
+            nodespace_proto::socket::LAUNCHER_ARGS
         );
     }
 

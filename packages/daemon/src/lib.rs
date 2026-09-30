@@ -10,6 +10,8 @@ pub mod incompatible_database;
 pub mod router;
 pub mod services;
 #[cfg(unix)]
+pub mod single_instance;
+#[cfg(unix)]
 pub mod stdio_log_rotation;
 pub mod tray;
 
@@ -103,16 +105,24 @@ pub fn resolve_db_path() -> Result<PathBuf> {
 /// foreign-mode-bits case, if not the foreign-owner-with-narrow-bits one).
 #[cfg(unix)]
 pub async fn create_dir_owner_only(dir: &std::path::Path) -> Result<()> {
-    use std::os::unix::fs::{MetadataExt, PermissionsExt};
-    tokio::fs::DirBuilder::new()
+    let dir = dir.to_owned();
+    tokio::task::spawn_blocking(move || create_dir_owner_only_blocking(&dir))
+        .await
+        .context("owner-only directory creation task did not complete")?
+}
+
+/// The blocking form of [`create_dir_owner_only`], with the same contract and
+/// the same errors, for a caller that runs before any async runtime exists
+/// (the daemon's single-instance lock is taken that early).
+#[cfg(unix)]
+pub(crate) fn create_dir_owner_only_blocking(dir: &std::path::Path) -> Result<()> {
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
+    std::fs::DirBuilder::new()
         .recursive(true)
         .mode(0o700)
         .create(dir)
-        .await
         .with_context(|| format!("create dir {}", dir.display()))?;
-    if let Err(chmod_err) =
-        tokio::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).await
-    {
+    if let Err(chmod_err) = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)) {
         let metadata = std::fs::metadata(dir)
             .with_context(|| format!("stat {} after failed chmod", dir.display()))?;
         let mode = metadata.permissions().mode() & 0o777;
@@ -160,6 +170,7 @@ pub use nodespace_proto::{
 };
 
 pub use db_routing::{DbManagerLayer, DATABASE_ID_HEADER};
+pub use nodespace_proto::socket::LAUNCHER_ARGS;
 pub use router::{build_base_router, BaseServices};
 pub use services::{
     build_database_services, build_shared_services, shared_model_load_in_flight,

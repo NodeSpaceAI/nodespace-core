@@ -49,6 +49,7 @@ use nodespace_daemon::{
     DatabaseServiceImpl, DatabaseServices, DbManagerLayer, SharedContext,
 };
 use nodespace_nlp_engine::EmbeddingService;
+use nodespace_proto::socket::TRAY_FLAG;
 use tokio::sync::watch;
 use tonic::transport::Server;
 
@@ -454,6 +455,29 @@ fn main() -> Result<()> {
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
         )
         .init();
+
+    // Take the single-instance lock before anything else touches state the
+    // daemons share: the registry and databases, the model, the socket, and
+    // the stdout/stderr log that `stdio_log_rotation` rolls below. A daemon
+    // that loses the lock exits with status 0, a deliberate stop, so a service
+    // manager registered with `KeepAlive { SuccessfulExit = false }` leaves
+    // the daemon that holds it alone. The lock lives as long as `main` does.
+    #[cfg(unix)]
+    let _instance_lock = {
+        use nodespace_daemon::single_instance::{acquire, Acquire};
+        let sock = socket_path();
+        match acquire(&sock).context("take the single-instance lock")? {
+            Acquire::Held(lock) => lock,
+            Acquire::HeldByAnother { holder_pid } => {
+                tracing::info!(
+                    sock = %sock.display(),
+                    holder_pid = ?holder_pid,
+                    "another nodespaced already serves this socket; exiting"
+                );
+                return Ok(());
+            }
+        }
+    };
 
     // Keep the log behind our own stdout/stderr bounded however we were
     // started — a headless `brew services`/systemd install has no supervisor
@@ -1128,11 +1152,6 @@ mod watch_for_shutdown_signal_tests {
     }
 }
 
-/// Command-line flag that opts the daemon INTO tray mode. See [`tray_mode`].
-/// The desktop app passes the same literal as `DAEMON_TRAY_FLAG` in
-/// `daemon_setup.rs`; the two crates share no dependency, so keep them in step.
-const TRAY_FLAG: &str = "--tray";
-
 /// Command-line flag that prints the package version and exits. `main`
 /// answers it before [`first_unrecognized_arg`] runs, so it is not part of
 /// [`ACCEPTED_ARGS`].
@@ -1223,6 +1242,21 @@ mod unrecognized_arg_tests {
     #[test]
     fn tray_flag_is_recognized() {
         assert_eq!(first_unrecognized_arg(&argv(&[TRAY_FLAG])), None);
+    }
+
+    /// The launchers register the daemon with `LAUNCHER_ARGS`, so a list this
+    /// daemon rejects would leave every registered daemon exiting with status 2.
+    /// A daemon built elsewhere on core's crates parses the same list in its
+    /// own tests.
+    #[test]
+    fn every_launcher_argument_is_recognized() {
+        let argv = argv(&nodespace_daemon::LAUNCHER_ARGS);
+        assert_eq!(first_unrecognized_arg(&argv), None);
+    }
+
+    #[test]
+    fn the_launcher_arguments_put_the_daemon_in_tray_mode() {
+        assert!(tray_mode(&argv(&nodespace_daemon::LAUNCHER_ARGS)));
     }
 
     #[test]
