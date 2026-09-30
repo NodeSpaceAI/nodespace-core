@@ -50,7 +50,7 @@
  * staged, with each check matched to what that half actually costs:
  *
  *   - The **compile** (`bun build --compile`, ~58MB) is guarded by mtime —
- *     the same comparison shape as `build_support.rs`'s `sync_stale_sidecar`
+ *     the same comparison shape as `nodespace-app-build`'s `sync_stale_sidecar`
  *     — so the expensive step is skipped outright, not run and discarded.
  *   - The **resource staging** is guarded by content. `tsc` runs without
  *     `--incremental` here, so it rewrites every `dist/*.js` on each run with
@@ -155,7 +155,7 @@ export function newestMtimeMs(
  * (nothing remains that could have superseded it).
  *
  * Deliberately mtime-based rather than content-hashed, matching
- * `build_support.rs`'s `sync_stale_sidecar`. The known residual failure mode
+ * `nodespace-app-build`'s `sync_stale_sidecar`. The known residual failure mode
  * is that git stamps checked-out files with checkout time, so a branch switch
  * that lands on the same coarse tick as an existing binary can read as fresh
  * when it isn't. What keeps that tolerable here: the outputs (`binaries/`,

@@ -5,6 +5,7 @@ edition = "2021"
 publish = false
 
 [dependencies]
+nodespace-app-build = { path = "../../app-build" }
 nodespace-app-lib = { path = ".." }
 tauri = { version = "2", features = ["test"] }
 tokio = { workspace = true }

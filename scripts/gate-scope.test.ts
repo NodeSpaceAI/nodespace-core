@@ -32,6 +32,7 @@ describe("classify", () => {
     "Cargo.lock",
     "packages/desktop-app/src-tauri/tauri.conf.json",
     "packages/desktop-app/app-lib/src/lib.rs",
+    "packages/desktop-app/app-build/src/bundle_entries.rs",
     "packages/core/tests/fixtures/data.json",
     "packages/proto/proto/nodespace.proto",
     ".cargo/config.toml",

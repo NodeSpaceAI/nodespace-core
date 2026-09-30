@@ -11,11 +11,11 @@
  * `GlobPathNotFound`. Both are gitignored, so a fresh checkout satisfies
  * neither.
  *
- * build.rs drops every unstaged sidecar and the unstaged skill from a debug
- * build (see its `drop_unstaged_bundle_entries`), so none of those gate
- * compiling. What is left is the `resources/models` glob, which survives on a
- * tracked `.gitkeep`, and the skill package's compiled installer script —
- * required here by a TEST (see `TEST_PREREQUISITES`), not by the build.
+ * build.rs drops every unstaged sidecar and resource from a debug build
+ * (`nodespace-app-build`'s `drop_unstaged_bundle_entries`), so none of those
+ * gate compiling. The `resources/models` glob survives on a tracked
+ * `.gitkeep`, and the skill package's compiled installer script is required
+ * here by a TEST (see `TEST_PREREQUISITES`), not by the build.
  *
  * Left alone, that surfaces from deep inside a build script naming one
  * missing path, with no hint which command produces it. This checks every
@@ -92,9 +92,9 @@ const resourcePatterns = (resources: unknown): string[] => {
 };
 
 /**
- * The `resources` entry build.rs drops from a DEBUG build when unstaged (see
- * its `drop_unstaged_bundle_entries`), so it doesn't gate compiling these
- * tests. Every `externalBin` sidecar is dropped the same way.
+ * The `resources` entry a DEBUG build drops when unstaged (see
+ * `nodespace-app-build`'s `drop_unstaged_bundle_entries`), so it doesn't gate
+ * compiling these tests. Every `externalBin` sidecar is dropped the same way.
  */
 const DEBUG_OPTIONAL_RESOURCE = 'resources/skill/**/*';
 

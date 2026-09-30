@@ -1,43 +1,34 @@
-//! Shared between `build.rs` (which calls this for real, immediately before
-//! `tauri_build::build()`) and `nodespace-app-test-support`, which re-exports
-//! `sync_stale_sidecar` purely so `tests/it/sidecar_staging_sync_test.rs` can
-//! exercise the real algorithm against synthetic trees — no duplicated
-//! copy.
+//! Keeps a sidecar's staging copy from overwriting a fresher build output.
 //!
-//! Pulled into each crate root via `mod build_support;` / `#[path = ...]
-//! mod build_support;` rather than published as its own workspace crate:
-//! `nodespace-app` cannot take `nodespace-app-test-support` as a
-//! `[build-dependencies]` (it links the whole app library and Tauri's test
-//! runtime), and `nodespace-app-test-support` cannot depend on the
-//! binary-only `nodespace-app`. A shared source file sidesteps both; no
-//! crate boundary, no duplication.
+//! An app crate calls [`sync_stale_sidecar`] from its `build.rs` immediately
+//! before `tauri_build::build()`. It is a plain library function, so a test can
+//! also run the real algorithm against synthetic trees, with no duplicated
+//! copy.
 //!
 //! ## Why this exists
 //!
 //! `tauri-build`'s own handling of `bundle.externalBin` (`copy_binaries` in
 //! `tauri-build-2.6.2/src/lib.rs`) copies each configured sidecar —
-//! `src-tauri/binaries/<bin>-<target-triple>` — onto `target/<profile>/<bin>`
+//! `<app crate>/binaries/<bin>-<target-triple>` — onto `target/<profile>/<bin>`
 //! (the bare cargo build output name, stripped of its triple suffix) every
-//! time `nodespace-app`'s build script runs. That copy is unconditional: it
+//! time the app crate's build script runs. That copy is unconditional: it
 //! `fs::remove_file`s whatever is already at the destination and overwrites
 //! it, with no mtime or freshness check of any kind.
 //!
 //! Because `target/<profile>/` is the *whole workspace's* shared Cargo
-//! output directory, `target/<profile>/nodespaced` is also exactly where
-//! `cargo build --bin nodespaced` puts the daemon binary from an entirely
-//! unrelated crate (`nodespace-daemon`). If the staged sidecar
-//! (`src-tauri/binaries/nodespaced-<triple>`) is stale — e.g. it was last
-//! refreshed via `bun run build:sidecars` days ago and never rebuilt since —
-//! then simply building `nodespace-app` (a plain `cargo build -p
-//! nodespace-app`, `cargo test -p nodespace-app`, or anything that reruns
-//! its build script) silently clobbers a genuinely fresh
-//! `target/<profile>/nodespaced` with those old bytes. This is the reverse
-//! of the direction developers expect data to flow (stage the sidecar FROM
-//! the build output, not the other way around), which is what makes it so
-//! confusing to diagnose — see `daemon_binary_freshness` in
-//! `nodespace-app-test-support`, which detects the resulting staleness but
-//! cannot prevent it, since by the time a test runs the clobber has already
-//! happened.
+//! output directory, `target/<profile>/<bin>` is also exactly where
+//! `cargo build --bin <bin>` puts that binary when an entirely unrelated crate
+//! of the workspace builds it (a daemon, say). If the staged sidecar
+//! (`binaries/<bin>-<triple>`) is stale — e.g. it was last refreshed by a
+//! staging script days ago and never rebuilt since — then simply building the
+//! app crate (a plain `cargo build -p <app>`, `cargo test -p <app>`, or
+//! anything that reruns its build script) silently clobbers a genuinely fresh
+//! `target/<profile>/<bin>` with those old bytes. This is the reverse of the
+//! direction developers expect data to flow (stage the sidecar FROM the build
+//! output, not the other way around), which is what makes it so confusing to
+//! diagnose. A test that checks a binary's freshness can detect the resulting
+//! staleness but cannot prevent it, since by the time a test runs the clobber
+//! has already happened.
 //!
 //! [`sync_stale_sidecar`] closes that gap by running immediately before
 //! `tauri_build::build()`, inside the same build script invocation: whichever
@@ -85,8 +76,8 @@ fn copy_preserving_mode(src: &Path, dest: &Path) -> io::Result<()> {
 }
 
 /// Reconciles a freshly cargo-built binary (`target_bin`, e.g.
-/// `target/debug/nodespaced`) with its Tauri sidecar staging copy
-/// (`sidecar_bin`, e.g. `src-tauri/binaries/nodespaced-<triple>`) so that
+/// `target/debug/<bin>`) with its Tauri sidecar staging copy
+/// (`sidecar_bin`, e.g. `binaries/<bin>-<triple>`) so that
 /// whichever of the two is newer is propagated onto the other — never the
 /// reverse. Returns `Ok(true)` if `sidecar_bin` was refreshed from
 /// `target_bin`, `Ok(false)` if nothing needed to change.

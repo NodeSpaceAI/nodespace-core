@@ -1,5 +1,3 @@
-mod build_support;
-
 use std::env;
 use std::path::PathBuf;
 
@@ -16,8 +14,8 @@ const EXTERNAL_BIN_NAMES: &[&str] = &["nodespaced", "nodespace"];
 /// (`src-tauri/binaries/<bin>-<triple>`) with the workspace's own build
 /// output (`target/<profile>/<bin>`) so that whichever is newer wins,
 /// *before* `tauri_build::build()` runs its own unconditional copy in the
-/// opposite direction. See `build_support`'s module doc for the full story
-/// on why this exists.
+/// opposite direction. See `nodespace_app_build`'s `sync_stale_sidecar` for
+/// the full story on why this exists.
 fn sync_external_bin_staging() {
     let target_triple = env::var("TARGET").expect("cargo always sets TARGET for build scripts");
     let target_os = env::var("CARGO_CFG_TARGET_OS").expect("cargo always sets CARGO_CFG_TARGET_OS");
@@ -43,10 +41,10 @@ fn sync_external_bin_staging() {
         let sidecar_bin =
             PathBuf::from("binaries").join(format!("{bin}-{target_triple}{exe_suffix}"));
 
-        match build_support::sync_stale_sidecar(&target_bin, &sidecar_bin) {
+        match nodespace_app_build::sync_stale_sidecar(&target_bin, &sidecar_bin) {
             Ok(true) => println!(
                 "cargo:warning=refreshed stale sidecar staging file {} from {} \
-                 (see build_support.rs for why)",
+                 (see nodespace_app_build::sync_stale_sidecar for why)",
                 sidecar_bin.display(),
                 target_bin.display()
             ),
@@ -65,116 +63,19 @@ fn sync_external_bin_staging() {
     }
 }
 
-/// The `resources` entry `bun run build:skill` stages, as `tauri.conf.json`
-/// declares it.
-const SKILL_RESOURCES: &str = "resources/skill/**/*";
-
-/// Leave unstaged sidecars and the unstaged skill out of a debug build's
-/// bundle config.
-///
-/// `tauri_build::build()` copies every declared resource and sidecar into the
-/// build output and fails on a missing one. All of them are gitignored build
-/// output, so any build of this crate in a fresh worktree — clippy,
-/// `cargo check`, `cargo test`, the merge gate — used to need them staged
-/// first (or copied in from another checkout, which risks a stale daemon),
-/// although none of those builds runs the bundled app. A debug build
-/// therefore declares only what is staged, and says so.
-///
-/// Release builds stay strict: a packaged app must never ship without its
-/// sidecars or skill, and `tauri:build` stages everything first. `dev:tauri`
-/// stages the sidecars but not the skill bundle: a dev app installs the skill
-/// from the source checkout's `packages/skill/dist/install.js`, which it
-/// builds instead. The Tauri-seam tests
-/// don't depend on the staged daemon either: the gate points them at
-/// `target/debug/nodespaced` via `NODESPACED_TEST_BIN`, and without it they
-/// fail with a message naming the command that stages it.
-///
-/// Works through `TAURI_CONFIG`, which `tauri_build` merges over
-/// `tauri.conf.json` as a JSON merge patch. Arrays are replaced whole, so the
-/// patch restates each list read from `tauri.conf.json`, minus the unstaged
-/// entries. An explicitly set `TAURI_CONFIG` (the tauri CLI's `--config`) is
-/// left alone: whoever set it owns the bundle config.
-fn drop_unstaged_bundle_entries() {
-    if env::var("PROFILE").as_deref() != Ok("debug") || env::var_os("TAURI_CONFIG").is_some() {
-        return;
-    }
-    let target_triple = env::var("TARGET").expect("cargo always sets TARGET for build scripts");
-    let target_os = env::var("CARGO_CFG_TARGET_OS").expect("cargo always sets CARGO_CFG_TARGET_OS");
-    let exe_suffix = if target_os == "windows" { ".exe" } else { "" };
-
-    let conf: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string("tauri.conf.json").expect("tauri.conf.json is readable"),
-    )
-    .expect("tauri.conf.json is valid JSON");
-    // `None` when the entry isn't a plain list (a resources map), in which
-    // case the build stays strict rather than guess at the shape.
-    let (Some(declared_bins), Some(declared_resources)) = (
-        conf["bundle"]["externalBin"].as_array(),
-        conf["bundle"]["resources"].as_array(),
-    ) else {
-        return;
-    };
-
-    let staged_path = |bin: &str| PathBuf::from(format!("{bin}-{target_triple}{exe_suffix}"));
-    let skill_dir = PathBuf::from("resources/skill");
-    let skill_staged = skill_dir
-        .read_dir()
-        .is_ok_and(|mut entries| entries.next().is_some());
-
-    // Non-string entries are kept as declared rather than guessed at.
-    let (external_bins, unstaged_bins): (Vec<serde_json::Value>, Vec<serde_json::Value>) =
-        declared_bins
-            .iter()
-            .cloned()
-            .partition(|entry| entry.as_str().is_none_or(|bin| staged_path(bin).is_file()));
-    let mut missing: Vec<PathBuf> = unstaged_bins
-        .iter()
-        .filter_map(|entry| entry.as_str().map(staged_path))
-        .collect();
-    let resources: Vec<serde_json::Value> = declared_resources
-        .iter()
-        .filter(|entry| skill_staged || entry.as_str() != Some(SKILL_RESOURCES))
-        .cloned()
-        .collect();
-    if !skill_staged {
-        missing.push(skill_dir);
-    }
-    if missing.is_empty() {
-        return;
-    }
-
-    let patch = serde_json::json!({
-        "bundle": { "resources": resources, "externalBin": external_bins }
-    });
-    // `set_var` is fine on edition 2021 — build scripts are single-threaded by
-    // Cargo's contract.
-    env::set_var("TAURI_CONFIG", patch.to_string());
-    let names: Vec<String> = missing.iter().map(|p| p.display().to_string()).collect();
-    println!(
-        "cargo:warning=not staged, left out of this debug build's bundle: {} \
-         (only needed to run the app; `bun run dev:tauri` stages the sidecars)",
-        names.join(", ")
-    );
-
-    // tauri_build watches only what it copies, so watch the dropped paths
-    // here to pick up a later staging step. A path that doesn't exist yet is
-    // watched through its nearest existing ancestor: cargo treats a missing
-    // path as always changed, which would rerun this script on every build.
-    for path in &missing {
-        if let Some(watched) = path
-            .ancestors()
-            .find(|p| !p.as_os_str().is_empty() && p.exists())
-        {
-            println!("cargo:rerun-if-changed={}", watched.display());
-        }
-    }
-}
-
 fn main() {
     // Must run before tauri_build::build(): that call is what performs the
     // unconditional, direction-reversing copy this guards against.
     sync_external_bin_staging();
-    drop_unstaged_bundle_entries();
+    // A debug build leaves whatever is unstaged out of its bundle, so building
+    // this crate needs no staged sidecar or skill bundle. `dev:tauri` stages
+    // the sidecars but not the skill bundle: a dev app installs the skill from
+    // the source checkout's `packages/skill/dist/install.js`, which it builds
+    // instead. The Tauri-seam tests don't depend on the staged daemon either:
+    // the gate points them at `target/debug/nodespaced` via
+    // `NODESPACED_TEST_BIN`. A release build stays strict, and `tauri:build`
+    // stages everything first.
+    nodespace_app_build::drop_unstaged_bundle_entries();
 
     tauri_build::build()
 }

@@ -42,14 +42,9 @@ use tauri::Manager;
 
 // Re-exported the same way `daemon_binary_freshness` below is: `pub` purely
 // so `tests/it/sidecar_staging_sync_test.rs` can exercise the real algorithm,
-// not because anything in this crate calls it itself. Pulled in via
-// `#[path]` from the app crate's source tree rather than a crate dependency:
-// `build_support.rs` is a plain source file compiled into the app crate's
-// `build.rs`, and the app crate is a binary-only package this crate cannot
-// depend on. See `build_support.rs`'s module doc for the full story.
-#[path = "../../../src-tauri/build_support.rs"]
-mod build_support;
-pub use build_support::sync_stale_sidecar;
+// not because anything in this crate calls it itself. The app crate's
+// `build.rs` calls the same function from `nodespace-app-build`.
+pub use nodespace_app_build::sync_stale_sidecar;
 
 /// Default timeout for `TauriTestApp::connect`'s daemon-health wait, shared
 /// by every `tests/*.rs` call site instead of each hardcoding its own
