@@ -45,16 +45,15 @@ pub const INITIAL_DATABASE_ENV: &str = "NODESPACE_INITIAL_DATABASE";
 
 /// This build variant's UI pid-file path, mirroring `nodespace-app`'s
 /// `daemon_setup::write_own_ui_pid_file` -- both sides derive the identical
-/// path from their own build-variant flags (debug/release x community/Pro)
-/// rather than one copying the other's answer, exactly like the daemon
-/// socket path each side already derives independently. `None` when the
-/// home directory can't be resolved, same as every other home-relative path
-/// in this crate.
+/// path from their own build flavour (debug or release) rather than one
+/// copying the other's answer, exactly like the daemon socket path each side
+/// already derives independently. `None` when the home directory can't be
+/// resolved, same as every other home-relative path in this crate.
 fn ui_pid_path() -> Option<PathBuf> {
     let home = dirs::home_dir()?;
     Some(home.join(nodespace_proto::socket::ui_pid_relative(
         cfg!(debug_assertions),
-        cfg!(feature = "pro"),
+        false,
     )))
 }
 

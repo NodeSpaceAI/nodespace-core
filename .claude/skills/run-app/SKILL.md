@@ -15,9 +15,12 @@ a visual change, a layout, an interaction.
 The daemon defaults to `~/.nodespace/database/nodespace.db` — the user's actual
 notes. Two traps, both of which have bitten before:
 
-1. **`nodespaced --help` does not print help.** It ignores unknown flags and
-   **starts a daemon against the real database**. Do not probe the binary with
-   `--help` / `--version`. Read `packages/daemon/src/lib.rs` instead.
+1. **A bare `nodespaced` starts a daemon against the real database.**
+   `nodespaced --help` does not print help: any argument other than `--tray`
+   and `--version` is refused with a one-line error and exit status 2 before
+   anything starts, so probing the binary that way is safe but tells you
+   nothing. Read `packages/daemon/src/lib.rs` for the flags and environment it
+   honours.
 2. **`NODESPACED_DB_PATH` alone is not isolation.** The source says so directly
    (`resolve_db_path` doc comment): setting it while inheriting the real home
    "would seed the real `~/.nodespace/databases.toml` with a throwaway path
