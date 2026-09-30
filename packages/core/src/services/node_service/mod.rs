@@ -59,6 +59,20 @@ pub use relationship::{CreatedRelationship, StoredEdge};
 /// key off this constant so the node is deterministic and created at most once.
 pub(crate) const DATABASE_SETTINGS_NODE_ID: &str = "database-settings-singleton";
 
+/// The first entry whose key appears in `declared`, the field names core itself
+/// declares on `database-settings`. Pure so it can be tested with a synthetic
+/// declared list: the compiled list is empty today, so no real entry is ever
+/// rejected yet.
+fn first_core_declared_key<'a>(
+    declared: &[String],
+    entries: &'a [(&'a str, Value)],
+) -> Option<&'a str> {
+    entries
+        .iter()
+        .map(|(key, _)| *key)
+        .find(|key| declared.iter().any(|name| name == key))
+}
+
 /// Compute property changes between pre-mutation and post-mutation node properties
 ///
 /// Diffs the top-level keys within each namespace. For namespaced properties
@@ -1643,13 +1657,14 @@ impl NodeService {
         Ok(())
     }
 
-    /// ADR-037: seed the DatabaseSettingsNode singleton — the container for
-    /// database-level configuration (sync state; tenant roles via `has_role`
-    /// edges). Idempotent: skips when a database-settings node already exists, so
-    /// an existing database is backfilled on next open too. Seeds `sync_enabled:
-    /// false`, `auth_status: local`, and one `has_role` owner edge from the local
-    /// PersonNode to this node (role `owner`, status `active`). Must run after the
-    /// local person seed so the owner edge always has a person to attach to.
+    /// ADR-037: seed the DatabaseSettingsNode singleton — the anchor for
+    /// database-level configuration — and one `has_role` owner edge from the local
+    /// PersonNode to it (role `owner`, status `active`). The singleton carries no
+    /// properties; extensions add their own keys later through
+    /// [`Self::merge_database_settings`]. Idempotent: skips when a
+    /// database-settings node already exists, so an existing database is
+    /// backfilled on next open too. Must run after the local person seed so the
+    /// owner edge always has a person to attach to.
     async fn seed_database_settings_if_needed(&self) -> Result<(), NodeServiceError> {
         // ADR-069 §1a/S5, closing F13: the idempotency guard checks the
         // owner EDGE, not merely the settings node's existence. The node and
@@ -1701,12 +1716,7 @@ impl NodeService {
                     DATABASE_SETTINGS_NODE_ID.to_string(),
                     "database-settings".to_string(),
                     String::new(),
-                    serde_json::json!({
-                        "database-settings": {
-                            "sync_enabled": false,
-                            "auth_status": "local"
-                        }
-                    }),
+                    serde_json::json!({}),
                 );
                 self.create_node(settings).await?
             }
@@ -2109,98 +2119,81 @@ impl NodeService {
         self.update_node(&person.id, person.version, update).await
     }
 
-    /// Read the cloud tenant (schema + collection) this database is bound to, from
-    /// the DatabaseSettingsNode singleton (ADR-053 per-database cloud sync). Returns
-    /// `Some((schema, collection))` only when both are present and non-empty; `None`
-    /// when the database is unbound — a fresh install, or one whose tenant has never
-    /// been set. Callers treat `None` as "no cloud sync target yet".
-    pub async fn get_bound_tenant(&self) -> Result<Option<(String, String)>, NodeServiceError> {
+    /// Read the `database-settings` bucket of the DatabaseSettingsNode singleton,
+    /// keys as stored. Extensions keep their own state here (new keys use the
+    /// `plugin:` prefix, ADR-063), and core neither interprets nor defaults any of
+    /// it: an absent key is the caller's to default.
+    ///
+    /// Returns an empty map when the singleton or the bucket is absent, and
+    /// `InitializationError` when the bucket is not a JSON object.
+    pub async fn database_settings(
+        &self,
+    ) -> Result<serde_json::Map<String, serde_json::Value>, NodeServiceError> {
         let Some(node) = self
             .query_nodes_by_type("database-settings", None)
             .await?
             .into_iter()
             .next()
         else {
-            return Ok(None);
+            return Ok(serde_json::Map::new());
         };
-        let settings = node.properties.get("database-settings");
-        let schema = settings
-            .and_then(|s| s.get("bound_tenant_schema"))
-            .and_then(|v| v.as_str())
-            .unwrap_or_default();
-        let collection = settings
-            .and_then(|s| s.get("bound_tenant_collection"))
-            .and_then(|v| v.as_str())
-            .unwrap_or_default();
-        if schema.is_empty() || collection.is_empty() {
-            return Ok(None);
-        }
-        Ok(Some((schema.to_string(), collection.to_string())))
-    }
-
-    /// Bind this database to a cloud tenant (schema + collection) by writing the
-    /// authoritative fields on the DatabaseSettingsNode singleton (ADR-053). Merges
-    /// into the existing `database-settings` namespace so sibling fields (sync state,
-    /// auth status) are preserved. Once set, `get_bound_tenant` returns these values
-    /// until re-bound. The singleton is seeded on database open, so a missing one is
-    /// an error rather than a silent no-op.
-    pub async fn set_bound_tenant(
-        &self,
-        schema: &str,
-        collection: &str,
-    ) -> Result<(), NodeServiceError> {
-        let node = self
-            .query_nodes_by_type("database-settings", None)
-            .await?
-            .into_iter()
-            .next()
-            .ok_or_else(|| {
-                NodeServiceError::InitializationError(
-                    "cannot bind tenant: DatabaseSettingsNode singleton not found".to_string(),
-                )
-            })?;
-
-        let mut properties = node.properties.clone();
-        let root = properties.as_object_mut().ok_or_else(|| {
+        let root = node.properties.as_object().ok_or_else(|| {
             NodeServiceError::InitializationError(
                 "DatabaseSettingsNode properties are not a JSON object".to_string(),
             )
         })?;
-        let settings = root
-            .entry("database-settings")
-            .or_insert_with(|| serde_json::json!({}))
-            .as_object_mut()
-            .ok_or_else(|| {
-                NodeServiceError::InitializationError(
-                    "DatabaseSettingsNode `database-settings` is not a JSON object".to_string(),
-                )
-            })?;
-        settings.insert(
-            "bound_tenant_schema".to_string(),
-            serde_json::Value::String(schema.to_string()),
-        );
-        settings.insert(
-            "bound_tenant_collection".to_string(),
-            serde_json::Value::String(collection.to_string()),
-        );
-
-        self.update_node(
-            &node.id,
-            node.version,
-            NodeUpdate::new().with_properties(properties),
-        )
-        .await?;
-        Ok(())
+        match root.get("database-settings") {
+            None => Ok(serde_json::Map::new()),
+            Some(serde_json::Value::Object(bucket)) => Ok(bucket.clone()),
+            Some(_) => Err(NodeServiceError::InitializationError(
+                "DatabaseSettingsNode `database-settings` is not a JSON object".to_string(),
+            )),
+        }
     }
 
-    /// Merge fields into the DatabaseSettingsNode singleton's `database-settings`
-    /// namespace, preserving every sibling field (tenant binding, sync state,
-    /// auth status). The singleton is seeded on database open, so a missing one
-    /// is an error rather than a silent no-op.
-    async fn merge_database_settings(
+    /// Merge entries into the DatabaseSettingsNode singleton's `database-settings`
+    /// bucket as one versioned `update_node`, keeping every other key.
+    ///
+    /// - A JSON `null` is stored as `null`; no key is ever deleted.
+    /// - A missing singleton returns `InitializationError`; it is seeded on
+    ///   database open, so that is an error rather than a silent no-op.
+    /// - A concurrent change to the node returns the ordinary `VersionConflict`;
+    ///   the caller re-reads with [`Self::database_settings`] and retries.
+    /// - An entry whose key core itself declares on `database-settings` is
+    ///   rejected with `InvalidUpdate` and nothing is written.
+    ///
+    /// New extension keys use the `plugin:` prefix (ADR-063).
+    pub async fn merge_database_settings(
         &self,
-        fields: &[(&str, serde_json::Value)],
+        entries: &[(&str, serde_json::Value)],
     ) -> Result<(), NodeServiceError> {
+        // The guard reads the COMPILED definition, never the stored schema node.
+        // `seed_core_schemas_if_needed` never rewrites a stored core schema, so a
+        // database created by an older build still declares fields there that
+        // core has since let go of; a guard built on the stored schema would
+        // reject those keys and with them the extension's own writes.
+        let declared: Vec<String> = crate::models::core_schemas::get_core_schemas()
+            .into_iter()
+            .find(|schema| schema.id == "database-settings")
+            .map(|schema| schema.fields.into_iter().map(|f| f.name).collect())
+            .unwrap_or_default();
+        self.merge_database_settings_rejecting(&declared, entries)
+            .await
+    }
+
+    /// [`Self::merge_database_settings`] with the core-declared key list passed
+    /// in, so the rejection can be exercised with a synthetic list.
+    async fn merge_database_settings_rejecting(
+        &self,
+        declared: &[String],
+        entries: &[(&str, serde_json::Value)],
+    ) -> Result<(), NodeServiceError> {
+        if let Some(key) = first_core_declared_key(declared, entries) {
+            return Err(NodeServiceError::InvalidUpdate(format!(
+                "cannot write `{key}` to database settings: core declares that key"
+            )));
+        }
+
         let node = self
             .query_nodes_by_type("database-settings", None)
             .await?
@@ -2228,7 +2221,7 @@ impl NodeService {
                     "DatabaseSettingsNode `database-settings` is not a JSON object".to_string(),
                 )
             })?;
-        for (key, value) in fields {
+        for (key, value) in entries {
             settings.insert((*key).to_string(), value.clone());
         }
 
@@ -2239,75 +2232,6 @@ impl NodeService {
         )
         .await?;
         Ok(())
-    }
-
-    /// Enable (or disable) per-database cloud sync by writing `sync_enabled` on
-    /// the DatabaseSettingsNode singleton (ADR-053). This is the field the
-    /// registry-driven Pro UI gates its collaboration surfaces on; nothing else
-    /// advances it, so this is the authoritative writer the first-Pro consent
-    /// flow calls once the user opts in.
-    pub async fn set_sync_enabled(&self, enabled: bool) -> Result<(), NodeServiceError> {
-        self.merge_database_settings(&[("sync_enabled", serde_json::Value::Bool(enabled))])
-            .await
-    }
-
-    /// Set the per-database cloud auth status (`local` or `connected`) on the
-    /// DatabaseSettingsNode singleton (ADR-053). The Pro daemon advances this to
-    /// `connected` once identity is bound and back to `local` on sign-out, which
-    /// drives the Pro UI from the sign-in variant to the connected variant.
-    pub async fn set_auth_status(&self, status: &str) -> Result<(), NodeServiceError> {
-        self.merge_database_settings(&[(
-            "auth_status",
-            serde_json::Value::String(status.to_string()),
-        )])
-        .await
-    }
-
-    /// Read whether per-database cloud sync is enabled, from the DatabaseSettingsNode
-    /// singleton (ADR-053). Returns `false` when the field is absent or the singleton
-    /// has not been seeded yet — a fresh install defaults to sync disabled until the
-    /// first-Pro consent flow opts in. This is the authoritative gate the Pro daemon
-    /// reads before pushing local changes to the cloud, so an un-opted-in database
-    /// never leaves the device.
-    pub async fn get_sync_enabled(&self) -> Result<bool, NodeServiceError> {
-        let Some(node) = self
-            .query_nodes_by_type("database-settings", None)
-            .await?
-            .into_iter()
-            .next()
-        else {
-            return Ok(false);
-        };
-        Ok(node
-            .properties
-            .get("database-settings")
-            .and_then(|s| s.get("sync_enabled"))
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false))
-    }
-
-    /// Read the per-database cloud auth status (`local` or `connected`) from the
-    /// DatabaseSettingsNode singleton (ADR-053). Returns `local` when the field is
-    /// absent or the singleton has not been seeded yet — the pre-sign-in default the
-    /// Pro UI's sign-in variant expects. Complements `set_auth_status`, which the Pro
-    /// daemon uses to advance this to `connected` on bind and back to `local` on
-    /// sign-out.
-    pub async fn get_auth_status(&self) -> Result<String, NodeServiceError> {
-        let Some(node) = self
-            .query_nodes_by_type("database-settings", None)
-            .await?
-            .into_iter()
-            .next()
-        else {
-            return Ok("local".to_string());
-        };
-        Ok(node
-            .properties
-            .get("database-settings")
-            .and_then(|s| s.get("auth_status"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("local")
-            .to_string())
     }
 
     /// Seed core schema definitions, per-schema, on every start.
@@ -9276,7 +9200,7 @@ mod tests {
     async fn test_seed_database_settings_singleton_with_owner_edge() {
         let (service, _temp) = create_test_service().await;
 
-        // Exactly one database-settings node, with the reserved id and defaults.
+        // Exactly one database-settings node, with the reserved id.
         let settings = service
             .query_nodes_by_type("database-settings", None)
             .await
@@ -9288,8 +9212,10 @@ mod tests {
         );
         let node = &settings[0];
         assert_eq!(node.id, DATABASE_SETTINGS_NODE_ID);
-        assert_eq!(node.properties["database-settings"]["sync_enabled"], false);
-        assert_eq!(node.properties["database-settings"]["auth_status"], "local");
+        assert!(
+            service.database_settings().await.unwrap().is_empty(),
+            "the seeded singleton carries no settings"
+        );
 
         // Exactly one local person, and exactly one has_role owner edge to the singleton.
         let people = service.query_nodes_by_type("person", None).await.unwrap();
@@ -10345,107 +10271,106 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_get_set_bound_tenant_roundtrip() {
+    async fn test_merge_database_settings_keeps_other_keys() {
         let (service, _temp) = create_test_service().await;
-        const COLL: &str = "c0000000-0000-0000-0000-000000000001";
 
-        // Fresh install: unbound.
-        assert_eq!(service.get_bound_tenant().await.unwrap(), None);
-
-        // Bind → get returns exactly what was set.
-        service.set_bound_tenant("tenant_demo", COLL).await.unwrap();
-        assert_eq!(
-            service.get_bound_tenant().await.unwrap(),
-            Some(("tenant_demo".to_string(), COLL.to_string()))
-        );
-
-        // Sibling fields in the `database-settings` namespace are preserved (merge,
-        // not overwrite).
-        let node = &service
-            .query_nodes_by_type("database-settings", None)
-            .await
-            .unwrap()[0];
-        assert_eq!(node.properties["database-settings"]["sync_enabled"], false);
-        assert_eq!(node.properties["database-settings"]["auth_status"], "local");
-
-        // Re-bind overwrites.
         service
-            .set_bound_tenant("tenant_other", "c9999999-0000-0000-0000-000000000009")
+            .merge_database_settings(&[("plugin:a", json!(1))])
             .await
             .unwrap();
-        assert_eq!(
-            service.get_bound_tenant().await.unwrap(),
-            Some((
-                "tenant_other".to_string(),
-                "c9999999-0000-0000-0000-000000000009".to_string()
-            ))
-        );
+        service
+            .merge_database_settings(&[("plugin:b", json!("two"))])
+            .await
+            .unwrap();
+        // A null is stored as null; the key is not deleted.
+        service
+            .merge_database_settings(&[("plugin:a", Value::Null)])
+            .await
+            .unwrap();
 
-        // Empty schema or collection is treated as unbound.
-        service.set_bound_tenant("", "").await.unwrap();
-        assert_eq!(service.get_bound_tenant().await.unwrap(), None);
+        let settings = service.database_settings().await.unwrap();
+        assert_eq!(settings.len(), 2, "both keys remain: {settings:?}");
+        assert_eq!(settings.get("plugin:a"), Some(&Value::Null));
+        assert_eq!(settings.get("plugin:b"), Some(&json!("two")));
     }
 
     #[tokio::test]
-    async fn test_set_sync_enabled_and_auth_status_roundtrip() {
+    async fn test_merge_database_settings_writes_every_entry_of_one_call() {
         let (service, _temp) = create_test_service().await;
-        const COLL: &str = "c0000000-0000-0000-0000-000000000001";
 
-        // Fresh install defaults, read through the accessors the Pro daemon uses.
-        let node = &service
-            .query_nodes_by_type("database-settings", None)
-            .await
-            .unwrap()[0];
-        assert_eq!(node.properties["database-settings"]["sync_enabled"], false);
-        assert_eq!(node.properties["database-settings"]["auth_status"], "local");
-        assert!(!service.get_sync_enabled().await.unwrap());
-        assert_eq!(service.get_auth_status().await.unwrap(), "local");
-
-        // Enabling sync flips only sync_enabled; auth_status is preserved.
-        service.set_sync_enabled(true).await.unwrap();
-        let node = &service
-            .query_nodes_by_type("database-settings", None)
-            .await
-            .unwrap()[0];
-        assert_eq!(node.properties["database-settings"]["sync_enabled"], true);
-        assert_eq!(node.properties["database-settings"]["auth_status"], "local");
-        assert!(service.get_sync_enabled().await.unwrap());
-        assert_eq!(service.get_auth_status().await.unwrap(), "local");
-
-        // Advancing auth_status preserves sync_enabled.
-        service.set_auth_status("connected").await.unwrap();
-        let node = &service
-            .query_nodes_by_type("database-settings", None)
-            .await
-            .unwrap()[0];
-        assert_eq!(
-            node.properties["database-settings"]["auth_status"],
-            "connected"
-        );
-        assert_eq!(node.properties["database-settings"]["sync_enabled"], true);
-        assert!(service.get_sync_enabled().await.unwrap());
-        assert_eq!(service.get_auth_status().await.unwrap(), "connected");
-
-        // A later tenant binding does not clobber the sync state (cross-field merge).
         service
-            .set_bound_tenant("tenant_public", COLL)
+            .merge_database_settings(&[("plugin:a", json!(1)), ("plugin:b", json!({"n": 2}))])
             .await
             .unwrap();
-        let node = &service
-            .query_nodes_by_type("database-settings", None)
-            .await
-            .unwrap()[0];
-        assert_eq!(node.properties["database-settings"]["sync_enabled"], true);
-        assert_eq!(
-            node.properties["database-settings"]["auth_status"],
-            "connected"
-        );
 
-        // And enabling sync again preserves the tenant binding.
-        service.set_sync_enabled(true).await.unwrap();
-        assert_eq!(
-            service.get_bound_tenant().await.unwrap(),
-            Some(("tenant_public".to_string(), COLL.to_string()))
+        let settings = service.database_settings().await.unwrap();
+        assert_eq!(settings.get("plugin:a"), Some(&json!(1)));
+        assert_eq!(settings.get("plugin:b"), Some(&json!({"n": 2})));
+        assert_eq!(settings.len(), 2, "no other keys appear: {settings:?}");
+    }
+
+    #[tokio::test]
+    async fn test_merge_database_settings_missing_singleton_is_initialization_error() {
+        let (service, _temp) = create_test_service().await;
+        let singleton = service
+            .get_node(DATABASE_SETTINGS_NODE_ID)
+            .await
+            .unwrap()
+            .expect("seeded singleton exists");
+        service
+            .delete_node(DATABASE_SETTINGS_NODE_ID, singleton.version)
+            .await
+            .unwrap();
+
+        assert!(service.database_settings().await.unwrap().is_empty());
+        let err = service
+            .merge_database_settings(&[("plugin:a", json!(1))])
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, NodeServiceError::InitializationError(_)),
+            "expected InitializationError, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn test_first_core_declared_key_rejects_declared_keys() {
+        let declared = vec!["core_a".to_string(), "core_b".to_string()];
+        let entries = [
+            ("plugin:x", json!(1)),
+            ("core_b", json!(2)),
+            ("core_a", json!(3)),
+        ];
+
+        // The first entry naming a declared key is the one reported.
+        assert_eq!(first_core_declared_key(&declared, &entries), Some("core_b"));
+        // Keys core does not declare pass.
+        assert_eq!(first_core_declared_key(&declared, &entries[..1]), None);
+        // An empty declared list, as core's compiled definition is today, rejects nothing.
+        assert_eq!(first_core_declared_key(&[], &entries), None);
+    }
+
+    #[tokio::test]
+    async fn test_merge_database_settings_rejects_declared_key_and_writes_nothing() {
+        let (service, _temp) = create_test_service().await;
+        let declared = vec!["core_a".to_string()];
+
+        // The clean entry precedes the declared one: neither may land.
+        let err = service
+            .merge_database_settings_rejecting(
+                &declared,
+                &[("plugin:ok", json!(1)), ("core_a", json!(2))],
+            )
+            .await
+            .unwrap_err();
+
+        assert!(
+            matches!(&err, NodeServiceError::InvalidUpdate(msg) if msg.contains("core_a")),
+            "expected InvalidUpdate naming the key, got {err:?}"
+        );
+        assert!(
+            service.database_settings().await.unwrap().is_empty(),
+            "a rejected merge must write nothing"
         );
     }
 
@@ -10453,12 +10378,25 @@ mod tests {
     async fn test_create_second_database_settings_is_noop() {
         let (service, _temp) = create_test_service().await;
 
+        // Give the singleton some state, so the check below compares against
+        // more than an empty bucket.
+        service
+            .merge_database_settings(&[("plugin:seeded", json!(1))])
+            .await
+            .unwrap();
+        let before = service
+            .query_nodes_by_type("database-settings", None)
+            .await
+            .unwrap()[0]
+            .properties
+            .clone();
+
         // A second database-settings create is idempotent: returns the existing
         // singleton id and does not create a duplicate.
         let duplicate = Node::new(
             "database-settings".to_string(),
             String::new(),
-            json!({"sync_enabled": true, "auth_status": "connected"}),
+            json!({"plugin:marker": true}),
         );
         let returned_id = service.create_node(duplicate).await.unwrap();
         assert_eq!(returned_id, DATABASE_SETTINGS_NODE_ID);
@@ -10472,11 +10410,8 @@ mod tests {
             1,
             "second database-settings create must be a no-op"
         );
-        // The original singleton is untouched (still holds seeded defaults).
-        assert_eq!(
-            settings[0].properties["database-settings"]["auth_status"],
-            "local"
-        );
+        // The original singleton is untouched: the duplicate's properties are dropped.
+        assert_eq!(settings[0].properties, before);
     }
 
     #[tokio::test]

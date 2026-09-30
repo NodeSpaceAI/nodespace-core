@@ -2316,13 +2316,11 @@ impl NodeBehavior for PersonNodeBehavior {
 
 /// Built-in behavior for the database-settings singleton node
 ///
-/// DatabaseSettingsNode is the single container for database-level configuration:
-/// `sync_enabled` (user intent to sync), `auth_status` (system-managed cloud
-/// bind state), and `bound_tenant_schema`/`bound_tenant_collection` (the cloud
-/// tenant this database binds to under ADR-053 per-database cloud sync — empty
-/// until bound). Tenant roles are NOT stored here — they live on the `has_role`
-/// edge (PersonNode → DatabaseSettingsNode). Per ADR-037, both `role` and
-/// `auth_status` were moved off PersonNode as part of that revision.
+/// DatabaseSettingsNode is the singleton anchor for database-level configuration
+/// and for the owner `has_role` edge (ADR-037): the edge runs PersonNode →
+/// DatabaseSettingsNode and carries the tenant role. Core declares no fields on
+/// it; extensions store their own keys through
+/// `NodeService::merge_database_settings`.
 pub struct DatabaseSettingsNodeBehavior;
 
 impl NodeBehavior for DatabaseSettingsNodeBehavior {
@@ -2330,42 +2328,7 @@ impl NodeBehavior for DatabaseSettingsNodeBehavior {
         "database-settings"
     }
 
-    fn validate(&self, node: &Node) -> Result<(), NodeValidationError> {
-        // Validate auth_status if present
-        if let Some(auth_status) = node.properties.get("auth_status") {
-            if let Some(auth_status_str) = auth_status.as_str() {
-                match auth_status_str {
-                    "local" | "connected" => {}
-                    _ => {
-                        return Err(NodeValidationError::InvalidProperties(format!(
-                            "Invalid auth_status '{}': must be one of local, connected",
-                            auth_status_str
-                        )));
-                    }
-                }
-            }
-        }
-
-        // Validate sync_enabled is a boolean if present
-        if let Some(sync_enabled) = node.properties.get("sync_enabled") {
-            if !sync_enabled.is_boolean() && !sync_enabled.is_null() {
-                return Err(NodeValidationError::InvalidProperties(
-                    "sync_enabled must be a boolean".to_string(),
-                ));
-            }
-        }
-
-        // Validate the bound-tenant fields are strings if present (ADR-053).
-        for field in ["bound_tenant_schema", "bound_tenant_collection"] {
-            if let Some(value) = node.properties.get(field) {
-                if !value.is_string() && !value.is_null() {
-                    return Err(NodeValidationError::InvalidProperties(format!(
-                        "{field} must be a string"
-                    )));
-                }
-            }
-        }
-
+    fn validate(&self, _node: &Node) -> Result<(), NodeValidationError> {
         Ok(())
     }
 
@@ -2375,13 +2338,6 @@ impl NodeBehavior for DatabaseSettingsNodeBehavior {
 
     fn supports_markdown(&self) -> bool {
         false // Settings are not markdown-rendered content
-    }
-
-    fn default_metadata(&self) -> serde_json::Value {
-        serde_json::json!({
-            "sync_enabled": false,
-            "auth_status": "local"
-        })
     }
 
     /// Settings carry no semantic content; they are not embedded for search.
@@ -5651,60 +5607,10 @@ mod tests {
     }
 
     #[test]
-    fn database_settings_valid_defaults_pass() {
-        let behavior = DatabaseSettingsNodeBehavior;
-        let node = database_settings_node(json!({
-            "sync_enabled": false,
-            "auth_status": "local"
-        }));
-        assert!(behavior.validate(&node).is_ok());
-    }
-
-    #[test]
     fn database_settings_minimal_node_is_valid() {
         let behavior = DatabaseSettingsNodeBehavior;
         let node = database_settings_node(json!({}));
         assert!(behavior.validate(&node).is_ok());
-    }
-
-    #[test]
-    fn database_settings_valid_auth_status_values_pass() {
-        let behavior = DatabaseSettingsNodeBehavior;
-        for auth_status in &["local", "connected"] {
-            let node = database_settings_node(json!({ "auth_status": auth_status }));
-            assert!(
-                behavior.validate(&node).is_ok(),
-                "auth_status '{}' should be valid",
-                auth_status
-            );
-        }
-    }
-
-    #[test]
-    fn database_settings_invalid_auth_status_fails() {
-        let behavior = DatabaseSettingsNodeBehavior;
-        let node = database_settings_node(json!({ "auth_status": "disconnected" }));
-        let err = behavior.validate(&node).unwrap_err();
-        match err {
-            NodeValidationError::InvalidProperties(msg) => {
-                assert!(msg.contains("Invalid auth_status"));
-                assert!(msg.contains("disconnected"));
-            }
-            _ => panic!("Expected InvalidProperties error"),
-        }
-    }
-
-    #[test]
-    fn database_settings_non_bool_sync_enabled_fails() {
-        let behavior = DatabaseSettingsNodeBehavior;
-        let node = database_settings_node(json!({ "sync_enabled": "yes" }));
-        let err = behavior.validate(&node).unwrap_err();
-        match err {
-            NodeValidationError::InvalidProperties(msg) => {
-                assert!(msg.contains("sync_enabled must be a boolean"));
-            }
-            _ => panic!("Expected InvalidProperties error"),
-        }
     }
 
     #[test]
@@ -5716,22 +5622,18 @@ mod tests {
     }
 
     #[test]
-    fn database_settings_default_metadata() {
+    fn database_settings_is_not_embeddable() {
         let behavior = DatabaseSettingsNodeBehavior;
-        let meta = behavior.default_metadata();
-        assert_eq!(meta["sync_enabled"], false);
-        assert_eq!(meta["auth_status"], "local");
+        let node = database_settings_node(json!({}));
+        assert!(behavior.get_embeddable_content(&node).is_none());
+        assert!(behavior.get_parent_contribution(&node).is_none());
     }
 
     #[test]
-    fn database_settings_is_not_embeddable() {
+    fn database_settings_accepts_namespaced_extension_keys() {
         let behavior = DatabaseSettingsNodeBehavior;
-        let node = database_settings_node(json!({
-            "sync_enabled": false,
-            "auth_status": "local"
-        }));
-        assert!(behavior.get_embeddable_content(&node).is_none());
-        assert!(behavior.get_parent_contribution(&node).is_none());
+        let node = database_settings_node(json!({ "plugin:example": 1 }));
+        assert!(behavior.validate(&node).is_ok());
     }
 
     // --- aggregate_children_content: traversal order regression ---
