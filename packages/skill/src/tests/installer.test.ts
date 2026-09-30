@@ -72,6 +72,35 @@ function readRecord(agent: typeof AGENTS[number]): { files: string[] } {
   return JSON.parse(readFileSync(join(agent.installDir, INSTALL_RECORD), 'utf8'));
 }
 
+/**
+ * `../installer.js` loaded afresh against a `node:fs` whose functions `replace`
+ * overrides, so a test decides the order a directory lists in, or that a delete
+ * fails, instead of inheriting whatever the platform and the user running it
+ * allow. The mock is removed again after each test.
+ */
+async function importInstallerWithFs(
+  replace: (actual: typeof import('node:fs')) => Partial<typeof import('node:fs')>
+): Promise<typeof import('../installer.js')> {
+  vi.resetModules();
+  vi.doMock('node:fs', async importOriginal => {
+    const actual = await importOriginal<typeof import('node:fs')>();
+    return { ...actual, ...replace(actual) };
+  });
+  return import('../installer.js');
+}
+
+/** A `node:fs` function that fails with `code` whenever `fails(path)` says so, and otherwise behaves as `real`. */
+function failingOn<F extends (path: never, ...rest: never[]) => unknown>(
+  real: F,
+  fails: (path: string) => boolean,
+  code = 'EACCES'
+): F {
+  return ((path: never, ...rest: never[]) => {
+    if (fails(String(path))) throw Object.assign(new Error(`${code}: simulated`), { code });
+    return real(path, ...rest);
+  }) as F;
+}
+
 beforeEach(() => {
   mkdirSync(TMP, { recursive: true });
   mkdirSync(FAKE_PKG_ROOT, { recursive: true });
@@ -79,6 +108,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.doUnmock('node:fs');
+  vi.resetModules();
   rmSync(TMP, { recursive: true, force: true });
 });
 
@@ -523,27 +554,6 @@ describe('uninstall', () => {
 });
 
 describe('listReferenceFiles', () => {
-  /**
-   * `listReferenceFiles` as loaded against a `readdirSync` that `wrap` controls,
-   * so a test decides the order (or failure) the filesystem reports rather than
-   * inheriting whatever the platform happens to do.
-   */
-  async function withReaddir(
-    wrap: (real: typeof readdirSync) => typeof readdirSync
-  ): Promise<typeof import('../installer.js')> {
-    vi.resetModules();
-    vi.doMock('node:fs', async importOriginal => {
-      const actual = await importOriginal<typeof import('node:fs')>();
-      return { ...actual, readdirSync: wrap(actual.readdirSync) };
-    });
-    return import('../installer.js');
-  }
-
-  afterEach(() => {
-    vi.doUnmock('node:fs');
-    vi.resetModules();
-  });
-
   it('returns the *.md files directly under references/ as package-root-relative paths', () => {
     const refs = join(FAKE_PKG_ROOT, 'references');
     mkdirSync(join(refs, 'nested'), { recursive: true });
@@ -563,10 +573,10 @@ describe('listReferenceFiles', () => {
       writeFileSync(join(refs, `${name}.md`), name, 'utf8');
     }
     // Reverse of whatever this platform lists: sorted or not, the result must be.
-    const { listReferenceFiles: reversed } = await withReaddir(
-      real => ((...args: Parameters<typeof readdirSync>) =>
-        [...(real(...args) as unknown[])].reverse()) as unknown as typeof readdirSync
-    );
+    const { listReferenceFiles: reversed } = await importInstallerWithFs(actual => ({
+      readdirSync: ((...args: Parameters<typeof readdirSync>) =>
+        [...(actual.readdirSync(...args) as unknown[])].reverse()) as unknown as typeof readdirSync,
+    }));
 
     expect(reversed(FAKE_PKG_ROOT)).toEqual([
       'references/alpha.md',
@@ -593,15 +603,12 @@ describe('listReferenceFiles', () => {
     seedPkgRoot(FAKE_PKG_ROOT, claude);
     install(['claude-code'], FAKE_PKG_ROOT);
 
-    const denied = Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' });
-    const { listReferenceFiles: failing, install: failingInstall } = await withReaddir(() => {
-      return (() => {
-        throw denied;
-      }) as unknown as typeof readdirSync;
-    });
+    const { listReferenceFiles: failing, install: failingInstall } = await importInstallerWithFs(actual => ({
+      readdirSync: failingOn(actual.readdirSync, () => true),
+    }));
 
-    expect(() => failing(FAKE_PKG_ROOT)).toThrow(denied);
-    expect(() => failingInstall(['claude-code'], FAKE_PKG_ROOT)).toThrow(denied);
+    expect(() => failing(FAKE_PKG_ROOT)).toThrow(/EACCES/);
+    expect(() => failingInstall(['claude-code'], FAKE_PKG_ROOT)).toThrow(/EACCES/);
     for (const ref of SEEDED_REFERENCES) {
       expect(existsSync(join(claude.installDir, ref)), ref).toBe(true);
     }
@@ -739,6 +746,56 @@ describe('references and the install record', () => {
       for (const rel of seededInstallFiles(claude)) {
         expect(existsSync(join(claude.installDir, rel)), rel).toBe(true);
       }
+    });
+
+    // A skill is discovered by its SKILL.md. A package that ships references and a
+    // harness shim but no SKILL.md must not replace a working install with a
+    // folder the harness cannot use, nor drop files next to it.
+    it('installs nothing, and leaves an existing install alone, when the package has no SKILL.md', () => {
+      installClaude();
+      const before = readFileSync(join(claude.installDir, INSTALL_RECORD), 'utf8');
+      const skillBefore = readFileSync(join(claude.installDir, 'SKILL.md'), 'utf8');
+      rmSync(join(FAKE_PKG_ROOT, 'SKILL.md'));
+      plant(FAKE_PKG_ROOT, 'references/new-only.md');
+
+      const [result] = install(['claude-code'], FAKE_PKG_ROOT);
+
+      expect(result.installed).toEqual([]);
+      expect(readFileSync(join(claude.installDir, 'SKILL.md'), 'utf8')).toBe(skillBefore);
+      expect(readFileSync(join(claude.installDir, INSTALL_RECORD), 'utf8')).toBe(before);
+      expect(existsSync(join(claude.installDir, 'references', 'new-only.md'))).toBe(false);
+      expect(existsSync(join(claude.installDir, 'references', 'cli.md'))).toBe(true);
+    });
+
+    // A stale file that cannot be deleted (read-only directory, a file Windows has
+    // locked) must stay in the record. Dropping it would orphan it: no later
+    // install or uninstall would know it is ours, and `references/` and the
+    // install directory would be stranded around it.
+    it('keeps a stale file it could not delete in the record, warns, and still finishes the install', async () => {
+      installClaude();
+      rmSync(join(FAKE_PKG_ROOT, 'references', 'extra-playbook.md'));
+      rmSync(join(FAKE_PKG_ROOT, 'references', 'cli.md'));
+      const { install: failingInstall } = await importInstallerWithFs(actual => ({
+        rmSync: failingOn(actual.rmSync, path => path.endsWith('extra-playbook.md')),
+      }));
+      const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+      try {
+        failingInstall(['claude-code'], FAKE_PKG_ROOT);
+        expect(stderr).toHaveBeenCalledWith(expect.stringContaining('could not remove'));
+      } finally {
+        stderr.mockRestore();
+      }
+
+      // The one that could be deleted went; the other stays, and stays recorded.
+      expect(existsSync(join(claude.installDir, 'references', 'cli.md'))).toBe(false);
+      expect(existsSync(join(claude.installDir, 'references', 'extra-playbook.md'))).toBe(true);
+      expect(readRecord(claude).files).toContain('references/extra-playbook.md');
+      expect(readRecord(claude).files).not.toContain('references/cli.md');
+
+      // ...so an uninstall still finds it, and leaves nothing stranded.
+      uninstall(['claude-code'], FAKE_PKG_ROOT);
+      expect(existsSync(claude.installDir)).toBe(false);
     });
 
     // Most installs predate the record (the first-launch install runs once), so
@@ -907,6 +964,82 @@ describe('references and the install record', () => {
 
       expect(existsSync(mine)).toBe(true);
       expect(existsSync(join(claude.installDir, 'references', 'cli.md'))).toBe(false);
+    });
+  });
+
+  describe('uninstall, filesystem edge cases', () => {
+    // A dotfile manager can link the skill's directory in from a repository. An
+    // emptied symlink cannot be rmdir'd, and the uninstall must neither crash
+    // nor skip the agents after it.
+    it.skipIf(process.platform === 'win32')(
+      'finishes, and moves on to the next agent, when the install directory is a symlink',
+      () => {
+        const codex = AGENTS.find(a => a.name === 'codex')!;
+        for (const config of [claude, codex]) {
+          mkdirSync(config.detectionDir, { recursive: true });
+          seedPkgRoot(FAKE_PKG_ROOT, config);
+        }
+        const linked = join(TMP, 'dotfiles', 'nodespace');
+        mkdirSync(linked, { recursive: true });
+        mkdirSync(join(claude.installDir, '..'), { recursive: true });
+        symlinkSync(linked, claude.installDir);
+        install(['claude-code', 'codex'], FAKE_PKG_ROOT);
+        expect(existsSync(join(linked, 'SKILL.md'))).toBe(true);
+
+        const results = uninstall(['claude-code', 'codex'], FAKE_PKG_ROOT);
+
+        expect(results.map(r => r.agent)).toEqual(['claude-code', 'codex']);
+        expect(readdirSync(linked)).toEqual([]);
+        expect(existsSync(codex.installDir)).toBe(false);
+      }
+    );
+
+    // The record names files; a link the user put where one of them goes is
+    // unlinked, never followed, so what it points at survives.
+    it.skipIf(process.platform === 'win32')(
+      'unlinks a recorded symlink without touching what it points at',
+      () => {
+        installClaude();
+        const external = plant(join(TMP, 'external'), 'SKILL.md', 'lives elsewhere');
+        const externalDir = join(TMP, 'external-dir');
+        const keepMe = plant(externalDir, 'keep.md', 'lives elsewhere too');
+        rmSync(join(claude.installDir, 'SKILL.md'));
+        symlinkSync(external, join(claude.installDir, 'SKILL.md'));
+        symlinkSync(externalDir, join(claude.installDir, 'linked-dir'));
+        writeRecord(['SKILL.md', 'linked-dir']);
+
+        uninstall(['claude-code'], FAKE_PKG_ROOT);
+
+        expect(existsSync(join(claude.installDir, 'SKILL.md'))).toBe(false);
+        expect(existsSync(join(claude.installDir, 'linked-dir'))).toBe(false);
+        expect(readFileSync(external, 'utf8')).toBe('lives elsewhere');
+        expect(readFileSync(keepMe, 'utf8')).toBe('lives elsewhere too');
+      }
+    );
+
+    // The recorded files are already gone, so there is nothing to delete, but
+    // the empty directories they leave behind are still this installer's.
+    it('prunes the directories of recorded files the user already deleted by hand', () => {
+      installClaude();
+      for (const rel of readRecord(claude).files) rmSync(join(claude.installDir, rel));
+
+      uninstall(['claude-code'], FAKE_PKG_ROOT);
+
+      expect(existsSync(claude.installDir)).toBe(false);
+    });
+
+    // An unreadable references/ in the package being uninstalled must not stop
+    // the removal of the files the pre-record list names.
+    it('without a record, still removes the pre-record files when the package references cannot be read', async () => {
+      for (const rel of ['SKILL.md', ...PRE_RECORD_REFERENCES]) plant(claude.installDir, rel);
+      const { uninstall: failingUninstall } = await importInstallerWithFs(actual => ({
+        readdirSync: failingOn(actual.readdirSync, path => path.endsWith('references') && path.startsWith(FAKE_PKG_ROOT)),
+      }));
+
+      const [result] = failingUninstall(['claude-code'], FAKE_PKG_ROOT);
+
+      expect(result.removed).toHaveLength(1 + PRE_RECORD_REFERENCES.length);
+      expect(existsSync(claude.installDir)).toBe(false);
     });
   });
 
