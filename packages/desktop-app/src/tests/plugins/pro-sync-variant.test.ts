@@ -1,5 +1,5 @@
 /**
- * UI-extension registry + Pro-sync variant machine.
+ * Pro-sync variant machine + the built-in Pro UI-extension registration.
  *
  * Exercises the two-signal state machine (`proSync.tier` × the active database's
  * DatabaseSettingsNode) and the registry filtering that resolves which chrome /
@@ -26,13 +26,13 @@ vi.mock('@tauri-apps/api/core', () =>
 import { proSync } from '$lib/stores/pro-sync.svelte';
 import { labsFlags } from '$lib/stores/labs-flags.svelte';
 import { SharedNodeStore } from '$lib/services/shared-node-store.svelte';
+import { resolveProSyncVariant, isProSyncActive } from '$lib/plugins/pro-sync-variant.svelte';
 import {
-  resolveProSyncVariant,
-  isProSyncActive,
   getActiveChromeContributions,
   getActiveViewerExtensions
 } from '$lib/plugins/ui-extensions.svelte';
-import { uiExtensionRegistry, DATABASE_SETTINGS_NODE_ID } from '$lib/plugins/ui-extensions';
+import { uiExtensionRegistry } from '$lib/plugins/ui-extensions';
+import { DATABASE_SETTINGS_NODE_ID } from '$lib/constants/database-settings';
 
 /**
  * Seed the active database's settings singleton with the given props. The daemon

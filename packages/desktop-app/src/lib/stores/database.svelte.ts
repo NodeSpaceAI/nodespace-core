@@ -18,7 +18,7 @@ import {
   DEFAULT_PANE_ID
 } from '$lib/stores/navigation.svelte';
 import { formatDateISO } from '$lib/utils/date-formatting';
-import { DATABASE_SETTINGS_NODE_ID } from '$lib/plugins/ui-extensions';
+import { DATABASE_SETTINGS_NODE_ID } from '$lib/constants/database-settings';
 import { toError } from '$lib/types/errors';
 
 const log = createLogger('DatabaseStore');
@@ -94,7 +94,7 @@ const ACTIVE_DB_STORAGE_KEY = 'nodespace.activeDatabaseId';
 /**
  * Owner key `DATABASE_SETTINGS_NODE_ID` is pinned reachable under (see
  * SharedNodeStore.pinNodes) — never unpinned, since the singleton backs
- * always-mounted Pro-sync chrome (ui-extensions.svelte.ts's
+ * always-mounted Pro-sync chrome (pro-sync-variant.svelte.ts's
  * resolveProSyncVariant/activeDatabaseSettings, membership.svelte.ts,
  * collaboration-locked.svelte) that has nothing to do with which tab/pane is
  * open. It has no structureTree relationship to any open tab and isn't

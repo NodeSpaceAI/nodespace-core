@@ -3,7 +3,7 @@
  * =================================
  *
  * The single {@link UiExtensionDefinition} for the Pro-sync surface. It maps each
- * variant of the two-signal state machine (see `ui-extensions.svelte.ts`) to the
+ * variant of the two-signal state machine (see `pro-sync-variant.svelte.ts`) to the
  * component that renders it:
  *
  *   | variant     | modal              | collection tab       |

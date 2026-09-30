@@ -47,13 +47,13 @@
  * ## A known blind spot (by design, not oversight)
  *
  * `DATABASE_SETTINGS_NODE_ID` — a fixed, app-wide singleton, not a per-instance
- * dynamic id — is read in `ui-extensions.svelte.ts` but pinned in
+ * dynamic id — is read in `pro-sync-variant.svelte.ts` but pinned in
  * `database.svelte.ts`'s `refreshDatabaseSettings()`, deliberately in a
  * DIFFERENT file (the read side is a pure derivation with no lifecycle to hang a
  * pin/unpin off; the pin is owned centrally, alongside the singleton's refresh,
  * for its whole app lifetime). No same-file (or even same-directory) heuristic
  * can validate a cross-file pin/read pairing for an arbitrary future singleton,
- * so `ui-extensions.svelte.ts` is listed in `REACHABLE_WITHOUT_PIN` and the pin
+ * so `pro-sync-variant.svelte.ts` is listed in `REACHABLE_WITHOUT_PIN` and the pin
  * side is guarded directly by the second test below instead.
  */
 
@@ -109,7 +109,7 @@ const REACHABLE_WITHOUT_PIN: Record<string, string> = {
     "Reads ids from its `nodeIds` prop — the exact set QueryNodeViewer already pinned wholesale before passing it down.",
   'lib/components/query/kanban-view.svelte':
     'Reads ids from its `nodeIds` prop, same as list-view.svelte.',
-  'lib/plugins/ui-extensions.svelte.ts':
+  'lib/plugins/pro-sync-variant.svelte.ts':
     'Reads the fixed DATABASE_SETTINGS_NODE_ID singleton, pinned centrally (by design, in a different file) by database.svelte.ts\'s refreshDatabaseSettings() — see the second test below.',
 };
 
@@ -182,7 +182,7 @@ describe('SharedNodeStore pin-reachability guard', () => {
 
   it('keeps the DATABASE_SETTINGS_NODE_ID singleton pinned by its owning refreshDatabaseSettings()', () => {
     // DATABASE_SETTINGS_NODE_ID has no structureTree relationship to any open tab
-    // and is read from a different file (ui-extensions.svelte.ts, exempted above)
+    // and is read from a different file (pro-sync-variant.svelte.ts, exempted above)
     // than the one that pins it, so the generic same-file check above cannot see
     // this pairing. Assert it directly instead: database.svelte.ts must still pin
     // the singleton, unconditionally, every time it refreshes it.
