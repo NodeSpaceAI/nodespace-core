@@ -608,7 +608,7 @@ impl PlaybookEngine {
 
     /// Repair-and-log for a node received via sync (ADR-060 §7).
     ///
-    /// `event` is the just-applied replicated-apply event. Only
+    /// `event` is the event of a just-applied replicated write. Only
     /// `NodeCreated` and `NodeUpdated` are repaired; any other event is a
     /// no-op. Rules are matched with `trigger_keys_for_event` — the same
     /// derivation the local pre-commit update path uses — so a received
