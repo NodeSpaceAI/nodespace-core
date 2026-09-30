@@ -29,7 +29,6 @@ nodespace-app-lib = { path = "../app-lib" }
 # `tauri_build`'s manifest check and `generate_context!` need `tauri` as a
 # direct dependency of the crate that owns tauri.conf.json.
 tauri = { version = "2", features = [] }
-tokio = { workspace = true }
 # Direct dependencies only for their permission files: `tauri_build` grants
 # `capabilities/default.json`'s `opener:default` and `dialog:default` from the
 # app crate's own direct dependencies, so dropping either fails

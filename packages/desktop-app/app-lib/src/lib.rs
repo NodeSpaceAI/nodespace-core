@@ -44,6 +44,7 @@ mod atomic_file;
 
 // Extension points for an app crate built on this library.
 pub mod extensions;
+use extensions::register_core_plugins;
 pub use extensions::{assemble, AppExtensions, EXTENSION_API_VERSION};
 
 // Window <-> database routing: window label/pin tracking and the
@@ -316,9 +317,75 @@ fn parse_relaunch_database_arg(argv: &[String]) -> Option<String> {
     }
 }
 
-/// Builds and runs the app. The app crate supplies `context`: it owns
-/// `tauri.conf.json`, so `tauri::generate_context!()` must expand there.
-pub fn run(context: tauri::Context<tauri::Wry>) {
+/// Builds the desktop app around `extensions` and runs it until it exits.
+///
+/// `run` is the whole of an app's startup. In order, it redirects stdio to log
+/// files in a Windows release build, builds the tokio runtime and hands it to
+/// Tauri, registers core's own plugins, applies `extensions` with [`assemble`],
+/// then adds core's setup, menu handler and commands, builds the app with
+/// `context` and runs the event loop. All of that after the runtime is set
+/// happens inside the runtime, so the main thread stays inside it while the
+/// event loop runs. An app with no extension passes [`AppExtensions::none`] and
+/// behaves exactly as core alone does.
+///
+/// # Calling it
+///
+/// Call `run` from a plain `fn main`, never from inside a tokio runtime: it
+/// builds a runtime of its own and blocks on it, which panics when one is
+/// already running. Nothing that spawns a task or touches Tauri's async runtime
+/// may run before it, evaluating its arguments included, because Tauri panics
+/// when `run` sets its runtime after one has already been initialised.
+///
+/// # What an app crate must do
+///
+/// The app crate is the binary crate that owns `tauri.conf.json`. It must:
+///
+/// * call `tauri_build::build()` in `build.rs` and pass
+///   `tauri::generate_context!()` to `run` from `main`. The macro reads
+///   `tauri.conf.json`, so it must expand in the crate that owns it, which is
+///   why `run` takes the context instead of creating it;
+/// * keep the `windows_subsystem` attribute in `main.rs`. It only works in the
+///   binary crate, so it cannot move into this library;
+/// * call `nodespace_app_build::drop_unstaged_bundle_entries()` in `build.rs`
+///   before `tauri_build::build()`, so debug builds and tests work without
+///   staged sidecars;
+/// * depend directly on every Tauri plugin crate that core's window capability
+///   names, because `tauri_build` only sees the permission files of an app
+///   crate's direct dependencies;
+/// * resolve the same Tauri and tonic versions as core's lockfile, so the app is
+///   never built on a release of either that core has not run.
+pub fn run(extensions: AppExtensions, context: tauri::Context<tauri::Wry>) {
+    // A release build has no console at all (see the `windows_subsystem`
+    // attribute on the app crate's `main.rs`), so `eprintln!`/`println!`
+    // anywhere in this process — notably `SchemaNode::from_node`'s
+    // fields-parse-failure diagnostic, called directly by `commands::schemas`'s
+    // Tauri commands — would otherwise be silently discarded. Redirect this
+    // process's own stdio to log files before the runtime and the app are
+    // built, so none of their diagnostics has already been lost. Debug builds
+    // keep their attached console (no `windows_subsystem = "windows"` there),
+    // so this is gated to release-on-Windows only to avoid silently moving a
+    // developer's live terminal output into a log file during `tauri dev`.
+    // See `daemon_setup::redirect_gui_stdio_to_log_files`'s doc comment for
+    // the real-Windows verification behind this.
+    #[cfg(all(windows, not(debug_assertions)))]
+    daemon_setup::redirect_gui_stdio_to_log_files();
+
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("Failed to build tokio runtime");
+
+    // Set this runtime as Tauri's async runtime before the app is built, so
+    // nothing Tauri starts uses a runtime of its own.
+    tauri::async_runtime::set(runtime.handle().clone());
+
+    // Run the app within our custom runtime
+    runtime.block_on(async move { run_app(extensions, context) })
+}
+
+/// Builds the app and runs its event loop. `run` calls it inside the runtime it
+/// built and set as Tauri's async runtime.
+fn run_app(extensions: AppExtensions, context: tauri::Context<tauri::Wry>) {
     use tauri::{menu::*, Manager};
 
     // Initialize tracing — respects RUST_LOG env var, defaults to info for nodespace_app
@@ -336,30 +403,13 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
     // the same way `graceful_shutdown` always has.
     let shutdown_token_for_setup = ShutdownToken::new();
 
-    // Single-instance guard: the daemon's tray always spawns a fresh UI
-    // process when a database is picked (see `nodespace_daemon::tray::
-    // TrayState::open_ui`) — it has no reliable way to know whether a UI
-    // process from an earlier launch is still alive, and none at all when the
-    // app was started outside the tray. Rather than the daemon tracking
-    // liveness, this plugin makes any second launch detect the running
-    // instance, forward its argv to it, and exit immediately, so a real UI
-    // process almost never survives alongside an existing one regardless of
-    // launch path. Must be registered before any other plugin (upstream
-    // requirement). Note this plugin's macOS backend claims the lock with a
-    // connect-then-bind probe rather than one atomic OS primitive (unlike its
-    // Windows/Linux backends), so it is not an absolute guarantee there — see
-    // the doc comment on `TrayState::open_ui` in the daemon crate.
-    let mut builder = tauri::Builder::default();
-    #[cfg(desktop)]
-    {
-        builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
-            handle_relaunch(app, &argv);
-        }));
-    }
+    // Core's plugins go on first, through the one list that also names what an
+    // extension plugin may not reuse (see `extensions::core_plugins`), and the
+    // extension's plugins after them.
+    let builder = register_core_plugins(tauri::Builder::default());
+    let builder = assemble(builder, extensions);
 
     let app = builder
-        .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_dialog::init())
         .setup(move |app| {
             // Create menu items
             let toggle_sidebar = MenuItemBuilder::new("Toggle Sidebar")
@@ -1456,6 +1506,120 @@ mod quit_wiring_tests {
             setup_slice.contains("listen_for_quit_signal(app.handle().clone())"),
             "app setup must start listening for the SIGTERM the daemon's tray Quit sends: \
              {setup_slice}"
+        );
+    }
+}
+
+/// Source-text pins on the order `run` starts the app in. Each one reads `run`
+/// and the app build it drives: the text from `pub fn run(` up to the run-event
+/// handler. This module sits after that handler, so its own literals are never
+/// in range.
+#[cfg(test)]
+mod run_wiring_tests {
+    fn run_source() -> &'static str {
+        let source = include_str!("lib.rs");
+        let start = source.find("pub fn run(").expect("run not found in lib.rs");
+        let end = source[start..]
+            .find("fn handle_run_event")
+            .map(|offset| start + offset)
+            .expect("handle_run_event not found after run in lib.rs");
+        &source[start..end]
+    }
+
+    fn position(source: &str, needle: &str) -> usize {
+        source
+            .find(needle)
+            .unwrap_or_else(|| panic!("`{needle}` not found in run"))
+    }
+
+    #[test]
+    fn run_assembles_extensions_after_core_plugins_and_before_setup() {
+        let run = run_source();
+        let core_plugins = position(run, "register_core_plugins(");
+        let assembled = position(run, "let builder = assemble(builder, extensions);");
+        let setup = position(run, ".setup(");
+
+        assert!(
+            core_plugins < assembled,
+            "extension plugins must be registered after every core plugin"
+        );
+        assert!(
+            assembled < setup,
+            "extension plugins must be registered before core's setup, so a plugin's own \
+             setup runs first and its state exists when core's setup runs"
+        );
+    }
+
+    #[test]
+    fn run_registers_core_plugins_only_through_the_shared_list() {
+        let run = run_source();
+
+        assert!(
+            !run.contains(".plugin"),
+            "run must not register a plugin itself: a plugin added there would be missing \
+             from the list that `assemble` protects from extension plugins of the same name. \
+             Add it to `extensions::core_plugins` instead"
+        );
+    }
+
+    #[test]
+    fn run_sets_the_async_runtime_before_building_the_app() {
+        let run = run_source();
+        let runtime_built = position(run, "tokio::runtime::Builder::new_multi_thread()");
+        let runtime_set = position(run, "tauri::async_runtime::set(");
+        let block_on = position(run, "runtime.block_on(");
+        let builder_created = position(run, "tauri::Builder::default()");
+
+        assert!(
+            runtime_built < runtime_set,
+            "the runtime is built before it is set"
+        );
+        assert!(
+            runtime_set < builder_created,
+            "Tauri must see the custom runtime before the builder is created"
+        );
+        assert!(
+            runtime_set < block_on,
+            "the runtime is set before anything runs inside it"
+        );
+        assert!(
+            run.contains("runtime.block_on(async move { run_app(extensions, context) })"),
+            "the app is built and run inside the runtime, so the main thread stays in it"
+        );
+    }
+
+    #[test]
+    fn run_redirects_stdio_before_the_runtime_starts() {
+        let run = run_source();
+        // The gate is part of the needle: only a Windows release build compiles
+        // this call, and dropping `not(debug_assertions)` would move a
+        // developer's terminal output into a log file during `tauri dev`.
+        let redirect = position(
+            run,
+            "#[cfg(all(windows, not(debug_assertions)))]\n    \
+             daemon_setup::redirect_gui_stdio_to_log_files();",
+        );
+        let runtime_built = position(run, "tokio::runtime::Builder::new_multi_thread()");
+
+        assert!(
+            redirect < runtime_built,
+            "stdio is redirected before anything else runs, so no diagnostic is lost"
+        );
+    }
+
+    #[test]
+    fn run_builds_with_the_callers_context() {
+        let run = run_source();
+        // Built from pieces so this test's own text is not what it finds.
+        let macro_name = concat!("generate_", "context!");
+
+        assert!(
+            run.contains(".build(context)"),
+            "run must build the app with the context its caller passes in"
+        );
+        assert!(
+            !run.contains(macro_name),
+            "the macro must expand in the app crate that owns the app's configuration, not in run"
         );
     }
 }

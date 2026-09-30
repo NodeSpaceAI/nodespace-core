@@ -15,7 +15,7 @@ use tauri::utils::acl::ExecutionContext;
 use tauri::webview::InvokeRequest;
 use tauri::{App, Manager, Runtime};
 
-use super::{assemble, AppExtensions, CORE_PLUGIN_NAMES, EXTENSION_API_VERSION};
+use super::{assemble, core_plugin_names, AppExtensions, EXTENSION_API_VERSION};
 
 /// Name of the fixture plugin, which is also its command namespace.
 const FIXTURE: &str = "fixture";
@@ -144,7 +144,12 @@ fn extension_plugin_command_is_denied_without_a_grant() {
 
 #[test]
 fn extension_plugin_named_like_a_core_plugin_is_not_registered() {
-    for name in CORE_PLUGIN_NAMES {
+    let names = core_plugin_names::<MockRuntime>();
+    assert!(
+        !names.is_empty(),
+        "core registers plugins, so there are names to protect"
+    );
+    for name in names {
         let core_ran = Arc::new(AtomicBool::new(false));
         let extension_ran = Arc::new(AtomicBool::new(false));
         // Stands in for the plugin core registers under this name before it
@@ -214,19 +219,22 @@ fn extension_plugins_are_registered_in_the_order_they_were_added() {
 }
 
 #[test]
+fn core_plugin_names_are_unique() {
+    // A repeated name would have the later core plugin replace the earlier one.
+    let names = core_plugin_names::<MockRuntime>();
+    let unique: std::collections::HashSet<_> = names.iter().collect();
+
+    assert_eq!(unique.len(), names.len(), "core plugin names: {names:?}");
+}
+
+#[test]
 #[cfg(desktop)]
-fn core_plugin_names_match_the_plugins_core_registers() {
-    let mut registered = vec![
-        tauri_plugin_single_instance::init::<MockRuntime, _>(|_, _, _| {}).name(),
-        tauri_plugin_opener::init::<MockRuntime>().name(),
-        tauri_plugin_dialog::init::<MockRuntime>().name(),
-    ];
-    registered.sort_unstable();
-
-    let mut listed = CORE_PLUGIN_NAMES.to_vec();
-    listed.sort_unstable();
-
-    assert_eq!(listed, registered);
+fn single_instance_plugin_is_the_first_core_plugin() {
+    // The single-instance plugin must be registered before any other plugin.
+    assert_eq!(
+        core_plugin_names::<MockRuntime>().first(),
+        Some(&tauri_plugin_single_instance::init::<MockRuntime, _>(|_, _, _| {}).name())
+    );
 }
 
 #[test]
@@ -240,7 +248,10 @@ fn none_registers_nothing() {
         );
         // Tauri cannot list the plugins an app registered, so only the names
         // this suite could have registered are probed.
-        for name in CORE_PLUGIN_NAMES.iter().chain(&[FIXTURE]) {
+        for name in core_plugin_names::<MockRuntime>()
+            .into_iter()
+            .chain([FIXTURE])
+        {
             assert!(
                 !app.handle().remove_plugin(name),
                 "no plugin named {name} is registered"
