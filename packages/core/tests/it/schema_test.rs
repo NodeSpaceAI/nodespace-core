@@ -41,8 +41,9 @@ async fn columns_of(conn: &libsql::Connection, table: &str) -> Vec<String> {
 }
 
 /// The bootstrap must produce every table the store depends on — including the
-/// ones that arrived late in the old migration ladder (`embedding.origin`, the
-/// conflict journal), which a naive collapse would silently drop.
+/// conflict journal that arrived late in the old migration ladder, which a naive
+/// collapse would silently drop — and keep the unused legacy columns
+/// (`embedding.origin`, `node.sync_seq`) that databases from earlier builds carry.
 #[tokio::test]
 async fn fresh_database_gets_the_complete_current_schema() {
     let temp_dir = tempfile::TempDir::new().unwrap();

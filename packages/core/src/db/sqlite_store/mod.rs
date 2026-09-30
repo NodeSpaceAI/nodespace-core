@@ -2065,6 +2065,8 @@ mod tests {
         e0.total_chunks = 2;
         let mut e1 = unit_embedding(&node.id, 5);
         e1.chunk_index = 1;
+        e1.chunk_start = 100;
+        e1.chunk_end = 200;
         e1.total_chunks = 2;
         store.upsert_embeddings(&node.id, vec![e0, e1]).await?;
 
@@ -2077,6 +2079,19 @@ mod tests {
         assert!(!got[0].stale, "freshly upserted vectors are not stale");
         assert_eq!(got[1].chunk_index, 1);
         assert_eq!(got[1].vector[5], 1.0, "axis-5 unit vector round-trips");
+
+        // Every bound column lands where the insert's positional params put it.
+        // The values are distinct per column so a transposed pair cannot pass.
+        assert_eq!(got[0].dimension, 768);
+        assert_eq!(got[0].model_name, "test-model");
+        assert_eq!(got[0].chunk_start, 0);
+        assert_eq!(got[0].chunk_end, Some(100));
+        assert_eq!(got[0].total_chunks, 2);
+        assert_eq!(got[0].content_hash.as_deref(), Some("hash-0"));
+        assert_eq!(got[0].token_count, Some(10));
+        assert_eq!(got[1].chunk_start, 100);
+        assert_eq!(got[1].chunk_end, Some(200));
+        assert_eq!(got[1].content_hash.as_deref(), Some("hash-5"));
 
         // The legacy `origin` column is not in the insert list, so a new row
         // takes the column default.

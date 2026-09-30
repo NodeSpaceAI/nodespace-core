@@ -141,7 +141,7 @@ impl SqliteStore {
 
     /// Decode a stored embedding row into the `Embedding` model. Vectors are
     /// persisted by `upsert_embeddings` as a little-endian f32 blob; decode it
-    /// back to `Vec<f32>`. Column order must match the SELECTs below.
+    /// back to `Vec<f32>`. Column order must match the SELECT below.
     fn row_to_embedding(row: &libsql::Row) -> Result<crate::models::Embedding> {
         let id: String = row.get(0)?;
         let node: String = row.get(1)?;
@@ -192,8 +192,7 @@ impl SqliteStore {
     }
 
     /// Read all stored embedding records for a node (one per chunk), ordered by
-    /// chunk index. Reads the persisted `embedding` table, so it works whether or
-    /// not embedding generation is compiled in.
+    /// chunk index.
     pub async fn get_embeddings(&self, node_id: &str) -> Result<Vec<crate::models::Embedding>> {
         let mut rows = self
             .read()
