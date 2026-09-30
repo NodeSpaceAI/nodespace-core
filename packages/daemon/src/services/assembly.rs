@@ -406,7 +406,7 @@ pub async fn build_database_services(
     // Play (playbook) engine — event subscriber, sequential RuleProcessor,
     // and CronRunner's 60-second poll loop, per ADR-073 hard-gated to
     // locally-originated events until ADR-060's multi-device semantics land
-    // (see `nodespace_core::playbook::engine::is_sync_originated`). One per
+    // (see `nodespace_core::playbook::engine::is_replicated_apply`). One per
     // database, its own watch-channel shutdown signal (mirroring the
     // conflict-journal sweep's shape above), stopped by
     // `DatabaseServices::shutdown` alongside this database's other

@@ -25,7 +25,7 @@
 //! rules or claim anything about their sync safety.
 
 use anyhow::Result;
-use nodespace_core::db::events::SYNC_SERVICE_CLIENT_ID;
+use nodespace_core::db::events::REPLICATED_APPLY_CLIENT_ID;
 use nodespace_core::db::SqliteStore;
 use nodespace_core::models::Node;
 use nodespace_core::services::NodeService;
@@ -294,11 +294,11 @@ async fn play_fires_end_to_end_for_local_mutation() -> Result<()> {
 /// evaluation (integration test)."
 ///
 /// This is the safety-critical half of ADR-073: a node created through
-/// `NodeService::with_client(SYNC_SERVICE_CLIENT_ID)` — the exact tagging
+/// `NodeService::with_client(REPLICATED_APPLY_CLIENT_ID)` — the exact tagging
 /// convention ADR-027 already establishes for the local-first sync service —
 /// must be excluded from trigger evaluation before it ever reaches
 /// `TriggerKey` lookup. If the gate in
-/// `packages/core/src/playbook/engine.rs::is_sync_originated` were absent or
+/// `packages/core/src/playbook/engine.rs::is_replicated_apply` were absent or
 /// wrong, this node would be updated exactly like the local-mutation test
 /// above.
 #[tokio::test]
@@ -337,7 +337,7 @@ async fn sync_originated_event_does_not_reach_trigger_evaluation() -> Result<()>
     // establishes for the local-first sync service (`with_client`, read by
     // `EventMetadata::source_client_id` on the resulting `NodeCreated`
     // event). Condition would pass (status == "open") if evaluated at all.
-    let sync_service = service.with_client(SYNC_SERVICE_CLIENT_ID);
+    let sync_service = service.with_client(REPLICATED_APPLY_CLIENT_ID);
     let synced_node = Node::new(
         "pb_sync_task".to_string(),
         "task applied via sync".to_string(),
@@ -400,7 +400,7 @@ async fn sync_originated_event_does_not_reach_trigger_evaluation() -> Result<()>
 /// once hardcoded `source: None` for every node in the batch,
 /// discarding whatever client_id the calling `NodeService` was tagged with —
 /// so a sync-tagged `bulk_create` call emitted events with
-/// `source_client_id: None`, which `is_sync_originated` (correctly) does NOT
+/// `source_client_id: None`, which `is_replicated_apply` (correctly) does NOT
 /// treat as sync-originated, and the ADR-073 gate let it straight through.
 /// This is exactly the "catch-up replay re-firing history" failure mode
 /// ADR-073 exists to prevent, for every device reconnecting with a backlog
@@ -443,7 +443,7 @@ async fn sync_originated_bulk_create_does_not_reach_trigger_evaluation() -> Resu
     // pulled rows through `bulk_create` (as `nodespaced-pro`'s catch-up path
     // does via `apply_node_upserts_batched`), not one `create_node` call per
     // row.
-    let sync_service = service.with_client(SYNC_SERVICE_CLIENT_ID);
+    let sync_service = service.with_client(REPLICATED_APPLY_CLIENT_ID);
     let synced_node = Node::new(
         "pb_bulk_sync_task".to_string(),
         "task applied via sync bulk_create".to_string(),
@@ -488,7 +488,7 @@ async fn sync_originated_bulk_create_does_not_reach_trigger_evaluation() -> Resu
         .expect("sync-tagged bulk-created node must still exist (created, just not acted on)");
 
     // The sync-tagged bulk-created node must remain untouched — its
-    // NodeCreated event must carry source_client_id = Some(SYNC_SERVICE_CLIENT_ID)
+    // NodeCreated event must carry source_client_id = Some(REPLICATED_APPLY_CLIENT_ID)
     // (not None) and never reach trigger evaluation at all.
     //
     // Unlike `create_node`, `NodeService::bulk_create` does not run node

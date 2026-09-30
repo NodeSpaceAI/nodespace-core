@@ -9,7 +9,7 @@
 //! persisted, and surface the same `PlayRuleRejected` single-node writes do.
 
 use anyhow::Result;
-use nodespace_core::db::events::{DomainEvent, SYNC_SERVICE_CLIENT_ID};
+use nodespace_core::db::events::{DomainEvent, REPLICATED_APPLY_CLIENT_ID};
 use nodespace_core::db::SqliteStore;
 use nodespace_core::models::{Node, NodeFilter, NodeUpdate};
 use nodespace_core::services::{NodeService, NodeServiceError};
@@ -374,7 +374,7 @@ async fn sync_tagged_bulk_create_does_not_run_invariant_rules() -> Result<()> {
     );
     let synced_id = synced.id.clone();
     service
-        .with_client(SYNC_SERVICE_CLIENT_ID)
+        .with_client(REPLICATED_APPLY_CLIENT_ID)
         .bulk_create(vec![synced])
         .await?;
     assert!(service.get_node(&synced_id).await?.is_some());
@@ -822,7 +822,7 @@ async fn sync_tagged_bulk_update_does_not_run_invariant_rules() -> Result<()> {
     service.create_node(node).await?;
 
     service
-        .with_client(SYNC_SERVICE_CLIENT_ID)
+        .with_client(REPLICATED_APPLY_CLIENT_ID)
         .bulk_update(vec![(id.clone(), status_update("blocked"))])
         .await?;
     let after = service.get_node(&id).await?.unwrap();

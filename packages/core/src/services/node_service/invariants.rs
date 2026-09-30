@@ -84,7 +84,7 @@ impl NodeService {
         &self,
         node_type: &str,
     ) -> Vec<crate::playbook::types::OrderedRuleRef> {
-        if self.client_id.as_deref() == Some(crate::db::events::SYNC_SERVICE_CLIENT_ID) {
+        if self.client_id.as_deref() == Some(crate::db::events::REPLICATED_APPLY_CLIENT_ID) {
             return Vec::new();
         }
 
@@ -154,7 +154,7 @@ impl NodeService {
         node: &Node,
         changed_properties: &[crate::db::events::PropertyChange],
     ) -> Result<(), NodeServiceError> {
-        if self.client_id.as_deref() == Some(crate::db::events::SYNC_SERVICE_CLIENT_ID) {
+        if self.client_id.as_deref() == Some(crate::db::events::REPLICATED_APPLY_CLIENT_ID) {
             return Ok(());
         }
 
@@ -212,7 +212,7 @@ impl NodeService {
         source: &Node,
         event: DomainEvent,
     ) -> Result<(), NodeServiceError> {
-        if self.client_id.as_deref() == Some(crate::db::events::SYNC_SERVICE_CLIENT_ID) {
+        if self.client_id.as_deref() == Some(crate::db::events::REPLICATED_APPLY_CLIENT_ID) {
             return Ok(());
         }
 

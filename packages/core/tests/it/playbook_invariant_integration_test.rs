@@ -15,14 +15,15 @@
 //!   creation — the node does not exist afterward, not merely "the action's
 //!   effect is missing."
 //! - An invariant rule does not re-execute on a device that received the
-//!   node via sync (`with_client(SYNC_SERVICE_CLIENT_ID)`).
+//!   node via sync (`with_client(REPLICATED_APPLY_CLIENT_ID)`).
 //! - A device receiving a node that violates an invariant it holds repairs
 //!   the node and logs the repair.
 //! - Reactive rules are unaffected by any of the above.
 
 use anyhow::Result;
 use nodespace_core::db::events::{
-    DomainEvent, PLAYBOOK_CHAIN_DEPTH_PROPERTY, PLAYBOOK_WRITE_ID_PROPERTY, SYNC_SERVICE_CLIENT_ID,
+    DomainEvent, PLAYBOOK_CHAIN_DEPTH_PROPERTY, PLAYBOOK_WRITE_ID_PROPERTY,
+    REPLICATED_APPLY_CLIENT_ID,
 };
 use nodespace_core::db::SqliteStore;
 use nodespace_core::models::{Node, NodeUpdate, Priority, TaskNodeUpdate, TaskStatus};
@@ -416,7 +417,7 @@ async fn one_failing_invariant_rule_rolls_back_another_rule_s_successful_effect_
 
 /// ADR-060 §1: an invariant rule must NOT re-execute on a device that
 /// received the node via sync — the effect arrives WITH the node as ordinary
-/// synced data. Uses the exact `with_client(SYNC_SERVICE_CLIENT_ID)` tagging
+/// synced data. Uses the exact `with_client(REPLICATED_APPLY_CLIENT_ID)` tagging
 /// convention `nodespace-sync`'s real apply path uses.
 #[tokio::test]
 async fn invariant_rule_does_not_re_execute_on_sync_applied_node() -> Result<()> {
@@ -445,7 +446,7 @@ async fn invariant_rule_does_not_re_execute_on_sync_applied_node() -> Result<()>
             .expect("play must parse and activate");
     }
 
-    let sync_service = service.with_client(SYNC_SERVICE_CLIENT_ID);
+    let sync_service = service.with_client(REPLICATED_APPLY_CLIENT_ID);
     let synced = Node::new(
         "iv_sync_task".to_string(),
         "arrived via sync".to_string(),
@@ -504,7 +505,7 @@ async fn sync_applied_node_violating_invariant_is_repaired_and_logged() -> Resul
     // Simulate a node that arrived via sync from an origin device that
     // predates (or had disabled) this invariant rule: matches the trigger
     // and its condition still passes (no `approved` stamp present).
-    let sync_service = service.with_client(SYNC_SERVICE_CLIENT_ID);
+    let sync_service = service.with_client(REPLICATED_APPLY_CLIENT_ID);
     let violating = Node::new(
         "iv_repair_task".to_string(),
         "violates the invariant".to_string(),
@@ -561,7 +562,7 @@ async fn sync_applied_node_already_satisfying_invariant_is_not_touched() -> Resu
 
     // Condition is `node.status == 'pending'`; this node has status
     // 'approved-elsewhere' so the condition is false — nothing to repair.
-    let sync_service = service.with_client(SYNC_SERVICE_CLIENT_ID);
+    let sync_service = service.with_client(REPLICATED_APPLY_CLIENT_ID);
     let already_fine = Node::new(
         "iv_ok_task".to_string(),
         "already handled by origin".to_string(),
@@ -2635,7 +2636,7 @@ async fn sync_repair_continues_only_a_play_written_chain() -> Result<()> {
     .await?;
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    let sync_service = service.with_client(SYNC_SERVICE_CLIENT_ID);
+    let sync_service = service.with_client(REPLICATED_APPLY_CLIENT_ID);
 
     // A play write at the end of a chain: one more hop would pass the limit.
     let at_limit = Node::new(
@@ -2703,7 +2704,7 @@ async fn sync_repair_continues_only_a_play_written_chain() -> Result<()> {
 // A received update can violate a `property_changed` invariant just as a
 // received create can violate a `node_created` one: the originating device
 // ran an older Play version, had the rule disabled, or predates it. These
-// tests drive the real sync tagging (`with_client(SYNC_SERVICE_CLIENT_ID)`)
+// tests drive the real sync tagging (`with_client(REPLICATED_APPLY_CLIENT_ID)`)
 // against a running engine, so the repair runs through `handle_event`'s
 // sync-originated branch exactly as it does for a real sync apply.
 //
@@ -2754,7 +2755,7 @@ fn activate_rules_directly(engine: &PlaybookEngine, name: &str, rules: serde_jso
 async fn create_via_sync(service: &Arc<NodeService>, node: Node) -> Result<(String, i64)> {
     let id = node.id.clone();
     service
-        .with_client(SYNC_SERVICE_CLIENT_ID)
+        .with_client(REPLICATED_APPLY_CLIENT_ID)
         .create_node(node)
         .await?;
     let version = service.get_node(&id).await?.unwrap().version;
@@ -2768,7 +2769,7 @@ async fn update_via_sync(
 ) -> Result<Node> {
     let version = service.get_node(id).await?.unwrap().version;
     Ok(service
-        .with_client(SYNC_SERVICE_CLIENT_ID)
+        .with_client(REPLICATED_APPLY_CLIENT_ID)
         .update_node(id, version, properties_update(properties))
         .await?)
 }
@@ -3340,7 +3341,8 @@ async fn contradictory_invariants_ping_pong(initial_properties: serde_json::Valu
         let (to, id) = (Arc::clone(to), id.to_string());
         tokio::spawn(async move {
             while let Ok(envelope) = events.recv().await {
-                if envelope.metadata.source_client_id.as_deref() == Some(SYNC_SERVICE_CLIENT_ID) {
+                if envelope.metadata.source_client_id.as_deref() == Some(REPLICATED_APPLY_CLIENT_ID)
+                {
                     continue;
                 }
                 let DomainEvent::NodeUpdated { node_id, node, .. } = envelope.event else {
@@ -3553,7 +3555,8 @@ async fn cycle_through_an_in_transaction_invariant_hop_stops_at_the_limit() -> R
         let to = Arc::clone(to);
         tokio::spawn(async move {
             while let Ok(envelope) = events.recv().await {
-                if envelope.metadata.source_client_id.as_deref() == Some(SYNC_SERVICE_CLIENT_ID) {
+                if envelope.metadata.source_client_id.as_deref() == Some(REPLICATED_APPLY_CLIENT_ID)
+                {
                     continue;
                 }
                 let DomainEvent::NodeUpdated {

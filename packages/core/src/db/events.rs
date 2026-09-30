@@ -274,15 +274,15 @@ pub fn chain_depth_of_write(
     }
 }
 
-/// Reserved `source_client_id` for writes applied by the local-first sync
-/// service (ADR-027's origin-tagging convention: `NodeService::with_client
-/// ("sync-service")`).
+/// Reserved `source_client_id` for writes applied from another device, per
+/// ADR-027's origin-tagging convention.
 ///
-/// Consumers that must not treat a sync-applied write as if it were a fresh
-/// local mutation — the playbook engine's local-origin gate (ADR-073) is the
-/// first such consumer — compare `EventMetadata::source_client_id` against
-/// this constant rather than hardcoding the literal string.
-pub const SYNC_SERVICE_CLIENT_ID: &str = "sync-service";
+/// Consumers that must not treat such a write as a fresh local mutation (the
+/// playbook engine's local-origin gate, ADR-073, and invariant dispatch)
+/// compare against this constant. The value is a stable tag that writers
+/// outside core set as a literal. Changing it would make those writes fire
+/// local rules again.
+pub const REPLICATED_APPLY_CLIENT_ID: &str = "sync-service";
 
 /// Metadata for cross-cutting concerns on domain events
 ///
@@ -396,6 +396,14 @@ pub enum DomainEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Writers outside core tag replicated writes with this literal instead of
+    /// importing the constant, so its value is part of the contract: changing
+    /// it would make those writes fire local rules and invariants again.
+    #[test]
+    fn replicated_apply_client_id_value_is_stable() {
+        assert_eq!(REPLICATED_APPLY_CLIENT_ID, "sync-service");
+    }
 
     /// Locks in the `node_thing` normalizer contract: bare ids (date
     /// pages, raw UUIDs) get prefixed; anything already containing
