@@ -353,7 +353,8 @@ nodespace-core/
 │   │   ├── src/                  # Frontend source (Svelte 5)
 │   │   │   ├── lib/design/       # Design system: components, tokens.ts, theme.ts
 │   │   │   └── app.css           # Semantic color tokens (light + dark)
-│   │   ├── src-tauri/            # Tauri backend
+│   │   ├── app-lib/              # Tauri app library (`nodespace-app-lib`): commands, services, entry point
+│   │   ├── src-tauri/            # Tauri app crate (`nodespace-app`): main.rs, build.rs, config, icons, sidecars
 │   │   └── [configs]             # App-specific configurations
 │   ├── nodespace-types/          # Shared wire types (core + Tauri command layer)
 │   ├── core/                     # Knowledge graph data layer (NodeService, ops/)

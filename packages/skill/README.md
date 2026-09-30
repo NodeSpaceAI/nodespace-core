@@ -6,7 +6,7 @@ Installs the NodeSpace Agent Skill into PTY agents (Claude Code, Codex, Antigrav
 on the npm registry, and it is not going to: the NodeSpace desktop app is the
 one thing that installs this package's output, and it does so by running a
 built installer directly (see
-`packages/desktop-app/src-tauri/src/skill_setup.rs`) — never `npx`/`npm`, so
+`packages/desktop-app/app-lib/src/skill_setup.rs`) — never `npx`/`npm`, so
 publishing to npm was never actually required for the app's own install path.
 
 If you're using an external agent harness yourself (not launched via the

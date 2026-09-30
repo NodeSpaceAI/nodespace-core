@@ -3438,6 +3438,19 @@ dependencies = [
 name = "nodespace-app"
 version = "0.3.2"
 dependencies = [
+ "nodespace-app-lib",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-dialog",
+ "tauri-plugin-opener",
+ "tokio",
+]
+
+[[package]]
+name = "nodespace-app-lib"
+version = "0.3.2"
+dependencies = [
  "anyhow",
  "async-stream",
  "async-trait",
@@ -3456,7 +3469,6 @@ dependencies = [
  "serde",
  "serde_json",
  "tauri",
- "tauri-build",
  "tauri-plugin-decorum",
  "tauri-plugin-dialog",
  "tauri-plugin-opener",
@@ -3478,7 +3490,7 @@ dependencies = [
 name = "nodespace-app-test-support"
 version = "0.1.0"
 dependencies = [
- "nodespace-app",
+ "nodespace-app-lib",
  "tauri",
  "tempfile",
  "tokio",

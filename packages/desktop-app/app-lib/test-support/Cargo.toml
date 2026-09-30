@@ -5,7 +5,7 @@ edition = "2021"
 publish = false
 
 [dependencies]
-nodespace-app = { path = ".." }
+nodespace-app-lib = { path = ".." }
 tauri = { version = "2", features = ["test"] }
 tokio = { workspace = true }
 tempfile = "3"

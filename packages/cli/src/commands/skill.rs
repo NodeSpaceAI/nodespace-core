@@ -14,7 +14,7 @@
 //!
 //! Mirrors `skill_setup.rs`'s `Installer` enum, minus every Tauri-specific
 //! resource-resolution piece (this crate has no `AppHandle` and must not
-//! depend on `desktop-app/src-tauri`):
+//! depend on `desktop-app/app-lib`):
 //!
 //!   1. **Compiled sidecar** (preferred): `nodespace-skill-installer`, built
 //!      for the same headless targets `nodespace`/`nodespaced` ship for (see

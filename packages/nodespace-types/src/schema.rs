@@ -343,7 +343,7 @@ pub struct SchemaNode {
 /// point (Tauri commands, MCP, HTTP) via `nodes_to_typed_values`, which
 /// `.collect()`s a `Vec<Result<_, _>>` into a single `Result<Vec<_>, _>` —
 /// and two direct call sites in
-/// `desktop-app/src-tauri/src/commands/schemas.rs`
+/// `desktop-app/app-lib/src/commands/schemas.rs`
 /// (`get_all_schemas`/`get_schema_definition`), which do not go through
 /// `nodes_to_typed_values` at all. Only the `node_to_typed_value` path risks
 /// a blast-radius problem: turning this into an `Err` there would fail an

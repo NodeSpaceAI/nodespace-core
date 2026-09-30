@@ -826,7 +826,7 @@ async fn watch_nodes_supports_multiple_concurrent_watchers() {
 /// content-comparison guess that repeatedly produced false-positive/false-
 /// negative conflict toasts; the daemon is now the sole authority, keyed on a
 /// real `x-ns-client-id` metadata header round-tripped over the wire exactly
-/// as `packages/desktop-app/src-tauri/src/services/grpc_client.rs`'s
+/// as `packages/desktop-app/app-lib/src/services/grpc_client.rs`'s
 /// `DatabaseIdInterceptor` stamps it on every request.
 #[tokio::test]
 async fn watch_nodes_over_real_transport_suppresses_own_echo_and_delivers_foreign_writes() {

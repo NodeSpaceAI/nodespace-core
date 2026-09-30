@@ -1,14 +1,15 @@
 #!/usr/bin/env bun
 /**
- * Run `nodespace-app`'s `src/` unit tests, once its build prerequisites are
- * known to be in place.
+ * Run the desktop app's unit tests — `nodespace-app-lib`'s `src/` — once the
+ * build prerequisites of the app crate that links it are known to be in place.
  *
- * `rust:test` covers that crate's unit tests, which means `test:all` compiles
- * it — and compiling it runs `tauri_build::build()`, which hard-fails on any
- * declared `externalBin` or `resources` entry in tauri.conf.json that isn't
- * staged: a missing sidecar is `ResourcePathNotFound`, and a `resources` glob
- * matching nothing is `GlobPathNotFound`. Both are gitignored, so a fresh
- * checkout satisfies neither.
+ * `rust:test` covers those unit tests, which means `test:all` compiles the
+ * `nodespace-app` crate alongside them — and compiling it runs
+ * `tauri_build::build()`, which hard-fails on any declared `externalBin` or
+ * `resources` entry in tauri.conf.json that isn't staged: a missing sidecar is
+ * `ResourcePathNotFound`, and a `resources` glob matching nothing is
+ * `GlobPathNotFound`. Both are gitignored, so a fresh checkout satisfies
+ * neither.
  *
  * build.rs drops every unstaged sidecar and the unstaged skill from a debug
  * build (see its `drop_unstaged_bundle_entries`), so none of those gate
@@ -132,7 +133,7 @@ const requiredPaths = (): RequiredPath[] => {
 
 if (!hasDesktopApp()) {
   console.log(
-    'Skipping nodespace-app unit tests (no Tauri desktop app on this platform).',
+    'Skipping nodespace-app-lib unit tests (no Tauri desktop app on this platform).',
   );
   process.exit(0);
 }
@@ -156,7 +157,7 @@ const missing = requiredPaths().filter(({ path, kind }) => {
 if (missing.length > 0) {
   const commands = [...new Set(missing.map(({ path }) => producerFor(path)))];
   console.error(
-    `\nnodespace-app unit tests need ${missing.length} path${
+    `\nnodespace-app-lib unit tests need ${missing.length} path${
       missing.length === 1 ? '' : 's'
     } that ${missing.length === 1 ? 'is' : 'are'} missing:\n`,
   );
@@ -192,6 +193,8 @@ const result = Bun.spawnSync(
     '--bins',
     '-p',
     'nodespace-app',
+    '-p',
+    'nodespace-app-lib',
     '-p',
     'nodespace-app-test-support',
     '--',

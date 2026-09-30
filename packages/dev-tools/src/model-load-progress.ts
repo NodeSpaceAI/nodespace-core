@@ -4,7 +4,7 @@
  * `/api/events` SSE channel.
  *
  * This is the browser-mode mirror of the Tauri command layer's
- * `ensure_model_ready` (packages/desktop-app/src-tauri/src/commands/local_agent.rs),
+ * `ensure_model_ready` (packages/desktop-app/app-lib/src/commands/local_agent.rs),
  * which forwards each event live via `app.emit` and derives the call's
  * outcome from the stream:
  *

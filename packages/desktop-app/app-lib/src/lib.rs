@@ -308,8 +308,9 @@ fn parse_relaunch_database_arg(argv: &[String]) -> Option<String> {
     }
 }
 
-#[cfg_attr(mobile, tauri::mobile_entry_point)]
-pub fn run() {
+/// Builds and runs the app. The app crate supplies `context`: it owns
+/// `tauri.conf.json`, so `tauri::generate_context!()` must expand there.
+pub fn run(context: tauri::Context<tauri::Wry>) {
     use tauri::{menu::*, Manager};
 
     // Initialize tracing — respects RUST_LOG env var, defaults to info for nodespace_app
@@ -859,7 +860,7 @@ pub fn run() {
             commands::onboarding::should_prompt_identity_backfill,
             commands::onboarding::dismiss_identity_backfill_prompt,
         ])
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("error while building tauri application");
 
     // Run with event handler for graceful shutdown. Routing lives in

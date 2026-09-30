@@ -2,7 +2,7 @@
  * The dev-proxy relays the daemon's EnsureModelReady / DownloadModel progress
  * stream to the browser as it arrives, and derives the HTTP outcome from it
  * the way the Tauri `ensure_model_ready` command does
- * (packages/desktop-app/src-tauri/src/commands/local_agent.rs).
+ * (packages/desktop-app/app-lib/src/commands/local_agent.rs).
  *
  * Previously the proxy buffered the whole stream and discarded it, so a
  * browser-mode chat send showed a phase-less overlay for the entire

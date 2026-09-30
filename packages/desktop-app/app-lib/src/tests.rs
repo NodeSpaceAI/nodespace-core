@@ -349,3 +349,21 @@ mod nodespace_tests {
         assert_eq!(all_ids.len(), 50, "Should have generated 50 unique IDs");
     }
 }
+
+#[cfg(test)]
+mod cfg_alias_tests {
+    /// `run()` guards the single-instance plugin with `#[cfg(desktop)]`. Only
+    /// this crate's `build.rs` defines that alias, and code behind an unset
+    /// alias compiles out silently, so nothing else would notice it going.
+    #[test]
+    fn desktop_cfg_alias_is_set() {
+        // Bound to a local so the assertion reads as a runtime check rather
+        // than a constant one (`clippy::assertions_on_constants`).
+        let desktop_alias_set = cfg!(desktop);
+        assert!(
+            desktop_alias_set,
+            "the `desktop` cfg alias is not set: app-lib/build.rs must define it, or \
+             `#[cfg(desktop)]` code (the single-instance guard) is compiled out"
+        );
+    }
+}

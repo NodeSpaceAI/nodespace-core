@@ -26,5 +26,5 @@ fn main() {
     tauri::async_runtime::set(runtime.handle().clone());
 
     // Run the app within our custom runtime
-    runtime.block_on(async { nodespace_app_lib::run() })
+    runtime.block_on(async { nodespace_app_lib::run(tauri::generate_context!()) })
 }

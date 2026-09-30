@@ -5,7 +5,7 @@
 //! own "Quit" also asks any running desktop-app window to close (see
 //! [`signal_ui_to_quit`]), and the desktop app's own window-close path
 //! (Cmd+Q, the red traffic-light button, or any other close that actually
-//! goes through) signals this daemon to stop in turn (see `nodespace-app`'s
+//! goes through) signals this daemon to stop in turn (see `nodespace-app-lib`'s
 //! `daemon_setup::signal_daemon_to_stop`) — a single action from either side
 //! fully quits NodeSpace rather than leaving the other half running.
 //!
@@ -43,7 +43,7 @@ const TRAY_ICON_BYTES: &[u8] = include_bytes!("../icons/tray-icon.png");
 /// `tauri-plugin-single-instance` relaunch handler reads instead.
 pub const INITIAL_DATABASE_ENV: &str = "NODESPACE_INITIAL_DATABASE";
 
-/// This build variant's UI pid-file path, mirroring `nodespace-app`'s
+/// This build variant's UI pid-file path, mirroring `nodespace-app-lib`'s
 /// `daemon_setup::write_own_ui_pid_file` -- both sides derive the identical
 /// path from their own build flags rather than one copying the other's
 /// answer, exactly like the daemon socket path each side already derives
@@ -60,7 +60,7 @@ fn ui_pid_path() -> Option<PathBuf> {
 
 /// The pid in `pid_file`, if it both parses and belongs to a live process
 /// whose argv[0] matches `expected_binary` exactly -- the same verify-
-/// before-signal discipline `nodespace-app`'s `daemon_setup::
+/// before-signal discipline `nodespace-app-lib`'s `daemon_setup::
 /// kill_running_daemon` uses for the daemon side of this relationship.
 ///
 /// `None` covers every "nothing to signal" case identically and silently: no
@@ -94,7 +94,7 @@ fn verified_ui_pid(pid_file: &Path, expected_binary: &Path) -> Option<i32> {
 /// pending unsaved-work flush is still respected. On Windows there is no pid
 /// file: `taskkill /F /IM` targets `ui_binary`'s resolved image name
 /// directly, force-killing it -- this loses the flush-before-close the Unix
-/// path preserves, mirroring the same already-accepted gap `nodespace-app`'s
+/// path preserves, mirroring the same already-accepted gap `nodespace-app-lib`'s
 /// `daemon_setup::kill_running_daemon` (Windows variant) has for the daemon
 /// side of a binary-update restart.
 ///
@@ -124,7 +124,7 @@ fn signal_ui_to_quit(pid_file: Option<&Path>, ui_binary: Option<&Path>) {
 /// pid file on this platform -- `taskkill /F /IM` targets `ui_binary`'s
 /// resolved image name directly, force-killing it. This loses the
 /// flush-before-close the Unix path preserves via SIGTERM, mirroring the
-/// same already-accepted gap `nodespace-app`'s `daemon_setup::
+/// same already-accepted gap `nodespace-app-lib`'s `daemon_setup::
 /// kill_running_daemon` (Windows variant) has for the daemon side of a
 /// binary-update restart. `_pid_file` is unused here -- Windows has no
 /// equivalent lookup -- but kept in the signature so both platforms' call
@@ -1159,7 +1159,7 @@ mod verified_ui_pid_tests {
 /// `run`'s live `tao` event loop can't be driven in a unit test (no real
 /// display), so this asserts the source itself calls [`signal_ui_to_quit`]
 /// from the `quit_id` branch — the same source-text-assertion precedent
-/// `nodespace-app`'s `quit_wiring_tests` module uses for its mirror-image
+/// `nodespace-app-lib`'s `quit_wiring_tests` module uses for its mirror-image
 /// half of this fix.
 #[cfg(test)]
 mod quit_signals_ui_tests {

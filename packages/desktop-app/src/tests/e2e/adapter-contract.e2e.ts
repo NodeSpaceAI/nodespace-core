@@ -28,7 +28,7 @@
  *
  * A true Tauri command-layer round-trip (no webview needed — `tauri::State`
  * obtained via `Manager::state()`, not IPC) is the Rust-side counterpart:
- * `packages/desktop-app/src-tauri/tests/it/adapter_contract_test.rs` drives the
+ * `packages/desktop-app/app-lib/tests/it/adapter_contract_test.rs` drives the
  * SAME three scenarios below (task tri-state update, create-with-position,
  * move-with-position) through the real `#[tauri::command]` functions. Two
  * suites independently pinning the same documented contract is what makes a

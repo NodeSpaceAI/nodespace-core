@@ -251,7 +251,7 @@ await Promise.all([
     await run({ label: "compile Rust test binaries", command: "bun run rust:test:build", timeoutMs: 60 * MINUTE });
     await run({
       label: "compile nodespaced and the Tauri-seam test binary",
-      command: `cargo build --bin nodespaced && cargo test -p nodespace-app --test it --no-run`,
+      command: `cargo build --bin nodespaced && cargo test -p nodespace-app-lib --test it --no-run`,
       timeoutMs: 45 * MINUTE,
     });
     // SKILL.md drift check (generated sections vs. the CLI definitions). After
@@ -278,8 +278,8 @@ await run({
 // crate's `src/` unit tests are in-process, need no daemon binary, and run
 // headless in ~2s at full parallelism, so `rust:test` (above) runs them
 // alongside every other crate's. Narrowing this step is what leaves them free
-// to do that — both a bare `cargo test -p nodespace-app` and `--tests` would
-// additionally re-run the lib/bin unittest targets here, needlessly, under the
+// to do that — both a bare `cargo test -p nodespace-app-lib` and `--tests` would
+// additionally re-run the lib unittest target here, needlessly, under the
 // =1 cap only this suite requires. (`--tests` means "every target with
 // test = true", not "the tests/ directory".)
 //
@@ -301,7 +301,7 @@ await run({
 // reliability.
 await run({
   label: "Tauri-seam integration tests (ADR-048)",
-  command: `cargo test -p nodespace-app --test it -- --test-threads=1`,
+  command: `cargo test -p nodespace-app-lib --test it -- --test-threads=1`,
   timeoutMs: 15 * MINUTE,
   env: { NODESPACED_TEST_BIN: daemonBinary },
 });

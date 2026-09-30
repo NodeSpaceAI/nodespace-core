@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Invoked directly via `bun <path-to-this-file> <command> [agent]` — the
 // desktop app's bundled installer runs it this way (see
-// packages/desktop-app/src-tauri/src/skill_setup.rs), and it's the same
+// packages/desktop-app/app-lib/src/skill_setup.rs), and it's the same
 // invocation for a manual run from a source checkout. Never `npx`/`npm`:
 // `@nodespaceai/skill` is not published to npm (the public
 // NodeSpaceAI/nodespace-skill repo is the distribution channel for external

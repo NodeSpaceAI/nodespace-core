@@ -6,10 +6,10 @@
 //!
 //! Pulled into each crate root via `mod build_support;` / `#[path = ...]
 //! mod build_support;` rather than published as its own workspace crate:
-//! `nodespace-app-test-support` already depends on `nodespace-app` (its
-//! `lib.rs`), so it cannot also be a `[build-dependencies]` of
-//! `nodespace-app` — that would be a build-dependency cycle back onto the
-//! same package. A shared source file sidesteps the cycle entirely; no
+//! `nodespace-app` cannot take `nodespace-app-test-support` as a
+//! `[build-dependencies]` (it links the whole app library and Tauri's test
+//! runtime), and `nodespace-app-test-support` cannot depend on the
+//! binary-only `nodespace-app`. A shared source file sidesteps both; no
 //! crate boundary, no duplication.
 //!
 //! ## Why this exists

@@ -240,7 +240,7 @@ function error(code: string, message: string, status = 500, conflictData?: unkno
 }
 
 // Mirrors the Tauri command layer's status_to_command_error
-// (packages/desktop-app/src-tauri/src/commands/nodes.rs): inspects the same
+// (packages/desktop-app/app-lib/src/commands/nodes.rs): inspects the same
 // gRPC trailer metadata to build SUBTREE_ACCESS_DENIED/VERSION_CONFLICT codes
 // with their conflictData payload, so a live refusal reached through
 // bun run dev:browser surfaces via isSubtreeAccessDenied/isVersionConflict
