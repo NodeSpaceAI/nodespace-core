@@ -8,9 +8,8 @@
 //! first, so extension commands cannot be entries in core's own command list.
 //!
 //! [`AppExtensions`] collects what an extension contributes and [`assemble`]
-//! applies it to a `tauri::Builder`. Core's own app crate passes
-//! [`AppExtensions::none`], so an app with no extension behaves exactly as core
-//! alone does.
+//! applies it to a `tauri::Builder`. An app with no extension, built from
+//! [`AppExtensions::none`], behaves exactly as core alone does.
 
 use std::collections::HashSet;
 
@@ -27,7 +26,7 @@ mod fixture_tests;
 /// the two must stay equal.
 pub const EXTENSION_API_VERSION: (u32, u32) = (1, 0);
 
-/// Names of the Tauri plugins core registers itself, in the order it does.
+/// Names of the Tauri plugins core registers itself.
 ///
 /// A plugin registered under an existing name replaces the earlier one without
 /// a warning, so an extension plugin that reused one of these names would
@@ -45,6 +44,7 @@ pub struct AppExtensions<R: Runtime = tauri::Wry> {
 
 impl<R: Runtime> AppExtensions<R> {
     /// An extension that contributes nothing.
+    #[must_use]
     pub fn none() -> Self {
         Self {
             plugins: Vec::new(),
@@ -55,6 +55,7 @@ impl<R: Runtime> AppExtensions<R> {
     ///
     /// A plugin's setup runs before core's own setup, so it must not assume the
     /// daemon connection, the shutdown token or a running daemon exist yet.
+    #[must_use]
     pub fn plugin<P: Plugin<R> + 'static>(mut self, plugin: P) -> Self {
         self.plugins.push(Box::new(plugin));
         self
@@ -97,8 +98,8 @@ impl<R: Runtime> Default for AppExtensions<R> {
 /// setup starts the real daemon, so neither can run on a mock runtime.
 /// `assemble` touches neither, which lets tests drive everything an extension
 /// contributes through `tauri::test::MockRuntime`.
-pub fn assemble<R: Runtime>(builder: Builder<R>, extensions: AppExtensions<R>) -> Builder<R> {
-    let mut builder = builder;
+#[must_use]
+pub fn assemble<R: Runtime>(mut builder: Builder<R>, extensions: AppExtensions<R>) -> Builder<R> {
     let mut registered: HashSet<&'static str> = HashSet::new();
     for plugin in extensions.plugins {
         let name = plugin.name();

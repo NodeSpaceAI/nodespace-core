@@ -60,6 +60,10 @@ fn build_app(ext: AppExtensions<MockRuntime>) -> App<MockRuntime> {
 }
 
 /// Builds an app from `ext`, granting `command` to every window.
+///
+/// The mock context has an empty ACL, and a plugin command is refused unless
+/// the ACL allows it. Tauri's only way to allow one on a mock context is this
+/// doc-hidden call on the context's runtime authority.
 fn build_app_granting(ext: AppExtensions<MockRuntime>, command: &str) -> App<MockRuntime> {
     let mut context = mock_context(noop_assets());
     context
@@ -131,25 +135,35 @@ fn extension_plugin_command_is_denied_without_a_grant() {
 
     let refusal = invoke(&app, "plugin:fixture|fixture_ping")
         .expect_err("an ungranted plugin command is refused");
+    let refusal = refusal.to_string();
     assert!(
-        refusal.to_string().contains("not allowed"),
-        "refused for a missing grant, got: {refusal}"
+        refusal.contains("fixture_ping") && refusal.contains("not allowed"),
+        "refused for the missing grant on the command, got: {refusal}"
     );
 }
 
 #[test]
 fn extension_plugin_named_like_a_core_plugin_is_not_registered() {
     for name in CORE_PLUGIN_NAMES {
-        let ran = Arc::new(AtomicBool::new(false));
-        let app = build_app(AppExtensions::none().plugin(probe_plugin(name, &ran)));
+        let core_ran = Arc::new(AtomicBool::new(false));
+        let extension_ran = Arc::new(AtomicBool::new(false));
+        // Stands in for the plugin core registers under this name before it
+        // calls `assemble`.
+        let builder = mock_builder().plugin(probe_plugin(name, &core_ran));
+        assemble(
+            builder,
+            AppExtensions::none().plugin(probe_plugin(name, &extension_ran)),
+        )
+        .build(mock_context(noop_assets()))
+        .expect("the app builds");
 
         assert!(
-            !ran.load(Ordering::SeqCst),
+            !extension_ran.load(Ordering::SeqCst),
             "the setup of an extension plugin named {name} must not run"
         );
         assert!(
-            !app.handle().remove_plugin(name),
-            "an extension plugin named {name} must not be registered"
+            core_ran.load(Ordering::SeqCst),
+            "the extension plugin named {name} must not replace core's plugin"
         );
     }
 }
@@ -224,6 +238,8 @@ fn none_registers_nothing() {
             app.try_state::<FixtureState>().is_none(),
             "no plugin ran its setup"
         );
+        // Tauri cannot list the plugins an app registered, so only the names
+        // this suite could have registered are probed.
         for name in CORE_PLUGIN_NAMES.iter().chain(&[FIXTURE]) {
             assert!(
                 !app.handle().remove_plugin(name),
