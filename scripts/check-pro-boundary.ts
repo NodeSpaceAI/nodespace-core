@@ -217,13 +217,13 @@ export const BASELINES = {
   // tenant binding, sync_enabled and auth_status state
   cloudBindState: 203,
   // cloud embedding and membership-edge sync hooks
-  cloudSyncHooks: 15,
+  cloudSyncHooks: 4,
   // Supabase, RLS, pgvector, nodespace-sync and "Pro daemon" wording
-  cloudWording: 82,
+  cloudWording: 74,
   // the word tenant (one fixture exempt, see EXEMPTIONS)
   tenantWording: 463,
   // the word Pro, except chip and model names such as "M2 Pro", "DeepSeek V4 Pro"
-  proWording: 300,
+  proWording: 294,
   // files whose basename has a pro segment
   proNamedFiles: 18,
 } satisfies Record<MarkerName, number>;
