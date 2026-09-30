@@ -56,13 +56,14 @@ use tokio::time::timeout;
 #[cfg(any(windows, test))]
 use tokio_util::sync::CancellationToken;
 
+use crate::daemon_profile::{self, DaemonProfile};
 #[cfg(windows)]
 use crate::window_routing;
 
 const DAEMON_BIN_DIR: &str = ".nodespace/bin";
 const DAEMON_DB_DIR: &str = ".nodespace/database";
 const DAEMON_LOG_DIR: &str = ".nodespace/logs";
-const DAEMON_BINARY_NAME: &str = "nodespaced";
+pub(crate) const DAEMON_BINARY_NAME: &str = "nodespaced";
 const PRO_DAEMON_BINARY_NAME: &str = "nodespaced-pro";
 const CLI_BINARY_NAME: &str = "nodespace";
 
@@ -85,23 +86,51 @@ pub(crate) fn is_pro_build() -> bool {
     PRO_SUPABASE_URL.is_some()
 }
 
-/// Pure function form of `daemon_binary_name()`, taking edition as a
-/// parameter instead of reading it from `is_pro_build()`'s compile-time-baked
-/// constant. This lets both editions' binary-name logic be exercised by an
-/// ordinary `#[test]` on any development machine — a real Pro build can only
-/// ever produce one edition per binary, so `is_pro_build()` itself can't be
-/// flipped at test time.
-fn daemon_binary_name_for(is_pro: bool) -> &'static str {
-    if is_pro {
-        PRO_DAEMON_BINARY_NAME
-    } else {
-        DAEMON_BINARY_NAME
+/// The daemon profile for the edition values baked in at compile time. A `None`
+/// URL is a community build; the URL alone decides, and the key defaults to
+/// empty.
+///
+/// Split from [`profile_for_this_build`], which passes the compile-time
+/// constants, so the values a build with the edition variables set produces can
+/// be pinned by an ordinary `#[test]`: a real build bakes in one edition, so the
+/// constants themselves cannot be flipped at test time.
+///
+/// The service environment injects the deployment-wide Supabase endpoint the
+/// sync daemon needs. Only the project URL and publishable anon key are baked in
+/// — both are deployment-wide, not tenant-specific. The tenant a database syncs
+/// to (schema + collection) is bound per database at runtime and is deliberately
+/// NOT injected here (ADR-053 per-database cloud sync). Both values are XML-safe
+/// (JWT chars / URLs contain no `<>&`).
+fn profile_for_build_env(
+    endpoint_url: Option<&'static str>,
+    anon_key: Option<&'static str>,
+) -> DaemonProfile {
+    match endpoint_url {
+        None => DaemonProfile::community(),
+        Some(url) => DaemonProfile {
+            binary_name: PRO_DAEMON_BINARY_NAME,
+            service_env: vec![
+                ("NODESPACED_PRO_SUPABASE_URL".to_string(), url.to_string()),
+                (
+                    "NODESPACED_PRO_ANON_KEY".to_string(),
+                    anon_key.unwrap_or_default().to_string(),
+                ),
+            ],
+            product: "pro",
+        },
     }
 }
 
-/// The daemon sidecar this edition installs + launches.
+/// The profile this build defaults to; what [`daemon_profile::active`] starts
+/// with. With [`profile_for_build_env`], the only code that picks the daemon
+/// binary, its service environment or its product by edition.
+pub(crate) fn profile_for_this_build() -> DaemonProfile {
+    profile_for_build_env(PRO_SUPABASE_URL, PRO_ANON_KEY)
+}
+
+/// The daemon sidecar this app installs + launches.
 fn daemon_binary_name() -> &'static str {
-    daemon_binary_name_for(is_pro_build())
+    daemon_profile::active().binary_name
 }
 
 /// Flag every launcher in this file passes so the daemon runs in tray mode.
@@ -312,7 +341,7 @@ pub fn signal_daemon_to_stop() {
 /// one: the daemon's `shutdown_all`/GPU-release drain does not run.
 #[cfg(windows)]
 pub fn signal_daemon_to_stop() {
-    let image_name = daemon_image_name_for(is_pro_build());
+    let image_name = daemon_profile::active().image_name();
     #[cfg(not(test))]
     {
         let _ = std::process::Command::new("taskkill")
@@ -589,7 +618,8 @@ pub async fn ensure_daemon_running(app: &AppHandle) -> Result<DaemonStatus> {
     #[cfg(target_os = "macos")]
     {
         let plist_path = launch_agents_dir(&home).join(plist_filename());
-        write_plist(&home, &plist_path, &daemon_bin).context("Failed to write launchd plist")?;
+        write_plist(&home, &plist_path, &daemon_bin, daemon_profile::active())
+            .context("Failed to write launchd plist")?;
         bootstrap_launchd_agent(&plist_path)?;
     }
 
@@ -667,43 +697,19 @@ async fn kill_running_daemon(socket_path: &Path) {
     let _ = std::fs::remove_file(socket_path);
 }
 
-/// Windows taskkill `/IM` image name for a given edition's daemon binary.
-///
-/// Pure function form, gated on `any(windows, test)` rather than `windows`
-/// alone (mirroring `daemon_log_paths`/`open_daemon_log` below), so the exact
-/// bug class this fixes — an image name that can silently drift from
-/// `daemon_binary_name_for()` — is directly testable on any platform, not
-/// just compile-checked against the Windows target.
-///
-/// The `.exe` suffix mirrors the literal this replaces (`"nodespaced.exe"`)
-/// and assumes the installed daemon binary carries that extension on
-/// Windows. Confirmed for real on a Windows box (issue-2137 investigation):
-/// this assumption did NOT hold before `extract_sidecar_if_changed`'s `dest`
-/// was fixed to route through `bundled_sidecar_name` — with the old bare
-/// (`.exe`-less) install name, a real `taskkill /F /IM nodespaced.exe`
-/// against a real running bare-named `nodespaced` process failed outright
-/// (`ERROR: The process "nodespaced.exe" not found.`) while the process kept
-/// running. With that fix in place, `daemon_bin`'s install name and this
-/// image name agree by construction.
-#[cfg(any(windows, test))]
-fn daemon_image_name_for(is_pro: bool) -> String {
-    format!("{}.exe", daemon_binary_name_for(is_pro))
-}
-
 /// Kill the running daemon on Windows via taskkill and wait for it to exit.
 ///
-/// Targets the edition-correct image name (`nodespaced.exe` or
-/// `nodespaced-pro.exe`, via `daemon_binary_name_for()`) rather than a
-/// hardcoded community-edition literal — a Pro build's `nodespaced-pro.exe`
-/// would otherwise never be matched and killed before launching the updated
-/// binary.
+/// Targets the active profile's image name (`DaemonProfile::image_name`)
+/// rather than a hardcoded literal — a daemon whose binary is not the
+/// community one would otherwise never be matched and killed before launching
+/// the updated binary.
 #[cfg(windows)]
 async fn kill_running_daemon(socket_path: &Path) {
     if !should_attempt_kill(&check_daemon_socket(socket_path).await) {
         return;
     }
 
-    let image_name = daemon_image_name_for(is_pro_build());
+    let image_name = daemon_profile::active().image_name();
     let _ = std::process::Command::new("taskkill")
         .args(["/F", "/IM", &image_name])
         .output();
@@ -1056,7 +1062,7 @@ pub(crate) fn bundled_sidecar_name(name: &str) -> String {
 /// `~/.nodespace/bin/` after extraction — the single source of truth both
 /// `extract_sidecar_if_changed` (what gets written there) and
 /// `ensure_daemon_running` (what `spawn_daemon_windows` launches and
-/// `kill_running_daemon`'s `taskkill /IM` targets, via `daemon_image_name_for`)
+/// `kill_running_daemon`'s `taskkill /IM` targets, via `DaemonProfile::image_name`)
 /// must agree on.
 ///
 /// Routes through [`bundled_sidecar_name`] rather than joining `name`
@@ -1151,7 +1157,12 @@ fn launch_agents_dir(home: &Path) -> PathBuf {
 /// This fix is specifically about the path that IS wired end to end: a
 /// deliberate tray "Quit."
 #[cfg(target_os = "macos")]
-fn write_plist(home: &Path, plist_path: &Path, daemon_bin: &Path) -> Result<()> {
+fn write_plist(
+    home: &Path,
+    plist_path: &Path,
+    daemon_bin: &Path,
+    profile: &DaemonProfile,
+) -> Result<()> {
     let launch_agents = plist_path
         .parent()
         .context("plist_path has no parent directory")?;
@@ -1170,22 +1181,19 @@ fn write_plist(home: &Path, plist_path: &Path, daemon_bin: &Path) -> Result<()> 
 
     let ui_binary = xml_escape(&current_exe_canonical()?.to_string_lossy());
 
-    // Pro edition: inject the deployment-wide Supabase endpoint the sync daemon
-    // needs. Only the project URL and publishable anon key are baked in — both are
-    // deployment-wide, not tenant-specific. The tenant a database syncs to (schema +
-    // collection) is bound per database at runtime and is deliberately NOT injected
-    // here (ADR-053 per-database cloud sync). Both values are XML-safe (JWT chars /
-    // URLs contain no `<>&`). Empty for a community build.
-    let pro_env = if is_pro_build() {
-        format!(
-            "        <key>NODESPACED_PRO_SUPABASE_URL</key>\n        <string>{url}</string>\n\
-             \x20       <key>NODESPACED_PRO_ANON_KEY</key>\n        <string>{key}</string>\n",
-            url = xml_escape(PRO_SUPABASE_URL.unwrap_or_default()),
-            key = xml_escape(PRO_ANON_KEY.unwrap_or_default()),
-        )
-    } else {
-        String::new()
-    };
+    // The profile's extra environment, rendered as `<key>`/`<string>` pairs after
+    // core's own two. Empty for a profile with none.
+    let service_env: String = profile
+        .service_env
+        .iter()
+        .map(|(key, value)| {
+            format!(
+                "        <key>{}</key>\n        <string>{}</string>\n",
+                xml_escape(key),
+                xml_escape(value)
+            )
+        })
+        .collect();
 
     let plist = format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -1205,7 +1213,7 @@ fn write_plist(home: &Path, plist_path: &Path, daemon_bin: &Path) -> Result<()> 
         <string>{socket}</string>
         <key>NODESPACE_UI_BINARY</key>
         <string>{ui_binary}</string>
-{pro_env}    </dict>
+{service_env}    </dict>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
@@ -1225,7 +1233,7 @@ fn write_plist(home: &Path, plist_path: &Path, daemon_bin: &Path) -> Result<()> 
         tray_flag = DAEMON_TRAY_FLAG,
         socket = socket_path,
         ui_binary = ui_binary,
-        pro_env = pro_env,
+        service_env = service_env,
         log_out = log_out,
         log_err = log_err,
     );
@@ -1330,8 +1338,8 @@ fn bootstrap_launchd_agent(plist_path: &Path) -> Result<()> {
     // an override, never the sole copy of a fact both processes must agree on.
     //
     // (`NODESPACED_DB_PATH` does not appear in this plist at all -- only
-    // `NODESPACED_SOCKET`, `NODESPACE_UI_BINARY` and the Pro pair -- so there
-    // is nothing for a restart to drop.)
+    // `NODESPACED_SOCKET`, `NODESPACE_UI_BINARY` and whatever the profile's
+    // `service_env` adds -- so there is nothing for a restart to drop.)
     let retry_stderr = String::from_utf8_lossy(&retry.stderr);
     tracing::warn!(
         "launchctl bootstrap retry failed ({}); attempting kickstart",
@@ -1736,8 +1744,7 @@ fn log_file_oversized(path: &Path) -> bool {
 /// Split out from [`check_and_rotate_live_logs`] so this branching — the part
 /// that actually decides whether to kill and restart the daemon — is
 /// unit-testable without touching a real socket or spawning a real process,
-/// the same reason [`daemon_binary_name_for`] is split from
-/// [`daemon_binary_name`].
+/// the same reason `DaemonProfile::image_name` is a pure method.
 ///
 /// Only `Healthy` proceeds: `NotRunning`/`Starting` means nothing is
 /// currently holding the file open, so there is nothing to coordinate a
@@ -2354,8 +2361,8 @@ mod macos_codesign_tests {
 /// checking the plist parses.
 #[cfg(all(test, target_os = "macos"))]
 mod macos_plist_keepalive_tests {
-    use super::{write_plist, DAEMON_TRAY_FLAG};
-    use std::path::PathBuf;
+    use super::{write_plist, DaemonProfile, DAEMON_TRAY_FLAG};
+    use std::path::{Path, PathBuf};
 
     fn scratch_dir(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
@@ -2373,7 +2380,8 @@ mod macos_plist_keepalive_tests {
         let plist_path = home.join("Library/LaunchAgents/app.nodespace.daemon.plist");
         let daemon_bin = home.join("bin/nodespaced");
 
-        write_plist(&home, &plist_path, &daemon_bin).expect("write_plist should succeed");
+        write_plist(&home, &plist_path, &daemon_bin, &DaemonProfile::community())
+            .expect("write_plist should succeed");
         let contents = std::fs::read_to_string(&plist_path).expect("plist should be written");
 
         assert!(
@@ -2406,7 +2414,8 @@ mod macos_plist_keepalive_tests {
         let plist_path = home.join("Library/LaunchAgents/app.nodespace.daemon.plist");
         let daemon_bin = home.join("bin/nodespaced");
 
-        write_plist(&home, &plist_path, &daemon_bin).expect("write_plist should succeed");
+        write_plist(&home, &plist_path, &daemon_bin, &DaemonProfile::community())
+            .expect("write_plist should succeed");
         let contents = std::fs::read_to_string(&plist_path).expect("plist should be written");
 
         let expected = std::env::current_exe()
@@ -2436,7 +2445,8 @@ mod macos_plist_keepalive_tests {
         let plist_path = home.join("Library/LaunchAgents/app.nodespace.daemon.plist");
         let daemon_bin = home.join("bin/nodespaced");
 
-        write_plist(&home, &plist_path, &daemon_bin).expect("write_plist should succeed");
+        write_plist(&home, &plist_path, &daemon_bin, &DaemonProfile::community())
+            .expect("write_plist should succeed");
         let contents = std::fs::read_to_string(&plist_path).expect("plist should be written");
 
         assert!(
@@ -2457,7 +2467,8 @@ mod macos_plist_keepalive_tests {
         let plist_path = home.join("Library/LaunchAgents/app.nodespace.daemon.plist");
         let daemon_bin = home.join("bin/nodespaced");
 
-        write_plist(&home, &plist_path, &daemon_bin).expect("write_plist should succeed");
+        write_plist(&home, &plist_path, &daemon_bin, &DaemonProfile::community())
+            .expect("write_plist should succeed");
         assert!(
             plist_path.exists(),
             "write_plist should have created the file"
@@ -2468,11 +2479,127 @@ mod macos_plist_keepalive_tests {
         // as a launchd job -- a lightweight correctness check beyond string
         // matching, catching e.g. an unbalanced <dict>/</dict> from the
         // KeepAlive change above.
-        let status = std::process::Command::new("plutil")
+        assert!(
+            plutil_lints(&plist_path),
+            "written plist must be valid XML/plist"
+        );
+
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    fn plutil_lints(plist_path: &Path) -> bool {
+        std::process::Command::new("plutil")
             .args(["-lint", &plist_path.to_string_lossy()])
             .status()
+            .expect("plutil should be available on macOS")
+            .success()
+    }
+
+    /// The plist as `plutil` parses it, as JSON: what launchd will actually see,
+    /// rather than the text this module wrote.
+    fn parsed_plist(plist_path: &Path) -> serde_json::Value {
+        let output = std::process::Command::new("plutil")
+            .args(["-convert", "json", "-o", "-", &plist_path.to_string_lossy()])
+            .output()
             .expect("plutil should be available on macOS");
-        assert!(status.success(), "written plist must be valid XML/plist");
+        assert!(
+            output.status.success(),
+            "plutil must parse the written plist"
+        );
+        serde_json::from_slice(&output.stdout).expect("plutil emits JSON")
+    }
+
+    fn write_with_profile(tag: &str, profile: &DaemonProfile) -> (PathBuf, PathBuf, String) {
+        let home = scratch_dir(tag);
+        let plist_path = home.join("Library/LaunchAgents/app.nodespace.daemon.plist");
+        let daemon_bin = home.join("bin/nodespaced");
+
+        write_plist(&home, &plist_path, &daemon_bin, profile).expect("write_plist should succeed");
+        let contents = std::fs::read_to_string(&plist_path).expect("plist should be written");
+        (home, plist_path, contents)
+    }
+
+    /// A profile with no extra environment must leave the daemon's environment
+    /// exactly as it was before profiles existed: the socket it binds and the
+    /// GUI its tray relaunches, nothing else.
+    #[test]
+    fn community_plist_environment_holds_only_the_two_core_variables() {
+        let (home, plist_path, _contents) =
+            write_with_profile("envdict", &DaemonProfile::community());
+
+        let plist = parsed_plist(&plist_path);
+        let env = plist["EnvironmentVariables"]
+            .as_object()
+            .expect("EnvironmentVariables is a dict");
+        let mut keys: Vec<&str> = env.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(keys, ["NODESPACED_SOCKET", "NODESPACE_UI_BINARY"]);
+
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// The profile's variables land after core's own, in the order given, one
+    /// `<key>`/`<string>` pair each at the same indentation, and the rest of
+    /// the plist follows unchanged.
+    #[test]
+    fn service_env_renders_after_the_core_variables_in_order() {
+        let profile = DaemonProfile {
+            service_env: vec![
+                ("EXTRA_ONE".to_string(), "one".to_string()),
+                ("EXTRA_TWO".to_string(), "two".to_string()),
+            ],
+            ..DaemonProfile::community()
+        };
+        let (home, plist_path, contents) = write_with_profile("envorder", &profile);
+
+        let ui_binary = std::env::current_exe()
+            .expect("current_exe")
+            .canonicalize()
+            .expect("canonicalize");
+        let expected = format!(
+            "        <key>NODESPACE_UI_BINARY</key>\n        <string>{}</string>\n\
+             \x20       <key>EXTRA_ONE</key>\n        <string>one</string>\n\
+             \x20       <key>EXTRA_TWO</key>\n        <string>two</string>\n\
+             \x20   </dict>\n    <key>RunAtLoad</key>",
+            ui_binary.display()
+        );
+        assert!(
+            contents.contains(&expected),
+            "service_env must follow NODESPACE_UI_BINARY as ordered key/string pairs: {contents}"
+        );
+        assert!(plutil_lints(&plist_path));
+
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// Both halves of a pair pass through `xml_escape`. A value or key holding
+    /// `<`, `&` or `>` would otherwise break the document or, worse, inject
+    /// markup into the launchd job definition.
+    #[test]
+    fn service_env_keys_and_values_are_xml_escaped() {
+        let profile = DaemonProfile {
+            service_env: vec![("KEY&<>".to_string(), "a<b&c>d".to_string())],
+            ..DaemonProfile::community()
+        };
+        let (home, plist_path, contents) = write_with_profile("envescape", &profile);
+
+        assert!(
+            contents.contains("<key>KEY&amp;&lt;&gt;</key>"),
+            "the key must be escaped: {contents}"
+        );
+        assert!(
+            contents.contains("<string>a&lt;b&amp;c&gt;d</string>"),
+            "the value must be escaped: {contents}"
+        );
+        assert!(
+            plutil_lints(&plist_path),
+            "an escaped service_env must still be a valid plist"
+        );
+        let plist = parsed_plist(&plist_path);
+        assert_eq!(
+            plist["EnvironmentVariables"]["KEY&<>"], "a<b&c>d",
+            "launchd must read back the original, unescaped value"
+        );
 
         let _ = std::fs::remove_dir_all(&home);
     }
@@ -2660,11 +2787,11 @@ mod windows_daemon_stdio_tests {
     }
 }
 
-/// Unit coverage for the edition-selection and image-name-formatting logic
-/// `kill_running_daemon` (Windows) consumes: `daemon_binary_name_for` and
-/// `daemon_image_name_for` are pure functions that take edition as a
-/// parameter, so both editions' exact output strings are pinned here even
-/// though a real build only ever bakes in one edition via `is_pro_build()`.
+/// Unit coverage for the image-name formatting `kill_running_daemon` (Windows)
+/// consumes: `DaemonProfile::image_name` is a pure method, so its exact output
+/// is pinned on any platform (see `daemon_profile`'s own tests), and this
+/// asserts the image name the Windows kill paths use cannot drift from the
+/// binary name every other launcher path installs and spawns.
 ///
 /// This does NOT exercise `kill_running_daemon` itself or the actual
 /// `taskkill` invocation — that remains compile-check-only against the
@@ -2672,18 +2799,95 @@ mod windows_daemon_stdio_tests {
 /// for why: no macOS/Linux equivalent exists to run it against).
 #[cfg(test)]
 mod windows_taskkill_image_name_tests {
-    use super::{daemon_binary_name_for, daemon_image_name_for};
+    use super::{daemon_binary_name, daemon_profile};
 
     #[test]
-    fn community_edition_image_name_matches_community_binary() {
-        assert_eq!(daemon_binary_name_for(false), "nodespaced");
-        assert_eq!(daemon_image_name_for(false), "nodespaced.exe");
+    fn active_profile_image_name_matches_the_installed_binary_name() {
+        assert_eq!(
+            daemon_profile::active().image_name(),
+            format!("{}.exe", daemon_binary_name())
+        );
+    }
+}
+
+/// What the build's compile-time edition values select. A real build bakes in
+/// one edition, so `profile_for_build_env` takes them as parameters and both
+/// outcomes are pinned here.
+#[cfg(test)]
+mod daemon_profile_selection_tests {
+    use super::{
+        daemon_profile, is_pro_build, profile_for_build_env, profile_for_this_build, DaemonProfile,
+    };
+
+    fn env(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
+        pairs
+            .iter()
+            .map(|(key, value)| (key.to_string(), value.to_string()))
+            .collect()
     }
 
     #[test]
-    fn pro_edition_image_name_matches_pro_binary() {
-        assert_eq!(daemon_binary_name_for(true), "nodespaced-pro");
-        assert_eq!(daemon_image_name_for(true), "nodespaced-pro.exe");
+    fn no_edition_url_selects_the_community_profile() {
+        assert_eq!(
+            profile_for_build_env(None, None),
+            DaemonProfile::community()
+        );
+    }
+
+    /// The URL alone decides: a key without a URL is not an edition.
+    #[test]
+    fn a_key_without_a_url_still_selects_the_community_profile() {
+        assert_eq!(
+            profile_for_build_env(None, Some("test-key")),
+            DaemonProfile::community()
+        );
+    }
+
+    #[test]
+    fn edition_values_select_the_edition_daemon_environment_and_product() {
+        let profile = profile_for_build_env(Some("https://example.invalid"), Some("test-key"));
+
+        assert_eq!(profile.binary_name, "nodespaced-pro");
+        assert_eq!(
+            profile.service_env,
+            env(&[
+                ("NODESPACED_PRO_SUPABASE_URL", "https://example.invalid"),
+                ("NODESPACED_PRO_ANON_KEY", "test-key"),
+            ]),
+            "the URL comes first, then the key"
+        );
+        assert_eq!(profile.product, "pro");
+    }
+
+    #[test]
+    fn a_missing_anon_key_defaults_to_empty() {
+        let profile = profile_for_build_env(Some("https://example.invalid"), None);
+
+        assert_eq!(
+            profile.service_env,
+            env(&[
+                ("NODESPACED_PRO_SUPABASE_URL", "https://example.invalid"),
+                ("NODESPACED_PRO_ANON_KEY", ""),
+            ])
+        );
+    }
+
+    /// Nothing installs a profile yet, so what every daemon-identity read
+    /// sees is the build default.
+    #[test]
+    fn the_active_profile_starts_as_the_build_default() {
+        assert_eq!(daemon_profile::active(), &profile_for_this_build());
+    }
+
+    /// The daemon selection and the identity selection (label, socket, pid
+    /// file, marker) read the same compile-time value; they must not disagree
+    /// about which product this build is.
+    #[test]
+    fn the_profile_and_the_identity_selection_agree_on_the_edition() {
+        assert_eq!(
+            profile_for_this_build() != DaemonProfile::community(),
+            is_pro_build()
+        );
     }
 }
 
@@ -2784,13 +2988,14 @@ mod sidecar_path_tests {
         }
     }
 
-    /// Same coverage for the Pro-edition binary name and the CLI binary name
-    /// — every caller of `extract_sidecar_if_changed`/`ensure_daemon_running`
-    /// gets the same treatment, not just the community daemon.
+    /// Same coverage for a daemon binary name other than the community one and
+    /// the CLI binary name — every caller of
+    /// `extract_sidecar_if_changed`/`ensure_daemon_running` gets the same
+    /// treatment, not just the community daemon.
     #[test]
-    fn sidecar_install_path_covers_pro_daemon_and_cli_names() {
+    fn sidecar_install_path_covers_any_daemon_and_cli_names() {
         let bin_dir = Path::new("/home/user/.nodespace/bin");
-        for name in ["nodespaced-pro", "nodespace"] {
+        for name in ["custom-daemon", "nodespace"] {
             let installed = sidecar_install_path(bin_dir, name);
             let expected = if cfg!(windows) {
                 format!("/home/user/.nodespace/bin/{name}.exe")
