@@ -241,10 +241,11 @@ describe("isProNamedFile", () => {
 describe("listScannedFiles", () => {
   test("lists tracked files and untracked files that are not ignored", () => {
     initRepo();
-    write("packages/a/tracked.ts", "x\n");
-    expect(git(dir, "add", "packages/a/tracked.ts").status).toBe(0);
-    write("packages/a/untracked.ts", "x\n");
-    expect(listScannedFiles(dir)).toEqual(["packages/a/tracked.ts", "packages/a/untracked.ts"]);
+    write("packages/a/z-tracked.ts", "x\n");
+    expect(git(dir, "add", "packages/a/z-tracked.ts").status).toBe(0);
+    write("packages/a/a-untracked.ts", "x\n");
+    // Sorted, so the order does not depend on which files git has indexed.
+    expect(listScannedFiles(dir)).toEqual(["packages/a/a-untracked.ts", "packages/a/z-tracked.ts"]);
   });
 
   test("leaves out gitignored paths: a directory, and an extensionless binary name", () => {
