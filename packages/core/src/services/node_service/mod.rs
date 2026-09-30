@@ -8827,7 +8827,7 @@ mod tests {
     #[tokio::test]
     async fn batch_keeps_writes_from_different_origins_apart() {
         let (service, _temp) = create_test_service().await;
-        let sync = service.with_client(crate::db::events::SYNC_SERVICE_CLIENT_ID);
+        let sync = service.with_client(crate::db::events::REPLICATED_APPLY_CLIENT_ID);
         let mut rx = service.subscribe_to_events();
         let node = Node::new("text".to_string(), "synced".to_string(), json!({}));
 
@@ -8850,12 +8850,12 @@ mod tests {
         assert!(matches!(flushed[0].event, DomainEvent::NodeCreated { .. }));
         assert_eq!(
             flushed[0].metadata.source_client_id.as_deref(),
-            Some(crate::db::events::SYNC_SERVICE_CLIENT_ID)
+            Some(crate::db::events::REPLICATED_APPLY_CLIENT_ID)
         );
         assert!(matches!(flushed[1].event, DomainEvent::NodeUpdated { .. }));
         assert_ne!(
             flushed[1].metadata.source_client_id.as_deref(),
-            Some(crate::db::events::SYNC_SERVICE_CLIENT_ID)
+            Some(crate::db::events::REPLICATED_APPLY_CLIENT_ID)
         );
     }
 
@@ -8865,7 +8865,7 @@ mod tests {
     #[tokio::test]
     async fn batch_flushes_the_newest_write_last_across_origins() {
         let (service, _temp) = create_test_service().await;
-        let sync = service.with_client(crate::db::events::SYNC_SERVICE_CLIENT_ID);
+        let sync = service.with_client(crate::db::events::REPLICATED_APPLY_CLIENT_ID);
         let mut rx = service.subscribe_to_events();
         let v1 = Node::new("text".to_string(), "v1".to_string(), json!({}));
         let mut v2 = v1.clone();

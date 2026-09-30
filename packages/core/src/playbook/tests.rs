@@ -1784,19 +1784,19 @@ mod playbook_tests {
     }
 
     // -----------------------------------------------------------------------
-    // ADR-073: local-origin gating (`is_sync_originated`)
+    // ADR-073: local-origin gating (`is_replicated_apply`)
     // -----------------------------------------------------------------------
     //
     // Unit-level coverage of the pure filter function. The real safety
-    // property — that a sync-originated event never reaches trigger
+    // property — that a replicated-apply event never reaches trigger
     // evaluation inside a running engine — is verified end-to-end in
     // `packages/core/tests/it/playbook_engine_integration_test.rs`, which drives
     // a real `PlaybookEngine::start()` against a real broadcast channel.
 
     #[test]
-    fn is_sync_originated_true_for_reserved_sync_client_id() {
-        use super::super::engine::is_sync_originated;
-        use crate::db::events::SYNC_SERVICE_CLIENT_ID;
+    fn is_replicated_apply_true_for_reserved_client_id() {
+        use super::super::engine::is_replicated_apply;
+        use crate::db::events::REPLICATED_APPLY_CLIENT_ID;
 
         let envelope = EventEnvelope {
             event: DomainEvent::NodeCreated {
@@ -1804,17 +1804,17 @@ mod playbook_tests {
                 node_type: "task".to_string(),
             },
             metadata: EventMetadata {
-                source_client_id: Some(SYNC_SERVICE_CLIENT_ID.to_string()),
+                source_client_id: Some(REPLICATED_APPLY_CLIENT_ID.to_string()),
                 playbook_context: None,
             },
         };
 
-        assert!(is_sync_originated(&envelope));
+        assert!(is_replicated_apply(&envelope));
     }
 
     #[test]
-    fn is_sync_originated_false_for_local_client_ids_and_none() {
-        use super::super::engine::is_sync_originated;
+    fn is_replicated_apply_false_for_local_client_ids_and_none() {
+        use super::super::engine::is_replicated_apply;
 
         for source in [None, Some("tauri-main"), Some("mcp-client-123"), Some("")] {
             let envelope = EventEnvelope {
@@ -1828,16 +1828,16 @@ mod playbook_tests {
                 },
             };
             assert!(
-                !is_sync_originated(&envelope),
-                "source_client_id {:?} must NOT be treated as sync-originated",
+                !is_replicated_apply(&envelope),
+                "source_client_id {:?} must NOT be treated as a replicated apply",
                 source
             );
         }
     }
 
     #[test]
-    fn is_sync_originated_is_an_exact_match_not_a_substring_check() {
-        use super::super::engine::is_sync_originated;
+    fn is_replicated_apply_is_an_exact_match_not_a_substring_check() {
+        use super::super::engine::is_replicated_apply;
 
         // A client id that merely contains the reserved token must not match —
         // the gate compares the whole `source_client_id`, not a substring.
@@ -1852,6 +1852,6 @@ mod playbook_tests {
             },
         };
 
-        assert!(!is_sync_originated(&envelope));
+        assert!(!is_replicated_apply(&envelope));
     }
 }

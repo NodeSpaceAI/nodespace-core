@@ -459,7 +459,7 @@ impl PlaybookEngine {
         // authored on another device is data like any other and must still
         // be installed locally once synced in. What IS gated is trigger
         // evaluation against a mutation: an event whose origin is the
-        // sync-apply path (tagged with `SYNC_SERVICE_CLIENT_ID`, per
+        // replicated-apply path (tagged with `REPLICATED_APPLY_CLIENT_ID`, per
         // ADR-027's existing `source_client_id` convention) is structurally
         // excluded here, before any `TriggerKey` lookup, so a reconnecting
         // device can never replay its sync backlog as live rule firings.
@@ -470,10 +470,10 @@ impl PlaybookEngine {
         // fail-closed guarantee depends on ADR-060 §2/§7 mechanisms that are
         // out of scope here. It only prevents reactive (and invariant) rules
         // from firing against a sync-replayed event at all.
-        if is_sync_originated(&envelope) {
+        if is_replicated_apply(&envelope) {
             debug!(
                 node_event = ?trigger_node_id(&envelope.event),
-                "Skipping trigger evaluation for sync-originated event"
+                "Skipping trigger evaluation for replicated-apply event"
             );
             // ADR-060 §7: repair-and-log. This IS the mechanism that makes
             // `RuleClass::Invariant` rules sync-safe for a node received
@@ -608,7 +608,7 @@ impl PlaybookEngine {
 
     /// Repair-and-log for a node received via sync (ADR-060 §7).
     ///
-    /// `event` is the just-applied sync-originated event. Only
+    /// `event` is the just-applied replicated-apply event. Only
     /// `NodeCreated` and `NodeUpdated` are repaired; any other event is a
     /// no-op. Rules are matched with `trigger_keys_for_event` — the same
     /// derivation the local pre-commit update path uses — so a received
@@ -1509,20 +1509,22 @@ pub(crate) async fn rule_processor_loop(
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// ADR-073 local-origin gate: true when `envelope` was applied via the
-/// sync-apply path rather than originating on this device.
+/// ADR-073 local-origin gate: true when `envelope` is a replicated apply (a
+/// write applied from another device) rather than a mutation that originated
+/// on this device.
 ///
-/// Deliberately a denylist (match the reserved sync origin), not an
-/// allowlist of known local client ids: local writes arrive tagged with many
+/// Deliberately a denylist (match the reserved replicated-apply origin), not
+/// an allowlist of known local client ids: local writes arrive tagged with many
 /// different client ids (Tauri windows, MCP clients, CLI sessions, or none at
 /// all), and enumerating them would be both impractical and the wrong
 /// direction to fail in — an unrecognized *local* id would be silently
-/// dropped instead of a genuinely sync-applied one slipping through. This
+/// dropped instead of a genuinely replicated one slipping through. This
 /// mirrors the existing `passes_origin_filter` precedent in
 /// `services::node_service` (`excluded_event_origin`), which excludes by
 /// origin match for the same reason.
-pub(crate) fn is_sync_originated(envelope: &EventEnvelope) -> bool {
-    envelope.metadata.source_client_id.as_deref() == Some(crate::db::events::SYNC_SERVICE_CLIENT_ID)
+pub(crate) fn is_replicated_apply(envelope: &EventEnvelope) -> bool {
+    envelope.metadata.source_client_id.as_deref()
+        == Some(crate::db::events::REPLICATED_APPLY_CLIENT_ID)
 }
 
 /// The chain depth to enforce `MAX_CHAIN_DEPTH` against for `work_item`
