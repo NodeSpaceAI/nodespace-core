@@ -364,7 +364,8 @@ function stripNodePrefix(id: string): string {
 /**
  * Initialize Tauri real-time synchronization event listeners
  *
- * Sets up listeners for logging/debugging sync events.
+ * Registers listeners for backend node and relationship events and applies
+ * them to the frontend stores.
  * Should be called once during app initialization.
  *
  * @returns Promise resolving when all listeners are registered
