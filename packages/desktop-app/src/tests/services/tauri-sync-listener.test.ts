@@ -199,8 +199,6 @@ describe('TauriSyncListener', () => {
       expect(mockEventListeners.has('relationship:created')).toBe(true);
       expect(mockEventListeners.has('relationship:updated')).toBe(true);
       expect(mockEventListeners.has('relationship:deleted')).toBe(true);
-      expect(mockEventListeners.has('sync:error')).toBe(true);
-      expect(mockEventListeners.has('sync:status')).toBe(true);
     });
   });
 
@@ -1258,26 +1256,6 @@ describe('TauriSyncListener', () => {
       // Should not crash, node should not be in store
       await new Promise((resolve) => setTimeout(resolve, 50));
       expect(sharedNodeStore.hasNode('nonexistent')).toBe(false);
-    });
-
-    it('should handle sync:error events', async () => {
-      // Should not crash
-      expect(() => {
-        emitTauriEvent('sync:error', {
-          message: 'Database connection lost',
-          errorType: 'connection'
-        });
-      }).not.toThrow();
-    });
-
-    it('should handle sync:status events', async () => {
-      // Should not crash
-      expect(() => {
-        emitTauriEvent('sync:status', {
-          status: 'connected',
-          reason: 'Initial connection'
-        });
-      }).not.toThrow();
     });
   });
 

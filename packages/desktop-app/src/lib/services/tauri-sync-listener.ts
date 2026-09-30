@@ -535,20 +535,6 @@ export async function initializeTauriSyncListeners(): Promise<void> {
       }
     });
 
-    // Listen for synchronization errors
-    await listen<Record<string, unknown>>('sync:error', (event) => {
-      const message = String(event.payload.message);
-      const errorType = String(event.payload.errorType);
-      log.error(`Sync error (${errorType}): ${message}`);
-    });
-
-    // Listen for synchronization status changes
-    await listen<Record<string, unknown>>('sync:status', (event) => {
-      const status = String(event.payload.status);
-      const reason = event.payload.reason ? String(event.payload.reason) : '';
-      log.info(`Sync status: ${status}${reason ? ` (${reason})` : ''}`);
-    });
-
     log.info('Real-time sync listeners initialized successfully');
   } catch (error) {
     log.error('Failed to initialize sync listeners', error);
