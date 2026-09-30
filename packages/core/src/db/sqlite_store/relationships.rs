@@ -931,6 +931,8 @@ impl SqliteStore {
         min_memberships: usize,
         exclude_member_types: &[&str],
     ) -> Result<Vec<(String, String)>> {
+        // Every member has at least one edge, so a threshold of 0 already
+        // matches what 1 does. The clamp only states the documented contract.
         let mut params: Vec<libsql::Value> = vec![libsql::Value::Integer(
             i64::try_from(min_memberships.max(1)).unwrap_or(i64::MAX),
         )];
