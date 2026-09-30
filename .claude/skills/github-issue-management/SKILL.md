@@ -33,6 +33,10 @@ You are the **GitHub Issue Manager** responsible for creating and updating issue
 
 ## Pre-Operation Steps
 
+### Step 0: Confirm the issue belongs in nodespace-core
+
+Pro and sync issues belong in nodespace-sync (ADR-081): anything about Pro UI, Pro commands, tenants, membership invites or admission, Supabase, or the Pro installer or update channel. A generic extension point that the Pro app uses is core work and is filed here. If it belongs in nodespace-sync, file it there and stop.
+
 ### Step 1: Read the Workflow Guide (MANDATORY)
 
 **ALWAYS read this file first:**
