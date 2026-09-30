@@ -20,7 +20,10 @@
 //!
 //! The frontend renders the surfacing (a non-blocking banner) by listening for the
 //! [`UPDATE_AVAILABLE_EVENT`] emitted at startup, or by invoking the
-//! [`check_for_update_command`] Tauri command directly.
+//! [`check_for_update_command`] Tauri command directly. The payload also names
+//! where to download the update ([`UpdateStatus::download_url`]), so the banner
+//! opens whatever location the source that found the update gave it; a source that
+//! names none leaves it `None` and the banner offers no download.
 
 use serde::Serialize;
 use std::time::Duration;
@@ -30,6 +33,9 @@ use std::time::Duration;
 /// install.
 const LATEST_RELEASE_URL: &str =
     "https://api.github.com/repos/NodeSpaceAI/nodespace-core/releases/latest";
+
+/// The page a user of the public source downloads a new release from.
+const RELEASES_PAGE_URL: &str = "https://github.com/NodeSpaceAI/nodespace-core/releases/latest";
 
 /// Pro update source: the cloud-worker proxy that returns the latest **private**
 /// nodespace-sync release version (the Pro app can't read that private repo
@@ -54,12 +60,15 @@ pub const UPDATE_AVAILABLE_EVENT: &str = "update://available";
 /// The outcome of an update check. `latest` is `None` when the check could not
 /// determine a published version (offline, timeout, no release, bad payload);
 /// `update_available` is only ever `true` when a version was fetched AND parses as
-/// strictly newer than the running version.
+/// strictly newer than the running version. `download_url` is where the source that
+/// found the update sends the user to get it; it is `None` when there is no update
+/// or the source names no location, and serializes as `null`.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct UpdateStatus {
     pub current: String,
     pub latest: Option<String>,
     pub update_available: bool,
+    pub download_url: Option<String>,
 }
 
 impl UpdateStatus {
@@ -70,6 +79,7 @@ impl UpdateStatus {
             current: current.to_string(),
             latest: None,
             update_available: false,
+            download_url: None,
         }
     }
 }
@@ -107,29 +117,38 @@ fn latest_tag_from_json(body: &str) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-/// Check whether a newer release exists than `current` (the running app version,
-/// passed in from Tauri's `PackageInfo`). Best-effort: every failure path resolves
-/// to [`UpdateStatus::no_update`], so the caller can treat the result uniformly and
-/// startup is never blocked or surfaced an error. Returns the current version
-/// always, the latest and the flag only when a newer version was positively
-/// determined.
-pub async fn check_for_update(current: &str) -> UpdateStatus {
-    // A Pro build tracks the PRIVATE nodespace-sync releases through the cloud-worker
-    // proxy (it can't read that repo directly); a community build tracks the public
-    // core repo. Either way the comparison and the surfaced banner are identical.
-    let latest = if crate::daemon_setup::is_pro_build() {
-        fetch_pro_latest_version().await
-    } else {
-        fetch_latest_tag().await
-    };
+/// Compare the running version with what a source reported. An update carries the
+/// source's `download_url`; anything else (no version, garbage, equal or older)
+/// is [`UpdateStatus::no_update`] and carries none, even when the source has one.
+fn status_from(current: &str, latest: Option<String>, download_url: Option<&str>) -> UpdateStatus {
     match latest {
         Some(tag) if update_available(current, &tag) => UpdateStatus {
             current: current.to_string(),
             latest: Some(tag),
             update_available: true,
+            download_url: download_url.map(str::to_string),
         },
         _ => UpdateStatus::no_update(current),
     }
+}
+
+/// Check whether a newer release exists than `current` (the running app version,
+/// passed in from Tauri's `PackageInfo`). Best-effort: every failure path resolves
+/// to [`UpdateStatus::no_update`], so the caller can treat the result uniformly and
+/// startup is never blocked or surfaced an error. Returns the current version
+/// always; the latest, the flag and the source's download location only when a
+/// newer version was positively determined.
+pub async fn check_for_update(current: &str) -> UpdateStatus {
+    // A Pro build tracks the PRIVATE nodespace-sync releases through the cloud-worker
+    // proxy (it can't read that repo directly); a community build tracks the public
+    // core repo. The comparison is the same either way; only the download location
+    // differs: the public source names its releases page, the other names none.
+    let (latest, download_url) = if crate::daemon_setup::is_pro_build() {
+        (fetch_pro_latest_version().await, None)
+    } else {
+        (fetch_latest_tag().await, Some(RELEASES_PAGE_URL))
+    };
+    status_from(current, latest, download_url)
 }
 
 /// Fetch the latest release tag from GitHub, swallowing every error to `None`.
@@ -288,5 +307,52 @@ mod tests {
         assert_eq!(s.current, "0.2.0");
         assert_eq!(s.latest, None);
         assert!(!s.update_available);
+        assert_eq!(s.download_url, None);
+    }
+
+    #[test]
+    fn an_update_carries_its_sources_download_url() {
+        let s = status_from(
+            "0.2.0",
+            Some("v0.3.0".to_string()),
+            Some("https://example.test/get"),
+        );
+        assert!(s.update_available);
+        assert_eq!(s.latest.as_deref(), Some("v0.3.0"));
+        assert_eq!(s.download_url.as_deref(), Some("https://example.test/get"));
+    }
+
+    #[test]
+    fn no_update_carries_no_download_url_even_when_the_source_has_one() {
+        let url = Some("https://example.test/get");
+        // Equal, older, garbage and absent versions are all "no update".
+        for latest in [Some("0.2.0"), Some("0.1.0"), Some("latest"), None] {
+            let s = status_from("0.2.0", latest.map(str::to_string), url);
+            assert!(!s.update_available, "latest = {latest:?}");
+            assert_eq!(s.download_url, None, "latest = {latest:?}");
+        }
+    }
+
+    #[test]
+    fn an_update_from_a_source_without_a_download_url_has_none() {
+        let s = status_from("0.2.0", Some("0.3.0".to_string()), None);
+        assert!(s.update_available);
+        assert_eq!(s.download_url, None);
+    }
+
+    #[test]
+    fn download_url_serializes_as_a_key_that_is_null_when_absent() {
+        // The frontend reads `download_url` off the wire; a missing key and a
+        // null value must both mean "no download", but the shape stays fixed.
+        let with = serde_json::to_value(status_from(
+            "0.2.0",
+            Some("0.3.0".to_string()),
+            Some("https://example.test/get"),
+        ))
+        .unwrap();
+        assert_eq!(with["download_url"], "https://example.test/get");
+
+        let without = serde_json::to_value(UpdateStatus::no_update("0.2.0")).unwrap();
+        assert!(without.get("download_url").is_some_and(|v| v.is_null()));
     }
 }
