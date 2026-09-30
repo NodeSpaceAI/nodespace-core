@@ -21,6 +21,10 @@ pub mod services;
 // see watcher.rs module docs for activation gating.
 pub mod watcher;
 
+// Which daemon binary and service environment this app installs and starts
+#[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+pub mod daemon_profile;
+
 // Daemon lifecycle: launchd (macOS), systemd (Linux), direct spawn (Windows)
 #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
 pub mod daemon_setup;
