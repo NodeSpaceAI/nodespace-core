@@ -99,8 +99,7 @@ pub(crate) fn is_pro_build() -> bool {
 /// sync daemon needs. Only the project URL and publishable anon key are baked in
 /// — both are deployment-wide, not tenant-specific. The tenant a database syncs
 /// to (schema + collection) is bound per database at runtime and is deliberately
-/// NOT injected here (ADR-053 per-database cloud sync). Both values are XML-safe
-/// (JWT chars / URLs contain no `<>&`).
+/// NOT injected here (ADR-053 per-database cloud sync).
 fn profile_for_build_env(
     endpoint_url: Option<&'static str>,
     anon_key: Option<&'static str>,
@@ -2790,11 +2789,12 @@ mod windows_daemon_stdio_tests {
 /// Unit coverage for the image-name formatting `kill_running_daemon` (Windows)
 /// consumes: `DaemonProfile::image_name` is a pure method, so its exact output
 /// is pinned on any platform (see `daemon_profile`'s own tests), and this
-/// asserts the image name the Windows kill paths use cannot drift from the
-/// binary name every other launcher path installs and spawns.
+/// asserts it stays tied to `daemon_binary_name()`, the binary name every other
+/// launcher path installs and spawns.
 ///
-/// This does NOT exercise `kill_running_daemon` itself or the actual
-/// `taskkill` invocation — that remains compile-check-only against the
+/// This does NOT exercise `kill_running_daemon` itself, the actual
+/// `taskkill` invocation, or that the Windows call sites read the active
+/// profile — that remains compile-check-only against the
 /// Windows target (see the `windows_daemon_stdio_tests` module docs above
 /// for why: no macOS/Linux equivalent exists to run it against).
 #[cfg(test)]

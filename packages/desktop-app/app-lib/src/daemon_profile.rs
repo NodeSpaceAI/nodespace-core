@@ -1,11 +1,10 @@
 //! Which daemon this app installs, registers and starts, and what it expects of it.
 //!
-//! Every choice that depends on the daemon's identity goes through the process's
-//! active [`DaemonProfile`]: the sidecar to install, the image name to kill on
-//! Windows, and the extra environment the service registration carries. The
-//! build's default profile is chosen in one place, `daemon_setup`'s
-//! `profile_for_this_build`, so no other code branches on the build's edition to
-//! pick a binary or an environment.
+//! Which daemon binary to run, which image name to kill on Windows, and what
+//! extra environment the service registration carries all go through the
+//! process's active [`DaemonProfile`]. The build's default profile is chosen in
+//! one place, `daemon_setup`'s `profile_for_this_build`, so no other code
+//! branches on the build's edition to pick a binary or an environment.
 //!
 //! The launchd label, socket, UI pid file and incompatible-database marker are
 //! not part of a profile: they follow the product's identity and are selected in
