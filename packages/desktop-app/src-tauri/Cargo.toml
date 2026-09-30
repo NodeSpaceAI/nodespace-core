@@ -6,16 +6,8 @@ authors = ["NodeSpace Team"]
 edition = "2021"
 default-run = "nodespace-app"
 
-[lib]
-name = "nodespace_app_lib"
-crate-type = ["staticlib", "cdylib", "rlib"]
-
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
-# Pro-tier proto compilation (nodespace.pro.v1 — vendored from
-# nodespace-sync via scripts/refresh-pro-proto.ts).
-tonic-build = "0.12"
-protoc-bin-vendored = "3"
 # Reads tauri.conf.json's bundle lists (build.rs `drop_unstaged_skill`).
 # Already compiled for the build host as a tauri-build dependency.
 serde_json = { workspace = true }
@@ -34,47 +26,15 @@ path = "src/main.rs"
 devtools = ["tauri/devtools"]
 
 [dependencies]
-nodespace-types = { workspace = true }
+nodespace-app-lib = { path = "../app-lib" }
+# `tauri_build`'s manifest check and `generate_context!` need `tauri` as a
+# direct dependency of the crate that owns tauri.conf.json.
 tauri = { version = "2", features = [] }
+tokio = { workspace = true }
+# Direct dependencies only for their permission files: `tauri_build` grants
+# `capabilities/default.json`'s `opener:default` and `dialog:default` from the
+# app crate's own direct dependencies, so dropping either fails
+# `validate_capabilities`. The plugins themselves are initialised in
+# nodespace-app-lib's `run()`.
 tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
-tauri-plugin-single-instance = "2"
-serde = { workspace = true }
-serde_json = { workspace = true }
-tokio = { workspace = true }
-anyhow = { workspace = true }
-chrono = { workspace = true }
-uuid = { workspace = true }
-tauri-plugin-decorum = "1.1.1"
-nodespace-proto = { workspace = true }
-tonic = "0.12"
-prost = { workspace = true }
-tower = { version = "0.5", features = ["util"] }
-hyper-util = { version = "0.1", features = ["tokio"] }
-dirs = "5.0"
-libc = "0.2"
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-futures = "0.3"
-tokio-stream = "0.1"
-tokio-util = "0.7"
-async-stream = "0.3"
-async-trait = { workspace = true }
-thiserror = { workspace = true }
-# App update check: fetch the latest GitHub release (rustls, no OpenSSL) and
-# compare versions with semver semantics.
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
-semver = "1"
-
-[dev-dependencies]
-tempfile = "3"
-# Adds tauri::test (mock AppHandle with a real event bus, no webview) for the
-# ADR-048 Tauri-seam integration tests — ONLY active for `cargo test`, since
-# Cargo unifies dev-dependency features into the main build for test targets
-# but not for the release binary.
-tauri = { version = "2", features = ["test"] }
-# Shared fixtures for the ADR-048 Tauri-seam integration tests under tests/ —
-# its own crate (not a `mod support;` duplicated per test binary) so clippy's
-# dead-code lint sees one compilation used across every test file, not each
-# binary's own unused subset (see test-support/src/lib.rs's module doc).
-nodespace-app-test-support = { path = "test-support" }

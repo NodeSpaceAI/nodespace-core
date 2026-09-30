@@ -24,10 +24,10 @@
 //! that per-binary view.
 //!
 //! Running this crate's tests directly with a bare `cargo test -p
-//! nodespace-app` uses cargo's default per-binary test concurrency, NOT the
+//! nodespace-app-lib` uses cargo's default per-binary test concurrency, NOT the
 //! `--test-threads=1` the merge gate (`scripts/test-gate.ts`) applies —
 //! see that file's comment for why serializing matters here. Prefer `cargo
-//! test -p nodespace-app -- --test-threads=1` when iterating locally on more
+//! test -p nodespace-app-lib -- --test-threads=1` when iterating locally on more
 //! than one test in the same file to avoid the same daemon-spawn contention
 //! the gate serializes away.
 
@@ -43,11 +43,11 @@ use tauri::Manager;
 // Re-exported the same way `daemon_binary_freshness` below is: `pub` purely
 // so `tests/it/sidecar_staging_sync_test.rs` can exercise the real algorithm,
 // not because anything in this crate calls it itself. Pulled in via
-// `#[path]` rather than a `[build-dependencies]` crate because this crate
-// already depends on `nodespace-app` — a build-dependency back onto the same
-// package would be a cycle. See `build_support.rs`'s module doc for the full
-// story.
-#[path = "../../build_support.rs"]
+// `#[path]` from the app crate's source tree rather than a crate dependency:
+// `build_support.rs` is a plain source file compiled into the app crate's
+// `build.rs`, and the app crate is a binary-only package this crate cannot
+// depend on. See `build_support.rs`'s module doc for the full story.
+#[path = "../../../src-tauri/build_support.rs"]
 mod build_support;
 pub use build_support::sync_stale_sidecar;
 
@@ -372,7 +372,7 @@ pub fn model_file_available(filename: &str) -> bool {
 }
 
 /// The workspace root, derived from this crate's manifest directory
-/// (`packages/desktop-app/src-tauri/test-support`). Canonicalised so paths
+/// (`packages/desktop-app/app-lib/test-support`). Canonicalised so paths
 /// quoted in failure messages read as real locations rather than a chain of
 /// `..` segments.
 fn workspace_root() -> PathBuf {
@@ -516,6 +516,8 @@ fn resolve_daemon_binary() -> PathBuf {
                     .expect("could not determine host target triple");
                 let sidecar = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                     .join("..")
+                    .join("..")
+                    .join("src-tauri")
                     .join("binaries")
                     .join(format!("nodespaced-{triple}"));
 
