@@ -201,10 +201,17 @@ async fn stored_declaration_still_validates_legacy_keys() -> Result<()> {
     let refused = service
         .merge_database_settings(&[("legacy_state", json!("z"))])
         .await;
-    assert!(
-        refused.is_err(),
-        "the stored declaration must still refuse an out-of-range legacy_state"
-    );
+    // Both this refusal and core's key guard are `InvalidUpdate`, so the message
+    // says which one fired: the stored enum declaration, not the guard.
+    match refused {
+        Err(NodeServiceError::InvalidUpdate(msg)) => assert!(
+            msg.contains("enum field 'legacy_state'"),
+            "expected the stored declaration's enum validation, got: {msg}"
+        ),
+        other => {
+            panic!("the stored declaration must refuse an out-of-range legacy_state, got {other:?}")
+        }
+    }
 
     // A refused write leaves the stored value as it was.
     assert_eq!(
