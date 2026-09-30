@@ -7,6 +7,9 @@
  * its own explicit AND — `proSync.isPro && labsFlags.syncEnabled` — same as
  * `account-settings.test.ts` covers for the "NodeSpace Pro" card.
  *
+ * Also covers the neutral, local-only copy: an unbound database's row carries no
+ * badge, and the explainer paragraph is free of the wording it used to show.
+ *
  * No Tauri bridge is mocked here: `isTauriBridgePresent()` (database.svelte.ts)
  * is false under plain Happy-DOM, so `databaseStore.load()` takes its
  * no-bridge branch (a single implicit local database, no `invoke` call) and
@@ -86,5 +89,10 @@ describe('DatabaseSettings', () => {
       'i'
     );
     expect(container.textContent).not.toMatch(removedWording);
+
+    // An unbound database renders no badge wrapper under its status line, not even an empty one.
+    const rowInfo = container.querySelector('.min-w-0.flex-1');
+    expect(rowInfo).not.toBeNull();
+    expect(rowInfo!.querySelector('.mt-1\\.5')).toBeNull();
   });
 });
