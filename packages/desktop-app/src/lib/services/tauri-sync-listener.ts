@@ -364,7 +364,8 @@ function stripNodePrefix(id: string): string {
 /**
  * Initialize Tauri real-time synchronization event listeners
  *
- * Sets up listeners for logging/debugging sync events.
+ * Registers listeners for backend node and relationship events and applies
+ * them to the frontend stores.
  * Should be called once during app initialization.
  *
  * @returns Promise resolving when all listeners are registered
@@ -533,20 +534,6 @@ export async function initializeTauriSyncListeners(): Promise<void> {
           .refreshMentionedIn(bareToId)
           .catch((err) => log.error(`Failed to refresh mentionedIn for ${bareToId}:`, err));
       }
-    });
-
-    // Listen for synchronization errors
-    await listen<Record<string, unknown>>('sync:error', (event) => {
-      const message = String(event.payload.message);
-      const errorType = String(event.payload.errorType);
-      log.error(`Sync error (${errorType}): ${message}`);
-    });
-
-    // Listen for synchronization status changes
-    await listen<Record<string, unknown>>('sync:status', (event) => {
-      const status = String(event.payload.status);
-      const reason = event.payload.reason ? String(event.payload.reason) : '';
-      log.info(`Sync status: ${status}${reason ? ` (${reason})` : ''}`);
     });
 
     log.info('Real-time sync listeners initialized successfully');
