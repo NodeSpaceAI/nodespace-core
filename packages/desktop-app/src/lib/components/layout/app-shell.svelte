@@ -34,6 +34,7 @@
   } from '$lib/utils/external-links';
   import OnboardingWizard from '$lib/components/onboarding/onboarding-wizard.svelte';
   import { proSync } from '$lib/stores/pro-sync.svelte';
+  import { startExtensions } from '$lib/plugins/extension-lifecycle';
   import ChromeSlotOutlet from '$lib/plugins/chrome-slot-outlet.svelte';
   import ConflictToast from '$lib/components/conflict-toast.svelte';
   import NodeRefPreview from '$lib/components/references/node-ref-preview.svelte';
@@ -245,6 +246,7 @@
     let cleanupMCP: (() => Promise<void>) | null = null;
     let staleNodesInterval: ReturnType<typeof setInterval> | null = null;
     let cleanupProSync: (() => void) | null = null;
+    let stopExtensions: (() => void) | null = null;
     let unlistenTier: Promise<() => void> | null = null;
     let unlistenSelectDatabase: Promise<() => void> | null = null;
 
@@ -260,6 +262,9 @@
         .start()
         .then((stop) => (cleanupProSync = stop))
         .catch((e) => log.warn('proSync.start failed', { error: e }));
+
+      // Extension lifecycle: start every registered extension's `start()` hook.
+      stopExtensions = startExtensions();
 
       // Sync theme from backend preferences (overrides localStorage if different)
       invoke<{ activeDatabasePath: string; display: { renderMarkdown: boolean; theme: string } }>('get_settings')
@@ -602,6 +607,7 @@
         (await unlistenSelectDatabase)();
       }
       cleanupProSync?.();
+      stopExtensions?.();
       if (cleanupMCP) {
         await cleanupMCP();
       }

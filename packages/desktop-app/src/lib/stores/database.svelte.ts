@@ -11,6 +11,7 @@ import { savedQueriesData } from '$lib/stores/saved-queries.svelte';
 import { conflictsStore } from '$lib/stores/conflicts.svelte';
 import { membership } from '$lib/stores/membership.svelte';
 import { resyncSchemaPluginsForDatabaseSwitch } from '$lib/plugins/schema-plugin-loader';
+import { notifyDatabaseActivated } from '$lib/plugins/extension-lifecycle';
 import {
   clearAllTabs,
   addTab,
@@ -245,6 +246,10 @@ class DatabaseStore {
           // variant machine can read sync_enabled/auth_status.
           this.refreshDatabaseSettings();
         }
+
+        // The first resolution is a committed activation: tell extensions once
+        // the restore above has finished evicting.
+        if (resolved !== null) notifyDatabaseActivated(resolved);
       }
     } catch (err) {
       this.error = toError(err).message;
@@ -455,6 +460,10 @@ class DatabaseStore {
       this.activateProSync(id);
 
       this.evictAndReloadActiveDatabase();
+
+      // Extensions clear their own per-database caches here: the previous
+      // database's data is evicted, and the workspace reset below has not run.
+      notifyDatabaseActivated(id);
 
       // Reset the workspace: open tabs referenced the previous database's
       // nodes, so drop them and land on the new database's daily journal
