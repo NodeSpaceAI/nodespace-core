@@ -110,14 +110,19 @@ class UpdateStore {
 
   /**
    * Open the download location the update source named (no in-app install — see the
-   * module doc). Does nothing when the source named none.
+   * module doc). Does nothing when the source named none. The location is data from
+   * the source, so one the browser opener rejects is logged rather than thrown.
    */
   async download(): Promise<void> {
     if (this.downloadUrl === null) {
       log.warn('download requested but the update source named no download location');
       return;
     }
-    await openUrl(this.downloadUrl);
+    try {
+      await openUrl(this.downloadUrl);
+    } catch (e) {
+      log.warn('failed to open the update download location', { error: e });
+    }
   }
 
   stop(): void {

@@ -132,6 +132,14 @@ describe('updateStatus store', () => {
     expect(mockOpenUrl).not.toHaveBeenCalled();
   });
 
+  it('download logs instead of throwing when the download location cannot be opened', async () => {
+    await updateStatus.init();
+    fireUpdate('0.2.0', '0.3.0', 'not-a-url');
+    mockOpenUrl.mockRejectedValueOnce(new Error('Invalid URL protocol'));
+    await expect(updateStatus.download()).resolves.toBeUndefined();
+    expect(mockOpenUrl).toHaveBeenCalledWith('not-a-url');
+  });
+
   it('a payload that omits download_url is treated as having none', async () => {
     await updateStatus.init();
     eventCb?.({ payload: { current: '0.2.0', latest: '0.3.0', update_available: true } });
