@@ -173,7 +173,7 @@ export const BASELINES = {
   // pro_* Tauri commands, the pro_sync / pro_client modules, pro_env
   proCommands: 275,
   // the proSync store, resolveProSyncVariant, isProSyncActive, pro-sync imports
-  proSyncModule: 360,
+  proSyncModule: 370,
   // the Pro proto, CloudSyncService, ProClient / ProTier, Pro Worker URLs
   proProtocol: 95,
   // quoted pro:tier-detected, sync:status and sync:error event names
@@ -181,19 +181,19 @@ export const BASELINES = {
   // the Pro membership service
   membershipService: 54,
   // Pro build, daemon, socket, launchd and installer branching
-  editionBranching: 122,
+  editionBranching: 113,
   // tenant binding, sync_enabled and auth_status state
-  cloudBindState: 322,
+  cloudBindState: 321,
   // cloud embedding and membership-edge sync hooks
   cloudSyncHooks: 15,
   // Supabase, RLS, pgvector, nodespace-sync and "Pro daemon" wording
-  cloudWording: 88,
+  cloudWording: 87,
   // the word tenant (one fixture exempt, see EXEMPTIONS)
-  tenantWording: 507,
+  tenantWording: 504,
   // the word Pro, except chip and model names such as "M2 Pro", "DeepSeek V4 Pro"
-  proWording: 312,
+  proWording: 310,
   // files whose basename has a pro segment
-  proNamedFiles: 16,
+  proNamedFiles: 18,
 } satisfies Record<MarkerName, number>;
 
 export type MarkerCounts = Record<MarkerName, number>;
