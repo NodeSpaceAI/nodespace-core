@@ -4,8 +4,8 @@
  * The local gate, in two modes (ADR-047). This repo has no CI runner for
  * tests; this script is the only gate.
  *
- * - `push` (the default, run by the Husky pre-push hook): lint and the
- *   app-version drift check only. Seconds,
+ * - `push` (the default, run by the Husky pre-push hook): lint, the
+ *   app-version drift check and the code-boundary ratchet only. Seconds,
  *   and it takes no lock. A push only publishes a branch; the merge is what
  *   changes main, and the merge gate tests it. Test the tiers a change
  *   reaches while developing, with `bun run test:changed`.
@@ -187,6 +187,17 @@ await run({
 await run({
   label: "check-version-sync (app version drift)",
   command: "bun run scripts/check-version-sync.ts",
+  timeoutMs: 5 * MINUTE,
+  nice: !merge,
+});
+// The code-boundary ratchet (ADR-081): fails when a marker count rises above its
+// ceiling. test:changed skips the scripts tier for frontend-only and .md-only
+// diffs, which is where most out-of-place code lands, so a push is the first
+// automated check such a change gets. In merge mode this runs before the machine
+// slot, so a raised count fails in seconds instead of minutes into a gate run.
+await run({
+  label: "check-pro-boundary (ADR-081 code-boundary ratchet)",
+  command: "bun run scripts/check-pro-boundary.ts",
   timeoutMs: 5 * MINUTE,
   nice: !merge,
 });
