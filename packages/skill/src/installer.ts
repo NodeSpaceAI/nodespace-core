@@ -1,13 +1,84 @@
-import { existsSync, mkdirSync, copyFileSync, rmSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { join, dirname, basename } from 'node:path';
+import {
+  existsSync,
+  mkdirSync,
+  copyFileSync,
+  rmSync,
+  rmdirSync,
+  readdirSync,
+  readFileSync,
+  writeFileSync,
+  lstatSync,
+  realpathSync,
+} from 'node:fs';
+import { join, dirname, basename, relative, resolve, isAbsolute, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { AGENTS } from './agents.js';
-import type { AgentName, InstallResult, UninstallResult } from './types.js';
+import type { AgentConfig, AgentName, InstallResult, UninstallResult } from './types.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 // Walk up past dist/ if running from compiled output; src/ stays at package root.
 const PACKAGE_ROOT = join(__dirname, '..');
+
+/** The directory, under both the package root and an install directory, that holds the skill's reference files. */
+const REFERENCES_DIR = 'references';
+
+/**
+ * Written into each agent's install directory by `install`: the exact list of
+ * files that install put there, as `{ "files": [<paths relative to the install
+ * directory>] }`. Uninstall removes what it names, and a later install removes
+ * any file it names that the new skill no longer ships, so neither has to guess
+ * from a hand-kept list which files are ours.
+ *
+ * Agent harnesses discover a skill by its `SKILL.md`, so this dotfile is inert
+ * to them.
+ */
+export const INSTALL_RECORD = '.nodespace-install.json';
+
+/**
+ * The reference files the installer wrote before it kept a record, when each
+ * agent's `shims` named them one by one. An install directory with no record
+ * is treated as holding these (plus its `SKILL.md` and harness shim), so
+ * uninstalling, or reinstalling from a skill that has dropped one, still
+ * cleans them up.
+ *
+ * It covers only installs made before the record existed, and can be deleted
+ * once those are gone.
+ */
+export const PRE_RECORD_REFERENCES = [
+  'references/cli.md',
+  'references/shared-workspaces.md',
+  'references/graph-authored-guidance.md',
+] as const;
+
+/**
+ * The reference files of the skill at `packageRoot`: every `*.md` directly
+ * under its `references/` directory, as sorted paths relative to the package
+ * root (`references/cli.md`), which is also where each installs inside an
+ * install directory.
+ *
+ * The install and the public skill repository both take their reference list
+ * from here, so a reference is added or dropped by changing that directory
+ * alone. Not recursive: only Markdown files sit directly in `references/`, and
+ * anything else there is not part of the skill. A package root with no
+ * `references/` directory has none.
+ */
+export function listReferenceFiles(packageRoot: string): string[] {
+  let entries;
+  try {
+    entries = readdirSync(join(packageRoot, REFERENCES_DIR), { withFileTypes: true });
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT' || code === 'ENOTDIR') return [];
+    // Anything else (permissions, I/O) must not read as "the skill has no
+    // references": install would then delete the ones it installed earlier.
+    throw err;
+  }
+  return entries
+    .filter(entry => entry.isFile() && entry.name.endsWith('.md'))
+    .map(entry => `${REFERENCES_DIR}/${entry.name}`)
+    .sort();
+}
 
 /**
  * Which configured agents are present on this machine, by the existence of
@@ -68,6 +139,16 @@ export function claudeCodePluginManagedSkillExists(claudeConfigDir: string): boo
   }
 }
 
+/**
+ * Installs the skill at `packageRoot` into `targetAgents` (or every detected
+ * agent): `SKILL.md`, the agent's harness shim, and every `references/*.md`
+ * the package root ships.
+ *
+ * Each agent's install directory gets a record (`INSTALL_RECORD`) of exactly
+ * what was written, and a file an earlier install put there that this skill no
+ * longer ships is deleted. An install directory with no record is read as
+ * holding what the installer wrote before records existed (`preRecordFiles`).
+ */
 export function install(targetAgents?: AgentName[], packageRoot = PACKAGE_ROOT): InstallResult[] {
   if (!isNodespaceBinaryOnPath()) {
     process.stderr.write(
@@ -97,28 +178,67 @@ export function install(targetAgents?: AgentName[], packageRoot = PACKAGE_ROOT):
       // so there is truly one copy, not just "no new copy going forward".
       // Reuses uninstall()'s own directory-pruning logic rather than
       // duplicating it; a no-op when nothing is there.
-      uninstall(['claude-code']);
+      uninstall(['claude-code'], packageRoot);
       results.push({ agent: agentName, installed: [], skipReason: 'plugin-managed' });
       continue;
     }
 
+    // What the skill is made of: the agent's shims (flat, under their
+    // basename) plus every reference file the package root ships. Each entry
+    // is `[source path, path inside the install directory]`.
+    const root = resolve(config.installDir);
+    const present = [
+      ...config.shims.map((shim): [string, string] => [join(packageRoot, shim), basename(shim)]),
+      ...listReferenceFiles(packageRoot).map((ref): [string, string] => [join(packageRoot, ref), ref]),
+    ].filter(([src]) => existsSync(src));
+
+    // A skill is discovered by its SKILL.md, so a package without one is
+    // broken, not a skill that has shrunk: install nothing, and leave whatever
+    // is already installed, and its record, exactly as it is.
+    if (!present.some(([, rel]) => rel === 'SKILL.md')) {
+      results.push({ agent: agentName, installed: [] });
+      continue;
+    }
+
     const installed: string[] = [];
-    for (const shim of config.shims) {
-      const src = join(packageRoot, shim);
-      const dest = join(config.installDir, installedName(shim));
-      if (existsSync(src)) {
-        mkdirSync(dirname(dest), { recursive: true });
-        // SKILL.md gets the agent's frontmatter prepended — a skill is
-        // discovered by its YAML `name` + `description` under the Agent Skills
-        // standard; everything else is copied verbatim.
-        if (config.skillFrontmatter && basename(shim) === 'SKILL.md') {
-          writeFileSync(dest, config.skillFrontmatter + '\n' + readFileSync(src, 'utf8'), 'utf8');
-        } else {
-          copyFileSync(src, dest);
-        }
-        installed.push(dest);
+    const wrote: string[] = [];
+    for (const [src, rel] of present) {
+      const dest = join(root, rel);
+      mkdirSync(dirname(dest), { recursive: true });
+      // SKILL.md gets the agent's frontmatter prepended — a skill is
+      // discovered by its YAML `name` + `description` under the Agent Skills
+      // standard; everything else is copied verbatim.
+      if (config.skillFrontmatter && rel === 'SKILL.md') {
+        writeFileSync(dest, config.skillFrontmatter + '\n' + readFileSync(src, 'utf8'), 'utf8');
+      } else {
+        copyFileSync(src, dest);
+      }
+      installed.push(dest);
+      wrote.push(rel);
+    }
+
+    // Files an earlier install put here that this skill no longer ships. They
+    // are compared by resolved path, so an oddly spelled entry naming a file
+    // just written (`./SKILL.md`) is never mistaken for a stale one.
+    const previous = readInstallRecord(root) ?? preRecordFiles(config);
+    const keep = new Set(wrote.map(rel => resolve(root, rel)));
+    const undeleted: string[] = [];
+    for (const rel of previous) {
+      if (keep.has(resolve(root, rel))) continue;
+      try {
+        removeRecordedFile(root, rel);
+      } catch (err) {
+        // Read-only directory, locked file. Keep it in the record so the next
+        // install (or an uninstall) still knows it is ours, and carry on: one
+        // stubborn file must not abort this agent's install or the others'.
+        undeleted.push(rel);
+        const reason = (err as NodeJS.ErrnoException).code ?? (err as Error).message;
+        process.stderr.write(
+          `WARNING: could not remove ${resolve(root, rel)} (${reason}); it stays in the install record.\n`,
+        );
       }
     }
+    writeInstallRecord(root, [...wrote, ...undeleted]);
 
     results.push({ agent: agentName, installed });
   }
@@ -127,23 +247,129 @@ export function install(targetAgents?: AgentName[], packageRoot = PACKAGE_ROOT):
 }
 
 /**
- * Where a source path lands inside the installed skill directory.
- *
- * Shims flatten to a basename (`shims/codex/x.ts` installs as `x.ts`), but
- * `references/` keeps its directory: SKILL.md links to `references/cli.md` by
- * relative path, so flattening it would leave the body pointing at a file that
- * isn't where it says.
- *
- * Install and uninstall MUST agree on this, which is why it is one function
- * rather than the same expression written twice. When it was duplicated, only
- * the install side learned about `references/` — so uninstall looked for a
- * `cli.md` that never existed, left the real file behind, and the
- * "directory is now empty" check then preserved a folder containing a
- * reference and no SKILL.md: a malformed skill in the harness's scan path,
- * created by the cleanup command itself.
+ * What the installer put in `installDir`, as recorded by the install that put
+ * it there, or `undefined` when there is no usable record: none written (an
+ * install from before the record existed), or one that is unreadable or not
+ * the `{ "files": [...] }` shape. Entries that are not strings are dropped.
  */
-function installedName(shim: string): string {
-  return shim.startsWith('references/') ? shim : basename(shim);
+function readInstallRecord(installDir: string): string[] | undefined {
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(join(installDir, INSTALL_RECORD), 'utf8'));
+    const files = (parsed as { files?: unknown } | null)?.files;
+    if (!Array.isArray(files)) return undefined;
+    return files.filter((file): file is string => typeof file === 'string');
+  } catch {
+    return undefined;
+  }
+}
+
+function writeInstallRecord(installDir: string, files: string[]): void {
+  const record = { files: [...files].sort() };
+  writeFileSync(join(installDir, INSTALL_RECORD), JSON.stringify(record, null, 2) + '\n', 'utf8');
+}
+
+/**
+ * The files the installer wrote before it kept a record: `SKILL.md`, the
+ * agent's harness shim and the references in `PRE_RECORD_REFERENCES`.
+ */
+function preRecordFiles(config: AgentConfig): string[] {
+  return [...config.shims.map(shim => basename(shim)), ...PRE_RECORD_REFERENCES];
+}
+
+/**
+ * What an uninstall removes from an install directory that has no record: the
+ * pre-record files, plus every reference the skill being uninstalled ships
+ * (`packageRoot`), which may name ones the pre-record list does not.
+ *
+ * A `references/` that cannot be read is treated as shipping none, with a
+ * warning: the pre-record list is still worth removing, and an uninstall should
+ * not abort over the state of a directory it only reads.
+ */
+function filesWithoutRecord(config: AgentConfig, packageRoot: string): string[] {
+  let shipped: string[] = [];
+  try {
+    shipped = listReferenceFiles(packageRoot);
+  } catch (err) {
+    const reason = (err as NodeJS.ErrnoException).code ?? (err as Error).message;
+    process.stderr.write(
+      `WARNING: could not read the skill's references (${reason}); ` +
+      'any it ships that the pre-record list does not name are left in place.\n',
+    );
+  }
+  return [...new Set([...preRecordFiles(config), ...shipped])];
+}
+
+/** Whether `path` is `root` or lies inside it, comparing the paths as written. */
+function isWithin(root: string, path: string): boolean {
+  const rel = relative(root, path);
+  return rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
+}
+
+/**
+ * Deletes `rel` (relative to `installDir`) if, and only if, it is a regular
+ * file or a symlink sitting in a directory that really lies inside
+ * `installDir`, and returns the path it removed. Anything else is ignored and
+ * returns `undefined`: a file that is already gone, a directory, an absolute
+ * path or one that climbs out with `..`, or a file reached through a symlinked
+ * directory that leads outside.
+ *
+ * A symlink entry is unlinked, never followed, so it cannot reach whatever it
+ * points at: a user who links the skill's files in from elsewhere loses the
+ * link on uninstall, not the file behind it.
+ *
+ * `rel` comes from a record on disk, which is only as trustworthy as that file:
+ * the delete must never reach outside the directory the installer owns, however
+ * the entry is spelled.
+ */
+function removeInstalledFile(installDir: string, rel: string): string | undefined {
+  const target = resolve(installDir, rel);
+  try {
+    // lstat, not stat: a symlink is judged as itself, never by what it points at.
+    const stat = lstatSync(target);
+    if (!stat.isFile() && !stat.isSymbolicLink()) return undefined;
+    // Real paths, so a symlinked parent directory cannot redirect the delete,
+    // and an absolute or `..` entry lands outside the real install directory.
+    if (!isWithin(realpathSync(installDir), realpathSync(dirname(target)))) return undefined;
+  } catch {
+    // Missing, unreadable or malformed: nothing this installer can show it wrote.
+    return undefined;
+  }
+  rmSync(target);
+  return target;
+}
+
+/**
+ * `removeInstalledFile`, then prunes the directories above `rel` that are left
+ * empty. That runs even when the file was already gone, so a user who deleted
+ * every recorded file from `references/` by hand does not leave an empty
+ * `references/` (and with it the install directory) behind.
+ */
+function removeRecordedFile(installDir: string, rel: string): string | undefined {
+  const removed = removeInstalledFile(installDir, rel);
+  pruneEmptyParents(installDir, resolve(installDir, rel));
+  return removed;
+}
+
+/**
+ * Removes the directories left empty by deleting `file`, walking up from its
+ * parent to (never including) `installDir`, and stops at the first that still
+ * holds anything. `rmdirSync` refuses a non-empty directory, so a user's own
+ * file, or a directory they made, is never touched: uninstall must not delete
+ * more than it installed, and leaving something behind is the smaller failure.
+ */
+function pruneEmptyParents(installDir: string, file: string): void {
+  for (let dir = dirname(file); dir !== installDir && isWithin(installDir, dir); dir = dirname(dir)) {
+    try {
+      // A symlinked directory is the user's link, not something this installer
+      // made, and never its to remove: on Windows rmdir would take the link
+      // itself even though the directory it points at is not empty.
+      if (lstatSync(dir).isSymbolicLink()) return;
+      rmdirSync(dir);
+    } catch {
+      // Not empty, or unreadable. Either way, the directories above it stay too.
+      return;
+    }
+  }
 }
 
 /**
@@ -165,7 +391,20 @@ export function checkInstalled(targetAgents?: AgentName[]): AgentName[] {
   });
 }
 
-export function uninstall(targetAgents?: AgentName[]): UninstallResult[] {
+/**
+ * Removes the skill from `targetAgents` (or every configured agent).
+ *
+ * With a record, removes exactly the files it names and the record itself.
+ * Without one, the install predates the record: it removes the agent's shims,
+ * every reference file `packageRoot` ships and `PRE_RECORD_REFERENCES`. Either
+ * way it then prunes only the directories those files leave empty, and the
+ * install directory itself once nothing is left in it.
+ *
+ * `packageRoot` is where the skill being uninstalled came from (the staged
+ * resource root when the app runs a compiled installer). It matters only for an
+ * install with no record, whose reference files it names.
+ */
+export function uninstall(targetAgents?: AgentName[], packageRoot = PACKAGE_ROOT): UninstallResult[] {
   const agents = targetAgents ?? AGENTS.map(a => a.name);
   const results: UninstallResult[] = [];
 
@@ -173,54 +412,25 @@ export function uninstall(targetAgents?: AgentName[]): UninstallResult[] {
     const config = AGENTS.find(a => a.name === agentName);
     if (!config || !existsSync(config.installDir)) continue;
 
+    const root = resolve(config.installDir);
+    const files = readInstallRecord(root) ?? filesWithoutRecord(config, packageRoot);
+
     const removed: string[] = [];
-    for (const shim of config.shims) {
-      const dest = join(config.installDir, installedName(shim));
-      if (existsSync(dest)) {
-        rmSync(dest);
-        removed.push(dest);
-      }
+    for (const rel of files) {
+      const path = removeRecordedFile(root, rel);
+      if (path !== undefined) removed.push(path);
     }
+    // Last, so an uninstall interrupted part-way can be run again.
+    removeInstalledFile(root, INSTALL_RECORD);
 
-    // Removing `references/cli.md` leaves an empty `references/` behind, which
-    // would make the directory look non-empty and strand the whole folder.
-    //
-    // Prune ONLY directories this installer created, derived from `shims` —
-    // never "any empty directory". Uninstall must not reach outside what it
-    // installed: a user's own empty folder here is not ours to delete, and
-    // removing it would also empty the parent and take the whole install
-    // directory with it, silently and without reporting any of it in
-    // `removed`. Deleting more than we installed is a worse failure than
-    // leaving something behind.
-    //
-    // This prunes the immediate parent only, which covers every shim today
-    // (`references/` is the one nested case). A deeper shim such as
-    // `references/api/cli.md` would prune `references/api` and strand
-    // `references/` — reviving the stranded-directory bug this exists to
-    // prevent. Prune leaf-upward if such a shim is ever added.
-    const ownedDirs = new Set(
-      config.shims
-        .map(shim => dirname(installedName(shim)))
-        .filter(dir => dir !== '.' && dir !== '')
-    );
-    for (const dir of ownedDirs) {
-      const subdir = join(config.installDir, dir);
-      // An unreadable directory (bad permissions) must not abort the uninstall
-      // for this agent or the ones after it — leaving a stale directory is a
-      // far smaller problem than skipping every remaining agent's cleanup.
+    if (readdirSync(root).length === 0) {
       try {
-        if (existsSync(subdir) && readdirSync(subdir).length === 0) {
-          rmSync(subdir, { recursive: true });
-        }
+        rmdirSync(root);
       } catch {
-        // Leave it in place; the is-empty check below then keeps the install
-        // directory too, which is the correct conservative outcome.
+        // A symlinked install directory (a dotfile manager's link) cannot be
+        // rmdir'd. Leaving the empty directory is the smaller failure than
+        // aborting the agents after this one.
       }
-    }
-
-    const remaining = readdirSync(config.installDir);
-    if (remaining.length === 0) {
-      rmSync(config.installDir, { recursive: true });
     }
 
     results.push({ agent: agentName, removed });

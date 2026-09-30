@@ -1,5 +1,15 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdirSync, rmSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
+import {
+  mkdirSync,
+  rmSync,
+  rmdirSync,
+  existsSync,
+  readFileSync,
+  readdirSync,
+  writeFileSync,
+  symlinkSync,
+  lstatSync,
+} from 'node:fs';
 import { join, basename } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -24,26 +34,81 @@ const {
   detectAgents,
   isNodespaceBinaryOnPath,
   claudeCodePluginManagedSkillExists,
+  listReferenceFiles,
+  INSTALL_RECORD,
+  PRE_RECORD_REFERENCES,
 } = await import('../installer.js');
 const { AGENTS, SHARED_SKILL_FRONTMATTER } = await import('../agents.js');
 
 const SKILL_MD_CONTENT = '# NodeSpace Skill\nTest content';
 const SHIM_CONTENT = '// shim content';
 
+// Reference files `seedPkgRoot` puts in the package root. The installer takes
+// its reference list from the package root's `references/` directory, so this
+// includes one file no agent config names (`extra-playbook.md`): it installs
+// only if the directory, not a hand-kept list, decides.
+const SEEDED_REFERENCES = [
+  'references/cli.md',
+  'references/extra-playbook.md',
+  'references/graph-authored-guidance.md',
+  'references/shared-workspaces.md',
+];
+
 function seedPkgRoot(root: string, agent: typeof AGENTS[number]): void {
   for (const shim of agent.shims) {
     const dir = join(root, shim.includes('/') ? shim.split('/').slice(0, -1).join('/') : '');
     mkdirSync(dir, { recursive: true });
-    // Content is unique per shim path, not just per shim "kind" -- so a test
-    // can tell multiple installed files apart, e.g. that installing several
-    // reference files (references/cli.md, references/shared-workspaces.md,
-    // references/graph-authored-guidance.md) lands each with its own content
-    // rather than one silently overwriting another.
     const content = shim.endsWith('.md')
       ? `${SKILL_MD_CONTENT}\n<!-- ${shim} -->`
       : `${SHIM_CONTENT} (${shim})`;
     writeFileSync(join(root, shim), content, 'utf8');
   }
+  // Content is unique per file path, not just per file "kind" -- so a test
+  // can tell multiple installed files apart, e.g. that installing several
+  // reference files lands each with its own content rather than one silently
+  // overwriting another.
+  mkdirSync(join(root, 'references'), { recursive: true });
+  for (const ref of SEEDED_REFERENCES) {
+    writeFileSync(join(root, ref), `${SKILL_MD_CONTENT}\n<!-- ${ref} -->`, 'utf8');
+  }
+}
+
+/** Everything `install()` puts in an agent's install directory from a `seedPkgRoot` package root. */
+function seededInstallFiles(agent: typeof AGENTS[number]): string[] {
+  return [...agent.shims.map(shim => basename(shim)), ...SEEDED_REFERENCES].sort();
+}
+
+function readRecord(agent: typeof AGENTS[number]): { files: string[] } {
+  return JSON.parse(readFileSync(join(agent.installDir, INSTALL_RECORD), 'utf8'));
+}
+
+/**
+ * `../installer.js` loaded afresh against a `node:fs` whose functions `replace`
+ * overrides, so a test decides the order a directory lists in, or that a delete
+ * fails, instead of inheriting whatever the platform and the user running it
+ * allow. The mock is removed again after each test.
+ */
+async function importInstallerWithFs(
+  replace: (actual: typeof import('node:fs')) => Partial<typeof import('node:fs')>
+): Promise<typeof import('../installer.js')> {
+  vi.resetModules();
+  vi.doMock('node:fs', async importOriginal => {
+    const actual = await importOriginal<typeof import('node:fs')>();
+    return { ...actual, ...replace(actual) };
+  });
+  return import('../installer.js');
+}
+
+/** A `node:fs` function that fails with `code` whenever `fails(path)` says so, and otherwise behaves as `real`. */
+function failingOn<F extends (path: never, ...rest: never[]) => unknown>(
+  real: F,
+  fails: (path: string) => boolean,
+  code = 'EACCES'
+): F {
+  return ((path: never, ...rest: never[]) => {
+    if (fails(String(path))) throw Object.assign(new Error(`${code}: simulated`), { code });
+    return real(path, ...rest);
+  }) as F;
 }
 
 beforeEach(() => {
@@ -53,6 +118,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.doUnmock('node:fs');
+  vi.resetModules();
   rmSync(TMP, { recursive: true, force: true });
 });
 
@@ -67,12 +134,31 @@ describe('AGENTS config', () => {
     expect(names).toContain('pi');
   });
 
-  it('each agent has detectionDir, installDir, SKILL.md shim, and at least one agent shim', () => {
+  // Reference files are not listed per agent: the installer copies every
+  // `references/*.md` it finds in the package root. A `references/` entry in a
+  // `shims` list would be the hand-kept list coming back.
+  it('each agent has detectionDir, installDir and a SKILL.md shim, and names no references', () => {
     for (const agent of AGENTS) {
       expect(agent.detectionDir).toBeTruthy();
       expect(agent.installDir).toBeTruthy();
       expect(agent.shims).toContain('SKILL.md');
-      expect(agent.shims.length).toBeGreaterThan(1);
+      expect(
+        agent.shims.filter(shim => shim.startsWith('references/')),
+        `${agent.name} lists references`
+      ).toEqual([]);
+    }
+  });
+
+  // Antigravity is a shell-capable agent that runs `nodespace` directly, so it
+  // has no harness shim (see agents.ts): its `shims` is `SKILL.md` alone.
+  it('every agent except antigravity has a harness shim', () => {
+    for (const agent of AGENTS) {
+      const harnessShims = agent.shims.filter(shim => shim.startsWith('shims/'));
+      if (agent.name === 'antigravity') {
+        expect(agent.shims).toEqual(['SKILL.md']);
+      } else {
+        expect(harnessShims.length, `${agent.name} has no harness shim`).toBeGreaterThan(0);
+      }
     }
   });
 
@@ -138,10 +224,14 @@ describe('install', () => {
       readFileSync(join(import.meta.dirname, '../../package.json'), 'utf8')
     ) as { files: string[] };
 
-    // The first segment of each shim path: a directory (`references`, `shims`)
-    // or a bare file (`SKILL.md`). npm's `files` accepts either form verbatim,
-    // so an exact match is the whole check.
-    const topLevel = new Set(AGENTS.flatMap(a => a.shims).map(s => s.split('/')[0]));
+    // The first segment of each shim path: a directory (`shims`) or a bare
+    // file (`SKILL.md`). npm's `files` accepts either form verbatim, so an
+    // exact match is the whole check. `references` is added by hand: no shim
+    // names it any more, but the installer copies everything in it.
+    const topLevel = new Set([
+      'references',
+      ...AGENTS.flatMap(a => a.shims).map(s => s.split('/')[0]),
+    ]);
     for (const entry of topLevel) {
       expect(
         pkg.files,
@@ -207,17 +297,19 @@ describe('install', () => {
     }
   });
 
-  it('installs all shims (SKILL.md + agent shim) when all source files exist', () => {
+  it('installs all shims (SKILL.md + agent shim) and every reference when all source files exist', () => {
     const agentName = 'claude-code';
     const config = AGENTS.find(a => a.name === agentName)!;
     mkdirSync(config.detectionDir, { recursive: true });
     seedPkgRoot(FAKE_PKG_ROOT, config);
 
     const results = install([agentName], FAKE_PKG_ROOT);
-    expect(results[0].installed).toHaveLength(config.shims.length);
+    expect(results[0].installed).toHaveLength(config.shims.length + SEEDED_REFERENCES.length);
     for (const shim of config.shims) {
-      const relative = shim.startsWith('references/') ? shim : basename(shim);
-      expect(existsSync(join(config.installDir, relative))).toBe(true);
+      expect(existsSync(join(config.installDir, basename(shim)))).toBe(true);
+    }
+    for (const ref of SEEDED_REFERENCES) {
+      expect(existsSync(join(config.installDir, ref))).toBe(true);
     }
   });
 
@@ -228,8 +320,7 @@ describe('install', () => {
   // reference.
   it('installs references into a references/ subdirectory, not flattened', () => {
     for (const config of AGENTS) {
-      const refs = config.shims.filter(s => s.startsWith('references/'));
-      expect(refs.length, `${config.name} installs no references`).toBeGreaterThan(0);
+      const refs = SEEDED_REFERENCES;
 
       mkdirSync(config.detectionDir, { recursive: true });
       seedPkgRoot(FAKE_PKG_ROOT, config);
@@ -249,18 +340,12 @@ describe('install', () => {
     }
   });
 
-  // `references/` now holds multiple files (cli.md, shared-workspaces.md,
-  // graph-authored-guidance.md) for every agent that ships references at
-  // all. Each must land as its own distinct file rather than one clobbering
-  // the other -- the scenario installedName()'s directory-preserving
-  // behavior was never exercised against until a second reference file
-  // existed.
+  // `references/` holds several files. Each must land as its own distinct file
+  // rather than one clobbering the other -- a path-flattening bug would
+  // collapse them all onto their basenames.
   it('installs multiple reference files side by side without collision', () => {
     for (const config of AGENTS) {
-      const refs = config.shims.filter(s => s.startsWith('references/'));
-      // Canary: if the reference set ever shrinks back to one file, this
-      // test silently stops covering the scenario it is named for.
-      expect(refs.length, `${config.name} has fewer than 2 reference files`).toBeGreaterThan(1);
+      const refs = SEEDED_REFERENCES;
 
       mkdirSync(config.detectionDir, { recursive: true });
       seedPkgRoot(FAKE_PKG_ROOT, config);
@@ -370,7 +455,7 @@ describe('uninstall', () => {
       mkdirSync(config.detectionDir, { recursive: true });
       seedPkgRoot(FAKE_PKG_ROOT, config);
       const installed = install([config.name], FAKE_PKG_ROOT)[0].installed;
-      expect(installed.length).toBe(config.shims.length);
+      expect(installed.length).toBe(config.shims.length + SEEDED_REFERENCES.length);
 
       const removed = uninstall([config.name])[0].removed;
       expect(removed.length, `${config.name}: not everything was removed`).toBe(installed.length);
@@ -396,7 +481,7 @@ describe('uninstall', () => {
       install([config.name], FAKE_PKG_ROOT);
       uninstall([config.name]);
 
-      for (const shim of config.shims.filter(s => s.startsWith('references/'))) {
+      for (const shim of SEEDED_REFERENCES) {
         expect(
           existsSync(join(config.installDir, shim)),
           `${config.name}: ${shim} survived uninstall`
@@ -413,8 +498,7 @@ describe('uninstall', () => {
   // directory.
   it('removing one reference file by hand does not strand the other or the install dir', () => {
     const config = AGENTS.find(a => a.name === 'claude-code')!;
-    const refs = config.shims.filter(s => s.startsWith('references/'));
-    expect(refs.length).toBeGreaterThan(1);
+    const refs = SEEDED_REFERENCES;
 
     mkdirSync(config.detectionDir, { recursive: true });
     seedPkgRoot(FAKE_PKG_ROOT, config);
@@ -476,6 +560,561 @@ describe('uninstall', () => {
     uninstall([config.name]);
 
     expect(existsSync(config.installDir)).toBe(false);
+  });
+});
+
+describe('listReferenceFiles', () => {
+  it('returns the *.md files directly under references/ as package-root-relative paths', () => {
+    const refs = join(FAKE_PKG_ROOT, 'references');
+    mkdirSync(join(refs, 'nested'), { recursive: true });
+    mkdirSync(join(refs, 'folder.md'));
+    writeFileSync(join(refs, 'notes.txt'), 'not markdown', 'utf8');
+    writeFileSync(join(refs, 'nested', 'deep.md'), 'not directly under references/', 'utf8');
+    writeFileSync(join(refs, 'b.md'), 'b', 'utf8');
+    writeFileSync(join(refs, 'a.md'), 'a', 'utf8');
+
+    expect(listReferenceFiles(FAKE_PKG_ROOT)).toEqual(['references/a.md', 'references/b.md']);
+  });
+
+  it('sorts them, whatever order the filesystem lists them in', async () => {
+    const refs = join(FAKE_PKG_ROOT, 'references');
+    mkdirSync(refs, { recursive: true });
+    for (const name of ['delta', 'alpha', 'echo', 'bravo']) {
+      writeFileSync(join(refs, `${name}.md`), name, 'utf8');
+    }
+    // Reverse of whatever this platform lists: sorted or not, the result must be.
+    const { listReferenceFiles: reversed } = await importInstallerWithFs(actual => ({
+      readdirSync: ((...args: Parameters<typeof readdirSync>) =>
+        [...(actual.readdirSync(...args) as unknown[])].reverse()) as unknown as typeof readdirSync,
+    }));
+
+    expect(reversed(FAKE_PKG_ROOT)).toEqual([
+      'references/alpha.md',
+      'references/bravo.md',
+      'references/delta.md',
+      'references/echo.md',
+    ]);
+  });
+
+  it('returns an empty list when the package root has no references/ directory', () => {
+    expect(listReferenceFiles(FAKE_PKG_ROOT)).toEqual([]);
+  });
+
+  it('returns an empty list when references is a file rather than a directory', () => {
+    writeFileSync(join(FAKE_PKG_ROOT, 'references'), 'not a directory', 'utf8');
+    expect(listReferenceFiles(FAKE_PKG_ROOT)).toEqual([]);
+  });
+
+  // An unreadable references/ is not "a skill with no references": reading it
+  // as empty would make a reinstall delete every reference it installed before.
+  it('rethrows a read error other than a missing directory, leaving installed references in place', async () => {
+    const claude = AGENTS.find(a => a.name === 'claude-code')!;
+    mkdirSync(claude.detectionDir, { recursive: true });
+    seedPkgRoot(FAKE_PKG_ROOT, claude);
+    install(['claude-code'], FAKE_PKG_ROOT);
+
+    const { listReferenceFiles: failing, install: failingInstall } = await importInstallerWithFs(actual => ({
+      readdirSync: failingOn(actual.readdirSync, () => true),
+    }));
+
+    expect(() => failing(FAKE_PKG_ROOT)).toThrow(/EACCES/);
+    expect(() => failingInstall(['claude-code'], FAKE_PKG_ROOT)).toThrow(/EACCES/);
+    for (const ref of SEEDED_REFERENCES) {
+      expect(existsSync(join(claude.installDir, ref)), ref).toBe(true);
+    }
+  });
+});
+
+describe('references and the install record', () => {
+  const claude = AGENTS.find(a => a.name === 'claude-code')!;
+  const OUTSIDE_INSTALL_DIR = join(claude.installDir, '..', 'outside.md');
+
+  /** Writes a file (and any parent directories) under `dir`. */
+  function plant(dir: string, rel: string, content = `planted ${rel}`): string {
+    const path = join(dir, rel);
+    mkdirSync(join(path, '..'), { recursive: true });
+    writeFileSync(path, content, 'utf8');
+    return path;
+  }
+
+  function installClaude(): void {
+    mkdirSync(claude.detectionDir, { recursive: true });
+    seedPkgRoot(FAKE_PKG_ROOT, claude);
+    install(['claude-code'], FAKE_PKG_ROOT);
+  }
+
+  /** Overwrites the record with exactly these entries, whatever they are. */
+  function writeRecord(files: unknown[]): void {
+    writeFileSync(join(claude.installDir, INSTALL_RECORD), JSON.stringify({ files }), 'utf8');
+  }
+
+  describe('install', () => {
+    it('copies every references/*.md in the package root, including one no agent config names', () => {
+      expect(AGENTS.flatMap(a => a.shims).some(shim => shim.includes('extra-playbook'))).toBe(false);
+
+      for (const config of AGENTS) {
+        mkdirSync(config.detectionDir, { recursive: true });
+        seedPkgRoot(FAKE_PKG_ROOT, config);
+        install([config.name], FAKE_PKG_ROOT);
+
+        for (const ref of SEEDED_REFERENCES) {
+          expect(readFileSync(join(config.installDir, ref), 'utf8'), `${config.name}: ${ref}`).toBe(
+            readFileSync(join(FAKE_PKG_ROOT, ref), 'utf8')
+          );
+        }
+      }
+    });
+
+    it('writes a record listing exactly the files it wrote', () => {
+      installClaude();
+
+      const record = readRecord(claude);
+      expect(Object.keys(record)).toEqual(['files']);
+      expect(record.files).toEqual(seededInstallFiles(claude));
+      // The record describes the skill's files; it is not one of them.
+      expect(record.files).not.toContain(INSTALL_RECORD);
+    });
+
+    it('does not report the record among the files it installed', () => {
+      mkdirSync(claude.detectionDir, { recursive: true });
+      seedPkgRoot(FAKE_PKG_ROOT, claude);
+
+      const [result] = install(['claude-code'], FAKE_PKG_ROOT);
+
+      expect(result.installed.map(path => basename(path))).not.toContain(INSTALL_RECORD);
+      expect(result.installed).toHaveLength(claude.shims.length + SEEDED_REFERENCES.length);
+    });
+
+    it('deletes an installed reference the new skill no longer ships and updates the record', () => {
+      installClaude();
+      rmSync(join(FAKE_PKG_ROOT, 'references', 'extra-playbook.md'));
+
+      install(['claude-code'], FAKE_PKG_ROOT);
+
+      expect(existsSync(join(claude.installDir, 'references', 'extra-playbook.md'))).toBe(false);
+      expect(existsSync(join(claude.installDir, 'references', 'cli.md'))).toBe(true);
+      expect(readRecord(claude).files).toEqual(
+        seededInstallFiles(claude).filter(rel => rel !== 'references/extra-playbook.md')
+      );
+    });
+
+    it('prunes references/ when the new skill ships no references at all', () => {
+      installClaude();
+      rmSync(join(FAKE_PKG_ROOT, 'references'), { recursive: true });
+
+      install(['claude-code'], FAKE_PKG_ROOT);
+
+      expect(existsSync(join(claude.installDir, 'references'))).toBe(false);
+      expect(existsSync(join(claude.installDir, 'SKILL.md'))).toBe(true);
+    });
+
+    it('leaves a user\'s own file in references/ alone when it deletes a dropped reference', () => {
+      installClaude();
+      const mine = plant(join(claude.installDir, 'references'), 'mine.md');
+      rmSync(join(FAKE_PKG_ROOT, 'references'), { recursive: true });
+
+      install(['claude-code'], FAKE_PKG_ROOT);
+
+      expect(existsSync(mine)).toBe(true);
+      expect(existsSync(join(claude.installDir, 'references', 'cli.md'))).toBe(false);
+    });
+
+    it('never deletes a stale record entry that points outside the install directory', () => {
+      installClaude();
+      plant(join(OUTSIDE_INSTALL_DIR, '..'), 'outside.md', 'not ours');
+      writeRecord(['SKILL.md', '../outside.md', join(OUTSIDE_INSTALL_DIR)]);
+
+      install(['claude-code'], FAKE_PKG_ROOT);
+
+      expect(readFileSync(OUTSIDE_INSTALL_DIR, 'utf8')).toBe('not ours');
+    });
+
+    // An entry spelled differently from what was just written must not turn
+    // that file into a "stale" one: the reinstall would delete its own output.
+    it('keeps a file it just wrote even when the previous record spells its path differently', () => {
+      installClaude();
+      writeRecord(['./SKILL.md', 'references//cli.md']);
+
+      install(['claude-code'], FAKE_PKG_ROOT);
+
+      expect(existsSync(join(claude.installDir, 'SKILL.md'))).toBe(true);
+      expect(existsSync(join(claude.installDir, 'references', 'cli.md'))).toBe(true);
+    });
+
+    // A package with no SKILL.md at all is broken, not a skill that shrank to
+    // nothing. Treating it as the latter would wipe a working install.
+    it('leaves an existing install and its record untouched when the package has nothing to install', () => {
+      installClaude();
+      const before = readFileSync(join(claude.installDir, INSTALL_RECORD), 'utf8');
+      const emptyRoot = join(TMP, 'empty-pkg');
+      mkdirSync(emptyRoot, { recursive: true });
+
+      const [result] = install(['claude-code'], emptyRoot);
+
+      expect(result.installed).toEqual([]);
+      expect(readFileSync(join(claude.installDir, INSTALL_RECORD), 'utf8')).toBe(before);
+      for (const rel of seededInstallFiles(claude)) {
+        expect(existsSync(join(claude.installDir, rel)), rel).toBe(true);
+      }
+    });
+
+    // A skill is discovered by its SKILL.md. A package that ships references and a
+    // harness shim but no SKILL.md must not replace a working install with a
+    // folder the harness cannot use, nor drop files next to it.
+    it('installs nothing, and leaves an existing install alone, when the package has no SKILL.md', () => {
+      installClaude();
+      const before = readFileSync(join(claude.installDir, INSTALL_RECORD), 'utf8');
+      const skillBefore = readFileSync(join(claude.installDir, 'SKILL.md'), 'utf8');
+      rmSync(join(FAKE_PKG_ROOT, 'SKILL.md'));
+      plant(FAKE_PKG_ROOT, 'references/new-only.md');
+
+      const [result] = install(['claude-code'], FAKE_PKG_ROOT);
+
+      expect(result.installed).toEqual([]);
+      expect(readFileSync(join(claude.installDir, 'SKILL.md'), 'utf8')).toBe(skillBefore);
+      expect(readFileSync(join(claude.installDir, INSTALL_RECORD), 'utf8')).toBe(before);
+      expect(existsSync(join(claude.installDir, 'references', 'new-only.md'))).toBe(false);
+      expect(existsSync(join(claude.installDir, 'references', 'cli.md'))).toBe(true);
+    });
+
+    // A stale file that cannot be deleted (read-only directory, a file Windows has
+    // locked) must stay in the record. Dropping it would orphan it: no later
+    // install or uninstall would know it is ours, and `references/` and the
+    // install directory would be stranded around it.
+    it('keeps a stale file it could not delete in the record, warns, and still finishes the install', async () => {
+      installClaude();
+      rmSync(join(FAKE_PKG_ROOT, 'references', 'extra-playbook.md'));
+      rmSync(join(FAKE_PKG_ROOT, 'references', 'cli.md'));
+      const { install: failingInstall } = await importInstallerWithFs(actual => ({
+        rmSync: failingOn(actual.rmSync, path => path.endsWith('extra-playbook.md')),
+      }));
+      const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+      try {
+        failingInstall(['claude-code'], FAKE_PKG_ROOT);
+        expect(stderr).toHaveBeenCalledWith(expect.stringContaining('could not remove'));
+      } finally {
+        stderr.mockRestore();
+      }
+
+      // The one that could be deleted went; the other stays, and stays recorded.
+      expect(existsSync(join(claude.installDir, 'references', 'cli.md'))).toBe(false);
+      expect(existsSync(join(claude.installDir, 'references', 'extra-playbook.md'))).toBe(true);
+      expect(readRecord(claude).files).toContain('references/extra-playbook.md');
+      expect(readRecord(claude).files).not.toContain('references/cli.md');
+
+      // ...so an uninstall still finds it, and leaves nothing stranded.
+      uninstall(['claude-code'], FAKE_PKG_ROOT);
+      expect(existsSync(claude.installDir)).toBe(false);
+    });
+
+    // Most installs predate the record (the first-launch install runs once), so
+    // the first reinstall over one has no record to diff against. It is read as
+    // holding what the installer wrote before records existed.
+    it('over an install with no record, removes pre-record references the new skill no longer ships', () => {
+      for (const rel of ['SKILL.md', 'nodespace-hook.ts', ...PRE_RECORD_REFERENCES]) {
+        plant(claude.installDir, rel);
+      }
+      mkdirSync(claude.detectionDir, { recursive: true });
+      plant(FAKE_PKG_ROOT, 'references/cli.md');
+
+      install(['claude-code'], FAKE_PKG_ROOT);
+
+      expect(existsSync(join(claude.installDir, 'references', 'cli.md'))).toBe(true);
+      expect(existsSync(join(claude.installDir, 'references', 'shared-workspaces.md'))).toBe(false);
+      expect(existsSync(join(claude.installDir, 'references', 'graph-authored-guidance.md'))).toBe(false);
+      expect(readRecord(claude).files).toEqual(['SKILL.md', 'references/cli.md']);
+    });
+
+    it('installs every reference in the real skill package, and every link in the installed SKILL.md resolves', () => {
+      const realRoot = join(import.meta.dirname, '../..');
+      mkdirSync(claude.detectionDir, { recursive: true });
+
+      install(['claude-code'], realRoot);
+
+      const shipped = readdirSync(join(realRoot, 'references')).filter(name => name.endsWith('.md'));
+      expect(shipped.length).toBeGreaterThan(0);
+      for (const name of shipped) {
+        expect(existsSync(join(claude.installDir, 'references', name)), name).toBe(true);
+      }
+
+      const body = readFileSync(join(claude.installDir, 'SKILL.md'), 'utf8');
+      const links = [...new Set(body.match(/references\/[A-Za-z0-9._-]+\.md/g))];
+      expect(links.length).toBeGreaterThan(0);
+      for (const link of links) {
+        expect(existsSync(join(claude.installDir, link)), `SKILL.md links ${link}`).toBe(true);
+      }
+    });
+  });
+
+  describe('uninstall', () => {
+    it('with a record, removes exactly the recorded files and the record, leaving no install directory', () => {
+      installClaude();
+      // A recorded file that neither the agent's shims nor the package root
+      // names: only the record can say it is ours.
+      const recordedOnly = plant(claude.installDir, 'references/retired-playbook.md');
+      writeRecord([...readRecord(claude).files, 'references/retired-playbook.md']);
+
+      const [result] = uninstall(['claude-code'], FAKE_PKG_ROOT);
+
+      expect(result.removed).toContain(recordedOnly);
+      expect(result.removed).toHaveLength(seededInstallFiles(claude).length + 1);
+      expect(existsSync(claude.installDir)).toBe(false);
+    });
+
+    it('with a record, keeps a user\'s own file in references/, and with it references/ and the install directory', () => {
+      installClaude();
+      const mine = plant(join(claude.installDir, 'references'), 'mine.md', 'user content');
+
+      uninstall(['claude-code'], FAKE_PKG_ROOT);
+
+      expect(readFileSync(mine, 'utf8')).toBe('user content');
+      expect(existsSync(join(claude.installDir, 'references', 'cli.md'))).toBe(false);
+      expect(existsSync(join(claude.installDir, 'SKILL.md'))).toBe(false);
+      expect(existsSync(join(claude.installDir, INSTALL_RECORD))).toBe(false);
+    });
+
+    it('with a record, ignores an entry that points outside the install directory', () => {
+      installClaude();
+      plant(join(OUTSIDE_INSTALL_DIR, '..'), 'outside.md', 'not ours');
+      writeRecord(['SKILL.md', '../outside.md', OUTSIDE_INSTALL_DIR, '../../../not-there.md']);
+
+      const [result] = uninstall(['claude-code'], FAKE_PKG_ROOT);
+
+      expect(readFileSync(OUTSIDE_INSTALL_DIR, 'utf8')).toBe('not ours');
+      expect(result.removed).toEqual([join(claude.installDir, 'SKILL.md')]);
+    });
+
+    it('with a record, ignores an entry that names a directory', () => {
+      installClaude();
+      const userFile = plant(join(claude.installDir, 'user-dir'), 'keep.md');
+      writeRecord(['user-dir', 'SKILL.md']);
+
+      uninstall(['claude-code'], FAKE_PKG_ROOT);
+
+      expect(existsSync(userFile)).toBe(true);
+    });
+
+    // The entry looks contained (`references/victim.md`), but `references` is a
+    // symlink to a directory outside the install directory.
+    it.skipIf(process.platform === 'win32')(
+      'with a record, never deletes through a symlinked directory that leads outside',
+      () => {
+        installClaude();
+        const elsewhere = join(TMP, 'elsewhere');
+        const victim = plant(elsewhere, 'victim.md', 'not ours');
+        rmSync(join(claude.installDir, 'references'), { recursive: true });
+        symlinkSync(elsewhere, join(claude.installDir, 'references'));
+        writeRecord(['references/victim.md']);
+
+        uninstall(['claude-code'], FAKE_PKG_ROOT);
+
+        expect(readFileSync(victim, 'utf8')).toBe('not ours');
+      }
+    );
+
+    it('treats an unreadable or malformed record as no record, and ignores non-string entries', () => {
+      const badRecords: Array<[string, string]> = [
+        ['not json', '{ nope'],
+        ['files is not an array', JSON.stringify({ files: 'SKILL.md' })],
+        ['a bare string', JSON.stringify('SKILL.md')],
+        ['null', 'null'],
+      ];
+      for (const [label, content] of badRecords) {
+        plant(claude.installDir, 'SKILL.md');
+        plant(claude.installDir, 'references/shared-workspaces.md');
+        writeFileSync(join(claude.installDir, INSTALL_RECORD), content, 'utf8');
+
+        uninstall(['claude-code'], FAKE_PKG_ROOT);
+
+        expect(existsSync(claude.installDir), `${label}: install dir survived`).toBe(false);
+      }
+
+      plant(claude.installDir, 'SKILL.md');
+      plant(claude.installDir, 'other.md', 'not in the record');
+      writeRecord([1, null, { file: 'other.md' }, 'SKILL.md']);
+      uninstall(['claude-code'], FAKE_PKG_ROOT);
+      expect(existsSync(join(claude.installDir, 'SKILL.md'))).toBe(false);
+      expect(existsSync(join(claude.installDir, 'other.md'))).toBe(true);
+    });
+
+    // Without a record the install predates it: what the installer wrote then
+    // was SKILL.md, the harness shim and a fixed set of references, including
+    // ones the skill has since stopped shipping.
+    it('without a record, removes the pre-record references, including one the package no longer ships, and prunes the directory', () => {
+      for (const rel of ['SKILL.md', 'nodespace-hook.ts', ...PRE_RECORD_REFERENCES]) {
+        plant(claude.installDir, rel);
+      }
+      // The package root ships only SKILL.md: none of the references exist there.
+
+      const [result] = uninstall(['claude-code'], FAKE_PKG_ROOT);
+
+      expect(result.removed).toHaveLength(2 + PRE_RECORD_REFERENCES.length);
+      expect(existsSync(join(claude.installDir, 'references'))).toBe(false);
+      expect(existsSync(claude.installDir)).toBe(false);
+    });
+
+    it('without a record, also removes a reference the package root ships that the pre-record list does not name', () => {
+      plant(claude.installDir, 'SKILL.md');
+      const extra = plant(claude.installDir, 'references/extra-playbook.md');
+      plant(FAKE_PKG_ROOT, 'references/extra-playbook.md');
+
+      const [result] = uninstall(['claude-code'], FAKE_PKG_ROOT);
+
+      expect(result.removed).toContain(extra);
+      expect(existsSync(claude.installDir)).toBe(false);
+    });
+
+    it('without a record, keeps a user\'s own file in references/, and with it references/ and the install directory', () => {
+      plant(claude.installDir, 'SKILL.md');
+      plant(claude.installDir, 'references/cli.md');
+      const mine = plant(claude.installDir, 'references/mine.md');
+
+      uninstall(['claude-code'], FAKE_PKG_ROOT);
+
+      expect(existsSync(mine)).toBe(true);
+      expect(existsSync(join(claude.installDir, 'references', 'cli.md'))).toBe(false);
+    });
+  });
+
+  describe('uninstall, filesystem edge cases', () => {
+    // A dotfile manager can link the skill's directory in from a repository. An
+    // emptied symlink cannot be rmdir'd, and the uninstall must neither crash
+    // nor skip the agents after it.
+    it.skipIf(process.platform === 'win32')(
+      'finishes, and moves on to the next agent, when the install directory is a symlink',
+      () => {
+        const codex = AGENTS.find(a => a.name === 'codex')!;
+        for (const config of [claude, codex]) {
+          mkdirSync(config.detectionDir, { recursive: true });
+          seedPkgRoot(FAKE_PKG_ROOT, config);
+        }
+        const linked = join(TMP, 'dotfiles', 'nodespace');
+        mkdirSync(linked, { recursive: true });
+        mkdirSync(join(claude.installDir, '..'), { recursive: true });
+        symlinkSync(linked, claude.installDir);
+        install(['claude-code', 'codex'], FAKE_PKG_ROOT);
+        expect(existsSync(join(linked, 'SKILL.md'))).toBe(true);
+
+        const results = uninstall(['claude-code', 'codex'], FAKE_PKG_ROOT);
+
+        expect(results.map(r => r.agent)).toEqual(['claude-code', 'codex']);
+        expect(readdirSync(linked)).toEqual([]);
+        expect(existsSync(codex.installDir)).toBe(false);
+      }
+    );
+
+    // The record names files; a link the user put where one of them goes is
+    // unlinked, never followed, so what it points at survives.
+    it.skipIf(process.platform === 'win32')(
+      'unlinks a recorded symlink without touching what it points at',
+      () => {
+        installClaude();
+        const external = plant(join(TMP, 'external'), 'SKILL.md', 'lives elsewhere');
+        const externalDir = join(TMP, 'external-dir');
+        const keepMe = plant(externalDir, 'keep.md', 'lives elsewhere too');
+        rmSync(join(claude.installDir, 'SKILL.md'));
+        symlinkSync(external, join(claude.installDir, 'SKILL.md'));
+        symlinkSync(externalDir, join(claude.installDir, 'linked-dir'));
+        writeRecord(['SKILL.md', 'linked-dir']);
+
+        uninstall(['claude-code'], FAKE_PKG_ROOT);
+
+        expect(existsSync(join(claude.installDir, 'SKILL.md'))).toBe(false);
+        expect(existsSync(join(claude.installDir, 'linked-dir'))).toBe(false);
+        expect(readFileSync(external, 'utf8')).toBe('lives elsewhere');
+        expect(readFileSync(keepMe, 'utf8')).toBe('lives elsewhere too');
+      }
+    );
+
+    // The recorded files are already gone, so there is nothing to delete, but
+    // the empty directories they leave behind are still this installer's.
+    it('prunes the directories of recorded files the user already deleted by hand', () => {
+      installClaude();
+      for (const rel of readRecord(claude).files) rmSync(join(claude.installDir, rel));
+
+      uninstall(['claude-code'], FAKE_PKG_ROOT);
+
+      expect(existsSync(claude.installDir)).toBe(false);
+    });
+
+    // An unreadable references/ in the package being uninstalled must not stop
+    // the removal of the files the pre-record list names.
+    it('without a record, still removes the pre-record files when the package references cannot be read', async () => {
+      for (const rel of ['SKILL.md', ...PRE_RECORD_REFERENCES]) plant(claude.installDir, rel);
+      const { uninstall: failingUninstall } = await importInstallerWithFs(actual => ({
+        readdirSync: failingOn(actual.readdirSync, path => path.endsWith('references') && path.startsWith(FAKE_PKG_ROOT)),
+      }));
+
+      const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+      let result;
+      try {
+        [result] = failingUninstall(['claude-code'], FAKE_PKG_ROOT);
+        // The cleanup is partial by construction, so it says so.
+        expect(stderr).toHaveBeenCalledWith(expect.stringContaining("could not read the skill's references"));
+      } finally {
+        stderr.mockRestore();
+      }
+
+      expect(result!.removed).toHaveLength(1 + PRE_RECORD_REFERENCES.length);
+      expect(existsSync(claude.installDir)).toBe(false);
+    });
+
+    // On Windows, rmdir on a directory symlink removes the link even though the
+    // directory behind it is not empty, unlike POSIX (ENOTDIR). This emulates
+    // that, so the guard is exercised on every platform the tests run on.
+    it.skipIf(process.platform === 'win32')(
+      'never prunes a symlinked directory, even where rmdir would remove the link',
+      async () => {
+        installClaude();
+        const elsewhere = join(TMP, 'elsewhere-references');
+        mkdirSync(elsewhere, { recursive: true });
+        for (const rel of readRecord(claude).files.filter(rel => rel.startsWith('references/'))) {
+          plant(elsewhere, rel.slice('references/'.length));
+        }
+        rmSync(join(claude.installDir, 'references'), { recursive: true });
+        symlinkSync(elsewhere, join(claude.installDir, 'references'));
+        const { uninstall: windowsUninstall } = await importInstallerWithFs(actual => ({
+          rmdirSync: ((path: string) =>
+            actual.lstatSync(path).isSymbolicLink() ? actual.unlinkSync(path) : actual.rmdirSync(path)) as typeof rmdirSync,
+        }));
+
+        windowsUninstall(['claude-code'], FAKE_PKG_ROOT);
+
+        expect(lstatSync(join(claude.installDir, 'references')).isSymbolicLink()).toBe(true);
+        expect(readdirSync(elsewhere).length).toBeGreaterThan(0);
+      }
+    );
+  });
+
+  describe('Claude Code plugin-managed reconciliation', () => {
+    // The cleanup is an uninstall of a possibly record-less copy, so it needs
+    // to know which package root the reinstall is running from.
+    it('cleans up a record-less copy using the package root install() was given', () => {
+      plant(claude.installDir, 'SKILL.md');
+      plant(claude.installDir, 'references/extra-playbook.md');
+      plant(FAKE_PKG_ROOT, 'references/extra-playbook.md');
+      mkdirSync(join(claude.detectionDir, 'plugins'), { recursive: true });
+      writeFileSync(
+        join(claude.detectionDir, 'plugins', 'installed_plugins.json'),
+        JSON.stringify({ version: 2, plugins: { 'nodespace@nodespace-skill': [{ scope: 'user' }] } }),
+        'utf8'
+      );
+
+      const [result] = install(['claude-code'], FAKE_PKG_ROOT);
+
+      expect(result.skipReason).toBe('plugin-managed');
+      expect(existsSync(claude.installDir)).toBe(false);
+    });
+  });
+
+  describe('checkInstalled', () => {
+    it('does not count an install directory holding only the record', () => {
+      mkdirSync(claude.installDir, { recursive: true });
+      writeRecord(['SKILL.md']);
+
+      expect(checkInstalled(['claude-code'])).toEqual([]);
+    });
   });
 });
 
@@ -666,7 +1305,7 @@ describe('install — Claude Code plugin-managed reconciliation', () => {
 
     const results = install(['claude-code', 'antigravity'], FAKE_PKG_ROOT);
     const antigravityResult = results.find(r => r.agent === 'antigravity')!;
-    expect(antigravityResult.installed.length).toBe(antigravity.shims.length);
+    expect(antigravityResult.installed.length).toBe(antigravity.shims.length + SEEDED_REFERENCES.length);
     expect(antigravityResult.skipReason).toBeUndefined();
   });
 });
