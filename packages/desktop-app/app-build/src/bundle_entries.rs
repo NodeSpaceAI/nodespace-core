@@ -24,8 +24,15 @@ use serde_json::{json, Value};
 /// - A resource (`bundle.resources`, list form) is staged when its base
 ///   directory exists and is not empty. The base directory is the run of whole
 ///   path components before the first `*`, `?` or `[`, or the entry itself when
-///   it has none. An entry that is not a string is left as declared, and a
-///   `resources` map leaves the whole config alone.
+///   it has none. A glob on part of a file name (`binaries/tool-*`) is judged
+///   by its directory, and a glob that starts at the crate root has the crate
+///   root (`.`) as its base, which is never empty. A directory that has files
+///   but none the glob matches is not detected: `tauri_build` fails on the
+///   glob, as it would without this helper.
+/// - An entry that is not a string is left as declared.
+/// - A config whose `bundle.externalBin` or `bundle.resources` is missing or
+///   not a list (a `resources` map, say) is left alone, so the build stays as
+///   strict as a release build.
 ///
 /// The config is read from `tauri.conf.json` in the build script's working
 /// directory, the app crate's root. The result goes through `TAURI_CONFIG`,
@@ -136,7 +143,12 @@ fn plan(
     let mut resources = Vec::new();
     for entry in declared_resources {
         match entry.as_str().map(base_dir) {
-            Some(base) if !has_content(&base) => missing.push(base),
+            // Two entries can draw from one directory: list it once.
+            Some(base) if !has_content(&base) => {
+                if !missing.contains(&base) {
+                    missing.push(base);
+                }
+            }
             _ => resources.push(entry.clone()),
         }
     }
@@ -156,26 +168,28 @@ fn plan(
 /// components before its first glob character, or the entry itself when it has
 /// none. `resources/skill/**/*` is judged by `resources/skill`; `binaries/tool-*`
 /// by `binaries`, since `tool-` is only the start of a file name.
+///
+/// Cut on the text, not rebuilt from `Path` components, so the entry's own
+/// separators reach the warning unchanged on every platform.
 fn base_dir(entry: &str) -> PathBuf {
     let dir = match entry.find(['*', '?', '[']) {
-        None => Path::new(entry),
+        None => entry,
         Some(glob_at) => {
+            // Up to and including the last separator before the glob.
             let literal = &entry[..glob_at];
-            if literal.ends_with(std::path::is_separator) {
-                Path::new(literal)
-            } else {
-                Path::new(literal).parent().unwrap_or(Path::new(""))
-            }
+            literal
+                .rfind(std::path::is_separator)
+                .map_or("", |at| &literal[..=at])
         }
     };
-    // `components` also drops a trailing separator, so the path reads the same
-    // in the warning however the entry was written.
-    let dir: PathBuf = dir.components().collect();
-    if dir.as_os_str().is_empty() {
-        PathBuf::from(".")
+    let trimmed = dir.trim_end_matches(std::path::is_separator);
+    // A path of separators only is the root, not the current directory.
+    let dir = if trimmed.is_empty() && !dir.is_empty() {
+        &dir[..1]
     } else {
-        dir
-    }
+        trimmed
+    };
+    PathBuf::from(if dir.is_empty() { "." } else { dir })
 }
 
 /// The nearest ancestor of `path` (itself included) that exists. A path that
@@ -318,6 +332,19 @@ mod tests {
     }
 
     #[test]
+    fn resources_drawing_from_one_missing_directory_list_it_once() {
+        let conf = conf(
+            json!([]),
+            json!(["resources/skill/**/*", "resources/skill/*.json"]),
+        );
+
+        let plan = plan_over(&conf, &[], &[]).expect("both entries are missing");
+
+        assert_eq!(plan.missing, paths(&["resources/skill"]));
+        assert_eq!(plan.patch["bundle"]["resources"], json!([]));
+    }
+
+    #[test]
     fn a_glob_free_resource_is_kept_when_it_is_a_staged_file() {
         let conf = conf(json!([]), json!(["docs/LICENSE"]));
 
@@ -408,8 +435,14 @@ mod tests {
             ("assets/a?/b", "assets"),
             ("assets/[ab]/c", "assets"),
             ("*.png", "."),
+            ("**/*.png", "."),
             ("assets/icon.png", "assets/icon.png"),
             ("assets/", "assets"),
+            ("assets//*.png", "assets"),
+            ("./assets/**", "./assets"),
+            ("../../skill/dist/*", "../../skill/dist"),
+            ("/abs/dir/*.txt", "/abs/dir"),
+            ("/*.txt", "/"),
         ] {
             // As text: a `Path` compares equal with or without a trailing separator.
             assert_eq!(base_dir(entry).to_str(), Some(expected), "entry {entry:?}");
