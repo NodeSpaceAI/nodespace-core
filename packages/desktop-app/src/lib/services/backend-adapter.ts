@@ -416,7 +416,7 @@ class TauriAdapter implements BackendAdapter {
 /**
  * Shape of the JSON error body dev-proxy sends for a failed request —
  * mirrors the Tauri command layer's `CommandError` (see
- * packages/desktop-app/src-tauri/src/commands/nodes.rs) closely enough that
+ * packages/desktop-app/app-lib/src/commands/nodes.rs) closely enough that
  * a well-formed body carries the same `code`/`conflictData` a Tauri
  * CommandError would.
  */

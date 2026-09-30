@@ -31,6 +31,7 @@ describe("classify", () => {
   test.each([
     "Cargo.lock",
     "packages/desktop-app/src-tauri/tauri.conf.json",
+    "packages/desktop-app/app-lib/src/lib.rs",
     "packages/core/tests/fixtures/data.json",
     "packages/proto/proto/nodespace.proto",
     ".cargo/config.toml",

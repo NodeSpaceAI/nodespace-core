@@ -51,7 +51,7 @@ export interface StageSpec {
  * them all; test:changed runs the ones the working diff reaches.
  */
 export const TIERS = {
-  // Compiles the skill installer script: a nodespace-app unit test asserts the
+  // Compiles the skill installer script: a nodespace-app-lib unit test asserts the
   // source checkout's `packages/skill/dist/install.js` exists, and the CLI's MCP
   // integration test skips itself without it. That is just the skill package's
   // `tsc` build — under a second. The rest of `build:skill` (staging the bundle,

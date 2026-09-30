@@ -29,7 +29,7 @@ const DST = join(
   REPO_ROOT,
   "packages",
   "desktop-app",
-  "src-tauri",
+  "app-lib",
   "proto",
   "nodespace_pro.proto",
 );

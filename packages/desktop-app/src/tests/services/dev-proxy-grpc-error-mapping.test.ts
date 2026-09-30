@@ -9,7 +9,7 @@
  * metadata the daemon attaches (packages/daemon/src/services/node_service.rs,
  * ops_error_to_status) and asserts it derives the same code/conflictData
  * shape the Tauri command layer's status_to_command_error
- * (packages/desktop-app/src-tauri/src/commands/nodes.rs) derives from tonic
+ * (packages/desktop-app/app-lib/src/commands/nodes.rs) derives from tonic
  * trailer metadata — the shape backend-adapter.test.ts already proves
  * HttpAdapter.handleResponse preserves once the JSON body carries it.
  */

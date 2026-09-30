@@ -4825,7 +4825,7 @@ mod tests {
     #[test]
     fn error_mapping_play_rule_rejected_is_distinguishable_from_subtree_access_denied() {
         // Both map to FAILED_PRECONDITION, but the Tauri-layer
-        // `status_to_command_error` (packages/desktop-app/src-tauri) must be
+        // `status_to_command_error` (packages/desktop-app/app-lib) must be
         // able to tell them apart by which metadata KEY is present, the same
         // way it already does for `x-subtree-inaccessible-count`. Guard
         // against the two headers ever colliding on the same name.

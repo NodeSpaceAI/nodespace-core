@@ -30,7 +30,7 @@ use tonic::transport::Channel;
 ///
 /// Deliberately does NOT stamp `x-ns-client-id` (ADR-026 C5 extension,
 /// implemented in the desktop app's own `DatabaseIdInterceptor` at
-/// `packages/desktop-app/src-tauri/src/services/grpc_client.rs`) — a separate,
+/// `packages/desktop-app/app-lib/src/services/grpc_client.rs`) — a separate,
 /// same-named struct in a different crate. The CLI is a one-shot process per
 /// invocation that never opens `WatchNodes`, so it has no same-origin echo to
 /// suppress; leaving its writes untagged means they carry no
@@ -284,7 +284,7 @@ async fn dial_channel(sock: &std::path::Path) -> Result<Channel> {
 /// Build a tonic `Channel` connected over a Named Pipe (Windows). Mirrors the
 /// daemon's server-side setup (`packages/daemon/src/main.rs`) and the desktop
 /// app's own client-side pipe transport
-/// (`packages/desktop-app/src-tauri/src/services/grpc_client.rs`) — same pipe
+/// (`packages/desktop-app/app-lib/src/services/grpc_client.rs`) — same pipe
 /// name convention, same connector shape, just a CLI-local copy since this
 /// crate has no dependency on the desktop-app crate.
 ///
@@ -689,7 +689,7 @@ mod windows_tests {
     /// Both tests below mutate `NODESPACED_SOCKET`, which is process-global —
     /// serialize them so they don't race each other under a multi-threaded
     /// test runner. Same shape as the equivalent lock in
-    /// `desktop-app/src-tauri/src/services/grpc_client.rs`'s `windows_tests`.
+    /// `desktop-app/app-lib/src/services/grpc_client.rs`'s `windows_tests`.
     static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     fn env_lock_guard() -> std::sync::MutexGuard<'static, ()> {

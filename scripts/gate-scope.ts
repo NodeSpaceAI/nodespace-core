@@ -21,7 +21,7 @@ export interface GateScope {
   fullReason: string | null;
   /** Happy-DOM unit tests and the Chromium browser tier. */
   frontend: boolean;
-  /** The Rust workspace's tests (nextest) and nodespace-app's unit tests. */
+  /** The Rust workspace's tests (nextest) and nodespace-app-lib's unit tests. */
   rust: boolean;
   /** The skill package's tests. */
   skill: boolean;
@@ -41,6 +41,7 @@ const RUST_DIRS = [
   "packages/proto/",
   "packages/nodespace-types/",
   "packages/desktop-app/src-tauri/",
+  "packages/desktop-app/app-lib/",
 ];
 
 /** Workspace-wide Rust inputs outside any one crate. */

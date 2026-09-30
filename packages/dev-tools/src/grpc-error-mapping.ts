@@ -29,7 +29,7 @@
  *     `collection_not_root`, `schema_not_root`, `cycle`). Binary for the same
  *     reason, with the same gating on the metadata key.
  *
- * `status_to_command_error` (packages/desktop-app/src-tauri/src/commands/nodes.rs)
+ * `status_to_command_error` (packages/desktop-app/app-lib/src/commands/nodes.rs)
  * reads those same trailers over tonic on the Tauri path to build
  * `VERSION_CONFLICT` / `SUBTREE_ACCESS_DENIED` / `PLAY_RULE_REJECTED` /
  * `TREE_INVARIANT_VIOLATION` `CommandError`s. This module is the dev-proxy/gRPC-js-side mirror of that

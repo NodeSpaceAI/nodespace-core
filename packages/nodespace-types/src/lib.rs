@@ -2,7 +2,7 @@
 //!
 //! This crate provides the type definitions and conversion functions shared
 //! between `nodespace-core` (storage layer), the Tauri command layer
-//! (`packages/desktop-app/src-tauri`), and `nodespace-cli` (which uses
+//! (`packages/desktop-app/app-lib`), and `nodespace-cli` (which uses
 //! `flatten_namespaced_properties` to honour the same property contract).
 //! All re-use these types directly, eliminating the hand-synced mirror that
 //! previously lived in `src-tauri/src/types.rs`.

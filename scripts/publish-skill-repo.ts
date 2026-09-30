@@ -8,7 +8,7 @@
  * `@nodespaceai/skill` is not published to npm and this script does not
  * change that: the desktop app runs `packages/skill`'s built installer
  * directly with `bun` (never `npx`/`npm` -- see
- * packages/desktop-app/src-tauri/src/skill_setup.rs), so npm publishing was
+ * packages/desktop-app/app-lib/src/skill_setup.rs), so npm publishing was
  * never actually required for the app's own install path -- the package
  * never landing on the registry never blocked anything real. This repo is
  * the sole distribution channel for the harness-native import path.

@@ -4,7 +4,7 @@
  * expects to find it.
  *
  * packages/skill ships two ways, both produced here (see
- * packages/desktop-app/src-tauri/src/skill_setup.rs's `Installer` enum for
+ * packages/desktop-app/app-lib/src/skill_setup.rs's `Installer` enum for
  * which one a given launch actually uses):
  *
  *   1. **The compiled standalone binary** (`bun build --compile`) — the
