@@ -2320,8 +2320,8 @@ impl NodeBehavior for PersonNodeBehavior {
 ///
 /// DatabaseSettingsNode is the singleton anchor for database-level configuration
 /// and for the owner `has_role` edge (ADR-037): the edge runs PersonNode →
-/// DatabaseSettingsNode and marks that person as the local user. Core declares
-/// no fields on it.
+/// DatabaseSettingsNode and marks that person as the local user. Its one field,
+/// `required_extensions`, lists the extensions a reader needs (ADR-083 §2).
 pub struct DatabaseSettingsNodeBehavior;
 
 impl NodeBehavior for DatabaseSettingsNodeBehavior {
@@ -2329,7 +2329,30 @@ impl NodeBehavior for DatabaseSettingsNodeBehavior {
         "database-settings"
     }
 
-    fn validate(&self, _node: &Node) -> Result<(), NodeValidationError> {
+    /// Rejects a `required_extensions` that is not a list of strings (null
+    /// clears it). The daemon's open guard refuses a database whose list it
+    /// cannot read, so a malformed value must not be stored. Checked in the
+    /// node's own bucket and at the top level, where a create passes its
+    /// properties before they are bucketed.
+    fn validate(&self, node: &Node) -> Result<(), NodeValidationError> {
+        let field = crate::db::required_extensions::REQUIRED_EXTENSIONS_FIELD;
+        let values = [
+            node.properties
+                .get(self.type_name())
+                .and_then(|bucket| bucket.get(field)),
+            node.properties.get(field),
+        ];
+        for value in values.into_iter().flatten() {
+            let is_list_of_strings = value.is_null()
+                || value
+                    .as_array()
+                    .is_some_and(|items| items.iter().all(serde_json::Value::is_string));
+            if !is_list_of_strings {
+                return Err(NodeValidationError::InvalidProperties(format!(
+                    "{field} must be a list of strings, found {value}"
+                )));
+            }
+        }
         Ok(())
     }
 
@@ -5605,6 +5628,47 @@ mod tests {
             registry.get("database-settings").unwrap().type_name(),
             "database-settings"
         );
+    }
+
+    #[test]
+    fn database_settings_accepts_a_list_of_strings_as_required_extensions() {
+        let behavior = DatabaseSettingsNodeBehavior;
+        for value in [
+            json!([]),
+            json!(["fixture"]),
+            json!(["a", "b"]),
+            json!(null),
+        ] {
+            for props in [
+                json!({ "database-settings": { "required_extensions": value.clone() } }),
+                json!({ "required_extensions": value.clone() }),
+            ] {
+                let node = database_settings_node(props.clone());
+                assert!(behavior.validate(&node).is_ok(), "{props} must be valid");
+            }
+        }
+    }
+
+    #[test]
+    fn database_settings_rejects_required_extensions_that_are_not_strings() {
+        let behavior = DatabaseSettingsNodeBehavior;
+        for value in [
+            json!(["fixture", 1]),
+            json!("fixture"),
+            json!(42),
+            json!({"a": "b"}),
+        ] {
+            for props in [
+                json!({ "database-settings": { "required_extensions": value.clone() } }),
+                json!({ "required_extensions": value.clone() }),
+            ] {
+                let node = database_settings_node(props.clone());
+                assert!(
+                    behavior.validate(&node).is_err(),
+                    "{props} must be rejected"
+                );
+            }
+        }
     }
 
     #[test]
