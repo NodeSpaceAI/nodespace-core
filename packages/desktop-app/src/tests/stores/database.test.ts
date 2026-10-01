@@ -1,10 +1,11 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 
+const logWarn = vi.fn();
 vi.mock('$lib/utils/logger', () => ({
   createLogger: () => ({
     debug: vi.fn(),
     info: vi.fn(),
-    warn: vi.fn(),
+    warn: (...a: unknown[]) => logWarn(...a),
     error: vi.fn()
   })
 }));
@@ -115,6 +116,55 @@ function db(id: string, overrides: Partial<DatabaseInfo> = {}): DatabaseInfo {
     extensions: {},
     ...overrides
   };
+}
+
+const REFUSAL: RequiresExtensionPayload = {
+  unsupportedExtensions: ['fixture-ext'],
+  message: 'This database needs Fixture App',
+  downloadLabel: 'Download Fixture App',
+  downloadUrl: 'https://example.test/fixture-app'
+};
+
+/** The error the app library returns for any command routed to a refused database. */
+function refusedRead(): Record<string, unknown> {
+  return {
+    message: REFUSAL.message,
+    code: 'REQUIRES_EXTENSION',
+    details: 'FailedPrecondition',
+    requiresExtension: REFUSAL
+  };
+}
+
+/**
+ * Answer like the app library over a daemon that refuses the databases in
+ * `refused`: the registry commands answer from `databases`, and every other
+ * command reads the routed database, rejecting when it is refused.
+ * `routedTo` is the database routing already points at.
+ */
+function daemon(
+  databases: DatabaseInfo[],
+  defaultId: string,
+  refused: string[],
+  routedTo: string | null = null
+): void {
+  let routed = routedTo;
+  mockInvoke.mockImplementation((cmd: string, args?: { id?: string }) => {
+    switch (cmd) {
+      case 'list_databases':
+        return Promise.resolve({ databases, defaultDatabaseId: defaultId });
+      case 'initial_database_id':
+        return Promise.resolve(null);
+      case 'set_active_database':
+        routed = args?.id ?? null;
+        return Promise.resolve();
+      case 'pin_window_database':
+        return Promise.resolve();
+      default:
+        return routed !== null && refused.includes(routed)
+          ? Promise.reject(refusedRead())
+          : Promise.resolve([]);
+    }
+  });
 }
 
 describe('Database Store', () => {
@@ -330,9 +380,9 @@ describe('Database Store', () => {
         'list_databases',
         'initial_database_id',
         'set_active_database',
-        // The refusal check reads the restored database after routing points at it.
-        'list_conflicts',
-        'pin_window_database'
+        'pin_window_database',
+        // The refusal check reads the restored database once it commits.
+        'list_conflicts'
       ]);
     });
 
@@ -507,8 +557,8 @@ describe('Database Store', () => {
 
       expect(mockInvoke.mock.calls).toEqual([
         ['set_active_database', { id: 'b' }],
-        ['list_conflicts', { input: { status: null, kind: null, limit: 1 } }],
-        ['pin_window_database', { id: 'b' }]
+        ['pin_window_database', { id: 'b' }],
+        ['list_conflicts', { input: { status: null, kind: null, limit: 1 } }]
       ]);
     });
 
@@ -731,6 +781,37 @@ describe('Database Store', () => {
       );
     });
 
+    it('load() restoring a refused database still fires the hook once, after the caches are evicted', async () => {
+      localStorage.setItem('nodespace.activeDatabaseId', 'a');
+      daemon([db('a', { status: 'requires_extension' }), db('b', { isDefault: true })], 'b', ['a']);
+
+      await databaseStore.load();
+
+      expect(databaseStore.activeRefusal).toEqual(REFUSAL);
+      expect(onDatabaseActivated).toHaveBeenCalledOnce();
+      expect(onDatabaseActivated).toHaveBeenCalledWith('a');
+      expect(activeAtHook).toEqual(['a']);
+      expect(clearAll.mock.invocationCallOrder[0]).toBeLessThan(
+        onDatabaseActivated.mock.invocationCallOrder[0]
+      );
+    });
+
+    it('switchTo a refused database still fires the hook once, after clearAll and before clearAllTabs', async () => {
+      databaseStore.databases = [db('a'), db('b', { status: 'requires_extension' })];
+      databaseStore.activeDatabaseId = 'a';
+      daemon(databaseStore.databases, 'a', ['b']);
+
+      await databaseStore.switchTo('b');
+
+      expect(databaseStore.activeRefusal).toEqual(REFUSAL);
+      expect(onDatabaseActivated).toHaveBeenCalledOnce();
+      expect(onDatabaseActivated).toHaveBeenCalledWith('b');
+      expect(activeAtHook).toEqual(['b']);
+      const hookOrder = onDatabaseActivated.mock.invocationCallOrder[0];
+      expect(clearAll.mock.invocationCallOrder[0]).toBeLessThan(hookOrder);
+      expect(hookOrder).toBeLessThan(clearAllTabs.mock.invocationCallOrder[0]);
+    });
+
     it('load() on the default database fires the hook once, with nothing evicted', async () => {
       listing();
 
@@ -931,69 +1012,30 @@ describe('Database Store', () => {
   });
 
   describe('refusal of a database that requires an extension', () => {
-    const REFUSAL: RequiresExtensionPayload = {
-      unsupportedExtensions: ['fixture-ext'],
-      message: 'This database needs Fixture App',
-      downloadLabel: 'Download Fixture App',
-      downloadUrl: 'https://example.test/fixture-app'
-    };
-
-    /** The error the app library returns for any command routed to a refused database. */
-    function refusedRead(): Record<string, unknown> {
-      return {
-        message: REFUSAL.message,
-        code: 'REQUIRES_EXTENSION',
-        details: 'FailedPrecondition',
-        requiresExtension: REFUSAL
-      };
-    }
-
-    /**
-     * Answer like the app library over a daemon that refuses the databases in
-     * `refused`: the registry commands answer from `databases`, and every
-     * other command reads the routed database, rejecting when it is refused.
-     * `routedTo` is the database routing already points at.
-     */
-    function daemon(
-      databases: DatabaseInfo[],
-      defaultId: string,
-      refused: string[],
-      routedTo: string | null = null
-    ): void {
-      let routed = routedTo;
-      mockInvoke.mockImplementation((cmd: string, args?: { id?: string }) => {
-        switch (cmd) {
-          case 'list_databases':
-            return Promise.resolve({ databases, defaultDatabaseId: defaultId });
-          case 'initial_database_id':
-            return Promise.resolve(null);
-          case 'set_active_database':
-            routed = args?.id ?? null;
-            return Promise.resolve();
-          case 'pin_window_database':
-            return Promise.resolve();
-          default:
-            return routed !== null && refused.includes(routed)
-              ? Promise.reject(refusedRead())
-              : Promise.resolve([]);
-        }
-      });
-    }
-
     /** Calls of the refusal read. */
     function refusalReads(): number {
       return mockInvoke.mock.calls.filter(([cmd]) => cmd === 'list_conflicts').length;
     }
 
-    it('a REQUIRES_EXTENSION error on the first read marks the restored database refused, and loads nothing from it', async () => {
+    /** The commands sent so far, in order. */
+    function commands(): string[] {
+      return mockInvoke.mock.calls.map(([cmd]) => cmd as string);
+    }
+
+    it('reads a database the listing marks refused before the selection commits, and loads nothing from it', async () => {
       localStorage.setItem('nodespace.activeDatabaseId', 'a');
-      daemon([db('a'), db('b', { isDefault: true })], 'b', ['a']);
+      daemon([db('a', { status: 'requires_extension' }), db('b', { isDefault: true })], 'b', ['a']);
 
       await databaseStore.load();
 
       expect(databaseStore.activeDatabaseId).toBe('a');
       expect(databaseStore.activeRefusal).toEqual(REFUSAL);
       expect(databaseStore.error).toBeNull();
+      // Read before the commit, which pins the window, and only once.
+      expect(commands().indexOf('list_conflicts')).toBeLessThan(
+        commands().indexOf('pin_window_database')
+      );
+      expect(refusalReads()).toBe(1);
       // The boot-time loads the default answered are dropped, and nothing is
       // reloaded from the refused database.
       expect(clearAll).toHaveBeenCalledOnce();
@@ -1014,9 +1056,22 @@ describe('Database Store', () => {
       expect(databaseStore.refusal?.databaseId).toBe('b');
     });
 
-    it('records no refusal when the first read fails for another reason', async () => {
+    it('records the refusal of a database the listing did not mark when its first read, after the commit, is refused', async () => {
       localStorage.setItem('nodespace.activeDatabaseId', 'a');
-      daemon([db('a'), db('b', { isDefault: true })], 'b', []);
+      daemon([db('a'), db('b', { isDefault: true })], 'b', ['a']);
+
+      await databaseStore.load();
+
+      expect(databaseStore.activeDatabaseId).toBe('a');
+      await vi.waitFor(() => expect(databaseStore.activeRefusal).toEqual(REFUSAL));
+      expect(commands().indexOf('pin_window_database')).toBeLessThan(
+        commands().indexOf('list_conflicts')
+      );
+    });
+
+    it('records no refusal when the read fails for another reason', async () => {
+      localStorage.setItem('nodespace.activeDatabaseId', 'a');
+      daemon([db('a', { status: 'requires_extension' }), db('b', { isDefault: true })], 'b', []);
       const answer = mockInvoke.getMockImplementation()!;
       mockInvoke.mockImplementation((cmd: string, args?: unknown) =>
         cmd === 'list_conflicts'
@@ -1025,14 +1080,36 @@ describe('Database Store', () => {
       );
 
       await databaseStore.load();
+      // The read before the commit and the check after it both failed.
+      await vi.waitFor(() => expect(refusalReads()).toBe(2));
 
       expect(databaseStore.activeDatabaseId).toBe('a');
       expect(databaseStore.activeRefusal).toBeNull();
       expect(loadCollections).toHaveBeenCalledOnce();
+      expect(logWarn).not.toHaveBeenCalled();
     });
 
-    it('switching to a refused database records its refusal, evicts the previous one and loads nothing', async () => {
-      databaseStore.databases = [db('a'), db('b')];
+    it('ignores, with a warning, a REQUIRES_EXTENSION error whose payload is malformed', async () => {
+      localStorage.setItem('nodespace.activeDatabaseId', 'a');
+      daemon([db('a'), db('b', { isDefault: true })], 'b', []);
+      const answer = mockInvoke.getMockImplementation()!;
+      mockInvoke.mockImplementation((cmd: string, args?: unknown) =>
+        cmd === 'list_conflicts'
+          ? Promise.reject({
+              ...refusedRead(),
+              requiresExtension: { ...REFUSAL, downloadUrl: 'mailto:someone@example.test' }
+            })
+          : answer(cmd, args)
+      );
+
+      await databaseStore.load();
+
+      await vi.waitFor(() => expect(logWarn).toHaveBeenCalledOnce());
+      expect(databaseStore.activeRefusal).toBeNull();
+    });
+
+    it('switching to a database the listing marks refused records its refusal before committing, and loads nothing', async () => {
+      databaseStore.databases = [db('a'), db('b', { status: 'requires_extension' })];
       databaseStore.activeDatabaseId = 'a';
       daemon(databaseStore.databases, 'a', ['b']);
 
@@ -1041,6 +1118,7 @@ describe('Database Store', () => {
       expect(databaseStore.activeDatabaseId).toBe('b');
       expect(databaseStore.activeRefusal).toEqual(REFUSAL);
       expect(databaseStore.error).toBeNull();
+      expect(commands()).toEqual(['set_active_database', 'list_conflicts', 'pin_window_database']);
       expect(clearAll).toHaveBeenCalledOnce();
       expect(clearAllTabs).toHaveBeenCalledOnce();
       expect(loadCollections).not.toHaveBeenCalled();
@@ -1049,8 +1127,38 @@ describe('Database Store', () => {
       expect(resyncSchemaPluginsForDatabaseSwitch).not.toHaveBeenCalled();
     });
 
-    it('switching to a database that opens clears the refusal and reloads', async () => {
+    it('does not hold a switch to a database the listing does not mark until it opens', async () => {
       databaseStore.databases = [db('a'), db('b')];
+      databaseStore.activeDatabaseId = 'a';
+      // The read waits on the database's open, which never finishes here.
+      mockInvoke.mockImplementation((cmd: string) =>
+        cmd === 'list_conflicts' ? new Promise(() => {}) : Promise.resolve(undefined)
+      );
+
+      const settled = await Promise.race([
+        databaseStore.switchTo('b').then(() => true),
+        new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 200))
+      ]);
+
+      expect(settled).toBe(true);
+      expect(databaseStore.activeDatabaseId).toBe('b');
+      expect(loadCollections).toHaveBeenCalledOnce();
+      expect(refusalReads()).toBe(1);
+    });
+
+    it('records the refusal of a database the listing did not mark after switching to it', async () => {
+      databaseStore.databases = [db('a'), db('b')];
+      databaseStore.activeDatabaseId = 'a';
+      daemon(databaseStore.databases, 'a', ['b']);
+
+      await databaseStore.switchTo('b');
+
+      expect(databaseStore.activeDatabaseId).toBe('b');
+      await vi.waitFor(() => expect(databaseStore.activeRefusal).toEqual(REFUSAL));
+    });
+
+    it('switching to a database that opens clears the refusal and reloads', async () => {
+      databaseStore.databases = [db('a', { status: 'requires_extension' }), db('b')];
       databaseStore.activeDatabaseId = 'a';
       databaseStore.refusal = { databaseId: 'a', requiresExtension: REFUSAL };
       daemon(databaseStore.databases, 'a', ['a']);
@@ -1119,7 +1227,7 @@ describe('Database Store', () => {
       expect(databaseStore.refusal).toBeNull();
     });
 
-    it('discards a listing re-read that a switch overtook', async () => {
+    it('drops a refusal read for a database that is no longer selected', async () => {
       databaseStore.databases = [db('a', { status: 'requires_extension' }), db('b')];
       databaseStore.activeDatabaseId = 'a';
       let routed: string | null = 'a';
@@ -1163,7 +1271,7 @@ describe('Database Store', () => {
       mockInvoke.mockImplementation((cmd: string, args?: { id?: string }) => {
         if (cmd === 'list_databases') {
           return Promise.resolve({
-            databases: [db('a'), db('b', { isDefault: true })],
+            databases: [db('a'), db('b', { isDefault: true, status: 'requires_extension' })],
             defaultDatabaseId: 'b'
           });
         }
@@ -1187,7 +1295,7 @@ describe('Database Store', () => {
     });
 
     it('discards the refusal read of a switch a newer switch superseded', async () => {
-      databaseStore.databases = [db('a'), db('b'), db('c')];
+      databaseStore.databases = [db('a'), db('b', { status: 'requires_extension' }), db('c')];
       databaseStore.activeDatabaseId = 'a';
       let routed: string | null = null;
       let refuseB: (() => void) | null = null;

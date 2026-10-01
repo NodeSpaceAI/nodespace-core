@@ -128,9 +128,11 @@ class DatabaseStore {
   error = $state<string | null>(null);
   /**
    * The refusal of the selected database, while the daemon refuses to open it.
-   * Read when a selection commits (`readRefusal`), and again when a listing
-   * marks the selected database `requires_extension` with no refusal recorded;
-   * replaced by the next committed selection. Read it through `activeRefusal`.
+   * Read before a selection commits when the listing marks the database
+   * `requires_extension`, otherwise right after it commits
+   * (`checkSelectedDatabase`), and again when a later listing marks it with
+   * no refusal recorded. Replaced by the next committed selection. Read it
+   * through `activeRefusal`.
    */
   refusal = $state<DatabaseRefusal | null>(null);
 
@@ -166,6 +168,11 @@ class DatabaseStore {
     return refusal !== null && refusal.databaseId === this.activeDatabaseId
       ? refusal.requiresExtension
       : null;
+  }
+
+  /** Whether the latest listing marks `id` as a database the daemon refuses to open. */
+  private isListedRefused(id: string): boolean {
+    return this.databases.some((db) => db.id === id && db.status === 'requires_extension');
   }
 
   /**
@@ -234,9 +241,12 @@ class DatabaseStore {
         await invoke('set_active_database', { id: resolved });
         if (superseded()) return;
 
-        // Learn whether the daemon refuses the restored database before
-        // committing it, so the workspace never mounts against a refused one.
-        const refusal = resolved !== null ? await this.readRefusal() : null;
+        // A database the listing marks refused is read before the selection
+        // commits, for the refusal's text, so the workspace never mounts
+        // against it. Any other database commits at once and is checked
+        // after, so its open never delays the selection.
+        const refusal =
+          resolved !== null && this.isListedRefused(resolved) ? await this.readRefusal() : null;
         if (superseded()) return;
 
         this.activeDatabaseId = resolved;
@@ -259,11 +269,16 @@ class DatabaseStore {
         // The first resolution is a committed activation: tell extensions once
         // the restore above has finished evicting.
         if (resolved !== null) notifyDatabaseActivated(resolved);
+        if (resolved !== null && refusal === null) void this.checkSelectedDatabase(resolved);
       } else if (
-        this.activeDatabase?.status === 'requires_extension' &&
-        this.activeRefusal === null
+        this.isListedRefused(this.activeDatabaseId) &&
+        this.activeRefusal === null &&
+        this.switchesInFlight === 0
       ) {
-        await this.recheckActiveDatabase();
+        // The listing marks the selected database refused, but no refusal was
+        // recorded (its read failed for another reason). With no switch in
+        // flight, routing still points at it.
+        await this.checkSelectedDatabase(this.activeDatabaseId);
       }
     } catch (err) {
       this.error = toError(err).message;
@@ -283,32 +298,38 @@ class DatabaseStore {
    * download link reach the frontend: the listing marks a refused database but
    * carries neither. Every routed command returns the same refusal, so this
    * sends a cheap one, a conflict-journal read of at most one record. Callers
-   * send it right after `set_active_database`, so it reads the database being
-   * selected and pays for its open ahead of the workspace's own reads.
+   * send it while routing points at the database it should read.
    */
   private async readRefusal(): Promise<RequiresExtensionPayload | null> {
     try {
       await invoke('list_conflicts', { input: { status: null, kind: null, limit: 1 } });
       return null;
     } catch (err) {
-      return isRequiresExtension(err) ? err.requiresExtension : null;
+      if (isRequiresExtension(err)) return err.requiresExtension;
+      if (typeof err === 'object' && err !== null && 'code' in err) {
+        if (err.code === 'REQUIRES_EXTENSION') {
+          // The daemon refuses the database, but with a payload this build
+          // cannot render, so the workspace shows and every read in it fails.
+          log.warn('Ignoring a REQUIRES_EXTENSION error with a malformed payload', err);
+        }
+      }
+      return null;
     }
   }
 
   /**
-   * Record the refusal of the selected database when a listing marks it
-   * `requires_extension` though none was recorded when it was selected (that
-   * read failed for another reason). Skipped while a switch is in flight,
-   * because routing may already point at the switch's target. Nothing is
-   * evicted: the refusal view replaces the workspace, and leaving it goes
-   * through `switchTo`, which evicts.
+   * Read the selected database `id`, which routing points at, and record its
+   * refusal if the daemon refuses it. Sent right after a selection commits,
+   * for a database the listing did not mark (a listing older than the
+   * database), so a switch to a database that opens never waits for its
+   * open; and when a later listing marks the selected database with no
+   * refusal recorded. A result for a database no longer selected is dropped.
+   * Nothing is evicted: the refusal view replaces the workspace, and leaving
+   * it goes through `switchTo`, which evicts.
    */
-  private async recheckActiveDatabase(): Promise<void> {
-    const id = this.activeDatabaseId;
-    if (id === null || this.switchesInFlight > 0) return;
-    const seq = this.switchSeq;
+  private async checkSelectedDatabase(id: string): Promise<void> {
     const refusal = await this.readRefusal();
-    if (refusal === null || seq !== this.switchSeq || this.activeDatabaseId !== id) return;
+    if (refusal === null || this.activeDatabaseId !== id) return;
     this.refusal = { databaseId: id, requiresExtension: refusal };
   }
 
@@ -453,7 +474,9 @@ class DatabaseStore {
 
       await invoke('set_active_database', { id });
       if (seq !== this.switchSeq) return;
-      const refusal = await this.readRefusal();
+      // As in `load()`: read a database the listing marks refused before
+      // committing, and check any other after.
+      const refusal = this.isListedRefused(id) ? await this.readRefusal() : null;
       if (seq !== this.switchSeq) return;
       this.activeDatabaseId = id;
       this.refusal = refusal === null ? null : { databaseId: id, requiresExtension: refusal };
@@ -487,6 +510,7 @@ class DatabaseStore {
         },
         true
       );
+      if (refusal === null) void this.checkSelectedDatabase(id);
     } catch (err) {
       this.error = toError(err).message;
       log.error('Failed to switch database', { id, error: err });
@@ -496,12 +520,15 @@ class DatabaseStore {
   }
 
   /**
-   * Evict every per-database cache, and invalidate every database-scoped
-   * load still in flight, so nothing from the previous database reaches the
-   * stores. Used by `switchTo`, and by `load()` when the restored database is
-   * not the daemon default (reads issued before routing was set were
-   * answered by the default). Followed by `reloadDatabaseStores` unless the
-   * daemon refuses the newly-active database.
+   * Evict the node caches and the per-database selection state, and
+   * invalidate every database-scoped load still in flight, so nothing from
+   * the previous database lands in a store afterwards. The sidebar stores'
+   * lists stay until `reloadDatabaseStores` replaces them. Used by
+   * `switchTo`, and by `load()` when the restored database is not the daemon
+   * default (reads issued before routing was set were answered by the
+   * default). A database the daemon refuses gets no reload: the refusal view
+   * replaces everything that shows those lists, and leaving it goes through
+   * `switchTo`, which reloads.
    */
   private evictDatabaseCaches(): void {
     // Evict the previous database's cached data. `clearAll()` also bumps the
