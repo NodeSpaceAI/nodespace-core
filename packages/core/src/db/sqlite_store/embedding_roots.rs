@@ -13,16 +13,16 @@
 use super::*;
 use std::collections::BTreeSet;
 
-/// Upper bound on the upward access walk, matching the cloud walk's cycle
-/// backstop (`user_can_access_node` in `cloud-sync.md`).
+/// Upper bound on the upward access walk's depth, a backstop against a
+/// pathologically deep `member_of` chain (the walk's `seen` set stops cycles).
 const MAX_ACCESS_WALK_DEPTH: usize = 64;
 
 /// Upper bound on a `has_child` chain, as a backstop against a cyclic tree.
 const MAX_PARENT_CHAIN_DEPTH: usize = 1000;
 
 /// SQL for a restricted collection at `alias`. JSON `true` and the string
-/// `"true"` both count, as they do for the cloud walk's text comparison
-/// (`properties->'collection'->>'restrictedToMembers' = 'true'`).
+/// `"true"` both count, so a flag stored as text by any writer still restricts
+/// the collection.
 fn restricted_collection_sql(alias: &str) -> String {
     format!(
         "({alias}.node_type = 'collection' \
@@ -34,9 +34,9 @@ fn restricted_collection_sql(alias: &str) -> String {
 /// SQL for "the node `id_expr` might have access that differs from its outline
 /// ancestry's": it holds a `member_of` edge. That is the only way a node gains
 /// its own classification, since a collection (the only thing that restricts)
-/// can never sit inside an outline. A `person`'s `member_of` edges are RBAC
-/// membership, gated server-side rather than by the reachability walk, so they
-/// do not classify the person node.
+/// can never sit inside an outline. A `person`'s `member_of` edges grant access
+/// to the collection (their `permission`); they are not content membership, so
+/// they do not classify the person node.
 ///
 /// A candidate is only a *possible* boundary; [`SqliteStore::access_boundary`]
 /// decides. The cheap filter keeps the walk off the common case.

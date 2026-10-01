@@ -27,7 +27,7 @@ describe('labelForField', () => {
   it('does not fall back to description even when friendlyName differs', () => {
     const f = field({
       friendlyName: 'Email',
-      description: 'Email address; optional at schema level, required for invited teammates'
+      description: 'Email address (optional)'
     });
     expect(labelForField(f)).toBe('Email');
   });

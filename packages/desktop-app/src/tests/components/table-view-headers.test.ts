@@ -58,8 +58,7 @@ describe('TableView column headers', () => {
         name: 'email',
         friendlyName: 'Email',
         type: 'string',
-        description:
-          'Email address; optional at schema level, required in practice for invited teammates'
+        description: 'Email address (optional)'
       })
     ]);
 
@@ -72,7 +71,7 @@ describe('TableView column headers', () => {
     expect(getByText('Email')).toBeTruthy();
     // The verbose description prose must never leak into a header.
     expect(queryByText(/a person may exist before a name is set/)).toBeNull();
-    expect(queryByText(/required in practice for invited teammates/)).toBeNull();
+    expect(queryByText(/Email address \(optional\)/)).toBeNull();
   });
 
   it('reads friendlyName for task-shaped fields unchanged from their prior label text', () => {
