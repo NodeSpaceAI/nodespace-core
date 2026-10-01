@@ -4214,7 +4214,7 @@ impl AgentToolExecutor for GraphToolExecutor {
         };
 
         // Build a map from handler key → ToolDefinition from node properties.
-        // Only enabled nodes with a valid handler key are included.
+        // Only internal or enabled nodes with a handler key are included.
         let mut node_defs: std::collections::HashMap<String, ToolDefinition> =
             std::collections::HashMap::new();
 
@@ -4227,6 +4227,12 @@ impl AgentToolExecutor for GraphToolExecutor {
                 .unwrap_or("")
                 .to_string();
             if handler.is_empty() {
+                // Tool validation requires a handler, so a node without one
+                // means this reader no longer matches the stored shape.
+                tracing::warn!(
+                    node_id = node.get("id").and_then(|v| v.as_str()).unwrap_or(""),
+                    "available_tools: skipping tool node with no handler"
+                );
                 continue;
             }
 
@@ -7781,7 +7787,9 @@ mod tests {
 
             // The premise of every test here: stored tool fields live in the
             // `tool` bucket, not at the top level of `properties`.
-            for node in ns.query_nodes_by_type("tool", None).await.unwrap() {
+            let stored = ns.query_nodes_by_type("tool", None).await.unwrap();
+            assert_eq!(stored.len(), templates.len());
+            for node in stored {
                 assert!(node.properties["tool"]["handler"].is_string());
                 assert!(node.properties.get("handler").is_none());
             }
@@ -7805,13 +7813,6 @@ mod tests {
             }
             fn flush(&mut self) -> std::io::Result<()> {
                 Ok(())
-            }
-        }
-
-        impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for CaptureWriter {
-            type Writer = CaptureWriter;
-            fn make_writer(&'a self) -> Self::Writer {
-                self.clone()
             }
         }
 
@@ -7845,13 +7846,18 @@ mod tests {
             let get_node = tools.iter().find(|t| t.name == "get_node").unwrap();
             assert_eq!(get_node.description, "Edited description");
             assert_eq!(get_node.parameters_schema, edited_schema);
-            // Unedited nodes still match the registry, in registry order.
-            let names: Vec<String> = tools.iter().map(|t| t.name.clone()).collect();
-            let expected: Vec<String> = model_facing_tool_definitions()
-                .into_iter()
-                .map(|t| t.name)
-                .collect();
-            assert_eq!(names, expected);
+            // Every unedited node yields the registry's own definition, in
+            // registry order — the prompt golden is rendered from the registry
+            // and relies on the two being the same surface.
+            let expected = model_facing_tool_definitions();
+            assert_eq!(tools.len(), expected.len());
+            for (actual, expected) in tools.iter().zip(&expected) {
+                assert_eq!(actual.name, expected.name);
+                if actual.name != "get_node" {
+                    assert_eq!(actual.description, expected.description);
+                    assert_eq!(actual.parameters_schema, expected.parameters_schema);
+                }
+            }
         }
 
         #[tokio::test]
@@ -7894,8 +7900,9 @@ mod tests {
             .await;
 
             let logs = CaptureWriter::default();
+            let sink = logs.clone();
             let subscriber = tracing_subscriber::fmt()
-                .with_writer(logs.clone())
+                .with_writer(move || sink.clone())
                 .with_ansi(false)
                 .finish();
             let tools = {
