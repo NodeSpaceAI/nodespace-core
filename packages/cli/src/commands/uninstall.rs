@@ -15,7 +15,33 @@ fn home_dir() -> Result<PathBuf> {
     Ok(PathBuf::from(home))
 }
 
+/// Where the macOS app is installed.
+#[cfg(target_os = "macos")]
+const INSTALLED_APP: &str = "/Applications/NodeSpace.app";
+
+/// The `Info.plist` key an app bundle declares its product in (ADR-084), and
+/// the value the free NodeSpace declares.
+#[cfg(any(target_os = "macos", test))]
+const PRODUCT_KEY: &str = "NodeSpaceProduct";
+#[cfg(any(target_os = "macos", test))]
+const COMMUNITY_PRODUCT: &str = "community";
+
+#[cfg(any(target_os = "macos", test))]
+const NOT_COMMUNITY_MESSAGE: &str = "The NodeSpace app on this Mac is a different NodeSpace \
+    product, or an older NodeSpace that does not say which product it is. Use that product's own \
+    uninstaller, or update NodeSpace first; this command removes only the free NodeSpace.";
+
 pub fn run(_args: UninstallArgs) -> Result<()> {
+    // This command removes only the free NodeSpace. Over any other installed
+    // app it would stop that app's daemon and delete its per-user files while
+    // leaving the app itself behind, so it refuses before touching anything.
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(message) = uninstall_blocker(Path::new(INSTALLED_APP)) {
+            anyhow::bail!(message);
+        }
+    }
+
     stop_daemon();
 
     let home = home_dir()?;
@@ -27,6 +53,32 @@ pub fn run(_args: UninstallArgs) -> Result<()> {
     println!("NodeSpace uninstalled. Your data at ~/.nodespace/database/ has been preserved.");
 
     Ok(())
+}
+
+/// Why `uninstall` must not run with the app bundle at `app_bundle`
+/// installed, or `None` when it may.
+///
+/// No bundle means a headless install, which is the free NodeSpace. A bundle
+/// may proceed only when its `Contents/Info.plist` (XML or binary) declares
+/// [`PRODUCT_KEY`] = [`COMMUNITY_PRODUCT`]. Anything else refuses: another
+/// value, no key (an app built before the key existed, which cannot say what
+/// it is), a value that isn't a string, or a plist that can't be read.
+#[cfg(any(target_os = "macos", test))]
+fn uninstall_blocker(app_bundle: &Path) -> Option<String> {
+    if let Ok(false) = app_bundle.try_exists() {
+        return None;
+    }
+    let info = plist::Value::from_file(app_bundle.join("Contents").join("Info.plist")).ok();
+    let product = info
+        .as_ref()
+        .and_then(plist::Value::as_dictionary)
+        .and_then(|info| info.get(PRODUCT_KEY))
+        .and_then(plist::Value::as_string);
+    if product == Some(COMMUNITY_PRODUCT) {
+        None
+    } else {
+        Some(NOT_COMMUNITY_MESSAGE.to_owned())
+    }
 }
 
 /// Remove the NodeSpace skill from every detected agent harness (Claude
@@ -144,6 +196,105 @@ fn remove_sock(home: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Creates `<dir>/NodeSpace.app/Contents` and returns the bundle path.
+    /// Every bundle lives in a tempdir; no test reads the real install.
+    fn app_bundle(dir: &Path) -> PathBuf {
+        let bundle = dir.join("NodeSpace.app");
+        fs::create_dir_all(bundle.join("Contents")).expect("create bundle");
+        bundle
+    }
+
+    fn info_plist(bundle: &Path) -> PathBuf {
+        bundle.join("Contents").join("Info.plist")
+    }
+
+    /// An `Info.plist` like the app's, with `product` under [`PRODUCT_KEY`]
+    /// when given.
+    fn info(product: Option<plist::Value>) -> plist::Value {
+        let mut info = plist::Dictionary::new();
+        info.insert("CFBundleIdentifier".into(), "com.nodespace.desktop".into());
+        if let Some(product) = product {
+            info.insert(PRODUCT_KEY.into(), product);
+        }
+        plist::Value::Dictionary(info)
+    }
+
+    /// The blocker for a bundle whose XML `Info.plist` is `info`.
+    fn blocker_for_xml(info: plist::Value) -> Option<String> {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let bundle = app_bundle(dir.path());
+        info.to_file_xml(info_plist(&bundle))
+            .expect("write Info.plist");
+        uninstall_blocker(&bundle)
+    }
+
+    fn refused() -> Option<String> {
+        Some(NOT_COMMUNITY_MESSAGE.to_owned())
+    }
+
+    /// A headless install has no app, and uninstalls as it always has.
+    #[test]
+    fn uninstall_blocker_allows_no_app() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        assert_eq!(uninstall_blocker(&dir.path().join("NodeSpace.app")), None);
+    }
+
+    #[test]
+    fn uninstall_blocker_allows_an_app_declaring_community() {
+        assert_eq!(blocker_for_xml(info(Some(COMMUNITY_PRODUCT.into()))), None);
+    }
+
+    /// Built bundles can carry a binary plist; the check reads both formats.
+    #[test]
+    fn uninstall_blocker_allows_a_binary_plist_declaring_community() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let bundle = app_bundle(dir.path());
+        info(Some(COMMUNITY_PRODUCT.into()))
+            .to_file_binary(info_plist(&bundle))
+            .expect("write binary Info.plist");
+        assert!(fs::read(info_plist(&bundle))
+            .expect("read back")
+            .starts_with(b"bplist00"));
+
+        assert_eq!(uninstall_blocker(&bundle), None);
+    }
+
+    #[test]
+    fn uninstall_blocker_refuses_an_app_declaring_another_product() {
+        for product in ["pro", "other"] {
+            assert_eq!(
+                blocker_for_xml(info(Some(product.into()))),
+                refused(),
+                "{PRODUCT_KEY} = {product:?}"
+            );
+        }
+    }
+
+    /// An app built before the key existed can't say which product it is.
+    #[test]
+    fn uninstall_blocker_refuses_an_app_without_the_key() {
+        assert_eq!(blocker_for_xml(info(None)), refused());
+    }
+
+    #[test]
+    fn uninstall_blocker_refuses_a_product_that_is_not_a_string() {
+        assert_eq!(blocker_for_xml(info(Some(true.into()))), refused());
+    }
+
+    #[test]
+    fn uninstall_blocker_refuses_an_unparseable_info_plist() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let bundle = app_bundle(dir.path());
+        fs::write(info_plist(&bundle), "not a property list").expect("write Info.plist");
+        assert_eq!(uninstall_blocker(&bundle), refused());
+    }
+
+    #[test]
+    fn uninstall_blocker_refuses_an_app_without_an_info_plist() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        assert_eq!(uninstall_blocker(&app_bundle(dir.path())), refused());
+    }
 
     /// Every variant's socket and lock file must go, and nothing beside them.
     /// The daemon leaves its lock file behind on every exit, so a lock that

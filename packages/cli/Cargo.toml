@@ -44,8 +44,13 @@ uuid = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 libc = "0.2"
+# Reads the installed app's Info.plist (XML or binary) for `uninstall`'s
+# product check -- already in the lockfile as a Tauri dependency.
+plist = "1.10"
 
 [dev-dependencies]
+# The `uninstall` product check is unit-tested on every platform.
+plist = "1.10"
 nodespace-core = { workspace = true }
 nodespace-agent = { workspace = true }
 nodespace-nlp-engine = { workspace = true }
