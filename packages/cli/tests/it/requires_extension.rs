@@ -24,6 +24,7 @@ use tokio::net::UnixListener;
 use tokio::process::Command;
 use tokio::sync::{oneshot, watch};
 use tokio_stream::wrappers::UnixListenerStream;
+use tonic::service::Interceptor;
 use tonic::transport::Server;
 
 fn context(home: &Path) -> SharedContext {
@@ -87,6 +88,11 @@ impl Drop for Daemon {
 /// Boot a daemon whose default database requires `pro`, with a second
 /// database `other` holding one node.
 async fn spawn_daemon() -> Daemon {
+    spawn_daemon_with(Ok::<_, tonic::Status>).await
+}
+
+/// [`spawn_daemon`], with `intercept` run before every node-service call.
+async fn spawn_daemon_with(intercept: impl Interceptor + Clone + Send + 'static) -> Daemon {
     let home = TempDir::new().unwrap();
     let context = context(home.path());
     let (default_path, _) = database_requiring(home.path(), "marked", &["pro"]).await;
@@ -121,7 +127,7 @@ async fn spawn_daemon() -> Daemon {
             .add_service(DatabaseServiceServer::new(DatabaseServiceImpl::new(
                 manager,
             )))
-            .add_service(NodeServiceServer::new(node))
+            .add_service(NodeServiceServer::with_interceptor(node, intercept))
             .serve_with_incoming_shutdown(incoming, async move {
                 let _ = shutdown_rx.await;
             })
@@ -177,6 +183,9 @@ async fn a_command_routed_to_a_refused_database_exits_non_zero_with_the_refusal(
         vec!["node", "get", "anything"],
         vec!["--database", "marked", "node", "get", "anything"],
         vec!["--json", "search", "anything"],
+        vec!["diagnostics"],
+        vec!["--database", "marked", "diagnostics"],
+        vec!["--json", "diagnostics"],
     ] {
         let out = nodespace(&daemon, &args).await;
         assert!(!out.status.success(), "{args:?} must fail");
@@ -242,4 +251,43 @@ async fn database_list_marks_the_refused_database() {
         .find(|d| d["name"] == "other")
         .unwrap();
     assert_eq!(other["refusal"], serde_json::Value::Null);
+}
+
+/// Fails every node-service call with a FAILED_PRECONDITION that is not the
+/// required-extensions refusal.
+#[derive(Clone)]
+struct RefuseByRule;
+
+impl Interceptor for RefuseByRule {
+    fn call(&mut self, _: tonic::Request<()>) -> Result<tonic::Request<()>, tonic::Status> {
+        Err(tonic::Status::failed_precondition("a rule refused"))
+    }
+}
+
+/// A failure other than the refusal, even another FAILED_PRECONDITION, leaves
+/// diagnostics reporting as before: each failing query is listed and the run
+/// exits non-zero, with no refusal text.
+#[tokio::test]
+async fn diagnostics_lists_each_failing_query_when_the_failure_is_not_the_refusal() {
+    let daemon = spawn_daemon_with(RefuseByRule).await;
+
+    let out = nodespace(&daemon, &["--database", "other", "diagnostics"]).await;
+    assert!(!out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    for rpc in [
+        "CountNodes",
+        "CountRoots",
+        "QueryNodesSimple",
+        "GetAllSchemas",
+        "GetDaemonMemory",
+    ] {
+        assert!(
+            stdout.contains(&format!("  - {rpc} failed: ")),
+            "{rpc} is listed: {stdout}"
+        );
+    }
+    assert_eq!(
+        String::from_utf8_lossy(&out.stderr),
+        "Error: diagnostics incomplete: 5 query/IO failure(s) — see the Errors section above\n"
+    );
 }

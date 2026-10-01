@@ -574,7 +574,9 @@ async fn diagnostics_collect_reports_counts_and_recency() {
         .expect("connect seed");
     let mut db = connect_database(&sock).await.expect("connect database");
 
-    let baseline = commands::diagnostics::collect(&mut node, &mut db, None).await;
+    let baseline = commands::diagnostics::collect(&mut node, &mut db, None)
+        .await
+        .expect("no database is refused");
     assert!(
         baseline.errors.is_empty(),
         "baseline collect must not produce errors: {:?}",
@@ -627,7 +629,9 @@ async fn diagnostics_collect_reports_counts_and_recency() {
             .node_id;
     }
 
-    let report = commands::diagnostics::collect(&mut node, &mut db, None).await;
+    let report = commands::diagnostics::collect(&mut node, &mut db, None)
+        .await
+        .expect("no database is refused");
     assert_eq!(
         report.total_node_count,
         baseline.total_node_count.map(|n| n + 3),
@@ -2697,7 +2701,9 @@ async fn diagnostics_reports_unknown_counts_when_the_node_query_fails() {
         .expect("connect starved")
         .max_decoding_message_size(1);
 
-    let report = commands::diagnostics::collect(&mut starved, &mut db, None).await;
+    let report = commands::diagnostics::collect(&mut starved, &mut db, None)
+        .await
+        .expect("no database is refused");
 
     assert!(
         report.total_node_count.is_none(),

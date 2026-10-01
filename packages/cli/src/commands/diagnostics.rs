@@ -89,7 +89,10 @@ pub async fn run(
     _args: DiagnosticsArgs,
     json_output: bool,
 ) -> Result<()> {
-    let report = collect(node_client, db_client, target_id).await;
+    // A refused database fails here, before anything is printed, so the
+    // top-level `render_refusal` prints the refusal exactly as it does for
+    // every other routed command.
+    let report = collect(node_client, db_client, target_id).await?;
     if json_output {
         print_json(&report)?;
     } else {
@@ -116,11 +119,16 @@ pub async fn run(
 /// Split out from `run` so integration tests can drive it against a tempdir
 /// daemon. `target_id` is the resolved id of the selected database, or `None`
 /// for the daemon's default.
+///
+/// Fails with the daemon's status when the targeted database is refused for
+/// requiring an extension this build does not support (ADR-083 §2): such a
+/// database has no report to give. Every other failed query is recorded in
+/// the report's `errors`.
 pub async fn collect(
     node_client: &mut NodeClient,
     db_client: &mut DatabaseServiceClient<Channel>,
     target_id: Option<&str>,
-) -> DiagnosticsReport {
+) -> Result<DiagnosticsReport> {
     let mut errors: Vec<String> = Vec::new();
     // No longer mutated: total_node_count/root_node_count come from
     // count-only RPCs (exact regardless of database size) and
@@ -146,7 +154,7 @@ pub async fn collect(
             (summaries, inner.default_database_id)
         }
         Err(e) => {
-            errors.push(format!("ListDatabases failed: {e}"));
+            record_failure("ListDatabases", e, &mut errors)?;
             (Vec::new(), String::new())
         }
     };
@@ -201,7 +209,7 @@ pub async fn collect(
     {
         Ok(response) => Some(response.into_inner().count as usize),
         Err(e) => {
-            errors.push(format!("CountNodes failed: {e}"));
+            record_failure("CountNodes", e, &mut errors)?;
             None
         }
     };
@@ -209,7 +217,7 @@ pub async fn collect(
     let root_node_count = match node_client.count_roots(Empty {}).await {
         Ok(response) => Some(response.into_inner().count as usize),
         Err(e) => {
-            errors.push(format!("CountRoots failed: {e}"));
+            record_failure("CountRoots", e, &mut errors)?;
             None
         }
     };
@@ -242,7 +250,7 @@ pub async fn collect(
                 .collect::<Vec<String>>(),
         ),
         Err(e) => {
-            errors.push(format!("QueryNodesSimple failed: {e}"));
+            record_failure("QueryNodesSimple", e, &mut errors)?;
             // Deliberately NOT an empty Vec: stays `None` so the report says
             // "unknown" rather than reporting a failed query as a zero-node
             // database.
@@ -253,7 +261,7 @@ pub async fn collect(
     let schema_count = match node_client.get_all_schemas(GetAllSchemasRequest {}).await {
         Ok(response) => Some(response.into_inner().count),
         Err(e) => {
-            errors.push(format!("GetAllSchemas failed: {e}"));
+            record_failure("GetAllSchemas", e, &mut errors)?;
             None
         }
     };
@@ -279,12 +287,12 @@ pub async fn collect(
             rss
         }
         Err(e) => {
-            errors.push(format!("GetDaemonMemory failed: {e}"));
+            record_failure("GetDaemonMemory", e, &mut errors)?;
             None
         }
     };
 
-    DiagnosticsReport {
+    Ok(DiagnosticsReport {
         databases,
         targeted_database_id,
         targeted_database_path,
@@ -296,7 +304,18 @@ pub async fn collect(
         recent_node_ids,
         errors,
         warnings,
+    })
+}
+
+/// Record the failed `rpc` in `errors`, unless the daemon refused the database
+/// for requiring an unsupported extension. That status is returned as the
+/// error itself, so `render_refusal` can find it in the error chain.
+fn record_failure(rpc: &str, status: tonic::Status, errors: &mut Vec<String>) -> Result<()> {
+    if nodespace_proto::requires_extension::unsupported_extensions(&status).is_some() {
+        return Err(status.into());
     }
+    errors.push(format!("{rpc} failed: {status}"));
+    Ok(())
 }
 
 /// On-disk size of the database at `path`.
