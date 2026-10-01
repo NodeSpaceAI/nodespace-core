@@ -1618,9 +1618,8 @@ impl NodeService {
     }
 
     /// ADR-037: seed exactly one local PersonNode — the local user.
-    /// Idempotent: skips when a person already exists, so an existing database
-    /// is backfilled on next open too. Name/email stay absent until the user
-    /// fills them in (PersonNodeBehavior allows it).
+    /// Idempotent: skips when a person already exists. Name/email stay absent
+    /// until the user fills them in (PersonNodeBehavior allows it).
     async fn seed_local_person_if_needed(&self) -> Result<(), NodeServiceError> {
         if !self.query_nodes_by_type("person", None).await?.is_empty() {
             return Ok(());
@@ -1728,30 +1727,39 @@ impl NodeService {
     /// edge `seed_database_settings_if_needed` seeds). The edge's existence is
     /// the whole fact: it carries no properties (ADR-083 §2), and a database
     /// has exactly one.
-    /// If more than one such edge is found — which the seeding path cannot
-    /// produce — the first is used and a `tracing::warn!` is emitted, so the
-    /// anomaly surfaces instead of resolving silently to whichever edge SQL
-    /// returns first.
-    /// Falls back to the first `person` node when no owner edge is found, so a
-    /// database whose edge was dropped still resolves to *a* local person
-    /// rather than surfacing "no identity" on an otherwise healthy install.
+    /// Seeding creates the edge and repairs it on every open, so any other
+    /// count is an anomaly, and both sides of it emit a `tracing::warn!`:
+    /// - More than one edge: the earliest-created node holding one is used,
+    ///   so the answer does not depend on the order SQL returns them in.
+    /// - No edge: falls back to the first `person` node — the one the next
+    ///   open re-attaches the edge to — rather than surfacing "no identity"
+    ///   on an otherwise healthy install.
+    ///
     /// Returns `None` only when there is no person node at all.
     pub async fn get_local_person(&self) -> Result<Option<Node>, NodeServiceError> {
-        let mut owners = self
+        let owners = self
             .get_related_nodes(DATABASE_SETTINGS_NODE_ID, "has_role", "in")
-            .await?
-            .into_iter();
-        let owner = owners.next();
-        if owners.next().is_some() {
+            .await?;
+        if owners.len() > 1 {
             tracing::warn!(
                 settings_node_id = DATABASE_SETTINGS_NODE_ID,
                 "multiple has_role edges found on DatabaseSettingsNode; \
-                 resolving to the first one returned"
+                 resolving to the earliest-created node holding one"
             );
         }
+        let owner = owners.into_iter().min_by(|a, b| {
+            a.created_at
+                .cmp(&b.created_at)
+                .then_with(|| a.id.cmp(&b.id))
+        });
         if let Some(owner) = owner {
             return Ok(Some(owner));
         }
+        tracing::warn!(
+            settings_node_id = DATABASE_SETTINGS_NODE_ID,
+            "no has_role edge found on DatabaseSettingsNode; \
+             falling back to the first person node"
+        );
         Ok(self
             .query_nodes_by_type("person", None)
             .await?
@@ -9068,9 +9076,9 @@ mod tests {
 
         let (local, warned) = warn_fired_during(|| service.get_local_person()).await;
         let local = local.unwrap().expect("a local person must still resolve");
-        assert!(
-            local.id == seeded_id || local.id == other_id,
-            "must resolve one of the people holding a has_role edge"
+        assert_eq!(
+            local.id, seeded_id,
+            "must resolve the earliest-created person holding a has_role edge"
         );
         assert!(
             warned,
@@ -9095,13 +9103,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_get_local_person_does_not_warn_when_no_has_role_edges_exist() {
+    async fn test_get_local_person_warns_when_no_has_role_edge_exists() {
         let (service, _temp) = create_test_service().await;
 
         let people = service.query_nodes_by_type("person", None).await.unwrap();
         let seeded_id = people[0].id.clone();
 
-        // No has_role edge at all.
+        // No has_role edge at all: seeding guarantees one, so its absence is
+        // an anomaly the fallback must surface.
         service
             .delete_relationship(&seeded_id, "has_role", DATABASE_SETTINGS_NODE_ID)
             .await
@@ -9112,7 +9121,10 @@ mod tests {
             .unwrap()
             .expect("fallback must still resolve a local person");
         assert_eq!(local.id, seeded_id);
-        assert!(!warned, "must not warn when there are zero has_role edges");
+        assert!(
+            warned,
+            "must warn when the fallback runs because no has_role edge exists"
+        );
     }
 
     #[tokio::test]
