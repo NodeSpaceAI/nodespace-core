@@ -1756,6 +1756,43 @@ mod typed_update_tests {
         assert!(err.to_string().contains("Invalid value 'someday'"), "{err}");
     }
 
+    /// A status a user added to the schema is written and read back as
+    /// itself: the typed path accepts it, and the wire conversion carries it
+    /// through the enum's user variant.
+    #[tokio::test]
+    async fn project_update_accepts_a_status_added_to_the_schema() {
+        let (service, _t) = create_test_service().await;
+        let service = std::sync::Arc::new(service);
+        crate::schema::handle_update_schema(
+            &service,
+            json!({
+                "schema_id": "project",
+                "add_field_values": [{
+                    "field": "status",
+                    "values": [{"value": "on_hold", "label": "On hold"}]
+                }]
+            }),
+        )
+        .await
+        .expect("add_field_values should succeed");
+        let project = create(&service, "project", json!({})).await;
+
+        let updated = service
+            .update_project_node(
+                &project.id,
+                project.version,
+                ProjectNodeUpdate {
+                    status: Some(ProjectStatus::User("on_hold".to_string())),
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("a status added via add_field_values must be accepted");
+
+        let typed = crate::models::node_to_typed_value(updated).unwrap();
+        assert_eq!(typed["status"], "on_hold");
+    }
+
     /// `archived` is governance vocabulary, not a project status (ADR-087):
     /// the typed update, the generic update and creation all reject it.
     #[tokio::test]

@@ -333,24 +333,8 @@ fn check_hand_serialized_enums(cfg: &Config) -> Result<(), String> {
             .collect()
     }
 
-    let mut problems = check(
-        cfg,
-        &[
-            TaskStatus::Open,
-            TaskStatus::InProgress,
-            TaskStatus::Done,
-            TaskStatus::Cancelled,
-        ],
-    );
-    problems.extend(check(
-        cfg,
-        &[
-            ProjectStatus::Planning,
-            ProjectStatus::Active,
-            ProjectStatus::Completed,
-            ProjectStatus::Cancelled,
-        ],
-    ));
+    let mut problems = check(cfg, &TaskStatus::CORE);
+    problems.extend(check(cfg, &ProjectStatus::CORE));
     problems.extend(check(
         cfg,
         &[

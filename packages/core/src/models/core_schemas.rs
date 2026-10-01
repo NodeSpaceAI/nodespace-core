@@ -2406,13 +2406,7 @@ mod tests {
 
         // Every named TaskStatus variant (everything but the User(_) catch-all)
         // must have a corresponding core_values entry.
-        let named_variants = [
-            TaskStatus::Open,
-            TaskStatus::InProgress,
-            TaskStatus::Done,
-            TaskStatus::Cancelled,
-        ];
-        for variant in &named_variants {
+        for variant in &TaskStatus::CORE {
             assert!(
                 core_value_strings.contains(&variant.as_str()),
                 "TaskStatus::{:?} (\"{}\") has no matching entry in task.status's core_values \
@@ -2438,6 +2432,12 @@ mod tests {
                 value
             );
         }
+
+        assert_eq!(
+            status_field.default,
+            Some(serde_json::json!(TaskStatus::default())),
+            "the schema default and TaskStatus::default() must agree"
+        );
     }
 
     /// The `ProjectStatus` sibling of the task status check above:
@@ -2460,15 +2460,12 @@ mod tests {
             .map(|ev| ev.value.as_str())
             .collect();
 
-        let named = [
-            ProjectStatus::Planning,
-            ProjectStatus::Active,
-            ProjectStatus::Completed,
-            ProjectStatus::Cancelled,
-        ];
         assert_eq!(
             core_values,
-            named.iter().map(ProjectStatus::as_str).collect::<Vec<_>>(),
+            ProjectStatus::CORE
+                .iter()
+                .map(ProjectStatus::as_str)
+                .collect::<Vec<_>>(),
             "project.status's core_values and ProjectStatus's named variants must list the same values"
         );
         for value in &core_values {

@@ -3,9 +3,8 @@
 /**
  * Where a project stands.
  *
- * The core statuses are strongly typed; a status a user added to the schema
- * (`user_values`) is `User(String)`. The default, [`Self::Planning`], is the
- * project schema's declared default: what a project with no stored status
- * has.
+ * The four core statuses are named; any other string is a status a user
+ * added to the project schema. A project with no stored status is
+ * `planning`, the schema's declared default.
  */
 export type ProjectStatus = 'planning' | 'active' | 'completed' | 'cancelled' | string;

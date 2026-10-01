@@ -7,10 +7,9 @@ use crate::task::flexible_date;
 
 /// Where a project stands.
 ///
-/// The core statuses are strongly typed; a status a user added to the schema
-/// (`user_values`) is `User(String)`. The default, [`Self::Planning`], is the
-/// project schema's declared default: what a project with no stored status
-/// has.
+/// The four core statuses are named; any other string is a status a user
+/// added to the project schema. A project with no stored status is
+/// `planning`, the schema's declared default.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[cfg_attr(feature = "ts", ts(rename_all = "snake_case"))]
@@ -26,6 +25,14 @@ pub enum ProjectStatus {
 }
 
 impl ProjectStatus {
+    /// The core statuses: every variant but the user-defined one.
+    pub const CORE: [Self; 4] = [
+        Self::Planning,
+        Self::Active,
+        Self::Completed,
+        Self::Cancelled,
+    ];
+
     /// The status a stored or wire string names. Every string is one: a
     /// value outside the core statuses is a user-defined status.
     pub fn from_value(s: &str) -> Self {
