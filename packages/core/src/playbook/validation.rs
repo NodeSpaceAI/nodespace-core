@@ -2078,8 +2078,8 @@ pub async fn check_schema_change_impact(
                         }
                     }
                     // `reject`'s only param is an author-supplied message —
-                    // no node_type/relationship_type to
-                    // reference a schema through.
+                    // no node_type/relationship_type to reference a schema
+                    // through.
                     ActionType::Reject => {}
                 }
             }

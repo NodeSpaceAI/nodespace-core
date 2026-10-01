@@ -170,6 +170,27 @@ function ordered(actual: unknown, expected: unknown): number {
 }
 
 /**
+ * The node columns a `metadata` filter may name, and where each travels on the
+ * node. Mirrors the backend's allow-list (`build_metadata_filter`); a name
+ * outside it has no value, as the backend rejects it.
+ */
+const METADATA_FIELDS: Readonly<Record<string, (node: Node) => unknown>> = {
+  created_at: (node) => node.createdAt,
+  modified_at: (node) => node.modifiedAt,
+  node_type: (node) => node.nodeType,
+  content: (node) => node.content,
+  title: (node) => node.title
+};
+
+/** The value a non-relationship filter compares against. */
+function filterSubject(node: Node, filter: QueryFilter): unknown {
+  if (filter.type === 'content') return node.content;
+  if (!filter.property) return undefined;
+  if (filter.type === 'metadata') return METADATA_FIELDS[filter.property]?.(node);
+  return resolveFieldValue(node, filter.property);
+}
+
+/**
  * Evaluate a single QueryFilter against a node.
  *
  * Supports `property`, `content`, and `metadata` filters fully, and the
@@ -199,12 +220,7 @@ export function matchesFilter(node: Node, filter: QueryFilter): boolean {
     }
   }
 
-  const actual =
-    filter.type === 'content'
-      ? node.content
-      : filter.property
-        ? resolveFieldValue(node, filter.property)
-        : undefined;
+  const actual = filterSubject(node, filter);
 
   switch (filter.operator) {
     case 'exists':

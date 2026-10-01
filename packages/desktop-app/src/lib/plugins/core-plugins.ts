@@ -532,16 +532,6 @@ export const collectionNodePlugin: PluginDefinition = {
   reference: {
     component: BaseNodeReference as NodeReferenceComponent,
     priority: 1
-  },
-  // Type-specific metadata extraction for collection properties
-  extractMetadata: (node: { nodeType: string; properties?: Record<string, unknown> }) => {
-    const properties = node.properties || {};
-    return {
-      description: properties.description as string | undefined,
-      icon: properties.icon as string | undefined,
-      color: properties.color as string | undefined,
-      ...properties
-    };
   }
 };
 

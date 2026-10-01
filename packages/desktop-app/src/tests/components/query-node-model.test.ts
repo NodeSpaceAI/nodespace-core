@@ -278,6 +278,109 @@ describe('matchesFilter', () => {
     ).toBe(true);
   });
 
+  it("reads a subtype's inherited field from properties", () => {
+    // Typed keys belong to the exact core type; a type extending task carries
+    // the inherited field flat in properties.
+    const bug = node('b1', { nodeType: 'bug', properties: { due_date: '2026-03-01' } });
+    expect(
+      matchesFilter(bug, {
+        type: 'property',
+        operator: 'equals',
+        property: 'due_date',
+        value: '2026-03-01',
+      })
+    ).toBe(true);
+  });
+
+  describe('metadata filters', () => {
+    const titled = node('m1', {
+      nodeType: 'invoice',
+      content: 'Acme Corp invoice',
+      title: 'Acme invoice',
+      createdAt: '2026-10-01T09:00:00.000Z',
+      modifiedAt: '2026-10-02T09:00:00.000Z',
+    });
+
+    it('matches node_type', () => {
+      expect(
+        matchesFilter(titled, {
+          type: 'metadata',
+          operator: 'equals',
+          property: 'node_type',
+          value: 'invoice',
+        })
+      ).toBe(true);
+      expect(
+        matchesFilter(titled, {
+          type: 'metadata',
+          operator: 'equals',
+          property: 'node_type',
+          value: 'task',
+        })
+      ).toBe(false);
+    });
+
+    it('compares created_at', () => {
+      expect(
+        matchesFilter(titled, {
+          type: 'metadata',
+          operator: 'gte',
+          property: 'created_at',
+          value: '2026-01-01',
+        })
+      ).toBe(true);
+      expect(
+        matchesFilter(titled, {
+          type: 'metadata',
+          operator: 'lt',
+          property: 'created_at',
+          value: '2026-01-01',
+        })
+      ).toBe(false);
+    });
+
+    it('compares modified_at', () => {
+      expect(
+        matchesFilter(titled, {
+          type: 'metadata',
+          operator: 'gt',
+          property: 'modified_at',
+          value: '2026-10-01T12:00:00.000Z',
+        })
+      ).toBe(true);
+    });
+
+    it('matches title and content', () => {
+      expect(
+        matchesFilter(titled, {
+          type: 'metadata',
+          operator: 'contains',
+          property: 'title',
+          value: 'acme inv',
+        })
+      ).toBe(true);
+      expect(
+        matchesFilter(titled, {
+          type: 'metadata',
+          operator: 'contains',
+          property: 'content',
+          value: 'corp',
+        })
+      ).toBe(true);
+    });
+
+    it('does not read a schema field or an unknown column', () => {
+      const withProp = node('m2', { properties: { status: 'open' } });
+      expect(
+        matchesFilter(withProp, {
+          type: 'metadata',
+          operator: 'exists',
+          property: 'status',
+        })
+      ).toBe(false);
+    });
+  });
+
   it('evaluates node-local relationship filters and declines graph ones', () => {
     const withRels = node('n2', { mentions: ['m1'], mentionedIn: [{ id: 'src', title: null, nodeType: 'text' }] });
     expect(
