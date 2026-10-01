@@ -806,9 +806,7 @@ mod tests {
                 path: PathBuf::from(format!("/tmp/{name}.db")),
                 created_at: chrono::Utc::now(),
                 last_opened_at: None,
-                bound_tenant_schema: None,
-                bound_tenant_collection: None,
-                extensions: toml::Table::new(),
+                extensions: Default::default(),
             },
             status,
             is_default,
@@ -848,11 +846,11 @@ mod tests {
         with_keys
             .entry
             .extensions
-            .insert("plugin_state".into(), toml::Value::String("keep".into()));
+            .insert("plugin_state".into(), "keep".into());
         with_keys
             .entry
             .extensions
-            .insert("plugin_flag".into(), toml::Value::Boolean(true));
+            .insert("plugin_flag".into(), "true".into());
 
         let entries = database_menu_entries(&snapshot(vec![with_keys]));
 
@@ -874,28 +872,6 @@ mod tests {
 
         assert_eq!(entries[0].label, "Alpha");
         assert_eq!(entries[1].label, "Beta — open");
-    }
-
-    /// An entry whose registry file still records a cloud binding renders as its
-    /// plain name: the tray no longer labels a database "synced". The key is built
-    /// from fragments because this is an absence test.
-    #[test]
-    fn a_recorded_binding_adds_no_marker() {
-        let key = ["bound_", "ten", "ant_schema"].concat();
-        let mut bound = listing("Plain", DatabaseStatus::Closed);
-        bound.entry = toml::from_str(&format!(
-            "id = \"id-Plain\"\nname = \"Plain\"\npath = \"/tmp/Plain.db\"\n\
-             created_at = \"2026-01-02T03:04:05Z\"\n{key} = \"demo\"\n"
-        ))
-        .unwrap();
-        assert!(
-            bound.entry.extensions.is_empty(),
-            "the key must load into its typed field, which is what a label could read"
-        );
-
-        let entries = database_menu_entries(&snapshot(vec![bound]));
-
-        assert_eq!(entries[0].label, "Plain");
     }
 
     /// Marker order is fixed so a label does not reshuffle between refreshes,

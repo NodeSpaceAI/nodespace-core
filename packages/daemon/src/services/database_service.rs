@@ -9,7 +9,6 @@
 //! create, register, remove, rename, and choose the default database that
 //! header-less requests fall back to.
 
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -66,20 +65,12 @@ fn listing_to_info(listing: &DatabaseListing) -> DatabaseInfo {
         last_opened_at: entry.last_opened_at.map(|t| t.to_rfc3339()),
         is_default: listing.is_default,
         status: proto_status(listing.status) as i32,
-        bound_tenant_schema: entry.bound_tenant_schema.clone(),
-        bound_tenant_collection: entry.bound_tenant_collection.clone(),
-        extensions: string_extensions(&entry.extensions),
+        extensions: entry
+            .extensions
+            .iter()
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect(),
     }
-}
-
-/// The string-valued entries of a registry entry's extension keys. The wire
-/// map carries strings only, so a value of any other type (integer, boolean,
-/// array, table) stays in the registry and is left out of the response.
-fn string_extensions(extensions: &toml::Table) -> HashMap<String, String> {
-    extensions
-        .iter()
-        .filter_map(|(key, value)| Some((key.clone(), value.as_str()?.to_string())))
-        .collect()
 }
 
 /// Translate the manager's runtime status enum into the generated proto enum.
@@ -181,6 +172,7 @@ mod tests {
     use nodespace_agent::pty::PtySessionManager;
     use nodespace_core::services::EmbeddingScheduler;
     use nodespace_nlp_engine::EmbeddingService;
+    use std::collections::{BTreeMap, HashMap};
     use tokio::sync::watch;
 
     /// A model-less build context (mirrors `database_manager::tests`): with
@@ -212,26 +204,21 @@ mod tests {
         (DatabaseServiceImpl::new(Arc::new(manager)), dir)
     }
 
-    /// Extension keys ride the wire as strings only: the map is `string -> string`,
-    /// so an integer, boolean or table value stays in the registry and is left
-    /// out of the response rather than being stringified.
+    /// `DatabaseInfo` carries the entry's extension keys, every key and value
+    /// unchanged.
     #[test]
-    fn listing_to_info_carries_string_extensions_only() {
-        let entry: DatabaseEntry = toml::from_str(
-            r#"
-id = "01J00000000000000000000000"
-name = "Work"
-path = "/tmp/work.db"
-created_at = "2026-01-02T03:04:05Z"
-plugin_state = "keep"
-plugin_count = 3
-plugin_flag = true
-
-[extra]
-level = 3
-"#,
-        )
-        .unwrap();
+    fn listing_to_info_carries_the_extensions_map() {
+        let entry = DatabaseEntry {
+            id: DatabaseId::from("01J00000000000000000000000".to_string()),
+            name: "Work".into(),
+            path: PathBuf::from("/tmp/work.db"),
+            created_at: chrono::Utc::now(),
+            last_opened_at: None,
+            extensions: BTreeMap::from([
+                ("plugin_state".to_string(), "keep".to_string()),
+                ("plugin_label".to_string(), "blue".to_string()),
+            ]),
+        };
 
         let info = listing_to_info(&DatabaseListing {
             entry,
@@ -241,7 +228,10 @@ level = 3
 
         assert_eq!(
             info.extensions,
-            HashMap::from([("plugin_state".to_string(), "keep".to_string())])
+            HashMap::from([
+                ("plugin_state".to_string(), "keep".to_string()),
+                ("plugin_label".to_string(), "blue".to_string()),
+            ])
         );
     }
 
