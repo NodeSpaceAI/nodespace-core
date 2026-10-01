@@ -5,9 +5,10 @@
  * The registry (`ui-extensions.ts`) holds declarative, non-reactive data and
  * never evaluates a contribution's `when()`. This module layers reactivity on
  * top (ADR-049): it returns only the contributions whose `when()` currently
- * holds. Reactivity comes from whatever the predicates read, so hosts call
- * these accessors inside a `$derived` or a template and re-run when that state
- * changes.
+ * holds, and for a replaceable slot also whether anything is registered for it,
+ * which does not depend on `when()`. Reactivity comes from whatever the
+ * predicates read, so hosts call these accessors inside a `$derived` or a
+ * template and re-run when that state changes.
  *
  * A throwing `when()` counts as false and is logged once per contribution key
  * (ADR-082 §3.4); it is logged again only after it has returned normally in

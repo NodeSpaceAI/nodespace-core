@@ -16,8 +16,10 @@ import { render, fireEvent } from '@testing-library/svelte';
 
 const openUrl = vi.hoisted(() => vi.fn<(url: string) => Promise<void>>());
 const invoke = vi.hoisted(() => vi.fn());
+const log = vi.hoisted(() => ({ debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }));
 
 vi.mock('$lib/utils/external-links', () => ({ openUrl }));
+vi.mock('$lib/utils/logger', () => ({ createLogger: () => log }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke }));
 
 import LabsSettings from '$lib/components/settings/sections/labs-settings.svelte';
@@ -49,6 +51,7 @@ describe('LabsSettings', () => {
     openUrl.mockReset();
     openUrl.mockResolvedValue(undefined);
     invoke.mockReset();
+    log.error.mockClear();
     fetchSpy = vi.fn();
     vi.stubGlobal('fetch', fetchSpy);
   });
@@ -66,8 +69,8 @@ describe('LabsSettings', () => {
     const cards = container.querySelectorAll('[data-slot="card"]');
     expect(cards).toHaveLength(3);
 
-    const headings = Array.from(cards).map(
-      (card) => card.querySelector('.font-semibold')?.textContent?.trim()
+    const headings = Array.from(cards).map((card) =>
+      card.querySelector('.font-semibold')?.textContent?.trim()
     );
     expect(headings).toEqual(['AI Chat', 'Playbooks', 'Team synchronization']);
   });
@@ -178,15 +181,20 @@ describe('LabsSettings', () => {
       expect(fetchSpy).not.toHaveBeenCalled();
     });
 
-    it('a failing openUrl is caught, not thrown', async () => {
-      openUrl.mockRejectedValueOnce(new Error('no mail client'));
+    it('a failing openUrl is caught and logged, not thrown', async () => {
+      const failure = new Error('no mail client');
+      openUrl.mockRejectedValueOnce(failure);
       const { container } = render(LabsSettings);
       const link = teamCard(container).querySelector('a') as HTMLAnchorElement;
 
       await fireEvent.click(link);
-      await Promise.resolve();
 
       expect(openUrl).toHaveBeenCalledTimes(1);
+      await vi.waitFor(() =>
+        expect(log.error).toHaveBeenCalledWith('Failed to open the contact link', {
+          error: failure
+        })
+      );
     });
 
     it('the card imports nothing beyond its card UI, the constant, openUrl and the logger', () => {

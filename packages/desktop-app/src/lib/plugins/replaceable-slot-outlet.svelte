@@ -22,12 +22,19 @@
   let { name, defaultContent }: { name: ReplaceableSlot; defaultContent: Snippet } = $props();
 
   const slot = $derived(getReplaceableSlot(name));
+  // Read through their own derivations: `getReplaceableSlot` returns a new object
+  // on every pass, which would make the outlet re-run `load()` and remount the
+  // contribution whenever any state a `when()` reads changes. `active` is the
+  // registry's own entry, so it compares equal until the chosen contribution
+  // itself changes.
+  const registered = $derived(slot.registered);
+  const active = $derived(slot.active);
 </script>
 
-{#if !slot.registered}
+{#if !registered}
   {@render defaultContent()}
-{:else if slot.active}
-  {#key slot.active.key}
-    <ExtensionOutlet load={slot.active.load} />
+{:else if active}
+  {#key active.key}
+    <ExtensionOutlet load={active.load} />
   {/key}
 {/if}

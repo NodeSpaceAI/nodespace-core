@@ -187,6 +187,73 @@ describe('Labs page: the collaboration.entry replaceable slot', () => {
     expect(showsContactCard(container)).toBe(false);
   });
 
+  it('keeps the rendered contribution mounted while the state its when() reads changes', async () => {
+    // `when()` reads a flag (`section`) whose changes never change its result.
+    const second: NodespaceExtension = {
+      id: SECOND_EXTENSION_ID,
+      apiVersion: 2,
+      replaceableSlots: [
+        {
+          id: 'entry',
+          slot: 'collaboration.entry',
+          when: () => {
+            void testExtensionFlags.section;
+            return true;
+          },
+          load: () => import('../../fixtures/test-extension/test-collaboration-entry.svelte')
+        }
+      ]
+    };
+    uiExtensionRegistry.register(second);
+
+    const { container, findByTestId } = render(LabsSettings);
+    const mounted = await findByTestId('test-collaboration-entry');
+
+    testExtensionFlags.section = true;
+    await settle();
+    testExtensionFlags.section = false;
+    await settle();
+
+    expect(testExtensionMounts['collaboration-entry']).toBe(1);
+    expect(container.querySelector('[data-testid="test-collaboration-entry"]')).toBe(mounted);
+  });
+
+  it('keeps the rendered contribution mounted while a hidden, higher-priority one re-evaluates', async () => {
+    const second: NodespaceExtension = {
+      id: SECOND_EXTENSION_ID,
+      apiVersion: 2,
+      replaceableSlots: [
+        {
+          // Evaluated first (higher priority) on every pass; stays hidden.
+          id: 'hidden',
+          slot: 'collaboration.entry',
+          priority: 5,
+          when: () => {
+            void testExtensionFlags.section;
+            return false;
+          },
+          load: () =>
+            import('../../fixtures/test-extension/test-collaboration-entry-secondary.svelte')
+        },
+        {
+          id: 'shown',
+          slot: 'collaboration.entry',
+          load: () => import('../../fixtures/test-extension/test-collaboration-entry.svelte')
+        }
+      ]
+    };
+    uiExtensionRegistry.register(second);
+
+    const { findByTestId } = render(LabsSettings);
+    await findByTestId('test-collaboration-entry');
+
+    testExtensionFlags.section = true;
+    await settle();
+
+    expect(testExtensionMounts['collaboration-entry']).toBe(1);
+    expect(testExtensionMounts['collaboration-entry-secondary']).toBeUndefined();
+  });
+
   it('among visible contributions of equal priority, renders only the first registered', async () => {
     uiExtensionRegistry.register(createTestExtension());
     const second: NodespaceExtension = {
