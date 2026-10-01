@@ -9,7 +9,9 @@
 //! cheaply per command (tonic `Channel` is an `Arc` internally).
 
 use std::sync::Arc;
+use std::time::Duration;
 
+use nodespace_proto::nodespace::GetNodeRequest;
 use nodespace_proto::{
     with_message_limits, AgentSessionServiceClient, DatabaseServiceClient, EmbeddingsServiceClient,
     ImportServiceClient, LocalAgentServiceClient, NodeServiceClient, SettingsServiceClient,
@@ -173,6 +175,28 @@ struct GrpcClientInner {
     /// with "Service was not ready: transport error" after a stream was
     /// dropped.
     channel: Channel,
+}
+
+/// How long [`GrpcClient::data_plane_round_trip`] callers wait for the daemon
+/// to answer before treating the channel as wedged or the daemon as silent.
+pub const DATA_PLANE_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// The node id [`GrpcClient::data_plane_round_trip`] asks for. No node has it,
+/// so a healthy daemon answers `NotFound`.
+const DATA_PLANE_PROBE_NODE_ID: &str = "__ns_channel_probe__";
+
+/// The outcome of one [`GrpcClient::data_plane_round_trip`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DataPlaneRoundTrip {
+    /// The daemon answered: a response, or `NotFound`, which is what a healthy
+    /// daemon returns for the probe's node id.
+    Answered,
+    /// The call completed with any other status: a transport failure while
+    /// nothing serves the socket, or an error on the daemon's side.
+    Failed(tonic::Code),
+    /// Nothing completed within the timeout: a wedged channel, or a daemon
+    /// that accepts the connection but does not answer.
+    TimedOut,
 }
 
 /// Managed Tauri state wrapping the gRPC clients connected to `nodespaced`.
@@ -435,6 +459,27 @@ impl GrpcClient {
     /// `AppExtensions::on_channel_rebuilt` to take the new channel.
     pub async fn channel(&self) -> Channel {
         self.inner.read().await.channel.clone()
+    }
+
+    /// Send one lightweight data-plane RPC on the shared channel and report
+    /// whether the daemon answered within `timeout`.
+    ///
+    /// A connectable socket only proves something accepts connections; this
+    /// proves gRPC answers. The RPC is a `GetNode` for an id no node has, so it
+    /// reads nothing and a healthy daemon answers `NotFound`.
+    pub async fn data_plane_round_trip(&self, timeout: Duration) -> DataPlaneRoundTrip {
+        let mut client = self.client().await;
+        let request = tonic::Request::new(GetNodeRequest {
+            node_id: DATA_PLANE_PROBE_NODE_ID.to_string(),
+        });
+        match tokio::time::timeout(timeout, client.get_node(request)).await {
+            Ok(Ok(_)) => DataPlaneRoundTrip::Answered,
+            Ok(Err(status)) if status.code() == tonic::Code::NotFound => {
+                DataPlaneRoundTrip::Answered
+            }
+            Ok(Err(status)) => DataPlaneRoundTrip::Failed(status.code()),
+            Err(_) => DataPlaneRoundTrip::TimedOut,
+        }
     }
 
     /// Rebuild the underlying lazy channel and every service client from
@@ -829,5 +874,61 @@ mod interceptor_tests {
         let tagged = stamped(tagged);
         assert_eq!(tagged.get(DATABASE_ID_HEADER).unwrap(), "db-1");
         assert!(tagged.get(CLIENT_ID_HEADER).is_some());
+    }
+}
+
+/// [`GrpcClient::data_plane_round_trip`] against endpoints that are not a
+/// daemon. TCP keeps them platform-agnostic; the answered case needs a real
+/// daemon and lives in the startup-readiness integration test.
+#[cfg(test)]
+mod data_plane_round_trip_tests {
+    use super::{DataPlaneRoundTrip, GrpcClient};
+    use std::time::Duration;
+    use tonic::transport::Endpoint;
+
+    fn client_for(port: u16) -> GrpcClient {
+        let channel = Endpoint::from_shared(format!("http://127.0.0.1:{port}"))
+            .expect("a loopback URI is valid")
+            .connect_lazy();
+        GrpcClient::from_channel(channel)
+    }
+
+    #[tokio::test]
+    async fn a_refused_endpoint_fails_without_timing_out() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+        let port = listener.local_addr().expect("local addr").port();
+        drop(listener);
+
+        let outcome = client_for(port)
+            .data_plane_round_trip(Duration::from_secs(2))
+            .await;
+
+        assert!(
+            matches!(outcome, DataPlaneRoundTrip::Failed(_)),
+            "nothing listens on the port, so the call completes with a failure: {outcome:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_silent_endpoint_times_out() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind loopback");
+        let port = listener.local_addr().expect("local addr").port();
+        // Accept every connection and hold it open without writing a byte, so
+        // the client's handshake never completes.
+        let holder = tokio::spawn(async move {
+            let mut held = Vec::new();
+            while let Ok((stream, _)) = listener.accept().await {
+                held.push(stream);
+            }
+        });
+
+        let outcome = client_for(port)
+            .data_plane_round_trip(Duration::from_millis(200))
+            .await;
+        holder.abort();
+
+        assert_eq!(outcome, DataPlaneRoundTrip::TimedOut);
     }
 }

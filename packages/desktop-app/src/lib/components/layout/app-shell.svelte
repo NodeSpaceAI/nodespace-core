@@ -44,6 +44,7 @@
   import { conflictNotifications } from '$lib/stores/conflict-notifications.svelte';
   import { conflictsStore } from '$lib/stores/conflicts.svelte';
   import {
+    DATA_PLANE_READY_EVENT,
     daemonStatus,
     startDaemonStatusListener,
     refreshDaemonStatus
@@ -247,7 +248,7 @@
     let staleNodesInterval: ReturnType<typeof setInterval> | null = null;
     let cleanupProSync: (() => void) | null = null;
     let stopExtensions: (() => void) | null = null;
-    let unlistenTier: Promise<() => void> | null = null;
+    let unlistenDataPlaneReady: Promise<() => void> | null = null;
     let unlistenSelectDatabase: Promise<() => void> | null = null;
 
     if (
@@ -278,11 +279,11 @@
           log.debug('Could not sync theme from backend preferences:', err);
         });
 
-      // Re-load schemas and collections once the daemon's Pro-tier capability probe
-      // resolves. Kept in addition to the generic daemon-reconnect hook below since
-      // Pro tier detection is a distinct signal that can complete after the initial
-      // healthy event (it depends on gRPC being reachable, not just the socket).
-      unlistenTier = listen('pro:tier-detected', () => {
+      // Re-load schemas and collections once the daemon first answers a real gRPC
+      // round trip at startup. Kept in addition to the generic daemon-reconnect hook
+      // below: `healthy` only proves the daemon socket accepts a connection, and gRPC
+      // can start answering after that.
+      unlistenDataPlaneReady = listen(DATA_PLANE_READY_EVENT, () => {
         schemasData.loadSchemas();
         collectionsData.loadCollections();
       });
@@ -600,8 +601,8 @@
       if (unlistenSkillInstallFailed) {
         (await unlistenSkillInstallFailed)();
       }
-      if (unlistenTier) {
-        (await unlistenTier)();
+      if (unlistenDataPlaneReady) {
+        (await unlistenDataPlaneReady)();
       }
       if (unlistenSelectDatabase) {
         (await unlistenSelectDatabase)();
