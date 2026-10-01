@@ -35,6 +35,8 @@
         return 'Closed';
       case 'missing':
         return 'File missing';
+      case 'requires_extension':
+        return "Needs an extension this app doesn't support";
       default:
         return 'Unknown';
     }
