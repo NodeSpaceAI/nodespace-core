@@ -58,6 +58,23 @@
  *     that isn't really there. Comparing bytes and writing only what actually
  *     differs leaves unchanged files' mtimes — and the crate — untouched.
  *
+ * ## Adding guidance at build time (`NODESPACE_SKILL_EXTENSIONS`)
+ *
+ * A build that ships more agent guidance than core's own names a directory in
+ * `NODESPACE_SKILL_EXTENSIONS` (ADR-082). With the variable unset or empty,
+ * which is every core build and test run, the staged skill is exactly core's.
+ * Set, the directory may hold a `SKILL.md` fragment, appended to the staged
+ * `SKILL.md`, and `references/*.md`, staged beside core's references; anything
+ * else in it, a reference named like one of core's, or a directory that does
+ * not exist fails the build (`readSkillExtensions`). The installer installs
+ * and uninstalls an added reference like any of core's, because it takes its
+ * list from what is staged.
+ *
+ * The additions are merged into what each entry stages, not copied after it.
+ * Both halves of the staging above compare bytes and delete what the source no
+ * longer holds, so a plain run after a run with additions removes them again,
+ * and a repeated run of either kind rewrites nothing.
+ *
  * ## Cross-compiling the binary (`--target <rust-triple>`)
  *
  * Every caller except one wants the compiled binary for `hostTriple()`
@@ -75,6 +92,7 @@ import { $ } from 'bun';
 import {
   chmodSync,
   copyFileSync,
+  type Dirent,
   existsSync,
   mkdirSync,
   readdirSync,
@@ -82,8 +100,9 @@ import {
   renameSync,
   rmSync,
   statSync,
+  writeFileSync,
 } from 'node:fs';
-import { basename, dirname, extname, join, relative, sep } from 'node:path';
+import { basename, dirname, extname, join, relative, resolve, sep } from 'node:path';
 import { arch, platform } from 'node:os';
 
 const WORKSPACE_ROOT = join(import.meta.dir, '..');
@@ -179,56 +198,79 @@ export function isOutputFresh(
 }
 
 /**
- * Mirrors `srcRoot` onto `destRoot` writing only what actually differs:
- * files whose bytes changed are copied, files no longer present in the
- * source are deleted, and byte-identical files are left completely alone,
+ * Where the bytes of one staged file come from: a file to copy, or the bytes
+ * themselves (for a file that exists only in the merged form, such as a
+ * `SKILL.md` with a fragment appended).
+ */
+export type StagedSource = { from: string } | { bytes: Uint8Array };
+
+/**
+ * Every file under `root` as a staging map, keyed by path relative to `root`
+ * (see `listFilesRecursive` for what a plain file or a missing root yields).
+ */
+export function treeSources(root: string): Map<string, StagedSource> {
+  return new Map(listFilesRecursive(root).map((rel) => [rel, { from: join(root, rel) }]));
+}
+
+/**
+ * Mirrors `files` onto `destRoot` writing only what actually differs: files
+ * whose bytes changed are written, files under `destRoot` that `files` does
+ * not hold are deleted, and byte-identical files are left completely alone,
  * mtime included (see the module doc on why that matters). Returns the count
  * of files written or removed, so the caller can report a real no-op.
+ *
+ * The keys are paths relative to `destRoot`; the empty path stages a plain
+ * file at `destRoot` itself, the shape `listFilesRecursive` gives a plain file.
  *
  * Mirrors *files*, not the directory structure as such: an empty source
  * directory has nothing to copy and so never appears in the destination,
  * which is the right shape for a Tauri bundle (it globs files). Symlinks are
  * not supported anywhere under the staged entries and are not handled.
  */
-export function syncTreeByContent(srcRoot: string, destRoot: string): number {
+export function syncFilesByContent(files: Map<string, StagedSource>, destRoot: string): number {
   // A path that flipped kind between runs (a file where a directory now
   // stands, or the reverse) can't be reconciled entry-by-entry — reading a
   // directory as bytes just throws EISDIR. Clear it and let the copy below
   // rebuild it, so the staging self-heals instead of wedging on an error
   // whose remedy ("delete resources/skill/ and re-run") isn't obvious.
-  if (existsSync(srcRoot) && existsSync(destRoot)) {
-    if (statSync(srcRoot).isDirectory() !== statSync(destRoot).isDirectory()) {
-      rmSync(destRoot, { recursive: true, force: true });
-    }
+  if (files.size > 0 && existsSync(destRoot) && statSync(destRoot).isDirectory() === files.has('')) {
+    rmSync(destRoot, { recursive: true, force: true });
   }
 
-  const srcFiles = new Set(listFilesRecursive(srcRoot));
   let changed = 0;
 
   for (const rel of listFilesRecursive(destRoot)) {
-    if (srcFiles.has(rel)) continue;
+    if (files.has(rel)) continue;
     rmSync(join(destRoot, rel));
     changed += 1;
   }
 
-  for (const rel of srcFiles) {
-    const src = join(srcRoot, rel);
+  for (const [rel, source] of files) {
     const dest = join(destRoot, rel);
     if (existsSync(dest)) {
       // Same self-healing as above, one level down: a nested path that is now
       // a file but was staged as a directory can't be byte-compared.
       if (statSync(dest).isDirectory()) {
         rmSync(dest, { recursive: true, force: true });
-      } else if (readFileSync(dest).equals(readFileSync(src))) {
+      } else if (readFileSync(dest).equals('from' in source ? readFileSync(source.from) : source.bytes)) {
         continue;
       }
     }
     mkdirSync(dirname(dest), { recursive: true });
-    copyFileSync(src, dest);
+    if ('from' in source) copyFileSync(source.from, dest);
+    else writeFileSync(dest, source.bytes);
     changed += 1;
   }
 
   return changed;
+}
+
+/**
+ * `syncFilesByContent` for every file under `srcRoot`: the staging of an entry
+ * that nothing adds to.
+ */
+export function syncTreeByContent(srcRoot: string, destRoot: string): number {
+  return syncFilesByContent(treeSources(srcRoot), destRoot);
 }
 
 /**
@@ -404,7 +446,159 @@ export function parseTargetArg(argv: string[]): string | undefined {
   return value;
 }
 
+/** The environment variable naming the directory of build-time additions to the skill. */
+export const SKILL_EXTENSIONS_VAR = 'NODESPACE_SKILL_EXTENSIONS';
+
+/** What a skill-extension directory adds to the staged skill. */
+export interface SkillExtensions {
+  /** The directory it was read from, as an absolute path. */
+  dir: string;
+  /** Each added `references/*.md`, by file name, as an absolute path. */
+  references: Map<string, string>;
+  /** The directory's `SKILL.md`, to be appended to the staged one. Absent when it has none. */
+  fragment?: string;
+}
+
+const CORE_REFERENCES_DIR = join(SKILL_DIR, 'references');
+
+/** A directory's entries, in name order, so a build's log and first error do not depend on the filesystem. */
+function sortedEntries(dir: string): Dirent[] {
+  return readdirSync(dir, { withFileTypes: true }).sort((a, b) =>
+    a.name < b.name ? -1 : a.name > b.name ? 1 : 0,
+  );
+}
+
+/**
+ * Reads the skill extension named by `NODESPACE_SKILL_EXTENSIONS` in `env`:
+ * `undefined` when it is unset or empty, otherwise what the directory adds.
+ * A relative path resolves against the directory the build runs from.
+ *
+ * The directory may hold only a `SKILL.md` (non-empty) and a flat `references/`
+ * of `*.md` files, the same files the installer installs from a package root.
+ * Anything else, a name already taken by one of core's references
+ * (`coreReferencesDir`, compared without regard to case so it cannot clobber
+ * one on a case-insensitive filesystem), or a directory that does not exist
+ * throws an error that names the problem; a build that quietly ignored a
+ * misplaced file would ship less guidance than its author meant.
+ */
+export function readSkillExtensions(
+  env: Record<string, string | undefined> = process.env,
+  coreReferencesDir: string = CORE_REFERENCES_DIR,
+): SkillExtensions | undefined {
+  const value = env[SKILL_EXTENSIONS_VAR];
+  if (!value) return undefined;
+
+  const dir = resolve(value);
+  const fail = (problem: string): never => {
+    throw new Error(`${SKILL_EXTENSIONS_VAR} (${dir}): ${problem}`);
+  };
+
+  if (!existsSync(dir)) return fail('the directory does not exist');
+  if (!statSync(dir).isDirectory()) return fail('it is not a directory');
+
+  const extensions: SkillExtensions = { dir, references: new Map() };
+  const coreNames = new Set(listFilesRecursive(coreReferencesDir).map((name) => name.toLowerCase()));
+
+  for (const entry of sortedEntries(dir)) {
+    if (entry.name === 'SKILL.md') {
+      if (!entry.isFile()) return fail('SKILL.md is not a regular file');
+      const fragment = readFileSync(join(dir, entry.name), 'utf8');
+      if (fragment.trim() === '') return fail('SKILL.md is empty');
+      extensions.fragment = fragment;
+    } else if (entry.name === 'references') {
+      if (!entry.isDirectory()) return fail('references is not a directory');
+      const referencesDir = join(dir, entry.name);
+      for (const reference of sortedEntries(referencesDir)) {
+        const where = `references/${reference.name}`;
+        if (reference.isDirectory()) return fail(`${where} is a directory; references must be flat`);
+        if (!reference.isFile()) return fail(`${where} is not a regular file`);
+        if (!reference.name.endsWith('.md')) return fail(`${where} is not a .md file`);
+        if (coreNames.has(reference.name.toLowerCase())) {
+          return fail(`${where} has the same name as one of core's references`);
+        }
+        extensions.references.set(reference.name, join(referencesDir, reference.name));
+      }
+    } else {
+      return fail(`unexpected entry '${entry.name}'; only SKILL.md and references/*.md are accepted`);
+    }
+  }
+
+  return extensions;
+}
+
+/** The one log line a build prints for its extension: where it came from and what it adds. */
+export function describeSkillExtensions(extensions: SkillExtensions): string {
+  const added = [
+    ...[...extensions.references.keys()].map((name) => `references/${name}`),
+    ...(extensions.fragment === undefined ? [] : ['a SKILL.md fragment']),
+  ];
+  return `Skill extensions from ${extensions.dir}: adding ${added.length === 0 ? 'nothing' : added.join(', ')}.`;
+}
+
+/**
+ * The files to stage for one of `STAGED_ENTRIES`: core's own from `skillDir`,
+ * and, when `extensions` is given, what it adds to `references` and `SKILL.md`.
+ * Every other entry stages as core's alone.
+ */
+export function stagedSources(
+  entry: string,
+  skillDir: string,
+  extensions?: SkillExtensions,
+): Map<string, StagedSource> {
+  const sources = treeSources(join(skillDir, entry));
+  if (!extensions) return sources;
+
+  if (entry === 'references') {
+    for (const [name, from] of extensions.references) {
+      if (sources.has(name)) throw new Error(`references/${name} would replace one of core's references`);
+      sources.set(name, { from });
+    }
+  } else if (entry === 'SKILL.md' && extensions.fragment !== undefined) {
+    sources.set('', {
+      bytes: Buffer.concat([readFileSync(join(skillDir, entry)), Buffer.from(`\n${extensions.fragment}`)]),
+    });
+  }
+  return sources;
+}
+
+/**
+ * Stages `skillDir`'s runtime output into `resourceDir` (core's, merged with
+ * `extensions` when given), writing only what differs and dropping anything
+ * staged that the source no longer holds. Returns how many files it wrote or
+ * removed, zero when everything was already current.
+ */
+export function stageSkillResources(
+  skillDir: string,
+  resourceDir: string,
+  extensions?: SkillExtensions,
+): number {
+  mkdirSync(resourceDir, { recursive: true });
+
+  // Drop anything already staged that is no longer one of STAGED_ENTRIES, so
+  // a since-removed entry never lingers in the bundle across rebuilds.
+  for (const entry of readdirSync(resourceDir)) {
+    if (!STAGED_ENTRIES.includes(entry)) {
+      rmSync(join(resourceDir, entry), { recursive: true, force: true });
+    }
+  }
+
+  let stagedChanges = 0;
+  for (const entry of STAGED_ENTRIES) {
+    stagedChanges += syncFilesByContent(
+      stagedSources(entry, skillDir, extensions),
+      join(resourceDir, entry),
+    );
+  }
+  pruneEmptyDirs(resourceDir);
+  return stagedChanges;
+}
+
 async function main(): Promise<void> {
+  // Read first: a bad extension directory should fail the build before any
+  // work, not after tsc has run.
+  const extensions = readSkillExtensions();
+  if (extensions) console.log(describeSkillExtensions(extensions));
+
   console.log('Building packages/skill...');
   await $`bun run --cwd ${SKILL_DIR} build`;
 
@@ -415,21 +609,7 @@ async function main(): Promise<void> {
   }
 
   console.log(`Staging skill resources -> ${RESOURCE_DIR}`);
-  mkdirSync(RESOURCE_DIR, { recursive: true });
-
-  // Drop anything already staged that is no longer one of STAGED_ENTRIES, so
-  // a since-removed entry never lingers in the bundle across rebuilds.
-  for (const entry of readdirSync(RESOURCE_DIR)) {
-    if (!STAGED_ENTRIES.includes(entry)) {
-      rmSync(join(RESOURCE_DIR, entry), { recursive: true, force: true });
-    }
-  }
-
-  let stagedChanges = 0;
-  for (const entry of STAGED_ENTRIES) {
-    stagedChanges += syncTreeByContent(join(SKILL_DIR, entry), join(RESOURCE_DIR, entry));
-  }
-  pruneEmptyDirs(RESOURCE_DIR);
+  const stagedChanges = stageSkillResources(SKILL_DIR, RESOURCE_DIR, extensions);
   console.log(
     stagedChanges === 0
       ? '  Staged resources already current — nothing rewritten.'

@@ -52,7 +52,7 @@ import { createLogger } from '$lib/utils/logger';
 const log = createLogger('UiExtensionRegistry');
 
 /** The extension API version this build implements. */
-export const EXTENSION_API_VERSION = { major: 1, minor: 0 } as const;
+export const EXTENSION_API_VERSION = { major: 1, minor: 1 } as const;
 
 // --- Lifecycle hooks (ADR-082 §2.5) ---------------------------------------------
 

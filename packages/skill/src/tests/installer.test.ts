@@ -862,6 +862,31 @@ describe('references and the install record', () => {
       expect(existsSync(claude.installDir)).toBe(false);
     });
 
+    it('leaves no file behind from a package root shaped like an extension-staged skill', () => {
+      mkdirSync(claude.detectionDir, { recursive: true });
+      seedPkgRoot(FAKE_PKG_ROOT, claude);
+      // What a build with a skill extension stages: core's references plus one
+      // it adds, and a fragment at the end of SKILL.md pointing at it.
+      plant(FAKE_PKG_ROOT, 'references/fixture-guide.md', '# Fixture guide');
+      writeFileSync(
+        join(FAKE_PKG_ROOT, 'SKILL.md'),
+        `${SKILL_MD_CONTENT}\n\nRead references/fixture-guide.md.\n`,
+        'utf8'
+      );
+
+      install(['claude-code'], FAKE_PKG_ROOT);
+
+      const added = join(claude.installDir, 'references', 'fixture-guide.md');
+      expect(readFileSync(added, 'utf8')).toBe('# Fixture guide');
+      expect(readRecord(claude).files).toContain('references/fixture-guide.md');
+
+      const [result] = uninstall(['claude-code'], FAKE_PKG_ROOT);
+
+      expect(result.removed).toContain(added);
+      expect(existsSync(added)).toBe(false);
+      expect(existsSync(claude.installDir)).toBe(false);
+    });
+
     it('with a record, keeps a user\'s own file in references/, and with it references/ and the install directory', () => {
       installClaude();
       const mine = plant(join(claude.installDir, 'references'), 'mine.md', 'user content');

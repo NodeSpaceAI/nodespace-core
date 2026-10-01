@@ -121,13 +121,12 @@ jobs:
           echo "Sidecars built:"
           ls -la "${BIN_DIR}/"
 
-      - name: Build and stage skill resources
-        run: bun run build:skill
-
-      # Core releases ship no extensions (ADR-082). The Tauri build runs
-      # `bun run build`, which inherits this environment, so a NODESPACE_EXTENSIONS
-      # left over in it would bundle that module into the release. `printenv`
-      # succeeds for any value, including an empty one.
+      # Core releases ship no extensions (ADR-082). `bun run build:skill` reads
+      # NODESPACE_SKILL_EXTENSIONS and stages that directory's guidance into the
+      # skill, and the Tauri build runs `bun run build`, which inherits this
+      # environment, so a NODESPACE_EXTENSIONS left over in it would bundle that
+      # module into the release. Both are refused here, before the skill is staged.
+      # `printenv` succeeds for any value, including an empty one.
       - name: Refuse injected extensions
         shell: bash
         run: |
@@ -135,6 +134,13 @@ jobs:
             echo '::error::NODESPACE_EXTENSIONS is set; core releases ship no extensions (ADR-082)'
             exit 1
           fi
+          if printenv NODESPACE_SKILL_EXTENSIONS > /dev/null; then
+            echo '::error::NODESPACE_SKILL_EXTENSIONS is set; core releases ship no extensions (ADR-082)'
+            exit 1
+          fi
+
+      - name: Build and stage skill resources
+        run: bun run build:skill
 
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
@@ -357,10 +363,6 @@ jobs:
           echo "Sidecars built:"
           ls -la "${BIN_DIR}/"
 
-      - name: Build and stage skill resources
-        if: steps.filter.outputs.skip != 'true'
-        run: bun run build:skill
-
       # See the guard in build-tauri-macos-arm.
       - name: Refuse injected extensions
         shell: bash
@@ -369,6 +371,14 @@ jobs:
             echo '::error::NODESPACE_EXTENSIONS is set; core releases ship no extensions (ADR-082)'
             exit 1
           fi
+          if printenv NODESPACE_SKILL_EXTENSIONS > /dev/null; then
+            echo '::error::NODESPACE_SKILL_EXTENSIONS is set; core releases ship no extensions (ADR-082)'
+            exit 1
+          fi
+
+      - name: Build and stage skill resources
+        if: steps.filter.outputs.skip != 'true'
+        run: bun run build:skill
 
       - name: Build Tauri app
         if: steps.filter.outputs.skip != 'true'
