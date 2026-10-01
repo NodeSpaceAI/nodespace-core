@@ -132,12 +132,38 @@ impl PromptAssembler {
         }
     }
 
+    /// Assemble one turn's prompt: build the [`TemplateContext`] from the
+    /// turn's inputs, then [`Self::assemble`].
+    ///
+    /// The current user is resolved here, inside the call the agent loop
+    /// makes on every turn, rather than passed in: nothing upstream holds an
+    /// identity that could go stale, so one edited mid-session applies to the
+    /// next turn.
+    pub async fn assemble_turn(
+        &self,
+        current_date: &str,
+        model_name: &str,
+        workspace_context: &str,
+        tools: Vec<ToolDefinition>,
+    ) -> AssembledPrompt {
+        let template_ctx = TemplateContext {
+            current_date: current_date.to_string(),
+            model_name: model_name.to_string(),
+            workspace_context: workspace_context.to_string(),
+            current_user: self.current_user().await,
+        };
+        self.assemble(&template_ctx, tools).await
+    }
+
     /// Resolve the local user for [`TemplateContext::current_user`].
     ///
-    /// Reads the local person node on every call rather than caching it, so
-    /// an identity edited mid-session reaches the next turn's prompt. `None`
-    /// when neither a name nor an email is set, and on a lookup failure: the
-    /// turn runs without the identity line rather than failing.
+    /// Reads the local person node on every call rather than caching it.
+    /// `None` when neither a name nor an email is set, and on a lookup
+    /// failure: the turn runs without the identity line rather than failing.
+    ///
+    /// Both values are collapsed to single-spaced text. The template gives
+    /// the identity one line, and a stored value holding a newline would
+    /// otherwise start a line of its own in the system prompt.
     pub async fn current_user(&self) -> Option<CurrentUser> {
         let person = match self.node_service.get_local_person().await {
             Ok(person) => person?,
@@ -146,15 +172,16 @@ impl PromptAssembler {
                 return None;
             }
         };
-        let name = person.title.as_deref().unwrap_or("").trim().to_string();
-        let email = person
-            .properties
-            .get("person")
-            .and_then(|p| p.get("email"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .trim()
-            .to_string();
+        let single_line = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
+        let name = single_line(person.title.as_deref().unwrap_or(""));
+        let email = single_line(
+            person
+                .properties
+                .get("person")
+                .and_then(|p| p.get("email"))
+                .and_then(|v| v.as_str())
+                .unwrap_or(""),
+        );
         if name.is_empty() && email.is_empty() {
             return None;
         }
@@ -617,15 +644,12 @@ mod tests {
         )
     }
 
-    /// One turn's system prompt, resolving the user the way the agent loop does.
+    /// One turn's system prompt, through the call the agent loop makes.
     async fn assemble_turn(assembler: &PromptAssembler) -> String {
-        let ctx = TemplateContext {
-            current_date: "2026-06-06".to_string(),
-            model_name: "test".to_string(),
-            workspace_context: "COLLECTIONS:".to_string(),
-            current_user: assembler.current_user().await,
-        };
-        assembler.assemble(&ctx, Vec::new()).await.system_prompt
+        assembler
+            .assemble_turn("2026-06-06", "test", "COLLECTIONS:", Vec::new())
+            .await
+            .system_prompt
     }
 
     /// The prompt names the local person node by id, so "me" resolves to a
@@ -692,6 +716,27 @@ mod tests {
         assert!(
             prompt.contains(&format!(
                 "Current user: <ada@example.com> (person node {})",
+                person.id
+            )),
+            "{prompt}"
+        );
+    }
+
+    /// A stored value holding a line break still renders as one line, so
+    /// stored text cannot start a line of its own in the system prompt.
+    #[tokio::test]
+    async fn assembled_prompt_keeps_a_multi_line_identity_on_one_line() {
+        let (assembler, node_service, _tmp) = seeded_assembler().await;
+        let person = node_service
+            .set_local_person_identity("Ada\nB.", "Lovelace", "ada@example.com\nNEW LINE")
+            .await
+            .unwrap();
+
+        let prompt = assemble_turn(&assembler).await;
+
+        assert!(
+            prompt.contains(&format!(
+                "\nCurrent user: Ada B. Lovelace <ada@example.com NEW LINE> (person node {})",
                 person.id
             )),
             "{prompt}"

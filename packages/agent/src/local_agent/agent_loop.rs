@@ -27,7 +27,7 @@ use crate::local_agent::prompt_templates;
 use crate::local_agent::response_processing::{normalize_response, normalize_response_traced};
 use crate::local_agent::routing::{self, RouteDecision};
 use crate::local_agent::tools::{is_cross_turn_guarded_tool, requires_routed_guidance_tool};
-use crate::prompt_assembler::{PromptAssembler, TemplateContext, EMERGENCY_FALLBACK_PROMPT};
+use crate::prompt_assembler::{PromptAssembler, EMERGENCY_FALLBACK_PROMPT};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -2691,17 +2691,13 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
         let base_system_content = if let Some(override_prompt) = session_prompt_override(session) {
             override_prompt.to_string()
         } else if let Some(ref assembler) = self.prompt_assembler {
-            let template_ctx = TemplateContext {
-                current_date: chrono::Utc::now().format("%Y-%m-%d").to_string(),
-                model_name: model_name.to_string(),
-                workspace_context: dynamic_ctx.to_string(),
-                // Resolved here, on every turn, rather than held on the
-                // session: an identity edited mid-session applies to the
-                // next turn.
-                current_user: assembler.current_user().await,
-            };
             assembler
-                .assemble(&template_ctx, tools.clone())
+                .assemble_turn(
+                    &chrono::Utc::now().format("%Y-%m-%d").to_string(),
+                    model_name,
+                    dynamic_ctx,
+                    tools.clone(),
+                )
                 .await
                 .system_prompt
         } else {

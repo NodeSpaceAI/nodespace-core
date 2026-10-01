@@ -10,6 +10,10 @@ Scenario: the user asks for a fact about themself that the `Current user:`
 line already states. Two outcomes are both right — reading the person node by
 the id on the line, or answering from the line — and one is wrong: searching
 for a person the prompt has already identified.
+
+MEASURED
+
+Locked model, 5 reps: 5/5 `get_node` on the person node id from the line.
 """
 
 [[turn]]

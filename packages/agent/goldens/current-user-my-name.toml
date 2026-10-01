@@ -18,8 +18,13 @@ person node id on the line, with no round trip to the user.
 
 CONTAMINATION GUARD
 
-The identity (Ada Lovelace) is the one the prompt-assembly snapshot fixture
-uses. It appears in no eval fixture and no guidance text.
+The identity (Ada Lovelace, and her person node id) is the one the
+prompt-assembly snapshot fixture uses. It appears in no eval fixture and no
+guidance text.
+
+MEASURED
+
+Locked model, 5 reps: 5/5 `search_nodes({"query":"Ada Lovelace"})`.
 """
 
 [[turn]]

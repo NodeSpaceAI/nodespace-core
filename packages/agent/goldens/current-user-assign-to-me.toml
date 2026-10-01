@@ -15,6 +15,21 @@ from the task side as `assignee`), so the write needs the person's node ID —
 the name is not enough. That id is what the `Current user:` line carries, and
 this case is the one that measures whether it is used: the id must reach the
 call without a search for the user.
+
+WHERE THIS DEPARTS FROM PRODUCTION
+
+`create_relationship`'s description here states the relation's name and
+direction outright ("from_id is the task, to_id is the person,
+relationship_type is \"assignee\""); production's does not. That is
+deliberate: with the name and direction given, the person id is the only
+thing the turn has to supply, so a miss is a miss on the identity line. A
+pass here says nothing about whether production's own description gets the
+direction right.
+
+MEASURED
+
+Locked model, 5 reps: 5/5 `create_relationship` from the task id to the
+person node id as `assignee`. No search for the user, no clarifying question.
 """
 
 # ---------------------------------------------------------------------------

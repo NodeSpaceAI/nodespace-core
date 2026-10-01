@@ -423,7 +423,7 @@ fn assemble_resident_system_prompt(workspace_context: &str) -> String {
         // A fixed identity, so the golden pins the current-user line the
         // model reads on a turn where the user has set one.
         current_user: Some(nodespace_agent::prompt_assembler::CurrentUser {
-            id: "01J8ZQ3K7X2N4P6R8T0V2W4Y6B".to_string(),
+            id: "5c1e9a47-2d83-4b6f-8e10-7a3f9d2c4b65".to_string(),
             name: "Ada Lovelace".to_string(),
             email: "ada@example.com".to_string(),
         }),

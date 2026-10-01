@@ -3,7 +3,7 @@ Call exactly one tool. Do not answer the user in prose when a tool applies.
 
 Current date: 2026-06-15
 Active model: gemma-4-E4B-it-Q4_K_M
-Current user: Ada Lovelace <ada@example.com> (person node 01J8ZQ3K7X2N4P6R8T0V2W4Y6B). "me", "my" and "I" refer to this person.
+Current user: Ada Lovelace <ada@example.com> (person node 5c1e9a47-2d83-4b6f-8e10-7a3f9d2c4b65). "me", "my" and "I" refer to this person.
 
 COLLECTIONS:
 - Engineering — Design notes, ADRs and tickets for the product team
