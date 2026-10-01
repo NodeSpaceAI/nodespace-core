@@ -33,17 +33,6 @@ const SKILL_MD: &str = include_str!("../../../skill/SKILL.md");
 /// written next to it.
 const SKILL_CLI_REFERENCE: &str = include_str!("../../../skill/references/cli.md");
 
-/// `packages/skill/references/shared-workspaces.md`, embedded for the same
-/// reason as [`SKILL_MD`].
-///
-/// SKILL.md links to this by relative path when a session is bound to a
-/// synced NodeSpace Pro collection — it covers write visibility, attribution,
-/// sync latency, and date-node sync limits. Embedding it too means a PTY
-/// session gets the whole skill rather than a body pointing at a file that
-/// was never written next to it.
-const SKILL_SHARED_WORKSPACES: &str =
-    include_str!("../../../skill/references/shared-workspaces.md");
-
 /// `packages/skill/references/graph-authored-guidance.md`, embedded for the
 /// same reason as [`SKILL_MD`].
 ///
@@ -415,11 +404,6 @@ async fn write_skill_md(session_dir: &Path) -> Result<(), ContextError> {
     let references = session_dir.join("references");
     tokio::fs::create_dir_all(&references).await?;
     tokio::fs::write(references.join("cli.md"), SKILL_CLI_REFERENCE).await?;
-    tokio::fs::write(
-        references.join("shared-workspaces.md"),
-        SKILL_SHARED_WORKSPACES,
-    )
-    .await?;
     tokio::fs::write(references.join("linear-playbook.md"), SKILL_LINEAR_PLAYBOOK).await?;
     tokio::fs::write(
         references.join("spec-driven-playbook.md"),
@@ -787,11 +771,6 @@ mod tests {
         // Sanity check that include_str! is resolving the sibling package's
         // SKILL.md and not an empty/stale copy.
         assert!(SKILL_MD.contains("NodeSpace"));
-    }
-
-    #[test]
-    fn embedded_shared_workspaces_matches_source_file() {
-        assert!(SKILL_SHARED_WORKSPACES.contains("shared"));
     }
 
     #[test]

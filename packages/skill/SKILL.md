@@ -33,10 +33,6 @@ Use NodeSpace as a working memory across sessions:
 
 Date nodes make temporal retrieval reliable: if a finding is time-bound, attach it under today's date node so future searches can scope by day.
 
-## Shared Workspaces (Multi-User)
-
-A NodeSpace collection can be synced and shared with a teammate through NodeSpace Pro: the daemon is launched already bound to it, so another engineer — or their agent — reads and writes the same graph. If that is the case here, read **`references/shared-workspaces.md`** before your first write to a shared collection: it covers write visibility, attribution, sync latency for search/recall, and why date-node findings do not sync yet. Skip it entirely for a private, single-user database.
-
 ## Preflight Check
 
 **Before starting any multi-step NodeSpace operation**, work out which of three capability branches you're on, then follow that branch. Check capability first, before running anything — the branches below differ in how (or whether) you can run a `nodespace` command at all, so branching on a command's output only works once you already know you have a way to run commands.

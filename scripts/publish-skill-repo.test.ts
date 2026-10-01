@@ -5,7 +5,8 @@
 // which must stay fast and deterministic, not depend on network or a real
 // SKILL_REPO_TOKEN.
 import { describe, expect, test } from "bun:test";
-import { readdirSync, readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { SHARED_SKILL_FRONTMATTER } from "../packages/skill/src/agents";
 import {
@@ -28,7 +29,6 @@ const REFERENCES = [
   "references/graph-authored-guidance.md",
   "references/jira-playbook.md",
   "references/linear-playbook.md",
-  "references/shared-workspaces.md",
   "references/spec-driven-playbook.md",
 ];
 
@@ -107,6 +107,36 @@ describe("sharedShimPaths", () => {
     expect(shared.has("shims/codex/nodespace-plugin.ts")).toBe(false);
     expect(shared.has("shims/opencode/nodespace-plugin.ts")).toBe(false);
   });
+
+  // Guidance that only another build's users need never reaches the public
+  // skill repository (ADR-082 section 6). The needle is built from fragments
+  // so this absence test does not itself name the file it looks for.
+  test("does not publish the removed multi-user reference", () => {
+    expect(sharedShimPaths()).not.toContain(["references/shared", "workspaces.md"].join("-"));
+  });
+
+  // A build adds guidance with NODESPACE_SKILL_EXTENSIONS (scripts/build-skill.ts).
+  // The publish reads packages/skill directly and never that variable, so a
+  // set variable changes nothing the public repository receives.
+  test("ignores NODESPACE_SKILL_EXTENSIONS: an extension directory adds nothing to the publish", () => {
+    const extension = mkdtempSync(join(tmpdir(), "publish-skill-extension-"));
+    const saved = process.env.NODESPACE_SKILL_EXTENSIONS;
+    try {
+      mkdirSync(join(extension, "references"));
+      writeFileSync(join(extension, "references", "extension-only.md"), "# Extension-only guidance\n");
+      writeFileSync(join(extension, "SKILL.md"), "## Extension-only section\n");
+      process.env.NODESPACE_SKILL_EXTENSIONS = extension;
+      expect(sharedShimPaths().sort()).toEqual(["SKILL.md", ...REFERENCES]);
+      const files = renderPublishFiles("v0.2.2");
+      expect(files.map((f) => f.relPath)).not.toContain("skills/nodespace/references/extension-only.md");
+      const skillMd = files.find((f) => f.relPath === "skills/nodespace/SKILL.md")!;
+      expect(skillMd.content).not.toContain("Extension-only section");
+    } finally {
+      if (saved === undefined) delete process.env.NODESPACE_SKILL_EXTENSIONS;
+      else process.env.NODESPACE_SKILL_EXTENSIONS = saved;
+      rmSync(extension, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("renderPublishFiles", () => {
@@ -175,15 +205,8 @@ describe("renderPublishFiles", () => {
 
   // SKILL.md's stub for the moved section must still name the file it points
   // at, or the publish step would ship a reference nothing in the body links
-  // to -- the same dangling-reference failure mode the issue that added this
-  // file exists to prevent, just checked against the published copy instead
-  // of the local one.
-  test("SKILL.md links to references/shared-workspaces.md by the exact published path", () => {
-    const files = renderPublishFiles("v0.2.2");
-    const skillMd = files.find((f) => f.relPath === "skills/nodespace/SKILL.md")!;
-    expect(skillMd.content).toContain("references/shared-workspaces.md");
-  });
-
+  // to: a dangling reference, checked against the published copy instead of
+  // the local one.
   test("SKILL.md links to references/graph-authored-guidance.md by the exact published path", () => {
     const files = renderPublishFiles("v0.2.2");
     const skillMd = files.find((f) => f.relPath === "skills/nodespace/SKILL.md")!;
