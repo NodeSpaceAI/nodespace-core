@@ -618,13 +618,9 @@ fn search_result_summary(node: &Value) -> Value {
         .and_then(|v| v.as_str())
         .filter(|t| !t.is_empty())
         .unwrap_or(content);
-    // `nodeType` is the wire spelling (`Node` is camelCase-serialized), so a
-    // `node_type` lookup alone reported every node's type as empty. A schema
-    // node has no such field at all and still reports none.
-    let node_type = ["nodeType", "node_type", "type"]
-        .iter()
-        .find_map(|key| node.get(*key).and_then(|v| v.as_str()))
-        .unwrap_or("");
+    // `nodeType` is the wire spelling: `Node` is camelCase-serialized. A schema
+    // node has no such field, so a type row reports no type.
+    let node_type = node.get("nodeType").and_then(|v| v.as_str()).unwrap_or("");
     json!({
         "id": node_uri(node.get("id").and_then(|v| v.as_str()).unwrap_or("")),
         "title": truncate(title, 100),
@@ -654,8 +650,8 @@ fn def_search_nodes() -> ToolDefinition {
             (3) filtering by typed properties with operators (status='in_dev', a date field before a given date) — \
             pass 'filters' for these. Combine as needed (e.g. node_type + a property filter). \
             To answer which types or schemas exist, call this with node_type='schema': it returns every type, \
-            built-in and custom, and the answer names each one it returned. The EXISTING SCHEMAS block is not \
-            that list — it holds only the custom types related to the current message. \
+            built-in and custom. The EXISTING SCHEMAS block is not that list — it holds only the custom types \
+            related to the current message. \
             A count of 0 means nothing in the workspace matches — it does not mean the query was wrong. \
             When a type-scoped search returns no matches, the result carries 'filterable_properties' — the fields that \
             type actually defines, with allowed values where they are constrained. Use it to check the filter you sent: \
@@ -8013,8 +8009,8 @@ mod tests {
 
     // -- search_result_summary ------------------------------------------------
 
-    /// A node's type is serialized as `nodeType`; reading only `node_type`
-    /// reported every search result's type as empty.
+    /// A node's type is serialized as `nodeType`, and that is the key a result
+    /// row reads it from.
     #[test]
     fn a_search_result_reports_the_nodes_type() {
         let node = json!({

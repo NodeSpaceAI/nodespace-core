@@ -526,8 +526,13 @@ fn unusable_arguments(args: &serde_json::Value) -> Option<&'static str> {
 /// What the model is told when its call's arguments are [`unusable_arguments`].
 ///
 /// Worded after the error a tool gives for an unknown field, which the model is
-/// measured to retry from. The offending text is deliberately not quoted back:
-/// the model copies the shape of what it reads in its own history.
+/// measured to retry from. It does not quote the offending text, so the result
+/// does not add a second copy of it to the prompt.
+///
+/// The call itself stays in history as emitted. Replaying it as `{}` was
+/// measured on `gemma-4-e4b-q4km` with this wording and with the invalid-JSON
+/// wording: in 4 of 4 trials each the model apologised and asked the user what
+/// they meant, where the verbatim call drew a retry.
 fn unusable_arguments_message(tool: &str, definition: Option<&ToolDefinition>) -> String {
     let names: Vec<String> = definition
         .and_then(|d| d.parameters_schema.get("properties"))
@@ -1740,6 +1745,10 @@ fn describe_unsurfaced_failures(failed: &[&ToolExecutionRecord]) -> String {
             };
             match failure_reason(record) {
                 FailureReason::NotRun(why) => format!("I couldn't run {action}: {why}."),
+                // A cut-short reason already ends in an ellipsis.
+                FailureReason::Failed(Some(why)) if why.ends_with('…') => {
+                    format!("I couldn't complete {action}: {why}")
+                }
                 FailureReason::Failed(Some(why)) => format!("I couldn't complete {action}: {why}."),
                 FailureReason::Failed(None) => format!("I couldn't complete {action}."),
             }
@@ -3443,13 +3452,16 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                     } else {
                         serde_json::from_str(&tc.arguments_json).ok()?
                     };
-                    // Mirrors the repair pass the per-call loop below applies
-                    // before its own parse, so this scan cannot disagree with
-                    // what that loop decides for the same call — a mismatch
-                    // here would mean a well-formed clarify goes undetected,
-                    // which is exactly the silent-write gap this scan exists
-                    // to close.
+                    // Mirrors the repair pass and the malformed-call check the
+                    // per-call loop below applies before its own parse, so this
+                    // scan cannot disagree with what that loop decides for the
+                    // same call — a mismatch here would mean a well-formed
+                    // clarify goes undetected, which is exactly the silent-write
+                    // gap this scan exists to close.
                     repair_parsed_tool_arguments(&mut args_value);
+                    if unusable_arguments(&args_value).is_some() {
+                        return None;
+                    }
                     crate::local_agent::tools::parse_route_clarify_args(&args_value)
                 });
             for tc in &tool_calls {
@@ -3533,7 +3545,6 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                     }
                 };
 
-                let mut malformed_message = None;
                 let (args, tool_result) = match parsed_args {
                     Ok(mut args) => {
                         consecutive_malformed_calls = 0;
@@ -3562,7 +3573,7 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                             if tc.function_name == routing::ROUTE_CLARIFY_TOOL {
                                 (
                                     args,
-                                    Some(Ok(crate::agent_types::ToolResult {
+                                    Ok(crate::agent_types::ToolResult {
                                         tool_call_id: tc.id.clone(),
                                         name: tc.function_name.clone(),
                                         result: serde_json::json!({
@@ -3571,7 +3582,7 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                                             "options": options,
                                         }),
                                         is_error: false,
-                                    })),
+                                    }),
                                 )
                             } else {
                                 tracing::warn!(
@@ -3583,7 +3594,7 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                                 );
                                 (
                                     args,
-                                    Some(Ok(crate::agent_types::ToolResult {
+                                    Ok(crate::agent_types::ToolResult {
                                         tool_call_id: tc.id.clone(),
                                         name: tc.function_name.clone(),
                                         result: serde_json::json!({
@@ -3594,7 +3605,7 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                                                 answer, then act on it in a follow-up call.",
                                         }),
                                         is_error: false,
-                                    })),
+                                    }),
                                 )
                             }
                         } else {
@@ -3642,7 +3653,7 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                                 // proceed by varying the call.
                                 (
                                     args,
-                                    Some(Ok(crate::agent_types::ToolResult {
+                                    Ok(crate::agent_types::ToolResult {
                                         tool_call_id: tc.id.clone(),
                                         name: tc.function_name.clone(),
                                         result: duplicate_write_result(prior),
@@ -3651,7 +3662,7 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                                         // as a failure would invite a repair retry —
                                         // the exact loop this guard exists to stop.
                                         is_error: false,
-                                    })),
+                                    }),
                                 )
                             } else if let Some(entity) = mentioned_entity_duplicated_by(
                                 &session.mentioned_entities,
@@ -3676,12 +3687,12 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                                 let refused = duplicate_entity_refused_result(entity);
                                 (
                                     args,
-                                    Some(Ok(crate::agent_types::ToolResult {
+                                    Ok(crate::agent_types::ToolResult {
                                         tool_call_id: tc.id.clone(),
                                         name: tc.function_name.clone(),
                                         result: refused,
                                         is_error: true,
-                                    })),
+                                    }),
                                 )
                             } else if tc.function_name == "create_schema"
                                 && second_schema_should_be_refused(
@@ -3713,12 +3724,12 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                                 );
                                 (
                                     args,
-                                    Some(Ok(crate::agent_types::ToolResult {
+                                    Ok(crate::agent_types::ToolResult {
                                         tool_call_id: tc.id.clone(),
                                         name: tc.function_name.clone(),
                                         result: refused,
                                         is_error: true,
-                                    })),
+                                    }),
                                 )
                             } else {
                                 // Note on `tc.function_name == routing::ROUTE_CLARIFY_TOOL`
@@ -3738,26 +3749,29 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                                     .tool_executor
                                     .execute(&tc.function_name, args.clone())
                                     .await;
-                                (args, Some(result))
+                                (args, result)
                             }
                         }
                     }
                     Err(message) => {
                         consecutive_malformed_calls += 1;
-                        malformed_message = Some(message);
-                        (serde_json::json!({}), None)
+                        (
+                            serde_json::json!({}),
+                            Ok(crate::agent_types::ToolResult {
+                                tool_call_id: tc.id.clone(),
+                                name: tc.function_name.clone(),
+                                result: malformed_call_result(message),
+                                is_error: true,
+                            }),
+                        )
                     }
                 };
 
                 let duration_ms = start.elapsed().as_millis() as u64;
 
                 let (result_value, is_error) = match tool_result {
-                    Some(Ok(tr)) => (tr.result, tr.is_error),
-                    Some(Err(e)) => (serde_json::json!({"error": e.to_string()}), true),
-                    None => (
-                        malformed_call_result(malformed_message.unwrap_or_default()),
-                        true,
-                    ),
+                    Ok(tr) => (tr.result, tr.is_error),
+                    Err(e) => (serde_json::json!({"error": e.to_string()}), true),
                 };
 
                 // Field count from the tool RESULT, not its arguments: the result is the
@@ -5710,7 +5724,7 @@ mod tests {
     fn a_long_tool_error_is_cut_short_and_marked() {
         let long = failed_record("update_node", json!({"error": "x".repeat(500)}));
         let described = describe_unsurfaced_failures(&[&long]);
-        assert!(described.ends_with("…."), "{described}");
+        assert!(described.ends_with("x…"), "{described}");
         assert!(described.chars().count() < 260, "{described}");
     }
 
@@ -9622,10 +9636,10 @@ mod tests {
         (result, session, executed)
     }
 
-    /// The reported turn: the kwargs-shaped call is valid JSON, so it used to
-    /// be dispatched, rejected by the tool for an unknown field, and papered
-    /// over by an answer from context. It must not reach the tool, the model
-    /// must be told how to re-send it, and the user must be told what failed.
+    /// The reported turn: the kwargs-shaped call is valid JSON, so no parse
+    /// guard catches it. It must not reach the tool, the model must be told how
+    /// to re-send it, and the user must be told what failed rather than given
+    /// the answer from context the model wrote over it.
     #[tokio::test]
     async fn kwargs_shaped_arguments_are_reported_as_a_malformed_call() {
         let (result, session, executed) = run_search_turn(
@@ -9667,7 +9681,7 @@ mod tests {
     }
 
     /// The model's answer to the user, written where the arguments belong —
-    /// as a key, and as the whole value. Either used to be dispatched as field
+    /// as a key, and as the whole value. Neither may be dispatched as field
     /// names.
     #[tokio::test]
     async fn prose_in_place_of_arguments_is_reported_as_a_malformed_call() {
