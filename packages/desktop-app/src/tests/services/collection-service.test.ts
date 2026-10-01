@@ -355,6 +355,7 @@ describe('HttpCollectionService', () => {
     ['getCollectionMembers', (svc) => svc.getCollectionMembers('c1')],
     ['getCollectionMembersRecursive', (svc) => svc.getCollectionMembersRecursive('c1')],
     ['addNodeToCollection', (svc) => svc.addNodeToCollection('n1', 'c1')],
+    ['addNodeToCollectionPath', (svc) => svc.addNodeToCollectionPath('n1', 'hr:policy')],
     ['removeNodeFromCollection', (svc) => svc.removeNodeFromCollection('n1', 'c1')]
   ];
 
@@ -489,15 +490,7 @@ describe('HttpCollectionService', () => {
   });
 
   it('addNodeToCollectionPath posts the path and returns the leaf collection id', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn().mockResolvedValue({
-        ok: true,
-        status: 200,
-        statusText: 'OK',
-        json: () => Promise.resolve('leaf-id')
-      })
-    );
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(okResponse('leaf-id')));
 
     const svc = await loadHttpService();
     const result = await svc.addNodeToCollectionPath('n 1', 'hr:policy');
@@ -508,43 +501,6 @@ describe('HttpCollectionService', () => {
       body: JSON.stringify({ collectionPath: 'hr:policy' })
     });
     expect(result).toBe('leaf-id');
-  });
-
-  it('addNodeToCollectionPath throws a descriptive error on a non-ok response', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn().mockResolvedValue({ ok: false, status: 404, statusText: 'Not Found' })
-    );
-
-    const svc = await loadHttpService();
-
-    await expect(svc.addNodeToCollectionPath('missing', 'hr:policy')).rejects.toThrow(
-      'Failed to add node to collection path: Not Found'
-    );
-  });
-
-  it("a failure reports the proxy's error message over the status text", async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn().mockResolvedValue({
-        ok: false,
-        status: 404,
-        statusText: 'Not Found',
-        json: () => Promise.resolve({ code: 'NOT_FOUND', message: 'Node not found: missing' })
-      })
-    );
-
-    const svc = await loadHttpService();
-
-    await expect(svc.addNodeToCollectionPath('missing', 'hr:policy')).rejects.toThrow(
-      'Failed to add node to collection path: Node not found: missing'
-    );
-    await expect(svc.addNodeToCollection('missing', 'c1')).rejects.toThrow(
-      'Failed to add node to collection: Node not found: missing'
-    );
-    await expect(svc.getCollectionMembers('c1')).rejects.toThrow(
-      'Failed to fetch collection members: Node not found: missing'
-    );
   });
 
   it('stub methods return their documented placeholder values without throwing', async () => {

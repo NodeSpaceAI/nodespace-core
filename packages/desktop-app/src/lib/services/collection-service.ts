@@ -263,9 +263,17 @@ class HttpCollectionService implements CollectionServiceInterface {
     await this.patchMembership(nodeId, { addToCollectionIds: [collectionId] });
   }
 
-  async addNodeToCollectionPath(_nodeId: string, _path: string): Promise<string> {
-    // Not implemented in dev-proxy yet
-    return '';
+  async addNodeToCollectionPath(nodeId: string, path: string): Promise<string> {
+    log.debug('Adding node to collection path via HTTP', { nodeId, path });
+    const response = await fetch(
+      `${DEV_PROXY_URL}/api/nodes/${encodeURIComponent(nodeId)}/collections`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ collectionPath: path })
+      }
+    );
+    return handleResponse<string>(response);
   }
 
   async removeNodeFromCollection(nodeId: string, collectionId: string): Promise<void> {
