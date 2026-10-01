@@ -76,8 +76,8 @@ service NodeService {
 
   // Local identity (ADR-037): the seeded local-user PersonNode.
   // GetLocalPerson resolves it via the has_role owner edge to the
-  // DatabaseSettingsNode singleton (falling back to the first person node on
-  // a database that predates that edge); the response's `node` is unset only
+  // DatabaseSettingsNode singleton (falling back to the first person node
+  // when that edge is missing); the response's `node` is unset only
   // when no person node exists at all. SetLocalPersonIdentity writes into
   // that SAME node — never a newly created one.
   rpc GetLocalPerson(Empty) returns (OptionalNodeResponse);

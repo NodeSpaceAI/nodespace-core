@@ -1778,7 +1778,7 @@ impl SqliteStore {
     /// Fetch a single relationship edge (with its properties) by endpoints and type.
     ///
     /// Complements `get_relationship_id` when the caller needs the edge's stored
-    /// properties (e.g. the `role`/`status` carried on a `has_role` edge), not just
+    /// properties (e.g. the `order` carried on a `member_of` edge), not just
     /// its id. Returns `None` when no such edge exists.
     pub async fn get_relationship_record(
         &self,
