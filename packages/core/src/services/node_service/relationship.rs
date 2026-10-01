@@ -1978,11 +1978,11 @@ impl NodeService {
             .map_err(NodeServiceError::from_store)?;
 
         // The domain-event broadcast channel is bounded
-        // (`DOMAIN_EVENT_CHANNEL_CAPACITY`). A large import can create far more
-        // `member_of` edges than that; emitting them all in a tight loop could
-        // make a slow subscriber lag and DROP edges. Yield every chunk so
-        // subscribers drain between bursts. The chunk stays well under the
-        // channel capacity.
+        // (`DOMAIN_EVENT_CHANNEL_CAPACITY`). A large import can create more
+        // `member_of` edges than the buffer holds; emitting them all in a tight
+        // loop could make a slow subscriber lag and DROP edges. Yield every
+        // chunk so subscribers drain between bursts. The chunk stays well under
+        // the channel capacity.
         const EMIT_CHUNK: usize = 50;
         for (i, (rel_id, node_id, collection_id, order)) in created.iter().enumerate() {
             self.emit_event(DomainEvent::RelationshipCreated {

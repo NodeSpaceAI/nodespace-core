@@ -177,8 +177,8 @@ impl NodeService {
             // writes made elsewhere can't make that same assumption — it may
             // send a non-null placeholder for every row, including templated
             // ones — so an `is_none()`-only check here would silently miss
-            // exactly the case this method exists to fix. A templated type's title is
-            // never legitimately caller-controlled anyway — its `content`
+            // exactly the case this method exists to fix. A templated type's
+            // title is never legitimately caller-controlled anyway — its `content`
             // must already be empty (the rule enforced above) — so
             // overriding a non-null placeholder is correct, not just
             // permissive. Read AFTER `rebucket_and_validate` so a templated
