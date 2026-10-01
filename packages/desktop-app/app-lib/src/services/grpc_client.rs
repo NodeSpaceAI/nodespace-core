@@ -749,7 +749,7 @@ mod tests {
     /// The app half of the app/daemon agreement check.
     ///
     /// These two strings are pinned literally here AND, identically, in the
-    /// daemon's `socket_fallback_variant_tests`. That duplication is the point:
+    /// daemon's `socket_fallback_flavour_tests`. That duplication is the point:
     /// both sides now derive their default from one shared table, so a test that
     /// re-derived the expectation from that same table would still pass if the
     /// table itself were wrong. Pinning the values on each side independently

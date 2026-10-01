@@ -420,7 +420,11 @@ mod tests {
     fn the_marker_lives_in_the_state_directory_under_this_flavours_name() {
         let marker = marker_path_in(Path::new("/home/u"));
         assert_eq!(marker.parent(), Some(Path::new("/home/u/.nodespace")));
-        assert!(nodespace_proto::socket::INCOMPATIBLE_DATABASE_NAMES
-            .contains(&marker.file_name().unwrap().to_str().unwrap()));
+        assert_eq!(
+            marker.file_name().and_then(|name| name.to_str()),
+            Some(nodespace_proto::socket::incompatible_database_name(cfg!(
+                debug_assertions
+            )))
+        );
     }
 }

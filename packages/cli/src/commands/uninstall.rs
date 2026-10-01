@@ -150,7 +150,7 @@ mod tests {
     /// survived an uninstall would sit in `~/.nodespace` forever.
     #[cfg(unix)]
     #[test]
-    fn remove_sock_removes_every_variants_socket_and_lock_file_only() {
+    fn remove_sock_removes_both_flavours_sockets_and_lock_files_only() {
         let home = tempfile::tempdir().expect("tempdir");
         let state_dir = home.path().join(nodespace_proto::socket::STATE_DIR);
         fs::create_dir_all(&state_dir).expect("create state dir");

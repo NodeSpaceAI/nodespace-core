@@ -108,7 +108,15 @@ pub(crate) fn daemon_socket_relative() -> &'static str {
 /// macOS launchd label, scoped by build flavour (mirrors daemon_socket_relative).
 #[cfg(target_os = "macos")]
 fn launch_agent_label() -> &'static str {
-    if cfg!(debug_assertions) {
+    launch_agent_label_for(cfg!(debug_assertions))
+}
+
+/// The launchd label for an arbitrary build flavour. Takes the flavour as a
+/// parameter because a compiled app is only ever one flavour, so this is the
+/// only way an ordinary `#[test]` can pin both labels.
+#[cfg(any(target_os = "macos", test))]
+fn launch_agent_label_for(is_debug: bool) -> &'static str {
+    if is_debug {
         "app.nodespace.daemon.dev"
     } else {
         "app.nodespace.daemon"
@@ -2871,7 +2879,7 @@ mod pkg_plist_matches_app_plist_tests {
         let contents = pkg_plist_contents();
         assert!(
             contents.contains("<key>Label</key>\n    <string>app.nodespace.daemon</string>"),
-            "the .pkg's plist must register under the exact label the community-build app \
+            "the .pkg's plist must register under the exact label the release-build app \
              self-registers under (app.nodespace.daemon) -- a mismatched label makes the pkg \
              and the app run two independent daemons instead of one: {contents}"
         );
@@ -3069,6 +3077,20 @@ mod daemon_profile_selection_tests {
     #[test]
     fn the_active_profile_starts_as_the_build_default() {
         assert_eq!(daemon_profile::active(), &profile_for_this_build());
+    }
+}
+
+/// The launchd label is part of the shared service identity: the `.pkg`'s
+/// static plist, the Homebrew cask and any daemon registered under core's
+/// identity use these exact strings, and only the build flavour separates them.
+#[cfg(test)]
+mod launch_agent_label_tests {
+    use super::launch_agent_label_for;
+
+    #[test]
+    fn the_label_is_exactly_the_release_or_the_dev_label() {
+        assert_eq!(launch_agent_label_for(false), "app.nodespace.daemon");
+        assert_eq!(launch_agent_label_for(true), "app.nodespace.daemon.dev");
     }
 }
 

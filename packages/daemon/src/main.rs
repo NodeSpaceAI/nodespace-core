@@ -2108,7 +2108,7 @@ mod pipe_permission_tests {
 /// names coincide — which is precisely why a test that checks a single flavour
 /// would not have caught it.
 #[cfg(all(test, unix))]
-mod socket_fallback_variant_tests {
+mod socket_fallback_flavour_tests {
     use super::default_socket_path_for;
 
     /// Both flavours, spelled out literally rather than re-derived from
@@ -2150,7 +2150,7 @@ mod socket_fallback_variant_tests {
 
     /// `NODESPACED_SOCKET` stays an override, not a suggestion — the plist sets
     /// it, and the two-window dev setup depends on it winning over the default.
-    /// Making the fallback variant-scoped must not have demoted it.
+    /// Making the fallback flavour-scoped must not have demoted it.
     ///
     /// This is the one test in the binary that mutates `NODESPACED_SOCKET`, so
     /// it owns that variable outright: everything else here reads only `HOME`.

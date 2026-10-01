@@ -2,7 +2,7 @@
 //!
 //! Which socket the daemon binds and which socket a client dials is part of the
 //! transport contract, not an implementation detail of either side — so the
-//! variant table lives here, next to the header keys and message limits, rather
+//! flavour table lives here, next to the header keys and message limits, rather
 //! than being copied into each crate that needs it.
 //!
 //! The socket filename is scoped by build flavour so that a dev build and a
@@ -78,7 +78,7 @@ pub const fn daemon_socket_relative(is_debug: bool) -> &'static str {
     }
 }
 
-/// The Windows Named Pipe the daemon serves. Windows has no per-variant
+/// The Windows Named Pipe the daemon serves. Windows has no per-flavour
 /// scoping: the pipe namespace is machine-global rather than per-home, and the
 /// desktop app spawns the daemon directly there instead of registering a
 /// long-lived service, so there is no plist-equivalent to drift out of sync.
