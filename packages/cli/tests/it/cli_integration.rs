@@ -2147,7 +2147,7 @@ async fn node_set_status_rejects_invalid_status() {
         .node_id;
 
     // No CLI-side vocabulary check remains, so this exercises the daemon's
-    // live-schema validation (`NodeService::validate_task_status`) via the
+    // live-schema validation (the update pipeline's enum check) via the
     // RPC — same error-mapping path as `schema_create_rejects_malformed_params`.
     let err = commands::node::run(
         &mut client,

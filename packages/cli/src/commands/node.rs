@@ -319,7 +319,7 @@ async fn set_status(client: &mut NodeClient, args: SetStatusArgs, json: bool) ->
     // not a list baked into this binary — is the only source of truth for
     // which values are valid. An invalid value comes back from the RPC
     // below as an InvalidArgument status naming the value and the current
-    // list (`NodeService::validate_task_status`).
+    // list (the update pipeline's enum check).
     let properties = json!({ "status": args.status }).to_string();
 
     let response = client
