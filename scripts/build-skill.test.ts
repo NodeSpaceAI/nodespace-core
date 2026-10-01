@@ -12,9 +12,12 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
+  realpathSync,
   rmSync,
   statSync,
+  symlinkSync,
   utimesSync,
   writeFileSync,
 } from "node:fs";
@@ -24,14 +27,21 @@ import {
   bunCompileTarget,
   compileInputs,
   compileInstaller,
+  describeSkillExtensions,
   isNotACompileInput,
   isOutputFresh,
   listFilesRecursive,
   newestMtimeMs,
   parseTargetArg,
   pruneEmptyDirs,
+  readSkillExtensions,
+  SKILL_EXTENSIONS_VAR,
   STAGED_ENTRIES,
-  syncTreeByContent,
+  stagedSources,
+  stageSkillResources,
+  syncFilesByContent,
+  treeSources,
+  type SkillExtensions,
 } from "./build-skill";
 
 let root: string;
@@ -182,12 +192,17 @@ describe("isNotACompileInput", () => {
   });
 });
 
-describe("syncTreeByContent", () => {
+/** Mirrors every file under `srcRoot` onto `destRoot`: how an entry with no additions is staged. */
+function syncTree(srcRoot: string, destRoot: string): number {
+  return syncFilesByContent(treeSources(srcRoot), destRoot);
+}
+
+describe("syncFilesByContent mirroring a source tree", () => {
   test("copies a tree that has never been staged", () => {
     write("src/a.txt", "a");
     write("src/nested/b.txt", "b");
 
-    const changed = syncTreeByContent(join(root, "src"), join(root, "dest"));
+    const changed = syncTree(join(root, "src"), join(root, "dest"));
 
     expect(changed).toBe(2);
     expect(readFileSync(join(root, "dest", "a.txt"), "utf8")).toBe("a");
@@ -200,7 +215,7 @@ describe("syncTreeByContent", () => {
     // preserved dest mtime is what keeps nodespace-app's build script valid.
     write("src/a.txt", "a");
     write("src/nested/b.txt", "b");
-    syncTreeByContent(join(root, "src"), join(root, "dest"));
+    syncTree(join(root, "src"), join(root, "dest"));
 
     const before = listFilesRecursive(join(root, "dest")).map((rel) =>
       statSync(join(root, "dest", rel)).mtimeMs,
@@ -209,7 +224,7 @@ describe("syncTreeByContent", () => {
     setMtime(join(root, "src", "a.txt"), 9_000);
     setMtime(join(root, "src", "nested", "b.txt"), 9_000);
 
-    const changed = syncTreeByContent(join(root, "src"), join(root, "dest"));
+    const changed = syncTree(join(root, "src"), join(root, "dest"));
 
     expect(changed).toBe(0);
     const after = listFilesRecursive(join(root, "dest")).map((rel) =>
@@ -221,11 +236,11 @@ describe("syncTreeByContent", () => {
   test("rewrites only the file whose content actually changed", () => {
     write("src/a.txt", "a");
     write("src/b.txt", "b");
-    syncTreeByContent(join(root, "src"), join(root, "dest"));
+    syncTree(join(root, "src"), join(root, "dest"));
     const untouchedBefore = statSync(join(root, "dest", "b.txt")).mtimeMs;
 
     write("src/a.txt", "a-edited");
-    const changed = syncTreeByContent(join(root, "src"), join(root, "dest"));
+    const changed = syncTree(join(root, "src"), join(root, "dest"));
 
     expect(changed).toBe(1);
     expect(readFileSync(join(root, "dest", "a.txt"), "utf8")).toBe("a-edited");
@@ -235,10 +250,10 @@ describe("syncTreeByContent", () => {
   test("deletes a staged file that no longer exists in the source", () => {
     write("src/keep.txt", "keep");
     write("src/gone.txt", "gone");
-    syncTreeByContent(join(root, "src"), join(root, "dest"));
+    syncTree(join(root, "src"), join(root, "dest"));
 
     rmSync(join(root, "src", "gone.txt"));
-    const changed = syncTreeByContent(join(root, "src"), join(root, "dest"));
+    const changed = syncTree(join(root, "src"), join(root, "dest"));
 
     expect(changed).toBe(1);
     expect(existsSync(join(root, "dest", "gone.txt"))).toBe(false);
@@ -253,7 +268,7 @@ describe("syncTreeByContent", () => {
     writeFileSync(join(root, "dest", "SKILL.md", "stray.txt"), "stale");
     write("SKILL.md", "# skill");
 
-    const changed = syncTreeByContent(join(root, "SKILL.md"), join(root, "dest", "SKILL.md"));
+    const changed = syncTree(join(root, "SKILL.md"), join(root, "dest", "SKILL.md"));
 
     expect(changed).toBe(1);
     expect(statSync(join(root, "dest", "SKILL.md")).isFile()).toBe(true);
@@ -264,7 +279,7 @@ describe("syncTreeByContent", () => {
     write("dest/refs", "was a file");
     write("refs/cli.md", "# cli");
 
-    const changed = syncTreeByContent(join(root, "refs"), join(root, "dest", "refs"));
+    const changed = syncTree(join(root, "refs"), join(root, "dest", "refs"));
 
     expect(changed).toBe(1);
     expect(readFileSync(join(root, "dest", "refs", "cli.md"), "utf8")).toBe("# cli");
@@ -272,11 +287,11 @@ describe("syncTreeByContent", () => {
 
   test("self-heals a nested path that flipped from directory to file", () => {
     write("src/nested/a.txt", "a");
-    syncTreeByContent(join(root, "src"), join(root, "dest"));
+    syncTree(join(root, "src"), join(root, "dest"));
     rmSync(join(root, "src", "nested"), { recursive: true });
     write("src/nested", "now a file");
 
-    const changed = syncTreeByContent(join(root, "src"), join(root, "dest"));
+    const changed = syncTree(join(root, "src"), join(root, "dest"));
 
     expect(changed).toBeGreaterThan(0);
     expect(readFileSync(join(root, "dest", "nested"), "utf8")).toBe("now a file");
@@ -285,11 +300,11 @@ describe("syncTreeByContent", () => {
   test("stages a plain file as a plain file", () => {
     write("SKILL.md", "# skill");
 
-    const changed = syncTreeByContent(join(root, "SKILL.md"), join(root, "dest", "SKILL.md"));
+    const changed = syncTree(join(root, "SKILL.md"), join(root, "dest", "SKILL.md"));
 
     expect(changed).toBe(1);
     expect(readFileSync(join(root, "dest", "SKILL.md"), "utf8")).toBe("# skill");
-    expect(syncTreeByContent(join(root, "SKILL.md"), join(root, "dest", "SKILL.md"))).toBe(0);
+    expect(syncTree(join(root, "SKILL.md"), join(root, "dest", "SKILL.md"))).toBe(0);
   });
 });
 
@@ -519,6 +534,381 @@ describe("compileInstaller", () => {
     ).rejects.toBe(failure);
 
     expect(existsSync(outfile)).toBe(false);
+  });
+});
+
+const FIXTURE_DIR = join(import.meta.dir, "fixtures", "skill-extension");
+const CORE_REFERENCES_DIR = join(import.meta.dir, "..", "packages", "skill", "references");
+
+/** Reads the extension at `dir`, which must exist, against a core `references/` holding `coreReferences`. */
+function readExtension(dir: string, coreReferences: string[] = ["cli.md"]): SkillExtensions {
+  for (const name of coreReferences) write(`core-references/${name}`, `# core ${name}`);
+  const extensions = readSkillExtensions({ [SKILL_EXTENSIONS_VAR]: dir }, join(root, "core-references"));
+  if (!extensions) throw new Error("expected an extension");
+  return extensions;
+}
+
+describe("syncFilesByContent", () => {
+  test("writes a bytes source, then leaves it alone while its bytes are unchanged", () => {
+    const files = new Map([["a.txt", { bytes: Buffer.from("a") }]]);
+    expect(syncFilesByContent(files, join(root, "dest"))).toBe(1);
+    expect(readFileSync(join(root, "dest", "a.txt"), "utf8")).toBe("a");
+    setMtime(join(root, "dest", "a.txt"), 1_000);
+
+    expect(syncFilesByContent(files, join(root, "dest"))).toBe(0);
+    expect(statSync(join(root, "dest", "a.txt")).mtimeMs).toBe(1_000_000);
+
+    expect(syncFilesByContent(new Map([["a.txt", { bytes: Buffer.from("b") }]]), join(root, "dest"))).toBe(1);
+    expect(readFileSync(join(root, "dest", "a.txt"), "utf8")).toBe("b");
+  });
+
+  test("removes a staged plain file when the map is empty", () => {
+    write("dest", "was a file");
+
+    expect(syncFilesByContent(new Map(), join(root, "dest"))).toBe(1);
+    expect(existsSync(join(root, "dest"))).toBe(false);
+  });
+
+  test("removes a file the map no longer holds", () => {
+    write("dest/old.txt", "old");
+    const files = new Map([["new.txt", { bytes: Buffer.from("new") }]]);
+
+    expect(syncFilesByContent(files, join(root, "dest"))).toBe(2);
+
+    expect(existsSync(join(root, "dest", "old.txt"))).toBe(false);
+    expect(existsSync(join(root, "dest", "new.txt"))).toBe(true);
+  });
+});
+
+describe("readSkillExtensions", () => {
+  test("returns undefined when the variable is unset", () => {
+    expect(readSkillExtensions({})).toBeUndefined();
+  });
+
+  test("returns undefined when the variable is empty", () => {
+    expect(readSkillExtensions({ [SKILL_EXTENSIONS_VAR]: "" })).toBeUndefined();
+  });
+
+  test("returns the added reference and the fragment of the fixture directory", () => {
+    const extensions = readSkillExtensions({ [SKILL_EXTENSIONS_VAR]: FIXTURE_DIR });
+
+    expect(extensions).toEqual({
+      dir: FIXTURE_DIR,
+      references: new Map([["fixture-guide.md", join(FIXTURE_DIR, "references", "fixture-guide.md")]]),
+      fragment: readFileSync(join(FIXTURE_DIR, "SKILL.md"), "utf8"),
+    });
+    expect(extensions?.fragment).toContain("references/fixture-guide.md");
+  });
+
+  test("resolves a relative path against the directory the build runs from", () => {
+    write("ext/references/extra.md", "# extra");
+    const cwd = process.cwd();
+    process.chdir(root);
+    try {
+      const extensions = readSkillExtensions({ [SKILL_EXTENSIONS_VAR]: "ext" }, join(root, "none"));
+
+      expect(extensions?.dir).toBe(realpathSync(join(root, "ext")));
+      expect([...(extensions?.references.values() ?? [])]).toEqual([
+        join(realpathSync(root), "ext", "references", "extra.md"),
+      ]);
+    } finally {
+      process.chdir(cwd);
+    }
+  });
+
+  test("accepts a directory with only references, only a fragment, or nothing", () => {
+    write("refs-only/references/a.md", "# a");
+    write("fragment-only/SKILL.md", "fragment\n");
+    mkdirSync(join(root, "empty"));
+
+    expect([...readExtension(join(root, "refs-only")).references.keys()]).toEqual(["a.md"]);
+    expect(readExtension(join(root, "refs-only")).fragment).toBeUndefined();
+    expect(readExtension(join(root, "fragment-only")).references.size).toBe(0);
+    expect(readExtension(join(root, "fragment-only")).fragment).toBe("fragment\n");
+    expect(readExtension(join(root, "empty"))).toEqual({ dir: join(root, "empty"), references: new Map() });
+  });
+
+  test("skips dot-entries at the root and under references/", () => {
+    write("ext/.DS_Store", "x");
+    write("ext/.git/HEAD", "ref: refs/heads/main\n");
+    write("ext/references/.DS_Store", "x");
+    write("ext/references/.gitkeep", "");
+    write("ext/references/.notes.md", "# hidden");
+    write("ext/references/a.md", "# a");
+
+    const extensions = readExtension(join(root, "ext"));
+
+    expect([...extensions.references.keys()]).toEqual(["a.md"]);
+    expect(extensions.fragment).toBeUndefined();
+  });
+
+  test("lists references in name order, whatever order the directory lists them in", () => {
+    for (const name of ["b.md", "c.md", "a.md"]) write(`ext/references/${name}`, `# ${name}`);
+
+    expect([...readExtension(join(root, "ext")).references.keys()]).toEqual(["a.md", "b.md", "c.md"]);
+  });
+
+  describe("rejects", () => {
+    // Each case lays out `ext` and names the problem the error must report.
+    // Core's own references hold `cli.md` (each test writes it after `arrange`).
+    const cases: [name: string, arrange: (ext: string) => void, problem: string][] = [
+      ["a directory that does not exist", () => undefined, "the directory does not exist"],
+      ["a path that is a file", (ext) => writeFileSync(ext, "x"), "it is not a directory"],
+      [
+        "a stray file at the root",
+        () => write(`ext/notes.txt`, "x"),
+        "unexpected entry 'notes.txt'; only SKILL.md and references/*.md are accepted",
+      ],
+      [
+        "a stray directory at the root",
+        (ext) => mkdirSync(join(ext, "extra"), { recursive: true }),
+        "unexpected entry 'extra'",
+      ],
+      [
+        "a subdirectory under references/",
+        () => write(`ext/references/nested/deep.md`, "x"),
+        "references/nested is a directory; references must be flat",
+      ],
+      [
+        "a non-.md file under references/",
+        () => write(`ext/references/data.json`, "{}"),
+        "references/data.json is not a .md file",
+      ],
+      [
+        "a references entry that is not a regular file",
+        (ext) => {
+          mkdirSync(join(ext, "references"), { recursive: true });
+          symlinkSync(join(root, "elsewhere.md"), join(ext, "references", "link.md"));
+        },
+        "references/link.md is not a regular file",
+      ],
+      ["a references that is a file", () => write(`ext/references`, "x"), "references is not a directory"],
+      [
+        "a references that is a symlink",
+        (ext) => {
+          mkdirSync(join(root, "real-references"), { recursive: true });
+          mkdirSync(ext, { recursive: true });
+          symlinkSync(join(root, "real-references"), join(ext, "references"));
+        },
+        "references is a symlink; symlinks are not accepted",
+      ],
+      [
+        "a SKILL.md that is a directory",
+        (ext) => mkdirSync(join(ext, "SKILL.md"), { recursive: true }),
+        "SKILL.md is not a regular file",
+      ],
+      ["an empty SKILL.md", () => write(`ext/SKILL.md`, "  \n"), "SKILL.md is empty"],
+      [
+        "a reference named like one of core's",
+        () => write(`ext/references/cli.md`, "x"),
+        "references/cli.md has the same name as one of core's references",
+      ],
+      [
+        "a reference named like one of core's apart from case",
+        () => write(`ext/references/CLI.md`, "x"),
+        "references/CLI.md has the same name as one of core's references",
+      ],
+    ];
+
+    for (const [name, arrange, problem] of cases) {
+      test(name, () => {
+        const ext = join(root, "ext");
+        arrange(ext);
+        write("core-references/cli.md", "# core cli");
+
+        expect(() =>
+          readSkillExtensions({ [SKILL_EXTENSIONS_VAR]: ext }, join(root, "core-references")),
+        ).toThrow(`${SKILL_EXTENSIONS_VAR} (${ext}): ${problem}`);
+      });
+    }
+
+    test("a reference named like one of core's apart from case, whichever way round", () => {
+      write("core-references/Guide.md", "# core guide");
+      write("ext/references/guide.md", "x");
+
+      expect(() =>
+        readSkillExtensions({ [SKILL_EXTENSIONS_VAR]: join(root, "ext") }, join(root, "core-references")),
+      ).toThrow("references/guide.md has the same name as one of core's references");
+    });
+
+    test("a reference named like one of the real core references", () => {
+      const [coreReference] = readdirSync(CORE_REFERENCES_DIR);
+      write(`ext/references/${coreReference}`, "x");
+
+      expect(() => readSkillExtensions({ [SKILL_EXTENSIONS_VAR]: join(root, "ext") })).toThrow(
+        `references/${coreReference} has the same name as one of core's references`,
+      );
+    });
+  });
+});
+
+describe("describeSkillExtensions", () => {
+  test("names the directory, each added reference and the fragment", () => {
+    const line = describeSkillExtensions({
+      dir: "/ext",
+      references: new Map([
+        ["a.md", "/ext/references/a.md"],
+        ["b.md", "/ext/references/b.md"],
+      ]),
+      fragment: "x",
+    });
+
+    expect(line).toBe("Skill extensions from /ext: adding references/a.md, references/b.md, a SKILL.md fragment.");
+    expect(line).not.toContain("\n");
+  });
+
+  test("says when the directory adds nothing", () => {
+    expect(describeSkillExtensions({ dir: "/ext", references: new Map() })).toBe(
+      "Skill extensions from /ext: adding nothing.",
+    );
+  });
+});
+
+describe("staging with a skill extension", () => {
+  const CORE_SKILL_MD = "# Core skill\n\nRead references/cli.md.\n";
+
+  /** A skill package holding every staged entry, the shape of packages/skill. */
+  function writeSkill(): string {
+    write("skill/dist/install.js", "console.log('install');\n");
+    write("skill/shims/claude.md", "# shim\n");
+    write("skill/SKILL.md", CORE_SKILL_MD);
+    write("skill/references/cli.md", "# core cli\n");
+    write("skill/package.json", '{ "type": "module" }\n');
+    return join(root, "skill");
+  }
+
+  /** The extension at the fixture directory, read against the fake skill's own references. */
+  function fixtureExtension(skill: string): SkillExtensions {
+    const extensions = readSkillExtensions({ [SKILL_EXTENSIONS_VAR]: FIXTURE_DIR }, join(skill, "references"));
+    if (!extensions) throw new Error("expected the fixture extension");
+    return extensions;
+  }
+
+  /** Every staged file, as path -> content. */
+  function staged(resourceDir: string): Record<string, string> {
+    return Object.fromEntries(
+      listFilesRecursive(resourceDir)
+        .sort()
+        .map((rel) => [rel, readFileSync(join(resourceDir, rel), "utf8")]),
+    );
+  }
+
+  test("without an extension, stages exactly the skill package's own files", () => {
+    const skill = writeSkill();
+
+    const changed = stageSkillResources(skill, join(root, "resources"));
+
+    expect(changed).toBe(5);
+    expect(staged(join(root, "resources"))).toEqual({
+      "dist/install.js": "console.log('install');\n",
+      "package.json": '{ "type": "module" }\n',
+      "references/cli.md": "# core cli\n",
+      "shims/claude.md": "# shim\n",
+      "SKILL.md": CORE_SKILL_MD,
+    });
+  });
+
+  test("with the fixture, adds its reference and ends SKILL.md with its fragment", () => {
+    const skill = writeSkill();
+    const fragment = readFileSync(join(FIXTURE_DIR, "SKILL.md"), "utf8");
+
+    stageSkillResources(skill, join(root, "resources"), fixtureExtension(skill));
+
+    expect(staged(join(root, "resources"))).toEqual({
+      "dist/install.js": "console.log('install');\n",
+      "package.json": '{ "type": "module" }\n',
+      "references/cli.md": "# core cli\n",
+      "references/fixture-guide.md": readFileSync(join(FIXTURE_DIR, "references", "fixture-guide.md"), "utf8"),
+      "shims/claude.md": "# shim\n",
+      "SKILL.md": `${CORE_SKILL_MD}\n${fragment}`,
+    });
+  });
+
+  test("a plain run after a run with the fixture restores core's staging", () => {
+    const skill = writeSkill();
+    stageSkillResources(skill, join(root, "plain"));
+    stageSkillResources(skill, join(root, "resources"), fixtureExtension(skill));
+
+    const changed = stageSkillResources(skill, join(root, "resources"));
+
+    // One file removed, one rewritten.
+    expect(changed).toBe(2);
+    expect(staged(join(root, "resources"))).toEqual(staged(join(root, "plain")));
+    expect(existsSync(join(root, "resources", "references", "fixture-guide.md"))).toBe(false);
+  });
+
+  test("a run with the same inputs rewrites nothing and preserves every mtime", () => {
+    const skill = writeSkill();
+    const resources = join(root, "resources");
+    const extensions = fixtureExtension(skill);
+    stageSkillResources(skill, resources, extensions);
+    const files = listFilesRecursive(resources);
+    for (const rel of files) setMtime(join(resources, rel), 1_000);
+
+    const changed = stageSkillResources(skill, resources, extensions);
+
+    expect(changed).toBe(0);
+    expect(files.map((rel) => statSync(join(resources, rel)).mtimeMs)).toEqual(files.map(() => 1_000_000));
+  });
+
+  test("a plain run over a plain staging also rewrites nothing", () => {
+    const skill = writeSkill();
+    stageSkillResources(skill, join(root, "resources"));
+
+    expect(stageSkillResources(skill, join(root, "resources"))).toBe(0);
+  });
+
+  test("never stages a dot-entry of the extension", () => {
+    const skill = writeSkill();
+    write("ext/.DS_Store", "x");
+    write("ext/references/.DS_Store", "x");
+    write("ext/references/extra.md", "# extra\n");
+
+    stageSkillResources(skill, join(root, "resources"), readExtension(join(root, "ext")));
+
+    expect(Object.keys(staged(join(root, "resources"))).filter((rel) => rel.includes(".DS_Store"))).toEqual([]);
+    expect(staged(join(root, "resources"))["references/extra.md"]).toBe("# extra\n");
+  });
+
+  test("an extension without a fragment leaves SKILL.md as core's", () => {
+    const skill = writeSkill();
+    write("ext/references/extra.md", "# extra\n");
+
+    stageSkillResources(skill, join(root, "resources"), readExtension(join(root, "ext")));
+
+    expect(staged(join(root, "resources"))["SKILL.md"]).toBe(CORE_SKILL_MD);
+    expect(staged(join(root, "resources"))["references/extra.md"]).toBe("# extra\n");
+  });
+
+  test("an extension without references leaves references as core's", () => {
+    const skill = writeSkill();
+    write("ext/SKILL.md", "More guidance.\n");
+
+    stageSkillResources(skill, join(root, "resources"), readExtension(join(root, "ext")));
+
+    expect(Object.keys(staged(join(root, "resources"))).filter((rel) => rel.startsWith("references/"))).toEqual([
+      "references/cli.md",
+    ]);
+    expect(staged(join(root, "resources"))["SKILL.md"]).toBe(`${CORE_SKILL_MD}\nMore guidance.\n`);
+  });
+
+  test("refuses to stage an added reference over one of core's", () => {
+    const skill = writeSkill();
+    const clashing: SkillExtensions = {
+      dir: join(root, "ext"),
+      references: new Map([["cli.md", join(root, "ext", "references", "cli.md")]]),
+    };
+
+    expect(() => stagedSources("references", skill, clashing)).toThrow("would replace one of core's references");
+  });
+
+  test("leaves entries other than references and SKILL.md as core's", () => {
+    const skill = writeSkill();
+    const extensions = fixtureExtension(skill);
+
+    for (const entry of ["dist", "shims", "package.json"]) {
+      expect(stagedSources(entry, skill, extensions)).toEqual(stagedSources(entry, skill));
+    }
   });
 });
 
