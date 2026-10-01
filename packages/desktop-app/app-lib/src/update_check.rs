@@ -221,12 +221,12 @@ fn status_from(current: &str, latest: Option<String>, download_url: Option<&str>
 /// Check whether `app`'s update source has a newer release than the running app.
 ///
 /// The running version is `app`'s `PackageInfo` version (the shipped
-/// `tauri.conf.json` version), and the source is the one managed on `app` (see
-/// [`update_source_for_app`]). Best-effort: every failure path resolves to
-/// [`UpdateStatus::no_update`], so the caller can treat the result uniformly and
-/// startup is never blocked or surfaced an error. Returns the current version
-/// always; the latest, the flag and the source's download location only when a
-/// newer version was positively determined.
+/// `tauri.conf.json` version), and the source is the one managed on `app`, or
+/// the built-in one when `app` manages none. Best-effort: every failure path
+/// resolves to [`UpdateStatus::no_update`], so the caller can treat the result
+/// uniformly and startup is never blocked or surfaced an error. Returns the
+/// current version always; the latest, the flag and the source's download
+/// location only when a newer version was positively determined.
 pub async fn check_for_update_for_app<R: Runtime>(app: &AppHandle<R>) -> UpdateStatus {
     let current = app.package_info().version.to_string();
     let source = update_source_for_app(app);
