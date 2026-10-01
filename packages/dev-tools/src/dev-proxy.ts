@@ -1051,6 +1051,28 @@ async function handleRequest(req: Request): Promise<Response> {
     }
   }
 
+  // POST /api/nodes/:id/collections  (add to the collection at a path)
+  // Returns the path's leaf collection id, which the node update's response
+  // (the updated node) does not name.
+  const nodeCollectionsMatch = pathname.match(/^\/api\/nodes\/([^/]+)\/collections$/);
+  if (method === 'POST' && nodeCollectionsMatch) {
+    const nodeId = decodeURIComponent(nodeCollectionsMatch[1]);
+    try {
+      const body = await req.json() as Record<string, unknown>;
+      if (typeof body.collectionPath !== 'string') {
+        return error('INVALID_ARGUMENT', 'collectionPath must be a string', 400);
+      }
+      const request = { nodeId, collectionPath: body.collectionPath };
+      const res = await call<typeof request, { collectionId: string }>(
+        (nodeClient as unknown as Record<string, Function>).addNodeToCollectionByPath,
+        request
+      );
+      return json(res.collectionId);
+    } catch (err) {
+      return grpcError(err as grpc.ServiceError);
+    }
+  }
+
   // -------------------------------------------------------------------------
   // LocalAgentService — model management routes
   // -------------------------------------------------------------------------
