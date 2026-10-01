@@ -27,7 +27,7 @@ use crate::local_agent::prompt_templates;
 use crate::local_agent::response_processing::{normalize_response, normalize_response_traced};
 use crate::local_agent::routing::{self, RouteDecision};
 use crate::local_agent::tools::{is_cross_turn_guarded_tool, requires_routed_guidance_tool};
-use crate::prompt_assembler::{PromptAssembler, TemplateContext, EMERGENCY_FALLBACK_PROMPT};
+use crate::prompt_assembler::{PromptAssembler, EMERGENCY_FALLBACK_PROMPT};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -2682,11 +2682,6 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
         });
 
         let model_name = session.model_id.as_deref().unwrap_or("unknown");
-        let template_ctx = TemplateContext {
-            current_date: chrono::Utc::now().format("%Y-%m-%d").to_string(),
-            model_name: model_name.to_string(),
-            workspace_context: dynamic_ctx.to_string(),
-        };
 
         // Build the system prompt: test override > graph assembler > emergency.
         // `session_prompt_override` returns `None` in production builds (see
@@ -2697,7 +2692,12 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
             override_prompt.to_string()
         } else if let Some(ref assembler) = self.prompt_assembler {
             assembler
-                .assemble(&template_ctx, tools.clone())
+                .assemble_turn(
+                    &chrono::Utc::now().format("%Y-%m-%d").to_string(),
+                    model_name,
+                    dynamic_ctx,
+                    tools.clone(),
+                )
                 .await
                 .system_prompt
         } else {

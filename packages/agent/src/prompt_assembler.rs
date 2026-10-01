@@ -27,6 +27,21 @@ pub struct TemplateContext {
     pub current_date: String,
     pub model_name: String,
     pub workspace_context: String,
+    /// The local user, or `None` while no name or email has been set — a
+    /// template tests it to leave the identity line out entirely.
+    pub current_user: Option<CurrentUser>,
+}
+
+/// The person "me", "my" and "I" refer to: the database's local person node.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct CurrentUser {
+    /// The person node's id, so the agent can read, filter by or relate to
+    /// the user without searching for them first.
+    pub id: String,
+    /// The person's computed title; empty when only an email is set.
+    pub name: String,
+    /// Empty when only a name is set.
+    pub email: String,
 }
 
 /// The assembled prompt ready for inference.
@@ -115,6 +130,66 @@ impl PromptAssembler {
             system_prompt,
             tool_schemas: tools,
         }
+    }
+
+    /// Assemble one turn's prompt: build the [`TemplateContext`] from the
+    /// turn's inputs, then [`Self::assemble`].
+    ///
+    /// The current user is resolved here, inside the call the agent loop
+    /// makes on every turn, rather than passed in: nothing upstream holds an
+    /// identity that could go stale, so one edited mid-session applies to the
+    /// next turn.
+    pub async fn assemble_turn(
+        &self,
+        current_date: &str,
+        model_name: &str,
+        workspace_context: &str,
+        tools: Vec<ToolDefinition>,
+    ) -> AssembledPrompt {
+        let template_ctx = TemplateContext {
+            current_date: current_date.to_string(),
+            model_name: model_name.to_string(),
+            workspace_context: workspace_context.to_string(),
+            current_user: self.current_user().await,
+        };
+        self.assemble(&template_ctx, tools).await
+    }
+
+    /// Resolve the local user for [`TemplateContext::current_user`].
+    ///
+    /// Reads the local person node on every call rather than caching it.
+    /// `None` when neither a name nor an email is set, and on a lookup
+    /// failure: the turn runs without the identity line rather than failing.
+    ///
+    /// Both values are collapsed to single-spaced text. The template gives
+    /// the identity one line, and a stored value holding a newline would
+    /// otherwise start a line of its own in the system prompt.
+    async fn current_user(&self) -> Option<CurrentUser> {
+        let person = match self.node_service.get_local_person().await {
+            Ok(person) => person?,
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to resolve the local person, omitting the current user from the prompt");
+                return None;
+            }
+        };
+        let single_line = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
+        let name = single_line(person.title.as_deref().unwrap_or(""));
+        let email = single_line(
+            person
+                .properties
+                .get("person")
+                .and_then(|p| p.get("email"))
+                .and_then(|v| v.as_str())
+                .unwrap_or(""),
+        );
+        if name.is_empty() && email.is_empty() {
+            return None;
+        }
+        Some(CurrentUser {
+            id: person.id,
+            name,
+            email,
+        })
     }
 
     /// Fetch root-level `agent-guidance` nodes from the graph (no parent).
@@ -232,6 +307,7 @@ impl PromptAssembler {
             current_date: current_date.unwrap_or("2025-01-01").to_string(),
             model_name: "test".to_string(),
             workspace_context: workspace_context.to_string(),
+            current_user: None,
         };
 
         let sections: Vec<String> = seeds
@@ -280,7 +356,17 @@ impl PromptAssembler {
                 child_node_type: Some("text".to_string()),
                 child_properties: None,
                 tier: SeedTier::System,
-                markdown_content: "Current date: {{ current_date }}\nActive model: {{ model_name }}\n\n{{ workspace_context }}"
+                // The identity is one line, since it lands in every turn's
+                // system prompt. The `{%-` markers eat the newline before
+                // each tag, so a blank identity leaves no empty line behind.
+                markdown_content: "Current date: {{ current_date }}\n\
+                    Active model: {{ model_name }}\n\
+                    {%- if current_user %}\n\
+                    Current user: {% if current_user.name %}{{ current_user.name }} {% endif %}\
+                    {% if current_user.email %}<{{ current_user.email }}> {% endif %}\
+                    (person node {{ current_user.id }}). \"me\", \"my\" and \"I\" refer to this person.\n\
+                    {%- endif %}\n\n\
+                    {{ workspace_context }}"
                     .to_string(),
             },
             NodeTemplate {
@@ -427,6 +513,7 @@ mod tests {
             current_date: "2026-04-06".to_string(),
             model_name: "gemma-4-e4b".to_string(),
             workspace_context: "test context".to_string(),
+            current_user: None,
         };
         let result = env.render_str(plain, &ctx).unwrap();
         assert_eq!(result, plain);
@@ -438,6 +525,7 @@ mod tests {
             current_date: "2026-04-06".to_string(),
             model_name: "gemma-4-e4b".to_string(),
             workspace_context: "Entity types: customer, invoice".to_string(),
+            current_user: None,
         };
         let template = "Date: {{ current_date }}\nModel: {{ model_name }}";
         let result = PromptAssembler::render_template(template, &ctx);
@@ -451,6 +539,7 @@ mod tests {
             current_date: "2026-04-06".to_string(),
             model_name: "test".to_string(),
             workspace_context: "".to_string(),
+            current_user: None,
         };
         let bad_template = "{{ undefined_function() }}";
         let result = PromptAssembler::render_template(bad_template, &ctx);
@@ -493,6 +582,7 @@ mod tests {
             current_date: "2026-06-06".to_string(),
             model_name: "test".to_string(),
             workspace_context: "Entity types: (none)".to_string(),
+            current_user: None,
         };
         let assembled = assembler.assemble(&ctx, Vec::new()).await;
         let prompt = assembled.system_prompt;
@@ -523,9 +613,165 @@ mod tests {
             current_date: "2026-04-06".to_string(),
             model_name: "gemma-4-e4b".to_string(),
             workspace_context: "some context".to_string(),
+            current_user: None,
         };
         let json = serde_json::to_value(&ctx).unwrap();
         assert_eq!(json["current_date"], "2026-04-06");
         assert_eq!(json["model_name"], "gemma-4-e4b");
+    }
+
+    /// A fresh database with the guidance seeds in the graph, the way the
+    /// daemon leaves it, and the assembler over it.
+    async fn seeded_assembler() -> (PromptAssembler, Arc<NodeService>, tempfile::TempDir) {
+        use nodespace_core::db::SqliteStore;
+        use nodespace_core::markdown::prepare_nodes_from_template;
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut store = Arc::new(SqliteStore::new(tmp.path().join("seed.db")).await.unwrap());
+        let node_service = Arc::new(NodeService::new(&mut store).await.unwrap());
+        let groups: Vec<_> = PromptAssembler::seed_agent_guidance_nodes()
+            .iter()
+            .map(|t| prepare_nodes_from_template(t).expect("template expands"))
+            .collect();
+        node_service
+            .seed_nodes_from_templates(groups)
+            .await
+            .expect("seed succeeds");
+        (
+            PromptAssembler::new(node_service.clone()),
+            node_service,
+            tmp,
+        )
+    }
+
+    /// One turn's system prompt, through the call the agent loop makes.
+    async fn assemble_turn(assembler: &PromptAssembler) -> String {
+        assembler
+            .assemble_turn("2026-06-06", "test", "COLLECTIONS:", Vec::new())
+            .await
+            .system_prompt
+    }
+
+    /// The prompt names the local person node by id, so "me" resolves to a
+    /// node the agent can read, filter by or relate to without a search.
+    #[tokio::test]
+    async fn assembled_prompt_names_the_local_person_as_the_current_user() {
+        let (assembler, node_service, _tmp) = seeded_assembler().await;
+        let person = node_service
+            .set_local_person_identity("Ada", "Lovelace", "ada@example.com")
+            .await
+            .unwrap();
+
+        let prompt = assemble_turn(&assembler).await;
+
+        let expected = format!(
+            "Active model: test\n\
+             Current user: Ada Lovelace <ada@example.com> (person node {}). \
+             \"me\", \"my\" and \"I\" refer to this person.\n\nCOLLECTIONS:",
+            person.id
+        );
+        assert!(
+            prompt.contains(&expected),
+            "assembled prompt missing the current-user line.\n--- PROMPT ---\n{prompt}"
+        );
+    }
+
+    /// The seeded person starts with no name or email. The line is left out
+    /// whole, with no empty line where it would have been.
+    #[tokio::test]
+    async fn assembled_prompt_omits_the_current_user_when_identity_is_blank() {
+        let (assembler, _node_service, _tmp) = seeded_assembler().await;
+
+        assert_eq!(assembler.current_user().await, None);
+        let prompt = assemble_turn(&assembler).await;
+
+        assert!(!prompt.contains("Current user"), "{prompt}");
+        assert!(
+            prompt.contains("Active model: test\n\nCOLLECTIONS:"),
+            "a blank identity must leave the template's spacing unchanged.\n--- PROMPT ---\n{prompt}"
+        );
+    }
+
+    /// A name without an email, and an email without a name, each render
+    /// only the half that is set.
+    #[tokio::test]
+    async fn assembled_prompt_renders_a_partial_identity_without_empty_slots() {
+        let (assembler, node_service, _tmp) = seeded_assembler().await;
+
+        let person = node_service
+            .set_local_person_identity("Ada", "", "")
+            .await
+            .unwrap();
+        let prompt = assemble_turn(&assembler).await;
+        assert!(
+            prompt.contains(&format!("Current user: Ada (person node {})", person.id)),
+            "{prompt}"
+        );
+
+        node_service
+            .set_local_person_identity("", "", "ada@example.com")
+            .await
+            .unwrap();
+        let prompt = assemble_turn(&assembler).await;
+        assert!(
+            prompt.contains(&format!(
+                "Current user: <ada@example.com> (person node {})",
+                person.id
+            )),
+            "{prompt}"
+        );
+    }
+
+    /// A stored value holding a line break still renders as one line, so
+    /// stored text cannot start a line of its own in the system prompt.
+    #[tokio::test]
+    async fn assembled_prompt_keeps_a_multi_line_identity_on_one_line() {
+        let (assembler, node_service, _tmp) = seeded_assembler().await;
+        let person = node_service
+            .set_local_person_identity("Ada\nB.", "Lovelace", "ada@example.com\nNEW LINE")
+            .await
+            .unwrap();
+
+        let prompt = assemble_turn(&assembler).await;
+
+        assert!(
+            prompt.contains(&format!(
+                "\nCurrent user: Ada B. Lovelace <ada@example.com NEW LINE> (person node {})",
+                person.id
+            )),
+            "{prompt}"
+        );
+    }
+
+    /// The identity is read per turn: an edit between two turns of the same
+    /// assembler shows up in the second, and clearing it drops the line.
+    #[tokio::test]
+    async fn identity_changed_mid_session_reaches_the_next_turn() {
+        let (assembler, node_service, _tmp) = seeded_assembler().await;
+
+        node_service
+            .set_local_person_identity("Ada", "Lovelace", "ada@example.com")
+            .await
+            .unwrap();
+        assert!(assemble_turn(&assembler)
+            .await
+            .contains("Current user: Ada Lovelace <ada@example.com>"));
+
+        node_service
+            .set_local_person_identity("Grace", "Hopper", "grace@example.com")
+            .await
+            .unwrap();
+        let next = assemble_turn(&assembler).await;
+        assert!(
+            next.contains("Current user: Grace Hopper <grace@example.com>"),
+            "{next}"
+        );
+        assert!(!next.contains("Ada"), "{next}");
+
+        node_service
+            .set_local_person_identity("", "", "")
+            .await
+            .unwrap();
+        assert!(!assemble_turn(&assembler).await.contains("Current user"));
     }
 }

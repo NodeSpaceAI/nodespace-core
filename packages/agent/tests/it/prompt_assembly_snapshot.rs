@@ -420,6 +420,13 @@ fn assemble_resident_system_prompt(workspace_context: &str) -> String {
         current_date: FIXTURE_DATE.to_string(),
         model_name: FIXTURE_MODEL_NAME.to_string(),
         workspace_context: workspace_context.to_string(),
+        // A fixed identity, so the golden pins the current-user line the
+        // model reads on a turn where the user has set one.
+        current_user: Some(nodespace_agent::prompt_assembler::CurrentUser {
+            id: "5c1e9a47-2d83-4b6f-8e10-7a3f9d2c4b65".to_string(),
+            name: "Ada Lovelace".to_string(),
+            email: "ada@example.com".to_string(),
+        }),
     };
     let sections: Vec<String> = PromptAssembler::seed_agent_guidance_nodes()
         .iter()
