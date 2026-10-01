@@ -307,19 +307,30 @@ pub async fn get_collection_by_name(
 /// primary-key-constraint error, since `NodeService::create_node` has no
 /// get-or-create/upsert semantics for collections (unlike, e.g., the
 /// `database-settings` singleton).
+///
+/// The name is checked as well, because a renamed collection keeps the id of
+/// its first name: without it, creating a collection under the new name of a
+/// renamed one would make a second active collection of that name. For the
+/// same reason the id of a renamed collection's first name stays taken.
+///
+/// The error names the collection in the way and its id, which is what the
+/// caller needs to update that collection instead.
 pub(crate) async fn new_collection_id(
     node_service: &Arc<NodeService>,
     name: &str,
 ) -> Result<String, OpsError> {
     let deterministic_id = deterministic_collection_id(name);
-    if node_service
-        .get_node(&deterministic_id)
-        .await
-        .map_err(OpsError::from)?
-        .is_some()
-    {
+    let in_the_way = match node_service.get_node(&deterministic_id).await? {
+        Some(holder) => Some(holder),
+        None => {
+            CollectionService::new(node_service.store(), node_service)
+                .get_collection_by_name(name)
+                .await?
+        }
+    };
+    if let Some(existing) = in_the_way {
         return Err(OpsError::AlreadyExists {
-            id: name.to_string(),
+            id: format!("collection '{}' (id {})", existing.content, existing.id),
         });
     }
     Ok(deterministic_id)
@@ -421,17 +432,23 @@ mod tests {
             name: "my-collection".to_string(),
             description: String::new(),
         };
-        create_collection(&svc, input).await.unwrap();
+        let created = create_collection(&svc, input).await.unwrap();
 
         let dup = CreateCollectionInput {
             name: "my-collection".to_string(),
             description: String::new(),
         };
         let err = create_collection(&svc, dup).await.unwrap_err();
+        assert_already_exists(&err, "my-collection", &created.collection_id);
+    }
+
+    /// The refusal names the collection in the way and its id, so the caller
+    /// can update that collection instead.
+    fn assert_already_exists(err: &OpsError, existing_name: &str, existing_id: &str) {
+        let expected = format!("collection '{existing_name}' (id {existing_id})");
         assert!(
-            matches!(err, OpsError::AlreadyExists { ref id } if id == "my-collection"),
-            "expected AlreadyExists, got {:?}",
-            err
+            matches!(err, OpsError::AlreadyExists { id } if *id == expected),
+            "expected AlreadyExists for {expected}, got {err:?}"
         );
     }
 
@@ -552,7 +569,7 @@ mod tests {
     async fn generic_create_of_an_existing_collection_name_returns_already_exists() {
         let (svc, _tmp) = make_service().await;
 
-        create_collection(
+        let created = create_collection(
             &svc,
             CreateCollectionInput {
                 name: "Clients".to_string(),
@@ -566,11 +583,95 @@ mod tests {
         let err = node_ops::create_node(&svc, generic_create("clients", serde_json::json!({})))
             .await
             .unwrap_err();
-        assert!(
-            matches!(err, OpsError::AlreadyExists { ref id } if id == "clients"),
-            "expected AlreadyExists, got {:?}",
-            err
+        assert_already_exists(&err, "Clients", &created.collection_id);
+    }
+
+    /// A subtype of collection is a collection: it is named the same way, so
+    /// it takes the name-derived id, and its inherited description lands in
+    /// the collection bucket.
+    #[tokio::test]
+    async fn generic_create_of_a_collection_subtype_uses_the_deterministic_id() {
+        let (svc, _tmp) = make_service().await;
+        crate::schema::handle_create_schema(
+            &svc,
+            serde_json::json!({
+                "name": "Shelf",
+                "extends": "collection",
+                "fields": [
+                    { "name": "room", "type": "text", "protection": "user", "indexed": false }
+                ]
+            }),
+        )
+        .await
+        .unwrap();
+
+        let mut input = generic_create(
+            "Cookbooks",
+            serde_json::json!({ "description": "Recipes we kept", "room": "kitchen" }),
         );
+        input.node_type = "shelf".to_string();
+        let created = node_ops::create_node(&svc, input).await.unwrap();
+
+        assert_eq!(created.node_id, deterministic_collection_id("Cookbooks"));
+        let node = svc.get_node(&created.node_id).await.unwrap().unwrap();
+        assert_eq!(
+            node.properties,
+            serde_json::json!({
+                "shelf": { "room": "kitchen" },
+                "collection": { "description": "Recipes we kept" }
+            })
+        );
+    }
+
+    /// A renamed collection keeps the id of its first name, so the id check
+    /// alone would let a second collection take its new name.
+    #[tokio::test]
+    async fn create_refuses_the_name_of_a_renamed_collection() {
+        let (svc, _tmp) = make_service().await;
+
+        let created = create_collection(
+            &svc,
+            CreateCollectionInput {
+                name: "Clients".to_string(),
+                description: String::new(),
+            },
+        )
+        .await
+        .unwrap();
+        let version = svc
+            .get_node(&created.collection_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .version;
+        rename_collection(
+            &svc,
+            RenameCollectionInput {
+                collection_id: created.collection_id.clone(),
+                new_name: "Accounts".to_string(),
+                version,
+            },
+        )
+        .await
+        .unwrap();
+
+        for name in ["Accounts", "Clients"] {
+            let err = node_ops::create_node(&svc, generic_create(name, serde_json::json!({})))
+                .await
+                .unwrap_err();
+            assert_already_exists(&err, "Accounts", &created.collection_id);
+
+            let err = create_collection(
+                &svc,
+                CreateCollectionInput {
+                    name: name.to_string(),
+                    description: String::new(),
+                },
+            )
+            .await
+            .unwrap_err();
+            assert_already_exists(&err, "Accounts", &created.collection_id);
+        }
     }
 
     #[tokio::test]
@@ -635,6 +736,40 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(listed, [("Clients".to_string(), None)]);
+    }
+
+    /// A text field is not type-checked on write, and the CLI parses
+    /// `--property description=42` as a number. The listing runs on every
+    /// agent turn, so a stored non-text value must read as no description
+    /// rather than fail it.
+    #[tokio::test]
+    async fn a_non_text_collection_description_is_listed_as_none() {
+        let (svc, _tmp) = make_service().await;
+        for (name, description) in [
+            ("Numbered", serde_json::json!(42)),
+            ("Flagged", serde_json::json!(true)),
+            ("Nested", serde_json::json!({ "text": "Accounts" })),
+        ] {
+            node_ops::create_node(
+                &svc,
+                generic_create(name, serde_json::json!({ "description": description })),
+            )
+            .await
+            .unwrap();
+        }
+
+        let listed = CollectionService::new(svc.store(), &svc)
+            .get_all_collection_descriptions()
+            .await
+            .unwrap();
+        assert_eq!(
+            listed,
+            [
+                ("Flagged".to_string(), None),
+                ("Nested".to_string(), None),
+                ("Numbered".to_string(), None),
+            ]
+        );
     }
 
     #[tokio::test]

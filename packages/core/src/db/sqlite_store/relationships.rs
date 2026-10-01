@@ -1144,13 +1144,19 @@ impl SqliteStore {
 
     /// Every collection's name and description, sorted by name. The
     /// description is `None` when the collection has none.
+    ///
+    /// Only a text value is read as a description. Nothing type-checks a text
+    /// field on write, and reading a stored number or boolean as a `String`
+    /// panics in the driver rather than returning an error.
     pub async fn get_all_collection_descriptions(&self) -> Result<Vec<(String, Option<String>)>> {
         let mut rows = self
             .read()
             .await?
             .query(
                 &format!(
-                    "SELECT content, json_extract(properties, '$.collection.description') \
+                    "SELECT content, \
+                     CASE WHEN json_type(properties, '$.collection.description') = 'text' \
+                          THEN json_extract(properties, '$.collection.description') END \
                      FROM node WHERE {} ORDER BY content ASC",
                     crate::db::schema::is_a_sql(
                         "node_type",

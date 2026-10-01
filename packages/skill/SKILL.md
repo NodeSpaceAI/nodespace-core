@@ -237,7 +237,7 @@ nodespace node create --type text --content "Retry budget" --collection docs:rus
 nodespace node update <node-id> --collection docs:rust
 ```
 
-Give a collection a `description` so agents know what goes in it: `node update <id> --property description="…"`.
+Describe a collection so agents know what goes in it: `nodespace node update <id> --property description="…"`.
 
 Prefer a collection for any durable grouping: don't add a `tags`/`categories`/`topics`/`labels` field for something collections already model. Unlike an array value, a collection shows in the UI, is renamed once not per member, nests, and needs no schema change to join (`member_of` is structural).
 

@@ -146,6 +146,9 @@ const MAX_CHARS_PER_COLLECTION_DESCRIPTION: usize = 80;
 /// The collections section is rendered first, so without a cap a workspace
 /// with many described collections would spend the budget the entity and
 /// schema tiers below it need. Collections past the cap are listed by name.
+///
+/// Like the rest of the `max_chars` budget, this share is counted in bytes,
+/// so descriptions in a multi-byte script reach it sooner.
 const COLLECTION_DESCRIPTIONS_BUDGET_DIVISOR: usize = 4;
 
 /// A collection description as one line of at most

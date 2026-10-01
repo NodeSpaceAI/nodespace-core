@@ -79,7 +79,7 @@ nodespace node create --type collection --content "Clients" --property descripti
 nodespace node update <collection-id> --property description="Accounts we bill, one page per client"
 ```
 
-A collection is identified by its name (case-insensitive): `node create --type collection` with a name that is taken fails with `Already exists`. Update the existing collection instead.
+A collection is identified by its name (case-insensitive): `node create --type collection` with a name that is taken fails with `Already exists`, naming the collection in the way and its id. Update that collection instead, using the id from the error.
 
 **Success semantics:** once `node create` returns an ID, the node exists — confirm what was created to the user and stop. Don't immediately `node get` the same ID to verify; the create response is the confirmation.
 
