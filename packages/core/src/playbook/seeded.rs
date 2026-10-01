@@ -57,7 +57,7 @@ pub enum ResetSeededPlayError {
 ///
 /// Reads `properties._seed.default_rules` off the play node itself (see the
 /// module doc for why the default lives on the node rather than a separate
-/// registry) and writes it back into `properties.rules`, replacing whatever
+/// registry) and writes it back as the play's `rules`, replacing whatever
 /// edits the user made. Does not touch any other property (name, status,
 /// `_seed` metadata itself) — a reset restores the RULES, not the whole node.
 pub async fn reset_seeded_play_to_default(
@@ -240,7 +240,6 @@ mod tests {
                 .properties
                 .get("play")
                 .and_then(|p| p.get("rules"))
-                .or_else(|| restored.properties.get("rules"))
                 .cloned()
                 .expect("rules must be present after reset");
             assert_eq!(

@@ -64,8 +64,7 @@ export function createTestNode(
       version: options.version ?? 1,
       properties: options.properties || {},
       // Always provide mentions as an array, never undefined
-      mentions: options.mentions || [],
-      embeddingVector: options.embeddingVector
+      mentions: options.mentions || []
     } as Node & { mentions: string[] }; // Type assertion to guarantee mentions is always present
   }
 
@@ -81,7 +80,6 @@ export function createTestNode(
     modifiedAt: now,
     version: 1,
     properties: {},
-    embeddingVector: undefined,
     ...additionalProps,
     // Ensure mentions is always an array (override additionalProps if needed)
     mentions: additionalProps?.mentions || []
@@ -116,21 +114,6 @@ export function createTextNode(content: string): Node {
  */
 export function createTaskNode(content: string): Node {
   return createTestNode({ nodeType: 'task', content });
-}
-
-/**
- * Create a document node with specific content
- *
- * @param content - Document content
- * @returns Document node
- *
- * @example
- * ```typescript
- * const doc = createDocumentNode('Project documentation');
- * ```
- */
-export function createDocumentNode(content: string): Node {
-  return createTestNode({ nodeType: 'document', content });
 }
 
 /**

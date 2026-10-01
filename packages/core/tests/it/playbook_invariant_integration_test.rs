@@ -222,7 +222,7 @@ async fn invariant_action_executes_synchronously_in_same_transaction() -> Result
     let play_node = Node::new(
         "play".to_string(),
         "stamp-play".to_string(),
-        json!({ "rules": stamp_approved_invariant_rule("iv_task") }),
+        json!({ "play": { "rules": stamp_approved_invariant_rule("iv_task") } }),
     );
     // Activate directly against the lifecycle manager (no engine loop
     // running to pick up the NodeCreated event reactively) — this test is
@@ -279,7 +279,7 @@ async fn invariant_action_failure_rolls_back_the_whole_node_creation() -> Result
     let play_node = Node::new(
         "play".to_string(),
         "broken-membership-play".to_string(),
-        json!({ "rules": [{
+        json!({ "play": { "rules": [{
             "name": "self-member-of-non-collection",
             "class": "invariant",
             "trigger": { "type": "graph_event", "on": "node_created", "node_type": "iv_gated" },
@@ -293,7 +293,7 @@ async fn invariant_action_failure_rolls_back_the_whole_node_creation() -> Result
                     "edge_data": { "order": 1.0 }
                 }
             }]
-        }] }),
+        }] } }),
     );
     {
         let lifecycle = engine.lifecycle();
@@ -359,7 +359,7 @@ async fn one_failing_invariant_rule_rolls_back_another_rule_s_successful_effect_
     let play_node = Node::new(
         "play".to_string(),
         "multi-rule-play".to_string(),
-        json!({ "rules": [
+        json!({ "play": { "rules": [
             {
                 "name": "stamp-first",
                 "class": "invariant",
@@ -385,7 +385,7 @@ async fn one_failing_invariant_rule_rolls_back_another_rule_s_successful_effect_
                     }
                 }]
             }
-        ] }),
+        ] } }),
     );
     {
         let lifecycle = engine.lifecycle();
@@ -437,7 +437,7 @@ async fn invariant_rule_does_not_re_execute_on_sync_applied_node() -> Result<()>
     let play_node = Node::new(
         "play".to_string(),
         "sync-stamp-play".to_string(),
-        json!({ "rules": stamp_approved_invariant_rule("iv_sync_task") }),
+        json!({ "play": { "rules": stamp_approved_invariant_rule("iv_sync_task") } }),
     );
     {
         let lifecycle = engine.lifecycle();
@@ -784,7 +784,7 @@ async fn an_invariant_action_creating_a_node_does_not_trigger_another_invariant_
     let play_a = Node::new(
         "play".to_string(),
         "chain-rule-a".to_string(),
-        json!({ "rules": [{
+        json!({ "play": { "rules": [{
             "name": "create-target",
             "class": "invariant",
             "trigger": { "type": "graph_event", "on": "node_created", "node_type": "iv_chain_source" },
@@ -793,7 +793,7 @@ async fn an_invariant_action_creating_a_node_does_not_trigger_another_invariant_
                 "action_type": "create_node",
                 "params": { "node_type": "iv_chain_target", "content": "created by rule A" }
             }]
-        }] }),
+        }] } }),
     );
     {
         let lifecycle = engine.lifecycle();
@@ -805,7 +805,7 @@ async fn an_invariant_action_creating_a_node_does_not_trigger_another_invariant_
     let play_b = Node::new(
         "play".to_string(),
         "chain-rule-b".to_string(),
-        json!({ "rules": [{
+        json!({ "play": { "rules": [{
             "name": "stamp-target",
             "class": "invariant",
             "trigger": { "type": "graph_event", "on": "node_created", "node_type": "iv_chain_target" },
@@ -817,7 +817,7 @@ async fn an_invariant_action_creating_a_node_does_not_trigger_another_invariant_
                     "properties": { "stamped_by_rule_b": true }
                 }
             }]
-        }] }),
+        }] } }),
     );
     {
         let lifecycle = engine.lifecycle();
@@ -993,11 +993,11 @@ async fn reject_action_prevents_node_creation_with_no_partial_write() -> Result<
     let play_node = Node::new(
         "play".to_string(),
         "reject-basic-play".to_string(),
-        json!({ "rules": reject_invariant_rule(
+        json!({ "play": { "rules": reject_invariant_rule(
             "iv_reject_basic",
             "node.status == 'blocked'",
             "cannot create a blocked iv_reject_basic node",
-        ) }),
+        ) } }),
     );
     {
         let lifecycle = engine.lifecycle();
@@ -1047,11 +1047,11 @@ async fn reject_action_error_is_play_rule_rejected_with_the_rule_s_message() -> 
     let play_node = Node::new(
         "play".to_string(),
         "reject-msg-play".to_string(),
-        json!({ "rules": reject_invariant_rule(
+        json!({ "play": { "rules": reject_invariant_rule(
             "iv_reject_msg",
             "node.status == 'blocked'",
             "custom violation text",
-        ) }),
+        ) } }),
     );
     let play_node_id = play_node.id.clone();
     {
@@ -1114,11 +1114,11 @@ async fn reject_action_condition_not_met_allows_normal_creation() -> Result<()> 
     let play_node = Node::new(
         "play".to_string(),
         "reject-gated-play".to_string(),
-        json!({ "rules": reject_invariant_rule(
+        json!({ "play": { "rules": reject_invariant_rule(
             "iv_reject_gated",
             "node.status == 'blocked'",
             "should never fire",
-        ) }),
+        ) } }),
     );
     {
         let lifecycle = engine.lifecycle();
@@ -1173,11 +1173,11 @@ async fn reject_rule_on_a_subtype_reads_an_inherited_field() -> Result<()> {
     let play_node = Node::new(
         "play".to_string(),
         "reject-inherited-play".to_string(),
-        json!({ "rules": reject_invariant_rule(
+        json!({ "play": { "rules": reject_invariant_rule(
             "iv_sub_bug",
             "node.state == 'done'",
             "cannot create a done bug",
-        ) }),
+        ) } }),
     );
     {
         let lifecycle = engine.lifecycle();
@@ -1265,7 +1265,7 @@ async fn relationship_reject_rule_on_a_subtype_reads_an_inherited_field() -> Res
     let play_node = Node::new(
         "play".to_string(),
         "reject-inherited-relationship-play".to_string(),
-        json!({ "rules": [{
+        json!({ "play": { "rules": [{
             "name": "reject-rule",
             "class": "invariant",
             "trigger": {
@@ -1278,7 +1278,7 @@ async fn relationship_reject_rule_on_a_subtype_reads_an_inherited_field() -> Res
                 "action_type": "reject",
                 "params": { "message": "a done bug cannot block anything" }
             }]
-        }] }),
+        }] } }),
     );
     {
         let lifecycle = engine.lifecycle();
@@ -1452,7 +1452,7 @@ async fn reject_before_augmenting_action_in_the_same_rule_prevents_the_augment()
     let play_node = Node::new(
         "play".to_string(),
         "reject-before-augment-play".to_string(),
-        json!({ "rules": [{
+        json!({ "play": { "rules": [{
             "name": "reject-then-augment",
             "class": "invariant",
             "trigger": { "type": "graph_event", "on": "node_created", "node_type": "iv_reject_order_a" },
@@ -1470,7 +1470,7 @@ async fn reject_before_augmenting_action_in_the_same_rule_prevents_the_augment()
                     }
                 }
             ]
-        }] }),
+        }] } }),
     );
     {
         let lifecycle = engine.lifecycle();
@@ -1599,7 +1599,7 @@ async fn augmenting_action_before_reject_in_the_same_rule_is_rolled_back_too() -
     let play_node = Node::new(
         "play".to_string(),
         "augment-before-reject-play".to_string(),
-        json!({ "rules": [{
+        json!({ "play": { "rules": [{
             "name": "augment-then-reject",
             "class": "invariant",
             "trigger": { "type": "graph_event", "on": "node_created", "node_type": "iv_reject_order_b" },
@@ -1617,7 +1617,7 @@ async fn augmenting_action_before_reject_in_the_same_rule_is_rolled_back_too() -
                     "params": { "message": "vetoed after the augment already ran" }
                 }
             ]
-        }] }),
+        }] } }),
     );
     {
         let lifecycle = engine.lifecycle();
@@ -1722,7 +1722,7 @@ async fn invariant_update_rule_executes_synchronously_in_same_transaction() -> R
     let play_node = Node::new(
         "play".to_string(),
         "stamp-verified-play".to_string(),
-        json!({ "rules": stamp_verified_on_update_invariant_rule("iv_update_task", "status") }),
+        json!({ "play": { "rules": stamp_verified_on_update_invariant_rule("iv_update_task", "status") } }),
     );
     {
         let lifecycle = engine.lifecycle();
@@ -1782,7 +1782,7 @@ async fn invariant_update_rule_reject_prevents_partial_write() -> Result<()> {
     let play_node = Node::new(
         "play".to_string(),
         "reject-on-update-play".to_string(),
-        json!({ "rules": [{
+        json!({ "play": { "rules": [{
             "name": "reject-blocked-transition",
             "class": "invariant",
             "trigger": { "type": "graph_event", "on": "property_changed", "node_type": "iv_update_reject", "property_key": "iv_update_reject.status" },
@@ -1791,7 +1791,7 @@ async fn invariant_update_rule_reject_prevents_partial_write() -> Result<()> {
                 "action_type": "reject",
                 "params": { "message": "cannot transition to blocked" }
             }]
-        }] }),
+        }] } }),
     );
     {
         let lifecycle = engine.lifecycle();
@@ -1855,7 +1855,7 @@ async fn invariant_update_rule_reject_emits_no_domain_event() -> Result<()> {
     let play_node = Node::new(
         "play".to_string(),
         "reject-no-broadcast-play".to_string(),
-        json!({ "rules": [{
+        json!({ "play": { "rules": [{
             "name": "reject-always",
             "class": "invariant",
             "trigger": { "type": "graph_event", "on": "property_changed", "node_type": "iv_update_no_broadcast", "property_key": "iv_update_no_broadcast.status" },
@@ -1864,7 +1864,7 @@ async fn invariant_update_rule_reject_emits_no_domain_event() -> Result<()> {
                 "action_type": "reject",
                 "params": { "message": "never allowed" }
             }]
-        }] }),
+        }] } }),
     );
     {
         let lifecycle = engine.lifecycle();
@@ -1928,7 +1928,7 @@ async fn invariant_update_rule_augmenting_action_commits_and_broadcasts_normally
     let play_node = Node::new(
         "play".to_string(),
         "augment-on-update-play".to_string(),
-        json!({ "rules": stamp_verified_on_update_invariant_rule("iv_update_broadcast", "status") }),
+        json!({ "play": { "rules": stamp_verified_on_update_invariant_rule("iv_update_broadcast", "status") } }),
     );
     {
         let lifecycle = engine.lifecycle();
@@ -2004,7 +2004,7 @@ async fn invariant_update_rule_scoped_to_one_property_ignores_a_different_proper
         "play".to_string(),
         "scoped-property-play".to_string(),
         // Scoped to "status" only.
-        json!({ "rules": stamp_verified_on_update_invariant_rule("iv_update_scoped", "status") }),
+        json!({ "play": { "rules": stamp_verified_on_update_invariant_rule("iv_update_scoped", "status") } }),
     );
     {
         let lifecycle = engine.lifecycle();
@@ -2187,7 +2187,7 @@ async fn invariant_task_update_rule_executes_synchronously_in_same_transaction()
     let play_node = Node::new(
         "play".to_string(),
         "stamp-priority-on-task-status-play".to_string(),
-        json!({ "rules": stamp_priority_on_task_status_update_invariant_rule() }),
+        json!({ "play": { "rules": stamp_priority_on_task_status_update_invariant_rule() } }),
     );
     {
         let lifecycle = engine.lifecycle();
@@ -2240,7 +2240,7 @@ async fn invariant_task_update_rule_reject_prevents_partial_write() -> Result<()
     let play_node = Node::new(
         "play".to_string(),
         "reject-task-done-play".to_string(),
-        json!({ "rules": [{
+        json!({ "play": { "rules": [{
             "name": "reject-done-transition",
             "class": "invariant",
             "trigger": { "type": "graph_event", "on": "property_changed", "node_type": "task", "property_key": "task.status" },
@@ -2249,7 +2249,7 @@ async fn invariant_task_update_rule_reject_prevents_partial_write() -> Result<()
                 "action_type": "reject",
                 "params": { "message": "cannot mark done while sub-issues are open" }
             }]
-        }] }),
+        }] } }),
     );
     {
         let lifecycle = engine.lifecycle();
@@ -2304,7 +2304,7 @@ async fn invariant_task_update_rule_reject_emits_no_domain_event() -> Result<()>
     let play_node = Node::new(
         "play".to_string(),
         "reject-task-no-broadcast-play".to_string(),
-        json!({ "rules": [{
+        json!({ "play": { "rules": [{
             "name": "reject-always",
             "class": "invariant",
             "trigger": { "type": "graph_event", "on": "property_changed", "node_type": "task", "property_key": "task.status" },
@@ -2313,7 +2313,7 @@ async fn invariant_task_update_rule_reject_emits_no_domain_event() -> Result<()>
                 "action_type": "reject",
                 "params": { "message": "never allowed" }
             }]
-        }] }),
+        }] } }),
     );
     {
         let lifecycle = engine.lifecycle();
@@ -2366,7 +2366,7 @@ async fn invariant_task_update_rule_augmenting_action_commits_and_broadcasts_nor
     let play_node = Node::new(
         "play".to_string(),
         "augment-on-task-update-play".to_string(),
-        json!({ "rules": stamp_priority_on_task_status_update_invariant_rule() }),
+        json!({ "play": { "rules": stamp_priority_on_task_status_update_invariant_rule() } }),
     );
     {
         let lifecycle = engine.lifecycle();
@@ -2429,7 +2429,7 @@ async fn invariant_task_update_rule_scoped_to_one_property_ignores_a_different_p
         "play".to_string(),
         "scoped-task-property-play".to_string(),
         // Scoped to "task.status" only.
-        json!({ "rules": stamp_priority_on_task_status_update_invariant_rule() }),
+        json!({ "play": { "rules": stamp_priority_on_task_status_update_invariant_rule() } }),
     );
     {
         let lifecycle = engine.lifecycle();
@@ -2742,7 +2742,7 @@ fn activate_rules_directly(engine: &PlaybookEngine, name: &str, rules: serde_jso
     let play = Node::new(
         "play".to_string(),
         name.to_string(),
-        json!({ "rules": rules }),
+        json!({ "play": { "rules": rules } }),
     );
     let lifecycle = engine.lifecycle();
     let mut lm = lifecycle.write().unwrap();

@@ -12,6 +12,7 @@
   import { sharedNodeStore } from '$lib/services/shared-node-store.svelte';
   import { pluginRegistry } from '$lib/plugins/plugin-registry';
   import { pinReachableNodes } from '$lib/utils/pin-node-reachability';
+  import { resolveFieldValue } from '$lib/components/schema/schema-field-resolution';
   import { TableRow as UiTableRow, TableCell } from '$lib/components/ui/table';
 
   let {
@@ -36,38 +37,24 @@
   const pinOwnerId = uuidv4();
   $effect(() => pinReachableNodes(pinOwnerId, [id]));
 
-  // Convert snake_case field name to camelCase for wire format lookups.
-  // Schema field names are snake_case (e.g. due_date) but the API serializes
-  // typed node fields as camelCase (e.g. dueDate) via serde rename_all.
-  function toCamelCase(name: string): string {
-    return name.replace(/_([a-z])/g, (_, c) => c.toUpperCase());
-  }
-
   // Derive the node and cell values
   const cellValues = $derived.by(() => {
     const node = sharedNodeStore.getNode(id);
     const map = new Map<string, string>();
     if (!node) return map;
 
-    const nodeRecord = node as unknown as Record<string, unknown>;
-
     for (const col of columns) {
       const fieldSchema = fieldSchemaMap.get(col.field);
-      // Resolution order:
-      // 1. For 'content' column: the node's current display value (pluginRegistry
-      //    .resolveDisplayTitle — title only for title_template-driven schemas, content
-      //    otherwise; see node-display-title.ts). node.title alone is stale for non-template
-      //    types, since it's only refreshed by a backend round-trip while optimistic edits
-      //    patch content directly.
-      // 2. camelCase top-level (typed core fields like task.dueDate serialized from Rust)
-      // 3. snake_case top-level (fallback)
-      // 4. node.properties[field] (user-defined fields on custom schema nodes)
-      const camelKey = toCamelCase(col.field);
-      const props = node.properties as Record<string, unknown> | undefined;
+      // The 'content' column shows the node's current display value
+      // (pluginRegistry.resolveDisplayTitle — title only for title_template-driven
+      // schemas, content otherwise; see node-display-title.ts). node.title alone is
+      // stale for non-template types, since it's only refreshed by a backend
+      // round-trip while optimistic edits patch content directly.
+      // Every other column is a schema field, read by its stored name.
       const rawValue =
         col.field === 'content'
           ? pluginRegistry.resolveDisplayTitle(node)
-          : (nodeRecord[camelKey] ?? nodeRecord[col.field] ?? props?.[col.field]);
+          : resolveFieldValue(node, col.field);
 
       if (rawValue === null || rawValue === undefined) {
         map.set(col.field, '');

@@ -3667,12 +3667,14 @@ async fn playbook_get_workflow_state_round_trip() {
             "play".to_string(),
             "Test Play".to_string(),
             serde_json::json!({
-                "rules": [{
-                    "name": "r1",
-                    "trigger": { "type": "graph_event", "on": "node_created", "node_type": "text" },
-                    "conditions": ["node.content == 'hello'"],
-                    "actions": []
-                }]
+                "play": {
+                    "rules": [{
+                        "name": "r1",
+                        "trigger": { "type": "graph_event", "on": "node_created", "node_type": "text" },
+                        "conditions": ["node.content == 'hello'"],
+                        "actions": []
+                    }]
+                }
             }),
         );
         lm.activate_play(&play).expect("activate play");

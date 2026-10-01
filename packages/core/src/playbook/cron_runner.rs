@@ -476,19 +476,21 @@ mod tests {
                 created_at: chrono::Utc::now(),
                 modified_at: chrono::Utc::now(),
                 properties: json!({
-                    "rules": [{
-                        "name": "cron-rule-1",
-                        "trigger": {
-                            "type": "scheduled",
-                            "cron": cron_expr,
-                            "node_type": node_type
-                        },
-                        "conditions": [],
-                        "actions": [{
-                            "action_type": "update_node",
-                            "params": {"target": "trigger.node"}
+                    "play": {
+                        "rules": [{
+                            "name": "cron-rule-1",
+                            "trigger": {
+                                "type": "scheduled",
+                                "cron": cron_expr,
+                                "node_type": node_type
+                            },
+                            "conditions": [],
+                            "actions": [{
+                                "action_type": "update_node",
+                                "params": {"target": "trigger.node"}
+                            }]
                         }]
-                    }]
+                    }
                 }),
                 mentions: vec![],
                 mentioned_in: vec![],

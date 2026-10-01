@@ -1719,13 +1719,13 @@ mod tests {
         let play = nodespace_core::Node::new(
             "play".to_string(),
             "import-poison-play".to_string(),
-            serde_json::json!({ "rules": [{
+            serde_json::json!({ "play": { "rules": [{
                 "name": "reject-poison",
                 "class": "invariant",
                 "trigger": { "type": "graph_event", "on": "node_created", "node_type": "text" },
                 "conditions": ["node.content.contains('POISON')"],
                 "actions": [{ "action_type": "reject", "params": { "message": "poisoned" } }]
-            }] }),
+            }] } }),
         );
         engine
             .lifecycle()

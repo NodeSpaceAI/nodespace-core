@@ -246,7 +246,6 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
       modifiedAt: new Date().toISOString(),
       version: 1,
       properties: {},
-      embeddingVector: null,
       mentions: []
     };
 

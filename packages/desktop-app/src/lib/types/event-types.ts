@@ -114,7 +114,6 @@ export interface NodeWithChildren {
   createdAt: string;
   modifiedAt: string;
   properties?: Record<string, unknown>;
-  embeddingVector?: number[];
   embeddingStale?: boolean;
   mentions?: string[];
   _schema_version?: number;

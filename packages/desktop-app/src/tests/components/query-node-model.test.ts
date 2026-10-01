@@ -247,6 +247,139 @@ describe('matchesFilter', () => {
     ).toBe(false);
   });
 
+  it('reads a snake_case custom field by its stored name only', () => {
+    const filter = {
+      type: 'property',
+      operator: 'equals',
+      property: 'billing_contact',
+      value: 'Avery',
+    } as const;
+    expect(matchesFilter(node('n2', { properties: { billing_contact: 'Avery' } }), filter)).toBe(
+      true
+    );
+    // Neither a camelCase key in properties nor a top-level key is the field.
+    expect(
+      matchesFilter(
+        node('n3', { properties: { billingContact: 'Avery' }, billingContact: 'Avery' }),
+        filter
+      )
+    ).toBe(false);
+  });
+
+  it("reads a core type's declared field from its typed key", () => {
+    const task = node('t1', { nodeType: 'task', dueDate: '2026-03-01' });
+    expect(
+      matchesFilter(task, {
+        type: 'property',
+        operator: 'equals',
+        property: 'due_date',
+        value: '2026-03-01',
+      })
+    ).toBe(true);
+  });
+
+  it("reads a subtype's inherited field from properties", () => {
+    // Typed keys belong to the exact core type; a type extending task carries
+    // the inherited field flat in properties.
+    const bug = node('b1', { nodeType: 'bug', properties: { due_date: '2026-03-01' } });
+    expect(
+      matchesFilter(bug, {
+        type: 'property',
+        operator: 'equals',
+        property: 'due_date',
+        value: '2026-03-01',
+      })
+    ).toBe(true);
+  });
+
+  describe('metadata filters', () => {
+    const titled = node('m1', {
+      nodeType: 'invoice',
+      content: 'Acme Corp invoice',
+      title: 'Acme invoice',
+      createdAt: '2026-10-01T09:00:00.000Z',
+      modifiedAt: '2026-10-02T09:00:00.000Z',
+    });
+
+    it('matches node_type', () => {
+      expect(
+        matchesFilter(titled, {
+          type: 'metadata',
+          operator: 'equals',
+          property: 'node_type',
+          value: 'invoice',
+        })
+      ).toBe(true);
+      expect(
+        matchesFilter(titled, {
+          type: 'metadata',
+          operator: 'equals',
+          property: 'node_type',
+          value: 'task',
+        })
+      ).toBe(false);
+    });
+
+    it('compares created_at', () => {
+      expect(
+        matchesFilter(titled, {
+          type: 'metadata',
+          operator: 'gte',
+          property: 'created_at',
+          value: '2026-01-01',
+        })
+      ).toBe(true);
+      expect(
+        matchesFilter(titled, {
+          type: 'metadata',
+          operator: 'lt',
+          property: 'created_at',
+          value: '2026-01-01',
+        })
+      ).toBe(false);
+    });
+
+    it('compares modified_at', () => {
+      expect(
+        matchesFilter(titled, {
+          type: 'metadata',
+          operator: 'gt',
+          property: 'modified_at',
+          value: '2026-10-01T12:00:00.000Z',
+        })
+      ).toBe(true);
+    });
+
+    it('matches title and content', () => {
+      expect(
+        matchesFilter(titled, {
+          type: 'metadata',
+          operator: 'contains',
+          property: 'title',
+          value: 'Acme inv',
+        })
+      ).toBe(true);
+      expect(
+        matchesFilter(titled, {
+          type: 'metadata',
+          operator: 'contains',
+          property: 'content',
+          value: 'Corp',
+        })
+      ).toBe(true);
+    });
+
+    it('does not read a schema field or an unknown column', () => {
+      const withProp = node('m2', { properties: { status: 'open' } });
+      // `constructor` and `__proto__` are inherited object keys, not columns.
+      for (const property of ['status', 'constructor', '__proto__']) {
+        expect(matchesFilter(withProp, { type: 'metadata', operator: 'exists', property })).toBe(
+          false
+        );
+      }
+    });
+  });
+
   it('evaluates node-local relationship filters and declines graph ones', () => {
     const withRels = node('n2', { mentions: ['m1'], mentionedIn: [{ id: 'src', title: null, nodeType: 'text' }] });
     expect(
@@ -359,13 +492,13 @@ describe('shouldShowCreatedNode', () => {
     };
     expect(
       shouldShowCreatedNode(
-        node('t1', { nodeType: 'task', properties: { status: 'open' } }),
+        node('t1', { nodeType: 'task', status: 'open' }),
         gate({ definition: withFilter })
       )
     ).toBe(true);
     expect(
       shouldShowCreatedNode(
-        node('t2', { nodeType: 'task', properties: { status: 'done' } }),
+        node('t2', { nodeType: 'task', status: 'done' }),
         gate({ definition: withFilter })
       )
     ).toBe(false);

@@ -27,7 +27,6 @@ export class TestNodeBuilder {
     content: '',
     version: 1,
     properties: {},
-    embeddingVector: null,
     mentions: []
   };
 
@@ -112,14 +111,6 @@ export class TestNodeBuilder {
   }
 
   /**
-   * Set embedding vector
-   */
-  withEmbedding(embedding: number[] | null): this {
-    this.node.embeddingVector = embedding;
-    return this;
-  }
-
-  /**
    * Set mentions
    */
   withMentions(mentions: string[]): this {
@@ -193,7 +184,6 @@ export class TestNodeBuilder {
       content: this.node.content,
       version: this.node.version ?? 1,
       properties: this.node.properties ?? {},
-      embeddingVector: this.node.embeddingVector ?? null,
       mentions: this.node.mentions ?? []
     };
   }

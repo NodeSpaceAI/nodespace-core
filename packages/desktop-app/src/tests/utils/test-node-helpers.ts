@@ -63,7 +63,6 @@ export async function createAndFetchNode(
     .withContent(nodeData.content)
     .withVersion(nodeData.version ?? 1)
     .withProperties(nodeData.properties ?? {})
-    .withEmbedding(nodeData.embeddingVector ?? null)
     .withMentions(nodeData.mentions ?? [])
     .buildWithTimestamps();
 }
@@ -114,7 +113,6 @@ export async function createNodeForCurrentMode(
     content: string;
     version?: number;
     properties: Record<string, unknown>;
-    embeddingVector: number[] | null;
     mentions: string[];
   }
 ): Promise<Node> {
@@ -125,7 +123,6 @@ export async function createNodeForCurrentMode(
     .withContent(nodeData.content)
     .withVersion(nodeData.version ?? 1)
     .withProperties(nodeData.properties)
-    .withEmbedding(nodeData.embeddingVector)
     .withMentions(nodeData.mentions)
     .buildWithTimestamps();
 }

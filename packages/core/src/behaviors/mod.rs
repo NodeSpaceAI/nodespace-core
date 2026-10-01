@@ -12,7 +12,7 @@
 use crate::models::schema::SchemaField;
 use crate::models::{
     Node, QueryFields, SchemaNode, SkillNode, TaskNode, ValidationError as NodeValidationError,
-    AI_CHAT_PROVIDERS, DEFAULT_SKILL_MAX_ITERATIONS,
+    AI_CHAT_PROVIDERS,
 };
 use crate::services::NodeAccessor;
 use serde_json::Value;
@@ -247,23 +247,6 @@ pub trait NodeBehavior: Send + Sync {
     /// ```
     fn process_content(&self, content: &str) -> Result<String, ProcessingError> {
         Ok(content.to_string())
-    }
-
-    /// Returns default metadata/properties for new nodes of this type
-    ///
-    /// # Examples
-    ///
-    /// ```rust
-    /// # use nodespace_core::behaviors::{NodeBehavior, TaskNodeBehavior};
-    /// # use serde_json::json;
-    /// let behavior = TaskNodeBehavior;
-    /// let defaults = behavior.default_metadata();
-    /// // Task defaults use nested format: properties.task.status
-    /// // Status values use lowercase format
-    /// assert_eq!(defaults["task"]["status"], "open");
-    /// ```
-    fn default_metadata(&self) -> serde_json::Value {
-        serde_json::json!({})
     }
 
     /// Returns embeddable text content if this node should be embedded as a root.
@@ -508,14 +491,6 @@ impl NodeBehavior for TextNodeBehavior {
         true
     }
 
-    fn default_metadata(&self) -> serde_json::Value {
-        serde_json::json!({
-            "markdown_enabled": true,
-            "auto_save": true,
-            "word_wrap": true
-        })
-    }
-
     /// Text nodes aggregate children's content for embedding
     fn get_aggregated_content<'a>(
         &'a self,
@@ -569,13 +544,6 @@ impl NodeBehavior for HeaderNodeBehavior {
 
     fn supports_markdown(&self) -> bool {
         true
-    }
-
-    fn default_metadata(&self) -> serde_json::Value {
-        serde_json::json!({
-            "headerLevel": 1,
-            "markdown_enabled": true
-        })
     }
 
     /// Header nodes aggregate children's content for embedding
@@ -698,17 +666,6 @@ impl NodeBehavior for TaskNodeBehavior {
 
     fn supports_markdown(&self) -> bool {
         false // Tasks are usually single-line descriptions
-    }
-
-    fn default_metadata(&self) -> serde_json::Value {
-        // Uses lowercase canonical values for consistency across all layers
-        serde_json::json!({
-            "task": {
-                "status": "open",
-                "priority": "medium",
-                "due_date": null
-            }
-        })
     }
 
     /// Tasks are not embedded as standalone roots
@@ -851,17 +808,6 @@ impl NodeBehavior for ProjectNodeBehavior {
         true // Projects carry rich descriptions
     }
 
-    fn default_metadata(&self) -> serde_json::Value {
-        serde_json::json!({
-            "project": {
-                "status": "planning",
-                "start_date": null,
-                "end_date": null,
-                "priority": null
-            }
-        })
-    }
-
     /// Projects are not embedded, like tasks.
     fn get_embeddable_content(&self, _node: &Node) -> Option<String> {
         None
@@ -914,12 +860,6 @@ impl NodeBehavior for CodeBlockNodeBehavior {
     fn supports_markdown(&self) -> bool {
         false // Code blocks display raw text, no markdown formatting
     }
-
-    fn default_metadata(&self) -> serde_json::Value {
-        serde_json::json!({
-            "language": "plaintext"
-        })
-    }
 }
 
 /// Built-in behavior for quote block nodes
@@ -962,12 +902,6 @@ impl NodeBehavior for QuoteBlockNodeBehavior {
 
     fn supports_markdown(&self) -> bool {
         true // Quote blocks support inline markdown formatting
-    }
-
-    fn default_metadata(&self) -> serde_json::Value {
-        serde_json::json!({
-            "markdown_enabled": true
-        })
     }
 }
 
@@ -1035,12 +969,6 @@ impl NodeBehavior for OrderedListNodeBehavior {
     fn supports_markdown(&self) -> bool {
         true // Ordered lists support inline markdown formatting
     }
-
-    fn default_metadata(&self) -> serde_json::Value {
-        serde_json::json!({
-            "markdown_enabled": true
-        })
-    }
 }
 
 /// Built-in behavior for horizontal line (thematic break) nodes
@@ -1072,10 +1000,6 @@ impl NodeBehavior for HorizontalLineNodeBehavior {
 
     fn get_parent_contribution(&self, _node: &Node) -> Option<String> {
         None
-    }
-
-    fn default_metadata(&self) -> serde_json::Value {
-        serde_json::json!({})
     }
 }
 
@@ -1116,10 +1040,6 @@ impl NodeBehavior for TableNodeBehavior {
         } else {
             Some(node.content.clone())
         }
-    }
-
-    fn default_metadata(&self) -> serde_json::Value {
-        serde_json::json!({})
     }
 }
 
@@ -1183,13 +1103,6 @@ impl NodeBehavior for DateNodeBehavior {
 
     fn supports_markdown(&self) -> bool {
         false // Dates are simple identifiers
-    }
-
-    fn default_metadata(&self) -> serde_json::Value {
-        serde_json::json!({
-            "is_holiday": false,
-            "timezone": "UTC"
-        })
     }
 
     /// Date nodes are not embedded (they're containers)
@@ -1518,14 +1431,6 @@ impl NodeBehavior for SchemaNodeBehavior {
         false // Schemas are structured data
     }
 
-    fn default_metadata(&self) -> serde_json::Value {
-        serde_json::json!({
-            "is_core": false,
-            "version": 1,
-            "fields": []
-        })
-    }
-
     /// Schema nodes aggregate their description child subtree for embedding.
     ///
     /// The description is stored as a markdown node subtree under the schema node.
@@ -1598,15 +1503,6 @@ impl NodeBehavior for QueryNodeBehavior {
 
     fn supports_markdown(&self) -> bool {
         false
-    }
-
-    fn default_metadata(&self) -> serde_json::Value {
-        serde_json::json!({
-            "query": {
-                "generated_by": "user",
-                "execution_count": 0
-            }
-        })
     }
 
     /// Queries are not embedded as standalone roots
@@ -1705,10 +1601,6 @@ impl NodeBehavior for CollectionNodeBehavior {
 
     fn supports_markdown(&self) -> bool {
         false // Collection names are plain text
-    }
-
-    fn default_metadata(&self) -> serde_json::Value {
-        serde_json::json!({})
     }
 
     /// Collections are not embedded (they're organizational containers)
@@ -1874,19 +1766,6 @@ impl NodeBehavior for AiChatNodeBehavior {
         false // Chat content is rendered by the chat viewer, not the markdown pipeline
     }
 
-    fn default_metadata(&self) -> serde_json::Value {
-        serde_json::json!({
-            "provider": "native",
-            "model": "",
-            "turn_status": "idle",
-            "session_status": "active",
-            "last_active": null,
-            "context_tokens": 0,
-            "created_nodes": [],
-            "messages": []
-        })
-    }
-
     /// AI-chat nodes are intentionally NOT embedded.
     ///
     /// Conversations are not general knowledge and must never surface in
@@ -1944,10 +1823,6 @@ impl NodeBehavior for AgentGuidanceNodeBehavior {
         true // Child nodes will be markdown
     }
 
-    fn default_metadata(&self) -> serde_json::Value {
-        serde_json::json!({})
-    }
-
     /// Agent-guidance nodes are not semantically indexed
     fn get_embeddable_content(&self, _node: &Node) -> Option<String> {
         None
@@ -1997,10 +1872,6 @@ impl NodeBehavior for SkillNodeBehavior {
 
     fn supports_markdown(&self) -> bool {
         false
-    }
-
-    fn default_metadata(&self) -> serde_json::Value {
-        SkillNode::new("", "", &[], DEFAULT_SKILL_MAX_ITERATIONS).properties()
     }
 
     /// The description property drives embedding for skill discovery
@@ -2098,16 +1969,6 @@ impl NodeBehavior for ToolNodeBehavior {
 
     fn supports_markdown(&self) -> bool {
         false
-    }
-
-    fn default_metadata(&self) -> serde_json::Value {
-        serde_json::json!({
-            "handler": "",
-            "description": "",
-            "parameter_schema": {},
-            "source": "internal",
-            "enabled": true,
-        })
     }
 
     fn get_embeddable_content(&self, node: &Node) -> Option<String> {
@@ -2257,10 +2118,6 @@ impl NodeBehavior for CustomNodeBehavior {
     fn supports_markdown(&self) -> bool {
         false // Custom types don't support markdown by default
     }
-
-    fn default_metadata(&self) -> serde_json::Value {
-        serde_json::json!({})
-    }
 }
 
 /// Built-in behavior for person nodes
@@ -2309,10 +2166,6 @@ impl NodeBehavior for PersonNodeBehavior {
 
     fn get_parent_contribution(&self, _node: &Node) -> Option<String> {
         None
-    }
-
-    fn default_metadata(&self) -> serde_json::Value {
-        serde_json::json!({})
     }
 }
 
@@ -2702,16 +2555,6 @@ mod tests {
     }
 
     #[test]
-    fn test_text_node_default_metadata() {
-        let behavior = TextNodeBehavior;
-        let metadata = behavior.default_metadata();
-
-        assert_eq!(metadata["markdown_enabled"], true);
-        assert_eq!(metadata["auto_save"], true);
-        assert_eq!(metadata["word_wrap"], true);
-    }
-
-    #[test]
     fn test_header_node_behavior_validation() {
         let behavior = HeaderNodeBehavior;
 
@@ -2861,7 +2704,6 @@ mod tests {
         assert_eq!(behavior.type_name(), "horizontal-line");
         assert!(!behavior.can_have_children());
         assert!(!behavior.supports_markdown());
-        assert_eq!(behavior.default_metadata(), json!({}));
     }
 
     #[test]
@@ -2894,7 +2736,6 @@ mod tests {
         assert_eq!(behavior.type_name(), "table");
         assert!(!behavior.can_have_children());
         assert!(!behavior.supports_markdown());
-        assert_eq!(behavior.default_metadata(), json!({}));
     }
 
     #[test]
@@ -3050,17 +2891,6 @@ mod tests {
     }
 
     #[test]
-    fn test_project_node_behavior_default_metadata() {
-        let behavior = ProjectNodeBehavior;
-        let meta = behavior.default_metadata();
-        let p = &meta["project"];
-        assert_eq!(p["status"], json!("planning"));
-        assert_eq!(p["start_date"], json!(null));
-        assert_eq!(p["end_date"], json!(null));
-        assert_eq!(p["priority"], json!(null));
-    }
-
-    #[test]
     fn test_task_node_behavior_validation() {
         let behavior = TaskNodeBehavior;
 
@@ -3203,18 +3033,6 @@ mod tests {
     }
 
     #[test]
-    fn test_task_node_default_metadata() {
-        let behavior = TaskNodeBehavior;
-        let metadata = behavior.default_metadata();
-
-        // Properties are now nested under "task" namespace
-        // Status/priority values use lowercase format
-        assert_eq!(metadata["task"]["status"], "open");
-        assert_eq!(metadata["task"]["priority"], "medium");
-        assert!(metadata["task"]["due_date"].is_null());
-    }
-
-    #[test]
     fn test_type_conversion_preserves_properties() {
         // Core value proposition: Properties should be preserved
         // when converting between node types (e.g., task → text → task)
@@ -3299,15 +3117,6 @@ mod tests {
         assert_eq!(behavior.type_name(), "date");
         assert!(behavior.can_have_children());
         assert!(!behavior.supports_markdown());
-    }
-
-    #[test]
-    fn test_date_node_default_metadata() {
-        let behavior = DateNodeBehavior;
-        let metadata = behavior.default_metadata();
-
-        assert_eq!(metadata["is_holiday"], false);
-        assert_eq!(metadata["timezone"], "UTC");
     }
 
     #[test]
@@ -4637,16 +4446,6 @@ mod tests {
     }
 
     #[test]
-    fn test_query_node_default_metadata() {
-        let behavior = QueryNodeBehavior;
-        let metadata = behavior.default_metadata();
-
-        // Query nodes have minimal default metadata
-        assert_eq!(metadata["query"]["generated_by"], "user");
-        assert_eq!(metadata["query"]["execution_count"], 0);
-    }
-
-    #[test]
     fn test_query_node_embedding_behavior() {
         let behavior = QueryNodeBehavior;
         let node = Node::new("query".to_string(), "Find all tasks".to_string(), json!({}));
@@ -4719,15 +4518,6 @@ mod tests {
         assert_eq!(behavior.type_name(), "collection");
         assert!(behavior.can_have_children()); // Collections form hierarchies
         assert!(!behavior.supports_markdown()); // Collection names are plain text
-    }
-
-    #[test]
-    fn test_collection_node_default_metadata() {
-        let behavior = CollectionNodeBehavior;
-        let metadata = behavior.default_metadata();
-
-        // Collections have minimal default metadata
-        assert_eq!(metadata, json!({}));
     }
 
     #[test]
@@ -4965,18 +4755,6 @@ mod tests {
         assert_eq!(behavior.type_name(), "ai-chat");
         assert!(!behavior.can_have_children());
         assert!(!behavior.supports_markdown());
-    }
-
-    #[test]
-    fn test_ai_chat_node_default_metadata() {
-        let behavior = AiChatNodeBehavior;
-        let meta = behavior.default_metadata();
-        assert_eq!(meta["provider"], "native");
-        assert_eq!(meta["turn_status"], "idle");
-        assert_eq!(meta["session_status"], "active");
-        assert_eq!(meta["context_tokens"], 0);
-        assert!(meta["messages"].as_array().unwrap().is_empty());
-        assert!(meta["created_nodes"].as_array().unwrap().is_empty());
     }
 
     #[test]

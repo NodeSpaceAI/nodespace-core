@@ -546,7 +546,7 @@ fn make_play_node(id: &str, rules_json: serde_json::Value) -> Node {
         id.to_string(),
         "play".to_string(),
         format!("play {}", id),
-        json!({ "rules": rules_json }),
+        json!({ "play": { "rules": rules_json } }),
     )
 }
 

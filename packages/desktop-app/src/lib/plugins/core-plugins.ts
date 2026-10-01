@@ -470,23 +470,6 @@ export const tableNodePlugin: PluginDefinition = {
   acceptsContentMerge: false
 };
 
-// Additional node types for reference system (no viewers currently)
-export const userNodePlugin: PluginDefinition = {
-  id: 'user',
-  name: 'User Reference',
-  description: 'User reference node',
-  version: '1.0.0',
-  config: {
-    slashCommands: [],
-    canHaveChildren: false,
-    canBeChild: true
-  },
-  reference: {
-    component: BaseNodeReference as NodeReferenceComponent,
-    priority: 1
-  }
-};
-
 export const queryNodePlugin: PluginDefinition = {
   id: 'query',
   name: 'Query Node',
@@ -512,22 +495,6 @@ export const queryNodePlugin: PluginDefinition = {
   },
   viewer: {
     lazyLoad: () => import('../components/viewers/query-node-viewer.svelte'),
-    priority: 1
-  }
-};
-
-export const documentNodePlugin: PluginDefinition = {
-  id: 'document',
-  name: 'Document Reference',
-  description: 'Document reference node',
-  version: '1.0.0',
-  config: {
-    slashCommands: [],
-    canHaveChildren: true,
-    canBeChild: true
-  },
-  reference: {
-    component: BaseNodeReference as NodeReferenceComponent,
     priority: 1
   }
 };
@@ -565,16 +532,6 @@ export const collectionNodePlugin: PluginDefinition = {
   reference: {
     component: BaseNodeReference as NodeReferenceComponent,
     priority: 1
-  },
-  // Type-specific metadata extraction for collection properties
-  extractMetadata: (node: { nodeType: string; properties?: Record<string, unknown> }) => {
-    const properties = node.properties || {};
-    return {
-      description: properties.description as string | undefined,
-      icon: properties.icon as string | undefined,
-      color: properties.color as string | undefined,
-      ...properties
-    };
   }
 };
 

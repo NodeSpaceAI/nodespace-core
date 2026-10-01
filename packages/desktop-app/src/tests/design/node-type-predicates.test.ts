@@ -47,7 +47,7 @@ describe('node-type-predicates', () => {
       // This predicate drives five behaviors — open button, arrow-nav skipping, slash-command
       // pane navigation, and viewer routing — so a change here is a UX change. Asserted as a
       // whole so any future registration that flips a type has to update this list knowingly.
-      const entityRows = ['project', 'collection', 'schema', 'user', 'document', 'ai-chat'];
+      const entityRows = ['project', 'collection', 'schema', 'ai-chat'];
       const inlineEditable = [
         'text',
         'task',

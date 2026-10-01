@@ -130,7 +130,7 @@ mod tests {
 
     #[test]
     fn the_shipped_rules_parse() {
-        let props = json!({ "rules": parent_task_completion_rules() });
+        let props = json!({ "play": { "rules": parent_task_completion_rules() } });
         let rules = parse_rules_from_properties(&props).expect("shipped rules must parse");
         assert_eq!(rules.len(), 1);
     }
