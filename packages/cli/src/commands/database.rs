@@ -186,16 +186,28 @@ async fn list(client: &mut DatabaseServiceClient<Channel>, json: bool) -> Result
     }
 
     // Leading column marks the default with `*`. Widths are generous enough for
-    // ULID ids and typical labels while staying scannable.
-    println!("{:<1} {:<28} {:<20} {:<8} PATH", "", "ID", "NAME", "STATUS");
+    // ULID ids and typical labels while staying scannable; the status column
+    // widens to fit the longest status listed.
+    let status_width = listed
+        .databases
+        .iter()
+        .map(|d| status_str(d.status).len())
+        .max()
+        .unwrap_or(0)
+        .max(8);
+    println!(
+        "{:<1} {:<28} {:<20} {:<status_width$} PATH",
+        "", "ID", "NAME", "STATUS"
+    );
     for d in &listed.databases {
         let marker = if d.is_default { "*" } else { " " };
         println!(
-            "{marker:<1} {:<28} {:<20} {:<8} {}",
+            "{marker:<1} {:<28} {:<20} {:<status_width$} {}{}",
             d.id,
             d.name,
             status_str(d.status),
-            d.path
+            d.path,
+            requirement_note(d)
         );
     }
     Ok(())
@@ -321,6 +333,9 @@ fn print_info(
     Ok(())
 }
 
+/// A refused database also carries the extensions it requires that this
+/// build does not support, and the refusal message an agent relays to the
+/// user verbatim (ADR-083 §2); `refusal` is null for any other database.
 fn info_to_json(info: &DatabaseInfo) -> serde_json::Value {
     json!({
         "id": info.id,
@@ -330,7 +345,29 @@ fn info_to_json(info: &DatabaseInfo) -> serde_json::Value {
         "last_opened_at": info.last_opened_at,
         "is_default": info.is_default,
         "status": status_str(info.status),
+        "unsupported_extensions": info.unsupported_extensions,
+        "refusal": is_refused(info).then(|| {
+            nodespace_proto::extension_names::refusal_message(&info.unsupported_extensions)
+        }),
     })
+}
+
+fn is_refused(info: &DatabaseInfo) -> bool {
+    DatabaseStatus::try_from(info.status) == Ok(DatabaseStatus::RequiresExtension)
+}
+
+/// What a refused database needs, appended after its path in the human
+/// listing; empty for any other database. Rendered by the shared display-name
+/// module, so the listing, the tray and the app say the same thing.
+fn requirement_note(info: &DatabaseInfo) -> String {
+    if is_refused(info) {
+        format!(
+            "  ({})",
+            nodespace_proto::extension_names::requirement(&info.unsupported_extensions)
+        )
+    } else {
+        String::new()
+    }
 }
 
 /// Human-readable name for a `DatabaseStatus` enum value.
@@ -339,6 +376,7 @@ pub(crate) fn status_str(status: i32) -> &'static str {
         Ok(DatabaseStatus::Closed) => "closed",
         Ok(DatabaseStatus::Open) => "open",
         Ok(DatabaseStatus::Missing) => "missing",
+        Ok(DatabaseStatus::RequiresExtension) => "requires_extension",
         Err(_) => "unknown",
     }
 }

@@ -523,11 +523,45 @@ pub async fn resolve_routing(
 
 /// Top-level dispatch — wired by `main.rs` and reused by integration tests.
 ///
+/// A command routed to a database that requires an extension this build does
+/// not support fails with the daemon's refusal (ADR-083 §2); its error is
+/// rewritten to the shared refusal text by [`render_refusal`]. `main` prints
+/// the error and exits non-zero either way.
+pub async fn run(cli: Cli) -> Result<()> {
+    dispatch(cli).await.map_err(render_refusal)
+}
+
+/// Replace an error that carries the daemon's required-extensions refusal
+/// with the refusal message and the download link, rendered by the shared
+/// display-name module so the CLI says exactly what the app says. Any other
+/// error passes through unchanged.
+pub fn render_refusal(err: anyhow::Error) -> anyhow::Error {
+    let refusal = err
+        .chain()
+        .filter_map(|cause| cause.downcast_ref::<tonic::Status>())
+        .find_map(nodespace_proto::requires_extension::unsupported_extensions);
+    match refusal {
+        Some(unsupported) => anyhow::anyhow!(refusal_text(&unsupported)),
+        None => err,
+    }
+}
+
+/// The refusal as the CLI prints it: the message, then the download link.
+pub fn refusal_text(unsupported: &[String]) -> String {
+    use nodespace_proto::extension_names::{refusal_message, DOWNLOAD_LABEL, DOWNLOAD_URL};
+    format!(
+        "{}\n{DOWNLOAD_LABEL}: {DOWNLOAD_URL}",
+        refusal_message(unsupported)
+    )
+}
+
+/// The command dispatch behind [`run`].
+///
 /// `sock` names the daemon endpoint for whichever transport this platform
 /// uses — a Unix Domain Socket path on macOS/Linux, a Named Pipe name
 /// (wrapped as a `Path` so every downstream `connect*` helper stays
 /// platform-agnostic) on Windows. Everything below this resolution is shared.
-pub async fn run(cli: Cli) -> Result<()> {
+async fn dispatch(cli: Cli) -> Result<()> {
     #[cfg(unix)]
     let sock = resolve_socket_path(cli.socket.as_deref());
     #[cfg(windows)]
@@ -652,6 +686,51 @@ pub async fn run(cli: Cli) -> Result<()> {
         Command::Mcp { action } => {
             commands::mcp::run(action, sock.clone(), cli.database.clone()).await
         }
+    }
+}
+
+#[cfg(test)]
+mod refusal_tests {
+    use super::{refusal_text, render_refusal};
+    use anyhow::Context;
+
+    fn failed(status: tonic::Status) -> anyhow::Error {
+        Err::<(), _>(status)
+            .context("GetNode RPC failed")
+            .unwrap_err()
+    }
+
+    /// The daemon's refusal, found under the context a command adds, becomes
+    /// the shared refusal text with the download link and nothing else.
+    #[test]
+    fn a_refusal_anywhere_in_the_chain_becomes_the_refusal_text() {
+        let unsupported = vec!["fixture".to_string()];
+        let err = render_refusal(failed(nodespace_proto::requires_extension::status(
+            &unsupported,
+        )));
+
+        assert_eq!(format!("{err:?}"), refusal_text(&unsupported));
+        assert_eq!(
+            refusal_text(&unsupported),
+            format!(
+                "{}\n{}: {}",
+                nodespace_proto::extension_names::refusal_message(&unsupported),
+                nodespace_proto::extension_names::DOWNLOAD_LABEL,
+                nodespace_proto::extension_names::DOWNLOAD_URL
+            )
+        );
+    }
+
+    /// Any other error, including another FAILED_PRECONDITION, is left as it
+    /// was.
+    #[test]
+    fn any_other_error_passes_through() {
+        let err = render_refusal(failed(tonic::Status::failed_precondition("a rule refused")));
+        assert!(format!("{err:#}").contains("a rule refused"), "{err:#}");
+        assert!(
+            format!("{err:#}").starts_with("GetNode RPC failed"),
+            "{err:#}"
+        );
     }
 }
 
