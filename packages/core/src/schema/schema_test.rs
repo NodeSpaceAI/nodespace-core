@@ -2768,8 +2768,9 @@ async fn test_create_schema_rejects_relationship_to_nonexistent_target_type() {
     );
 }
 
-/// AI chats are private, so no declared relationship may target one — a
-/// provenance-style link back to the producing chat cannot even be modelled.
+/// No node may reference an AI chat (ADR-061 §8), so no declared relationship
+/// may target one — a provenance-style link back to the producing chat cannot
+/// even be modelled.
 #[tokio::test]
 async fn test_create_schema_rejects_relationship_targeting_ai_chat() {
     let (svc, _tmp) = create_test_service().await;

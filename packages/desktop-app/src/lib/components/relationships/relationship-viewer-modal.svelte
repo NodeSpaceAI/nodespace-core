@@ -48,9 +48,10 @@
     twin: add and remove write the declared edge with the endpoints transposed.
   - An inbound edge WITH edge fields is read-only here: it shows the SAME values,
     and editing means opening the declaring node, which the target link does.
-    This is the authority model, not a UI convenience: a `person` viewing
-    `has_access_to → Design Docs` sees `access: Owner` and must not change it,
-    because access is granted from the collection's panel.
+    This is the authority model, not a UI convenience: a `person` viewing an
+    incoming `staffed_by` edge from the Apollo project sees `role: Lead` and
+    must not change it, because the role is set on the project, which declares
+    the relationship.
 
   ## Nothing is "saved"
 

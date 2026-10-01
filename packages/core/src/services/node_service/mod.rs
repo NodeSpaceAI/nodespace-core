@@ -6320,8 +6320,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_has_child_relationship_allows_a_person_member() {
-        // `person` membership is a grant (ADR-037 §4), exempt from the
-        // root-only rule.
+        // A `person`'s membership says who belongs to a collection, not where
+        // content is filed, so it is exempt from the root-only rule.
         for path in HAS_CHILD_PATHS {
             let (service, _temp) = create_test_service().await;
             let coll = service

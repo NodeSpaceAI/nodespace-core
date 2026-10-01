@@ -71,9 +71,8 @@
   let collectionForPanel = $derived(collectionsState.selectedCollection);
   let collectionMembers = $derived(collectionsState.selectedCollectionMembers);
 
-  // Inline "New collection" form for the Collections section. New collections are
-  // created open (the app has no privacy toggle yet). A new collection starts with
-  // zero members, so the store inserts it optimistically and exempts it from the
+  // Inline "New collection" form for the Collections section. A new collection
+  // starts with zero members, so the store inserts it optimistically and exempts it from the
   // hide-empty filter — that is what makes it appear here the instant it is named.
   let creatingCollection = $state(false);
   let newCollectionName = $state('');
