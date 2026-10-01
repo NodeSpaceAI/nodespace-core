@@ -18,6 +18,7 @@
 
 /* global EventSource, MessageEvent */
 
+import { isA, isExactly } from '$lib/types/core-node-types';
 import { sharedNodeStore, SimplePersistenceCoordinator } from './shared-node-store.svelte';
 import { structureTree } from '$lib/stores/reactive-structure-tree.svelte';
 import type { ModelLoadProgressSseEvent, SseEvent } from '$lib/types/sse-events';
@@ -218,12 +219,12 @@ class BrowserSyncService {
         log.debug(`Node created: ${event.nodeId} (type: ${event.nodeType})`);
 
         // If a collection node is created, refresh collections sidebar
-        if (event.nodeType === 'collection') {
+        if (isA(event.nodeType, 'collection')) {
           scheduleCollectionRefresh();
         }
 
         // If a schema node is created, refresh the node types sidebar
-        if (event.nodeType === 'schema') {
+        if (isExactly(event.nodeType, 'schema')) {
           scheduleSchemaRefresh();
           registerSchemaPlugin(event.nodeId).catch((err) =>
             log.error('Failed to register schema plugin:', err)
@@ -231,7 +232,7 @@ class BrowserSyncService {
         }
 
         // If a query node is created, refresh the saved queries in the sidebar
-        if (event.nodeType === 'query') {
+        if (isA(event.nodeType, 'query')) {
           scheduleSavedQueryRefresh();
         }
 
@@ -376,14 +377,14 @@ class BrowserSyncService {
         // detectable here, after the full node is fetched. Refresh is a no-op
         // for anything that isn't a non-core schema. Fire-and-forget: a failure
         // only leaves that type's title stale.
-        if (normalizedNode.nodeType === 'schema') {
+        if (isExactly(normalizedNode.nodeType, 'schema')) {
           registerSchemaPlugin(normalizedNode.id).catch((err) =>
             log.error('Failed to refresh schema plugin on node event:', err)
           );
         }
         // Like `nodeType` on the payload, only the fetched node reveals that an
         // update touched a query (e.g. a retarget into a listed type).
-        if (normalizedNode.nodeType === 'query') {
+        if (isA(normalizedNode.nodeType, 'query')) {
           scheduleSavedQueryRefresh();
         }
         log.debug(`${eventType}: updated store for node`, nodeId);

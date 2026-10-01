@@ -68,6 +68,7 @@ describe('SharedNodeStore — OCC notification dedup preserves error shape', () 
   const mcpSource: UpdateSource = { type: 'mcp-server', serverId: 'test-mcp' };
 
   const makeNode = (id: string, content: string, version = 1): Node => ({
+    lifecycleStatus: 'active',
     id,
     nodeType: 'text',
     content,

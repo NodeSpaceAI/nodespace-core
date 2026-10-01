@@ -40,7 +40,7 @@ async fn create_base_and_subtype(svc: &Arc<NodeService>) -> Result<()> {
             "name": "unique_ext_base",
             "fields": [{
                 "name": "email",
-                "type": "string",
+                "type": "text",
                 "protection": "user",
                 "indexed": false,
                 "unique": true,

@@ -1031,7 +1031,7 @@ async fn schema_create_and_update_round_trip() {
                 serde_json::json!({
                     "schema_id": "invoice",
                     "add_fields": [
-                        {"name": "currency", "type": "string"}
+                        {"name": "currency", "type": "text"}
                     ]
                 })
                 .to_string(),
@@ -1573,7 +1573,7 @@ async fn relationship_create_and_get() {
             params: Some(
                 serde_json::json!({
                     "name": "Ticket",
-                    "fields": [{"name": "title", "type": "string"}],
+                    "fields": [{"name": "title", "type": "text"}],
                     "relationships": [
                         {"name": "blocks", "targetType": "ticket", "direction": "out", "cardinality": "many", "reverseName": "blocked_by", "reverseCardinality": "many"}
                     ]
@@ -1669,7 +1669,7 @@ async fn relationship_get_emits_flat_properties() {
             params: Some(
                 serde_json::json!({
                     "name": "Ticket",
-                    "fields": [{"name": "severity", "type": "string"}],
+                    "fields": [{"name": "severity", "type": "text"}],
                     "relationships": [
                         {"name": "blocks", "targetType": "ticket", "direction": "out", "cardinality": "many", "reverseName": "blocked_by", "reverseCardinality": "many"}
                     ]
@@ -1861,7 +1861,7 @@ async fn node_update_sets_properties_and_preserves_content() {
             node_type: "text".into(),
             content: "original content".into(),
             parent_id: None,
-            properties: serde_json::json!({"existing": "keep-me"}).to_string(),
+            properties: serde_json::json!({"custom:existing": "keep-me"}).to_string(),
             collections: Vec::new(),
             collection_ids: Vec::new(),
             lifecycle_status: None,
@@ -1878,7 +1878,7 @@ async fn node_update_sets_properties_and_preserves_content() {
         commands::node::NodeAction::Update(commands::node::UpdateArgs {
             id: id.clone(),
             content: None,
-            properties: vec![("added".into(), serde_json::json!("value"))],
+            properties: vec![("custom:added".into(), serde_json::json!("value"))],
             collections: vec![],
             collection_ids: vec![],
             remove_collection_ids: vec![],
@@ -1906,9 +1906,9 @@ async fn node_update_sets_properties_and_preserves_content() {
     // Typed properties are namespaced under the node's type key on the wire
     // (properties.<node_type>.<field>), per the typed-value shape produced by
     // crate::models::node_to_typed_value.
-    assert_eq!(props["text"]["added"], "value");
+    assert_eq!(props["text"]["custom:added"], "value");
     assert_eq!(
-        props["text"]["existing"], "keep-me",
+        props["text"]["custom:existing"], "keep-me",
         "existing properties must be deep-merged, not replaced"
     );
 

@@ -1,9 +1,8 @@
-use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-use crate::helpers::{deserialize_clearable, is_active_lifecycle};
-use crate::node::{Node, ValidationError};
+use crate::helpers::deserialize_clearable;
+use crate::node::{Node, NodeEnvelope, ValidationError};
 
 /// The `node_type` of every saved query.
 pub const QUERY_NODE_TYPE: &str = "query";
@@ -219,7 +218,7 @@ impl QueryFields {
     /// `InvalidNodeType` if `node` is not a query, `InvalidProperties` if a
     /// field is present with the wrong shape (see [`Self::from_properties`]).
     pub fn from_node(node: &Node) -> Result<Self, ValidationError> {
-        if node.node_type != QUERY_NODE_TYPE {
+        if !crate::CoreNodeType::Query.is_exactly(&node.node_type) {
             return Err(ValidationError::InvalidNodeType(format!(
                 "Expected '{QUERY_NODE_TYPE}', got '{}'",
                 node.node_type
@@ -294,18 +293,10 @@ fn invalid(key: &str, detail: &str) -> ValidationError {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct QueryNode {
-    pub id: String,
-    #[serde(rename = "nodeType")]
-    pub node_type: String,
-    pub content: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub title: Option<String>,
-    pub version: i64,
-    pub created_at: DateTime<Utc>,
-    pub modified_at: DateTime<Utc>,
-    pub properties: Value,
-    #[serde(default, skip_serializing_if = "is_active_lifecycle")]
-    pub lifecycle_status: String,
+    /// The fields every node carries. `properties` holds extension fields
+    /// only; the type's own fields are the typed ones below.
+    #[serde(flatten)]
+    pub envelope: NodeEnvelope,
     #[serde(flatten)]
     pub fields: QueryFields,
 }

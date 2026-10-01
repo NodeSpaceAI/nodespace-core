@@ -22,6 +22,8 @@ const getSchema = vi.mocked(backendAdapter.getSchema);
 
 function schemaFor(id: string): SchemaNode {
   return {
+    lifecycleStatus: 'active' as const,
+    properties: {},
     id,
     nodeType: 'schema',
     content: id,

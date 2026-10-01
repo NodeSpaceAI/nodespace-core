@@ -42,7 +42,7 @@ async fn create_base_and_subtype(ns: &Arc<NodeService>) {
             "name": "ledger_entry",
             "fields": [
                 { "name": "amount", "type": "number" },
-                { "name": "memo", "type": "string" }
+                { "name": "memo", "type": "text" }
             ]
         }),
     )
@@ -53,7 +53,7 @@ async fn create_base_and_subtype(ns: &Arc<NodeService>) {
         json!({
             "name": "refund_entry",
             "extends": "ledger_entry",
-            "fields": [{ "name": "reason", "type": "string" }]
+            "fields": [{ "name": "reason", "type": "text" }]
         }),
     )
     .await

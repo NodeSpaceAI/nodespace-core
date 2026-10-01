@@ -126,6 +126,7 @@ describe('ReactiveNodeService - Service Lifecycle', () => {
 
   it('reflects SharedNodeStore changes via findNode (no subscription needed)', () => {
     const node: Node = {
+      lifecycleStatus: 'active',
       id: 'test-1',
       nodeType: 'text',
       content: 'Test',
@@ -176,6 +177,7 @@ describe('ReactiveNodeService - Node Finding', () => {
 
   it('findNode returns node from SharedNodeStore', () => {
     const node: Node = {
+      lifecycleStatus: 'active',
       id: 'find-test-1',
       nodeType: 'text',
       content: 'Find me',
@@ -225,6 +227,7 @@ describe('ReactiveNodeService - Initialize Nodes', () => {
   it('initializes with root nodes', () => {
     const nodes: Node[] = [
       {
+        lifecycleStatus: 'active',
         id: 'root-1',
         nodeType: 'text',
         content: 'Root 1',
@@ -234,6 +237,7 @@ describe('ReactiveNodeService - Initialize Nodes', () => {
         modifiedAt: new Date().toISOString(),
       },
       {
+        lifecycleStatus: 'active',
         id: 'root-2',
         nodeType: 'text',
         content: 'Root 2',
@@ -253,6 +257,7 @@ describe('ReactiveNodeService - Initialize Nodes', () => {
   it('initializes with multiple nodes and sets UI state', () => {
     const nodes: Node[] = [
       {
+        lifecycleStatus: 'active',
         id: 'node-1',
         nodeType: 'text',
         content: 'Node 1',
@@ -262,6 +267,7 @@ describe('ReactiveNodeService - Initialize Nodes', () => {
         modifiedAt: new Date().toISOString(),
       },
       {
+        lifecycleStatus: 'active',
         id: 'node-2',
         nodeType: 'text',
         content: 'Node 2',
@@ -271,6 +277,7 @@ describe('ReactiveNodeService - Initialize Nodes', () => {
         modifiedAt: new Date().toISOString(),
       },
       {
+        lifecycleStatus: 'active',
         id: 'node-3',
         nodeType: 'text',
         content: 'Node 3',
@@ -305,6 +312,7 @@ describe('ReactiveNodeService - Initialize Nodes', () => {
   it('initializes with custom options', () => {
     const nodes: Node[] = [
       {
+        lifecycleStatus: 'active',
         id: 'test-1',
         nodeType: 'text',
         content: '',
@@ -331,6 +339,7 @@ describe('ReactiveNodeService - Initialize Nodes', () => {
   it('initializes nodes and allows custom depth via options', () => {
     const nodes: Node[] = [
       {
+        lifecycleStatus: 'active',
         id: 'test-node',
         nodeType: 'text',
         content: 'Test',
@@ -373,6 +382,7 @@ describe('ReactiveNodeService - Update Node Content', () => {
 
     // Initialize with test node
     const node: Node = {
+      lifecycleStatus: 'active',
       id: 'update-test',
       nodeType: 'text',
       content: 'Original',
@@ -461,6 +471,7 @@ describe('ReactiveNodeService - Update Node Type', () => {
     service = createReactiveNodeService(events);
 
     const node: Node = {
+      lifecycleStatus: 'active',
       id: 'type-test',
       nodeType: 'text',
       content: 'Test content',
@@ -517,6 +528,7 @@ describe('ReactiveNodeService - Update Node Mentions', () => {
     service = createReactiveNodeService(events);
 
     const node: Node = {
+      lifecycleStatus: 'active',
       id: 'mentions-test',
       nodeType: 'text',
       content: 'Test',
@@ -575,6 +587,7 @@ describe('ReactiveNodeService - Update Node Properties', () => {
     service = createReactiveNodeService(events);
 
     const node: Node = {
+      lifecycleStatus: 'active',
       id: 'props-test',
       nodeType: 'text',
       content: 'Test',
@@ -635,6 +648,7 @@ describe('ReactiveNodeService - Expansion State', () => {
 
     const nodes: Node[] = [
       {
+        lifecycleStatus: 'active',
         id: 'expand-test',
         nodeType: 'text',
         content: 'Parent',
@@ -700,6 +714,7 @@ describe('ReactiveNodeService - Expansion State', () => {
     const newService = createReactiveNodeService(events);
 
     const newNode: Node = {
+      lifecycleStatus: 'active',
       id: 'new-node',
       nodeType: 'text',
       content: 'New',
@@ -727,6 +742,7 @@ describe('ReactiveNodeService - Expansion State', () => {
   it('batchSetExpanded updates multiple nodes efficiently', () => {
     const nodes: Node[] = [
       {
+        lifecycleStatus: 'active',
         id: 'batch-1',
         nodeType: 'text',
         content: 'Node 1',
@@ -736,6 +752,7 @@ describe('ReactiveNodeService - Expansion State', () => {
         modifiedAt: new Date().toISOString()
       },
       {
+        lifecycleStatus: 'active',
         id: 'batch-2',
         nodeType: 'text',
         content: 'Node 2',
@@ -745,6 +762,7 @@ describe('ReactiveNodeService - Expansion State', () => {
         modifiedAt: new Date().toISOString()
       },
       {
+        lifecycleStatus: 'active',
         id: 'batch-3',
         nodeType: 'text',
         content: 'Node 3',
@@ -781,6 +799,7 @@ describe('ReactiveNodeService - Expansion State', () => {
   it('batchSetExpanded skips nodes with no change', () => {
     const nodes: Node[] = [
       {
+        lifecycleStatus: 'active',
         id: 'batch-1',
         nodeType: 'text',
         content: 'Node 1',
@@ -829,6 +848,7 @@ describe('ReactiveNodeService - Delete Node', () => {
 
     const nodes: Node[] = [
       {
+        lifecycleStatus: 'active',
         id: 'delete-test',
         nodeType: 'text',
         content: 'To delete',
@@ -888,6 +908,7 @@ describe('ReactiveNodeService - Delete Node', () => {
   it('shows confirmation when node has descendants', async () => {
     const { backendAdapter } = await import('$lib/services/backend-adapter');
     const mockDescendant: Node = {
+      lifecycleStatus: 'active',
       id: 'child-1',
       nodeType: 'text',
       content: 'child',
@@ -908,6 +929,7 @@ describe('ReactiveNodeService - Delete Node', () => {
   it('aborts deletion when user cancels confirmation', async () => {
     const { backendAdapter } = await import('$lib/services/backend-adapter');
     const mockDescendant: Node = {
+      lifecycleStatus: 'active',
       id: 'child-1',
       nodeType: 'text',
       content: 'child',
@@ -967,6 +989,7 @@ describe('ReactiveNodeService - Visible Nodes', () => {
   it('returns root nodes when parentId is null', () => {
     const nodes: Node[] = [
       {
+        lifecycleStatus: 'active',
         id: 'root-1',
         nodeType: 'text',
         content: 'Root 1',
@@ -976,6 +999,7 @@ describe('ReactiveNodeService - Visible Nodes', () => {
         modifiedAt: new Date().toISOString(),
       },
       {
+        lifecycleStatus: 'active',
         id: 'root-2',
         nodeType: 'text',
         content: 'Root 2',
@@ -996,6 +1020,7 @@ describe('ReactiveNodeService - Visible Nodes', () => {
   it('includes expanded node children', () => {
     const nodes: Node[] = [
       {
+        lifecycleStatus: 'active',
         id: 'parent',
         nodeType: 'text',
         content: 'Parent',
@@ -1005,6 +1030,7 @@ describe('ReactiveNodeService - Visible Nodes', () => {
         modifiedAt: new Date().toISOString(),
       },
       {
+        lifecycleStatus: 'active',
         id: 'child',
         nodeType: 'text',
         content: 'Child',
@@ -1025,6 +1051,7 @@ describe('ReactiveNodeService - Visible Nodes', () => {
   it('excludes collapsed node children', () => {
     const nodes: Node[] = [
       {
+        lifecycleStatus: 'active',
         id: 'parent',
         nodeType: 'text',
         content: 'Parent',
@@ -1048,6 +1075,7 @@ describe('ReactiveNodeService - Visible Nodes', () => {
   it('includes depth in visible node data', () => {
     const nodes: Node[] = [
       {
+        lifecycleStatus: 'active',
         id: 'root-node',
         nodeType: 'text',
         content: 'Root',
@@ -1085,6 +1113,7 @@ describe('ReactiveNodeService - Header Level', () => {
     service = createReactiveNodeService(events);
 
     const node: Node = {
+      lifecycleStatus: 'active',
       id: 'content-test',
       nodeType: 'text',
       content: 'Plain text',
@@ -1135,6 +1164,7 @@ describe('ReactiveNodeService - Reactive Updates', () => {
 
   it('findNode reflects SharedNodeStore changes with no manual trigger needed', () => {
     const node: Node = {
+      lifecycleStatus: 'active',
       id: 'reactive-test',
       nodeType: 'text',
       content: 'Test',
@@ -1151,6 +1181,7 @@ describe('ReactiveNodeService - Reactive Updates', () => {
 
   it('initializes UI state for new nodes added to SharedNodeStore', () => {
     const node: Node = {
+      lifecycleStatus: 'active',
       id: 'new-reactive-node',
       nodeType: 'text',
       content: 'Test',
@@ -1170,6 +1201,7 @@ describe('ReactiveNodeService - Reactive Updates', () => {
 
   it('initializes UI state for new nodes added to SharedNodeStore', () => {
     const node: Node = {
+      lifecycleStatus: 'active',
       id: 'new-reactive-node',
       nodeType: 'text',
       content: 'Test',
@@ -1208,6 +1240,7 @@ describe('ReactiveNodeService - Create Node', () => {
 
     // Initialize with a reference node
     const referenceNode: Node = {
+      lifecycleStatus: 'active',
       id: 'reference-node',
       nodeType: 'text',
       content: 'Reference',
@@ -1303,6 +1336,7 @@ describe('ReactiveNodeService - Combine Nodes', () => {
 
     const nodes: Node[] = [
       {
+        lifecycleStatus: 'active',
         id: 'node-1',
         nodeType: 'text',
         content: 'First node',
@@ -1312,6 +1346,7 @@ describe('ReactiveNodeService - Combine Nodes', () => {
         modifiedAt: new Date().toISOString(),
       },
       {
+        lifecycleStatus: 'active',
         id: 'node-2',
         nodeType: 'text',
         content: 'Second node',
@@ -1436,6 +1471,7 @@ describe('ReactiveNodeService - Indent/Outdent Node', () => {
 
     const nodes: Node[] = [
       {
+        lifecycleStatus: 'active',
         id: 'parent',
         nodeType: 'text',
         content: 'Parent',
@@ -1445,6 +1481,7 @@ describe('ReactiveNodeService - Indent/Outdent Node', () => {
         modifiedAt: new Date().toISOString(),
       },
       {
+        lifecycleStatus: 'active',
         id: 'sibling',
         nodeType: 'text',
         content: 'Sibling',
@@ -1488,6 +1525,7 @@ describe('ReactiveNodeService - Indent/Outdent Node', () => {
 
     const nodes: Node[] = [
       {
+        lifecycleStatus: 'active',
         id: 'leaf-parent',
         nodeType: 'query', // query nodes cannot have children
         content: 'A query',
@@ -1497,6 +1535,7 @@ describe('ReactiveNodeService - Indent/Outdent Node', () => {
         modifiedAt: new Date().toISOString(),
       },
       {
+        lifecycleStatus: 'active',
         id: 'target-node',
         nodeType: 'text',
         content: 'Want to indent',
@@ -1598,6 +1637,7 @@ describe('ReactiveNodeService - CreateNode Edge Cases', () => {
     service = createReactiveNodeService(events);
 
     const referenceNode: Node = {
+      lifecycleStatus: 'active',
       id: 'reference',
       nodeType: 'text',
       content: 'Reference',
@@ -1823,6 +1863,7 @@ describe('ReactiveNodeService - CombineNodes with Children', () => {
 
     const nodes: Node[] = [
       {
+        lifecycleStatus: 'active',
         id: 'target',
         nodeType: 'text',
         content: 'Target',
@@ -1832,6 +1873,7 @@ describe('ReactiveNodeService - CombineNodes with Children', () => {
         modifiedAt: new Date().toISOString(),
       },
       {
+        lifecycleStatus: 'active',
         id: 'current',
         nodeType: 'text',
         content: 'Current',
@@ -1863,6 +1905,7 @@ describe('ReactiveNodeService - CombineNodes with Children', () => {
   it('combineNodes strips quote-block prefixes when combining', () => {
     const nodes: Node[] = [
       {
+        lifecycleStatus: 'active',
         id: 'node1',
         nodeType: 'text',
         content: 'First',
@@ -1872,6 +1915,7 @@ describe('ReactiveNodeService - CombineNodes with Children', () => {
         modifiedAt: new Date().toISOString(),
       },
       {
+        lifecycleStatus: 'active',
         id: 'node2',
         nodeType: 'text',
         content: '> Quote line 1\n> Quote line 2',
@@ -1917,6 +1961,7 @@ describe('ReactiveNodeService - VisibleNodes Recursive', () => {
   it('visibleNodes returns deeply nested hierarchy when expanded', () => {
     const nodes: Node[] = [
       {
+        lifecycleStatus: 'active',
         id: 'root',
         nodeType: 'text',
         content: 'Root',
@@ -1926,6 +1971,7 @@ describe('ReactiveNodeService - VisibleNodes Recursive', () => {
         modifiedAt: new Date().toISOString(),
       },
       {
+        lifecycleStatus: 'active',
         id: 'child1',
         nodeType: 'text',
         content: 'Child 1',
@@ -1935,6 +1981,7 @@ describe('ReactiveNodeService - VisibleNodes Recursive', () => {
         modifiedAt: new Date().toISOString(),
       },
       {
+        lifecycleStatus: 'active',
         id: 'child2',
         nodeType: 'text',
         content: 'Child 2',
@@ -1958,6 +2005,7 @@ describe('ReactiveNodeService - VisibleNodes Recursive', () => {
     // This test verifies the method works even with a virtual/non-root parent
     const nodes: Node[] = [
       {
+        lifecycleStatus: 'active',
         id: 'parent',
         nodeType: 'text',
         content: 'Parent',
@@ -1967,6 +2015,7 @@ describe('ReactiveNodeService - VisibleNodes Recursive', () => {
         modifiedAt: new Date().toISOString(),
       },
       {
+        lifecycleStatus: 'active',
         id: 'child1',
         nodeType: 'text',
         content: 'Child 1',
@@ -1976,6 +2025,7 @@ describe('ReactiveNodeService - VisibleNodes Recursive', () => {
         modifiedAt: new Date().toISOString(),
       },
       {
+        lifecycleStatus: 'active',
         id: 'child2',
         nodeType: 'text',
         content: 'Child 2',
@@ -2001,6 +2051,7 @@ describe('ReactiveNodeService - VisibleNodes Recursive', () => {
   it('visibleNodes includes autoFocus derived from FocusManager', () => {
     const nodes: Node[] = [
       {
+        lifecycleStatus: 'active',
         id: 'test',
         nodeType: 'text',
         content: 'Test',
@@ -2045,6 +2096,7 @@ describe('ReactiveNodeService - InitializeNodes Edge Cases', () => {
   it('initializeNodes initializes all provided nodes', () => {
     const nodes: Node[] = [
       {
+        lifecycleStatus: 'active',
         id: 'parent',
         nodeType: 'text',
         content: 'Parent',
@@ -2054,6 +2106,7 @@ describe('ReactiveNodeService - InitializeNodes Edge Cases', () => {
         modifiedAt: new Date().toISOString()
       },
       {
+        lifecycleStatus: 'active',
         id: 'child',
         nodeType: 'text',
         content: 'Child',
@@ -2080,6 +2133,7 @@ describe('ReactiveNodeService - InitializeNodes Edge Cases', () => {
   it('initializeNodes with mixed placeholder and non-placeholder nodes', () => {
     const nodes: Node[] = [
       {
+        lifecycleStatus: 'active',
         id: 'placeholder',
         nodeType: 'text',
         content: '',
@@ -2089,6 +2143,7 @@ describe('ReactiveNodeService - InitializeNodes Edge Cases', () => {
         modifiedAt: new Date().toISOString(),
       },
       {
+        lifecycleStatus: 'active',
         id: 'real',
         nodeType: 'text',
         content: 'Real content',
@@ -2111,6 +2166,7 @@ describe('ReactiveNodeService - InitializeNodes Edge Cases', () => {
   it('initializeNodes computes depth based on parent queries', () => {
     const nodes: Node[] = [
       {
+        lifecycleStatus: 'active',
         id: 'level0',
         nodeType: 'text',
         content: 'Level 0',
@@ -2120,6 +2176,7 @@ describe('ReactiveNodeService - InitializeNodes Edge Cases', () => {
         modifiedAt: new Date().toISOString(),
       },
       {
+        lifecycleStatus: 'active',
         id: 'level1',
         nodeType: 'text',
         content: 'Level 1',
@@ -2129,6 +2186,7 @@ describe('ReactiveNodeService - InitializeNodes Edge Cases', () => {
         modifiedAt: new Date().toISOString(),
       },
       {
+        lifecycleStatus: 'active',
         id: 'level2',
         nodeType: 'text',
         content: 'Level 2',
@@ -2174,6 +2232,7 @@ describe('ReactiveNodeService - Content Processing Debouncing', () => {
     service = createReactiveNodeService(events);
 
     const node: Node = {
+      lifecycleStatus: 'active',
       id: 'debounce-test',
       nodeType: 'text',
       content: 'Test',
@@ -2282,6 +2341,7 @@ describe('ReactiveNodeService - Debounced Operations Cleanup', () => {
 
   it('deleteNode cleans up debounced operations with fastTimer', async () => {
     const node: Node = {
+      lifecycleStatus: 'active',
       id: 'cleanup-test',
       nodeType: 'text',
       content: 'Test',
@@ -2306,6 +2366,7 @@ describe('ReactiveNodeService - Debounced Operations Cleanup', () => {
 
   it('deleteNode cleans up debounced operations with both timers', async () => {
     const node: Node = {
+      lifecycleStatus: 'active',
       id: 'cleanup-both',
       nodeType: 'text',
       content: 'Test',
@@ -2329,6 +2390,7 @@ describe('ReactiveNodeService - Debounced Operations Cleanup', () => {
 
   it('deleteNode handles nodes without debounced operations', async () => {
     const node: Node = {
+      lifecycleStatus: 'active',
       id: 'no-debounce',
       nodeType: 'text',
       content: 'Test',

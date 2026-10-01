@@ -20,7 +20,8 @@
  * ```
  */
 
-import type { Node } from './node';
+import type { Node, NodeEnvelope } from './node';
+import { isExactly } from './core-node-types';
 
 /**
  * DateNode interface extending base Node
@@ -28,7 +29,7 @@ import type { Node } from './node';
  * Represents a date node that serves as a root for daily content.
  * The ID is always in YYYY-MM-DD format.
  */
-export interface DateNode extends Node {
+export interface DateNode extends NodeEnvelope {
   nodeType: 'date';
 }
 
@@ -47,7 +48,7 @@ export interface DateNode extends Node {
  * ```
  */
 export function isDateNode(node: Node): node is DateNode {
-  return node.nodeType === 'date';
+  return isExactly(node.nodeType, 'date');
 }
 
 /**
@@ -122,6 +123,7 @@ export const DateNodeHelpers = {
     const today = new Date();
     const id = generateDateId(today);
     return {
+      lifecycleStatus: 'active',
       id,
       nodeType: 'date',
       content: '',
@@ -141,6 +143,7 @@ export const DateNodeHelpers = {
   createDateNode(date: Date | string): DateNode {
     const id = typeof date === 'string' ? date : generateDateId(date);
     return {
+      lifecycleStatus: 'active',
       id,
       nodeType: 'date',
       content: '',

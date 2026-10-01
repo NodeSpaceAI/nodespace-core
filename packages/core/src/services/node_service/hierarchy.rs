@@ -312,7 +312,10 @@ impl NodeService {
         new_parent: Option<&str>,
     ) -> Result<(), NodeServiceError> {
         // Date nodes are top-level containers and cannot be moved
-        if node.node_type == "date" {
+        if self
+            .type_is_a(&node.node_type, crate::models::CoreNodeType::Date)
+            .await?
+        {
             return Err(NodeServiceError::hierarchy_violation(format!(
                 "Date node '{}' cannot be moved (it's a top-level container)",
                 node.id
@@ -331,6 +334,7 @@ impl NodeService {
         // Enforce container rule: reject moves into non-container node types
         if !self
             .behavior_for(&parent_node.node_type)
+            .await?
             .can_have_children()
         {
             return Err(NodeServiceError::not_a_container(
@@ -752,6 +756,7 @@ impl NodeService {
 
         if !self
             .behavior_for(&parent_node.node_type)
+            .await?
             .can_have_children()
         {
             return Err(NodeServiceError::not_a_container(
@@ -779,7 +784,10 @@ impl NodeService {
             }
 
             // Date nodes are top-level containers and cannot be moved.
-            if node.node_type == "date" {
+            if self
+                .type_is_a(&node.node_type, crate::models::CoreNodeType::Date)
+                .await?
+            {
                 return Err(NodeServiceError::hierarchy_violation(format!(
                     "Date node '{}' cannot be moved (it's a top-level container)",
                     node_id
@@ -1311,7 +1319,7 @@ pub fn render_subtree_markdown(
             );
             continue;
         }
-        let is_text = node.node_type == "text";
+        let is_text = crate::models::CoreNodeType::Text.is_exactly(&node.node_type);
         let list_level = (is_text && pending.parent_is_text)
             .then(|| pending.parent_list_level.map_or(0, |level| level + 1));
         if !out.is_empty() {

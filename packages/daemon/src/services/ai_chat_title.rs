@@ -317,7 +317,7 @@ mod tests {
 
     fn chat(content: &str, messages: Vec<AiChatMessage>) -> AiChatNode {
         AiChatNode {
-            id: "chat-1".to_string(),
+            id: "920d4578-c2d0-54ad-8f1a-69c1db594eb9".to_string(),
             node_type: "ai-chat".to_string(),
             content: content.to_string(),
             version: 1,

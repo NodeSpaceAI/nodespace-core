@@ -16,14 +16,15 @@
  * ```
  */
 
-import type { Node } from './node';
+import type { Node, NodeEnvelope } from './node';
+import { isExactly } from './core-node-types';
 
 /**
  * QuoteBlock node interface extending base Node
  *
  * Represents a quote block for displaying quoted text or citations.
  */
-export interface QuoteBlockNode extends Node {
+export interface QuoteBlockNode extends NodeEnvelope {
   nodeType: 'quote-block';
 }
 
@@ -42,7 +43,7 @@ export interface QuoteBlockNode extends Node {
  * ```
  */
 export function isQuoteBlockNode(node: Node): node is QuoteBlockNode {
-  return node.nodeType === 'quote-block';
+  return isExactly(node.nodeType, 'quote-block');
 }
 
 /**
@@ -71,6 +72,7 @@ export const QuoteBlockNodeHelpers = {
    */
   createQuoteBlock(content: string): QuoteBlockNode {
     return {
+      lifecycleStatus: 'active',
       id: `quote-block-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`,
       nodeType: 'quote-block',
       content,

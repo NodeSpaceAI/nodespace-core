@@ -2,8 +2,8 @@
  * Type-Safe Schema Node
  *
  * Represents schema definitions with typed top-level fields.
- * This matches the Rust SchemaNode custom Serialize output - fields are at the top level,
- * NOT buried in properties.
+ * This matches the Rust SchemaNode wire shape: the node envelope plus typed
+ * top-level fields, NOT buried in properties.
  *
  * ## Serialized Structure
  *
@@ -11,10 +11,13 @@
  * ```json
  * {
  *   "id": "task",
+ *   "nodeType": "schema",
  *   "content": "Task",
  *   "createdAt": "2025-01-01T00:00:00Z",
  *   "modifiedAt": "2025-01-01T00:00:00Z",
  *   "version": 1,
+ *   "lifecycleStatus": "active",
+ *   "properties": {},
  *   "isCore": true,
  *   "schemaVersion": 1,
  *   "fields": [...]
@@ -22,8 +25,6 @@
  * ```
  *
  * Note: `description` is optional — it is sourced from child node text and may be absent.
- *
- * Note: nodeType is NOT included in the response - it's implicit (always "schema").
  *
  * @example
  * ```typescript
@@ -34,6 +35,22 @@
  * }
  * ```
  */
+
+import type { NodeEnvelope } from './node';
+
+/**
+ * The closed vocabulary of schema field types. `text` is the string type: the
+ * backend rejects `string`.
+ */
+export type SchemaFieldType =
+  | 'text'
+  | 'number'
+  | 'boolean'
+  | 'date'
+  | 'datetime'
+  | 'enum'
+  | 'array'
+  | 'object';
 
 /**
  * Protection level for schema fields
@@ -75,8 +92,8 @@ export interface SchemaField {
    *  update_schema) when the caller omits it. */
   friendlyName: string;
 
-  /** Field type (e.g., "string", "number", "boolean", "enum", "array", "object") */
-  type: string;
+  /** Field type */
+  type: SchemaFieldType;
 
   /** Protection level determining mutability */
   protection: ProtectionLevel;
@@ -108,7 +125,7 @@ export interface SchemaField {
   description?: string;
 
   /** For array fields, the type of items in the array */
-  itemType?: string;
+  itemType?: SchemaFieldType;
 
   /** Sub-fields of an object field (field.type === 'object') */
   fields?: SchemaField[];
@@ -146,30 +163,21 @@ export interface SchemaField {
  * This matches the Rust SchemaNode custom Serialize output.
  * Schema-specific fields are at the top level, NOT in properties.
  *
- * **Important**: The `nodeType` field is optional because the /api/schemas/:id
- * endpoint may omit it (it's implicit - always "schema" for this endpoint).
- * Use `isSchemaNode()` for runtime validation which handles both cases.
+ * `id` is the schema's type id (e.g., "task", "person"); `properties` is empty,
+ * because every stored property is a typed field below.
  */
-export interface SchemaNode {
-  /** Unique identifier (same as schema type, e.g., "task", "person") */
-  id: string;
-
-  /** Always "schema" for schema nodes. Optional - may be omitted in API responses where it's implicit. */
-  nodeType?: 'schema';
-
-  /** Schema name (same as id) */
-  content: string;
-
-  /** Creation timestamp */
-  createdAt: string;
-
-  /** Last modification timestamp */
-  modifiedAt: string;
-
-  /** Node version for OCC */
-  version: number;
+export interface SchemaNode extends NodeEnvelope {
+  /** Always "schema" for schema nodes. */
+  nodeType: 'schema';
 
   // Schema-specific typed fields (NOT in properties)
+
+  /** The parent schema id this type `extends`, when it is a subtype. A type has at most one parent. */
+  extends?: string;
+
+  /** An abstract type is never instantiated: no node is created with it as its `nodeType`.
+   *  It stays a valid `extends` target and query scope. */
+  abstract?: boolean;
 
   /** Whether this is a core (built-in) schema */
   isCore: boolean;
@@ -198,8 +206,6 @@ export interface SchemaNode {
  * Type guard to check if a value is a SchemaNode
  *
  * Checks for the presence of schema-specific typed fields.
- * Note: Does NOT check nodeType because the /api/schemas/:id endpoint
- * returns SchemaNode without the nodeType field (it's implicit).
  *
  * @param value - Value to check
  * @returns True if value is a SchemaNode
@@ -207,7 +213,7 @@ export interface SchemaNode {
 export function isSchemaNode(value: unknown): value is SchemaNode {
   if (!value || typeof value !== 'object') return false;
   const node = value as Record<string, unknown>;
-  // Check for schema-specific fields (nodeType is implicit from endpoint)
+  // Check for schema-specific fields
   return (
     typeof node.isCore === 'boolean' &&
     typeof node.schemaVersion === 'number' &&

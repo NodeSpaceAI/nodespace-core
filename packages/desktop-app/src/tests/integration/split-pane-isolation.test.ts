@@ -18,6 +18,7 @@ describe('Split-Pane Content Isolation', () => {
   it('should isolate children between two viewers with different parents', () => {
     // Setup: Create two parents with different children
     const parentA: Node = {
+      lifecycleStatus: 'active',
       id: 'parent-a',
       content: 'Parent A',
       nodeType: 'text',
@@ -28,6 +29,7 @@ describe('Split-Pane Content Isolation', () => {
     };
 
     const parentB: Node = {
+      lifecycleStatus: 'active',
       id: 'parent-b',
       content: 'Parent B',
       nodeType: 'text',
@@ -38,6 +40,7 @@ describe('Split-Pane Content Isolation', () => {
     };
 
     const childA1: Node = {
+      lifecycleStatus: 'active',
       id: 'child-a1',
       content: 'Child of A',
       nodeType: 'text',
@@ -48,6 +51,7 @@ describe('Split-Pane Content Isolation', () => {
     };
 
     const childB1: Node = {
+      lifecycleStatus: 'active',
       id: 'child-b1',
       content: 'Child of B',
       nodeType: 'text',
@@ -86,6 +90,7 @@ describe('Split-Pane Content Isolation', () => {
   it('should allow two viewers to query same parent without conflict', () => {
     // Setup
     const parent: Node = {
+      lifecycleStatus: 'active',
       id: 'shared-parent',
       content: 'Shared Parent',
       nodeType: 'text',
@@ -96,6 +101,7 @@ describe('Split-Pane Content Isolation', () => {
     };
 
     const child1: Node = {
+      lifecycleStatus: 'active',
       id: 'child-1',
       content: 'Child 1',
       nodeType: 'text',
@@ -128,6 +134,7 @@ describe('Split-Pane Content Isolation', () => {
   it('should handle null parentId (root nodes)', () => {
     // Setup
     const rootNode: Node = {
+      lifecycleStatus: 'active',
       id: 'root-1',
       content: 'Root Node',
       nodeType: 'text',

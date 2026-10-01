@@ -35,6 +35,7 @@ import type { Node } from '$lib/types';
 
 function makeNode(id: string, version = 1): Node {
   return {
+    lifecycleStatus: 'active',
     id,
     nodeType: 'text',
     content: `Content ${id}`,

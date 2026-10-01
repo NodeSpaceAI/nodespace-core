@@ -8,6 +8,7 @@
  * a `member_of` grouping — so this helper only creates the node.
  */
 
+import { isA } from '$lib/types/core-node-types';
 import { v4 as uuidv4 } from 'uuid';
 import { backendAdapter } from '$lib/services/backend-adapter';
 import { humanizeSchemaId } from '$lib/plugins/schema-plugin-loader';
@@ -105,6 +106,7 @@ export function createInstancePlaceholder(schema: SchemaNode): Node {
   const required = requiredFieldsWithoutDefault(schema);
   const now = new Date().toISOString();
   const node: Node = {
+    lifecycleStatus: 'active',
     id: uuidv4(),
     nodeType: schema.id,
     content: seedContent(schema.id),
@@ -139,7 +141,7 @@ export async function createSchemaInstance(typeId: string): Promise<Node> {
   // A new ai-chat starts on the user's default model, written at creation so
   // the node records it from the first moment (no later write to race an echo).
   const properties: Record<string, unknown> =
-    typeId === 'ai-chat' ? { ...getDefaultAiChatModelProperties() } : {};
+    isA(typeId, 'ai-chat') ? { ...getDefaultAiChatModelProperties() } : {};
   await backendAdapter.createNode({
     id: newId,
     nodeType: typeId,

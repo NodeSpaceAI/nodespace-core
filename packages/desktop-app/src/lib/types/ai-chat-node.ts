@@ -1,4 +1,5 @@
-import type { Node } from './node';
+import type { Node, NodeEnvelope } from './node';
+import { isExactly } from './core-node-types';
 
 /**
  * Inference turn state, daemon-owned. `idle` is what the daemon writes when a
@@ -134,14 +135,8 @@ export interface AiChatMessage {
  *
  * Always use nodeToAiChatNode() to convert a generic Node from the store.
  */
-export interface AiChatNode {
-  id: string;
+export interface AiChatNode extends NodeEnvelope {
   nodeType: 'ai-chat';
-  content: string;
-  version: number;
-  lifecycleStatus?: string;
-  createdAt: string;
-  modifiedAt: string;
 
   turnStatus: AiChatTurnStatus;
   sessionStatus: AiChatSessionStatus;
@@ -151,7 +146,7 @@ export interface AiChatNode {
 }
 
 export function isAiChatNode(node: Node | AiChatNode): node is AiChatNode {
-  return node.nodeType === 'ai-chat';
+  return isExactly(node.nodeType, 'ai-chat');
 }
 
 /**
@@ -164,15 +159,19 @@ export function isAiChatNode(node: Node | AiChatNode): node is AiChatNode {
  * This converter therefore trusts the flat contract and only fills defaults.
  */
 export function nodeToAiChatNode(node: Node): AiChatNode {
-  const chat = node as unknown as Partial<AiChatNode> & { lifecycleStatus?: string };
+  const chat = node as unknown as Partial<AiChatNode>;
   return {
     id: node.id,
     nodeType: 'ai-chat',
     content: node.content,
     version: node.version,
-    lifecycleStatus: chat.lifecycleStatus,
+    lifecycleStatus: node.lifecycleStatus,
     createdAt: node.createdAt,
     modifiedAt: node.modifiedAt,
+    properties: node.properties ?? {},
+    title: node.title,
+    mentions: node.mentions,
+    mentionedIn: node.mentionedIn,
     turnStatus: chat.turnStatus ?? 'idle',
     sessionStatus: chat.sessionStatus ?? 'active',
     provider: chat.provider,

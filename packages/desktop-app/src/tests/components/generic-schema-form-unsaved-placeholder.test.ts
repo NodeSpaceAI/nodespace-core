@@ -27,6 +27,9 @@ function field(partial: Partial<SchemaField> & { name: string; type: string }): 
 }
 
 const schema: SchemaNode = {
+  nodeType: 'schema' as const,
+  lifecycleStatus: 'active' as const,
+  properties: {},
   id: 'widget',
   content: 'Widget',
   createdAt: '2026-01-01T00:00:00Z',
@@ -35,8 +38,8 @@ const schema: SchemaNode = {
   isCore: false,
   schemaVersion: 1,
   fields: [
-    field({ name: 'description', friendlyName: 'Description', type: 'string', required: true }),
-    field({ name: 'notes', friendlyName: 'Notes', type: 'string' })
+    field({ name: 'description', friendlyName: 'Description', type: 'text', required: true }),
+    field({ name: 'notes', friendlyName: 'Notes', type: 'text' })
   ]
 };
 
@@ -82,6 +85,7 @@ describe('GenericSchemaForm — unsaved placeholder', () => {
   it('shows no markers for an ordinary saved node', async () => {
     sharedNodeStore.setNode(
       {
+        lifecycleStatus: 'active',
         id: 'saved-1',
         nodeType: 'widget',
         content: '',

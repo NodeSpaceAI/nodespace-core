@@ -27,6 +27,7 @@
  * - Clean API for checking capabilities (canRevert, shouldDetectPatterns)
  */
 
+import { isA } from '$lib/types/core-node-types';
 import type { PluginDefinition } from '$lib/plugins/types';
 
 /**
@@ -279,12 +280,12 @@ export function createPatternState(
   plugin?: PluginDefinition
 ): PatternState {
   // Inherited nodes (Enter on typed node) - reversion controlled by plugin
-  if (isInherited && currentNodeType !== 'text') {
+  if (isInherited && !isA(currentNodeType, 'text')) {
     return new PatternState('inherited', plugin);
   }
 
   // Type conversion means pattern was detected
-  if (isTypeConversion && currentNodeType !== 'text') {
+  if (isTypeConversion && !isA(currentNodeType, 'text')) {
     return new PatternState('pattern', plugin);
   }
 

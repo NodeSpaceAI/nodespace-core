@@ -75,7 +75,7 @@ impl SkillNode {
     /// `InvalidNodeType` if `node` is not a skill, `InvalidProperties` if a
     /// field is present with the wrong type (see [`Self::from_properties`]).
     pub fn from_node(node: &Node) -> Result<Self, ValidationError> {
-        if node.node_type != SKILL_NODE_TYPE {
+        if !crate::CoreNodeType::Skill.is_exactly(&node.node_type) {
             return Err(ValidationError::InvalidNodeType(format!(
                 "Expected '{SKILL_NODE_TYPE}', got '{}'",
                 node.node_type

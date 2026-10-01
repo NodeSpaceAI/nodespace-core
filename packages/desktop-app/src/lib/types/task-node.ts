@@ -21,7 +21,8 @@
  * ```
  */
 
-import type { Node } from './node';
+import type { Node, NodeEnvelope } from './node';
+import { isExactly } from './core-node-types';
 
 /**
  * Core task status values (protected, cannot be removed)
@@ -75,17 +76,11 @@ export type TaskPriority = CoreTaskPriority | string;
  * @see isTaskNode - Type guard to check if a node is a TaskNode
  * @see nodeToTaskNode - Convert a generic Node to TaskNode
  */
-export interface TaskNode {
-  // Node fields (from node table)
-  id: string;
+export interface TaskNode extends NodeEnvelope {
   nodeType: 'task';
-  content: string;
-  title?: string | null;
-  version: number;
-  createdAt: string;
-  modifiedAt: string;
-  /** Extension fields only (`custom:…`) — core fields are the typed fields below. */
-  properties?: Record<string, unknown>;
+
+  // `properties` carries extension fields only (`custom:…`); core fields are
+  // the typed fields below.
 
   // Type-specific fields (flat, at top level)
   status: TaskStatus;
@@ -102,7 +97,7 @@ export interface TaskNode {
  * @returns True if node is a task node
  */
 export function isTaskNode(node: Node | TaskNode): node is TaskNode {
-  return node.nodeType === 'task';
+  return isExactly(node.nodeType, 'task');
 }
 
 /**
@@ -359,6 +354,7 @@ export const TaskNodeHelpers = {
     } = {}
   ): TaskNode {
     return {
+      lifecycleStatus: 'active',
       id: `task-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`,
       nodeType: 'task',
       content,

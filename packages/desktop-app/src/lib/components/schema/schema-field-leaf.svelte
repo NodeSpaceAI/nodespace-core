@@ -114,7 +114,7 @@
       class="h-4 w-4 rounded border-input"
     />
   </div>
-{:else if field.type === 'string' || field.type === 'text'}
+{:else if field.type === 'text'}
   <Input
     id={fieldId}
     type="text"

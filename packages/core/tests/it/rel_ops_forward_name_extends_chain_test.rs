@@ -62,7 +62,7 @@ async fn create_base_and_subtype(svc: &Arc<NodeService>) -> Result<()> {
         svc,
         json!({
             "name": "rel_ops_ext_target",
-            "fields": [{ "name": "title", "type": "string", "protection": "user", "indexed": false }]
+            "fields": [{ "name": "title", "type": "text", "protection": "user", "indexed": false }]
         }),
     )
     .await
@@ -114,10 +114,20 @@ fn get(node_id: &str, name: &str, direction: &str) -> rel_ops::GetRelatedInput {
 async fn inherited_forward_name_resolves_as_forward_not_invalid_params() -> Result<()> {
     let (svc, _t) = create_test_service().await?;
     create_base_and_subtype(&svc).await?;
-    make_node(&svc, "sub1", "rel_ops_ext_sub").await?;
+    make_node(
+        &svc,
+        "b1beb18c-b5fa-5cd1-ad04-f8ca4b02745c",
+        "rel_ops_ext_sub",
+    )
+    .await?;
 
-    let resolved =
-        rel_ops::resolve_relationship_name(&svc, "sub1", "rel_ops_ext_sub", "story").await?;
+    let resolved = rel_ops::resolve_relationship_name(
+        &svc,
+        "b1beb18c-b5fa-5cd1-ad04-f8ca4b02745c",
+        "rel_ops_ext_sub",
+        "story",
+    )
+    .await?;
     assert_eq!(resolved, ResolvedRelName::Forward);
     Ok(())
 }
@@ -131,22 +141,44 @@ async fn inherited_forward_name_resolves_as_forward_not_invalid_params() -> Resu
 async fn real_edge_on_subtype_instance_is_readable_through_inherited_forward_name() -> Result<()> {
     let (svc, _t) = create_test_service().await?;
     create_base_and_subtype(&svc).await?;
-    make_node(&svc, "target1", "rel_ops_ext_target").await?;
-    make_node(&svc, "sub1", "rel_ops_ext_sub").await?;
+    make_node(
+        &svc,
+        "a2b6557f-5da0-5f9b-a63a-55077d89680b",
+        "rel_ops_ext_target",
+    )
+    .await?;
+    make_node(
+        &svc,
+        "b1beb18c-b5fa-5cd1-ad04-f8ca4b02745c",
+        "rel_ops_ext_sub",
+    )
+    .await?;
 
     // The write path is already extends-chain aware -- this succeeds today
     // even though `story` is declared only on the ancestor schema.
-    svc.create_relationship("sub1", "story", "target1", json!({}))
-        .await
-        .expect("create_relationship must succeed for an inherited relationship");
+    svc.create_relationship(
+        "b1beb18c-b5fa-5cd1-ad04-f8ca4b02745c",
+        "story",
+        "a2b6557f-5da0-5f9b-a63a-55077d89680b",
+        json!({}),
+    )
+    .await
+    .expect("create_relationship must succeed for an inherited relationship");
 
-    let out = rel_ops::get_related_nodes(&svc, get("sub1", "story", "out")).await?;
+    let out = rel_ops::get_related_nodes(
+        &svc,
+        get("b1beb18c-b5fa-5cd1-ad04-f8ca4b02745c", "story", "out"),
+    )
+    .await?;
     assert_eq!(
         out.count, 1,
         "a real edge on a subtype instance must be readable through an \
          inherited forward name, not silently empty"
     );
-    assert_eq!(out.related_nodes[0]["id"], "target1");
+    assert_eq!(
+        out.related_nodes[0]["id"],
+        "a2b6557f-5da0-5f9b-a63a-55077d89680b"
+    );
     assert_eq!(out.relationship_name, "story");
     assert_eq!(out.direction, "out");
     Ok(())
@@ -159,11 +191,23 @@ async fn real_edge_on_subtype_instance_is_readable_through_inherited_forward_nam
 async fn undeclared_name_on_subtype_still_errors() -> Result<()> {
     let (svc, _t) = create_test_service().await?;
     create_base_and_subtype(&svc).await?;
-    make_node(&svc, "sub1", "rel_ops_ext_sub").await?;
+    make_node(
+        &svc,
+        "b1beb18c-b5fa-5cd1-ad04-f8ca4b02745c",
+        "rel_ops_ext_sub",
+    )
+    .await?;
 
-    let err = rel_ops::get_related_nodes(&svc, get("sub1", "not_a_real_name", "out"))
-        .await
-        .expect_err("an undeclared name must still error, extends chain or not");
+    let err = rel_ops::get_related_nodes(
+        &svc,
+        get(
+            "b1beb18c-b5fa-5cd1-ad04-f8ca4b02745c",
+            "not_a_real_name",
+            "out",
+        ),
+    )
+    .await
+    .expect_err("an undeclared name must still error, extends chain or not");
     assert!(matches!(
         err,
         nodespace_core::ops::OpsError::InvalidParams(_)
@@ -187,10 +231,20 @@ async fn undeclared_name_on_subtype_still_errors() -> Result<()> {
 async fn extends_literal_name_still_resolves_without_erroring() -> Result<()> {
     let (svc, _t) = create_test_service().await?;
     create_base_and_subtype(&svc).await?;
-    make_node(&svc, "sub1", "rel_ops_ext_sub").await?;
+    make_node(
+        &svc,
+        "b1beb18c-b5fa-5cd1-ad04-f8ca4b02745c",
+        "rel_ops_ext_sub",
+    )
+    .await?;
 
-    let resolved =
-        rel_ops::resolve_relationship_name(&svc, "sub1", "rel_ops_ext_sub", "extends").await?;
+    let resolved = rel_ops::resolve_relationship_name(
+        &svc,
+        "b1beb18c-b5fa-5cd1-ad04-f8ca4b02745c",
+        "rel_ops_ext_sub",
+        "extends",
+    )
+    .await?;
     assert_eq!(
         resolved,
         ResolvedRelName::InboundForward,
@@ -198,7 +252,11 @@ async fn extends_literal_name_still_resolves_without_erroring() -> Result<()> {
          though it is no longer matched by the (now chain-aware) forward check"
     );
 
-    let out = rel_ops::get_related_nodes(&svc, get("sub1", "extends", "out")).await?;
+    let out = rel_ops::get_related_nodes(
+        &svc,
+        get("b1beb18c-b5fa-5cd1-ad04-f8ca4b02745c", "extends", "out"),
+    )
+    .await?;
     assert_eq!(
         out.count, 0,
         "no data node ever carries a real 'extends' edge -- this must stay a \
@@ -245,21 +303,51 @@ async fn inherited_forward_name_still_wins_over_another_schemas_same_spelled_rev
     .await
     .map_err(|e| anyhow::anyhow!("other schema: {e}"))?;
 
-    make_node(&svc, "target1", "rel_ops_ext_target").await?;
-    make_node(&svc, "sub1", "rel_ops_ext_sub").await?;
-    make_node(&svc, "other1", "rel_ops_ext_other").await?;
+    make_node(
+        &svc,
+        "a2b6557f-5da0-5f9b-a63a-55077d89680b",
+        "rel_ops_ext_target",
+    )
+    .await?;
+    make_node(
+        &svc,
+        "b1beb18c-b5fa-5cd1-ad04-f8ca4b02745c",
+        "rel_ops_ext_sub",
+    )
+    .await?;
+    make_node(
+        &svc,
+        "0046fadd-c17a-5c63-859d-3f4da0bbe519",
+        "rel_ops_ext_other",
+    )
+    .await?;
 
     // The real, chain-aware edge under the inherited forward name.
-    svc.create_relationship("sub1", "story", "target1", json!({}))
-        .await
-        .expect("create_relationship must succeed for an inherited relationship");
+    svc.create_relationship(
+        "b1beb18c-b5fa-5cd1-ad04-f8ca4b02745c",
+        "story",
+        "a2b6557f-5da0-5f9b-a63a-55077d89680b",
+        json!({}),
+    )
+    .await
+    .expect("create_relationship must succeed for an inherited relationship");
     // The colliding edge under the OTHER schema's forward declaration.
-    svc.create_relationship("other1", "other_forward", "sub1", json!({}))
-        .await
-        .expect("create_relationship must succeed for the colliding declaration");
+    svc.create_relationship(
+        "0046fadd-c17a-5c63-859d-3f4da0bbe519",
+        "other_forward",
+        "b1beb18c-b5fa-5cd1-ad04-f8ca4b02745c",
+        json!({}),
+    )
+    .await
+    .expect("create_relationship must succeed for the colliding declaration");
 
-    let resolved =
-        rel_ops::resolve_relationship_name(&svc, "sub1", "rel_ops_ext_sub", "story").await?;
+    let resolved = rel_ops::resolve_relationship_name(
+        &svc,
+        "b1beb18c-b5fa-5cd1-ad04-f8ca4b02745c",
+        "rel_ops_ext_sub",
+        "story",
+    )
+    .await?;
     assert_eq!(
         resolved,
         ResolvedRelName::Forward,
@@ -267,13 +355,20 @@ async fn inherited_forward_name_still_wins_over_another_schemas_same_spelled_rev
          name declared elsewhere, exactly as an own-declared forward name would"
     );
 
-    let out = rel_ops::get_related_nodes(&svc, get("sub1", "story", "out")).await?;
+    let out = rel_ops::get_related_nodes(
+        &svc,
+        get("b1beb18c-b5fa-5cd1-ad04-f8ca4b02745c", "story", "out"),
+    )
+    .await?;
     assert_eq!(
         out.count, 1,
         "must return the real edge under the inherited forward name, not the \
          colliding schema's edge"
     );
-    assert_eq!(out.related_nodes[0]["id"], "target1");
+    assert_eq!(
+        out.related_nodes[0]["id"],
+        "a2b6557f-5da0-5f9b-a63a-55077d89680b"
+    );
     Ok(())
 }
 
@@ -287,9 +382,15 @@ async fn inherited_forward_name_still_wins_over_another_schemas_same_spelled_rev
 async fn viewer_shows_an_outbound_group_for_an_inherited_relationship() -> Result<()> {
     let (svc, _t) = create_test_service().await?;
     create_base_and_subtype(&svc).await?;
-    make_node(&svc, "sub1", "rel_ops_ext_sub").await?;
+    make_node(
+        &svc,
+        "b1beb18c-b5fa-5cd1-ad04-f8ca4b02745c",
+        "rel_ops_ext_sub",
+    )
+    .await?;
 
-    let viewer = rel_ops::get_node_relationships(&svc, "sub1").await?;
+    let viewer =
+        rel_ops::get_node_relationships(&svc, "b1beb18c-b5fa-5cd1-ad04-f8ca4b02745c").await?;
     let group = viewer
         .groups
         .iter()
@@ -302,18 +403,29 @@ async fn viewer_shows_an_outbound_group_for_an_inherited_relationship() -> Resul
     assert_eq!(group.count, 0);
 
     // And once a real edge exists, the group reflects it.
-    make_node(&svc, "target1", "rel_ops_ext_target").await?;
-    svc.create_relationship("sub1", "story", "target1", json!({}))
-        .await
-        .expect("create_relationship must succeed for an inherited relationship");
-    let viewer = rel_ops::get_node_relationships(&svc, "sub1").await?;
+    make_node(
+        &svc,
+        "a2b6557f-5da0-5f9b-a63a-55077d89680b",
+        "rel_ops_ext_target",
+    )
+    .await?;
+    svc.create_relationship(
+        "b1beb18c-b5fa-5cd1-ad04-f8ca4b02745c",
+        "story",
+        "a2b6557f-5da0-5f9b-a63a-55077d89680b",
+        json!({}),
+    )
+    .await
+    .expect("create_relationship must succeed for an inherited relationship");
+    let viewer =
+        rel_ops::get_node_relationships(&svc, "b1beb18c-b5fa-5cd1-ad04-f8ca4b02745c").await?;
     let group = viewer
         .groups
         .iter()
         .find(|g| g.relationship_name == "story" && g.direction == "out")
         .expect("outbound group");
     assert_eq!(group.count, 1);
-    assert_eq!(group.related[0].id, "target1");
+    assert_eq!(group.related[0].id, "a2b6557f-5da0-5f9b-a63a-55077d89680b");
     Ok(())
 }
 
@@ -362,15 +474,34 @@ async fn reverse_name_narrowing_includes_a_subtype_of_the_declaring_schema() -> 
     .await
     .map_err(|e| anyhow::anyhow!("issue schema: {e}"))?;
 
-    make_node(&svc, "issue1", "rel_ops_ext_relissue").await?;
-    make_node(&svc, "issue2", "rel_ops_ext_relissue").await?;
-    svc.create_relationship("issue1", "blocks", "issue2", json!({}))
-        .await
-        .expect("create_relationship must succeed for an inherited relationship");
+    make_node(
+        &svc,
+        "ad5aeffa-8cb6-5701-af09-934561698590",
+        "rel_ops_ext_relissue",
+    )
+    .await?;
+    make_node(
+        &svc,
+        "5405e60e-d76e-512d-9ce7-02b169b96733",
+        "rel_ops_ext_relissue",
+    )
+    .await?;
+    svc.create_relationship(
+        "ad5aeffa-8cb6-5701-af09-934561698590",
+        "blocks",
+        "5405e60e-d76e-512d-9ce7-02b169b96733",
+        json!({}),
+    )
+    .await
+    .expect("create_relationship must succeed for an inherited relationship");
 
-    let resolved =
-        rel_ops::resolve_relationship_name(&svc, "issue2", "rel_ops_ext_relissue", "blocked_by")
-            .await?;
+    let resolved = rel_ops::resolve_relationship_name(
+        &svc,
+        "5405e60e-d76e-512d-9ce7-02b169b96733",
+        "rel_ops_ext_relissue",
+        "blocked_by",
+    )
+    .await?;
     assert_eq!(
         resolved,
         ResolvedRelName::Reverse {
@@ -379,12 +510,19 @@ async fn reverse_name_narrowing_includes_a_subtype_of_the_declaring_schema() -> 
         }
     );
 
-    let out = rel_ops::get_related_nodes(&svc, get("issue2", "blocked_by", "out")).await?;
+    let out = rel_ops::get_related_nodes(
+        &svc,
+        get("5405e60e-d76e-512d-9ce7-02b169b96733", "blocked_by", "out"),
+    )
+    .await?;
     assert_eq!(
         out.count, 1,
         "a subtype instance's blocking edge must survive the reverse-name \
          narrowing filter, not just an exact-type match"
     );
-    assert_eq!(out.related_nodes[0]["id"], "issue1");
+    assert_eq!(
+        out.related_nodes[0]["id"],
+        "ad5aeffa-8cb6-5701-af09-934561698590"
+    );
     Ok(())
 }

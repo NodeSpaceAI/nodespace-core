@@ -354,6 +354,15 @@ impl NodeServiceError {
         }
     }
 
+    /// A create or retype named an abstract type (ADR-086 §6).
+    pub fn abstract_node_type(node_type: impl Into<String>) -> Self {
+        let node_type = node_type.into();
+        Self::invalid_update(format!(
+            "'{node_type}' is an abstract type: no node can have it as its type. Use one of \
+             the types that extend it."
+        ))
+    }
+
     /// Create a play validation failed error from a list of validation errors
     pub fn play_validation_failed(
         errors: &[crate::playbook::validation::PlayValidationError],

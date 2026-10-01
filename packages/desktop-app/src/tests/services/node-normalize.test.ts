@@ -228,13 +228,13 @@ describe('storageNodeToApiFields', () => {
     });
   });
 
-  it('moves task core fields to typed keys, reading either date spelling', () => {
+  it('moves task core fields to typed keys', () => {
     const fields = storageNodeToApiFields('task', {
       task: {
         status: 'in_progress',
         priority: 'high',
         due_date: '2024-12-31',
-        startedAt: '2024-12-01T08:00:00Z',
+        started_at: '2024-12-01T08:00:00Z',
         'custom:store': 'Costco'
       }
     });
@@ -247,17 +247,13 @@ describe('storageNodeToApiFields', () => {
     });
   });
 
-  it('mirrors Rust at the edges: typed-key fallback is task-only, and a present null wins', () => {
-    // person_node_to_value reads the storage key alone: a stray typed-key
-    // spelling is not promoted (and, like every core-field spelling, is dropped).
+  it('mirrors Rust at the edges: only the storage key is read', () => {
+    // The conversion reads and removes the storage key alone. A key under the
+    // wire spelling is not a core field: it is neither promoted nor removed
+    // (and a closed core bucket never stores one).
     expect(storageNodeToApiFields('person', { person: { firstName: 'Ada' } })).toEqual({
-      properties: {}
+      properties: { firstName: 'Ada' }
     });
-    // task reads `dueDate` first when present at all, even as null — no
-    // fallback to `due_date` then, as `.get(wire).or_else(storage)` behaves.
-    expect(
-      storageNodeToApiFields('task', { task: { dueDate: null, due_date: '2026-05-01' } })
-    ).toEqual({ status: 'open', properties: {} });
     // A datetime with an offset reduces to its date, space-separated too; one
     // without an offset passes through, as normalize_date_field leaves it.
     expect(

@@ -33,6 +33,9 @@ if (!pluginRegistry.hasPlugin('task')) {
 
 function taskSchema(): SchemaNode {
   return {
+    nodeType: 'schema' as const,
+    lifecycleStatus: 'active' as const,
+    properties: {},
     id: 'task',
     content: 'Task',
     createdAt: '2026-01-01T00:00:00Z',

@@ -820,7 +820,7 @@ async fn create_schema_chain(svc: &Arc<NodeService>, depth: usize) -> Vec<String
                 "isCore": false,
                 "schemaVersion": 1,
                 "description": format!("Bench schema {}", i),
-                "fields": [{"name": "status", "type": "string"}],
+                "fields": [{"name": "status", "type": "text"}],
                 "relationships": rels
             }),
         );

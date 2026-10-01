@@ -5,7 +5,15 @@
  */
 
 // Node types - ONLY source of truth
-export type { Node, NodeUpdate, NodeUIState, CollectionNode, NodeReference } from './node';
+export type {
+  Node,
+  NodeEnvelope,
+  LifecycleStatus,
+  NodeUpdate,
+  NodeUIState,
+  CollectionNode,
+  NodeReference
+} from './node';
 export { isNode, createDefaultUIState, isCollectionNode } from './node';
 
 // Type-safe node wrappers - Simple types (extend Node with nodeType narrowing only)
@@ -63,10 +71,28 @@ export { isProjectNode, nodeToProjectNode } from './project-node';
 export type { QueryNode, QueryNodeUpdate, QueryGeneratedBy } from './query';
 export { nodeToQueryNode } from './query';
 
-export type { SchemaNode, SchemaField, ProtectionLevel, EnumValue } from './schema-node';
+export type {
+  SchemaNode,
+  SchemaField,
+  SchemaFieldType,
+  ProtectionLevel,
+  EnumValue
+} from './schema-node';
 // Only isSchemaNode remains - type guard for runtime checking
 // All other properties are typed top-level fields accessed directly (e.g., node.isCore, node.fields)
 export { isSchemaNode } from './schema-node';
+
+// Core node type registry
+export type { CoreNodeTypeId, CoreTypeEntry } from './core-node-types';
+export {
+  CORE_NODE_TYPES,
+  coreTypeEntry,
+  isA,
+  isCoreNodeType,
+  isExactly,
+  nearestCoreType,
+  typeChain
+} from './core-node-types';
 
 // Error types
 export type { CommandError } from './errors';

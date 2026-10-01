@@ -14,7 +14,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { v4 as uuidv4 } from 'uuid';
 import { backendAdapter } from '$lib/services/backend-adapter';
 import { collectionService } from '$lib/services/collection-service';
-import { NON_CONTENT_NODE_TYPES } from '$lib/stores/collections.svelte';
+import { isNonContentNodeType } from '$lib/stores/collections.svelte';
 import type { Node } from '$lib/types';
 
 /**
@@ -62,6 +62,6 @@ export async function searchAddableNodes(
   const found = await invoke<Node[]>('search_roots', { params: { query: q, limit: 20 } });
   return found.filter(
     (n) =>
-      n.id !== collectionId && !excludeIds.has(n.id) && !NON_CONTENT_NODE_TYPES.has(n.nodeType)
+      n.id !== collectionId && !excludeIds.has(n.id) && !isNonContentNodeType(n.nodeType)
   );
 }

@@ -55,20 +55,23 @@ struct PendingRelationshipDispatch {
 
 impl NodeService {
     /// Refuse a `has_child` edge onto a node whose type is always a root: a
-    /// collection (ADR-059 §2) or a schema. Shared by the relationship-create
-    /// path and its `_in_tx` twin so both return the typed refusal; the
-    /// `*_is_root_edge` triggers back it up on every write path.
-    fn refuse_parent_for_root_only_type(target: &Node) -> Result<(), NodeServiceError> {
-        match target.node_type.as_str() {
-            "collection" => {
-                Err(TreeInvariantViolation::collection_not_root(Some(&target.id)).into())
+    /// collection (ADR-059 §2), a schema, or a subtype of either. Shared by the
+    /// relationship-create path and its `_in_tx` twin so both return the typed
+    /// refusal; the root-only triggers back it up on every write path.
+    fn refuse_parent_for_root_only_type(
+        target: &Node,
+        root_only: Option<crate::models::CoreNodeType>,
+    ) -> Result<(), NodeServiceError> {
+        match root_only {
+            Some(root_type) => {
+                Err(TreeInvariantViolation::not_root(root_type, Some(&target.id)).into())
             }
-            "schema" => Err(TreeInvariantViolation::schema_not_root(&target.id).into()),
-            _ => Ok(()),
+            None => Ok(()),
         }
     }
 
-    /// Refuse any edge whose (stored) target is an `ai-chat` node.
+    /// Refuse any edge whose (stored) target is an `ai-chat` node, or a node
+    /// of a type extending `ai-chat`.
     ///
     /// No node may reference an ai-chat node (ADR-061 §8): a reference *to*
     /// one — a `mentions` edge from an `@mention`/`[[wikilink]]`, a provenance
@@ -77,12 +80,14 @@ impl NodeService {
     /// chat stays free to be an edge's *source*, and a `has_child` onto one is
     /// outline placement — a chat nested under a page — not a reference, so it
     /// is allowed.
+    ///
+    /// `target_is_chat` is the caller's chain-aware answer for `target`.
     fn refuse_ai_chat_target(
         relationship_name: &str,
         target: &Node,
+        target_is_chat: bool,
     ) -> Result<(), NodeServiceError> {
-        if relationship_name != "has_child" && target.node_type == crate::models::AI_CHAT_NODE_TYPE
-        {
+        if relationship_name != "has_child" && target_is_chat {
             return Err(NodeServiceError::invalid_update(format!(
                 "Node '{}' is an ai-chat node; ai-chat nodes cannot be the target of a \
                  mention or relationship",
@@ -150,7 +155,10 @@ impl NodeService {
             .get_node(mentioned_node_id)
             .await?
             .ok_or_else(|| NodeServiceError::node_not_found(mentioned_node_id))?;
-        Self::refuse_ai_chat_target("mentions", &mentioned)?;
+        let mentioned_is_chat = self
+            .type_is_a(&mentioned.node_type, crate::models::CoreNodeType::AiChat)
+            .await?;
+        Self::refuse_ai_chat_target("mentions", &mentioned, mentioned_is_chat)?;
 
         // Prevent root-level self-references (child mentioning its own root)
         // Get root ID via edge traversal for validation only
@@ -826,7 +834,10 @@ impl NodeService {
         // lookup on the hot outline path.
         if relationship_name != "has_child" {
             if let Some(target) = self.get_node(target_id).await? {
-                Self::refuse_ai_chat_target(relationship_name, &target)?;
+                let target_is_chat = self
+                    .type_is_a(&target.node_type, crate::models::CoreNodeType::AiChat)
+                    .await?;
+                Self::refuse_ai_chat_target(relationship_name, &target, target_is_chat)?;
             }
         }
 
@@ -837,7 +848,10 @@ impl NodeService {
                 .get_node(target_id)
                 .await?
                 .ok_or_else(|| NodeServiceError::node_not_found(target_id))?;
-            if target.node_type != "collection" {
+            if !self
+                .type_is_a(&target.node_type, crate::models::CoreNodeType::Collection)
+                .await?
+            {
                 return Err(NodeServiceError::invalid_update(format!(
                     "member_of target must be a collection node, got '{}'",
                     target.node_type
@@ -853,7 +867,10 @@ impl NodeService {
                 .get_node(source_id)
                 .await?
                 .ok_or_else(|| NodeServiceError::node_not_found(source_id))?;
-            if source.node_type == "collection" {
+            if self
+                .type_is_a(&source.node_type, crate::models::CoreNodeType::Collection)
+                .await?
+            {
                 self.store
                     .validate_no_member_of_cycle(source_id, target_id)
                     .await
@@ -866,7 +883,12 @@ impl NodeService {
                 .get_node(target_id)
                 .await?
                 .ok_or_else(|| NodeServiceError::node_not_found(target_id))?;
-            Self::refuse_parent_for_root_only_type(&target)?;
+            let root_only = self
+                .store
+                .root_only_type_of(&target.node_type)
+                .await
+                .map_err(NodeServiceError::from_store)?;
+            Self::refuse_parent_for_root_only_type(&target, root_only)?;
         }
 
         // The outline is single-parent, and every read path assumes it:
@@ -1151,7 +1173,14 @@ impl NodeService {
         );
 
         if let Some(target) = Self::get_node_in_tx_or_virtual_date(tx, target_id).await? {
-            Self::refuse_ai_chat_target(relationship_name, &target)?;
+            let target_is_chat = crate::db::SqliteStore::type_is_a_in_tx(
+                tx.store_tx(),
+                &target.node_type,
+                crate::models::CoreNodeType::AiChat,
+            )
+            .await
+            .map_err(NodeServiceError::from_store)?;
+            Self::refuse_ai_chat_target(relationship_name, &target, target_is_chat)?;
         }
 
         // See `create_relationship` — a declared relationship's instance edge
@@ -1175,7 +1204,14 @@ impl NodeService {
                     .await
                     .map_err(NodeServiceError::from_store)?
                     .ok_or_else(|| NodeServiceError::node_not_found(target_id))?;
-                if target.node_type != "collection" {
+                let target_is_collection = crate::db::SqliteStore::type_is_a_in_tx(
+                    tx.store_tx(),
+                    &target.node_type,
+                    crate::models::CoreNodeType::Collection,
+                )
+                .await
+                .map_err(NodeServiceError::from_store)?;
+                if !target_is_collection {
                     return Err(NodeServiceError::invalid_update(format!(
                         "member_of target must be a collection node, got '{}'",
                         target.node_type
@@ -1185,7 +1221,14 @@ impl NodeService {
                     .await
                     .map_err(NodeServiceError::from_store)?
                     .ok_or_else(|| NodeServiceError::node_not_found(source_id))?;
-                if source.node_type == "collection" {
+                let source_is_collection = crate::db::SqliteStore::type_is_a_in_tx(
+                    tx.store_tx(),
+                    &source.node_type,
+                    crate::models::CoreNodeType::Collection,
+                )
+                .await
+                .map_err(NodeServiceError::from_store)?;
+                if source_is_collection {
                     crate::db::SqliteStore::validate_no_member_of_cycle_in_tx(
                         tx.store_tx(),
                         source_id,
@@ -1205,7 +1248,13 @@ impl NodeService {
                 let target = Self::get_node_in_tx_or_virtual_date(tx, target_id)
                     .await?
                     .ok_or_else(|| NodeServiceError::node_not_found(target_id))?;
-                Self::refuse_parent_for_root_only_type(&target)?;
+                let root_only = crate::db::SqliteStore::root_only_type_of_in_tx(
+                    tx.store_tx(),
+                    &target.node_type,
+                )
+                .await
+                .map_err(NodeServiceError::from_store)?;
+                Self::refuse_parent_for_root_only_type(&target, root_only)?;
                 if let Some(existing) =
                     crate::db::SqliteStore::get_parent_id_in_tx(tx.store_tx(), target_id)
                         .await
@@ -1229,7 +1278,7 @@ impl NodeService {
                 .await?
                 .ok_or_else(|| NodeServiceError::node_not_found(source_id))?;
 
-            if source.node_type == "schema" {
+            if crate::models::CoreNodeType::Schema.is_exactly(&source.node_type) {
                 return Err(NodeServiceError::invalid_update(format!(
                     "'{}' is a schema node; typed relationships between schemas are declarations \
                      — declare them via update_schema, not create_relationship",
@@ -1275,7 +1324,7 @@ impl NodeService {
                 .await?
                 .ok_or_else(|| NodeServiceError::node_not_found(target_id))?;
 
-            if target.node_type == "schema" {
+            if crate::models::CoreNodeType::Schema.is_exactly(&target.node_type) {
                 return Err(NodeServiceError::invalid_update(format!(
                     "'{}' is a schema node; typed relationships between schemas are declarations \
                      — declare them via update_schema, not create_relationship",
@@ -1823,7 +1872,7 @@ impl NodeService {
                 .await
                 .map_err(NodeServiceError::from_store)?
             {
-                if source.node_type == "schema" {
+                if crate::models::CoreNodeType::Schema.is_exactly(&source.node_type) {
                     return Err(NodeServiceError::invalid_update(format!(
                         "'{}' is a schema node; '{}' is a relationship declaration — \
                          remove it via update_schema, not delete_relationship",
@@ -2175,7 +2224,7 @@ impl NodeService {
 
         if !is_builtin {
             if let Some(source) = self.get_node(source_id).await? {
-                if source.node_type == "schema" {
+                if crate::models::CoreNodeType::Schema.is_exactly(&source.node_type) {
                     return Err(NodeServiceError::invalid_update(format!(
                         "'{}' is a schema node; '{}' is a relationship declaration — \
                          edit it via update_schema, not update_relationship_properties",
@@ -2675,7 +2724,10 @@ mod required_in_last_edge_tests {
             .expect_err("last qualifying inbound edge")
             .to_string();
         assert!(
-            message.contains("'superseded_by' on 'old' is required and this is its last edge"),
+            message.contains(
+                "'superseded_by' on 'ac012a23-2b8e-5fdc-9aca-df129fe90625' is required and this is \
+                 its last edge"
+            ),
             "{message}"
         );
     }
@@ -2683,19 +2735,57 @@ mod required_in_last_edge_tests {
     #[tokio::test]
     async fn deleting_the_last_inbound_edge_is_rejected() {
         let (svc, _tmp) = service().await;
-        node(&svc, "old", "guard_adr").await;
-        node(&svc, "new", "guard_adr").await;
-        supersede(&svc, "new", "old").await;
+        node(&svc, "ac012a23-2b8e-5fdc-9aca-df129fe90625", "guard_adr").await;
+        node(&svc, "15881b3b-b2c4-5713-8dc5-03428d288eb7", "guard_adr").await;
+        supersede(
+            &svc,
+            "15881b3b-b2c4-5713-8dc5-03428d288eb7",
+            "ac012a23-2b8e-5fdc-9aca-df129fe90625",
+        )
+        .await;
 
-        assert_last_edge_rejection(svc.delete_relationship("new", "supersedes", "old").await);
+        assert_last_edge_rejection(
+            svc.delete_relationship(
+                "15881b3b-b2c4-5713-8dc5-03428d288eb7",
+                "supersedes",
+                "ac012a23-2b8e-5fdc-9aca-df129fe90625",
+            )
+            .await,
+        );
         // Through the `in` spelling, normalized to the same forward edge.
-        assert_last_edge_rejection(svc.delete_relationship("old", "superseded_by", "new").await);
-        assert_last_edge_rejection(remove_in_tx(&svc, "new", "supersedes", "old").await);
-        assert_last_edge_rejection(remove_in_tx(&svc, "old", "superseded_by", "new").await);
+        assert_last_edge_rejection(
+            svc.delete_relationship(
+                "ac012a23-2b8e-5fdc-9aca-df129fe90625",
+                "superseded_by",
+                "15881b3b-b2c4-5713-8dc5-03428d288eb7",
+            )
+            .await,
+        );
+        assert_last_edge_rejection(
+            remove_in_tx(
+                &svc,
+                "15881b3b-b2c4-5713-8dc5-03428d288eb7",
+                "supersedes",
+                "ac012a23-2b8e-5fdc-9aca-df129fe90625",
+            )
+            .await,
+        );
+        assert_last_edge_rejection(
+            remove_in_tx(
+                &svc,
+                "ac012a23-2b8e-5fdc-9aca-df129fe90625",
+                "superseded_by",
+                "15881b3b-b2c4-5713-8dc5-03428d288eb7",
+            )
+            .await,
+        );
 
-        assert_eq!(superseders(&svc, "old").await, ["new"]);
+        assert_eq!(
+            superseders(&svc, "ac012a23-2b8e-5fdc-9aca-df129fe90625").await,
+            ["15881b3b-b2c4-5713-8dc5-03428d288eb7"]
+        );
         assert!(
-            svc.check_node_completeness("old")
+            svc.check_node_completeness("ac012a23-2b8e-5fdc-9aca-df129fe90625")
                 .await
                 .unwrap()
                 .is_complete
@@ -2705,48 +2795,126 @@ mod required_in_last_edge_tests {
     #[tokio::test]
     async fn deleting_one_of_several_inbound_edges_succeeds() {
         let (svc, _tmp) = service().await;
-        for id in ["old", "a", "b", "c"] {
+        for id in [
+            "ac012a23-2b8e-5fdc-9aca-df129fe90625",
+            "7b9a12ed-d3ba-5b46-a6f6-7a952d22bd90",
+            "c9668a68-ab56-5b6a-b13d-1bef2f88c379",
+            "bff0a8d2-4776-5ce4-9176-c4dd4cfc8f19",
+        ] {
             node(&svc, id, "guard_adr").await;
         }
-        for source in ["a", "b", "c"] {
-            supersede(&svc, source, "old").await;
+        for source in [
+            "7b9a12ed-d3ba-5b46-a6f6-7a952d22bd90",
+            "c9668a68-ab56-5b6a-b13d-1bef2f88c379",
+            "bff0a8d2-4776-5ce4-9176-c4dd4cfc8f19",
+        ] {
+            supersede(&svc, source, "ac012a23-2b8e-5fdc-9aca-df129fe90625").await;
         }
 
-        svc.delete_relationship("a", "supersedes", "old")
-            .await
-            .unwrap();
-        remove_in_tx(&svc, "old", "superseded_by", "b")
-            .await
-            .unwrap();
-        assert_eq!(superseders(&svc, "old").await, ["c"]);
+        svc.delete_relationship(
+            "7b9a12ed-d3ba-5b46-a6f6-7a952d22bd90",
+            "supersedes",
+            "ac012a23-2b8e-5fdc-9aca-df129fe90625",
+        )
+        .await
+        .unwrap();
+        remove_in_tx(
+            &svc,
+            "ac012a23-2b8e-5fdc-9aca-df129fe90625",
+            "superseded_by",
+            "c9668a68-ab56-5b6a-b13d-1bef2f88c379",
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            superseders(&svc, "ac012a23-2b8e-5fdc-9aca-df129fe90625").await,
+            ["bff0a8d2-4776-5ce4-9176-c4dd4cfc8f19"]
+        );
 
-        assert_last_edge_rejection(svc.delete_relationship("c", "supersedes", "old").await);
-        assert_last_edge_rejection(remove_in_tx(&svc, "c", "supersedes", "old").await);
+        assert_last_edge_rejection(
+            svc.delete_relationship(
+                "bff0a8d2-4776-5ce4-9176-c4dd4cfc8f19",
+                "supersedes",
+                "ac012a23-2b8e-5fdc-9aca-df129fe90625",
+            )
+            .await,
+        );
+        assert_last_edge_rejection(
+            remove_in_tx(
+                &svc,
+                "bff0a8d2-4776-5ce4-9176-c4dd4cfc8f19",
+                "supersedes",
+                "ac012a23-2b8e-5fdc-9aca-df129fe90625",
+            )
+            .await,
+        );
     }
 
     #[tokio::test]
     async fn edge_from_an_unqualified_source_neither_counts_nor_is_protected() {
         let (svc, _tmp) = service().await;
-        node(&svc, "old", "guard_adr").await;
-        node(&svc, "new", "guard_adr").await;
-        node(&svc, "memo", "guard_memo").await;
-        node(&svc, "memo2", "guard_memo").await;
-        supersede(&svc, "new", "old").await;
-        supersede(&svc, "memo", "old").await;
-        supersede(&svc, "memo2", "old").await;
+        node(&svc, "ac012a23-2b8e-5fdc-9aca-df129fe90625", "guard_adr").await;
+        node(&svc, "15881b3b-b2c4-5713-8dc5-03428d288eb7", "guard_adr").await;
+        node(&svc, "e6a50d56-17e6-5811-a64d-f182cc21963b", "guard_memo").await;
+        node(&svc, "1bd8dbd6-5886-52fc-9c55-af605a38ba28", "guard_memo").await;
+        supersede(
+            &svc,
+            "15881b3b-b2c4-5713-8dc5-03428d288eb7",
+            "ac012a23-2b8e-5fdc-9aca-df129fe90625",
+        )
+        .await;
+        supersede(
+            &svc,
+            "e6a50d56-17e6-5811-a64d-f182cc21963b",
+            "ac012a23-2b8e-5fdc-9aca-df129fe90625",
+        )
+        .await;
+        supersede(
+            &svc,
+            "1bd8dbd6-5886-52fc-9c55-af605a38ba28",
+            "ac012a23-2b8e-5fdc-9aca-df129fe90625",
+        )
+        .await;
 
         // The memo edges don't keep `superseded_by` satisfied...
-        assert_last_edge_rejection(svc.delete_relationship("new", "supersedes", "old").await);
-        assert_last_edge_rejection(remove_in_tx(&svc, "new", "supersedes", "old").await);
+        assert_last_edge_rejection(
+            svc.delete_relationship(
+                "15881b3b-b2c4-5713-8dc5-03428d288eb7",
+                "supersedes",
+                "ac012a23-2b8e-5fdc-9aca-df129fe90625",
+            )
+            .await,
+        );
+        assert_last_edge_rejection(
+            remove_in_tx(
+                &svc,
+                "15881b3b-b2c4-5713-8dc5-03428d288eb7",
+                "supersedes",
+                "ac012a23-2b8e-5fdc-9aca-df129fe90625",
+            )
+            .await,
+        );
 
         // ...and aren't protected by it.
-        svc.delete_relationship("memo", "supersedes", "old")
-            .await
-            .unwrap();
-        remove_in_tx(&svc, "memo2", "supersedes", "old")
-            .await
-            .unwrap();
-        assert_eq!(superseders(&svc, "old").await, ["new"]);
+        svc.delete_relationship(
+            "e6a50d56-17e6-5811-a64d-f182cc21963b",
+            "supersedes",
+            "ac012a23-2b8e-5fdc-9aca-df129fe90625",
+        )
+        .await
+        .unwrap();
+        remove_in_tx(
+            &svc,
+            "1bd8dbd6-5886-52fc-9c55-af605a38ba28",
+            "supersedes",
+            "ac012a23-2b8e-5fdc-9aca-df129fe90625",
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            superseders(&svc, "ac012a23-2b8e-5fdc-9aca-df129fe90625").await,
+            ["15881b3b-b2c4-5713-8dc5-03428d288eb7"]
+        );
     }
 
     /// A `cardinality: one` replace evicts the source's previous edge through
@@ -2784,7 +2952,12 @@ mod required_in_last_edge_tests {
         )
         .await
         .expect("one schema");
-        for id in ["a", "b", "x", "y"] {
+        for id in [
+            "7b9a12ed-d3ba-5b46-a6f6-7a952d22bd90",
+            "c9668a68-ab56-5b6a-b13d-1bef2f88c379",
+            "6c453fe8-3e1e-5b84-9c1b-ba03442649a2",
+            "31502b29-9308-57b3-8aa6-b0a42a0010b7",
+        ] {
             node(&svc, id, "guard_one").await;
         }
         let targets = |id: &'static str| {
@@ -2798,29 +2971,59 @@ mod required_in_last_edge_tests {
                     .collect::<Vec<_>>()
             }
         };
-        svc.create_relationship("a", "replaces", "x", json!({}))
-            .await
-            .unwrap();
+        svc.create_relationship(
+            "7b9a12ed-d3ba-5b46-a6f6-7a952d22bd90",
+            "replaces",
+            "6c453fe8-3e1e-5b84-9c1b-ba03442649a2",
+            json!({}),
+        )
+        .await
+        .unwrap();
 
         let message = svc
-            .create_relationship("a", "replaces", "y", json!({}))
+            .create_relationship(
+                "7b9a12ed-d3ba-5b46-a6f6-7a952d22bd90",
+                "replaces",
+                "31502b29-9308-57b3-8aa6-b0a42a0010b7",
+                json!({}),
+            )
             .await
             .expect_err("evicting a -> x strands x")
             .to_string();
         assert!(
-            message.contains("'replaced_by' on 'x' is required and this is its last edge"),
+            message.contains(
+                "'replaced_by' on '6c453fe8-3e1e-5b84-9c1b-ba03442649a2' is required and this is \
+                 its last edge"
+            ),
             "{message}"
         );
-        assert_eq!(targets("a").await, ["x"], "the create rolled back whole");
+        assert_eq!(
+            targets("7b9a12ed-d3ba-5b46-a6f6-7a952d22bd90").await,
+            ["6c453fe8-3e1e-5b84-9c1b-ba03442649a2"],
+            "the create rolled back whole"
+        );
 
         // With another qualifying source on `x`, the same replace goes through.
-        svc.create_relationship("b", "replaces", "x", json!({}))
-            .await
-            .unwrap();
-        svc.create_relationship("a", "replaces", "y", json!({}))
-            .await
-            .unwrap();
-        assert_eq!(targets("a").await, ["y"]);
+        svc.create_relationship(
+            "c9668a68-ab56-5b6a-b13d-1bef2f88c379",
+            "replaces",
+            "6c453fe8-3e1e-5b84-9c1b-ba03442649a2",
+            json!({}),
+        )
+        .await
+        .unwrap();
+        svc.create_relationship(
+            "7b9a12ed-d3ba-5b46-a6f6-7a952d22bd90",
+            "replaces",
+            "31502b29-9308-57b3-8aa6-b0a42a0010b7",
+            json!({}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            targets("7b9a12ed-d3ba-5b46-a6f6-7a952d22bd90").await,
+            ["31502b29-9308-57b3-8aa6-b0a42a0010b7"]
+        );
     }
 
     /// Builds `shadow_child extends shadow_base`, both declaring `owns`
@@ -2900,16 +3103,26 @@ mod required_in_last_edge_tests {
         let (svc, _tmp) = service().await;
         shadowed_owns_fixture(&svc).await;
 
-        node(&svc, "thing", "shadow_thing").await;
-        node(&svc, "child", "shadow_child").await;
-        node(&svc, "base", "shadow_base").await;
-        node(&svc, "base2", "shadow_base").await;
+        node(&svc, "88c17c94-8606-52a6-9e7a-31c6abf519d3", "shadow_thing").await;
+        node(&svc, "759e78dc-004a-52e4-95a2-2668cd21aad9", "shadow_child").await;
+        node(&svc, "93fc523e-f0ea-5ce6-8340-1e756ac6fa13", "shadow_base").await;
+        node(&svc, "66348493-e523-5f42-8f27-c97eac4699e6", "shadow_base").await;
 
-        svc.create_relationship("child", "owns", "thing", json!({}))
-            .await
-            .unwrap();
+        svc.create_relationship(
+            "759e78dc-004a-52e4-95a2-2668cd21aad9",
+            "owns",
+            "88c17c94-8606-52a6-9e7a-31c6abf519d3",
+            json!({}),
+        )
+        .await
+        .unwrap();
         let created = svc
-            .create_relationship("base", "owns", "thing", json!({}))
+            .create_relationship(
+                "93fc523e-f0ea-5ce6-8340-1e756ac6fa13",
+                "owns",
+                "88c17c94-8606-52a6-9e7a-31c6abf519d3",
+                json!({}),
+            )
             .await
             .unwrap();
         assert!(
@@ -2919,20 +3132,36 @@ mod required_in_last_edge_tests {
         );
         assert!(svc
             .store()
-            .relationship_exists("child", "thing", "owns")
+            .relationship_exists(
+                "759e78dc-004a-52e4-95a2-2668cd21aad9",
+                "88c17c94-8606-52a6-9e7a-31c6abf519d3",
+                "owns"
+            )
             .await
             .unwrap());
 
         // Same-declaration edges are still replaced.
         let replaced = svc
-            .create_relationship("base2", "owns", "thing", json!({}))
+            .create_relationship(
+                "66348493-e523-5f42-8f27-c97eac4699e6",
+                "owns",
+                "88c17c94-8606-52a6-9e7a-31c6abf519d3",
+                json!({}),
+            )
             .await
             .unwrap();
         assert_eq!(replaced.replaced.len(), 1);
-        assert_eq!(replaced.replaced[0].source_id, "base");
+        assert_eq!(
+            replaced.replaced[0].source_id,
+            "93fc523e-f0ea-5ce6-8340-1e756ac6fa13"
+        );
         assert!(svc
             .store()
-            .relationship_exists("child", "thing", "owns")
+            .relationship_exists(
+                "759e78dc-004a-52e4-95a2-2668cd21aad9",
+                "88c17c94-8606-52a6-9e7a-31c6abf519d3",
+                "owns"
+            )
             .await
             .unwrap());
     }
@@ -2946,28 +3175,53 @@ mod required_in_last_edge_tests {
     async fn merge_repoint_ignores_edges_owned_by_a_shadowing_declaration() {
         let (svc, _tmp) = service().await;
         shadowed_owns_fixture(&svc).await;
-        node(&svc, "kept", "shadow_thing").await;
-        node(&svc, "lost", "shadow_thing").await;
-        node(&svc, "child", "shadow_child").await;
-        node(&svc, "base", "shadow_base").await;
-        svc.create_relationship("child", "owns", "kept", json!({}))
-            .await
-            .unwrap();
-        svc.create_relationship("base", "owns", "lost", json!({}))
-            .await
-            .unwrap();
+        node(&svc, "dd82a82d-26ba-5088-aae1-a5492e8a688d", "shadow_thing").await;
+        node(&svc, "127fa0d7-9a70-55e8-9571-2768eec9d989", "shadow_thing").await;
+        node(&svc, "759e78dc-004a-52e4-95a2-2668cd21aad9", "shadow_child").await;
+        node(&svc, "93fc523e-f0ea-5ce6-8340-1e756ac6fa13", "shadow_base").await;
+        svc.create_relationship(
+            "759e78dc-004a-52e4-95a2-2668cd21aad9",
+            "owns",
+            "dd82a82d-26ba-5088-aae1-a5492e8a688d",
+            json!({}),
+        )
+        .await
+        .unwrap();
+        svc.create_relationship(
+            "93fc523e-f0ea-5ce6-8340-1e756ac6fa13",
+            "owns",
+            "127fa0d7-9a70-55e8-9571-2768eec9d989",
+            json!({}),
+        )
+        .await
+        .unwrap();
 
-        let outcome = svc.merge_nodes("kept", "lost", None).await.unwrap();
+        let outcome = svc
+            .merge_nodes(
+                "dd82a82d-26ba-5088-aae1-a5492e8a688d",
+                "127fa0d7-9a70-55e8-9571-2768eec9d989",
+                None,
+            )
+            .await
+            .unwrap();
         assert_eq!(outcome.edges_dropped, 0, "{outcome:?}");
         assert_eq!(outcome.edges_repointed, 1, "{outcome:?}");
         assert!(svc
             .store()
-            .relationship_exists("child", "kept", "owns")
+            .relationship_exists(
+                "759e78dc-004a-52e4-95a2-2668cd21aad9",
+                "dd82a82d-26ba-5088-aae1-a5492e8a688d",
+                "owns"
+            )
             .await
             .unwrap());
         assert!(svc
             .store()
-            .relationship_exists("base", "kept", "owns")
+            .relationship_exists(
+                "93fc523e-f0ea-5ce6-8340-1e756ac6fa13",
+                "dd82a82d-26ba-5088-aae1-a5492e8a688d",
+                "owns"
+            )
             .await
             .unwrap());
     }
@@ -2975,17 +3229,34 @@ mod required_in_last_edge_tests {
     #[tokio::test]
     async fn deleting_a_nonexistent_inbound_edge_stays_a_no_op() {
         let (svc, _tmp) = service().await;
-        node(&svc, "old", "guard_adr").await;
-        node(&svc, "new", "guard_adr").await;
-        node(&svc, "other", "guard_adr").await;
-        supersede(&svc, "new", "old").await;
+        node(&svc, "ac012a23-2b8e-5fdc-9aca-df129fe90625", "guard_adr").await;
+        node(&svc, "15881b3b-b2c4-5713-8dc5-03428d288eb7", "guard_adr").await;
+        node(&svc, "6e52f1e6-c527-50df-8892-cde6cb435c5a", "guard_adr").await;
+        supersede(
+            &svc,
+            "15881b3b-b2c4-5713-8dc5-03428d288eb7",
+            "ac012a23-2b8e-5fdc-9aca-df129fe90625",
+        )
+        .await;
 
-        svc.delete_relationship("other", "supersedes", "old")
-            .await
-            .unwrap();
-        remove_in_tx(&svc, "other", "supersedes", "old")
-            .await
-            .unwrap();
-        assert_eq!(superseders(&svc, "old").await, ["new"]);
+        svc.delete_relationship(
+            "6e52f1e6-c527-50df-8892-cde6cb435c5a",
+            "supersedes",
+            "ac012a23-2b8e-5fdc-9aca-df129fe90625",
+        )
+        .await
+        .unwrap();
+        remove_in_tx(
+            &svc,
+            "6e52f1e6-c527-50df-8892-cde6cb435c5a",
+            "supersedes",
+            "ac012a23-2b8e-5fdc-9aca-df129fe90625",
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            superseders(&svc, "ac012a23-2b8e-5fdc-9aca-df129fe90625").await,
+            ["15881b3b-b2c4-5713-8dc5-03428d288eb7"]
+        );
     }
 }

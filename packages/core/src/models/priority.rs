@@ -63,11 +63,15 @@ impl Priority {
     /// this enum's core values, which
     /// `test_priority_variants_match_core_values_bidirectionally` in
     /// `core_schemas.rs` checks for each of them.
-    pub const NODE_TYPES: [&'static str; 2] = ["task", "project"];
+    pub const NODE_TYPES: [crate::models::CoreNodeType; 2] = [
+        crate::models::CoreNodeType::Task,
+        crate::models::CoreNodeType::Project,
+    ];
 
     /// Whether `node_type`'s `priority` field uses this scale.
     pub fn applies_to(node_type: &str) -> bool {
-        Self::NODE_TYPES.contains(&node_type)
+        crate::models::CoreNodeType::from_id(node_type)
+            .is_some_and(|core| Self::NODE_TYPES.contains(&core))
     }
 
     /// Convert priority to string representation

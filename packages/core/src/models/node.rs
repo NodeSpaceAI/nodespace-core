@@ -41,7 +41,8 @@ use serde::{Deserialize, Serialize};
 // nodespace-core adds the core-only types below (NodeFilter, NodeRelationship, etc.)
 // that are not part of the shared wire surface.
 pub use nodespace_types::{
-    DeleteResult, Node, NodeQuery, NodeReference, NodeUpdate, OrderBy, ValidationError,
+    DeleteResult, Node, NodeEnvelope, NodeQuery, NodeReference, NodeUpdate, OrderBy,
+    ValidationError,
 };
 
 /// Direction to traverse an edge relative to a node
@@ -638,13 +639,13 @@ mod tests {
     }
 
     #[test]
-    fn test_node_lifecycle_status_serialization_active_skipped() {
-        // Test that "active" lifecycle_status is skipped during serialization
+    fn test_node_lifecycle_status_is_always_serialized() {
+        // The envelope always carries `lifecycleStatus`, `active` included: a
+        // reader never has to infer it from an absent key (ADR-086 §2).
         let node = Node::new("text".to_string(), "Test".to_string(), json!({}));
-        let json = serde_json::to_string(&node).unwrap();
+        let json = serde_json::to_value(&node).unwrap();
 
-        // "active" should be skipped (not serialized)
-        assert!(!json.contains("lifecycleStatus"));
+        assert_eq!(json["lifecycleStatus"], "active");
     }
 
     #[test]

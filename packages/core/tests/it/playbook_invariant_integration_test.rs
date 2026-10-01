@@ -208,7 +208,7 @@ async fn invariant_action_executes_synchronously_in_same_transaction() -> Result
         &service,
         "iv_task",
         json!([
-            { "name": "status", "type": "string" },
+            { "name": "status", "type": "text" },
             { "name": "approved", "type": "boolean" }
         ]),
     )
@@ -270,7 +270,7 @@ async fn invariant_action_failure_rolls_back_the_whole_node_creation() -> Result
     create_schema(
         &service,
         "iv_gated",
-        json!([{ "name": "status", "type": "string" }]),
+        json!([{ "name": "status", "type": "text" }]),
     )
     .await?;
 
@@ -343,7 +343,7 @@ async fn one_failing_invariant_rule_rolls_back_another_rule_s_successful_effect_
         &service,
         "iv_multi",
         json!([
-            { "name": "status", "type": "string" },
+            { "name": "status", "type": "text" },
             { "name": "approved", "type": "boolean" }
         ]),
     )
@@ -426,7 +426,7 @@ async fn invariant_rule_does_not_re_execute_on_sync_applied_node() -> Result<()>
         &service,
         "iv_sync_task",
         json!([
-            { "name": "status", "type": "string" },
+            { "name": "status", "type": "text" },
             { "name": "approved", "type": "boolean" }
         ]),
     )
@@ -486,7 +486,7 @@ async fn sync_applied_node_violating_invariant_is_repaired_and_logged() -> Resul
         &service,
         "iv_repair_task",
         json!([
-            { "name": "status", "type": "string" },
+            { "name": "status", "type": "text" },
             { "name": "approved", "type": "boolean" }
         ]),
     )
@@ -545,7 +545,7 @@ async fn sync_applied_node_already_satisfying_invariant_is_not_touched() -> Resu
         &service,
         "iv_ok_task",
         json!([
-            { "name": "status", "type": "string" },
+            { "name": "status", "type": "text" },
             { "name": "approved", "type": "boolean" }
         ]),
     )
@@ -599,7 +599,7 @@ async fn reactive_rule_still_fires_normally_alongside_an_invariant_rule() -> Res
         &service,
         "iv_mixed_a",
         json!([
-            { "name": "status", "type": "string" },
+            { "name": "status", "type": "text" },
             { "name": "approved", "type": "boolean" }
         ]),
     )
@@ -607,7 +607,7 @@ async fn reactive_rule_still_fires_normally_alongside_an_invariant_rule() -> Res
     create_schema(
         &service,
         "iv_mixed_b",
-        json!([{ "name": "status", "type": "string" }]),
+        json!([{ "name": "status", "type": "text" }]),
     )
     .await?;
 
@@ -694,7 +694,7 @@ async fn disabling_a_seeded_invariant_play_logs_a_warning() -> Result<()> {
     create_schema(
         &service,
         "iv_seeded_task",
-        json!([{ "name": "status", "type": "string" }]),
+        json!([{ "name": "status", "type": "text" }]),
     )
     .await?;
 
@@ -708,7 +708,7 @@ async fn disabling_a_seeded_invariant_play_logs_a_warning() -> Result<()> {
         "actions": []
     }]);
     let play = Node::new_with_id(
-        "pb-seeded-warn".to_string(),
+        "06e19d75-005e-5c35-b6e1-01dc381ceb11".to_string(),
         "play".to_string(),
         "Seeded Warn Play".to_string(),
         json!({ "rules": default_rules, "_seed": { "default_rules": default_rules } }),
@@ -717,18 +717,26 @@ async fn disabling_a_seeded_invariant_play_logs_a_warning() -> Result<()> {
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Disable it.
-    let current = service.get_node("pb-seeded-warn").await?.unwrap();
+    let current = service
+        .get_node("06e19d75-005e-5c35-b6e1-01dc381ceb11")
+        .await?
+        .unwrap();
     let update =
         nodespace_core::models::NodeUpdate::default().with_lifecycle_status("archived".to_string());
     service
-        .update_node("pb-seeded-warn", current.version, update)
+        .update_node(
+            "06e19d75-005e-5c35-b6e1-01dc381ceb11",
+            current.version,
+            update,
+        )
         .await?;
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     let logged = logs.contents();
     assert!(
-        logged.contains("seeded-invariant-rule") && logged.contains("pb-seeded-warn"),
+        logged.contains("seeded-invariant-rule")
+            && logged.contains("06e19d75-005e-5c35-b6e1-01dc381ceb11"),
         "disabling a seeded invariant play must log a warning naming the play and \
          rule; captured tracing output was: {logged}"
     );
@@ -760,14 +768,14 @@ async fn an_invariant_action_creating_a_node_does_not_trigger_another_invariant_
     create_schema(
         &service,
         "iv_chain_source",
-        json!([{ "name": "status", "type": "string" }]),
+        json!([{ "name": "status", "type": "text" }]),
     )
     .await?;
     create_schema(
         &service,
         "iv_chain_target",
         json!([
-            { "name": "note", "type": "string" },
+            { "name": "note", "type": "text" },
             { "name": "stamped_by_rule_b", "type": "boolean" }
         ]),
     )
@@ -886,7 +894,7 @@ async fn invariant_rule_does_not_also_run_via_the_reactive_queue() -> Result<()>
         &service,
         "iv_no_double_exec",
         json!([
-            { "name": "status", "type": "string" },
+            { "name": "status", "type": "text" },
             { "name": "approved", "type": "boolean" }
         ]),
     )
@@ -984,7 +992,7 @@ async fn reject_action_prevents_node_creation_with_no_partial_write() -> Result<
     create_schema(
         &service,
         "iv_reject_basic",
-        json!([{ "name": "status", "type": "string" }]),
+        json!([{ "name": "status", "type": "text" }]),
     )
     .await?;
 
@@ -1038,7 +1046,7 @@ async fn reject_action_error_is_play_rule_rejected_with_the_rule_s_message() -> 
     create_schema(
         &service,
         "iv_reject_msg",
-        json!([{ "name": "status", "type": "string" }]),
+        json!([{ "name": "status", "type": "text" }]),
     )
     .await?;
 
@@ -1105,7 +1113,7 @@ async fn reject_action_condition_not_met_allows_normal_creation() -> Result<()> 
     create_schema(
         &service,
         "iv_reject_gated",
-        json!([{ "name": "status", "type": "string" }]),
+        json!([{ "name": "status", "type": "text" }]),
     )
     .await?;
 
@@ -1158,7 +1166,7 @@ async fn reject_rule_on_a_subtype_reads_an_inherited_field() -> Result<()> {
         &service,
         json!({
             "name": "iv_sub_ticket",
-            "fields": [{ "name": "state", "type": "string", "protection": "user", "indexed": false }]
+            "fields": [{ "name": "state", "type": "text", "protection": "user", "indexed": false }]
         }),
     )
     .await?;
@@ -1238,7 +1246,7 @@ async fn relationship_reject_rule_on_a_subtype_reads_an_inherited_field() -> Res
         &service,
         json!({
             "name": "iv_rel_ticket",
-            "fields": [{ "name": "status", "type": "string", "protection": "user", "indexed": false }]
+            "fields": [{ "name": "status", "type": "text", "protection": "user", "indexed": false }]
         }),
     )
     .await?;
@@ -1433,7 +1441,7 @@ async fn reject_before_augmenting_action_in_the_same_rule_prevents_the_augment()
     create_schema(
         &service,
         "iv_reject_order_a",
-        json!([{ "name": "status", "type": "string" }]),
+        json!([{ "name": "status", "type": "text" }]),
     )
     .await?;
 
@@ -1529,7 +1537,7 @@ async fn reject_on_reactive_rule_bypassing_save_time_validation_is_not_activated
     create_schema(
         &service,
         "iv_reject_bypass",
-        json!([{ "name": "status", "type": "string" }]),
+        json!([{ "name": "status", "type": "text" }]),
     )
     .await?;
 
@@ -1581,7 +1589,7 @@ async fn augmenting_action_before_reject_in_the_same_rule_is_rolled_back_too() -
     create_schema(
         &service,
         "iv_reject_order_b",
-        json!([{ "name": "status", "type": "string" }]),
+        json!([{ "name": "status", "type": "text" }]),
     )
     .await?;
 
@@ -1711,7 +1719,7 @@ async fn invariant_update_rule_executes_synchronously_in_same_transaction() -> R
         &service,
         "iv_update_task",
         json!([
-            { "name": "status", "type": "string" },
+            { "name": "status", "type": "text" },
             { "name": "verified", "type": "boolean" }
         ]),
     )
@@ -1773,7 +1781,7 @@ async fn invariant_update_rule_reject_prevents_partial_write() -> Result<()> {
     create_schema(
         &service,
         "iv_update_reject",
-        json!([{ "name": "status", "type": "string" }]),
+        json!([{ "name": "status", "type": "text" }]),
     )
     .await?;
 
@@ -1846,7 +1854,7 @@ async fn invariant_update_rule_reject_emits_no_domain_event() -> Result<()> {
     create_schema(
         &service,
         "iv_update_no_broadcast",
-        json!([{ "name": "status", "type": "string" }]),
+        json!([{ "name": "status", "type": "text" }]),
     )
     .await?;
 
@@ -1917,7 +1925,7 @@ async fn invariant_update_rule_augmenting_action_commits_and_broadcasts_normally
         &service,
         "iv_update_broadcast",
         json!([
-            { "name": "status", "type": "string" },
+            { "name": "status", "type": "text" },
             { "name": "verified", "type": "boolean" }
         ]),
     )
@@ -1991,8 +1999,8 @@ async fn invariant_update_rule_scoped_to_one_property_ignores_a_different_proper
         &service,
         "iv_update_scoped",
         json!([
-            { "name": "status", "type": "string" },
-            { "name": "priority", "type": "string" },
+            { "name": "status", "type": "text" },
+            { "name": "priority", "type": "text" },
             { "name": "verified", "type": "boolean" }
         ]),
     )
@@ -2056,7 +2064,7 @@ async fn reactive_update_rule_still_fires_asynchronously_post_commit() -> Result
         &service,
         "iv_update_reactive",
         json!([
-            { "name": "status", "type": "string" },
+            { "name": "status", "type": "text" },
             { "name": "notified", "type": "boolean" }
         ]),
     )
@@ -2622,7 +2630,7 @@ async fn sync_repair_continues_only_a_play_written_chain() -> Result<()> {
         &service,
         "iv_chain_task",
         json!([
-            { "name": "status", "type": "string" },
+            { "name": "status", "type": "text" },
             { "name": "approved", "type": "boolean" }
         ]),
     )
@@ -2787,8 +2795,8 @@ async fn setup_verified_when_done(
         &service,
         node_type,
         json!([
-            { "name": "status", "type": "string" },
-            { "name": "priority", "type": "string" },
+            { "name": "status", "type": "text" },
+            { "name": "priority", "type": "text" },
             { "name": "verified", "type": "boolean" }
         ]),
     )
@@ -2952,7 +2960,7 @@ async fn sync_applied_update_does_not_run_a_node_created_invariant() -> Result<(
         &service,
         "iv_su_create_only",
         json!([
-            { "name": "status", "type": "string" },
+            { "name": "status", "type": "text" },
             { "name": "approved", "type": "boolean" }
         ]),
     )
@@ -3143,13 +3151,13 @@ async fn sync_applied_update_is_repaired_by_a_saved_non_self_chaining_invariant(
     create_schema(
         &service,
         "iv_su_legal",
-        json!([{ "name": "status", "type": "string" }]),
+        json!([{ "name": "status", "type": "text" }]),
     )
     .await?;
     create_schema(
         &service,
         "iv_su_legal_log",
-        json!([{ "name": "note", "type": "string" }]),
+        json!([{ "name": "note", "type": "text" }]),
     )
     .await?;
     let (_engine, shutdown_tx, task) = spawn_engine(&service).await;
@@ -3307,7 +3315,7 @@ async fn contradictory_invariants_ping_pong(initial_properties: serde_json::Valu
         create_schema(
             &service,
             NODE_TYPE,
-            json!([{ "name": "mode", "type": "string" }]),
+            json!([{ "name": "mode", "type": "text" }]),
         )
         .await?;
         let (engine, shutdown_tx, task) = spawn_engine(&service).await;
@@ -3453,7 +3461,7 @@ async fn chain_device(
         create_schema(
             &service,
             node_type,
-            json!([{ "name": "f", "type": "string" }]),
+            json!([{ "name": "f", "type": "text" }]),
         )
         .await?;
     }
@@ -3461,7 +3469,11 @@ async fn chain_device(
     for (name, play_rules) in rules {
         activate_rules_directly(&engine, name, play_rules.clone());
     }
-    for (id, node_type) in [("rv-x", "rv_x"), ("rv-y", "rv_y"), ("rv-z", "rv_z")] {
+    for (id, node_type) in [
+        ("1481fce2-d682-567e-add1-5805e071832e", "rv_x"),
+        ("1cba38b9-283d-5519-b32f-a13ad4185c32", "rv_y"),
+        ("6d43ed3c-86ef-5120-a279-9fb99a31dcca", "rv_z"),
+    ] {
         create_via_sync(
             &service,
             Node::new_with_id(
@@ -3486,14 +3498,20 @@ fn depth_of(node: &Node) -> Option<serde_json::Value> {
 #[tokio::test]
 async fn in_transaction_invariant_hop_continues_the_repair_chain_depth() -> Result<()> {
     let (service, _tmp, shutdown_tx, task) = chain_device(&[
-        ("x-to-y", relay_f_rules("rv_x", "rv-y", false)),
-        ("y-to-z", relay_f_rules("rv_y", "rv-z", false)),
+        (
+            "x-to-y",
+            relay_f_rules("rv_x", "1cba38b9-283d-5519-b32f-a13ad4185c32", false),
+        ),
+        (
+            "y-to-z",
+            relay_f_rules("rv_y", "6d43ed3c-86ef-5120-a279-9fb99a31dcca", false),
+        ),
     ])
     .await?;
 
     update_via_sync(
         &service,
-        "rv-x",
+        "1481fce2-d682-567e-add1-5805e071832e",
         json!({
             "f": "on",
             (PLAYBOOK_CHAIN_DEPTH_PROPERTY): 5,
@@ -3506,7 +3524,7 @@ async fn in_transaction_invariant_hop_continues_the_repair_chain_depth() -> Resu
         let service = Arc::clone(&service);
         async move {
             matches!(
-                service.get_node("rv-z").await,
+                service.get_node("6d43ed3c-86ef-5120-a279-9fb99a31dcca").await,
                 Ok(Some(n)) if user_field(&n, "rv_z", "f") == Some(&json!("on"))
             )
         }
@@ -3517,8 +3535,14 @@ async fn in_transaction_invariant_hop_continues_the_repair_chain_depth() -> Resu
         "the repair and the invariant it triggers must both run"
     );
 
-    let y = service.get_node("rv-y").await?.unwrap();
-    let z = service.get_node("rv-z").await?.unwrap();
+    let y = service
+        .get_node("1cba38b9-283d-5519-b32f-a13ad4185c32")
+        .await?
+        .unwrap();
+    let z = service
+        .get_node("6d43ed3c-86ef-5120-a279-9fb99a31dcca")
+        .await?
+        .unwrap();
     assert_eq!(
         depth_of(&y),
         Some(json!(6)),
@@ -3543,12 +3567,21 @@ async fn in_transaction_invariant_hop_continues_the_repair_chain_depth() -> Resu
 #[tokio::test]
 async fn cycle_through_an_in_transaction_invariant_hop_stops_at_the_limit() -> Result<()> {
     let (device_a, _tmp_a, shutdown_a, task_a) = chain_device(&[
-        ("x-to-y", relay_f_rules("rv_x", "rv-y", false)),
-        ("y-to-z", relay_f_rules("rv_y", "rv-z", false)),
+        (
+            "x-to-y",
+            relay_f_rules("rv_x", "1cba38b9-283d-5519-b32f-a13ad4185c32", false),
+        ),
+        (
+            "y-to-z",
+            relay_f_rules("rv_y", "6d43ed3c-86ef-5120-a279-9fb99a31dcca", false),
+        ),
     ])
     .await?;
-    let (device_b, _tmp_b, shutdown_b, task_b) =
-        chain_device(&[("z-to-x", relay_f_rules("rv_z", "rv-x", true))]).await?;
+    let (device_b, _tmp_b, shutdown_b, task_b) = chain_device(&[(
+        "z-to-x",
+        relay_f_rules("rv_z", "1481fce2-d682-567e-add1-5805e071832e", true),
+    )])
+    .await?;
 
     fn relay(from: &Arc<NodeService>, to: &Arc<NodeService>) -> tokio::task::JoinHandle<()> {
         let mut events = from.subscribe_to_events();
@@ -3568,7 +3601,13 @@ async fn cycle_through_an_in_transaction_invariant_hop_stops_at_the_limit() -> R
                 else {
                     continue;
                 };
-                if !node_id.starts_with("rv-") {
+                // Only the three relay nodes take part in the exchange.
+                const RELAY_NODES: [&str; 3] = [
+                    "1481fce2-d682-567e-add1-5805e071832e",
+                    "1cba38b9-283d-5519-b32f-a13ad4185c32",
+                    "6d43ed3c-86ef-5120-a279-9fb99a31dcca",
+                ];
+                if !RELAY_NODES.contains(&node_id.as_str()) {
                     continue;
                 }
                 // Sync carries the whole node, bookkeeping stamps included.
@@ -3586,14 +3625,23 @@ async fn cycle_through_an_in_transaction_invariant_hop_stops_at_the_limit() -> R
     let relay_ba = relay(&device_b, &device_a);
 
     // A user's edit on some third device arrives at A.
-    update_via_sync(&device_a, "rv-x", json!({ "f": "on" })).await?;
+    update_via_sync(
+        &device_a,
+        "1481fce2-d682-567e-add1-5805e071832e",
+        json!({ "f": "on" }),
+    )
+    .await?;
 
     let versions = |a: &Arc<NodeService>, b: &Arc<NodeService>| {
         let (a, b) = (Arc::clone(a), Arc::clone(b));
         async move {
             let mut v = Vec::new();
             for service in [&a, &b] {
-                for id in ["rv-x", "rv-y", "rv-z"] {
+                for id in [
+                    "1481fce2-d682-567e-add1-5805e071832e",
+                    "1cba38b9-283d-5519-b32f-a13ad4185c32",
+                    "6d43ed3c-86ef-5120-a279-9fb99a31dcca",
+                ] {
                     v.push(service.get_node(id).await?.unwrap().version);
                 }
             }
@@ -3617,7 +3665,10 @@ async fn cycle_through_an_in_transaction_invariant_hop_stops_at_the_limit() -> R
          (versions still moving: {last:?})"
     );
 
-    let z_on_b = device_b.get_node("rv-z").await?.unwrap();
+    let z_on_b = device_b
+        .get_node("6d43ed3c-86ef-5120-a279-9fb99a31dcca")
+        .await?
+        .unwrap();
     assert_eq!(
         depth_of(&z_on_b),
         Some(json!(MAX_CHAIN_DEPTH)),

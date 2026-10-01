@@ -18,6 +18,7 @@ import {
 describe('CodeBlockNode Type Guard', () => {
   it('identifies code block nodes correctly', () => {
     const codeBlockNode: Node = {
+      lifecycleStatus: 'active',
       id: 'test-1',
       nodeType: 'code-block',
       content: '```javascript\nconst x = 1;\n```',
@@ -32,6 +33,7 @@ describe('CodeBlockNode Type Guard', () => {
 
   it('rejects non-code-block nodes', () => {
     const textNode: Node = {
+      lifecycleStatus: 'active',
       id: 'test-2',
       nodeType: 'text',
       content: 'Regular text',
@@ -48,6 +50,7 @@ describe('CodeBlockNode Type Guard', () => {
 describe('getLanguage', () => {
   it('returns language from code fence syntax in content', () => {
     const node: CodeBlockNode = {
+      lifecycleStatus: 'active',
       id: 'test-3',
       nodeType: 'code-block',
       content: '```python\nprint("hello")\n```',
@@ -62,6 +65,7 @@ describe('getLanguage', () => {
 
   it('returns plaintext when language is missing in code fence', () => {
     const node: CodeBlockNode = {
+      lifecycleStatus: 'active',
       id: 'test-4',
       nodeType: 'code-block',
       content: '```\nsome code\n```',
@@ -76,6 +80,7 @@ describe('getLanguage', () => {
 
   it('returns plaintext when no code fence exists', () => {
     const node: CodeBlockNode = {
+      lifecycleStatus: 'active',
       id: 'test-5',
       nodeType: 'code-block',
       content: 'some code without fences',
@@ -90,6 +95,7 @@ describe('getLanguage', () => {
 
   it('handles empty content', () => {
     const node: CodeBlockNode = {
+      lifecycleStatus: 'active',
       id: 'test-6',
       nodeType: 'code-block',
       content: '',
@@ -104,6 +110,7 @@ describe('getLanguage', () => {
 
   it('extracts language case-insensitively and normalizes to lowercase', () => {
     const node: CodeBlockNode = {
+      lifecycleStatus: 'active',
       id: 'test-7',
       nodeType: 'code-block',
       content: '```JavaScript\ncode here\n```',
@@ -120,6 +127,7 @@ describe('getLanguage', () => {
 describe('setLanguage', () => {
   it('sets language in code fence immutably', () => {
     const original: CodeBlockNode = {
+      lifecycleStatus: 'active',
       id: 'test-7',
       nodeType: 'code-block',
       content: '```\nfn main() {}\n```',
@@ -143,6 +151,7 @@ describe('setLanguage', () => {
 
   it('overwrites existing language', () => {
     const original: CodeBlockNode = {
+      lifecycleStatus: 'active',
       id: 'test-8',
       nodeType: 'code-block',
       content: '```javascript\ncode\n```',
@@ -161,6 +170,7 @@ describe('setLanguage', () => {
 
   it('preserves other properties', () => {
     const original: CodeBlockNode = {
+      lifecycleStatus: 'active',
       id: 'test-9',
       nodeType: 'code-block',
       content: '```javascript\ncode\n```',
@@ -248,6 +258,7 @@ describe('CodeBlockNodeHelpers', () => {
 describe('Integration', () => {
   it('works with type guard and helpers', () => {
     const node: Node = {
+      lifecycleStatus: 'active',
       id: 'test-10',
       nodeType: 'code-block',
       content: '```sql\nSELECT * FROM users;\n```',
@@ -283,6 +294,7 @@ describe('Integration', () => {
 
     scenarios.forEach(({ language, content, expected }) => {
       const node: CodeBlockNode = {
+        lifecycleStatus: 'active',
         id: `test-${language}`,
         nodeType: 'code-block',
         content,

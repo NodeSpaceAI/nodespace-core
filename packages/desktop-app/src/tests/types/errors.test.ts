@@ -384,6 +384,7 @@ describe('NodeOperationError', () => {
 
 describe('isVersionConflict Type Guard (gRPC shape)', () => {
   const createMockNode = (): Node => ({
+    lifecycleStatus: 'active',
     id: 'node-123',
     nodeType: 'text',
     content: 'Test content',
@@ -727,6 +728,7 @@ describe('VersionConflictData Interface', () => {
       expected: 10,
       actual: 15,
       current_node: {
+        lifecycleStatus: 'active',
         id: 'node-789',
         nodeType: 'task',
         content: 'Task content',

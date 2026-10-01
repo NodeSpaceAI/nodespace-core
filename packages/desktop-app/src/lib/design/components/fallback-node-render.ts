@@ -10,6 +10,8 @@
  * code-block via slash command or pattern detection.
  */
 
+import { isA } from '$lib/types/core-node-types';
+
 /**
  * Normalize content for code-block conversion by adding a closing fence if missing.
  * Handles the pattern where a user types "```\n" before existing content.
@@ -30,26 +32,24 @@ export function extractFallbackDisplayContent(
   content: string,
   nodeType: string
 ): string | undefined {
-  switch (nodeType) {
-    case 'code-block': {
-      // Strip code fence markers for view mode (matches code-block-node.svelte logic)
-      // Replace ```language with empty, keep content, replace closing ``` with newline
-      const result = content.replace(/^```\w*/, '').replace(/```$/, '\n');
-      return result;
-    }
-
-    case 'header':
-      // Strip leading # symbols for header display (matches header node display)
-      return content.replace(/^#+\s*/, '');
-
-    case 'quote-block':
-      // Strip leading > for quote blocks
-      return content.replace(/^>\s*/, '');
-
-    default:
-      // No stripping needed for other types
-      return undefined;
+  if (isA(nodeType, 'code-block')) {
+    // Strip code fence markers for view mode (matches code-block-node.svelte logic)
+    // Replace ```language with empty, keep content, replace closing ``` with newline
+    return content.replace(/^```\w*/, '').replace(/```$/, '\n');
   }
+
+  if (isA(nodeType, 'header')) {
+    // Strip leading # symbols for header display (matches header node display)
+    return content.replace(/^#+\s*/, '');
+  }
+
+  if (isA(nodeType, 'quote-block')) {
+    // Strip leading > for quote blocks
+    return content.replace(/^>\s*/, '');
+  }
+
+  // No stripping needed for other types
+  return undefined;
 }
 
 /**
@@ -62,12 +62,6 @@ export function extractFallbackMetadata(
 ): Record<string, unknown> {
   const base = properties || {};
 
-  switch (nodeType) {
-    case 'code-block':
-      // Code blocks should not process markdown
-      return { ...base, disableMarkdown: true };
-
-    default:
-      return base;
-  }
+  // Code blocks should not process markdown
+  return isA(nodeType, 'code-block') ? { ...base, disableMarkdown: true } : base;
 }

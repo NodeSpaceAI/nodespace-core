@@ -38,6 +38,7 @@ describe('NodeType Conflict Detection', () => {
   describe('NodeType Conversion Bypass', () => {
     it('should bypass conflict detection for nodeType conversions', async () => {
       const textNode: Node = {
+        lifecycleStatus: 'active',
         id: 'test-node-1',
         nodeType: 'text',
         content: '',
@@ -75,6 +76,7 @@ describe('NodeType Conflict Detection', () => {
 
     it('should bypass conflict detection for header → text conversion', async () => {
       const headerNode: Node = {
+        lifecycleStatus: 'active',
         id: 'test-node-2',
         nodeType: 'header',
         content: '## Hello',
@@ -110,6 +112,7 @@ describe('NodeType Conflict Detection', () => {
 
     it('should handle multiple rapid conversions without conflicts', async () => {
       const textNode: Node = {
+        lifecycleStatus: 'active',
         id: 'test-node-3',
         nodeType: 'text',
         content: '',
@@ -149,6 +152,7 @@ describe('NodeType Conflict Detection', () => {
   describe('Regular Conflict Detection', () => {
     it('should still detect conflicts for regular concurrent edits', async () => {
       const textNode: Node = {
+        lifecycleStatus: 'active',
         id: 'test-node-4',
         nodeType: 'text',
         content: 'Original',
@@ -177,6 +181,7 @@ describe('NodeType Conflict Detection', () => {
 
     it('should detect conflicts for concurrent property changes', async () => {
       const textNode: Node = {
+        lifecycleStatus: 'active',
         id: 'test-node-5',
         nodeType: 'text',
         content: 'Test',
@@ -215,6 +220,7 @@ describe('NodeType Conflict Detection', () => {
   describe('Edge Cases', () => {
     it('should handle nodeType conversion with concurrent content edit', async () => {
       const textNode: Node = {
+        lifecycleStatus: 'active',
         id: 'test-node-6',
         nodeType: 'text',
         content: 'Test',
@@ -251,6 +257,7 @@ describe('NodeType Conflict Detection', () => {
 
     it('should handle alternating text ↔ header conversions', async () => {
       const textNode: Node = {
+        lifecycleStatus: 'active',
         id: 'test-node-7',
         nodeType: 'text',
         content: '',
@@ -292,6 +299,7 @@ describe('NodeType Conflict Detection', () => {
 
     it('should handle nodeType conversion with no content change', async () => {
       const textNode: Node = {
+        lifecycleStatus: 'active',
         id: 'test-node-8',
         nodeType: 'text',
         content: '## Already formatted',
@@ -327,6 +335,7 @@ describe('NodeType Conflict Detection', () => {
     it('should apply rapid nodeType conversions across many nodes', async () => {
       const nodes: Node[] = Array.from({ length: 20 }, (_, i) => ({
         id: `test-node-${i}`,
+        lifecycleStatus: 'active' as const,
         nodeType: 'text' as const,
         content: '',
         createdAt: new Date().toISOString(),

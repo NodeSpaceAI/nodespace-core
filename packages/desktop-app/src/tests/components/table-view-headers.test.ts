@@ -24,6 +24,9 @@ function field(partial: Partial<SchemaField> & { name: string; type: string }): 
 
 function schemaWith(fields: SchemaField[]): SchemaNode {
   return {
+    nodeType: 'schema' as const,
+    lifecycleStatus: 'active' as const,
+    properties: {},
     id: 'person',
     content: 'Person',
     createdAt: '2026-01-01T00:00:00Z',
@@ -45,19 +48,19 @@ describe('TableView column headers', () => {
       field({
         name: 'first_name',
         friendlyName: 'First name',
-        type: 'string',
+        type: 'text',
         description: 'First name; optional — a person may exist before a name is set'
       }),
       field({
         name: 'last_name',
         friendlyName: 'Last name',
-        type: 'string',
+        type: 'text',
         description: 'Last name; optional — a person may exist before a name is set'
       }),
       field({
         name: 'email',
         friendlyName: 'Email',
-        type: 'string',
+        type: 'text',
         description: 'Email address (optional)'
       })
     ]);

@@ -300,7 +300,7 @@ impl TaskNode {
     ///
     /// Returns `ValidationError::InvalidNodeType` if the node type is not "task".
     pub fn from_node(node: Node) -> Result<Self, ValidationError> {
-        if node.node_type != "task" {
+        if !crate::models::CoreNodeType::Task.is_exactly(&node.node_type) {
             return Err(ValidationError::InvalidNodeType(format!(
                 "Expected 'task', got '{}'",
                 node.node_type

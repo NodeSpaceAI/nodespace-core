@@ -30,7 +30,7 @@ import { sharedNodeStore } from '$lib/services/shared-node-store.svelte';
 import { backendAdapter } from '$lib/services/backend-adapter';
 
 function stringField(name: string, friendlyName: string, opts: Partial<SchemaField> = {}): SchemaField {
-  return { name, friendlyName, type: 'string', protection: 'user', indexed: false, required: false, ...opts };
+  return { name, friendlyName, type: 'text', protection: 'user', indexed: false, required: false, ...opts };
 }
 
 /** A user-defined type whose `sku` is unique and whose `notes` is not. */

@@ -7,21 +7,15 @@
  * (`custom:…`), never `status`/`priority`/`start_date`/`end_date`.
  */
 
-import type { Node } from './node';
+import type { Node, NodeEnvelope } from './node';
+import { isExactly } from './core-node-types';
 
 /** Project status — the schema's core values plus any user-added value. */
 export type ProjectStatus = 'planning' | 'active' | 'completed' | 'cancelled' | string;
 
-export interface ProjectNode {
-  id: string;
+/** `properties` carries extension fields only — core fields are the typed fields below. */
+export interface ProjectNode extends NodeEnvelope {
   nodeType: 'project';
-  content: string;
-  title?: string | null;
-  version: number;
-  createdAt: string;
-  modifiedAt: string;
-  /** Extension fields only — core fields are the typed fields below. */
-  properties?: Record<string, unknown>;
 
   status: ProjectStatus;
   priority?: string;
@@ -42,7 +36,7 @@ export interface ProjectNodeUpdate {
 }
 
 export function isProjectNode(node: Node | ProjectNode): node is ProjectNode {
-  return node.nodeType === 'project';
+  return isExactly(node.nodeType, 'project');
 }
 
 /**

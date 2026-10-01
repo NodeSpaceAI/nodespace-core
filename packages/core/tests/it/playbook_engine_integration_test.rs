@@ -209,7 +209,7 @@ async fn play_fires_end_to_end_for_local_mutation() -> Result<()> {
     create_schema(
         &service,
         "pb_task",
-        json!([{ "name": "status", "type": "string" }]),
+        json!([{ "name": "status", "type": "text" }]),
     )
     .await?;
 
@@ -308,7 +308,7 @@ async fn sync_originated_event_does_not_reach_trigger_evaluation() -> Result<()>
     create_schema(
         &service,
         "pb_sync_task",
-        json!([{ "name": "status", "type": "string" }]),
+        json!([{ "name": "status", "type": "text" }]),
     )
     .await?;
 
@@ -413,7 +413,7 @@ async fn sync_originated_bulk_create_does_not_reach_trigger_evaluation() -> Resu
     create_schema(
         &service,
         "pb_bulk_sync_task",
-        json!([{ "name": "status", "type": "string" }]),
+        json!([{ "name": "status", "type": "text" }]),
     )
     .await?;
 
@@ -637,7 +637,7 @@ async fn scheduled_play_computes_end_date_via_add_days_and_writes_it_to_a_new_no
     create_schema(
         &service,
         "pb_cycle_source",
-        json!([{ "name": "start_date", "type": "string" }]),
+        json!([{ "name": "start_date", "type": "text" }]),
     )
     .await?;
     // A distinct node type for the action to create -- reusing the
@@ -647,7 +647,7 @@ async fn scheduled_play_computes_end_date_via_add_days_and_writes_it_to_a_new_no
     create_schema(
         &service,
         "pb_cycle_result",
-        json!([{ "name": "end_date", "type": "string" }]),
+        json!([{ "name": "end_date", "type": "text" }]),
     )
     .await?;
 
@@ -783,7 +783,7 @@ async fn setup_cycle_total_estimate_play(
         &service,
         &cycle_type,
         json!([
-            { "name": "touch", "type": "string" },
+            { "name": "touch", "type": "text" },
             { "name": "total_estimate", "type": "number" }
         ]),
         json!([{
@@ -954,7 +954,7 @@ async fn recompute_over_a_relationship_with_zero_current_matches_does_not_fail_t
         &service,
         cycle_type,
         json!([
-            { "name": "touch", "type": "string" },
+            { "name": "touch", "type": "text" },
             { "name": "total_estimate", "type": "number" },
             { "name": "item_count", "type": "number" }
         ]),
@@ -1184,7 +1184,7 @@ async fn relationship_added_rule_fires_on_matching_relationship_create() -> Resu
     create_schema(
         &service,
         "pbrel_add_task",
-        json!([{ "name": "notified", "type": "string" }]),
+        json!([{ "name": "notified", "type": "text" }]),
     )
     .await?;
 
@@ -1272,7 +1272,7 @@ async fn relationship_removed_rule_fires_on_matching_relationship_delete() -> Re
     create_schema(
         &service,
         "pbrel_remove_task",
-        json!([{ "name": "notified", "type": "string" }]),
+        json!([{ "name": "notified", "type": "text" }]),
     )
     .await?;
 
@@ -1356,7 +1356,7 @@ async fn relationship_added_rule_on_base_type_fires_for_subtype_source_node() ->
         &service,
         json!({
             "name": "pbrel_sub_base",
-            "fields": [{ "name": "notified", "type": "string", "protection": "user", "indexed": false }]
+            "fields": [{ "name": "notified", "type": "text", "protection": "user", "indexed": false }]
         }),
     )
     .await?;
@@ -1441,13 +1441,13 @@ async fn relationship_added_rule_does_not_fire_for_non_matching_source_type() ->
     create_schema(
         &service,
         "pbrel_registered_task",
-        json!([{ "name": "notified", "type": "string" }]),
+        json!([{ "name": "notified", "type": "text" }]),
     )
     .await?;
     create_schema(
         &service,
         "pbrel_unrelated_task",
-        json!([{ "name": "notified", "type": "string" }]),
+        json!([{ "name": "notified", "type": "text" }]),
     )
     .await?;
 

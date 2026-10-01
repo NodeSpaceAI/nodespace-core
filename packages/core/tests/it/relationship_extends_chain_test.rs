@@ -84,22 +84,32 @@ async fn make_node(svc: &NodeService, id: &str, node_type: &str, title: &str) ->
 async fn delete_relationship_protects_last_edge_of_an_inherited_required_relationship() -> Result<()>
 {
     let (svc, _t) = service_with_extending_schemas().await?;
-    make_node(&svc, "gadget-1", "gadget", "Widget").await?;
-    make_node(&svc, "person-1", "person", "").await?;
+    make_node(
+        &svc,
+        "72c0df38-e1b3-5288-bb3f-b63462cc3df5",
+        "gadget",
+        "Widget",
+    )
+    .await?;
+    make_node(&svc, "bf53417d-8511-5995-aecb-300ecf227fcb", "person", "").await?;
 
     // `assigned_to` is declared `required: true` on `gizmo`, not redeclared on
     // `gadget`, and the create path already accepts it on a `gadget` instance
     // via the extends chain.
     svc.create_relationship(
-        "gadget-1",
+        "72c0df38-e1b3-5288-bb3f-b63462cc3df5",
         "assigned_to",
-        "person-1",
+        "bf53417d-8511-5995-aecb-300ecf227fcb",
         json!({ "access": "owner" }),
     )
     .await?;
 
     let err = svc
-        .delete_relationship("gadget-1", "assigned_to", "person-1")
+        .delete_relationship(
+            "72c0df38-e1b3-5288-bb3f-b63462cc3df5",
+            "assigned_to",
+            "bf53417d-8511-5995-aecb-300ecf227fcb",
+        )
         .await;
     assert!(
         err.is_err(),
@@ -113,22 +123,28 @@ async fn delete_relationship_protects_last_edge_of_an_inherited_required_relatio
 #[tokio::test]
 async fn update_relationship_properties_validates_inherited_enum_edge_fields() -> Result<()> {
     let (svc, _t) = service_with_extending_schemas().await?;
-    make_node(&svc, "gadget-1", "gadget", "Widget").await?;
-    make_node(&svc, "person-1", "person", "").await?;
+    make_node(
+        &svc,
+        "72c0df38-e1b3-5288-bb3f-b63462cc3df5",
+        "gadget",
+        "Widget",
+    )
+    .await?;
+    make_node(&svc, "bf53417d-8511-5995-aecb-300ecf227fcb", "person", "").await?;
 
     svc.create_relationship(
-        "gadget-1",
+        "72c0df38-e1b3-5288-bb3f-b63462cc3df5",
         "assigned_to",
-        "person-1",
+        "bf53417d-8511-5995-aecb-300ecf227fcb",
         json!({ "access": "owner" }),
     )
     .await?;
 
     let err = svc
         .update_relationship_properties(
-            "gadget-1",
+            "72c0df38-e1b3-5288-bb3f-b63462cc3df5",
             "assigned_to",
-            "person-1",
+            "bf53417d-8511-5995-aecb-300ecf227fcb",
             json!({ "access": "not-a-real-value" }),
         )
         .await;
@@ -170,11 +186,28 @@ async fn get_relationship_graph_includes_inherited_relationships() -> Result<()>
 #[tokio::test]
 async fn create_relationship_rejects_the_extends_type_system_name() -> Result<()> {
     let (svc, _t) = service_with_extending_schemas().await?;
-    make_node(&svc, "gadget-1", "gadget", "Widget").await?;
-    make_node(&svc, "gadget-2", "gadget", "Sprocket").await?;
+    make_node(
+        &svc,
+        "72c0df38-e1b3-5288-bb3f-b63462cc3df5",
+        "gadget",
+        "Widget",
+    )
+    .await?;
+    make_node(
+        &svc,
+        "b6ac923b-3cc4-526d-ae10-ce06bd790604",
+        "gadget",
+        "Sprocket",
+    )
+    .await?;
 
     let err = svc
-        .create_relationship("gadget-1", "extends", "gadget-2", json!({}))
+        .create_relationship(
+            "72c0df38-e1b3-5288-bb3f-b63462cc3df5",
+            "extends",
+            "b6ac923b-3cc4-526d-ae10-ce06bd790604",
+            json!({}),
+        )
         .await;
     assert!(
         err.is_err(),

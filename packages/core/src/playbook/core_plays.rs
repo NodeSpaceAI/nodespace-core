@@ -18,10 +18,11 @@ use serde_json::json;
 
 /// Node id of the parent-task completion rollup Play (ADR-079).
 ///
-/// Stable and hardcoded rather than minted per install: ADR-060 §5 keys
+/// A fixed literal UUID rather than one minted per install: ADR-060 §5 keys
 /// cross-Play rule ordering on the Play node id, so a random id would make two
-/// devices order the same rules differently.
-pub const PARENT_TASK_COMPLETION_PLAY_ID: &str = "play-core-parent-task-completion";
+/// devices order the same rules differently. A seeded node's identity is its
+/// id (ADR-086 §10).
+pub const PARENT_TASK_COMPLETION_PLAY_ID: &str = "5dc9b580-8840-4d02-b89d-9aa16ac552fd";
 
 /// The rollup rule, as shipped (ADR-079).
 ///

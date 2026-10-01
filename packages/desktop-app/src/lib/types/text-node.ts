@@ -16,14 +16,15 @@
  * ```
  */
 
-import type { Node } from './node';
+import type { Node, NodeEnvelope } from './node';
+import { isExactly } from './core-node-types';
 
 /**
  * TextNode interface extending base Node
  *
  * Represents a simple text node - the most common node type.
  */
-export interface TextNode extends Node {
+export interface TextNode extends NodeEnvelope {
   nodeType: 'text';
 }
 
@@ -42,7 +43,7 @@ export interface TextNode extends Node {
  * ```
  */
 export function isTextNode(node: Node): node is TextNode {
-  return node.nodeType === 'text';
+  return isExactly(node.nodeType, 'text');
 }
 
 /**
@@ -62,6 +63,7 @@ export const TextNodeHelpers = {
    */
   createTextNode(content: string): TextNode {
     return {
+      lifecycleStatus: 'active',
       id: `text-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`,
       nodeType: 'text',
       content,

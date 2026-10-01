@@ -33,7 +33,7 @@ async fn create_base_and_subtype(svc: &Arc<NodeService>) -> Result<()> {
         svc,
         json!({
             "name": "ledger_customer",
-            "fields": [{ "name": "name", "type": "string" }]
+            "fields": [{ "name": "name", "type": "text" }]
         }),
     )
     .await

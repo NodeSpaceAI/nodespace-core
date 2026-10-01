@@ -134,7 +134,7 @@ describe('makeEmptyValueForField', () => {
     expect(makeEmptyValueForField(field({ name: 'a', type: 'array' }))).toEqual([]);
     expect(makeEmptyValueForField(field({ name: 'b', type: 'boolean' }))).toBe(false);
     expect(makeEmptyValueForField(field({ name: 'n', type: 'number' }))).toBe(0);
-    expect(makeEmptyValueForField(field({ name: 's', type: 'string' }))).toBe('');
+    expect(makeEmptyValueForField(field({ name: 's', type: 'text' }))).toBe('');
     expect(makeEmptyValueForField(field({ name: 't', type: 'text' }))).toBe('');
     expect(makeEmptyValueForField(field({ name: 'e', type: 'enum' }))).toBe('');
     expect(makeEmptyValueForField(field({ name: 'd', type: 'date' }))).toBeNull();
@@ -147,7 +147,7 @@ describe('makeEmptyArrayItem', () => {
   });
 
   it('returns the scalar empty for an array of scalars', () => {
-    expect(makeEmptyArrayItem(field({ name: 'tags', type: 'array', itemType: 'string' }))).toBe('');
+    expect(makeEmptyArrayItem(field({ name: 'tags', type: 'array', itemType: 'text' }))).toBe('');
     expect(makeEmptyArrayItem(field({ name: 'counts', type: 'array', itemType: 'number' }))).toBe(0);
   });
 
@@ -160,7 +160,7 @@ describe('isNestedField', () => {
   it('is true only for object and array fields', () => {
     expect(isNestedField(field({ name: 'o', type: 'object' }))).toBe(true);
     expect(isNestedField(field({ name: 'a', type: 'array' }))).toBe(true);
-    expect(isNestedField(field({ name: 's', type: 'string' }))).toBe(false);
+    expect(isNestedField(field({ name: 's', type: 'text' }))).toBe(false);
     expect(isNestedField(field({ name: 'e', type: 'enum' }))).toBe(false);
   });
 });

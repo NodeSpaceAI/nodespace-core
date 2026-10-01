@@ -111,9 +111,9 @@ async fn core_link_declarations_are_seeded_as_relationship_rows() -> Result<()> 
 #[tokio::test]
 async fn task_link_pairs_resolve_direction_asymmetrically() -> Result<()> {
     let (svc, _t) = create_test_service().await?;
-    make_node(&svc, "t_upstream", "task").await?;
-    make_node(&svc, "t_mid", "task").await?;
-    make_node(&svc, "t_downstream", "task").await?;
+    make_node(&svc, "87f5bbc3-0d4e-5cbf-9f65-6776ee32e35c", "task").await?;
+    make_node(&svc, "fa93961d-299d-551a-b363-5b1b783ab365", "task").await?;
+    make_node(&svc, "0afefbf8-6574-5d5d-ba9f-025143d26219", "task").await?;
 
     for (name, reverse_name) in [
         ("blocks", "blocked_by"),
@@ -121,51 +121,79 @@ async fn task_link_pairs_resolve_direction_asymmetrically() -> Result<()> {
         ("duplicates", "duplicated_by"),
     ] {
         // upstream → mid → downstream, under this relationship name.
-        svc.create_relationship("t_upstream", name, "t_mid", json!({}))
-            .await
-            .map_err(|e| anyhow::anyhow!("create upstream {name} mid: {e}"))?;
-        svc.create_relationship("t_mid", name, "t_downstream", json!({}))
-            .await
-            .map_err(|e| anyhow::anyhow!("create mid {name} downstream: {e}"))?;
+        svc.create_relationship(
+            "87f5bbc3-0d4e-5cbf-9f65-6776ee32e35c",
+            name,
+            "fa93961d-299d-551a-b363-5b1b783ab365",
+            json!({}),
+        )
+        .await
+        .map_err(|e| anyhow::anyhow!("create upstream {name} mid: {e}"))?;
+        svc.create_relationship(
+            "fa93961d-299d-551a-b363-5b1b783ab365",
+            name,
+            "0afefbf8-6574-5d5d-ba9f-025143d26219",
+            json!({}),
+        )
+        .await
+        .map_err(|e| anyhow::anyhow!("create mid {name} downstream: {e}"))?;
 
         // Forward from the middle reaches only what mid points at.
-        let forward = rel_ops::get_related_nodes(&svc, get("t_mid", name, "out")).await?;
+        let forward = rel_ops::get_related_nodes(
+            &svc,
+            get("fa93961d-299d-551a-b363-5b1b783ab365", name, "out"),
+        )
+        .await?;
         assert_eq!(forward.count, 1, "{name} should traverse forward from mid");
         assert_eq!(
-            forward.related_nodes[0]["id"], "t_downstream",
+            forward.related_nodes[0]["id"], "0afefbf8-6574-5d5d-ba9f-025143d26219",
             "{name} from mid must reach downstream, not upstream"
         );
 
         // The reverse spelling from the same node reaches the OTHER neighbour.
         // This only resolves if self-referential declarations are handled, and
         // only passes if the two names address different edge sets.
-        let reverse = rel_ops::get_related_nodes(&svc, get("t_mid", reverse_name, "out")).await?;
+        let reverse = rel_ops::get_related_nodes(
+            &svc,
+            get("fa93961d-299d-551a-b363-5b1b783ab365", reverse_name, "out"),
+        )
+        .await?;
         assert_eq!(
             reverse.count, 1,
             "{reverse_name} must resolve rather than return a silent zero: {reverse:?}"
         );
         assert_eq!(
-            reverse.related_nodes[0]["id"], "t_upstream",
+            reverse.related_nodes[0]["id"], "87f5bbc3-0d4e-5cbf-9f65-6776ee32e35c",
             "{reverse_name} from mid must reach upstream — if it returns downstream, \
              the reverse name collapsed onto the forward edge set"
         );
 
         // ...and agree with the same traversal spelled the long way.
-        let inbound = rel_ops::get_related_nodes(&svc, get("t_mid", name, "in")).await?;
+        let inbound = rel_ops::get_related_nodes(
+            &svc,
+            get("fa93961d-299d-551a-b363-5b1b783ab365", name, "in"),
+        )
+        .await?;
         assert_eq!(
             inbound.related_nodes[0]["id"], reverse.related_nodes[0]["id"],
             "{reverse_name} and `{name} --direction in` must agree"
         );
 
         // The chain ends see exactly one side each.
-        let upstream_reverse =
-            rel_ops::get_related_nodes(&svc, get("t_upstream", reverse_name, "out")).await?;
+        let upstream_reverse = rel_ops::get_related_nodes(
+            &svc,
+            get("87f5bbc3-0d4e-5cbf-9f65-6776ee32e35c", reverse_name, "out"),
+        )
+        .await?;
         assert_eq!(
             upstream_reverse.count, 0,
             "nothing points at upstream under {name}"
         );
-        let downstream_forward =
-            rel_ops::get_related_nodes(&svc, get("t_downstream", name, "out")).await?;
+        let downstream_forward = rel_ops::get_related_nodes(
+            &svc,
+            get("0afefbf8-6574-5d5d-ba9f-025143d26219", name, "out"),
+        )
+        .await?;
         assert_eq!(
             downstream_forward.count, 0,
             "downstream points at nothing under {name}"
@@ -180,35 +208,69 @@ async fn task_link_pairs_resolve_direction_asymmetrically() -> Result<()> {
 #[tokio::test]
 async fn creator_resolves_independently_of_assignee() -> Result<()> {
     let (svc, _t) = create_test_service().await?;
-    make_node(&svc, "p_reporter", "person").await?;
-    make_node(&svc, "p_assignee", "person").await?;
-    make_node(&svc, "t1", "task").await?;
+    make_node(&svc, "ce036e75-4532-5462-b7eb-ba53673bc4bc", "person").await?;
+    make_node(&svc, "23b4430f-01b5-5ad2-aa2c-cfb9edae6e2f", "person").await?;
+    make_node(&svc, "47b0416e-68db-58e9-805c-db17bfe8856d", "task").await?;
 
-    svc.create_relationship("p_reporter", "reported_tasks", "t1", json!({}))
-        .await
-        .map_err(|e| anyhow::anyhow!("reported_tasks: {e}"))?;
-    svc.create_relationship("p_assignee", "tasks", "t1", json!({}))
-        .await
-        .map_err(|e| anyhow::anyhow!("tasks: {e}"))?;
+    svc.create_relationship(
+        "ce036e75-4532-5462-b7eb-ba53673bc4bc",
+        "reported_tasks",
+        "47b0416e-68db-58e9-805c-db17bfe8856d",
+        json!({}),
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("reported_tasks: {e}"))?;
+    svc.create_relationship(
+        "23b4430f-01b5-5ad2-aa2c-cfb9edae6e2f",
+        "tasks",
+        "47b0416e-68db-58e9-805c-db17bfe8856d",
+        json!({}),
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("tasks: {e}"))?;
 
-    let creator = rel_ops::get_related_nodes(&svc, get("t1", "creator", "out")).await?;
+    let creator = rel_ops::get_related_nodes(
+        &svc,
+        get("47b0416e-68db-58e9-805c-db17bfe8856d", "creator", "out"),
+    )
+    .await?;
     assert_eq!(creator.count, 1, "creator must resolve: {creator:?}");
-    assert_eq!(creator.related_nodes[0]["id"], "p_reporter");
+    assert_eq!(
+        creator.related_nodes[0]["id"],
+        "ce036e75-4532-5462-b7eb-ba53673bc4bc"
+    );
 
-    let assignee = rel_ops::get_related_nodes(&svc, get("t1", "assignee", "out")).await?;
+    let assignee = rel_ops::get_related_nodes(
+        &svc,
+        get("47b0416e-68db-58e9-805c-db17bfe8856d", "assignee", "out"),
+    )
+    .await?;
     assert_eq!(assignee.count, 1);
     assert_eq!(
-        assignee.related_nodes[0]["id"], "p_assignee",
+        assignee.related_nodes[0]["id"], "23b4430f-01b5-5ad2-aa2c-cfb9edae6e2f",
         "the new declaration must not shadow the existing assignee reverse name"
     );
 
     // And from the person's end, the reporter's queues stay distinct.
-    let reported =
-        rel_ops::get_related_nodes(&svc, get("p_reporter", "reported_tasks", "out")).await?;
+    let reported = rel_ops::get_related_nodes(
+        &svc,
+        get(
+            "ce036e75-4532-5462-b7eb-ba53673bc4bc",
+            "reported_tasks",
+            "out",
+        ),
+    )
+    .await?;
     assert_eq!(reported.count, 1);
-    assert_eq!(reported.related_nodes[0]["id"], "t1");
-    let reporter_assigned =
-        rel_ops::get_related_nodes(&svc, get("p_reporter", "tasks", "out")).await?;
+    assert_eq!(
+        reported.related_nodes[0]["id"],
+        "47b0416e-68db-58e9-805c-db17bfe8856d"
+    );
+    let reporter_assigned = rel_ops::get_related_nodes(
+        &svc,
+        get("ce036e75-4532-5462-b7eb-ba53673bc4bc", "tasks", "out"),
+    )
+    .await?;
     assert_eq!(
         reporter_assigned.count, 0,
         "reporting a task must not make the reporter its assignee"
@@ -223,19 +285,32 @@ async fn creator_resolves_independently_of_assignee() -> Result<()> {
 #[tokio::test]
 async fn blocking_cycle_is_representable() -> Result<()> {
     let (svc, _t) = create_test_service().await?;
-    make_node(&svc, "t_a", "task").await?;
-    make_node(&svc, "t_b", "task").await?;
+    make_node(&svc, "f6070d8d-5c7b-5257-bcf3-6e52ee19d27b", "task").await?;
+    make_node(&svc, "86eac5ed-73ba-500f-bf77-83a5f12b66cb", "task").await?;
 
-    svc.create_relationship("t_a", "blocks", "t_b", json!({}))
-        .await
-        .map_err(|e| anyhow::anyhow!("a blocks b: {e}"))?;
-    svc.create_relationship("t_b", "blocks", "t_a", json!({}))
-        .await
-        .map_err(|e| anyhow::anyhow!("b blocks a — a cycle must be accepted: {e}"))?;
+    svc.create_relationship(
+        "f6070d8d-5c7b-5257-bcf3-6e52ee19d27b",
+        "blocks",
+        "86eac5ed-73ba-500f-bf77-83a5f12b66cb",
+        json!({}),
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("a blocks b: {e}"))?;
+    svc.create_relationship(
+        "86eac5ed-73ba-500f-bf77-83a5f12b66cb",
+        "blocks",
+        "f6070d8d-5c7b-5257-bcf3-6e52ee19d27b",
+        json!({}),
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("b blocks a — a cycle must be accepted: {e}"))?;
 
     // Both directions read back on both nodes: each task blocks the other and
     // is blocked by the other.
-    for id in ["t_a", "t_b"] {
+    for id in [
+        "f6070d8d-5c7b-5257-bcf3-6e52ee19d27b",
+        "86eac5ed-73ba-500f-bf77-83a5f12b66cb",
+    ] {
         let blocks = rel_ops::get_related_nodes(&svc, get(id, "blocks", "out")).await?;
         assert_eq!(blocks.count, 1, "{id} blocks the other");
         let blocked_by = rel_ops::get_related_nodes(&svc, get(id, "blocked_by", "out")).await?;

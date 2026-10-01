@@ -50,6 +50,20 @@ const DEFAULT_CYCLE_DAYS: i64 = 14;
 /// exact firing time is best-effort, not guaranteed.
 const DAILY_AFTER_MIDNIGHT: &str = "0 5 0 * * * *";
 
+// The fixed ids of the nodes this playbook seeds. A seeded node's identity
+// is its id (ADR-086 §10), and ADR-060 §5 orders rules across plays by play
+// id, so each is a literal UUID rather than one minted per install.
+/// The `linear-cycle-rollover` play.
+pub const CYCLE_ROLLOVER_ID: &str = "c0e62d2e-3f5b-4f0a-9d36-1b7f1e6a4c01";
+/// The `linear-sub-issue-gate` play.
+pub const SUB_ISSUE_GATE_ID: &str = "c0e62d2e-3f5b-4f0a-9d36-1b7f1e6a4c02";
+/// The `linear-blocker-gate` play.
+pub const BLOCKER_GATE_ID: &str = "c0e62d2e-3f5b-4f0a-9d36-1b7f1e6a4c03";
+/// The `linear-issues-by-status` saved view.
+pub const ISSUES_BY_STATUS_ID: &str = "c0e62d2e-3f5b-4f0a-9d36-1b7f1e6a4c04";
+/// The `linear-cycles` saved view.
+pub const CYCLES_ID: &str = "c0e62d2e-3f5b-4f0a-9d36-1b7f1e6a4c05";
+
 /// The Linear-style playbook.
 pub fn playbook() -> MethodologyPlaybook {
     MethodologyPlaybook {
@@ -309,7 +323,7 @@ const ROLLOVER_TASKS: &str = "trigger.node.tasks.where(status != 'done' && statu
 /// task's own id, so the reassignments collapse the same way.
 fn cycle_rollover_play() -> PlayStep {
     PlayStep {
-        play_id: "linear-cycle-rollover",
+        play_id: CYCLE_ROLLOVER_ID,
         name: "Close out the ending cycle",
         description: "On the day a cycle ends, create its successor — starting the next day and \
              spanning that cycle's own duration_days — then move the ending cycle's unfinished \
@@ -371,7 +385,7 @@ fn cycle_rollover_play() -> PlayStep {
 /// this gate works for any nesting the outline allows.
 fn sub_issue_completion_gate() -> PlayStep {
     PlayStep {
-        play_id: "linear-sub-issue-gate",
+        play_id: SUB_ISSUE_GATE_ID,
         name: "Block closing an issue with open sub-issues",
         description:
             "Rejects a status change to done while any child issue is still open. Close the \
@@ -414,7 +428,7 @@ fn sub_issue_completion_gate() -> PlayStep {
 /// or `triage` behind a blocker quite legitimately.
 fn blocker_gate() -> PlayStep {
     PlayStep {
-        play_id: "linear-blocker-gate",
+        play_id: BLOCKER_GATE_ID,
         name: "Block starting an issue with an open blocker",
         description:
             "Rejects a status change to in_progress while anything blocking this issue is \
@@ -460,7 +474,7 @@ fn blocker_gate() -> PlayStep {
 /// rather than anything this view has to declare.
 fn issues_by_status_view() -> ViewStep {
     ViewStep {
-        view_id: "linear-issues-by-status",
+        view_id: ISSUES_BY_STATUS_ID,
         name: "Issues by Status",
         definition: QueryDefinition {
             target_type: "issue".to_string(),
@@ -482,7 +496,7 @@ fn issues_by_status_view() -> ViewStep {
 /// next.
 fn cycles_view() -> ViewStep {
     ViewStep {
-        view_id: "linear-cycles",
+        view_id: CYCLES_ID,
         name: "Cycles",
         definition: QueryDefinition {
             target_type: "cycle".to_string(),

@@ -414,7 +414,7 @@ async fn measure_decomposition_filter_shapes() {
             .map(|s| {
                 s.fields
                     .iter()
-                    .map(|f| (f.name.clone(), f.field_type.clone()))
+                    .map(|f| (f.name.clone(), f.field_type.to_string()))
                     .collect()
             })
             .unwrap_or_default();

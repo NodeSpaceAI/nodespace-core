@@ -17,6 +17,7 @@
 -->
 
 <script lang="ts">
+import { isA } from '$lib/types/core-node-types';
   import { createEventDispatcher, onDestroy } from 'svelte';
   import BaseNode from './base-node.svelte';
   import { focusManager } from '$lib/services/focus-manager.svelte';
@@ -305,7 +306,7 @@
     const detail = event.detail;
 
     // For code-blocks: no splitting, create blank code-block below with cursor ready
-    if (detail.nodeType === 'code-block') {
+    if (isA(detail.nodeType, 'code-block')) {
       detail.currentContent = content; // Keep current node unchanged
       detail.newContent = EMPTY_CODE_BLOCK_TEMPLATE; // New blank code-block (language managed by dropdown state)
       // Cursor position is for edit content (```\n|\n```) which is position 4

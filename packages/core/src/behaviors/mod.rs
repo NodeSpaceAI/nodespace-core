@@ -10,8 +10,9 @@
 //! and consistent validation across all node operations.
 
 use crate::models::schema::SchemaField;
+use crate::models::CoreNodeType;
 use crate::models::{
-    Node, QueryFields, SchemaNode, SkillNode, TaskNode, ValidationError as NodeValidationError,
+    Node, QueryFields, SchemaNode, SkillNode, ValidationError as NodeValidationError,
     AI_CHAT_PROVIDERS,
 };
 use crate::services::NodeAccessor;
@@ -406,10 +407,21 @@ async fn aggregate_children_content(
             );
             continue;
         }
-        // Use behavior to get the contribution this child makes to its parent's embedding
-        let behavior: Arc<dyn NodeBehavior> = registry
-            .get(&child.node_type)
-            .unwrap_or_else(|| Arc::new(CustomNodeBehavior::new(&child.node_type)));
+        // Use behavior to get the contribution this child makes to its parent's
+        // embedding, resolved through the child's `extends` chain so a subtype
+        // contributes as the type it extends does.
+        let chain = match accessor.type_chain(&child.node_type).await {
+            Ok(chain) => chain,
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to resolve the type chain of {}: {}",
+                    child.node_type,
+                    e
+                );
+                vec![child.node_type.clone()]
+            }
+        };
+        let behavior = registry.resolve(&chain);
         if let Some(contribution) = behavior.get_parent_contribution(&child) {
             parts.push(contribution);
         }
@@ -576,12 +588,6 @@ impl NodeBehavior for HeaderNodeBehavior {
 ///
 /// User-extensible values can be added via schema.
 ///
-/// # Strongly-Typed Validation
-///
-/// This behavior supports both generic Node validation (via `validate()`) and
-/// strongly-typed TaskNode validation (via `validate_task_node()`). The generic
-/// validation internally converts to TaskNode for type-safe validation.
-///
 /// # Examples
 ///
 /// ```rust
@@ -599,65 +605,16 @@ impl NodeBehavior for HeaderNodeBehavior {
 /// ```
 pub struct TaskNodeBehavior;
 
-impl TaskNodeBehavior {
-    /// Validate a strongly-typed TaskNode directly
-    ///
-    /// This method provides compile-time type safety by validating TaskNode
-    /// fields directly rather than parsing from JSON properties. Use this
-    /// method when you already have a TaskNode instance.
-    ///
-    /// # Arguments
-    ///
-    /// * `task` - The TaskNode to validate
-    ///
-    /// # Errors
-    ///
-    /// Returns `ValidationError` if validation fails. Currently validates:
-    /// - Status is a valid enum value (enforced by TaskStatus type)
-    /// - Priority is a valid enum value (enforced by Priority type)
-    ///
-    /// # Examples
-    ///
-    /// ```rust
-    /// use nodespace_core::behaviors::TaskNodeBehavior;
-    /// use nodespace_core::models::{TaskNode, TaskStatus, Priority};
-    ///
-    /// let behavior = TaskNodeBehavior;
-    /// let task = TaskNode::builder("Fix bug".to_string())
-    ///     .with_status(TaskStatus::InProgress)
-    ///     .with_priority(Priority::Medium)
-    ///     .build();
-    ///
-    /// assert!(behavior.validate_task_node(&task).is_ok());
-    /// ```
-    pub fn validate_task_node(&self, _task: &TaskNode) -> Result<(), NodeValidationError> {
-        // Status is already type-safe via TaskStatus enum - no validation needed
-        // The Rust type system guarantees it's a valid status value
-        //
-        // Priority is already type-safe via Priority enum - no validation needed
-        // Core values (highest, high, medium, low, lowest) are enforced by the enum
-        // User-defined values (Priority::User) are allowed by schema extension
-        //
-        // Note: Empty content is allowed for tasks - users can add description later
-        // Note: Due date validation (if present, must be valid DateTime) is enforced by type
-
-        Ok(())
-    }
-}
-
 impl NodeBehavior for TaskNodeBehavior {
     fn type_name(&self) -> &'static str {
         "task"
     }
 
-    fn validate(&self, node: &Node) -> Result<(), NodeValidationError> {
-        // Convert to strongly-typed TaskNode and validate.
-        // `from_node` fails only when `node_type != "task"`, returning
-        // `InvalidNodeType` — the same enum this returns, so `?` propagates it
-        // unchanged. A node this behavior does not describe is rejected rather
-        // than validated against task rules.
-        let task = TaskNode::from_node(node.clone())?;
-        self.validate_task_node(&task)
+    fn validate(&self, _node: &Node) -> Result<(), NodeValidationError> {
+        // A task's field vocabulary is the schema's to check, and empty
+        // content is allowed. The behaviour also runs for every type that
+        // extends `task`, so it never reads the node's own type.
+        Ok(())
     }
 
     fn can_have_children(&self) -> bool {
@@ -1246,7 +1203,7 @@ fn validate_schema_field(field: &SchemaField) -> Result<(), NodeValidationError>
     validate_schema_field_name(&field.name)?;
 
     // Enum fields must have at least one value defined
-    if field.field_type == "enum" {
+    if field.field_type == crate::models::SchemaFieldType::Enum {
         let has_values = field.core_values.as_ref().is_some_and(|v| !v.is_empty())
             || field.user_values.as_ref().is_some_and(|v| !v.is_empty());
 
@@ -1493,7 +1450,9 @@ impl NodeBehavior for QueryNodeBehavior {
     /// non-object `view_config` is rejected on write rather than discovered
     /// when the view is opened.
     fn validate(&self, node: &Node) -> Result<(), NodeValidationError> {
-        QueryFields::from_node(node)?;
+        // Decoded from the properties rather than the node, so a type
+        // extending `query` is held to the same field shapes.
+        QueryFields::from_properties(&node.properties)?;
         Ok(())
     }
 
@@ -1834,6 +1793,65 @@ impl NodeBehavior for AgentGuidanceNodeBehavior {
     }
 }
 
+/// Built-in behavior for play nodes (workflow definitions).
+///
+/// A play's rules are validated by the play engine's own pipeline on every
+/// write (`NodeService::validate_play_rules`), and its fields by the schema,
+/// so there is nothing left for the behaviour to check. A play is automation,
+/// not knowledge: it is not embedded.
+pub struct PlayNodeBehavior;
+
+impl NodeBehavior for PlayNodeBehavior {
+    fn type_name(&self) -> &'static str {
+        CoreNodeType::Play.as_str()
+    }
+
+    fn validate(&self, _node: &Node) -> Result<(), NodeValidationError> {
+        Ok(())
+    }
+
+    fn can_have_children(&self) -> bool {
+        true
+    }
+
+    fn supports_markdown(&self) -> bool {
+        false
+    }
+
+    fn get_embeddable_content(&self, _node: &Node) -> Option<String> {
+        None
+    }
+
+    fn get_parent_contribution(&self, _node: &Node) -> Option<String> {
+        None
+    }
+}
+
+/// Built-in behavior for checkbox nodes.
+///
+/// A checkbox is a primitive: its text and its checked state are both in
+/// `content` (`- [ ] ` / `- [x] `). It is searchable text like any other
+/// markup body, so it takes the default embedding rules.
+pub struct CheckboxNodeBehavior;
+
+impl NodeBehavior for CheckboxNodeBehavior {
+    fn type_name(&self) -> &'static str {
+        CoreNodeType::Checkbox.as_str()
+    }
+
+    fn validate(&self, _node: &Node) -> Result<(), NodeValidationError> {
+        Ok(())
+    }
+
+    fn can_have_children(&self) -> bool {
+        true
+    }
+
+    fn supports_markdown(&self) -> bool {
+        true
+    }
+}
+
 /// Built-in behavior for skill nodes (ADR-030 Phase 3)
 ///
 /// Skills define what the agent can do and how. They contain:
@@ -1860,8 +1878,10 @@ impl NodeBehavior for SkillNodeBehavior {
         }
 
         // Field types (description, exclusion, tool_whitelist,
-        // max_iterations, node_types) are the model's to check.
-        SkillNode::from_node(node)?;
+        // max_iterations, node_types) are the model's to check. Decoded from
+        // the properties rather than the node, so a type extending `skill`
+        // is held to the same field shapes.
+        SkillNode::from_properties(&node.content, &node.properties)?;
 
         Ok(())
     }
@@ -1878,7 +1898,7 @@ impl NodeBehavior for SkillNodeBehavior {
     fn get_embeddable_content(&self, node: &Node) -> Option<String> {
         // A skill that fails to decode was rejected by `validate` on write,
         // so only an in-memory node can reach here malformed; embed its name.
-        let description = SkillNode::from_node(node)
+        let description = SkillNode::from_properties(&node.content, &node.properties)
             .map(|skill| skill.description)
             .unwrap_or_default();
         let desc = description.as_str();
@@ -2311,61 +2331,88 @@ impl NodeBehaviorRegistry {
             behaviors: HashMap::new(),
         };
 
-        // Register built-in types
-        registry.register(Arc::new(TextNodeBehavior));
-        registry.register(Arc::new(HeaderNodeBehavior));
-        registry.register(Arc::new(TaskNodeBehavior));
-        registry.register(Arc::new(ProjectNodeBehavior));
-        registry.register(Arc::new(CodeBlockNodeBehavior));
-        registry.register(Arc::new(QuoteBlockNodeBehavior));
-        registry.register(Arc::new(OrderedListNodeBehavior));
-        registry.register(Arc::new(DateNodeBehavior));
-        registry.register(Arc::new(SchemaNodeBehavior));
-        registry.register(Arc::new(QueryNodeBehavior));
-        registry.register(Arc::new(CollectionNodeBehavior));
-        registry.register(Arc::new(HorizontalLineNodeBehavior));
-        registry.register(Arc::new(TableNodeBehavior));
-        registry.register(Arc::new(AiChatNodeBehavior));
-        registry.register(Arc::new(AgentGuidanceNodeBehavior));
-        registry.register(Arc::new(SkillNodeBehavior));
-        registry.register(Arc::new(ToolNodeBehavior));
-        registry.register(Arc::new(PersonNodeBehavior));
-        registry.register(Arc::new(DatabaseSettingsNodeBehavior));
+        // One behaviour per core type (ADR-086 §3). The registry tests hold
+        // this list to `CoreNodeType::ALL`.
+        registry.register_core(Arc::new(TextNodeBehavior));
+        registry.register_core(Arc::new(HeaderNodeBehavior));
+        registry.register_core(Arc::new(TaskNodeBehavior));
+        registry.register_core(Arc::new(ProjectNodeBehavior));
+        registry.register_core(Arc::new(CodeBlockNodeBehavior));
+        registry.register_core(Arc::new(QuoteBlockNodeBehavior));
+        registry.register_core(Arc::new(OrderedListNodeBehavior));
+        registry.register_core(Arc::new(CheckboxNodeBehavior));
+        registry.register_core(Arc::new(DateNodeBehavior));
+        registry.register_core(Arc::new(SchemaNodeBehavior));
+        registry.register_core(Arc::new(QueryNodeBehavior));
+        registry.register_core(Arc::new(CollectionNodeBehavior));
+        registry.register_core(Arc::new(HorizontalLineNodeBehavior));
+        registry.register_core(Arc::new(TableNodeBehavior));
+        registry.register_core(Arc::new(AiChatNodeBehavior));
+        registry.register_core(Arc::new(AgentGuidanceNodeBehavior));
+        registry.register_core(Arc::new(SkillNodeBehavior));
+        registry.register_core(Arc::new(ToolNodeBehavior));
+        registry.register_core(Arc::new(PlayNodeBehavior));
+        registry.register_core(Arc::new(PersonNodeBehavior));
+        registry.register_core(Arc::new(DatabaseSettingsNodeBehavior));
 
         registry
     }
 
-    /// Registers a new node behavior
+    /// Register a built-in behaviour for a core type.
+    fn register_core(&mut self, behavior: Arc<dyn NodeBehavior>) {
+        let type_name = behavior.type_name().to_string();
+        debug_assert!(
+            CoreNodeType::from_id(&type_name).is_some(),
+            "'{type_name}' is not a core type"
+        );
+        self.behaviors.insert(type_name, behavior);
+    }
+
+    /// Registers a behaviour for a type outside the core registry: a subtype
+    /// another build adds on top of a core type.
     ///
-    /// The behavior's `type_name()` is used as the key for registration.
-    /// If a behavior with the same type name already exists, it will be replaced.
+    /// The behaviour's `type_name()` is the key. It **adds** to the rules of
+    /// the types it extends: [`Self::validate_node`] runs every behaviour in a
+    /// node's chain, base first, so a subtype can reject more and never less.
     ///
-    /// # Arguments
+    /// # Errors
     ///
-    /// * `behavior` - The behavior to register (wrapped in Arc)
+    /// A behaviour for a core type is refused, and so is a second behaviour
+    /// for a type that already has one. Another build may add types; it
+    /// cannot replace the rules of an existing one (ADR-086 §5).
     ///
     /// # Examples
     ///
     /// ```rust
-    /// use nodespace_core::behaviors::{NodeBehavior, NodeBehaviorRegistry, TextNodeBehavior};
+    /// use nodespace_core::behaviors::{CustomNodeBehavior, NodeBehaviorRegistry, TextNodeBehavior};
     /// use std::sync::Arc;
     ///
     /// let mut registry = NodeBehaviorRegistry::new();
-    /// registry.register(Arc::new(TextNodeBehavior));
-    /// assert!(registry.get("text").is_some());
+    /// assert!(registry.register(Arc::new(CustomNodeBehavior::new("invoice"))).is_ok());
+    /// // `text` is a core type: its behaviour cannot be replaced.
+    /// assert!(registry.register(Arc::new(TextNodeBehavior)).is_err());
     /// ```
-    pub fn register(&mut self, behavior: Arc<dyn NodeBehavior>) {
+    pub fn register(
+        &mut self,
+        behavior: Arc<dyn NodeBehavior>,
+    ) -> Result<(), BehaviorRegistrationError> {
         let type_name = behavior.type_name().to_string();
+        if CoreNodeType::from_id(&type_name).is_some() {
+            return Err(BehaviorRegistrationError::CoreType(type_name));
+        }
+        if self.behaviors.contains_key(&type_name) {
+            return Err(BehaviorRegistrationError::AlreadyRegistered(type_name));
+        }
         self.behaviors.insert(type_name, behavior);
+        Ok(())
     }
 
-    /// Retrieves a behavior by node type
+    /// The behaviour registered for exactly `node_type`.
     ///
-    /// Returns `None` if no behavior is registered for the given type.
-    ///
-    /// # Arguments
-    ///
-    /// * `node_type` - The node type identifier
+    /// `None` for a type with no behaviour of its own, which includes every
+    /// user-defined subtype of a core type. To apply a type's rules to a node,
+    /// resolve the node's chain and use [`Self::resolve`] or
+    /// [`Self::validate_node`] instead.
     ///
     /// # Examples
     ///
@@ -2388,25 +2435,57 @@ impl NodeBehaviorRegistry {
     /// use nodespace_core::behaviors::NodeBehaviorRegistry;
     ///
     /// let registry = NodeBehaviorRegistry::new();
-    /// let types = registry.get_all_types();
-    /// assert!(types.len() >= 3); // At least text, task, date
+    /// assert!(registry.get_all_types().len() >= 3); // At least text, task, date
     /// ```
     pub fn get_all_types(&self) -> Vec<String> {
         self.behaviors.keys().cloned().collect()
     }
 
-    /// Validates a node using its registered behavior
+    /// Every behaviour that applies to a node whose type has `chain` (nearest
+    /// scope first, as `SqliteStore::type_chain` returns it), ordered base
+    /// first: `[task behaviour, issue behaviour]` for `["issue", "task"]`.
+    pub fn for_chain<S: AsRef<str>>(&self, chain: &[S]) -> Vec<Arc<dyn NodeBehavior>> {
+        chain
+            .iter()
+            .rev()
+            .filter_map(|node_type| self.get(node_type.as_ref()))
+            .collect()
+    }
+
+    /// The behaviour that decides a node's embedding, title and content
+    /// rules: the nearest one registered in `chain`, so a type with no
+    /// behaviour of its own behaves as the type it extends. A chain with no
+    /// registered behaviour gets the schema-defined fallback.
     ///
-    /// # Arguments
+    /// # Examples
     ///
-    /// * `node` - The node to validate
+    /// ```rust
+    /// use nodespace_core::behaviors::NodeBehaviorRegistry;
+    ///
+    /// let registry = NodeBehaviorRegistry::new();
+    /// // A user's `issue extends task` is a task.
+    /// assert_eq!(registry.resolve(&["issue", "task"]).type_name(), "task");
+    /// ```
+    pub fn resolve<S: AsRef<str>>(&self, chain: &[S]) -> Arc<dyn NodeBehavior> {
+        chain
+            .iter()
+            .find_map(|node_type| self.get(node_type.as_ref()))
+            .unwrap_or_else(|| {
+                let own = chain.first().map(|t| t.as_ref()).unwrap_or_default();
+                Arc::new(CustomNodeBehavior::new(own))
+            })
+    }
+
+    /// Validates a node against every behaviour in its type's `chain`
+    /// (nearest scope first), base first.
+    ///
+    /// Composition, not replacement: a subtype's behaviour runs after its
+    /// ancestors' and can only add rejections. A chain with no registered
+    /// behaviour is a schema-defined type and gets the minimal fallback.
     ///
     /// # Errors
     ///
-    /// For unknown types, uses `CustomNodeBehavior` as a fallback. This enables
-    /// schema-defined custom types to work without explicit behavior registration.
-    ///
-    /// Returns validation errors from the behavior's `validate()` method.
+    /// The first validation error any behaviour in the chain returns.
     ///
     /// # Examples
     ///
@@ -2417,29 +2496,38 @@ impl NodeBehaviorRegistry {
     ///
     /// let registry = NodeBehaviorRegistry::new();
     ///
-    /// let valid_node = Node::new(
-    ///     "text".to_string(),
-    ///     "Hello".to_string(),
-    ///     json!({}),
-    /// );
-    /// assert!(registry.validate_node(&valid_node).is_ok());
+    /// let node = Node::new("text".to_string(), "Hello".to_string(), json!({}));
+    /// assert!(registry.validate_node(&node, &["text"]).is_ok());
     ///
-    /// // Custom types use fallback behavior
-    /// let custom_node = Node::new(
-    ///     "person".to_string(),
-    ///     "Alice".to_string(),
-    ///     json!({}),
-    /// );
-    /// assert!(registry.validate_node(&custom_node).is_ok());
+    /// // A subtype of `collection` keeps the collection's naming rule.
+    /// let team = Node::new("team".to_string(), "a:b".to_string(), json!({}));
+    /// assert!(registry.validate_node(&team, &["team", "collection"]).is_err());
     /// ```
-    pub fn validate_node(&self, node: &Node) -> Result<(), NodeValidationError> {
-        // Get registered behavior or use fallback for custom types
-        let behavior: Arc<dyn NodeBehavior> = self
-            .get(&node.node_type)
-            .unwrap_or_else(|| Arc::new(CustomNodeBehavior::new(&node.node_type)));
-
-        behavior.validate(node)
+    pub fn validate_node<S: AsRef<str>>(
+        &self,
+        node: &Node,
+        chain: &[S],
+    ) -> Result<(), NodeValidationError> {
+        let behaviors = self.for_chain(chain);
+        if behaviors.is_empty() {
+            return CustomNodeBehavior::new(&node.node_type).validate(node);
+        }
+        for behavior in behaviors {
+            behavior.validate(node)?;
+        }
+        Ok(())
     }
+}
+
+/// Why a behaviour could not be registered.
+#[derive(Error, Debug, Clone, PartialEq, Eq)]
+pub enum BehaviorRegistrationError {
+    /// The type is in the core registry: its rules are fixed.
+    #[error("'{0}' is a core type; its behavior cannot be replaced")]
+    CoreType(String),
+    /// The type already has a behaviour.
+    #[error("a behavior is already registered for '{0}'")]
+    AlreadyRegistered(String),
 }
 
 impl Default for NodeBehaviorRegistry {
@@ -2451,6 +2539,7 @@ impl Default for NodeBehaviorRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::TaskNode;
     use serde_json::json;
 
     #[test]
@@ -2948,18 +3037,14 @@ mod tests {
         empty_content_node.content = String::new();
         assert!(behavior.validate(&empty_content_node).is_ok());
 
-        // A node this behavior does not describe is rejected, and the precise
-        // variant survives — callers can distinguish "wrong type" from "bad
-        // properties" rather than reading it out of a message string.
-        let not_a_task = Node::new(
-            "text".to_string(),
-            "Not a task".to_string(),
+        // The behavior never reads the node's own type: it also runs for every
+        // type extending `task`, whose nodes carry their own `node_type`.
+        let issue = Node::new(
+            "issue".to_string(),
+            "A subtype of task".to_string(),
             json!({"task": {"status": "open"}}),
         );
-        assert!(matches!(
-            behavior.validate(&not_a_task),
-            Err(NodeValidationError::InvalidNodeType(_))
-        ));
+        assert!(behavior.validate(&issue).is_ok());
 
         // NOTE: Status value validation (e.g., "open" vs custom) is handled by TaskStatus enum.
         // Unknown status values become TaskStatus::User(value) for schema extensibility.
@@ -3133,16 +3218,159 @@ mod tests {
     fn test_registry_register_and_get() {
         let mut registry = NodeBehaviorRegistry::new();
 
-        // Register a new behavior
-        registry.register(Arc::new(TextNodeBehavior));
-
-        // Should be able to retrieve it
-        let behavior = registry.get("text");
+        // A type outside the core registry can be given a behavior.
+        registry
+            .register(Arc::new(CustomNodeBehavior::new("invoice")))
+            .unwrap();
+        let behavior = registry.get("invoice");
         assert!(behavior.is_some());
-        assert_eq!(behavior.unwrap().type_name(), "text");
+        assert_eq!(behavior.unwrap().type_name(), "invoice");
 
         // Unknown type should return None
         assert!(registry.get("unknown").is_none());
+    }
+
+    /// Another build may add types; it cannot replace the rules of a core one
+    /// (ADR-086 §5), nor register a second behavior for a type that has one.
+    #[test]
+    fn a_behavior_for_a_core_type_is_refused() {
+        let mut registry = NodeBehaviorRegistry::new();
+        for core in CoreNodeType::ALL {
+            assert_eq!(
+                registry.register(Arc::new(CustomNodeBehavior::new(core.as_str()))),
+                Err(BehaviorRegistrationError::CoreType(
+                    core.as_str().to_string()
+                )),
+            );
+        }
+        registry
+            .register(Arc::new(CustomNodeBehavior::new("invoice")))
+            .unwrap();
+        assert_eq!(
+            registry.register(Arc::new(CustomNodeBehavior::new("invoice"))),
+            Err(BehaviorRegistrationError::AlreadyRegistered(
+                "invoice".to_string()
+            )),
+        );
+    }
+
+    /// Every core type has exactly one behavior, and no behavior is
+    /// registered for a type outside the registry (ADR-086 §3).
+    #[test]
+    fn the_built_in_behaviors_are_exactly_the_core_types() {
+        let registry = NodeBehaviorRegistry::new();
+        let mut registered = registry.get_all_types();
+        registered.sort();
+        let mut core: Vec<String> = CoreNodeType::ALL
+            .iter()
+            .map(|t| t.as_str().to_string())
+            .collect();
+        core.sort();
+        assert_eq!(registered, core);
+        for core in CoreNodeType::ALL {
+            assert_eq!(
+                registry.get(core.as_str()).unwrap().type_name(),
+                core.as_str()
+            );
+        }
+    }
+
+    /// What the registry records as embedded is what the behavior does.
+    #[test]
+    fn a_core_type_is_embedded_exactly_when_the_registry_says_so() {
+        let registry = NodeBehaviorRegistry::new();
+        for core in CoreNodeType::ALL {
+            let probe = Node::new(
+                core.as_str().to_string(),
+                "probe content".to_string(),
+                json!({}),
+            );
+            let embeddable = registry
+                .resolve(&[core.as_str()])
+                .get_embeddable_content(&probe)
+                .is_some();
+            assert_eq!(
+                embeddable,
+                core.participation().embedded,
+                "{core}: the behavior and the registry disagree on embedding"
+            );
+        }
+    }
+
+    /// A type with no behavior of its own takes the rules of the type it
+    /// extends: validation composes base first, and embedding resolves to the
+    /// nearest registered behavior.
+    #[test]
+    fn a_subtype_is_validated_and_embedded_as_the_type_it_extends() {
+        let registry = NodeBehaviorRegistry::new();
+
+        // `team extends collection` keeps the collection's naming rule.
+        let team = Node::new("team".to_string(), "a:b".to_string(), json!({}));
+        assert!(registry
+            .validate_node(&team, &["team", "collection"])
+            .is_err());
+        assert!(registry.validate_node(&team, &["team"]).is_ok());
+
+        // `issue extends task` is not embedded, as a task is not.
+        let issue = Node::new("issue".to_string(), "Fix it".to_string(), json!({}));
+        assert!(registry
+            .resolve(&["issue", "task"])
+            .get_embeddable_content(&issue)
+            .is_none());
+        assert_eq!(
+            registry
+                .for_chain(&["bug", "issue", "task"])
+                .iter()
+                .map(|b| b.type_name())
+                .collect::<Vec<_>>(),
+            vec!["task"]
+        );
+    }
+
+    /// A registered subtype behavior adds to its base's rules; it cannot relax
+    /// them.
+    #[test]
+    fn a_subtype_behavior_adds_to_its_bases_rules() {
+        struct NamedTeam;
+        impl NodeBehavior for NamedTeam {
+            fn type_name(&self) -> &'static str {
+                "team"
+            }
+            fn validate(&self, node: &Node) -> Result<(), NodeValidationError> {
+                if node.content.starts_with("team-") {
+                    Ok(())
+                } else {
+                    Err(NodeValidationError::InvalidProperties(
+                        "a team's name starts with team-".to_string(),
+                    ))
+                }
+            }
+            fn can_have_children(&self) -> bool {
+                true
+            }
+            fn supports_markdown(&self) -> bool {
+                false
+            }
+        }
+
+        let mut registry = NodeBehaviorRegistry::new();
+        registry.register(Arc::new(NamedTeam)).unwrap();
+        let chain = ["team", "collection"];
+        let node = |content: &str| Node::new("team".to_string(), content.to_string(), json!({}));
+
+        assert!(registry.validate_node(&node("team-core"), &chain).is_ok());
+        // The subtype's own rule rejects.
+        assert!(registry.validate_node(&node("core"), &chain).is_err());
+        // The base's rule still rejects what the subtype would accept.
+        assert!(registry.validate_node(&node("team-a:b"), &chain).is_err());
+        assert_eq!(
+            registry
+                .for_chain(&chain)
+                .iter()
+                .map(|b| b.type_name())
+                .collect::<Vec<_>>(),
+            vec!["collection", "team"]
+        );
     }
 
     #[test]
@@ -3169,7 +3397,9 @@ mod tests {
         assert!(types.contains(&"person".to_string()));
         assert!(types.contains(&"database-settings".to_string()));
         assert!(types.contains(&"project".to_string()));
-        assert_eq!(types.len(), 19);
+        assert!(types.contains(&"play".to_string()));
+        assert!(types.contains(&"checkbox".to_string()));
+        assert_eq!(types.len(), CoreNodeType::ALL.len());
     }
 
     #[test]
@@ -3178,7 +3408,7 @@ mod tests {
 
         // Valid text node
         let text_node = Node::new("text".to_string(), "Hello".to_string(), json!({}));
-        assert!(registry.validate_node(&text_node).is_ok());
+        assert!(registry.validate_node(&text_node, &["text"]).is_ok());
 
         // Valid task node (status uses lowercase format)
         let task_node = Node::new(
@@ -3186,11 +3416,11 @@ mod tests {
             "Do something".to_string(),
             json!({"status": "open"}),
         );
-        assert!(registry.validate_node(&task_node).is_ok());
+        assert!(registry.validate_node(&task_node, &["task"]).is_ok());
 
         // Unknown node type now uses CustomNodeBehavior fallback and passes basic validation
         let unknown_node = Node::new("unknown".to_string(), "Content".to_string(), json!({}));
-        let result = registry.validate_node(&unknown_node);
+        let result = registry.validate_node(&unknown_node, &["unknown"]);
         assert!(
             result.is_ok(),
             "Unknown node types should use CustomNodeBehavior fallback"
@@ -3200,7 +3430,7 @@ mod tests {
         let mut bad_properties_node =
             Node::new("unknown".to_string(), "Content".to_string(), json!({}));
         bad_properties_node.properties = serde_json::json!("not an object");
-        let result = registry.validate_node(&bad_properties_node);
+        let result = registry.validate_node(&bad_properties_node, &["unknown"]);
         assert!(result.is_err());
         assert!(matches!(
             result,
@@ -3224,7 +3454,7 @@ mod tests {
                 assert!(behavior.is_some());
 
                 let node = Node::new("text".to_string(), "Thread test".to_string(), json!({}));
-                assert!(registry_clone.validate_node(&node).is_ok());
+                assert!(registry_clone.validate_node(&node, &["text"]).is_ok());
             });
             handles.push(handle);
         }
@@ -3470,48 +3700,6 @@ mod tests {
     // =========================================================================
 
     #[test]
-    fn test_task_node_behavior_validate_task_node() {
-        use crate::models::{Priority, TaskNode, TaskStatus};
-
-        let behavior = TaskNodeBehavior;
-
-        // Valid task with all defaults
-        let task = TaskNode::builder("Write tests".to_string()).build();
-        assert!(behavior.validate_task_node(&task).is_ok());
-
-        // Valid task with specific status
-        let task_in_progress = TaskNode::builder("Fix bug".to_string())
-            .with_status(TaskStatus::InProgress)
-            .build();
-        assert!(behavior.validate_task_node(&task_in_progress).is_ok());
-
-        // Valid task with priority (now a string enum)
-        let task_with_priority = TaskNode::builder("High priority task".to_string())
-            .with_priority(Priority::High)
-            .build();
-        assert!(behavior.validate_task_node(&task_with_priority).is_ok());
-
-        // Valid task with low priority
-        let task_low_priority = TaskNode::builder("Low priority".to_string())
-            .with_priority(Priority::Low)
-            .build();
-        assert!(behavior.validate_task_node(&task_low_priority).is_ok());
-
-        // User-defined priority values are allowed (schema extensibility)
-        let task_custom_priority = TaskNode::builder("Custom priority".to_string())
-            .with_priority(Priority::User("critical".to_string()))
-            .build();
-        assert!(
-            behavior.validate_task_node(&task_custom_priority).is_ok(),
-            "User-defined priority values should be allowed"
-        );
-
-        // Valid: empty content (allowed for tasks)
-        let empty_task = TaskNode::builder("".to_string()).build();
-        assert!(behavior.validate_task_node(&empty_task).is_ok());
-    }
-
-    #[test]
     fn test_schema_node_behavior_validate_schema_node() {
         use crate::models::SchemaNode;
 
@@ -3660,7 +3848,7 @@ mod tests {
                 "fields": [
                     {
                         "name": "custom:contact_email",
-                        "type": "string",
+                        "type": "text",
                         "protection": "user",
                         "indexed": false
                     }
@@ -3695,7 +3883,7 @@ mod tests {
                         "fields": [
                             {
                                 "name": "custom:postal_code",
-                                "type": "string",
+                                "type": "text",
                                 "protection": "user",
                                 "indexed": false
                             }
@@ -3709,7 +3897,7 @@ mod tests {
                         "item_fields": [
                             {
                                 "name": "custom:room",
-                                "type": "string",
+                                "type": "text",
                                 "protection": "user",
                                 "indexed": false
                             }
@@ -3740,7 +3928,7 @@ mod tests {
                         "fields": [
                             {
                                 "name": "custom:a:b",
-                                "type": "string",
+                                "type": "text",
                                 "protection": "user",
                                 "indexed": false
                             }
@@ -3772,7 +3960,7 @@ mod tests {
                 "fields": [
                     {
                         "name": "custom:contact_email",
-                        "type": "string",
+                        "type": "text",
                         "protection": "user",
                         "indexed": false
                     }
@@ -3796,7 +3984,7 @@ mod tests {
                 "fields": [
                     {
                         "name": "custom:contact_email",
-                        "type": "string",
+                        "type": "text",
                         "protection": "user",
                         "indexed": false
                     }
@@ -4098,8 +4286,8 @@ mod tests {
                 "description": "",
                 "titleTemplate": "{first_name} {last_name}",
                 "fields": [
-                    {"name": "first_name", "type": "string", "protection": "user", "indexed": false},
-                    {"name": "last_name", "type": "string", "protection": "user", "indexed": false}
+                    {"name": "first_name", "type": "text", "protection": "user", "indexed": false},
+                    {"name": "last_name", "type": "text", "protection": "user", "indexed": false}
                 ],
                 "relationships": []
             }),
@@ -4205,7 +4393,7 @@ mod tests {
                 "fields": [
                     {
                         "name": "first_name",
-                        "type": "string",
+                        "type": "text",
                         "protection": "user",
                         "indexed": false
                     }
@@ -4243,13 +4431,13 @@ mod tests {
                 "fields": [
                     {
                         "name": "first_name",
-                        "type": "string",
+                        "type": "text",
                         "protection": "user",
                         "indexed": false
                     },
                     {
                         "name": "last_name",
-                        "type": "string",
+                        "type": "text",
                         "protection": "user",
                         "indexed": false
                     }
@@ -4280,7 +4468,7 @@ mod tests {
                 "description": "Customer schema",
                 "fields": [
                     {"name": "status", "type": "enum", "protection": "user", "indexed": false, "coreValues": [{"value": "active", "label": "Active"}, {"value": "inactive", "label": "Inactive"}]},
-                    {"name": "company", "type": "string", "protection": "user", "indexed": false}
+                    {"name": "company", "type": "text", "protection": "user", "indexed": false}
                 ],
                 "relationships": [],
                 "propertiesHeaderSummaryTemplate": "{status} · {company}"
@@ -5523,6 +5711,13 @@ mod tests {
             _root_id: &str,
         ) -> Result<HashSet<String>, crate::services::error::NodeServiceError> {
             Ok(HashSet::new())
+        }
+
+        async fn type_chain(
+            &self,
+            node_type: &str,
+        ) -> Result<Vec<String>, crate::services::error::NodeServiceError> {
+            Ok(vec![node_type.to_string()])
         }
     }
 

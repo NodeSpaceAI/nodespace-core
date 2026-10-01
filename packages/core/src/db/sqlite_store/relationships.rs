@@ -211,14 +211,18 @@ fn root_only_membership_chunks<'a>(member_ids: &[&'a str]) -> Vec<Vec<&'a str>> 
         .collect()
 }
 
-/// `(id, node_type, has_parent)` for each id in `chunk`, with its bound params.
+/// `(id, node_type, has_parent, is_person)` for each id in `chunk`, with its
+/// bound params. `is_person` is resolved through the type's `extends` chain,
+/// so a subtype of `person` is a person.
 fn root_only_membership_query(chunk: &[&str]) -> (String, Vec<libsql::Value>) {
     let placeholders: Vec<String> = (1..=chunk.len()).map(|i| format!("?{}", i)).collect();
     let sql = format!(
         "SELECT n.id, n.node_type, \
          EXISTS(SELECT 1 FROM relationship r \
-                WHERE r.out_node = n.id AND r.relationship_type = 'has_child') \
+                WHERE r.out_node = n.id AND r.relationship_type = 'has_child'), \
+         {} \
          FROM node n WHERE n.id IN ({})",
+        crate::db::schema::is_a_sql("n.node_type", &[crate::models::CoreNodeType::Person]),
         placeholders.join(", ")
     );
     let params = chunk
@@ -228,21 +232,18 @@ fn root_only_membership_query(chunk: &[&str]) -> (String, Vec<libsql::Value>) {
     (sql, params)
 }
 
-/// Whether a collection member of `node_type` may also have a `has_child`
-/// parent. Only a `person` may. There is no collection exemption — a
-/// collection is always a root (enforced by the `collection_is_root_*`
-/// triggers), so it can never reach this with a parent.
-///
-/// The single source of the root-only membership rule (ADR-059 §2) for the
-/// guard twins below and for `merge_nodes_in_tx`, so they cannot drift.
-pub(super) fn member_may_have_parent(node_type: &str) -> bool {
-    node_type == "person"
-}
-
-/// The root-only membership rule ([`member_may_have_parent`]) for one row of
-/// [`root_only_membership_query`], shared by both guard twins.
-fn check_root_only_member(id: String, node_type: String, has_parent: i64) -> Result<()> {
-    if has_parent != 0 && !member_may_have_parent(&node_type) {
+/// The root-only membership rule (ADR-059 §2) for one row of
+/// [`root_only_membership_query`], shared by both guard twins: a collection
+/// member may also have a `has_child` parent only when it is a person. There
+/// is no collection exemption — a collection is always a root (enforced by
+/// the root-only triggers), so it can never reach this with a parent.
+fn check_root_only_member(
+    id: String,
+    node_type: String,
+    has_parent: i64,
+    is_person: i64,
+) -> Result<()> {
+    if has_parent != 0 && is_person == 0 {
         let detail = format!(
             "content node '{}' (type '{}') has a parent, so it cannot be a member of a collection directly — file its root node instead",
             id, node_type
@@ -525,7 +526,7 @@ impl SqliteStore {
                 .await
                 .context("Failed to validate root-only membership")?;
             while let Some(row) = rows.next().await? {
-                check_root_only_member(row.get(0)?, row.get(1)?, row.get(2)?)?;
+                check_root_only_member(row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)?;
             }
         }
         Ok(())
@@ -550,7 +551,7 @@ impl SqliteStore {
                 .await
                 .context("Failed to validate root-only membership")?;
             while let Some(row) = rows.next().await? {
-                check_root_only_member(row.get(0)?, row.get(1)?, row.get(2)?)?;
+                check_root_only_member(row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)?;
             }
         }
         Ok(())
@@ -1018,8 +1019,14 @@ impl SqliteStore {
                 .read()
                 .await?
                 .query(
-                    "SELECT id FROM node WHERE node_type = 'collection' AND LOWER(title) = ?1 \
-                 AND lifecycle_status = 'active' LIMIT 1",
+                    &format!(
+                        "SELECT id FROM node WHERE {} AND LOWER(title) = ?1 \
+                         AND lifecycle_status = 'active' LIMIT 1",
+                        crate::db::schema::is_a_sql(
+                            "node_type",
+                            &[crate::models::CoreNodeType::Collection]
+                        )
+                    ),
                     libsql::params![normalized],
                 )
                 .await
@@ -1047,7 +1054,8 @@ impl SqliteStore {
         let normalized: Vec<String> = names.iter().map(|n| n.to_lowercase()).collect();
         let placeholders: Vec<String> = (1..=normalized.len()).map(|i| format!("?{}", i)).collect();
         let sql = format!(
-            "SELECT id, title FROM node WHERE node_type = 'collection' AND LOWER(title) IN ({})",
+            "SELECT id, title FROM node WHERE {} AND LOWER(title) IN ({})",
+            crate::db::schema::is_a_sql("node_type", &[crate::models::CoreNodeType::Collection]),
             placeholders.join(", ")
         );
 
@@ -1102,17 +1110,23 @@ impl SqliteStore {
             .read()
             .await?
             .query(
-                r#"WITH RECURSIVE coll_subtree(node_id, depth) AS (
+                &format!(
+                    r#"WITH RECURSIVE coll_subtree(node_id, depth) AS (
                 SELECT ?1, 0
                 UNION ALL
                 SELECT r.in_node, cs.depth + 1 FROM relationship r
                 JOIN coll_subtree cs ON r.out_node = cs.node_id
-                JOIN node n ON n.id = r.in_node AND n.node_type = 'collection'
+                JOIN node n ON n.id = r.in_node AND {}
                 WHERE r.relationship_type = 'member_of' AND cs.depth < 100
             )
             SELECT DISTINCT r.in_node FROM relationship r
             JOIN coll_subtree cs ON r.out_node = cs.node_id
             WHERE r.relationship_type = 'member_of'"#,
+                    crate::db::schema::is_a_sql(
+                        "n.node_type",
+                        &[crate::models::CoreNodeType::Collection]
+                    )
+                ),
                 libsql::params![collection_id.to_string()],
             )
             .await
@@ -1133,7 +1147,13 @@ impl SqliteStore {
             .read()
             .await?
             .query(
-                "SELECT content FROM node WHERE node_type = 'collection' ORDER BY content ASC",
+                &format!(
+                    "SELECT content FROM node WHERE {} ORDER BY content ASC",
+                    crate::db::schema::is_a_sql(
+                        "node_type",
+                        &[crate::models::CoreNodeType::Collection]
+                    )
+                ),
                 (),
             )
             .await
@@ -1165,18 +1185,30 @@ impl SqliteStore {
         // (collections.svelte.ts): `person`/`schema`/`database-settings` are
         // system/definition nodes, `collection` members are shown in the tree
         // itself, and `horizontal-line` is a decorative divider. Keep the two lists
-        // in sync.
+        // in sync. Each covers its subtypes: a member of a type extending
+        // `person` is no more content than a person is.
+        let is_content = crate::db::schema::is_not_a_sql(
+            "n.node_type",
+            &[
+                crate::models::CoreNodeType::Schema,
+                crate::models::CoreNodeType::Person,
+                crate::models::CoreNodeType::DatabaseSettings,
+                crate::models::CoreNodeType::Collection,
+                crate::models::CoreNodeType::HorizontalLine,
+            ],
+        );
         let mut rows = self
             .read()
             .await?
             .query(
-                "SELECT r.out_node, COUNT(*) \
+                &format!(
+                    "SELECT r.out_node, COUNT(*) \
              FROM relationship r \
              JOIN node n ON n.id = r.in_node \
              WHERE r.relationship_type = 'member_of' \
-               AND n.node_type NOT IN \
-                 ('schema', 'person', 'database-settings', 'collection', 'horizontal-line') \
-             GROUP BY r.out_node",
+               AND {is_content} \
+             GROUP BY r.out_node"
+                ),
                 (),
             )
             .await
@@ -1190,10 +1222,27 @@ impl SqliteStore {
         }
 
         // Get collection-to-collection hierarchy edges
-        let mut rows2 = self.read().await?.query(
-            "SELECT r.in_node, r.out_node FROM relationship r JOIN node n1 ON n1.id = r.in_node JOIN node n2 ON n2.id = r.out_node WHERE r.relationship_type = 'member_of' AND n1.node_type = 'collection' AND n2.node_type = 'collection'",
-            (),
-        ).await.context("Failed to get collection hierarchy")?;
+        let mut rows2 = self
+            .read()
+            .await?
+            .query(
+                &format!(
+                    "SELECT r.in_node, r.out_node FROM relationship r \
+                     JOIN node n1 ON n1.id = r.in_node JOIN node n2 ON n2.id = r.out_node \
+                     WHERE r.relationship_type = 'member_of' AND {} AND {}",
+                    crate::db::schema::is_a_sql(
+                        "n1.node_type",
+                        &[crate::models::CoreNodeType::Collection]
+                    ),
+                    crate::db::schema::is_a_sql(
+                        "n2.node_type",
+                        &[crate::models::CoreNodeType::Collection]
+                    )
+                ),
+                (),
+            )
+            .await
+            .context("Failed to get collection hierarchy")?;
 
         let mut parent_map: HashMap<String, Vec<String>> = HashMap::new();
         while let Some(row) = rows2.next().await? {
@@ -1214,7 +1263,13 @@ impl SqliteStore {
 
     async fn get_all_collections(&self) -> Result<Vec<Node>> {
         self.query_nodes_from_sql(
-            "SELECT * FROM node WHERE node_type = 'collection' ORDER BY content ASC",
+            &format!(
+                "SELECT * FROM node WHERE {} ORDER BY content ASC",
+                crate::db::schema::is_a_sql(
+                    "node_type",
+                    &[crate::models::CoreNodeType::Collection]
+                )
+            ),
             (),
         )
         .await
@@ -1303,7 +1358,11 @@ impl SqliteStore {
         for chunk in unique.chunks(ID_CHUNK) {
             let placeholders: Vec<String> = (1..=chunk.len()).map(|i| format!("?{}", i)).collect();
             let sql = format!(
-                "SELECT id FROM node WHERE node_type = 'collection' AND id IN ({})",
+                "SELECT id FROM node WHERE {} AND id IN ({})",
+                crate::db::schema::is_a_sql(
+                    "node_type",
+                    &[crate::models::CoreNodeType::Collection]
+                ),
                 placeholders.join(", ")
             );
             let params: Vec<libsql::Value> = chunk
@@ -1538,8 +1597,11 @@ impl SqliteStore {
         let mut ai_chats: std::collections::HashSet<String> = std::collections::HashSet::new();
         for chunk in endpoint_ids.chunks(ID_CHUNK) {
             let placeholders: Vec<String> = (1..=chunk.len()).map(|i| format!("?{}", i)).collect();
+            // Whether an endpoint is a chat is resolved through its type's
+            // chain, as the single-edge refusal resolves it.
             let sql = format!(
-                "SELECT id, node_type FROM node WHERE id IN ({})",
+                "SELECT id, {} FROM node WHERE id IN ({})",
+                crate::db::schema::is_a_sql("node_type", &[crate::models::CoreNodeType::AiChat]),
                 placeholders.join(", ")
             );
             let params: Vec<libsql::Value> = chunk
@@ -1554,8 +1616,8 @@ impl SqliteStore {
                 .context("Failed to check mention endpoints")?;
             while let Some(row) = rows.next().await? {
                 let id: String = row.get(0)?;
-                let node_type: String = row.get(1)?;
-                if node_type == crate::models::AI_CHAT_NODE_TYPE {
+                let is_chat: i64 = row.get(1)?;
+                if is_chat != 0 {
                     ai_chats.insert(id.clone());
                 }
                 existing.insert(id);
@@ -2225,7 +2287,8 @@ impl SqliteStore {
         let sql = format!(
             "SELECT r.in_node, r.properties FROM relationship r \
              JOIN node s ON s.id = r.in_node \
-             WHERE s.node_type = 'schema' AND {} ORDER BY r.rowid",
+             WHERE {} AND {} ORDER BY r.rowid",
+            crate::db::schema::is_exactly_sql("s.node_type", crate::models::CoreNodeType::Schema),
             builtin_exclusion_sql("r.relationship_type")
         );
         let mut rows = self
@@ -2560,7 +2623,7 @@ impl SqliteStore {
     /// silently destroy the declarations (and strand any instance edges written
     /// under them). A non-schema node passes without a query.
     pub(super) async fn assert_schema_deletable(&self, node: &Node) -> Result<()> {
-        if node.node_type != "schema" {
+        if !crate::models::CoreNodeType::Schema.is_exactly(&node.node_type) {
             return Ok(());
         }
         let is_core = node
@@ -2613,9 +2676,11 @@ impl SqliteStore {
              JOIN node a ON a.id = r.in_node \
              JOIN node b ON b.id = r.out_node \
              WHERE (r.in_node = ?1 OR r.out_node = ?1) \
-               AND a.node_type = 'schema' AND b.node_type = 'schema' \
+               AND {} AND {} \
                AND {} \
                AND NOT (r.relationship_type = '{}' AND r.in_node = ?1)",
+            crate::db::schema::is_exactly_sql("a.node_type", crate::models::CoreNodeType::Schema),
+            crate::db::schema::is_exactly_sql("b.node_type", crate::models::CoreNodeType::Schema),
             builtin_exclusion_sql("r.relationship_type"),
             EXTENDS_RELATIONSHIP
         );
@@ -2642,10 +2707,10 @@ mod tests {
     /// `person`, with no collection exemption — the rule both guard twins run.
     #[test]
     fn root_only_member_rule_exempts_only_person() {
-        assert!(check_root_only_member("a".into(), "text".into(), 0).is_ok());
-        assert!(check_root_only_member("b".into(), "person".into(), 1).is_ok());
+        assert!(check_root_only_member("a".into(), "text".into(), 0, 0).is_ok());
+        assert!(check_root_only_member("b".into(), "person".into(), 1, 1).is_ok());
         for node_type in ["text", "task", "collection"] {
-            let err = check_root_only_member("c".into(), node_type.into(), 1).unwrap_err();
+            let err = check_root_only_member("c".into(), node_type.into(), 1, 0).unwrap_err();
             let violation = err
                 .downcast_ref::<super::super::TreeInvariantViolation>()
                 .expect("a typed TreeInvariantViolation");

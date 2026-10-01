@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use uuid::Uuid;
 
-use crate::helpers::{default_lifecycle_status, default_version, is_active_lifecycle};
+use crate::helpers::{default_lifecycle_status, default_version};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -13,9 +13,19 @@ pub struct NodeReference {
     pub node_type: String,
 }
 
+/// The fields every node carries, whatever its type (ADR-086 §2).
+///
+/// The generic [`Node`] is the envelope itself, and every typed node struct
+/// embeds it, so no typed shape can omit a universal field. On a typed node,
+/// `properties` holds only extension fields: each field the type's schema
+/// chain declares has one home, its typed top-level field.
+///
+/// `lifecycle_status` is always serialized. It is governance state (ADR-087),
+/// and a reader that had to infer `active` from an absent key could not tell
+/// that from a shape that never carried the field.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct Node {
+pub struct NodeEnvelope {
     pub id: String,
     pub node_type: String,
     pub content: String,
@@ -30,14 +40,16 @@ pub struct Node {
     pub mentioned_in: Vec<NodeReference>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
-    #[serde(
-        default = "default_lifecycle_status",
-        skip_serializing_if = "is_active_lifecycle"
-    )]
+    #[serde(default = "default_lifecycle_status")]
     pub lifecycle_status: String,
 }
 
-impl Node {
+/// The generic node: the envelope, with every field of its type inside
+/// `properties`. A primitive type has no fields, so this is also its whole
+/// wire shape.
+pub type Node = NodeEnvelope;
+
+impl NodeEnvelope {
     pub fn new(node_type: String, content: String, properties: serde_json::Value) -> Self {
         let now = Utc::now();
         Self {

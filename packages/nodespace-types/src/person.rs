@@ -1,7 +1,7 @@
-use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::helpers::{deserialize_clearable, is_active_lifecycle};
+use crate::helpers::deserialize_clearable;
+use crate::node::NodeEnvelope;
 
 /// Wire shape for person nodes sent to the frontend.
 ///
@@ -11,18 +11,10 @@ use crate::helpers::{deserialize_clearable, is_active_lifecycle};
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PersonNode {
-    pub id: String,
-    #[serde(rename = "nodeType")]
-    pub node_type: String,
-    pub content: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub title: Option<String>,
-    pub version: i64,
-    pub created_at: DateTime<Utc>,
-    pub modified_at: DateTime<Utc>,
-    pub properties: serde_json::Value,
-    #[serde(default, skip_serializing_if = "is_active_lifecycle")]
-    pub lifecycle_status: String,
+    /// The fields every node carries. `properties` holds extension fields
+    /// only; the type's own fields are the typed ones below.
+    #[serde(flatten)]
+    pub envelope: NodeEnvelope,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub first_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

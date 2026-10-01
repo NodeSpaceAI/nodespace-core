@@ -41,6 +41,7 @@
  * as a real conflict.
  */
 
+import { isA } from '$lib/types/core-node-types';
 import type { Node } from '$lib/types';
 import type { UpdateSource } from '$lib/types/update-protocol';
 
@@ -150,7 +151,7 @@ export function shouldSkipStaleAiChatUpdate(
   source: UpdateSource,
   pending = false
 ): boolean {
-  if (incoming.nodeType !== 'ai-chat' || source.type !== 'database' || !existingNode) {
+  if (!isA(incoming.nodeType, 'ai-chat') || source.type !== 'database' || !existingNode) {
     return false;
   }
 

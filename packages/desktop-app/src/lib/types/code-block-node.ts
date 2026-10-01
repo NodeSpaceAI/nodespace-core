@@ -20,7 +20,8 @@
  * ```
  */
 
-import type { Node } from './node';
+import type { Node, NodeEnvelope } from './node';
+import { isExactly } from './core-node-types';
 
 /**
  * CodeBlock node interface extending base Node
@@ -28,7 +29,7 @@ import type { Node } from './node';
  * Represents a code block with syntax highlighting support.
  * Note: language is derived from content (code fence syntax), not stored in properties.
  */
-export interface CodeBlockNode extends Node {
+export interface CodeBlockNode extends NodeEnvelope {
   nodeType: 'code-block';
 }
 
@@ -47,7 +48,7 @@ export interface CodeBlockNode extends Node {
  * ```
  */
 export function isCodeBlockNode(node: Node): node is CodeBlockNode {
-  return node.nodeType === 'code-block';
+  return isExactly(node.nodeType, 'code-block');
 }
 
 /**

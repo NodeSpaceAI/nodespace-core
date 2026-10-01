@@ -25,6 +25,7 @@ import type { Node } from '$lib/types/node';
 // Helper to create test nodes
 function createTestNode(id: string, content: string): Node {
   return {
+    lifecycleStatus: 'active',
     id,
     content,
     nodeType: 'text',

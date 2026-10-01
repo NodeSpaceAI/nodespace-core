@@ -19,6 +19,7 @@ const getNodeMock = vi.mocked(backendAdapter.getNode);
 
 function makeNode(id: string, nodeType: string): Node {
   return {
+    lifecycleStatus: 'active',
     id,
     nodeType,
     content: '',

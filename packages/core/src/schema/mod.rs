@@ -409,11 +409,19 @@ async fn validate_relationship_targets(
         let Some(target_type) = rel.target_type.as_deref() else {
             continue;
         };
-        if target_type == crate::models::AI_CHAT_NODE_TYPE {
+        let targets_a_chat = node_service
+            .type_is_a(target_type, crate::models::CoreNodeType::AiChat)
+            .await
+            .map_err(|e| {
+                MarkdownError::internal_error(format!(
+                    "Failed to resolve the type chain of '{target_type}': {e}"
+                ))
+            })?;
+        if targets_a_chat {
             return Err(MarkdownError::invalid_params(format!(
-                "Relationship '{}' targets 'ai-chat'. No node may reference an AI chat, \
-                 so no relationship may target one.",
-                rel.name
+                "Relationship '{}' targets '{}', an AI chat. No node may reference an AI \
+                 chat, so no relationship may target one.",
+                rel.name, target_type
             )));
         }
         if pending_schema_id == Some(target_type) {
@@ -739,7 +747,7 @@ fn extend_inherited_field(
             addition.field, schema_id
         )));
     }
-    if inherited.field_type != "enum" {
+    if inherited.field_type != crate::models::SchemaFieldType::Enum {
         return Err(MarkdownError::invalid_params(format!(
             "Field '{}' (inherited by '{}') is type '{}', not 'enum' — add_field_values \
              only applies to enum fields.",
@@ -1040,6 +1048,90 @@ async fn load_parent_map(
         .get_extends_parent_map()
         .await
         .map_err(|e| MarkdownError::internal_error(format!("Failed to load extends edges: {e}")))
+}
+
+/// Refuse a change to a schema's place in the type system that the type's
+/// existing state does not allow. Run in `update_schema`'s Phase 0, against
+/// the schema as it stood before the call, because Phase 1 commits renames
+/// (and migrates node data) before anything later can refuse.
+///
+/// - **A core type's parent and abstract flag are the registry's.** Every
+///   rule resolved in Rust answers from the registry, so changing either here
+///   would leave the ancestry table and the stored flag saying something the
+///   registry does not.
+/// - **Taking on a root-only base** tightens the rule for every node the type
+///   already has (ADR-089): refused while one of them has a parent, rather
+///   than leave a node the rule would never have admitted.
+/// - **Becoming abstract** is refused while a node has the type as its own:
+///   such a node would hold a type that cannot be instantiated.
+///
+/// The two instance checks read outside the transaction that later writes the
+/// schema, so a node created between the check and the write is not seen. The
+/// database triggers still refuse a parent for a root-only node from then on.
+async fn validate_type_system_changes(
+    node_service: &Arc<NodeService>,
+    schema: &crate::models::SchemaNode,
+    params: &UpdateSchemaParams,
+) -> Result<(), MarkdownError> {
+    if schema.is_core && (params.extends.is_some() || params.is_abstract.is_some()) {
+        return Err(MarkdownError::invalid_params(format!(
+            "'{}' is a core type; what it extends and whether it is abstract cannot be changed.",
+            schema.id
+        )));
+    }
+
+    if let Some(new_parent) = params.extends.as_deref().map(str::trim) {
+        let root_only = node_service
+            .store()
+            .root_only_type_of(new_parent)
+            .await
+            .map_err(|e| {
+                MarkdownError::internal_error(format!(
+                    "Failed to resolve the type chain of '{new_parent}': {e}"
+                ))
+            })?;
+        if let Some(root_type) = root_only {
+            let has_parented = node_service
+                .store()
+                .has_parented_nodes_of_type(&schema.id)
+                .await
+                .map_err(|e| {
+                    MarkdownError::internal_error(format!(
+                        "Failed to check the nodes of '{}': {e}",
+                        schema.id
+                    ))
+                })?;
+            if has_parented {
+                return Err(MarkdownError::invalid_params(format!(
+                    "'{}' cannot extend '{}': a {} is always a root, and nodes of type '{}' \
+                     have parents. Move them to the root first.",
+                    schema.id, new_parent, root_type, schema.id
+                )));
+            }
+        }
+    }
+
+    if params.is_abstract == Some(true) && !schema.is_abstract {
+        let has_instances = node_service
+            .store()
+            .has_nodes_of_exact_type(&schema.id)
+            .await
+            .map_err(|e| {
+                MarkdownError::internal_error(format!(
+                    "Failed to check for nodes of type '{}': {}",
+                    schema.id, e
+                ))
+            })?;
+        if has_instances {
+            return Err(MarkdownError::invalid_params(format!(
+                "'{}' cannot become abstract: nodes of that type exist. Retype them to a \
+                 subtype first.",
+                schema.id
+            )));
+        }
+    }
+
+    Ok(())
 }
 
 /// Validate a pending `extends` target: it must exist, must be a schema, and
@@ -1730,6 +1822,11 @@ pub struct CreateSchemaParams {
     /// `extended_by` are rejected outright.
     #[serde(default)]
     pub extends: Option<String>,
+    /// Declare the type abstract (ADR-086 §6): it can be extended and
+    /// queried, but no node is created with it as its `node_type` or retyped
+    /// into it. Only its subtypes are instantiated.
+    #[serde(default, rename = "abstract")]
+    pub is_abstract: bool,
     /// Optional relationship definitions
     #[serde(default)]
     pub relationships: Option<Vec<crate::models::schema::SchemaRelationship>>,
@@ -1852,6 +1949,15 @@ pub async fn handle_create_schema(
     // Generate schema ID. Needed before validation so a relationship targeting
     // the schema this call is creating can be recognised as self-referential.
     let schema_id = crate::services::node_service::normalize_schema_id(&params.name);
+
+    // A core type's id is the registry's. `schema` is the one a plain
+    // existence check would miss: it has no schema node to collide with.
+    if crate::models::CoreNodeType::from_id(&schema_id).is_some() {
+        return Err(MarkdownError::invalid_params(format!(
+            "'{}' is a core type; a schema cannot take its name.",
+            schema_id
+        )));
+    }
 
     // Reject reserved relationship names and dangling targetTypes BEFORE the
     // schema node exists, so a bad declaration can't leave a half-created
@@ -1983,6 +2089,9 @@ pub async fn handle_create_schema(
         "schemaVersion": 1,
         "fields": &stored_fields,
     });
+    if params.is_abstract {
+        properties["abstract"] = serde_json::Value::Bool(true);
+    }
     if let Some(ref template) = params.title_template {
         properties["titleTemplate"] = serde_json::Value::String(template.clone());
     }
@@ -2255,6 +2364,11 @@ pub struct UpdateSchemaParams {
     /// New description (optional)
     #[serde(default)]
     pub description: Option<String>,
+    /// Make the type abstract (`true`) or concrete (`false`); absent leaves it
+    /// unchanged. A type that already has nodes of its own cannot become
+    /// abstract: no node may have an abstract type (ADR-086 §6).
+    #[serde(default, rename = "abstract")]
+    pub is_abstract: Option<bool>,
     /// Set or update the title template. Pass `null` (absent) to leave unchanged.
     /// Use `{field_name}` tokens referencing fields defined in the schema.
     /// Example: `"{first_name} {last_name}"`
@@ -2358,6 +2472,10 @@ pub async fn handle_update_schema(
         .ok_or_else(|| {
             MarkdownError::invalid_params(format!("Schema '{}' not found", params.schema_id))
         })?;
+
+    // Before Phase 1 commits a rename: a refused `extends` or `abstract` must
+    // not leave the call half-applied.
+    validate_type_system_changes(node_service, &schema_before, &params).await?;
 
     // Before any mutation, like the reserved-name check above: a name this
     // schema does not declare itself would otherwise remove nothing, silently.
@@ -2909,13 +3027,13 @@ pub async fn handle_update_schema(
 
             // `user_values`/`core_values` are only ever read by
             // `get_enum_values`/`get_enum_value_strings` (`schema_node.rs`),
-            // which both gate on `field_type == "enum"` — appending to
+            // which both gate on the field being an `enum` — appending to
             // `user_values` on a non-enum field would silently write values
             // nothing surfaces or validates against. No seed field combines
             // `extensible: true` with a non-enum type today, but the
             // `extensible` check alone doesn't rule it out, so check
             // explicitly rather than relying on that absence to hold forever.
-            if field.field_type != "enum" {
+            if field.field_type != crate::models::SchemaFieldType::Enum {
                 return Err(MarkdownError::invalid_params(format!(
                     "Field '{}' on schema '{}' is type '{}', not 'enum' — add_field_values \
                      only applies to enum fields.",
@@ -3098,6 +3216,10 @@ pub async fn handle_update_schema(
         .properties_header_summary_template
         .or(schema.properties_header_summary_template);
 
+    // Whether the flag may change was settled in Phase 0
+    // (`validate_type_system_changes`).
+    let is_abstract = params.is_abstract.unwrap_or(schema.is_abstract);
+
     // Build updated properties (description is stored as a child subtree and
     // relationship declarations as relationship-table rows — neither lives in
     // properties)
@@ -3106,6 +3228,9 @@ pub async fn handle_update_schema(
         "schemaVersion": schema.schema_version,
         "fields": fields,
     });
+    if is_abstract {
+        properties["abstract"] = serde_json::Value::Bool(true);
+    }
     if let Some(ref template) = title_template {
         properties["titleTemplate"] = serde_json::Value::String(template.clone());
     }
@@ -3536,7 +3661,7 @@ mod tests {
         SchemaField {
             name: name.to_string(),
             friendly_name: name.to_string(),
-            field_type: "string".to_string(),
+            field_type: crate::models::SchemaFieldType::Text,
             local_only: false,
             protection: SchemaProtectionLevel::User,
             core_values: None,

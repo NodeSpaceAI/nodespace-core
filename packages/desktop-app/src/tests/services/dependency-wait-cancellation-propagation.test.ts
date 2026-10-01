@@ -204,6 +204,7 @@ describe('Dependency-wait cancellation propagation', () => {
     let store: SharedNodeStore;
 
     const makeNode = (id: string, content: string, version = 1): Node => ({
+      lifecycleStatus: 'active',
       id,
       nodeType: 'text',
       content,

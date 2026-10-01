@@ -64,6 +64,7 @@ describe('NavigationService - resolveNodeTarget', () => {
 
   it('resolves node from store (synchronous path)', async () => {
     const testNode: Node = {
+      lifecycleStatus: 'active',
       id: 'test-node-1',
       nodeType: 'text',
       content: 'Test Content',
@@ -144,6 +145,7 @@ describe('NavigationService - resolveNodeTarget', () => {
 
   it('handles date nodes correctly', async () => {
     const dateNode: Node = {
+      lifecycleStatus: 'active',
       id: '2025-12-25',
       nodeType: 'date',
       content: '2025-12-25',
@@ -174,6 +176,7 @@ describe('NavigationService - generateTabTitle (via resolveNodeTarget)', () => {
 
   it('generates title from text node content', async () => {
     const textNode: Node = {
+      lifecycleStatus: 'active',
       id: 'text-1',
       nodeType: 'text',
       content: 'This is a long piece of content that should be truncated if too long',
@@ -192,6 +195,7 @@ describe('NavigationService - generateTabTitle (via resolveNodeTarget)', () => {
 
   it('generates title from date node properties', async () => {
     const dateNode: Node = {
+      lifecycleStatus: 'active',
       id: 'date-1',
       nodeType: 'date',
       content: '2025-01-15',
@@ -211,6 +215,7 @@ describe('NavigationService - generateTabTitle (via resolveNodeTarget)', () => {
 
   it('generates title for date node with numeric timestamp', async () => {
     const dateNode: Node = {
+      lifecycleStatus: 'active',
       id: 'date-2',
       nodeType: 'date',
       content: '2025-01-15',
@@ -229,6 +234,7 @@ describe('NavigationService - generateTabTitle (via resolveNodeTarget)', () => {
 
   it('generates title for date node without date property', async () => {
     const dateNode: Node = {
+      lifecycleStatus: 'active',
       id: 'date-3',
       nodeType: 'date',
       content: '2025-01-15',
@@ -248,6 +254,7 @@ describe('NavigationService - generateTabTitle (via resolveNodeTarget)', () => {
 
   it('generates fallback title for node without content', async () => {
     const taskNode: Node = {
+      lifecycleStatus: 'active',
       id: 'task-1',
       nodeType: 'task',
       content: '',
@@ -267,6 +274,7 @@ describe('NavigationService - generateTabTitle (via resolveNodeTarget)', () => {
 
   it('generates fallback title for node with non-string content', async () => {
     const taskNode: Node = {
+      lifecycleStatus: 'active',
       id: 'task-2',
       nodeType: 'task',
       content: null as unknown as string,
@@ -288,6 +296,7 @@ describe('NavigationService - generateTabTitle (via resolveNodeTarget)', () => {
     // Pins the original reason node-type-predicates' gate exists: `text`'s plugin name
     // ("Text Node") is a registry label, not a title — must not regress to showing it.
     const textNode: Node = {
+      lifecycleStatus: 'active',
       id: 'text-untitled',
       nodeType: 'text',
       content: '',
@@ -305,6 +314,7 @@ describe('NavigationService - generateTabTitle (via resolveNodeTarget)', () => {
 
   it('generates fallback title for an untitled header node (still the raw <type> Node form)', async () => {
     const headerNode: Node = {
+      lifecycleStatus: 'active',
       id: 'header-untitled',
       nodeType: 'header',
       content: '',
@@ -325,6 +335,7 @@ describe('NavigationService - generateTabTitle (via resolveNodeTarget)', () => {
     // false) but its plugin name "Person" is a real entity noun — the gate used to
     // exclude it from the plugin-name branch purely because it renders inline.
     const personNode: Node = {
+      lifecycleStatus: 'active',
       id: 'person-untitled',
       nodeType: 'person',
       content: '',
@@ -346,6 +357,7 @@ describe('NavigationService - generateTabTitle (via resolveNodeTarget)', () => {
     // (e.g. leftover content from before a type conversion) — it must reach the
     // "Untitled Person" fallback instead, matching resolveTitleOrContent's rule.
     const personNode: Node = {
+      lifecycleStatus: 'active',
       id: 'person-stale-content',
       nodeType: 'person',
       content: 'leftover text from before conversion',
@@ -367,6 +379,7 @@ describe('NavigationService - generateTabTitle (via resolveNodeTarget)', () => {
     // plugin-name branch before this fix — this pins that the "Untitled " prefix now
     // generically applies there too, not just to person.
     const chatNode: Node = {
+      lifecycleStatus: 'active',
       id: 'chat-untitled',
       nodeType: 'ai-chat',
       content: '',
@@ -392,6 +405,7 @@ describe('NavigationService - navigateToNode', () => {
 
     // Setup test node
     const testNode: Node = {
+      lifecycleStatus: 'active',
       id: 'nav-node-1',
       nodeType: 'text',
       content: 'Navigation Test Node',
@@ -524,6 +538,7 @@ describe('NavigationService - navigateToNodeInOtherPane', () => {
 
     // Mock a test node in the store
     const testNode: Node = {
+      lifecycleStatus: 'active',
       id: 'test-node-1',
       nodeType: 'text',
       content: 'Test Node Content',
@@ -579,6 +594,7 @@ describe('NavigationService - navigateToNodeInOtherPane', () => {
     it('handles date nodes correctly', async () => {
       // Mock a date node in the store (backend would return this for YYYY-MM-DD IDs)
       const dateNode: Node = {
+        lifecycleStatus: 'active',
         id: '2025-12-25',
         nodeType: 'date',
         content: '2025-12-25', // Date nodes have content matching ID
@@ -619,6 +635,7 @@ describe('NavigationService - navigateToNodeInOtherPane', () => {
 
       // Mock another test node
       const testNode2: Node = {
+        lifecycleStatus: 'active',
         id: 'test-node-2',
         nodeType: 'text',
         content: 'Test Node 2 Content',
@@ -727,6 +744,7 @@ describe('NavigationService - navigateToNodeInOtherPane', () => {
 
       // Add another node for testing
       const testNode2: Node = {
+        lifecycleStatus: 'active',
         id: 'test-node-3',
         nodeType: 'text',
         content: 'Test Node 3',
@@ -784,6 +802,7 @@ describe('NavigationService - Entity node navigation', () => {
 
   function makeNode(id: string, nodeType: string, content: string = ''): Node {
     return {
+      lifecycleStatus: 'active',
       id,
       nodeType,
       content,
@@ -1023,6 +1042,7 @@ describe('NavigationService - focusOrOpenNode', () => {
     // navigateToNode would walk a primitive up to its viewer-owning ancestor;
     // focusOrOpenNode deliberately does not.
     const dateNode: Node = {
+      lifecycleStatus: 'active',
       id: '2026-01-05',
       nodeType: 'date',
       content: '',

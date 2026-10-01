@@ -399,7 +399,7 @@ async fn bulk_import_rejects_a_wrongly_typed_scalar() -> Result<()> {
 
     let err = svc
         .bulk_create_hierarchy(vec![(
-            "imported-ticket".to_string(),
+            "900446a1-76cc-5568-a19e-9452e65cb6e1".to_string(),
             "ticket".to_string(),
             "Imported".to_string(),
             None,

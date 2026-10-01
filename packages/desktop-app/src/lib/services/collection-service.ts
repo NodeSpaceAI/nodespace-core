@@ -200,6 +200,7 @@ class MockCollectionService implements CollectionServiceInterface {
 
   async renameCollection(collectionId: string, _version: number, newName: string): Promise<CollectionNode> {
     return {
+      lifecycleStatus: 'active',
       id: collectionId,
       nodeType: 'collection',
       content: newName,
@@ -303,6 +304,7 @@ class HttpCollectionService implements CollectionServiceInterface {
   async renameCollection(collectionId: string, _version: number, newName: string): Promise<CollectionNode> {
     // Not implemented in dev-proxy yet
     return {
+      lifecycleStatus: 'active',
       id: collectionId,
       nodeType: 'collection',
       content: newName,

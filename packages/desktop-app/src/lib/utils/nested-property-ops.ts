@@ -67,7 +67,7 @@ export function addArrayItem(value: unknown, item: unknown): unknown[] {
 /**
  * A sensible empty/default value for a leaf/nested field, used when adding an
  * array element or initializing a missing sub-value. Object → {}, array → [],
- * boolean → false, number → 0, string/text/enum → '', everything else → null.
+ * boolean → false, number → 0, text/enum → '', everything else → null.
  */
 export function makeEmptyValueForField(field: SchemaField): unknown {
   switch (field.type) {
@@ -79,7 +79,6 @@ export function makeEmptyValueForField(field: SchemaField): unknown {
       return false;
     case 'number':
       return 0;
-    case 'string':
     case 'text':
     case 'enum':
       return '';
@@ -96,7 +95,7 @@ export function makeEmptyValueForField(field: SchemaField): unknown {
 export function makeEmptyArrayItem(field: SchemaField): unknown {
   if (field.itemType === 'object') return {};
   // Reuse the scalar defaults by mapping itemType onto a synthetic field type.
-  return makeEmptyValueForField({ ...field, type: field.itemType ?? 'string' });
+  return makeEmptyValueForField({ ...field, type: field.itemType ?? 'text' });
 }
 
 /** True when a field renders as a nested editor (object with sub-fields, or an array). */

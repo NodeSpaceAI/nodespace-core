@@ -273,7 +273,7 @@ mod event_emission_tests {
             .update_node_unchecked(
                 &node_id,
                 nodespace_core::models::NodeUpdate {
-                    properties: Some(json!({ "keep": "yes" })),
+                    properties: Some(json!({ "custom:keep": "yes" })),
                     ..Default::default()
                 },
             )
@@ -287,7 +287,7 @@ mod event_emission_tests {
             .bulk_update(vec![(
                 node_id.clone(),
                 nodespace_core::models::NodeUpdate {
-                    properties: Some(json!({ "add": "new" })),
+                    properties: Some(json!({ "custom:add": "new" })),
                     ..Default::default()
                 },
             )])
@@ -316,11 +316,11 @@ mod event_emission_tests {
         let updated = service.get_node(&node_id).await?.expect("node exists");
         let props = updated.properties.to_string();
         assert!(
-            props.contains("keep") && props.contains("yes"),
+            props.contains("custom:keep") && props.contains("yes"),
             "pre-existing property must survive the bulk update (merge): {props}"
         );
         assert!(
-            props.contains("add") && props.contains("new"),
+            props.contains("custom:add") && props.contains("new"),
             "new property must be present after the bulk update: {props}"
         );
         Ok(())

@@ -35,6 +35,9 @@ import { conflictNotifications } from '$lib/stores/conflict-notifications.svelte
 
 function schema(): SchemaNode {
   return {
+    nodeType: 'schema' as const,
+    lifecycleStatus: 'active' as const,
+    properties: {},
     id: 'ticket',
     content: 'Ticket',
     createdAt: '2026-01-01T00:00:00Z',
@@ -61,6 +64,7 @@ function schema(): SchemaNode {
 
 function ticket(id: string, status: string, title: string): Node {
   return {
+    lifecycleStatus: 'active',
     id,
     nodeType: 'ticket',
     content: title,
@@ -82,6 +86,9 @@ function seed(node: Node): void {
  *  group-by field ('payment_state') doesn't exist on the 'ticket' type at all. */
 function invoiceSchema(): SchemaNode {
   return {
+    nodeType: 'schema' as const,
+    lifecycleStatus: 'active' as const,
+    properties: {},
     id: 'invoice',
     content: 'Invoice',
     createdAt: '2026-01-01T00:00:00Z',
@@ -108,6 +115,7 @@ function invoiceSchema(): SchemaNode {
 
 function invoice(id: string, paymentState: string, title: string): Node {
   return {
+    lifecycleStatus: 'active',
     id,
     nodeType: 'invoice',
     content: title,

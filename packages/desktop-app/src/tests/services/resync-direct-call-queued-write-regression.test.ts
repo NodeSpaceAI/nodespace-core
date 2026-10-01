@@ -49,6 +49,7 @@ import type { Node } from '../../lib/types';
 import { DEBOUNCED_WRITE_WAIT_MS, CASCADE_SETTLE_TIMEOUT_MS } from '../utils/test-constants';
 
 const makeNode = (id: string, content: string, version = 1): Node => ({
+  lifecycleStatus: 'active',
   id,
   nodeType: 'text',
   content,
@@ -115,6 +116,7 @@ describe('resyncNodeFromServer direct call — queued-write regression', () => {
         // Write B's own real (queued) persist attempt, once promoted —
         // succeeds normally against the corrected version.
         return {
+          lifecycleStatus: 'active' as const,
           id: nodeId,
           nodeType: 'text',
           content: String(node.content ?? ''),

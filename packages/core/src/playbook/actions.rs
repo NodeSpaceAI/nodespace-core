@@ -4159,12 +4159,18 @@ mod tests {
         let a = deterministic_action_output_id(
             "rule-a",
             0,
-            &["cycle-1".to_string(), "issue-1".to_string()],
+            &[
+                "4ef65e85-5856-5cd8-ae87-4185100f980c".to_string(),
+                "issue-1".to_string(),
+            ],
         );
         let b = deterministic_action_output_id(
             "rule-a",
             0,
-            &["issue-1".to_string(), "cycle-1".to_string()],
+            &[
+                "issue-1".to_string(),
+                "4ef65e85-5856-5cd8-ae87-4185100f980c".to_string(),
+            ],
         );
         assert_ne!(a, b);
     }
@@ -4427,7 +4433,7 @@ mod tests {
             let (svc, _tmp) = create_test_service().await;
             // The scanned node the scheduled trigger matched (e.g. a cycle).
             let trigger = make_trigger_node(
-                "cycle-1",
+                "4ef65e85-5856-5cd8-ae87-4185100f980c",
                 "cycle",
                 json!({
                     "items": [
@@ -4437,7 +4443,7 @@ mod tests {
                     ]
                 }),
             );
-            let event = make_node_created_event("cycle-1", "cycle");
+            let event = make_node_created_event("4ef65e85-5856-5cd8-ae87-4185100f980c", "cycle");
             let actions = vec![make_action(
                 ActionType::CreateNode,
                 json!({"node_type": "text", "content": "migrated from {item.id}"}),
@@ -4455,7 +4461,10 @@ mod tests {
                     deterministic_action_output_id(
                         &rule_id,
                         0,
-                        &["cycle-1".to_string(), item_id.to_string()],
+                        &[
+                            "4ef65e85-5856-5cd8-ae87-4185100f980c".to_string(),
+                            item_id.to_string(),
+                        ],
                     )
                 })
                 .collect();
@@ -4504,18 +4513,18 @@ mod tests {
             )];
 
             let cycle_a = make_trigger_node(
-                "cycle-a",
+                "f0f6fe41-efeb-518e-ab49-2084229bb187",
                 "cycle",
                 json!({"items": [{"id": "issue-shared"}]}),
             );
             let cycle_b = make_trigger_node(
-                "cycle-b",
+                "b3913da3-6e55-5efe-94d2-562477f33990",
                 "cycle",
                 json!({"items": [{"id": "issue-shared"}]}),
             );
 
-            let event_a = make_node_created_event("cycle-a", "cycle");
-            let event_b = make_node_created_event("cycle-b", "cycle");
+            let event_a = make_node_created_event("f0f6fe41-efeb-518e-ab49-2084229bb187", "cycle");
+            let event_b = make_node_created_event("b3913da3-6e55-5efe-94d2-562477f33990", "cycle");
 
             let ra = execute_actions(&actions, &cycle_a, &event_a, &svc, exec_ctx("play-3")).await;
             let rb = execute_actions(&actions, &cycle_b, &event_b, &svc, exec_ctx("play-3")).await;
@@ -4526,12 +4535,18 @@ mod tests {
             let id_under_a = deterministic_action_output_id(
                 &rule_id,
                 0,
-                &["cycle-a".to_string(), "issue-shared".to_string()],
+                &[
+                    "f0f6fe41-efeb-518e-ab49-2084229bb187".to_string(),
+                    "issue-shared".to_string(),
+                ],
             );
             let id_under_b = deterministic_action_output_id(
                 &rule_id,
                 0,
-                &["cycle-b".to_string(), "issue-shared".to_string()],
+                &[
+                    "b3913da3-6e55-5efe-94d2-562477f33990".to_string(),
+                    "issue-shared".to_string(),
+                ],
             );
 
             assert_ne!(
@@ -4569,17 +4584,17 @@ mod tests {
                 json!({"node_type": "text", "content": "migrated from {item.id}"}),
                 Some("trigger.node.properties.items"),
             )];
-            let event = make_node_created_event("cycle-1", "cycle");
+            let event = make_node_created_event("4ef65e85-5856-5cd8-ae87-4185100f980c", "cycle");
 
             // Device A scans in one order...
             let trigger_a = make_trigger_node(
-                "cycle-1",
+                "4ef65e85-5856-5cd8-ae87-4185100f980c",
                 "cycle",
                 json!({"items": [{"id": "issue-1"}, {"id": "issue-2"}, {"id": "issue-3"}]}),
             );
             // ...device B scans the SAME set in a different order.
             let trigger_b = make_trigger_node(
-                "cycle-1",
+                "4ef65e85-5856-5cd8-ae87-4185100f980c",
                 "cycle",
                 json!({"items": [{"id": "issue-3"}, {"id": "issue-1"}, {"id": "issue-2"}]}),
             );
@@ -4634,8 +4649,12 @@ mod tests {
         #[tokio::test]
         async fn for_each_item_without_resolvable_id_fails_the_rule() {
             let (svc, _tmp) = create_test_service().await;
-            let trigger = make_trigger_node("cycle-1", "cycle", json!({"items": [1, 2, 3]}));
-            let event = make_node_created_event("cycle-1", "cycle");
+            let trigger = make_trigger_node(
+                "4ef65e85-5856-5cd8-ae87-4185100f980c",
+                "cycle",
+                json!({"items": [1, 2, 3]}),
+            );
+            let event = make_node_created_event("4ef65e85-5856-5cd8-ae87-4185100f980c", "cycle");
             let actions = vec![make_action(
                 ActionType::CreateNode,
                 json!({"node_type": "text", "content": "x"}),
@@ -4842,23 +4861,35 @@ mod tests {
             )
             .await;
 
-            let cycle = make_trigger_node("cycle-1", "sh_cycle", json!({}));
+            let cycle = make_trigger_node(
+                "4ef65e85-5856-5cd8-ae87-4185100f980c",
+                "sh_cycle",
+                json!({}),
+            );
             svc.create_node(cycle).await.unwrap();
-            let issue =
-                make_trigger_node("issue-1", "sh_issue", json!({"sh_issue": {"estimate": 3}}));
+            let issue = make_trigger_node(
+                "de3c38b5-df34-5692-b290-1c18fd12b034",
+                "sh_issue",
+                json!({"sh_issue": {"estimate": 3}}),
+            );
             svc.create_node(issue.clone()).await.unwrap();
-            svc.create_relationship("issue-1", "cycle", "cycle-1", json!({}))
-                .await
-                .unwrap();
+            svc.create_relationship(
+                "de3c38b5-df34-5692-b290-1c18fd12b034",
+                "cycle",
+                "4ef65e85-5856-5cd8-ae87-4185100f980c",
+                json!({}),
+            )
+            .await
+            .unwrap();
 
-            let event = make_node_created_event("issue-1", "sh_issue");
+            let event = make_node_created_event("de3c38b5-df34-5692-b290-1c18fd12b034", "sh_issue");
             let resolver = GraphResolver::new(Arc::clone(&svc));
             let mut ctx = BindingContext::new(&issue, &event, Some(resolver));
 
             let result = ctx.resolve_binding("trigger.node.cycle").await.unwrap();
             assert_eq!(
                 result.get("id").and_then(|v| v.as_str()),
-                Some("cycle-1"),
+                Some("4ef65e85-5856-5cd8-ae87-4185100f980c"),
                 "single-hop `trigger.node.<relationship>` must resolve to the \
                  full related node, not fail before ever reaching GraphResolver"
             );
@@ -4891,28 +4922,43 @@ mod tests {
             )
             .await;
 
-            let cycle = make_trigger_node("cycle-2", "sh_cycle2", json!({}));
+            let cycle = make_trigger_node(
+                "f2e78b8a-a88f-55e6-90df-6d10048632c8",
+                "sh_cycle2",
+                json!({}),
+            );
             svc.create_node(cycle.clone()).await.unwrap();
             let issue_a = make_trigger_node(
-                "issue-a",
+                "568a756c-cf0b-53a9-b297-dee0fb59bbe7",
                 "sh_issue2",
                 json!({"sh_issue2": {"estimate": 3}}),
             );
             let issue_b = make_trigger_node(
-                "issue-b",
+                "bd4ee224-0773-564d-ac28-ab17dac78bd6",
                 "sh_issue2",
                 json!({"sh_issue2": {"estimate": 5}}),
             );
             svc.create_node(issue_a).await.unwrap();
             svc.create_node(issue_b).await.unwrap();
-            svc.create_relationship("cycle-2", "issues", "issue-a", json!({}))
-                .await
-                .unwrap();
-            svc.create_relationship("cycle-2", "issues", "issue-b", json!({}))
-                .await
-                .unwrap();
+            svc.create_relationship(
+                "f2e78b8a-a88f-55e6-90df-6d10048632c8",
+                "issues",
+                "568a756c-cf0b-53a9-b297-dee0fb59bbe7",
+                json!({}),
+            )
+            .await
+            .unwrap();
+            svc.create_relationship(
+                "f2e78b8a-a88f-55e6-90df-6d10048632c8",
+                "issues",
+                "bd4ee224-0773-564d-ac28-ab17dac78bd6",
+                json!({}),
+            )
+            .await
+            .unwrap();
 
-            let event = make_node_created_event("cycle-2", "sh_cycle2");
+            let event =
+                make_node_created_event("f2e78b8a-a88f-55e6-90df-6d10048632c8", "sh_cycle2");
             let resolver = GraphResolver::new(Arc::clone(&svc));
             let mut ctx = BindingContext::new(&cycle, &event, Some(resolver));
 
@@ -4941,7 +4987,7 @@ mod tests {
                 .iter()
                 .map(|i| i["id"].as_str().unwrap())
                 .collect();
-            assert_eq!(narrowed_ids, vec!["issue-b"]);
+            assert_eq!(narrowed_ids, vec!["bd4ee224-0773-564d-ac28-ab17dac78bd6"]);
         }
     }
 
@@ -5033,10 +5079,10 @@ mod tests {
             let (svc, _tmp) = create_test_service().await;
 
             let existing = Node::new_with_id(
-                "node:target-1".to_string(),
+                "3dee0ede-ed4f-598d-a749-1770eba65579".to_string(),
                 "text".to_string(),
                 "original".to_string(),
-                json!({"text": {"tag": "keep-me"}}),
+                json!({"text": {"custom:tag": "keep-me"}}),
             );
             svc.create_node(existing).await.unwrap();
 
@@ -5044,7 +5090,7 @@ mod tests {
             let event = make_node_created_event("task-1", "task");
             let actions = vec![make_action(
                 ActionType::UpdateNode,
-                json!({"node_id": "node:target-1", "content": "updated"}),
+                json!({"node_id": "3dee0ede-ed4f-598d-a749-1770eba65579", "content": "updated"}),
                 None,
             )];
 
@@ -5052,14 +5098,18 @@ mod tests {
                 execute_actions(&actions, &trigger, &event, &svc, exec_ctx("play-1", 3)).await;
             assert!(matches!(result, ActionResult::Success), "{result:?}");
 
-            let updated = svc.get_node("node:target-1").await.unwrap().unwrap();
+            let updated = svc
+                .get_node("3dee0ede-ed4f-598d-a749-1770eba65579")
+                .await
+                .unwrap()
+                .unwrap();
             assert_eq!(
                 updated.properties[PLAYBOOK_CHAIN_DEPTH_PROPERTY],
                 json!(3),
                 "update_node must stamp the chain depth even though the action's own params never set `properties`"
             );
             assert_eq!(
-                updated.properties["text"]["tag"],
+                updated.properties["text"]["custom:tag"],
                 json!("keep-me"),
                 "the depth stamp must merge in, not replace, the node's existing properties"
             );
@@ -5077,7 +5127,7 @@ mod tests {
 
             let (svc, _tmp) = create_test_service().await;
             svc.create_node(Node::new_with_id(
-                "node:target-2".to_string(),
+                "dbe02618-8816-5e69-b12f-49fa7b6ffc0a".to_string(),
                 "text".to_string(),
                 "original".to_string(),
                 json!({}),
@@ -5089,7 +5139,7 @@ mod tests {
             let event = make_node_created_event("task-1", "task");
             let actions = vec![make_action(
                 ActionType::UpdateNode,
-                json!({"node_id": "node:target-2", "content": "updated"}),
+                json!({"node_id": "dbe02618-8816-5e69-b12f-49fa7b6ffc0a", "content": "updated"}),
                 None,
             )];
 
@@ -5106,7 +5156,7 @@ mod tests {
                 let envelope = tokio::time::timeout(std::time::Duration::from_secs(5), async {
                     loop {
                         let envelope = events.recv().await.unwrap();
-                    if matches!(&envelope.event, DomainEvent::NodeUpdated { node_id, .. } if node_id == "node:target-2")
+                    if matches!(&envelope.event, DomainEvent::NodeUpdated { node_id, .. } if node_id == "dbe02618-8816-5e69-b12f-49fa7b6ffc0a")
                     {
                         break envelope;
                     }
@@ -5120,7 +5170,11 @@ mod tests {
                     "a play update's committed diff must carry its write id change"
                 );
 
-                let updated = svc.get_node("node:target-2").await.unwrap().unwrap();
+                let updated = svc
+                    .get_node("dbe02618-8816-5e69-b12f-49fa7b6ffc0a")
+                    .await
+                    .unwrap()
+                    .unwrap();
                 assert_eq!(updated.properties[PLAYBOOK_CHAIN_DEPTH_PROPERTY], json!(3));
                 let write_id = updated.properties[PLAYBOOK_WRITE_ID_PROPERTY].clone();
                 assert!(write_id.is_string(), "a play write must stamp a write id");
@@ -5210,7 +5264,7 @@ mod tests {
                         "isCore": false,
                         "schemaVersion": 1,
                         "description": format!("{type_name} schema"),
-                        "fields": [{"name": "email", "type": "string"}]
+                        "fields": [{"name": "email", "type": "text"}]
                     }),
                 );
                 svc.create_node(schema).await.unwrap();
@@ -5224,19 +5278,29 @@ mod tests {
             }
 
             svc.create_node(make_trigger_node(
-                "bind-person-1",
+                "4449b2e3-b913-5cd9-8e32-0c7d90aaddf8",
                 "bind_person",
                 json!({"email": "ada@example.com"}),
             ))
             .await
             .unwrap();
-            let ticket = make_trigger_node("bind-ticket-1", "bind_ticket", json!({}));
+            let ticket = make_trigger_node(
+                "63b212a6-2ee7-5b0c-9fe4-904454b53c12",
+                "bind_ticket",
+                json!({}),
+            );
             svc.create_node(ticket.clone()).await.unwrap();
-            svc.create_relationship("bind-person-1", "tasks", "bind-ticket-1", json!({}))
-                .await
-                .unwrap();
+            svc.create_relationship(
+                "4449b2e3-b913-5cd9-8e32-0c7d90aaddf8",
+                "tasks",
+                "63b212a6-2ee7-5b0c-9fe4-904454b53c12",
+                json!({}),
+            )
+            .await
+            .unwrap();
 
-            let event = make_node_created_event("bind-ticket-1", "bind_ticket");
+            let event =
+                make_node_created_event("63b212a6-2ee7-5b0c-9fe4-904454b53c12", "bind_ticket");
             let resolver = GraphResolver::new(Arc::clone(&svc));
             let mut ctx = BindingContext::new(&ticket, &event, Some(resolver));
 
@@ -5247,7 +5311,7 @@ mod tests {
                 .await
                 .expect("a single-hop reverse binding must resolve");
             assert_eq!(
-                resolved["id"], "bind-person-1",
+                resolved["id"], "4449b2e3-b913-5cd9-8e32-0c7d90aaddf8",
                 "the binding must resolve to the assignee node"
             );
 

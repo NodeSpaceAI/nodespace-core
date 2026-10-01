@@ -156,7 +156,10 @@ pub fn interpolate_title_template_with_schema(
                     let resolved = fields
                         .iter()
                         // "enum" matches SchemaField.field_type JSON serialization — must stay in sync
-                        .find(|f| f.name == field_name && f.field_type == "enum")
+                        .find(|f| {
+                            f.name == field_name
+                                && f.field_type == crate::models::SchemaFieldType::Enum
+                        })
                         .and_then(|f| {
                             f.core_values
                                 .iter()
@@ -456,7 +459,7 @@ mod tests {
         SchemaField {
             name: "status".to_string(),
             friendly_name: "Status".to_string(),
-            field_type: "enum".to_string(),
+            field_type: crate::models::SchemaFieldType::Enum,
             local_only: false,
             protection: crate::models::schema::SchemaProtectionLevel::Core,
             core_values: if core.is_empty() {
@@ -532,7 +535,7 @@ mod tests {
         let name_field = SchemaField {
             name: "name".to_string(),
             friendly_name: "Name".to_string(),
-            field_type: "string".to_string(),
+            field_type: crate::models::SchemaFieldType::Text,
             local_only: false,
             protection: crate::models::schema::SchemaProtectionLevel::User,
             core_values: None,
@@ -551,7 +554,7 @@ mod tests {
         let status_field = SchemaField {
             name: "status".to_string(),
             friendly_name: "Status".to_string(),
-            field_type: "enum".to_string(),
+            field_type: crate::models::SchemaFieldType::Enum,
             local_only: false,
             protection: crate::models::schema::SchemaProtectionLevel::Core,
             core_values: Some(vec![
@@ -604,7 +607,7 @@ mod tests {
         let field = SchemaField {
             name: "status".to_string(),
             friendly_name: "Status".to_string(),
-            field_type: "enum".to_string(),
+            field_type: crate::models::SchemaFieldType::Enum,
             local_only: false,
             protection: crate::models::schema::SchemaProtectionLevel::Core,
             core_values: Some(vec![EnumValue::new(

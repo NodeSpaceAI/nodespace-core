@@ -906,6 +906,8 @@ class MockAdapter implements BackendAdapter {
       createdAt: new Date().toISOString(),
       modifiedAt: new Date().toISOString(),
       version: 1,
+      lifecycleStatus: 'active',
+      properties: {},
       // Typed schema fields at top level (not in properties)
       isCore: false,
       schemaVersion: 1,

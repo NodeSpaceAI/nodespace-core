@@ -13,6 +13,7 @@ import type { Node } from '../../lib/types';
 import { CASCADE_SETTLE_TIMEOUT_MS } from '../utils/test-constants';
 
 const makeNode = (id: string, version = 1): Node => ({
+  lifecycleStatus: 'active',
   id,
   nodeType: 'text',
   content: 'Original content',

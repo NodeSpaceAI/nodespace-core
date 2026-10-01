@@ -25,6 +25,7 @@ describe('SharedNodeStore — skip-while-editing guard', () => {
   let store: SharedNodeStore;
 
   const makeNode = (id: string, content: string, version = 1): Node => ({
+    lifecycleStatus: 'active',
     id,
     nodeType: 'text',
     content,
@@ -616,6 +617,7 @@ describe('SharedNodeStore — skip-while-editing guard', () => {
         }
         // Write B's own eventual real persist attempt, once promoted.
         return {
+          lifecycleStatus: 'active' as const,
           id: 'occ-5',
           nodeType: 'text',
           content: String(node.content ?? ''),
@@ -682,6 +684,7 @@ describe('SharedNodeStore — skip-while-editing guard', () => {
     };
 
     const makeTaskNode = (id: string, content: string, version = 1): TaskLikeNode => ({
+      lifecycleStatus: 'active',
       id,
       nodeType: 'task',
       content,

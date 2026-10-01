@@ -51,12 +51,13 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             created_at: now,
             modified_at: now,
             is_core: true,
+            is_abstract: false,
             schema_version: 1,
             fields: vec![
                 SchemaField {
                     name: "status".to_string(),
                     friendly_name: "Status".to_string(),
-                    field_type: "enum".to_string(),
+                    field_type: crate::models::SchemaFieldType::Enum,
                     local_only: false,
                     protection: SchemaProtectionLevel::Core,
                     core_values: Some(vec![
@@ -86,7 +87,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                 SchemaField {
                     name: "priority".to_string(),
                     friendly_name: "Priority".to_string(),
-                    field_type: "enum".to_string(),
+                    field_type: crate::models::SchemaFieldType::Enum,
                     local_only: false,
                     protection: SchemaProtectionLevel::User,
                     core_values: Some(vec![
@@ -118,7 +119,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                 SchemaField {
                     name: "due_date".to_string(),
                     friendly_name: "Due date".to_string(),
-                    field_type: "date".to_string(),
+                    field_type: crate::models::SchemaFieldType::Date,
                     local_only: false,
                     protection: SchemaProtectionLevel::User,
                     core_values: None,
@@ -143,7 +144,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                 SchemaField {
                     name: "started_at".to_string(),
                     friendly_name: "Started at".to_string(),
-                    field_type: "date".to_string(),
+                    field_type: crate::models::SchemaFieldType::Date,
                     local_only: false,
                     protection: SchemaProtectionLevel::User,
                     core_values: None,
@@ -167,7 +168,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                 SchemaField {
                     name: "completed_at".to_string(),
                     friendly_name: "Completed at".to_string(),
-                    field_type: "date".to_string(),
+                    field_type: crate::models::SchemaFieldType::Date,
                     local_only: false,
                     protection: SchemaProtectionLevel::User,
                     core_values: None,
@@ -273,12 +274,13 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             created_at: now,
             modified_at: now,
             is_core: true,
+            is_abstract: false,
             schema_version: 1,
             fields: vec![
                 SchemaField {
                     name: "status".to_string(),
                     friendly_name: "Status".to_string(),
-                    field_type: "enum".to_string(),
+                    field_type: crate::models::SchemaFieldType::Enum,
                     local_only: false,
                     protection: SchemaProtectionLevel::Core,
                     core_values: Some(vec![
@@ -307,7 +309,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                 SchemaField {
                     name: "priority".to_string(),
                     friendly_name: "Priority".to_string(),
-                    field_type: "enum".to_string(),
+                    field_type: crate::models::SchemaFieldType::Enum,
                     local_only: false,
                     protection: SchemaProtectionLevel::User,
                     core_values: Some(vec![
@@ -339,7 +341,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                 SchemaField {
                     name: "start_date".to_string(),
                     friendly_name: "Start date".to_string(),
-                    field_type: "date".to_string(),
+                    field_type: crate::models::SchemaFieldType::Date,
                     local_only: false,
                     protection: SchemaProtectionLevel::User,
                     core_values: None,
@@ -362,7 +364,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                 SchemaField {
                     name: "end_date".to_string(),
                     friendly_name: "End date".to_string(),
-                    field_type: "date".to_string(),
+                    field_type: crate::models::SchemaFieldType::Date,
                     local_only: false,
                     protection: SchemaProtectionLevel::User,
                     core_values: None,
@@ -411,6 +413,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             created_at: now,
             modified_at: now,
             is_core: true,
+            is_abstract: false,
             schema_version: 1,
             fields: vec![],
             relationships: vec![],
@@ -425,6 +428,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             created_at: now,
             modified_at: now,
             is_core: true,
+            is_abstract: false,
             schema_version: 1,
             fields: vec![],
             relationships: vec![],
@@ -439,6 +443,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             created_at: now,
             modified_at: now,
             is_core: true,
+            is_abstract: false,
             schema_version: 1,
             fields: vec![],
             relationships: vec![],
@@ -453,6 +458,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             created_at: now,
             modified_at: now,
             is_core: true,
+            is_abstract: false,
             schema_version: 1,
             fields: vec![],
             relationships: vec![],
@@ -467,6 +473,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             created_at: now,
             modified_at: now,
             is_core: true,
+            is_abstract: false,
             schema_version: 1,
             fields: vec![],
             relationships: vec![],
@@ -481,6 +488,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             created_at: now,
             modified_at: now,
             is_core: true,
+            is_abstract: false,
             schema_version: 1,
             fields: vec![],
             relationships: vec![],
@@ -495,6 +503,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             created_at: now,
             modified_at: now,
             is_core: true,
+            is_abstract: false,
             schema_version: 1,
             fields: vec![],
             relationships: vec![],
@@ -509,6 +518,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             created_at: now,
             modified_at: now,
             is_core: true,
+            is_abstract: false,
             schema_version: 1,
             fields: vec![],
             relationships: vec![],
@@ -523,8 +533,27 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             created_at: now,
             modified_at: now,
             is_core: true,
+            is_abstract: false,
             schema_version: 1,
-            fields: vec![],
+            fields: vec![SchemaField {
+                name: "description".to_string(),
+                friendly_name: "Description".to_string(),
+                field_type: crate::models::SchemaFieldType::Text,
+                local_only: false,
+                protection: SchemaProtectionLevel::Core,
+                core_values: None,
+                user_values: None,
+                indexed: false,
+                required: Some(false),
+                extensible: None,
+                default: None,
+                description: Some("What the collection is for".to_string()),
+                item_type: None,
+                fields: None,
+                item_fields: None,
+                unique: None,
+                unique_case_insensitive: None,
+            }],
             relationships: vec![], // member_of is a native edge, not schema-defined
             title_template: None,
             properties_header_summary_template: None,
@@ -537,6 +566,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             created_at: now,
             modified_at: now,
             is_core: true,
+            is_abstract: false,
             schema_version: 1,
             fields: vec![],
             relationships: vec![],
@@ -551,12 +581,13 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             created_at: now,
             modified_at: now,
             is_core: true,
+            is_abstract: false,
             schema_version: 1,
             fields: vec![
                 SchemaField {
                     name: "provider".to_string(),
                     friendly_name: "Provider".to_string(),
-                    field_type: "enum".to_string(),
+                    field_type: crate::models::SchemaFieldType::Enum,
                     local_only: false,
                     protection: SchemaProtectionLevel::Core,
                     // Closed set: validation rejects any provider outside
@@ -584,7 +615,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                 SchemaField {
                     name: "model".to_string(),
                     friendly_name: "Model".to_string(),
-                    field_type: "text".to_string(),
+                    field_type: crate::models::SchemaFieldType::Text,
                     local_only: false,
                     protection: SchemaProtectionLevel::Core,
                     core_values: None,
@@ -603,7 +634,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                 SchemaField {
                     name: "turn_status".to_string(),
                     friendly_name: "Turn status".to_string(),
-                    field_type: "enum".to_string(),
+                    field_type: crate::models::SchemaFieldType::Enum,
                     local_only: false,
                     protection: SchemaProtectionLevel::Core,
                     // Daemon-owned: the inference turn state, independent of the
@@ -629,7 +660,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                 SchemaField {
                     name: "session_status".to_string(),
                     friendly_name: "Session status".to_string(),
-                    field_type: "enum".to_string(),
+                    field_type: crate::models::SchemaFieldType::Enum,
                     local_only: false,
                     protection: SchemaProtectionLevel::Core,
                     // PTY-owned: the session lifecycle, independent of the
@@ -655,7 +686,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                 SchemaField {
                     name: "last_active".to_string(),
                     friendly_name: "Last active".to_string(),
-                    field_type: "datetime".to_string(),
+                    field_type: crate::models::SchemaFieldType::Datetime,
                     local_only: false,
                     protection: SchemaProtectionLevel::System,
                     core_values: None,
@@ -674,7 +705,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                 SchemaField {
                     name: "context_tokens".to_string(),
                     friendly_name: "Context tokens".to_string(),
-                    field_type: "number".to_string(),
+                    field_type: crate::models::SchemaFieldType::Number,
                     local_only: false,
                     protection: SchemaProtectionLevel::System,
                     core_values: None,
@@ -695,7 +726,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                 SchemaField {
                     name: "created_nodes".to_string(),
                     friendly_name: "Created nodes".to_string(),
-                    field_type: "array".to_string(),
+                    field_type: crate::models::SchemaFieldType::Array,
                     local_only: false,
                     protection: SchemaProtectionLevel::System,
                     core_values: None,
@@ -707,7 +738,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                     description: Some(
                         "IDs of nodes created by the agent during this chat".to_string(),
                     ),
-                    item_type: Some("text".to_string()),
+                    item_type: Some(crate::models::SchemaFieldType::Text),
                     fields: None,
                     item_fields: None,
                     unique: None,
@@ -716,7 +747,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                 SchemaField {
                     name: "messages".to_string(),
                     friendly_name: "Messages".to_string(),
-                    field_type: "array".to_string(),
+                    field_type: crate::models::SchemaFieldType::Array,
                     local_only: false,
                     protection: SchemaProtectionLevel::Core,
                     core_values: None,
@@ -726,13 +757,13 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                     extensible: None,
                     default: Some(serde_json::json!([])),
                     description: Some("Conversation messages array".to_string()),
-                    item_type: Some("object".to_string()),
+                    item_type: Some(crate::models::SchemaFieldType::Object),
                     fields: None,
                     item_fields: Some(vec![
                         SchemaField {
                             name: "role".to_string(),
                             friendly_name: "Message sender role".to_string(),
-                            field_type: "enum".to_string(),
+                            field_type: crate::models::SchemaFieldType::Enum,
                             local_only: false,
                             protection: SchemaProtectionLevel::Core,
                             core_values: Some(vec![
@@ -756,7 +787,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                         SchemaField {
                             name: "content".to_string(),
                             friendly_name: "Message text content".to_string(),
-                            field_type: "text".to_string(),
+                            field_type: crate::models::SchemaFieldType::Text,
                             local_only: false,
                             protection: SchemaProtectionLevel::Core,
                             core_values: None,
@@ -775,7 +806,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                         SchemaField {
                             name: "reasoning".to_string(),
                             friendly_name: "Reasoning".to_string(),
-                            field_type: "text".to_string(),
+                            field_type: crate::models::SchemaFieldType::Text,
                             local_only: false,
                             protection: SchemaProtectionLevel::Core,
                             core_values: None,
@@ -796,7 +827,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                         SchemaField {
                             name: "timestamp".to_string(),
                             friendly_name: "Message timestamp".to_string(),
-                            field_type: "datetime".to_string(),
+                            field_type: crate::models::SchemaFieldType::Datetime,
                             local_only: false,
                             protection: SchemaProtectionLevel::System,
                             core_values: None,
@@ -815,7 +846,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                         SchemaField {
                             name: "referenced_nodes".to_string(),
                             friendly_name: "Referenced nodes".to_string(),
-                            field_type: "array".to_string(),
+                            field_type: crate::models::SchemaFieldType::Array,
                             local_only: false,
                             protection: SchemaProtectionLevel::Core,
                             core_values: None,
@@ -825,7 +856,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                             extensible: None,
                             default: None,
                             description: Some("Node IDs referenced in this message".to_string()),
-                            item_type: Some("text".to_string()),
+                            item_type: Some(crate::models::SchemaFieldType::Text),
                             fields: None,
                             item_fields: None,
                             unique: None,
@@ -834,7 +865,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                         SchemaField {
                             name: "tool".to_string(),
                             friendly_name: "Tool".to_string(),
-                            field_type: "text".to_string(),
+                            field_type: crate::models::SchemaFieldType::Text,
                             local_only: false,
                             protection: SchemaProtectionLevel::Core,
                             core_values: None,
@@ -855,7 +886,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                         SchemaField {
                             name: "args".to_string(),
                             friendly_name: "Args".to_string(),
-                            field_type: "object".to_string(),
+                            field_type: crate::models::SchemaFieldType::Object,
                             local_only: false,
                             protection: SchemaProtectionLevel::Core,
                             core_values: None,
@@ -876,7 +907,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                         SchemaField {
                             name: "status".to_string(),
                             friendly_name: "Status".to_string(),
-                            field_type: "enum".to_string(),
+                            field_type: crate::models::SchemaFieldType::Enum,
                             local_only: false,
                             protection: SchemaProtectionLevel::Core,
                             core_values: Some(vec![
@@ -900,7 +931,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                         SchemaField {
                             name: "result_summary".to_string(),
                             friendly_name: "Result summary".to_string(),
-                            field_type: "text".to_string(),
+                            field_type: crate::models::SchemaFieldType::Text,
                             local_only: false,
                             protection: SchemaProtectionLevel::Core,
                             core_values: None,
@@ -922,7 +953,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                         SchemaField {
                             name: "duration_ms".to_string(),
                             friendly_name: "Duration ms".to_string(),
-                            field_type: "number".to_string(),
+                            field_type: crate::models::SchemaFieldType::Number,
                             local_only: false,
                             protection: SchemaProtectionLevel::System,
                             core_values: None,
@@ -951,7 +982,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                 SchemaField {
                     name: "capture:session_id".to_string(),
                     friendly_name: "Session id".to_string(),
-                    field_type: "text".to_string(),
+                    field_type: crate::models::SchemaFieldType::Text,
                     local_only: true,
                     protection: SchemaProtectionLevel::System,
                     core_values: None,
@@ -974,7 +1005,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                 SchemaField {
                     name: "capture:transcript".to_string(),
                     friendly_name: "Transcript".to_string(),
-                    field_type: "text".to_string(),
+                    field_type: crate::models::SchemaFieldType::Text,
                     local_only: true,
                     protection: SchemaProtectionLevel::System,
                     core_values: None,
@@ -999,7 +1030,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                 SchemaField {
                     name: "capture:summary".to_string(),
                     friendly_name: "Summary".to_string(),
-                    field_type: "text".to_string(),
+                    field_type: crate::models::SchemaFieldType::Text,
                     local_only: false,
                     protection: SchemaProtectionLevel::System,
                     core_values: None,
@@ -1011,6 +1042,50 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                     description: Some(
                         "Derived conversation summary — locally-generated prose, the \
                          intended cross-device artifact; syncs."
+                            .to_string(),
+                    ),
+                    item_type: None,
+                    fields: None,
+                    item_fields: None,
+                    unique: None,
+                    unique_case_insensitive: None,
+                },
+                SchemaField {
+                    name: "capture:agent_type".to_string(),
+                    friendly_name: "Agent".to_string(),
+                    field_type: crate::models::SchemaFieldType::Text,
+                    local_only: false,
+                    protection: SchemaProtectionLevel::System,
+                    core_values: None,
+                    user_values: None,
+                    indexed: false,
+                    required: Some(false),
+                    extensible: None,
+                    default: None,
+                    description: Some(
+                        "The external agent a terminal session runs (claude-code, codex, ...)"
+                            .to_string(),
+                    ),
+                    item_type: None,
+                    fields: None,
+                    item_fields: None,
+                    unique: None,
+                    unique_case_insensitive: None,
+                },
+                SchemaField {
+                    name: "capture:exit_code".to_string(),
+                    friendly_name: "Exit code".to_string(),
+                    field_type: crate::models::SchemaFieldType::Number,
+                    local_only: false,
+                    protection: SchemaProtectionLevel::System,
+                    core_values: None,
+                    user_values: None,
+                    indexed: false,
+                    required: Some(false),
+                    extensible: None,
+                    default: None,
+                    description: Some(
+                        "Exit code of the terminal session's process, once it has ended"
                             .to_string(),
                     ),
                     item_type: None,
@@ -1032,12 +1107,13 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             created_at: now,
             modified_at: now,
             is_core: true,
+            is_abstract: false,
             schema_version: 1,
             fields: vec![
                 SchemaField {
                     name: "target_type".to_string(),
                     friendly_name: "Target type".to_string(),
-                    field_type: "text".to_string(),
+                    field_type: crate::models::SchemaFieldType::Text,
                     local_only: false,
                     protection: SchemaProtectionLevel::Core,
                     core_values: None,
@@ -1056,7 +1132,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                 SchemaField {
                     name: "filters".to_string(),
                     friendly_name: "Filters".to_string(),
-                    field_type: "array".to_string(),
+                    field_type: crate::models::SchemaFieldType::Array,
                     local_only: false,
                     protection: SchemaProtectionLevel::Core,
                     core_values: None,
@@ -1066,7 +1142,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                     extensible: None,
                     default: Some(serde_json::json!([])),
                     description: Some("Filter conditions array".to_string()),
-                    item_type: Some("object".to_string()),
+                    item_type: Some(crate::models::SchemaFieldType::Object),
                     fields: None,
                     item_fields: None,
                     unique: None,
@@ -1075,7 +1151,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                 SchemaField {
                     name: "sorting".to_string(),
                     friendly_name: "Sorting".to_string(),
-                    field_type: "array".to_string(),
+                    field_type: crate::models::SchemaFieldType::Array,
                     local_only: false,
                     protection: SchemaProtectionLevel::Core,
                     core_values: None,
@@ -1085,7 +1161,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                     extensible: None,
                     default: None,
                     description: Some("Sorting configuration array".to_string()),
-                    item_type: Some("object".to_string()),
+                    item_type: Some(crate::models::SchemaFieldType::Object),
                     fields: None,
                     item_fields: None,
                     unique: None,
@@ -1094,7 +1170,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                 SchemaField {
                     name: "limit".to_string(),
                     friendly_name: "Result limit".to_string(),
-                    field_type: "number".to_string(),
+                    field_type: crate::models::SchemaFieldType::Number,
                     local_only: false,
                     protection: SchemaProtectionLevel::Core,
                     core_values: None,
@@ -1113,7 +1189,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                 SchemaField {
                     name: "generated_by".to_string(),
                     friendly_name: "Generated by".to_string(),
-                    field_type: "enum".to_string(),
+                    field_type: crate::models::SchemaFieldType::Enum,
                     local_only: false,
                     protection: SchemaProtectionLevel::Core,
                     core_values: Some(vec![
@@ -1135,7 +1211,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                 SchemaField {
                     name: "generator_context".to_string(),
                     friendly_name: "Generator context".to_string(),
-                    field_type: "text".to_string(),
+                    field_type: crate::models::SchemaFieldType::Text,
                     local_only: false,
                     protection: SchemaProtectionLevel::Core,
                     core_values: None,
@@ -1154,7 +1230,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                 SchemaField {
                     name: "execution_count".to_string(),
                     friendly_name: "Execution count".to_string(),
-                    field_type: "number".to_string(),
+                    field_type: crate::models::SchemaFieldType::Number,
                     local_only: false,
                     protection: SchemaProtectionLevel::System,
                     core_values: None,
@@ -1173,7 +1249,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                 SchemaField {
                     name: "last_executed".to_string(),
                     friendly_name: "Last executed".to_string(),
-                    field_type: "datetime".to_string(),
+                    field_type: crate::models::SchemaFieldType::Datetime,
                     local_only: false,
                     protection: SchemaProtectionLevel::System,
                     core_values: None,
@@ -1192,7 +1268,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                 SchemaField {
                     name: "view_config".to_string(),
                     friendly_name: "View configuration".to_string(),
-                    field_type: "object".to_string(),
+                    field_type: crate::models::SchemaFieldType::Object,
                     local_only: false,
                     protection: SchemaProtectionLevel::Core,
                     core_values: None,
@@ -1230,12 +1306,13 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             created_at: now,
             modified_at: now,
             is_core: true,
+            is_abstract: false,
             schema_version: 1,
             fields: vec![
                 SchemaField {
                     name: "first_name".to_string(),
                     friendly_name: "First name".to_string(),
-                    field_type: "string".to_string(),
+                    field_type: crate::models::SchemaFieldType::Text,
                     local_only: false,
                     protection: SchemaProtectionLevel::Core,
                     core_values: None,
@@ -1257,7 +1334,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                 SchemaField {
                     name: "last_name".to_string(),
                     friendly_name: "Last name".to_string(),
-                    field_type: "string".to_string(),
+                    field_type: crate::models::SchemaFieldType::Text,
                     local_only: false,
                     protection: SchemaProtectionLevel::Core,
                     core_values: None,
@@ -1278,7 +1355,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                 SchemaField {
                     name: "email".to_string(),
                     friendly_name: "Email".to_string(),
-                    field_type: "string".to_string(),
+                    field_type: crate::models::SchemaFieldType::Text,
                     local_only: false,
                     protection: SchemaProtectionLevel::Core,
                     core_values: None,
@@ -1353,6 +1430,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             created_at: now,
             modified_at: now,
             is_core: true,
+            is_abstract: false,
             schema_version: 1,
             fields: vec![],
             relationships: vec![],
@@ -1367,12 +1445,13 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             created_at: now,
             modified_at: now,
             is_core: true,
+            is_abstract: false,
             schema_version: 1,
             fields: vec![
                 SchemaField {
                     name: "description".to_string(),
                     friendly_name: "Description".to_string(),
-                    field_type: "string".to_string(),
+                    field_type: crate::models::SchemaFieldType::Text,
                     local_only: false,
                     protection: SchemaProtectionLevel::Core,
                     core_values: None,
@@ -1393,7 +1472,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                 SchemaField {
                     name: "exclusion".to_string(),
                     friendly_name: "Exclusion".to_string(),
-                    field_type: "string".to_string(),
+                    field_type: crate::models::SchemaFieldType::Text,
                     local_only: false,
                     protection: SchemaProtectionLevel::Core,
                     core_values: None,
@@ -1416,7 +1495,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                 SchemaField {
                     name: "tool_whitelist".to_string(),
                     friendly_name: "Tool whitelist".to_string(),
-                    field_type: "array".to_string(),
+                    field_type: crate::models::SchemaFieldType::Array,
                     local_only: false,
                     protection: SchemaProtectionLevel::Core,
                     core_values: None,
@@ -1426,7 +1505,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                     extensible: None,
                     default: Some(serde_json::json!([])),
                     description: Some("Tools available when this skill is active".to_string()),
-                    item_type: Some("string".to_string()),
+                    item_type: Some(crate::models::SchemaFieldType::Text),
                     fields: None,
                     item_fields: None,
                     unique: None,
@@ -1435,7 +1514,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                 SchemaField {
                     name: "max_iterations".to_string(),
                     friendly_name: "Max iterations".to_string(),
-                    field_type: "number".to_string(),
+                    field_type: crate::models::SchemaFieldType::Number,
                     local_only: false,
                     protection: SchemaProtectionLevel::Core,
                     core_values: None,
@@ -1448,6 +1527,27 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                     )),
                     description: Some("Maximum ReAct loop iterations for this skill".to_string()),
                     item_type: None,
+                    fields: None,
+                    item_fields: None,
+                    unique: None,
+                    unique_case_insensitive: None,
+                },
+                SchemaField {
+                    name: "node_types".to_string(),
+                    friendly_name: "Node types".to_string(),
+                    field_type: crate::models::SchemaFieldType::Array,
+                    local_only: false,
+                    protection: SchemaProtectionLevel::Core,
+                    core_values: None,
+                    user_values: None,
+                    indexed: false,
+                    required: Some(false),
+                    extensible: None,
+                    default: Some(serde_json::json!([])),
+                    description: Some(
+                        "Schema ids this skill is scoped to; empty means unscoped".to_string(),
+                    ),
+                    item_type: Some(crate::models::SchemaFieldType::Text),
                     fields: None,
                     item_fields: None,
                     unique: None,
@@ -1482,12 +1582,13 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             created_at: now,
             modified_at: now,
             is_core: true,
+            is_abstract: false,
             schema_version: 1,
             fields: vec![
                 SchemaField {
                     name: "rules".to_string(),
                     friendly_name: "Rules".to_string(),
-                    field_type: "array".to_string(),
+                    field_type: crate::models::SchemaFieldType::Array,
                     local_only: false,
                     protection: SchemaProtectionLevel::Core,
                     core_values: None,
@@ -1502,7 +1603,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                     description: Some(
                         "Rule definitions: each a trigger, conditions and actions".to_string(),
                     ),
-                    item_type: Some("object".to_string()),
+                    item_type: Some(crate::models::SchemaFieldType::Object),
                     fields: None,
                     item_fields: None,
                     unique: None,
@@ -1511,7 +1612,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                 SchemaField {
                     name: "description".to_string(),
                     friendly_name: "Description".to_string(),
-                    field_type: "string".to_string(),
+                    field_type: crate::models::SchemaFieldType::Text,
                     local_only: false,
                     protection: SchemaProtectionLevel::Core,
                     core_values: None,
@@ -1545,11 +1646,12 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             created_at: now,
             modified_at: now,
             is_core: true,
+            is_abstract: false,
             schema_version: 1,
             fields: vec![SchemaField {
                 name: REQUIRED_EXTENSIONS_FIELD.to_string(),
                 friendly_name: "Required extensions".to_string(),
-                field_type: "array".to_string(),
+                field_type: crate::models::SchemaFieldType::Array,
                 local_only: false,
                 protection: SchemaProtectionLevel::Core,
                 core_values: None,
@@ -1564,12 +1666,136 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                      refuses to open a database that lists an extension it does not support."
                         .to_string(),
                 ),
-                item_type: Some("string".to_string()),
+                item_type: Some(crate::models::SchemaFieldType::Text),
                 fields: None,
                 item_fields: None,
                 unique: None,
                 unique_case_insensitive: None,
             }],
+            relationships: vec![],
+            title_template: None,
+            properties_header_summary_template: None,
+        },
+        // Tool schema — a searchable registry entry for something the agent
+        // can call. Content is the tool's display name. The parameter schema
+        // is a JSON Schema document with its own validator
+        // (`ToolNodeBehavior`), so it is an open object here.
+        SchemaNode {
+            id: "tool".to_string(),
+            content: "Tool".to_string(),
+            version: 1,
+            created_at: now,
+            modified_at: now,
+            is_core: true,
+            is_abstract: false,
+            schema_version: 1,
+            fields: vec![
+                SchemaField {
+                    name: "handler".to_string(),
+                    friendly_name: "Handler".to_string(),
+                    field_type: crate::models::SchemaFieldType::Text,
+                    local_only: false,
+                    protection: SchemaProtectionLevel::Core,
+                    core_values: None,
+                    user_values: None,
+                    indexed: true,
+                    required: Some(true),
+                    extensible: None,
+                    default: None,
+                    description: Some(
+                        "Stable key resolving to the handler that runs the tool".to_string(),
+                    ),
+                    item_type: None,
+                    fields: None,
+                    item_fields: None,
+                    unique: None,
+                    unique_case_insensitive: None,
+                },
+                SchemaField {
+                    name: "description".to_string(),
+                    friendly_name: "Description".to_string(),
+                    field_type: crate::models::SchemaFieldType::Text,
+                    local_only: false,
+                    protection: SchemaProtectionLevel::Core,
+                    core_values: None,
+                    user_values: None,
+                    indexed: false,
+                    required: Some(false),
+                    extensible: None,
+                    default: None,
+                    description: Some(
+                        "What the tool does; embedded with its name for discovery".to_string(),
+                    ),
+                    item_type: None,
+                    fields: None,
+                    item_fields: None,
+                    unique: None,
+                    unique_case_insensitive: None,
+                },
+                SchemaField {
+                    name: "parameter_schema".to_string(),
+                    friendly_name: "Parameter schema".to_string(),
+                    field_type: crate::models::SchemaFieldType::Object,
+                    local_only: false,
+                    protection: SchemaProtectionLevel::Core,
+                    core_values: None,
+                    user_values: None,
+                    indexed: false,
+                    required: Some(false),
+                    extensible: None,
+                    default: None,
+                    description: Some("JSON Schema for the parameters the tool takes".to_string()),
+                    item_type: None,
+                    fields: None,
+                    item_fields: None,
+                    unique: None,
+                    unique_case_insensitive: None,
+                },
+                SchemaField {
+                    name: "source".to_string(),
+                    friendly_name: "Source".to_string(),
+                    field_type: crate::models::SchemaFieldType::Enum,
+                    local_only: false,
+                    protection: SchemaProtectionLevel::Core,
+                    core_values: Some(vec![
+                        EnumValue::new("internal".to_string(), "Internal".to_string()),
+                        EnumValue::new("external".to_string(), "External".to_string()),
+                    ]),
+                    user_values: Some(vec![]),
+                    indexed: false,
+                    required: Some(false),
+                    extensible: Some(false),
+                    default: Some(serde_json::json!("internal")),
+                    description: Some(
+                        "Where the tool comes from: generated by NodeSpace or registered by a user"
+                            .to_string(),
+                    ),
+                    item_type: None,
+                    fields: None,
+                    item_fields: None,
+                    unique: None,
+                    unique_case_insensitive: None,
+                },
+                SchemaField {
+                    name: "enabled".to_string(),
+                    friendly_name: "Enabled".to_string(),
+                    field_type: crate::models::SchemaFieldType::Boolean,
+                    local_only: false,
+                    protection: SchemaProtectionLevel::Core,
+                    core_values: None,
+                    user_values: None,
+                    indexed: false,
+                    required: Some(false),
+                    extensible: None,
+                    default: Some(serde_json::json!(true)),
+                    description: Some("Whether the tool is offered to the model".to_string()),
+                    item_type: None,
+                    fields: None,
+                    item_fields: None,
+                    unique: None,
+                    unique_case_insensitive: None,
+                },
+            ],
             relationships: vec![],
             title_template: None,
             properties_header_summary_template: None,
@@ -1613,8 +1839,175 @@ mod tests {
                 "table",
                 "task",
                 "text",
+                "tool",
             ]
         );
+    }
+
+    // ---- The core type registry, held to the seeded schemas (ADR-086 §3) ----
+
+    use crate::models::{CoreNodeType, SchemaFieldType, TypeCategory, WireShape};
+
+    fn core_schema(core: CoreNodeType) -> Option<SchemaNode> {
+        get_core_schemas()
+            .into_iter()
+            .find(|s| s.id == core.as_str())
+    }
+
+    /// The fields of a core type's whole `extends` chain, nearest first.
+    fn chain_fields(core: CoreNodeType) -> Vec<SchemaField> {
+        core.chain()
+            .into_iter()
+            .filter_map(core_schema)
+            .flat_map(|schema| schema.fields)
+            .collect()
+    }
+
+    /// The seeded core schemas name exactly the registry's variants, except
+    /// the `schema` meta-type, which has no schema of its own.
+    #[test]
+    fn the_seeded_schemas_are_exactly_the_registry_minus_the_meta_type() {
+        let mut seeded: Vec<String> = get_core_schemas().into_iter().map(|s| s.id).collect();
+        seeded.sort();
+        let mut registered: Vec<String> = CoreNodeType::ALL
+            .into_iter()
+            .filter(|core| *core != CoreNodeType::Schema)
+            .map(|core| core.as_str().to_string())
+            .collect();
+        registered.sort();
+        assert_eq!(seeded, registered);
+        assert!(core_schema(CoreNodeType::Schema).is_none());
+    }
+
+    /// Every core behaviour has a seeded schema, and every seeded schema has a
+    /// behaviour (the meta-type's behaviour is the one without a schema).
+    #[test]
+    fn every_core_behavior_has_a_schema_and_every_schema_a_behavior() {
+        let registry = crate::behaviors::NodeBehaviorRegistry::new();
+        for core in CoreNodeType::ALL {
+            assert!(
+                registry.get(core.as_str()).is_some(),
+                "{core} has no behavior"
+            );
+        }
+        for schema in get_core_schemas() {
+            assert!(
+                registry.get(&schema.id).is_some(),
+                "seeded schema '{}' has no behavior",
+                schema.id
+            );
+        }
+        for type_name in registry.get_all_types() {
+            let core = CoreNodeType::from_id(&type_name)
+                .unwrap_or_else(|| panic!("behavior '{type_name}' is not a core type"));
+            assert!(
+                core == CoreNodeType::Schema || core_schema(core).is_some(),
+                "behavior '{type_name}' has no seeded schema"
+            );
+        }
+    }
+
+    /// A type's category is computed over its whole `extends` chain: a
+    /// primitive declares no fields, a structured type holds at least one
+    /// object-valued field, and a flat type holds fields but no objects.
+    #[test]
+    fn each_category_matches_the_fields_its_chain_declares() {
+        fn holds_objects(field: &SchemaField) -> bool {
+            field.field_type == SchemaFieldType::Object
+                || field.item_type == Some(SchemaFieldType::Object)
+        }
+        for core in CoreNodeType::ALL {
+            // The meta-type's fields are the schema node's own typed
+            // properties (`fields`, `relationships`), not a seeded schema.
+            if core == CoreNodeType::Schema {
+                assert_eq!(core.category(), TypeCategory::Structured);
+                continue;
+            }
+            let fields = chain_fields(core);
+            let computed = if fields.is_empty() {
+                TypeCategory::Primitive
+            } else if fields.iter().any(holds_objects) {
+                TypeCategory::Structured
+            } else {
+                TypeCategory::Flat
+            };
+            assert_eq!(
+                core.category(),
+                computed,
+                "{core}: the registry's category does not match its schema chain"
+            );
+        }
+    }
+
+    /// The registry's parent, abstract flag and title template are the
+    /// schema's.
+    #[test]
+    fn registry_parents_abstract_flags_and_templates_match_the_schemas() {
+        for core in CoreNodeType::ALL {
+            let Some(schema) = core_schema(core) else {
+                continue;
+            };
+            assert_eq!(
+                schema.is_abstract,
+                core.is_abstract(),
+                "{core}: abstract flag"
+            );
+            assert_eq!(
+                crate::schema::extends_chain::declared_parent(&schema),
+                core.parent().map(|p| p.as_str().to_string()),
+                "{core}: parent"
+            );
+            assert_eq!(
+                schema.title_template.as_deref(),
+                core.info().title_template,
+                "{core}: title template"
+            );
+        }
+    }
+
+    /// Core field names are snake_case, apart from the namespaced ones, and
+    /// no core field takes the `string` type the vocabulary no longer has.
+    #[test]
+    fn core_fields_are_snake_case() {
+        for schema in get_core_schemas() {
+            for field in &schema.fields {
+                let bare = field.name.rsplit(':').next().unwrap_or(&field.name);
+                assert!(
+                    bare.chars()
+                        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_'),
+                    "{}.{} is not snake_case",
+                    schema.id,
+                    field.name
+                );
+            }
+        }
+    }
+
+    /// A type that travels typed promotes exactly its schema's fields, and a
+    /// type whose update is typed has promoted fields to write.
+    #[test]
+    fn typed_wire_shapes_promote_their_schemas_fields() {
+        for core in CoreNodeType::ALL {
+            let promoted = nodespace_types::core_promoted_fields(core);
+            match core.wire() {
+                WireShape::Typed { update: true } => {
+                    let schema = core_schema(core).expect("a typed core type has a schema");
+                    let mut declared: Vec<&str> =
+                        schema.fields.iter().map(|f| f.name.as_str()).collect();
+                    declared.sort_unstable();
+                    let mut storage: Vec<&str> = promoted.iter().map(|(s, _)| *s).collect();
+                    storage.sort_unstable();
+                    assert_eq!(storage, declared, "{core}: promoted fields");
+                    assert_eq!(nodespace_types::typed_update_fields(core), promoted);
+                }
+                WireShape::Typed { update: false } | WireShape::Generic | WireShape::Envelope => {
+                    assert!(
+                        nodespace_types::typed_update_fields(core).is_empty(),
+                        "{core} has no typed update"
+                    );
+                }
+            }
+        }
     }
 
     /// Engine diagnostics do not live in the graph: there is no `log` or
@@ -1791,8 +2184,6 @@ mod tests {
             "quote-block",
             "ordered-list",
             "checkbox",
-            // A collection is grouping only (ADR-083 §5).
-            "collection",
         ] {
             let schema = schemas.iter().find(|s| s.id == *id).unwrap();
             assert!(
@@ -1839,7 +2230,7 @@ mod tests {
         let schemas = get_core_schemas();
         let ai_chat = schemas.iter().find(|s| s.id == "ai-chat").unwrap();
 
-        assert_eq!(ai_chat.fields.len(), 11);
+        assert_eq!(ai_chat.fields.len(), 13);
         assert!(ai_chat.get_field("provider").is_some());
         assert!(ai_chat.get_field("model").is_some());
         assert!(ai_chat.get_field("turn_status").is_some());
@@ -1861,8 +2252,14 @@ mod tests {
 
         // Verify messages has item_fields (nested schema for message objects)
         let messages_field = ai_chat.get_field("messages").unwrap();
-        assert_eq!(messages_field.field_type, "array");
-        assert_eq!(messages_field.item_type.as_deref(), Some("object"));
+        assert_eq!(
+            messages_field.field_type,
+            crate::models::SchemaFieldType::Array
+        );
+        assert_eq!(
+            messages_field.item_type,
+            Some(crate::models::SchemaFieldType::Object)
+        );
         let item_fields = messages_field.item_fields.as_ref().unwrap();
         assert!(item_fields.iter().any(|f| f.name == "role"));
         assert!(item_fields.iter().any(|f| f.name == "content"));
@@ -1888,7 +2285,8 @@ mod tests {
         let schemas = get_core_schemas();
         let skill = schemas.iter().find(|s| s.id == "skill").unwrap();
 
-        assert_eq!(skill.fields.len(), 4);
+        assert_eq!(skill.fields.len(), 5);
+        assert!(skill.get_field("node_types").is_some());
         assert!(skill.get_field("description").is_some());
         assert!(skill.get_field("exclusion").is_some());
         assert!(skill.get_field("tool_whitelist").is_some());
@@ -1896,8 +2294,11 @@ mod tests {
 
         // Verify tool_whitelist is an array of strings
         let whitelist = skill.get_field("tool_whitelist").unwrap();
-        assert_eq!(whitelist.field_type, "array");
-        assert_eq!(whitelist.item_type.as_deref(), Some("string"));
+        assert_eq!(whitelist.field_type, crate::models::SchemaFieldType::Array);
+        assert_eq!(
+            whitelist.item_type,
+            Some(crate::models::SchemaFieldType::Text)
+        );
     }
 
     #[test]
@@ -1921,8 +2322,8 @@ mod tests {
             vec!["required_extensions"]
         );
         let field = &settings.fields[0];
-        assert_eq!(field.field_type, "array");
-        assert_eq!(field.item_type.as_deref(), Some("string"));
+        assert_eq!(field.field_type, crate::models::SchemaFieldType::Array);
+        assert_eq!(field.item_type, Some(crate::models::SchemaFieldType::Text));
         assert_eq!(field.default, Some(serde_json::json!([])));
         assert_eq!(field.required, Some(false));
     }
@@ -2024,7 +2425,7 @@ mod tests {
         .collect();
 
         let schemas = get_core_schemas();
-        for node_type in Priority::NODE_TYPES {
+        for node_type in Priority::NODE_TYPES.map(|core| core.as_str()) {
             let schema = schemas
                 .iter()
                 .find(|s| s.id == node_type)

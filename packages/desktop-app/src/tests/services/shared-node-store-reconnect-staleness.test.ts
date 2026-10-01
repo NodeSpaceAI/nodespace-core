@@ -43,6 +43,7 @@ describe('SharedNodeStore - reconnect staleness', () => {
   type AiChatLikeNode = Node & { messages: AiChatMessage[] };
 
   const makeChatNode = (id: string, messageCount: number, version = 1): AiChatLikeNode => ({
+    lifecycleStatus: 'active',
     id,
     nodeType: 'ai-chat',
     content: '',

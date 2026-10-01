@@ -826,15 +826,27 @@ mod tests {
         async fn execute_query_filters_by_status() {
             let (svc, _tmp) = make_test_service().await;
 
-            svc.create_node(task_node("t1", "open", None))
-                .await
-                .unwrap();
-            svc.create_node(task_node("t2", "done", None))
-                .await
-                .unwrap();
-            svc.create_node(task_node("t3", "open", None))
-                .await
-                .unwrap();
+            svc.create_node(task_node(
+                "47b0416e-68db-58e9-805c-db17bfe8856d",
+                "open",
+                None,
+            ))
+            .await
+            .unwrap();
+            svc.create_node(task_node(
+                "75489349-da91-5de1-bc06-2d7fe6ad7ccc",
+                "done",
+                None,
+            ))
+            .await
+            .unwrap();
+            svc.create_node(task_node(
+                "94c19580-a99d-5cba-b653-2f70dcd839d7",
+                "open",
+                None,
+            ))
+            .await
+            .unwrap();
 
             let input: ExecuteQueryInput = serde_json::from_value(json!({
                 "target_type": "task",
@@ -904,7 +916,7 @@ mod tests {
 
             create_schema(
                 &svc,
-                json!({"name": "rf_project", "fields": [{"name": "status", "type": "string"}]}),
+                json!({"name": "rf_project", "fields": [{"name": "status", "type": "text"}]}),
             )
             .await;
             create_schema(
@@ -925,31 +937,49 @@ mod tests {
             .await;
 
             svc.create_node(node(
-                "proj-active",
+                "dc9569ca-1867-5917-b11b-8b77a9236717",
                 "rf_project",
                 json!({"status": "active"}),
             ))
             .await
             .unwrap();
             svc.create_node(node(
-                "proj-completed",
+                "d65e6776-2ea6-5bff-a3d4-cf789180883f",
                 "rf_project",
                 json!({"status": "completed"}),
             ))
             .await
             .unwrap();
-            svc.create_node(node("task-a", "rf_task", json!({})))
-                .await
-                .unwrap();
-            svc.create_node(node("task-b", "rf_task", json!({})))
-                .await
-                .unwrap();
-            svc.create_relationship("task-a", "project", "proj-active", json!({}))
-                .await
-                .unwrap();
-            svc.create_relationship("task-b", "project", "proj-completed", json!({}))
-                .await
-                .unwrap();
+            svc.create_node(node(
+                "d0aaac45-70f6-537e-a669-b6da9229eb6a",
+                "rf_task",
+                json!({}),
+            ))
+            .await
+            .unwrap();
+            svc.create_node(node(
+                "d5255404-47a9-5cbc-ad65-a93d51e23b51",
+                "rf_task",
+                json!({}),
+            ))
+            .await
+            .unwrap();
+            svc.create_relationship(
+                "d0aaac45-70f6-537e-a669-b6da9229eb6a",
+                "project",
+                "dc9569ca-1867-5917-b11b-8b77a9236717",
+                json!({}),
+            )
+            .await
+            .unwrap();
+            svc.create_relationship(
+                "d5255404-47a9-5cbc-ad65-a93d51e23b51",
+                "project",
+                "d65e6776-2ea6-5bff-a3d4-cf789180883f",
+                json!({}),
+            )
+            .await
+            .unwrap();
 
             let input: ExecuteQueryInput = serde_json::from_value(json!({
                 "target_type": "rf_task",
@@ -975,7 +1005,7 @@ mod tests {
             );
             assert_eq!(
                 output.nodes[0].get("id").and_then(|v| v.as_str()),
-                Some("task-a")
+                Some("d0aaac45-70f6-537e-a669-b6da9229eb6a")
             );
         }
 
@@ -1001,7 +1031,7 @@ mod tests {
                 &svc,
                 json!({
                     "name": "rf2_task",
-                    "fields": [{"name": "severity", "type": "string"}],
+                    "fields": [{"name": "severity", "type": "text"}],
                     "relationships": [{
                         "name": "sprint",
                         "targetType": "rf2_sprint",
@@ -1014,38 +1044,69 @@ mod tests {
             )
             .await;
 
-            svc.create_node(node("sprint-hot", "rf2_sprint", json!({})))
-                .await
-                .unwrap();
-            svc.create_node(node("sprint-cold", "rf2_sprint", json!({})))
-                .await
-                .unwrap();
             svc.create_node(node(
-                "t-critical",
+                "036a1de4-68d2-56db-800d-0af9282deb1a",
+                "rf2_sprint",
+                json!({}),
+            ))
+            .await
+            .unwrap();
+            svc.create_node(node(
+                "ec7a4732-33ae-578f-b965-8d89e1d05970",
+                "rf2_sprint",
+                json!({}),
+            ))
+            .await
+            .unwrap();
+            svc.create_node(node(
+                "93bf1145-a86c-5584-a012-c98947702696",
                 "rf2_task",
                 json!({"severity": "critical"}),
             ))
             .await
             .unwrap();
-            svc.create_node(node("t-minor", "rf2_task", json!({"severity": "minor"})))
-                .await
-                .unwrap();
-            svc.create_node(node("t-minor-2", "rf2_task", json!({"severity": "minor"})))
-                .await
-                .unwrap();
+            svc.create_node(node(
+                "a7a56745-c02d-5d04-83df-5e02e9fb3366",
+                "rf2_task",
+                json!({"severity": "minor"}),
+            ))
+            .await
+            .unwrap();
+            svc.create_node(node(
+                "201dfae7-602b-5e1d-97c1-23c741f34e19",
+                "rf2_task",
+                json!({"severity": "minor"}),
+            ))
+            .await
+            .unwrap();
             // sprint-hot has both a critical and a minor task -- still one match.
             // The forward declaration (`sprint`) lives on `rf2_task`, so the
             // edge is created from the task's end, naming the forward name --
             // `tasks` is the reverse spelling the query filter below uses.
-            svc.create_relationship("t-critical", "sprint", "sprint-hot", json!({}))
-                .await
-                .unwrap();
-            svc.create_relationship("t-minor", "sprint", "sprint-hot", json!({}))
-                .await
-                .unwrap();
-            svc.create_relationship("t-minor-2", "sprint", "sprint-cold", json!({}))
-                .await
-                .unwrap();
+            svc.create_relationship(
+                "93bf1145-a86c-5584-a012-c98947702696",
+                "sprint",
+                "036a1de4-68d2-56db-800d-0af9282deb1a",
+                json!({}),
+            )
+            .await
+            .unwrap();
+            svc.create_relationship(
+                "a7a56745-c02d-5d04-83df-5e02e9fb3366",
+                "sprint",
+                "036a1de4-68d2-56db-800d-0af9282deb1a",
+                json!({}),
+            )
+            .await
+            .unwrap();
+            svc.create_relationship(
+                "201dfae7-602b-5e1d-97c1-23c741f34e19",
+                "sprint",
+                "ec7a4732-33ae-578f-b965-8d89e1d05970",
+                json!({}),
+            )
+            .await
+            .unwrap();
 
             let input: ExecuteQueryInput = serde_json::from_value(json!({
                 "target_type": "rf2_sprint",
@@ -1071,7 +1132,7 @@ mod tests {
             );
             assert_eq!(
                 output.nodes[0].get("id").and_then(|v| v.as_str()),
-                Some("sprint-hot")
+                Some("036a1de4-68d2-56db-800d-0af9282deb1a")
             );
         }
 
@@ -1082,24 +1143,50 @@ mod tests {
         async fn related_filter_builtin_has_child() {
             let (svc, _tmp) = make_test_service().await;
 
-            svc.create_node(node("parent-a", "text", json!({})))
-                .await
-                .unwrap();
-            svc.create_node(node("parent-b", "text", json!({})))
-                .await
-                .unwrap();
-            svc.create_node(task_node("child-open", "open", None))
-                .await
-                .unwrap();
-            svc.create_node(task_node("child-done", "done", None))
-                .await
-                .unwrap();
-            svc.create_relationship("parent-a", "has_child", "child-open", json!({}))
-                .await
-                .unwrap();
-            svc.create_relationship("parent-b", "has_child", "child-done", json!({}))
-                .await
-                .unwrap();
+            svc.create_node(node(
+                "764e4e18-2fe9-50fb-97a5-74002e615fbc",
+                "text",
+                json!({}),
+            ))
+            .await
+            .unwrap();
+            svc.create_node(node(
+                "d36de88d-02fc-5996-a026-70683445e160",
+                "text",
+                json!({}),
+            ))
+            .await
+            .unwrap();
+            svc.create_node(task_node(
+                "6def7f87-3a08-5bd0-ac70-00954b87e7e1",
+                "open",
+                None,
+            ))
+            .await
+            .unwrap();
+            svc.create_node(task_node(
+                "9eb5c42d-18c4-5e29-a8d5-2cb5e2799784",
+                "done",
+                None,
+            ))
+            .await
+            .unwrap();
+            svc.create_relationship(
+                "764e4e18-2fe9-50fb-97a5-74002e615fbc",
+                "has_child",
+                "6def7f87-3a08-5bd0-ac70-00954b87e7e1",
+                json!({}),
+            )
+            .await
+            .unwrap();
+            svc.create_relationship(
+                "d36de88d-02fc-5996-a026-70683445e160",
+                "has_child",
+                "9eb5c42d-18c4-5e29-a8d5-2cb5e2799784",
+                json!({}),
+            )
+            .await
+            .unwrap();
 
             let input: ExecuteQueryInput = serde_json::from_value(json!({
                 "target_type": "text",
@@ -1125,7 +1212,7 @@ mod tests {
             );
             assert_eq!(
                 output.nodes[0].get("id").and_then(|v| v.as_str()),
-                Some("parent-a")
+                Some("764e4e18-2fe9-50fb-97a5-74002e615fbc")
             );
         }
 
@@ -1138,7 +1225,7 @@ mod tests {
 
             create_schema(
                 &svc,
-                json!({"name": "rf3_epic", "fields": [{"name": "status", "type": "string"}]}),
+                json!({"name": "rf3_epic", "fields": [{"name": "status", "type": "text"}]}),
             )
             .await;
             create_schema(
@@ -1163,15 +1250,28 @@ mod tests {
             )
             .await;
 
-            svc.create_node(node("epic-active", "rf3_epic", json!({"status": "active"})))
-                .await
-                .unwrap();
-            svc.create_node(node("story-1", "rf3_story", json!({})))
-                .await
-                .unwrap();
-            svc.create_relationship("story-1", "epic", "epic-active", json!({}))
-                .await
-                .expect("create_relationship must succeed for an inherited relationship");
+            svc.create_node(node(
+                "00e0ccd8-aa1e-53da-92f6-6dab31ad8626",
+                "rf3_epic",
+                json!({"status": "active"}),
+            ))
+            .await
+            .unwrap();
+            svc.create_node(node(
+                "2563689f-df77-5f7c-9aad-879d135a915f",
+                "rf3_story",
+                json!({}),
+            ))
+            .await
+            .unwrap();
+            svc.create_relationship(
+                "2563689f-df77-5f7c-9aad-879d135a915f",
+                "epic",
+                "00e0ccd8-aa1e-53da-92f6-6dab31ad8626",
+                json!({}),
+            )
+            .await
+            .expect("create_relationship must succeed for an inherited relationship");
 
             let input: ExecuteQueryInput = serde_json::from_value(json!({
                 "target_type": "rf3_story",
@@ -1329,7 +1429,7 @@ mod tests {
 
             create_schema(
                 &svc,
-                json!({"name": "rf5_project", "fields": [{"name": "status", "type": "string"}]}),
+                json!({"name": "rf5_project", "fields": [{"name": "status", "type": "text"}]}),
             )
             .await;
             create_schema(
@@ -1350,18 +1450,27 @@ mod tests {
             .await;
 
             svc.create_node(node(
-                "rf5-proj-active",
+                "9ac587e9-f1b5-5f0c-881d-3719852c028b",
                 "rf5_project",
                 json!({"status": "active"}),
             ))
             .await
             .unwrap();
-            svc.create_node(node("rf5-task-a", "rf5_task", json!({})))
-                .await
-                .unwrap();
-            svc.create_relationship("rf5-task-a", "project", "rf5-proj-active", json!({}))
-                .await
-                .unwrap();
+            svc.create_node(node(
+                "054b66fd-0362-5b43-86a6-1961eda0112b",
+                "rf5_task",
+                json!({}),
+            ))
+            .await
+            .unwrap();
+            svc.create_relationship(
+                "054b66fd-0362-5b43-86a6-1961eda0112b",
+                "project",
+                "9ac587e9-f1b5-5f0c-881d-3719852c028b",
+                json!({}),
+            )
+            .await
+            .unwrap();
 
             // Walked from the project's end using the forward name itself
             // ("project"), not its reverseName ("tasks") -- the
@@ -1401,15 +1510,28 @@ mod tests {
         async fn bare_relationship_filter_still_works_unchanged() {
             let (svc, _tmp) = make_test_service().await;
 
-            svc.create_node(task_node("parent-task", "open", None))
-                .await
-                .unwrap();
-            svc.create_node(task_node("child-task", "open", None))
-                .await
-                .unwrap();
-            svc.create_relationship("parent-task", "has_child", "child-task", json!({}))
-                .await
-                .unwrap();
+            svc.create_node(task_node(
+                "038ebfa1-35f7-5d7c-941f-7502434c9955",
+                "open",
+                None,
+            ))
+            .await
+            .unwrap();
+            svc.create_node(task_node(
+                "dd996f5b-a763-58e3-a836-e9bc25d0827c",
+                "open",
+                None,
+            ))
+            .await
+            .unwrap();
+            svc.create_relationship(
+                "038ebfa1-35f7-5d7c-941f-7502434c9955",
+                "has_child",
+                "dd996f5b-a763-58e3-a836-e9bc25d0827c",
+                json!({}),
+            )
+            .await
+            .unwrap();
 
             let input: ExecuteQueryInput = serde_json::from_value(json!({
                 "target_type": "task",
@@ -1417,7 +1539,7 @@ mod tests {
                     "type": "relationship",
                     "operator": "equals",
                     "relationship_type": "parent",
-                    "node_id": "child-task"
+                    "node_id": "dd996f5b-a763-58e3-a836-e9bc25d0827c"
                 }]
             }))
             .unwrap();
@@ -1426,7 +1548,7 @@ mod tests {
             assert_eq!(output.count, 1);
             assert_eq!(
                 output.nodes[0].get("id").and_then(|v| v.as_str()),
-                Some("parent-task")
+                Some("038ebfa1-35f7-5d7c-941f-7502434c9955")
             );
         }
     }

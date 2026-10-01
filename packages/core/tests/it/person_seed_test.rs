@@ -90,7 +90,7 @@ mod person_email_uniqueness_tests {
         let node = Node::new(
             "person".to_string(),
             String::new(),
-            json!({ "person": { "name": name, "email": email } }),
+            json!({ "person": { "first_name": name, "email": email } }),
         );
         let id = service.create_node(node).await?;
         Ok(id)
@@ -147,9 +147,9 @@ mod person_email_uniqueness_tests {
         let (service, _t) = service().await?;
         create_person(&service, "Alice", "alice@example.com").await?;
 
-        // `name` is not flagged unique, so a matching name is never a duplicate.
+        // `first_name` is not flagged unique, so a matching name is never a duplicate.
         let dup = service
-            .find_duplicate_for("person", "name", "Alice", None)
+            .find_duplicate_for("person", "first_name", "Alice", None)
             .await?;
         assert!(
             dup.is_none(),

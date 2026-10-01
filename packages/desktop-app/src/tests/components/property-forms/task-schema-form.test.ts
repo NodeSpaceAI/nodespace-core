@@ -79,6 +79,9 @@ function dateField(name: string, friendlyName: string): SchemaField {
 /** Mirrors the real `task` SchemaNode exactly as declared in core_schemas.rs. */
 function realTaskSchema(): SchemaNode {
   return {
+    nodeType: 'schema' as const,
+    lifecycleStatus: 'active' as const,
+    properties: {},
     id: 'task',
     content: 'Task',
     createdAt: '2026-01-01T00:00:00Z',
@@ -450,7 +453,7 @@ describe('TaskSchemaForm — user-defined fields still render dynamically', () =
     schema.fields.push({
       name: 'sprint',
       friendlyName: 'Sprint',
-      type: 'string',
+      type: 'text',
       protection: 'user',
       indexed: false,
       required: false
@@ -479,7 +482,7 @@ describe('TaskSchemaForm — user-defined fields still render dynamically', () =
     schema.fields.push({
       name: 'sprint',
       friendlyName: 'Sprint',
-      type: 'string',
+      type: 'text',
       protection: 'user',
       indexed: false,
       required: false
@@ -487,7 +490,7 @@ describe('TaskSchemaForm — user-defined fields still render dynamically', () =
     schema.fields.push({
       name: 'capture:transcript',
       friendlyName: 'Transcript',
-      type: 'string',
+      type: 'text',
       protection: 'system',
       indexed: false,
       required: false

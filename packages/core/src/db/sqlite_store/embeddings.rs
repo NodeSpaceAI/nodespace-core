@@ -601,8 +601,9 @@ impl SqliteStore {
         let sql = format!(
             "SELECT f.id, bm25(node_title_fts) FROM node_title_fts f \
              JOIN node n ON n.id = f.id \
-             WHERE node_title_fts MATCH ?1 AND n.node_type != 'schema' \
+             WHERE node_title_fts MATCH ?1 AND NOT ({}) \
              ORDER BY rank LIMIT {}",
+            crate::db::schema::is_exactly_sql("n.node_type", crate::models::CoreNodeType::Schema),
             candidate_limit
         );
 

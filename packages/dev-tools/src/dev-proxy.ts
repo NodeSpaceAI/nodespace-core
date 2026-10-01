@@ -464,9 +464,12 @@ async function handleRequest(req: Request): Promise<Response> {
     try {
       const body = await req.json() as Record<string, unknown>;
       // Optional proto fields must be omitted (not '') for the "no change" case.
+      // The frontend writes a core type's fields through that type's typed
+      // update, so the daemon refuses a generic patch that names one.
       const request: Record<string, unknown> = {
         nodeId,
-        version: body.version ?? null
+        version: body.version ?? null,
+        typedClient: true
       };
       if (body.nodeType && body.nodeType !== '') request.nodeType = body.nodeType;
       if (body.content !== undefined) request.content = String(body.content);

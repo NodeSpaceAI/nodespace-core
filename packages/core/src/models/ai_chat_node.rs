@@ -331,7 +331,7 @@ impl AiChatNode {
     /// Returns [`ValidationError::InvalidNodeType`] when the node is not an
     /// ai-chat node.
     pub fn from_node(node: Node) -> Result<Self, ValidationError> {
-        if node.node_type != AI_CHAT_NODE_TYPE {
+        if !crate::models::CoreNodeType::AiChat.is_exactly(&node.node_type) {
             return Err(ValidationError::InvalidNodeType(format!(
                 "Expected '{AI_CHAT_NODE_TYPE}', got '{}'",
                 node.node_type

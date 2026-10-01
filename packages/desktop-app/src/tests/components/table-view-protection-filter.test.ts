@@ -89,7 +89,7 @@ describe('TableView — protection-level filtering', () => {
             type: 'boolean',
             protection: 'system'
           }),
-          field({ name: 'address', friendlyName: 'Address', type: 'string' })
+          field({ name: 'address', friendlyName: 'Address', type: 'text' })
         ]),
         fieldSchemaMap: new Map(),
         onRowClick: vi.fn()
@@ -105,8 +105,8 @@ describe('TableView — protection-level filtering', () => {
       props: {
         nodeIds: [],
         schema: schemaWith('all-system', false, [
-          field({ name: 'a', friendlyName: 'A', type: 'string', protection: 'system' }),
-          field({ name: 'b', friendlyName: 'B', type: 'string', protection: 'system' })
+          field({ name: 'a', friendlyName: 'A', type: 'text', protection: 'system' }),
+          field({ name: 'b', friendlyName: 'B', type: 'text', protection: 'system' })
         ]),
         fieldSchemaMap: new Map(),
         onRowClick: vi.fn()

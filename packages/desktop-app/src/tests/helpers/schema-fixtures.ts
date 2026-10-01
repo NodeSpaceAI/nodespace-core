@@ -25,6 +25,9 @@ export function field(
 /** Build a SchemaNode around a field list, with plausible envelope metadata. */
 export function schemaWith(id: string, isCore: boolean, fields: SchemaField[]): SchemaNode {
   return {
+    nodeType: 'schema' as const,
+    lifecycleStatus: 'active' as const,
+    properties: {},
     id,
     content: id,
     createdAt: '2026-01-01T00:00:00Z',
@@ -38,9 +41,9 @@ export function schemaWith(id: string, isCore: boolean, fields: SchemaField[]): 
 
 /** `person` — 3 visible, no system fields (core_schemas.rs, the `person` SchemaNode). */
 export const PERSON_FIELDS: SchemaField[] = [
-  field({ name: 'first_name', friendlyName: 'First name', type: 'string', protection: 'core' }),
-  field({ name: 'last_name', friendlyName: 'Last name', type: 'string', protection: 'core' }),
-  field({ name: 'email', friendlyName: 'Email', type: 'string', protection: 'core' })
+  field({ name: 'first_name', friendlyName: 'First name', type: 'text', protection: 'core' }),
+  field({ name: 'last_name', friendlyName: 'Last name', type: 'text', protection: 'core' }),
+  field({ name: 'email', friendlyName: 'Email', type: 'text', protection: 'core' })
 ];
 
 /** `person`'s field names that should survive a user-visibility filter. */

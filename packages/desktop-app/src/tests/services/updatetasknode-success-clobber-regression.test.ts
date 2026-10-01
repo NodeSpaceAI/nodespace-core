@@ -109,6 +109,8 @@ describe('updateTaskNode success-path clobber — queued-write regression', () =
             // priority changed to 'high' (A's edit), status still 'open'
             // (A never touched it — this is the field B is about to change).
             return {
+              lifecycleStatus: 'active' as const,
+              properties: {},
               id: nodeId,
               nodeType: 'task' as const,
               content: '- [ ] seed task',
@@ -183,6 +185,8 @@ describe('updateTaskNode success-path clobber — queued-write regression', () =
           if (updateCallCount === 1) {
             await new Promise((resolve) => setTimeout(resolve, 300));
             return {
+              lifecycleStatus: 'active' as const,
+              properties: {},
               id: nodeId,
               nodeType: 'task' as const,
               content: '- [ ] seed task',
@@ -200,6 +204,8 @@ describe('updateTaskNode success-path clobber — queued-write regression', () =
           // reflecting the server's merged state (A's priority + B's own
           // status change).
           return {
+            lifecycleStatus: 'active' as const,
+            properties: {},
             id: nodeId,
             nodeType: 'task' as const,
             content: '- [ ] seed task',

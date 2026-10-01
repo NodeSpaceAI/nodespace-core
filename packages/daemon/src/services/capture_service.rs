@@ -115,6 +115,11 @@ pub async fn finalize_capture(
 
 /// Build the capture properties to merge onto an existing ai-chat node.
 ///
+/// Every key written here is declared by the `ai-chat` schema: the bucket is
+/// closed, so an undeclared key would refuse the whole backfill. When the
+/// session started and ended are the node's own `created_at` and
+/// `last_active`, so they are not written again.
+///
 /// Only capture-derived fields are emitted — the node's `provider`/`model`/
 /// `messages` were set at launch and are preserved by the deep merge. The
 /// session is marked `archived` (it has ended) and `last_active` refreshed.
@@ -134,8 +139,6 @@ fn build_capture_properties(
         "session_status": "archived",
         "last_active": session.ended_at.to_rfc3339(),
         "capture:agent_type": session.agent_type,
-        "capture:started_at": session.started_at.to_rfc3339(),
-        "capture:ended_at": session.ended_at.to_rfc3339(),
         "capture:exit_code": session.exit_status.code,
         "capture:session_id": session.id.to_string(),
     });
@@ -262,6 +265,69 @@ mod tests {
         // Should NOT have un-namespaced agent-specific fields
         assert!(props.get("agent_session_id").is_none());
         assert!(props.get("agent_type").is_none());
+    }
+
+    /// Every key the backfill writes is declared by the `ai-chat` schema, so
+    /// the closed bucket accepts it. A key added here without a declaration
+    /// would refuse the whole backfill.
+    #[test]
+    fn every_capture_key_is_declared_by_the_ai_chat_schema() {
+        let session = make_session();
+        let capture = make_capture_with("hello world");
+        let props = build_capture_properties(&session, &capture, CaptureContentSetting::Full);
+        let declared: Vec<String> = nodespace_core::models::core_schemas::get_core_schemas()
+            .into_iter()
+            .find(|s| s.id == "ai-chat")
+            .expect("ai-chat schema")
+            .fields
+            .into_iter()
+            .map(|f| f.name)
+            .collect();
+        for key in props.as_object().unwrap().keys() {
+            assert!(declared.contains(key), "'{key}' is not declared by ai-chat");
+        }
+    }
+
+    /// The backfill lands on a real ai-chat node through the service: the
+    /// path a finished terminal session takes.
+    #[tokio::test]
+    async fn finalize_capture_backfills_a_real_ai_chat_node() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut store = Arc::new(
+            nodespace_core::db::SqliteStore::new(tmp.path().join("capture.db"))
+                .await
+                .unwrap(),
+        );
+        let node_service = Arc::new(CoreNodeService::new(&mut store).await.unwrap());
+        let node_id = node_service
+            .create_node(nodespace_core::models::Node::new(
+                "ai-chat".to_string(),
+                "Terminal session".to_string(),
+                json!({ "provider": "pty" }),
+            ))
+            .await
+            .unwrap();
+
+        let mut session = make_session();
+        session.node_id = Some(node_id.clone());
+        let capture = make_capture_with("hello world");
+        let config = CaptureConfig {
+            enabled: true,
+            content: CaptureContentSetting::Full,
+        };
+
+        let backfilled = finalize_capture(&session, &capture, &node_service, &config)
+            .await
+            .expect("the backfill must be accepted");
+        assert_eq!(backfilled.as_deref(), Some(node_id.as_str()));
+
+        let node = node_service.get_node(&node_id).await.unwrap().unwrap();
+        let chat = &node.properties["ai-chat"];
+        assert_eq!(chat["session_status"], "archived");
+        assert_eq!(chat["capture:agent_type"], "claude-code");
+        assert_eq!(chat["capture:exit_code"], 0);
+        assert_eq!(chat["capture:transcript"], "hello world");
+        assert_eq!(chat["provider"], "pty", "launch-time fields are kept");
     }
 
     #[tokio::test]

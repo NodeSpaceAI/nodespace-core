@@ -245,7 +245,7 @@ async fn create_reconcile_base_and_subtype(svc: &Arc<NodeService>) -> Result<()>
             "name": "reconcile_ext_base",
             "fields": [{
                 "name": "email",
-                "type": "string",
+                "type": "text",
                 "protection": "user",
                 "indexed": false,
                 "unique": true

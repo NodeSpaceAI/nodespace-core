@@ -52,6 +52,8 @@ const QUERY_ID = 'saved-query-1';
 const seed = { type: 'database', reason: 'test seed' } as const;
 
 const schema: SchemaNode = {
+  lifecycleStatus: 'active' as const,
+  properties: {},
   id: SCHEMA_ID,
   nodeType: 'schema',
   content: 'Widget',
@@ -65,6 +67,7 @@ const schema: SchemaNode = {
 };
 
 const queryNode: QueryNode & Node = {
+  lifecycleStatus: 'active',
   id: QUERY_ID,
   nodeType: 'query',
   content: 'Widgets',
@@ -82,6 +85,7 @@ const queryNode: QueryNode & Node = {
 
 function widget(id: string): Node {
   return {
+    lifecycleStatus: 'active',
     id,
     nodeType: SCHEMA_ID,
     content: id,

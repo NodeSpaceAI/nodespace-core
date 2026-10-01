@@ -27,6 +27,9 @@ import { sharedNodeStore } from '$lib/services/shared-node-store.svelte';
 
 function schema(): SchemaNode {
   return {
+    nodeType: 'schema' as const,
+    lifecycleStatus: 'active' as const,
+    properties: {},
     id: 'gadget',
     content: 'Gadget',
     createdAt: '2026-01-01T00:00:00Z',

@@ -20,6 +20,22 @@ use serde_json::{json, Value};
 use tempfile::TempDir;
 use tokio::sync::RwLock;
 
+// The nodes these tests create. Every node has a UUID, and the ids are
+// ordered so a sorted result reads in the order the test names them.
+const CUSTOMER: &str = "3a6f1d52-0c4e-4b7a-9f21-5d8e7c6b4a01";
+const INVOICE_1: &str = "3a6f1d52-0c4e-4b7a-9f21-5d8e7c6b4a02";
+const INVOICE_2: &str = "3a6f1d52-0c4e-4b7a-9f21-5d8e7c6b4a03";
+const PARENT: &str = "3a6f1d52-0c4e-4b7a-9f21-5d8e7c6b4a04";
+const CHILD: &str = "3a6f1d52-0c4e-4b7a-9f21-5d8e7c6b4a05";
+const NODE_A: &str = "3a6f1d52-0c4e-4b7a-9f21-5d8e7c6b4a06";
+const NODE_B: &str = "3a6f1d52-0c4e-4b7a-9f21-5d8e7c6b4a07";
+const NODE_C: &str = "3a6f1d52-0c4e-4b7a-9f21-5d8e7c6b4a08";
+
+/// The `nodespace://` URI a tool result reports for a node.
+fn uri(id: &str) -> String {
+    format!("nodespace://{id}")
+}
+
 async fn make_executor() -> (GraphToolExecutor, Arc<NodeService>, TempDir) {
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("test.db");
@@ -52,7 +68,7 @@ async fn seed_invoices(ns: &Arc<NodeService>) {
         ns,
         json!({
             "name": "Customer",
-            "fields": [{ "name": "email", "type": "string", "protection": "user", "indexed": false }]
+            "fields": [{ "name": "email", "type": "text", "protection": "user", "indexed": false }]
         }),
     )
     .await
@@ -75,10 +91,10 @@ async fn seed_invoices(ns: &Arc<NodeService>) {
     .await
     .unwrap();
 
-    make_node(ns, "c1", "customer").await;
-    for inv in ["inv1", "inv2"] {
+    make_node(ns, CUSTOMER, "customer").await;
+    for inv in [INVOICE_1, INVOICE_2] {
         make_node(ns, inv, "invoice").await;
-        ns.create_relationship(inv, "billed_to", "c1", json!({}))
+        ns.create_relationship(inv, "billed_to", CUSTOMER, json!({}))
             .await
             .unwrap();
     }
@@ -101,8 +117,8 @@ async fn reverse_name_with_both_direction_reports_each_node_once() {
     seed_invoices(&ns).await;
 
     for args in [
-        json!({ "id": "c1", "relationship_type": "invoices" }),
-        json!({ "id": "c1", "relationship_type": "invoices", "direction": "both" }),
+        json!({ "id": CUSTOMER, "relationship_type": "invoices" }),
+        json!({ "id": CUSTOMER, "relationship_type": "invoices", "direction": "both" }),
     ] {
         let result = executor
             .execute("get_related_nodes", args.clone())
@@ -112,7 +128,7 @@ async fn reverse_name_with_both_direction_reports_each_node_once() {
         assert_eq!(result.result["count"], 2, "{args}: {:?}", result.result);
         assert_eq!(
             ids(&result.result),
-            vec!["nodespace://inv1", "nodespace://inv2"],
+            vec![uri(INVOICE_1), uri(INVOICE_2)],
             "{args}"
         );
         // Each hit is labelled with the traversal that actually ran.
@@ -133,7 +149,7 @@ async fn reverse_name_equal_to_forward_name_reports_each_node_once() {
         &ns,
         json!({
             "name": "Customer",
-            "fields": [{ "name": "email", "type": "string", "protection": "user", "indexed": false }]
+            "fields": [{ "name": "email", "type": "text", "protection": "user", "indexed": false }]
         }),
     )
     .await
@@ -155,10 +171,10 @@ async fn reverse_name_equal_to_forward_name_reports_each_node_once() {
     )
     .await
     .unwrap();
-    make_node(&ns, "c1", "customer").await;
-    for inv in ["inv1", "inv2"] {
+    make_node(&ns, CUSTOMER, "customer").await;
+    for inv in [INVOICE_1, INVOICE_2] {
         make_node(&ns, inv, "invoice").await;
-        ns.create_relationship(inv, "related", "c1", json!({}))
+        ns.create_relationship(inv, "related", CUSTOMER, json!({}))
             .await
             .unwrap();
     }
@@ -166,16 +182,13 @@ async fn reverse_name_equal_to_forward_name_reports_each_node_once() {
     let result = executor
         .execute(
             "get_related_nodes",
-            json!({ "id": "c1", "relationship_type": "related" }),
+            json!({ "id": CUSTOMER, "relationship_type": "related" }),
         )
         .await
         .unwrap();
     assert!(!result.is_error, "{:?}", result.result);
     assert_eq!(result.result["count"], 2, "{:?}", result.result);
-    assert_eq!(
-        ids(&result.result),
-        vec!["nodespace://inv1", "nodespace://inv2"]
-    );
+    assert_eq!(ids(&result.result), vec![uri(INVOICE_1), uri(INVOICE_2)]);
 }
 
 /// A built-in inverse (`child_of`) resolves through a different branch than a
@@ -183,22 +196,22 @@ async fn reverse_name_equal_to_forward_name_reports_each_node_once() {
 #[tokio::test]
 async fn builtin_reverse_name_with_both_direction_reports_each_node_once() {
     let (executor, ns, _tmp) = make_executor().await;
-    make_node(&ns, "parent", "text").await;
-    make_node(&ns, "child", "text").await;
-    ns.create_relationship("parent", "has_child", "child", json!({}))
+    make_node(&ns, PARENT, "text").await;
+    make_node(&ns, CHILD, "text").await;
+    ns.create_relationship(PARENT, "has_child", CHILD, json!({}))
         .await
         .unwrap();
 
     let result = executor
         .execute(
             "get_related_nodes",
-            json!({ "id": "child", "relationship_type": "child_of" }),
+            json!({ "id": CHILD, "relationship_type": "child_of" }),
         )
         .await
         .unwrap();
     assert!(!result.is_error, "{:?}", result.result);
     assert_eq!(result.result["count"], 1, "{:?}", result.result);
-    assert_eq!(ids(&result.result), vec!["nodespace://parent"]);
+    assert_eq!(ids(&result.result), vec![uri(PARENT)]);
     assert_eq!(result.result["nodes"][0]["relationship_type"], "has_child");
     assert_eq!(result.result["nodes"][0]["direction"], "in");
 }
@@ -208,24 +221,24 @@ async fn builtin_reverse_name_with_both_direction_reports_each_node_once() {
 #[tokio::test]
 async fn forward_name_with_both_direction_still_unions_directions() {
     let (executor, ns, _tmp) = make_executor().await;
-    make_node(&ns, "a", "text").await;
-    make_node(&ns, "b", "text").await;
-    make_node(&ns, "c", "text").await;
-    ns.create_relationship("a", "mentions", "b", json!({}))
+    make_node(&ns, NODE_A, "text").await;
+    make_node(&ns, NODE_B, "text").await;
+    make_node(&ns, NODE_C, "text").await;
+    ns.create_relationship(NODE_A, "mentions", NODE_B, json!({}))
         .await
         .unwrap();
-    ns.create_relationship("c", "mentions", "a", json!({}))
+    ns.create_relationship(NODE_C, "mentions", NODE_A, json!({}))
         .await
         .unwrap();
 
     let result = executor
         .execute(
             "get_related_nodes",
-            json!({ "id": "a", "relationship_type": "mentions", "direction": "both" }),
+            json!({ "id": NODE_A, "relationship_type": "mentions", "direction": "both" }),
         )
         .await
         .unwrap();
     assert!(!result.is_error, "{:?}", result.result);
     assert_eq!(result.result["count"], 2, "{:?}", result.result);
-    assert_eq!(ids(&result.result), vec!["nodespace://b", "nodespace://c"]);
+    assert_eq!(ids(&result.result), vec![uri(NODE_B), uri(NODE_C)]);
 }

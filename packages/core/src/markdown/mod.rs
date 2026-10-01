@@ -388,7 +388,7 @@ pub(crate) fn slugify_heading(content: &str) -> String {
 fn build_slug_to_uuid_map(nodes: &[PreparedNode]) -> HashMap<String, String> {
     let mut map = HashMap::new();
     for node in nodes {
-        if node.node_type == "header" {
+        if crate::models::CoreNodeType::Header.is_exactly(&node.node_type) {
             let slug = slugify_heading(&node.content);
             if !slug.is_empty() {
                 // First heading with this slug wins
@@ -663,10 +663,13 @@ pub fn prepare_nodes_from_markdown(
         let last_text_id = text_stack.last().map(|(id, _)| id.clone());
 
         // Determine parent based on hierarchy rules
-        let parent_id = if node_type == "horizontal-line" {
+        let parent_id = if crate::models::CoreNodeType::HorizontalLine.is_exactly(node_type) {
             // Horizontal rules are document-level dividers — always place at root level
             context.root_parent_id()
-        } else if node_type == "code-block" || node_type == "quote-block" || node_type == "table" {
+        } else if crate::models::CoreNodeType::CodeBlock.is_exactly(node_type)
+            || crate::models::CoreNodeType::QuoteBlock.is_exactly(node_type)
+            || crate::models::CoreNodeType::Table.is_exactly(node_type)
+        {
             last_content_node
                 .clone()
                 .or_else(|| context.current_parent_id())
@@ -680,7 +683,7 @@ pub fn prepare_nodes_from_markdown(
             } else {
                 last_text_id.or_else(|| context.current_parent_id())
             }
-        } else if node_type == "ordered-list" {
+        } else if crate::models::CoreNodeType::OrderedList.is_exactly(node_type) {
             last_text_id.or_else(|| context.current_parent_id())
         } else if let Some(h_level) = heading_level {
             context.pop_headings_for_level(h_level);
@@ -701,7 +704,7 @@ pub fn prepare_nodes_from_markdown(
 
         // Build properties
         let final_properties = properties.unwrap_or_else(|| {
-            if node_type == "task" {
+            if crate::models::CoreNodeType::Task.is_exactly(node_type) {
                 json!({"status": "open"})
             } else {
                 json!({})
@@ -723,7 +726,7 @@ pub fn prepare_nodes_from_markdown(
             context.push_heading(node_id.clone(), h_level);
         }
 
-        if node_type == "text" && !is_bullet {
+        if crate::models::CoreNodeType::Text.is_exactly(node_type) && !is_bullet {
             // Already popped to this indent: a same-indent paragraph replaces
             // its predecessor, a deeper one stacks above it.
             if text_stack
@@ -733,11 +736,13 @@ pub fn prepare_nodes_from_markdown(
                 text_stack.pop();
             }
             text_stack.push((node_id.clone(), indent_level));
-        } else if node_type != "text" {
+        } else if !crate::models::CoreNodeType::Text.is_exactly(node_type) {
             text_stack.clear();
         }
 
-        if node_type == "header" || (node_type == "text" && !is_bullet) {
+        if crate::models::CoreNodeType::Header.is_exactly(node_type)
+            || (crate::models::CoreNodeType::Text.is_exactly(node_type) && !is_bullet)
+        {
             last_content_node = Some(node_id.clone());
         }
 
@@ -1524,7 +1529,14 @@ fn is_date_format(s: &str) -> bool {
 /// Only text, header, and date nodes can be containers (semantically meaningful)
 /// Multi-line nodes (code-block, quote-block, ordered-list) cannot be containers
 fn is_valid_container_type(node_type: &str) -> bool {
-    matches!(node_type, "text" | "header" | "date")
+    matches!(
+        crate::models::CoreNodeType::from_id(node_type),
+        Some(
+            crate::models::CoreNodeType::Text
+                | crate::models::CoreNodeType::Header
+                | crate::models::CoreNodeType::Date
+        )
+    )
 }
 
 /// Detect if a line is a markdown heading
@@ -1739,8 +1751,9 @@ async fn create_node(
     let properties = if let Some(props) = custom_properties {
         props
     } else {
-        match node_type {
-            "task" => json!({"status": "open"}),
+        // A task parsed from markdown with no explicit state starts open.
+        match crate::models::CoreNodeType::from_id(node_type) {
+            Some(crate::models::CoreNodeType::Task) => json!({"status": "open"}),
             _ => json!({}),
         }
     };
@@ -1963,7 +1976,7 @@ fn export_node_hierarchy(
     }
 
     // Handle task nodes specially - render with checkbox syntax
-    if node.node_type == "task" {
+    if crate::models::CoreNodeType::Task.is_exactly(&node.node_type) {
         output.push_str(format_task_checkbox(node));
         output.push_str(&node.content);
         output.push_str("\n\n");
@@ -2063,9 +2076,12 @@ fn export_node_with_context(
     // Determine if this node should be rendered as a bullet item
     // Rules: text node + (header OR text) parent + 2+ siblings + no children
     // This covers both direct header children and label→list patterns
-    let should_render_as_bullet = node.node_type == "text"
+    let should_render_as_bullet = crate::models::CoreNodeType::Text.is_exactly(&node.node_type)
         && node.content.len() < MAX_BULLET_CONTENT_LENGTH
-        && (context.parent_type == "header" || context.parent_type == "text")
+        && matches!(
+            crate::models::CoreNodeType::from_id(context.parent_type),
+            Some(crate::models::CoreNodeType::Header | crate::models::CoreNodeType::Text)
+        )
         && context.sibling_count >= 2
         && !has_children;
 
@@ -2075,7 +2091,7 @@ fn export_node_with_context(
     }
 
     // Handle task nodes specially - render with checkbox syntax
-    if node.node_type == "task" {
+    if crate::models::CoreNodeType::Task.is_exactly(&node.node_type) {
         output.push_str(format_task_checkbox(node));
         output.push_str(&node.content);
         output.push_str("\n\n");

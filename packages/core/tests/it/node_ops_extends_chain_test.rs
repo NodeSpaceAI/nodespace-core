@@ -35,14 +35,14 @@ async fn service_with_refund_node() -> Result<(Arc<NodeService>, TempDir)> {
         json!({
             "name": "refund_entry",
             "extends": "ledger_entry",
-            "fields": [{ "name": "reason", "type": "string" }]
+            "fields": [{ "name": "reason", "type": "text" }]
         }),
     )
     .await
     .map_err(|e| anyhow::anyhow!("subtype schema: {e}"))?;
 
     svc.create_node(Node::new_with_id(
-        "refund-1".to_string(),
+        "4f96c399-4d8c-554b-83e3-14eeb86dc3a9".to_string(),
         "refund_entry".to_string(),
         "Refund".to_string(),
         json!({ "amount": 42, "reason": "duplicate" }),
@@ -58,7 +58,7 @@ async fn get_node_returns_an_extending_nodes_inherited_values() -> Result<()> {
     let node = get_node(
         &svc,
         GetNodeInput {
-            node_id: "refund-1".to_string(),
+            node_id: "4f96c399-4d8c-554b-83e3-14eeb86dc3a9".to_string(),
         },
     )
     .await?;
@@ -97,7 +97,7 @@ async fn query_nodes_returns_an_extending_nodes_inherited_values() -> Result<()>
 
 fn update_reason(version: Option<i64>) -> UpdateNodeInput {
     UpdateNodeInput {
-        node_id: "refund-1".to_string(),
+        node_id: "4f96c399-4d8c-554b-83e3-14eeb86dc3a9".to_string(),
         version,
         node_type: None,
         content: None,

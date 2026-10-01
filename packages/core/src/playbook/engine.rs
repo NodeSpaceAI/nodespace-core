@@ -308,7 +308,7 @@ impl PlaybookEngine {
 
         let nodes = self
             .node_service
-            .query_nodes_by_type("play", Some("active"))
+            .query_nodes_by_type(crate::models::CoreNodeType::Play.as_str(), Some("active"))
             .await?;
 
         let mut loaded = 0;
@@ -414,26 +414,46 @@ impl PlaybookEngine {
             self.refresh_ancestor_cache().await;
         }
 
-        // Lifecycle management: detect play node events
+        // Lifecycle management: detect play node events. A node of a type
+        // extending `play` is a play, so the event's type is resolved through
+        // its chain; the startup load finds the same nodes, since a query for
+        // `play` returns its subtypes.
+        let play_event = match &envelope.event {
+            DomainEvent::NodeCreated { node_type, .. }
+            | DomainEvent::NodeDeleted { node_type, .. }
+            | DomainEvent::NodeUpdated { node_type, .. } => {
+                let play = crate::models::CoreNodeType::Play;
+                match self.node_service.type_is_a(node_type, play).await {
+                    Ok(is_play) => is_play,
+                    Err(e) => {
+                        tracing::warn!(
+                            node_type = %node_type,
+                            error = %e,
+                            "failed to resolve an event's type chain; matching the type alone"
+                        );
+                        play.is_exactly(node_type)
+                    }
+                }
+            }
+            _ => false,
+        };
         match &envelope.event {
-            DomainEvent::NodeCreated { node_type, node_id } if node_type == "play" => {
+            DomainEvent::NodeCreated { node_id, .. } if play_event => {
                 self.handle_play_created(node_id).await;
                 return;
             }
-            DomainEvent::NodeDeleted { node_type, id } if node_type == "play" => {
+            DomainEvent::NodeDeleted { id, .. } if play_event => {
                 self.handle_play_deleted(id);
                 return;
             }
-            DomainEvent::NodeUpdated {
-                node_type, node_id, ..
-            } if node_type == "play" => {
+            DomainEvent::NodeUpdated { node_id, .. } if play_event => {
                 self.handle_play_updated(node_id).await;
                 return;
             }
             // Schema version drift detection
             DomainEvent::NodeUpdated {
                 node_type, node_id, ..
-            } if node_type == "schema" => {
+            } if crate::models::CoreNodeType::Schema.is_exactly(node_type) => {
                 self.handle_schema_updated(node_id).await;
                 return;
             }
@@ -443,10 +463,14 @@ impl PlaybookEngine {
             // would stay stale until some unrelated schema edit. Refresh, but
             // don't return: schema creation/deletion is not itself drift, and
             // a Play may legitimately trigger on it.
-            DomainEvent::NodeCreated { node_type, .. } if node_type == "schema" => {
+            DomainEvent::NodeCreated { node_type, .. }
+                if crate::models::CoreNodeType::Schema.is_exactly(node_type) =>
+            {
                 self.refresh_ancestor_cache().await;
             }
-            DomainEvent::NodeDeleted { node_type, .. } if node_type == "schema" => {
+            DomainEvent::NodeDeleted { node_type, .. }
+                if crate::models::CoreNodeType::Schema.is_exactly(node_type) =>
+            {
                 self.refresh_ancestor_cache().await;
             }
             _ => {}
@@ -1681,7 +1705,7 @@ mod scope_tests {
                 "name": "Bug",
                 "extends": "ticket",
                 "fields": [
-                    { "name": "severity", "type": "string", "protection": "user", "indexed": false }
+                    { "name": "severity", "type": "text", "protection": "user", "indexed": false }
                 ]
             }),
         )
@@ -2405,7 +2429,7 @@ mod ancestry_cache_tests {
             json!({
                 "name": "Ticket",
                 "fields": [
-                    { "name": "state", "type": "string", "protection": "user", "indexed": false }
+                    { "name": "state", "type": "text", "protection": "user", "indexed": false }
                 ]
             }),
         )
@@ -2418,7 +2442,7 @@ mod ancestry_cache_tests {
                 "name": "Bug",
                 "extends": "ticket",
                 "fields": [
-                    { "name": "severity", "type": "string", "protection": "user", "indexed": false }
+                    { "name": "severity", "type": "text", "protection": "user", "indexed": false }
                 ]
             }),
         )
@@ -2553,7 +2577,7 @@ mod ancestry_cache_tests {
             json!({
                 "name": "Standalone",
                 "fields": [
-                    { "name": "note", "type": "string", "protection": "user", "indexed": false }
+                    { "name": "note", "type": "text", "protection": "user", "indexed": false }
                 ]
             }),
         )

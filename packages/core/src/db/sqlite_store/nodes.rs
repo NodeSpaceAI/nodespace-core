@@ -233,12 +233,6 @@ fn has_child_cycle_violation(parent_id: &str, child_id: &str) -> anyhow::Error {
     ))
 }
 
-/// Collections and schemas are always roots; their refusal needs no
-/// membership lookup.
-fn is_always_root(node_type: &str) -> bool {
-    node_type == "collection" || node_type == "schema"
-}
-
 /// Dedupe `node_ids` and chunk them under SQLite's compiled
 /// SQLITE_MAX_VARIABLE_NUMBER (32766) for `may_gain_parent_query`.
 fn may_gain_parent_chunks<'a>(node_ids: &[&'a str]) -> Vec<Vec<&'a str>> {
@@ -249,18 +243,35 @@ fn may_gain_parent_chunks<'a>(node_ids: &[&'a str]) -> Vec<Vec<&'a str>> {
     unique.chunks(ID_CHUNK).map(<[&str]>::to_vec).collect()
 }
 
-/// Offenders among `chunk`: collections, schemas, and non-exempt nodes that
-/// already hold a `member_of` edge. Returns `(id, node_type)` rows.
+/// Offenders among `chunk`: nodes of a root-only type (or a subtype of one),
+/// and non-exempt nodes that already hold a `member_of` edge. Returns
+/// `(id, root_only_type)` rows, where `root_only_type` is the root-only type
+/// the node is or extends, NULL for a member offender. Both are resolved
+/// through the type's `extends` chain.
 fn may_gain_parent_query(chunk: &[&str]) -> (String, Vec<libsql::Value>) {
     let placeholders: Vec<String> = (1..=chunk.len()).map(|i| format!("?{}", i)).collect();
+    let root_only = crate::models::CoreNodeType::root_only();
+    let root_only_ids = root_only
+        .iter()
+        .map(|t| format!("'{}'", t.as_str()))
+        .collect::<Vec<_>>()
+        .join(", ");
     let sql = format!(
-        "SELECT n.id, n.node_type FROM node n \
-         WHERE n.id IN ({}) \
-           AND (n.node_type IN ('collection', 'schema') \
-                OR (n.node_type != 'person' \
+        "SELECT n.id, \
+                (SELECT a.ancestor FROM {ancestry} a \
+                 WHERE a.node_type = n.node_type AND a.ancestor IN ({root_only_ids}) \
+                 ORDER BY a.depth LIMIT 1) \
+         FROM node n \
+         WHERE n.id IN ({ids}) \
+           AND ({is_root_only} \
+                OR ({not_a_person} \
                     AND EXISTS(SELECT 1 FROM relationship r \
                                WHERE r.in_node = n.id AND r.relationship_type = 'member_of')))",
-        placeholders.join(", ")
+        ancestry = crate::db::schema::TYPE_ANCESTRY_TABLE,
+        ids = placeholders.join(", "),
+        is_root_only = crate::db::schema::is_a_sql("n.node_type", &root_only),
+        not_a_person =
+            crate::db::schema::is_not_a_sql("n.node_type", &[crate::models::CoreNodeType::Person]),
     );
     let params = chunk
         .iter()
@@ -269,20 +280,27 @@ fn may_gain_parent_query(chunk: &[&str]) -> (String, Vec<libsql::Value>) {
     (sql, params)
 }
 
+/// The root-only type an offender row of [`may_gain_parent_query`] names.
+fn offender_root_only_type(root_only_type: Option<String>) -> Option<crate::models::CoreNodeType> {
+    root_only_type
+        .as_deref()
+        .and_then(crate::models::CoreNodeType::from_id)
+}
+
 /// The refusal for an offender `may_gain_parent_query` found. `memberships`
-/// is the collections a member offender belongs to; ignored for an
-/// always-root type.
+/// is the collections a member offender belongs to; ignored for a node of a
+/// root-only type.
 fn may_gain_parent_violation(
     offender: String,
-    node_type: &str,
+    root_only_type: Option<crate::models::CoreNodeType>,
     memberships: Vec<String>,
 ) -> anyhow::Error {
-    match node_type {
-        "collection" => anyhow::Error::new(super::TreeInvariantViolation::collection_not_root(
+    match root_only_type {
+        Some(root_type) => anyhow::Error::new(super::TreeInvariantViolation::not_root(
+            root_type,
             Some(&offender),
         )),
-        "schema" => anyhow::Error::new(super::TreeInvariantViolation::schema_not_root(&offender)),
-        _ => {
+        None => {
             let detail = format!(
                 "node '{}' holds collection membership ({}) and cannot be moved under a parent — only root nodes may hold collection membership (ADR-059 §2). Remove it from the collection(s) first, or move its root instead.",
                 offender,
@@ -326,7 +344,10 @@ impl SqliteStore {
         // BEFORE the insert below so it unambiguously identifies the
         // pre-existing OTHER node, then let the write proceed unconditionally
         // and mark both sides afterward.
-        let colliding_collection = if node.node_type == "collection" {
+        let colliding_collection = if self
+            .type_is_a(&node.node_type, crate::models::CoreNodeType::Collection)
+            .await?
+        {
             self.get_collection_by_name(&node.content).await?
         } else {
             None
@@ -472,20 +493,17 @@ impl SqliteStore {
         properties: Value,
         source: Option<String>,
     ) -> Result<Node> {
-        if node_type == "collection" {
-            return Err(anyhow::Error::new(
-                super::TreeInvariantViolation::collection_not_root(None),
-            ));
-        }
-        if node_type == "schema" {
-            // A schema's id derives from its content (see `normalize_schema_id`);
-            // this path mints a UUID, so it could never create a valid schema
-            // anyway — and schemas are always roots.
-            return Err(anyhow::Error::new(
-                super::TreeInvariantViolation::schema_not_root(
-                    &crate::services::node_service::normalize_schema_id(content),
-                ),
-            ));
+        // A node of a root-only type (or a subtype of one) cannot be created
+        // under a parent. A schema's id derives from its content (see
+        // `normalize_schema_id`); this path mints a UUID, so it could never
+        // create a valid schema anyway.
+        if let Some(root_type) = self.root_only_type_of(node_type).await? {
+            let schema_id = crate::services::node_service::normalize_schema_id(content);
+            let node_id =
+                (root_type == crate::models::CoreNodeType::Schema).then_some(schema_id.as_str());
+            return Err(anyhow::Error::new(super::TreeInvariantViolation::not_root(
+                root_type, node_id,
+            )));
         }
 
         let node_id = uuid::Uuid::new_v4().to_string();
@@ -805,7 +823,8 @@ impl SqliteStore {
         for chunk in ids.chunks(ID_CHUNK) {
             let placeholders: Vec<String> = (1..=chunk.len()).map(|i| format!("?{}", i)).collect();
             let sql = format!(
-                "SELECT * FROM node WHERE node_type = 'schema' AND id IN ({})",
+                "SELECT * FROM node WHERE {} AND id IN ({})",
+                crate::db::schema::is_exactly_sql("node_type", crate::models::CoreNodeType::Schema),
                 placeholders.join(", ")
             );
             let params: Vec<libsql::Value> = chunk
@@ -900,14 +919,17 @@ impl SqliteStore {
         // OLD title too, so a genuine collision was already detectable (and
         // would already have been marked) before this rename, not newly
         // hidden by filtering out the self-match here.
-        let colliding_collection =
-            if updated_node_type == "collection" && updated_content != current.content {
-                self.get_collection_by_name(&updated_content)
-                    .await?
-                    .filter(|existing| existing.id != id)
-            } else {
-                None
-            };
+        let colliding_collection = if updated_content != current.content
+            && self
+                .type_is_a(&updated_node_type, crate::models::CoreNodeType::Collection)
+                .await?
+        {
+            self.get_collection_by_name(&updated_content)
+                .await?
+                .filter(|existing| existing.id != id)
+        } else {
+            None
+        };
 
         let properties_update = if let Some(ref updated_props) = update.properties {
             let mut merged = current.properties.as_object().cloned().unwrap_or_default();
@@ -1221,14 +1243,17 @@ impl SqliteStore {
         // `update_node` and `mark_collection_name_collision`'s doc comment.
         // Compares against `previous_node` (cloned above, before `current`
         // was partially moved from) rather than `current` directly.
-        let colliding_collection =
-            if updated_node_type == "collection" && updated_content != previous_node.content {
-                self.get_collection_by_name(&updated_content)
-                    .await?
-                    .filter(|existing| existing.id != id)
-            } else {
-                None
-            };
+        let colliding_collection = if updated_content != previous_node.content
+            && self
+                .type_is_a(&updated_node_type, crate::models::CoreNodeType::Collection)
+                .await?
+        {
+            self.get_collection_by_name(&updated_content)
+                .await?
+                .filter(|existing| existing.id != id)
+        } else {
+            None
+        };
 
         let updated_props = match update.properties {
             Some(p) => serde_json::to_string(&p).context("Failed to serialize properties")?,
@@ -2849,7 +2874,7 @@ impl SqliteStore {
             let (sql, params) = may_gain_parent_query(&chunk);
             // Drain and drop the cursor before `get_node_memberships` checks out a
             // second reader connection — see `ReadRows` in `connections.rs`.
-            let offender: Option<(String, String)> = {
+            let offender: Option<(String, Option<String>)> = {
                 let mut rows = self
                     .read()
                     .await?
@@ -2861,13 +2886,18 @@ impl SqliteStore {
                     None => None,
                 }
             };
-            if let Some((offender, node_type)) = offender {
-                let memberships = if is_always_root(&node_type) {
+            if let Some((offender, root_only_type)) = offender {
+                let root_only_type = offender_root_only_type(root_only_type);
+                let memberships = if root_only_type.is_some() {
                     Vec::new()
                 } else {
                     self.get_node_memberships(&offender).await?
                 };
-                return Err(may_gain_parent_violation(offender, &node_type, memberships));
+                return Err(may_gain_parent_violation(
+                    offender,
+                    root_only_type,
+                    memberships,
+                ));
             }
         }
         Ok(())
@@ -2879,7 +2909,7 @@ impl SqliteStore {
     pub(crate) async fn assert_may_gain_parent_in_tx(tx: &Tx<'_>, node_ids: &[&str]) -> Result<()> {
         for chunk in may_gain_parent_chunks(node_ids) {
             let (sql, params) = may_gain_parent_query(&chunk);
-            let offender: Option<(String, String)> = {
+            let offender: Option<(String, Option<String>)> = {
                 let mut rows = tx
                     .conn()
                     .query(&sql, params)
@@ -2890,13 +2920,18 @@ impl SqliteStore {
                     None => None,
                 }
             };
-            if let Some((offender, node_type)) = offender {
-                let memberships = if is_always_root(&node_type) {
+            if let Some((offender, root_only_type)) = offender {
+                let root_only_type = offender_root_only_type(root_only_type);
+                let memberships = if root_only_type.is_some() {
                     Vec::new()
                 } else {
                     Self::get_node_memberships_in_tx(tx, &offender).await?
                 };
-                return Err(may_gain_parent_violation(offender, &node_type, memberships));
+                return Err(may_gain_parent_violation(
+                    offender,
+                    root_only_type,
+                    memberships,
+                ));
             }
         }
         Ok(())
@@ -3751,7 +3786,9 @@ impl SqliteStore {
     /// and [`Self::update_task_node_with_version_check_in_tx`] so the two
     /// read paths can never parse the stored shape differently.
     pub(crate) fn node_to_task_node(n: Node) -> Option<crate::models::TaskNode> {
-        if n.node_type != "task" {
+        // The typed task shape is `task`'s own: a subtype is never converted
+        // to its base's struct (ADR-086 §5).
+        if !crate::models::CoreNodeType::Task.is_exactly(&n.node_type) {
             return None;
         }
         let props = &n.properties;
@@ -3915,7 +3952,13 @@ impl SqliteStore {
                 .read()
                 .await?
                 .query(
-                    "SELECT * FROM node WHERE id = ?1 AND node_type = 'schema' LIMIT 1",
+                    &format!(
+                        "SELECT * FROM node WHERE id = ?1 AND {} LIMIT 1",
+                        crate::db::schema::is_exactly_sql(
+                            "node_type",
+                            crate::models::CoreNodeType::Schema
+                        )
+                    ),
                     libsql::params![id.to_string()],
                 )
                 .await
@@ -3949,7 +3992,13 @@ impl SqliteStore {
                 .read()
                 .await?
                 .query(
-                    "SELECT * FROM node WHERE node_type = 'schema' ORDER BY id",
+                    &format!(
+                        "SELECT * FROM node WHERE {} ORDER BY id",
+                        crate::db::schema::is_exactly_sql(
+                            "node_type",
+                            crate::models::CoreNodeType::Schema
+                        )
+                    ),
                     (),
                 )
                 .await
@@ -4210,8 +4259,15 @@ impl SqliteStore {
              FROM node_title_fts f \
              JOIN node n ON n.id = f.id \
              WHERE node_title_fts MATCH ?1 AND n.lifecycle_status != 'archived' \
-             AND n.node_type NOT IN ('schema', 'date') \
+             AND {} \
              ORDER BY rank LIMIT {}",
+            crate::db::schema::is_not_a_sql(
+                "n.node_type",
+                &[
+                    crate::models::CoreNodeType::Schema,
+                    crate::models::CoreNodeType::Date
+                ]
+            ),
             limit
         );
 

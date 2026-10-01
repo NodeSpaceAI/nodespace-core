@@ -40,6 +40,20 @@ use crate::methodology::{MethodologyPlaybook, PlayStep, SchemaStep, ViewStep};
 use crate::services::QueryDefinition;
 use serde_json::json;
 
+// The fixed ids of the nodes this playbook seeds. A seeded node's identity
+// is its id (ADR-086 §10), and ADR-060 §5 orders rules across plays by play
+// id, so each is a literal UUID rather than one minted per install.
+/// The `jira-sprint-transition-gate` play.
+pub const SPRINT_TRANSITION_GATE_ID: &str = "7a1d94b8-52c3-4e7e-8a40-5e2c9d3b6f01";
+/// The `jira-sprint-completion-stamp` play.
+pub const SPRINT_COMPLETION_STAMP_ID: &str = "7a1d94b8-52c3-4e7e-8a40-5e2c9d3b6f02";
+/// The `jira-sprint-close-lock` play.
+pub const SPRINT_CLOSE_LOCK_ID: &str = "7a1d94b8-52c3-4e7e-8a40-5e2c9d3b6f03";
+/// The `jira-epics-by-status` saved view.
+pub const EPICS_BY_STATUS_ID: &str = "7a1d94b8-52c3-4e7e-8a40-5e2c9d3b6f04";
+/// The `jira-sprints-by-status` saved view.
+pub const SPRINTS_BY_STATUS_ID: &str = "7a1d94b8-52c3-4e7e-8a40-5e2c9d3b6f05";
+
 /// The Jira-style playbook.
 pub fn playbook() -> MethodologyPlaybook {
     MethodologyPlaybook {
@@ -135,7 +149,7 @@ fn bug_schema() -> SchemaStep {
                 {
                     "name": "environment",
                     "friendlyName": "Environment",
-                    "type": "string",
+                    "type": "text",
                     "protection": "user",
                     "indexed": false,
                     "required": false,
@@ -257,7 +271,7 @@ fn sprint_schema() -> SchemaStep {
                 {
                     "name": "goal",
                     "friendlyName": "Goal",
-                    "type": "string",
+                    "type": "text",
                     "protection": "user",
                     "indexed": false,
                     "required": false,
@@ -330,7 +344,7 @@ fn sprint_transition_gate() -> PlayStep {
     .join(" || ");
 
     PlayStep {
-        play_id: "jira-sprint-transition-gate",
+        play_id: SPRINT_TRANSITION_GATE_ID,
         name: "Keep sprints moving future → active → closed",
         description:
             "Rejects any sprint_status change other than future → active or active → closed, \
@@ -420,7 +434,7 @@ fn sprint_transition_gate() -> PlayStep {
 /// every device that runs this.
 fn sprint_completion_stamp() -> PlayStep {
     PlayStep {
-        play_id: "jira-sprint-completion-stamp",
+        play_id: SPRINT_COMPLETION_STAMP_ID,
         name: "Record when a sprint closes",
         description: "When a sprint moves from active to closed, sets its completed_date to the \
              time of the close.",
@@ -548,7 +562,7 @@ fn sprint_close_lock() -> PlayStep {
     }
 
     PlayStep {
-        play_id: "jira-sprint-close-lock",
+        play_id: SPRINT_CLOSE_LOCK_ID,
         name: "Lock closed sprints",
         description: "Rejects changing a closed sprint's dates or its issues, and rejects setting \
              completed_date by hand. A closed sprint's name and goal stay editable.",
@@ -563,7 +577,7 @@ fn sprint_close_lock() -> PlayStep {
 /// Epics by Status — the roadmap at a glance.
 fn epics_by_status_view() -> ViewStep {
     ViewStep {
-        view_id: "jira-epics-by-status",
+        view_id: EPICS_BY_STATUS_ID,
         name: "Epics by Status",
         definition: QueryDefinition {
             target_type: "epic".to_string(),
@@ -581,7 +595,7 @@ fn epics_by_status_view() -> ViewStep {
 /// Sprints by lifecycle: what is being planned, what is running, what is done.
 fn sprints_by_status_view() -> ViewStep {
     ViewStep {
-        view_id: "jira-sprints-by-status",
+        view_id: SPRINTS_BY_STATUS_ID,
         name: "Sprints",
         definition: QueryDefinition {
             target_type: "sprint".to_string(),

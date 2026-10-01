@@ -93,7 +93,7 @@ impl NodeService {
         };
 
         // Only queue if root is an embeddable type
-        if !self.is_embeddable_type(&root_type) {
+        if !self.is_embeddable_type(&root_type).await {
             tracing::debug!(
                 "Root {} is not embeddable (type: {}), skipping embedding queue",
                 root_id,
@@ -190,11 +190,14 @@ impl NodeService {
             }
         };
 
-        // Only queue if root is an embeddable type (behavior-driven)
-        let behavior: std::sync::Arc<dyn crate::behaviors::NodeBehavior> =
-            behaviors.get(&root_type).unwrap_or_else(|| {
-                std::sync::Arc::new(crate::behaviors::CustomNodeBehavior::new(&root_type))
-            });
+        // Only queue if root is an embeddable type (behavior-driven), resolved
+        // through the root type's chain so a subtype follows the type it
+        // extends.
+        let chain = store
+            .type_chain(&root_type)
+            .await
+            .unwrap_or_else(|_| vec![root_type.clone()]);
+        let behavior = behaviors.resolve(&chain);
         let probe = Node {
             id: "probe".to_string(),
             node_type: root_type.clone(),

@@ -28,6 +28,7 @@ import type { UpdateSource, NodeUpdate } from '../../lib/types/update-protocol';
 describe('SharedNodeStore', () => {
   let store: SharedNodeStore;
   const mockNode: Node = {
+    lifecycleStatus: 'active',
     id: 'test-node-1',
     nodeType: 'text',
     content: 'Test content',
@@ -1766,6 +1767,7 @@ describe('SharedNodeStore', () => {
 
   describe('OCC Error Recovery', () => {
     const mockServerNode: Node = {
+      lifecycleStatus: 'active',
       id: 'test-node-occ',
       nodeType: 'text',
       content: 'Server content (version 5)',
@@ -2170,6 +2172,7 @@ describe('SharedNodeStore', () => {
   describe('Extended Coverage', () => {
     // Helper to create test nodes
     const createTestNode = (id: string, content: string = 'Test content'): Node => ({
+      lifecycleStatus: 'active',
       id,
       nodeType: 'text',
       content,
@@ -2695,6 +2698,7 @@ describe('SharedNodeStore', () => {
 
   describe('ensureNode in-flight de-duplication', () => {
     const makeNode = (id: string): Node => ({
+      lifecycleStatus: 'active',
       id,
       nodeType: 'text',
       content: `content-${id}`,

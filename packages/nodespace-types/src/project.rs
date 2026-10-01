@@ -1,7 +1,7 @@
-use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::helpers::{deserialize_clearable, is_active_lifecycle};
+use crate::helpers::deserialize_clearable;
+use crate::node::NodeEnvelope;
 use crate::task::flexible_date;
 
 /// Default `status` for a project that has none stored, matching the project
@@ -21,18 +21,10 @@ pub const DEFAULT_PROJECT_STATUS: &str = "planning";
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectNode {
-    pub id: String,
-    #[serde(rename = "nodeType")]
-    pub node_type: String,
-    pub content: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub title: Option<String>,
-    pub version: i64,
-    pub created_at: DateTime<Utc>,
-    pub modified_at: DateTime<Utc>,
-    pub properties: serde_json::Value,
-    #[serde(default, skip_serializing_if = "is_active_lifecycle")]
-    pub lifecycle_status: String,
+    /// The fields every node carries. `properties` holds extension fields
+    /// only; the type's own fields are the typed ones below.
+    #[serde(flatten)]
+    pub envelope: NodeEnvelope,
     pub status: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub priority: Option<String>,

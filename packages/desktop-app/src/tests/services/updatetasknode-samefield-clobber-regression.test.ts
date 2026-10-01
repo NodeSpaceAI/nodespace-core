@@ -103,6 +103,8 @@ describe('updateTaskNode success-path clobber — same-field concurrent-write re
             // status changed to 'in-progress' (A's edit). It does NOT know
             // about B's later 'done' change.
             return {
+              lifecycleStatus: 'active' as const,
+              properties: {},
               id: nodeId,
               nodeType: 'task' as const,
               content: '- [ ] seed task',
@@ -175,6 +177,8 @@ describe('updateTaskNode success-path clobber — same-field concurrent-write re
           if (updateCallCount === 1) {
             await new Promise((resolve) => setTimeout(resolve, 300));
             return {
+              lifecycleStatus: 'active' as const,
+              properties: {},
               id: nodeId,
               nodeType: 'task' as const,
               content: '- [ ] seed task',
@@ -191,6 +195,8 @@ describe('updateTaskNode success-path clobber — same-field concurrent-write re
           // Write B's real persist, once promoted: succeeds normally,
           // reflecting the server's merged state (B's own final status).
           return {
+            lifecycleStatus: 'active' as const,
+            properties: {},
             id: nodeId,
             nodeType: 'task' as const,
             content: '- [ ] seed task',
@@ -238,6 +244,8 @@ describe('updateTaskNode success-path clobber — same-field concurrent-write re
             // with write B; priority will not.
             await new Promise((resolve) => setTimeout(resolve, 300));
             return {
+              lifecycleStatus: 'active' as const,
+              properties: {},
               id: nodeId,
               nodeType: 'task' as const,
               content: '- [ ] seed task',

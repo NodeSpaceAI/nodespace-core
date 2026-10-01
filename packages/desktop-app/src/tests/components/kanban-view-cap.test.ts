@@ -28,6 +28,9 @@ import { sharedNodeStore } from '$lib/services/shared-node-store.svelte';
 
 function schema(): SchemaNode {
   return {
+    nodeType: 'schema' as const,
+    lifecycleStatus: 'active' as const,
+    properties: {},
     id: 'widget',
     content: 'Widget',
     createdAt: '2026-01-01T00:00:00Z',
@@ -52,6 +55,7 @@ function schema(): SchemaNode {
 function makeNodes(count: number): Node[] {
   return Array.from({ length: count }, (_, i) => ({
     id: `n${i}`,
+    lifecycleStatus: 'active' as const,
     nodeType: 'widget',
     content: `Card ${i}`,
     createdAt: '2026-01-01T00:00:00Z',
@@ -149,6 +153,7 @@ describe('KanbanView — per-column cap', () => {
       id: `closed-${i}`,
       nodeType: 'widget',
       content: `Closed ${i}`,
+      lifecycleStatus: 'active' as const,
       createdAt: '2026-01-01T00:00:00Z',
       modifiedAt: '2026-01-01T00:00:00Z',
       version: 1,
@@ -182,6 +187,7 @@ describe('KanbanView — per-column cap', () => {
     // must keep n25 visible and treat n0 (the actual new arrival) as hidden.
     const openNodes = makeNodes(25).map((n, i) => ({ ...n, id: `open-${i}` }));
     const outsider: Node = {
+      lifecycleStatus: 'active',
       id: 'outsider',
       nodeType: 'widget',
       content: 'Outsider',
@@ -232,6 +238,9 @@ describe('KanbanView — per-column cap', () => {
 
   it('reveals a card moved (via the keyboard select) into an already-oversized column immediately', async () => {
     const schemaWithTwoColumns: SchemaNode = {
+      nodeType: 'schema' as const,
+      lifecycleStatus: 'active' as const,
+      properties: {},
       id: 'widget',
       content: 'Widget',
       createdAt: '2026-01-01T00:00:00Z',
@@ -258,6 +267,7 @@ describe('KanbanView — per-column cap', () => {
     // Closed, alone.
     const openNodes = makeNodes(30);
     const mover: Node = {
+      lifecycleStatus: 'active',
       id: 'mover',
       nodeType: 'widget',
       content: 'Mover',

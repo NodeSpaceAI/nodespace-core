@@ -60,7 +60,7 @@ async fn create_adr_pair(svc: &Arc<NodeService>) -> Result<()> {
         svc,
         json!({
             "name": "Reviewer",
-            "fields": [{ "name": "email", "type": "string", "protection": "user", "indexed": false }]
+            "fields": [{ "name": "email", "type": "text", "protection": "user", "indexed": false }]
         }),
     )
     .await
@@ -70,7 +70,7 @@ async fn create_adr_pair(svc: &Arc<NodeService>) -> Result<()> {
         svc,
         json!({
             "name": "Adr",
-            "fields": [{ "name": "status", "type": "string", "protection": "user", "indexed": false }],
+            "fields": [{ "name": "status", "type": "text", "protection": "user", "indexed": false }],
             "relationships": [{
                 "name": "decided_by",
                 "targetType": "reviewer",
@@ -101,13 +101,26 @@ fn get(node_id: &str, name: &str, direction: &str) -> rel_ops::GetRelatedInput {
 async fn reverse_name_matches_forward_name_with_direction_in() -> Result<()> {
     let (svc, _t) = create_test_service().await?;
     create_adr_pair(&svc).await?;
-    make_node(&svc, "p1", "reviewer").await?;
-    make_node(&svc, "adr1", "adr").await?;
-    svc.create_relationship("adr1", "decided_by", "p1", json!({}))
-        .await?;
+    make_node(&svc, "99e6a416-b162-589d-97e9-af6fa8004f05", "reviewer").await?;
+    make_node(&svc, "22fb22df-4f21-52e7-ac88-2e0adaa56b0f", "adr").await?;
+    svc.create_relationship(
+        "22fb22df-4f21-52e7-ac88-2e0adaa56b0f",
+        "decided_by",
+        "99e6a416-b162-589d-97e9-af6fa8004f05",
+        json!({}),
+    )
+    .await?;
 
-    let by_reverse = rel_ops::get_related_nodes(&svc, get("p1", "decisions", "out")).await?;
-    let by_forward = rel_ops::get_related_nodes(&svc, get("p1", "decided_by", "in")).await?;
+    let by_reverse = rel_ops::get_related_nodes(
+        &svc,
+        get("99e6a416-b162-589d-97e9-af6fa8004f05", "decisions", "out"),
+    )
+    .await?;
+    let by_forward = rel_ops::get_related_nodes(
+        &svc,
+        get("99e6a416-b162-589d-97e9-af6fa8004f05", "decided_by", "in"),
+    )
+    .await?;
 
     assert_eq!(by_reverse.count, 1, "reverse name must not return a zero");
     assert_eq!(by_reverse.count, by_forward.count);
@@ -131,13 +144,26 @@ async fn reverse_name_matches_forward_name_with_direction_in() -> Result<()> {
 async fn reverse_name_ignores_the_requested_direction() -> Result<()> {
     let (svc, _t) = create_test_service().await?;
     create_adr_pair(&svc).await?;
-    make_node(&svc, "p1", "reviewer").await?;
-    make_node(&svc, "adr1", "adr").await?;
-    svc.create_relationship("adr1", "decided_by", "p1", json!({}))
-        .await?;
+    make_node(&svc, "99e6a416-b162-589d-97e9-af6fa8004f05", "reviewer").await?;
+    make_node(&svc, "22fb22df-4f21-52e7-ac88-2e0adaa56b0f", "adr").await?;
+    svc.create_relationship(
+        "22fb22df-4f21-52e7-ac88-2e0adaa56b0f",
+        "decided_by",
+        "99e6a416-b162-589d-97e9-af6fa8004f05",
+        json!({}),
+    )
+    .await?;
 
-    let via_in = rel_ops::get_related_nodes(&svc, get("p1", "decisions", "in")).await?;
-    let via_out = rel_ops::get_related_nodes(&svc, get("p1", "decisions", "out")).await?;
+    let via_in = rel_ops::get_related_nodes(
+        &svc,
+        get("99e6a416-b162-589d-97e9-af6fa8004f05", "decisions", "in"),
+    )
+    .await?;
+    let via_out = rel_ops::get_related_nodes(
+        &svc,
+        get("99e6a416-b162-589d-97e9-af6fa8004f05", "decisions", "out"),
+    )
+    .await?;
     assert_eq!(via_in.relationship_name, "decided_by");
     assert_eq!(via_in.direction, "in");
     assert_eq!(
@@ -168,27 +194,46 @@ async fn reverse_name_ignores_the_requested_direction() -> Result<()> {
 async fn malformed_direction_errors_for_both_forward_and_reverse_names() -> Result<()> {
     let (svc, _t) = create_test_service().await?;
     create_adr_pair(&svc).await?;
-    make_node(&svc, "p1", "reviewer").await?;
-    make_node(&svc, "adr1", "adr").await?;
-    svc.create_relationship("adr1", "decided_by", "p1", json!({}))
-        .await?;
+    make_node(&svc, "99e6a416-b162-589d-97e9-af6fa8004f05", "reviewer").await?;
+    make_node(&svc, "22fb22df-4f21-52e7-ac88-2e0adaa56b0f", "adr").await?;
+    svc.create_relationship(
+        "22fb22df-4f21-52e7-ac88-2e0adaa56b0f",
+        "decided_by",
+        "99e6a416-b162-589d-97e9-af6fa8004f05",
+        json!({}),
+    )
+    .await?;
 
     for direction in ["In", "", "both", "sideways"] {
-        let forward_err = rel_ops::get_related_nodes(&svc, get("adr1", "decided_by", direction))
-            .await
-            .expect_err(&format!(
-                "direction '{direction}' must be rejected for a forward name"
-            ));
+        let forward_err = rel_ops::get_related_nodes(
+            &svc,
+            get(
+                "22fb22df-4f21-52e7-ac88-2e0adaa56b0f",
+                "decided_by",
+                direction,
+            ),
+        )
+        .await
+        .expect_err(&format!(
+            "direction '{direction}' must be rejected for a forward name"
+        ));
         assert!(
             matches!(forward_err, OpsError::InvalidParams(_)),
             "expected InvalidParams for direction '{direction}' on a forward name, got {forward_err:?}"
         );
 
-        let reverse_err = rel_ops::get_related_nodes(&svc, get("p1", "decisions", direction))
-            .await
-            .expect_err(&format!(
-                "direction '{direction}' must be rejected for a reverse name"
-            ));
+        let reverse_err = rel_ops::get_related_nodes(
+            &svc,
+            get(
+                "99e6a416-b162-589d-97e9-af6fa8004f05",
+                "decisions",
+                direction,
+            ),
+        )
+        .await
+        .expect_err(&format!(
+            "direction '{direction}' must be rejected for a reverse name"
+        ));
         assert!(
             matches!(reverse_err, OpsError::InvalidParams(_)),
             "expected InvalidParams for direction '{direction}' on a reverse name, got {reverse_err:?}"
@@ -203,12 +248,21 @@ async fn malformed_direction_errors_for_both_forward_and_reverse_names() -> Resu
 async fn forward_name_is_unchanged_by_resolution() -> Result<()> {
     let (svc, _t) = create_test_service().await?;
     create_adr_pair(&svc).await?;
-    make_node(&svc, "p1", "reviewer").await?;
-    make_node(&svc, "adr1", "adr").await?;
-    svc.create_relationship("adr1", "decided_by", "p1", json!({}))
-        .await?;
+    make_node(&svc, "99e6a416-b162-589d-97e9-af6fa8004f05", "reviewer").await?;
+    make_node(&svc, "22fb22df-4f21-52e7-ac88-2e0adaa56b0f", "adr").await?;
+    svc.create_relationship(
+        "22fb22df-4f21-52e7-ac88-2e0adaa56b0f",
+        "decided_by",
+        "99e6a416-b162-589d-97e9-af6fa8004f05",
+        json!({}),
+    )
+    .await?;
 
-    let out = rel_ops::get_related_nodes(&svc, get("adr1", "decided_by", "out")).await?;
+    let out = rel_ops::get_related_nodes(
+        &svc,
+        get("22fb22df-4f21-52e7-ac88-2e0adaa56b0f", "decided_by", "out"),
+    )
+    .await?;
     assert_eq!(out.relationship_name, "decided_by");
     assert_eq!(out.direction, "out");
     assert_eq!(out.count, 1);
@@ -223,16 +277,28 @@ async fn forward_name_is_unchanged_by_resolution() -> Result<()> {
 async fn inbound_forward_name_still_traverses() -> Result<()> {
     let (svc, _t) = create_test_service().await?;
     create_adr_pair(&svc).await?;
-    make_node(&svc, "p1", "reviewer").await?;
-    make_node(&svc, "adr1", "adr").await?;
-    svc.create_relationship("adr1", "decided_by", "p1", json!({}))
-        .await?;
+    make_node(&svc, "99e6a416-b162-589d-97e9-af6fa8004f05", "reviewer").await?;
+    make_node(&svc, "22fb22df-4f21-52e7-ac88-2e0adaa56b0f", "adr").await?;
+    svc.create_relationship(
+        "22fb22df-4f21-52e7-ac88-2e0adaa56b0f",
+        "decided_by",
+        "99e6a416-b162-589d-97e9-af6fa8004f05",
+        json!({}),
+    )
+    .await?;
 
-    let inbound = rel_ops::get_related_nodes(&svc, get("p1", "decided_by", "in")).await?;
+    let inbound = rel_ops::get_related_nodes(
+        &svc,
+        get("99e6a416-b162-589d-97e9-af6fa8004f05", "decided_by", "in"),
+    )
+    .await?;
     assert_eq!(inbound.relationship_name, "decided_by");
     assert_eq!(inbound.direction, "in");
     assert_eq!(inbound.count, 1);
-    assert_eq!(inbound.related_nodes[0]["id"], "adr1");
+    assert_eq!(
+        inbound.related_nodes[0]["id"],
+        "22fb22df-4f21-52e7-ac88-2e0adaa56b0f"
+    );
     Ok(())
 }
 
@@ -243,14 +309,22 @@ async fn inbound_forward_name_still_traverses() -> Result<()> {
 async fn declared_name_with_no_edges_returns_empty_not_an_error() -> Result<()> {
     let (svc, _t) = create_test_service().await?;
     create_adr_pair(&svc).await?;
-    make_node(&svc, "p1", "reviewer").await?;
+    make_node(&svc, "99e6a416-b162-589d-97e9-af6fa8004f05", "reviewer").await?;
 
-    let by_reverse = rel_ops::get_related_nodes(&svc, get("p1", "decisions", "out")).await?;
+    let by_reverse = rel_ops::get_related_nodes(
+        &svc,
+        get("99e6a416-b162-589d-97e9-af6fa8004f05", "decisions", "out"),
+    )
+    .await?;
     assert_eq!(by_reverse.count, 0);
     assert!(by_reverse.related_nodes.is_empty());
 
-    make_node(&svc, "adr1", "adr").await?;
-    let forward = rel_ops::get_related_nodes(&svc, get("adr1", "decided_by", "out")).await?;
+    make_node(&svc, "22fb22df-4f21-52e7-ac88-2e0adaa56b0f", "adr").await?;
+    let forward = rel_ops::get_related_nodes(
+        &svc,
+        get("22fb22df-4f21-52e7-ac88-2e0adaa56b0f", "decided_by", "out"),
+    )
+    .await?;
     assert_eq!(forward.count, 0);
     Ok(())
 }
@@ -262,11 +336,14 @@ async fn declared_name_with_no_edges_returns_empty_not_an_error() -> Result<()> 
 async fn undeclared_name_errors_instead_of_returning_zero() -> Result<()> {
     let (svc, _t) = create_test_service().await?;
     create_adr_pair(&svc).await?;
-    make_node(&svc, "p1", "reviewer").await?;
+    make_node(&svc, "99e6a416-b162-589d-97e9-af6fa8004f05", "reviewer").await?;
 
-    let err = rel_ops::get_related_nodes(&svc, get("p1", "desicions", "out"))
-        .await
-        .expect_err("a name declared in neither direction must not report as zero results");
+    let err = rel_ops::get_related_nodes(
+        &svc,
+        get("99e6a416-b162-589d-97e9-af6fa8004f05", "desicions", "out"),
+    )
+    .await
+    .expect_err("a name declared in neither direction must not report as zero results");
 
     match err {
         OpsError::InvalidParams(msg) => {
@@ -295,10 +372,19 @@ async fn undeclared_name_errors_instead_of_returning_zero() -> Result<()> {
     }
 
     // The forward spelling the error advertises must actually work.
-    make_node(&svc, "adr1", "adr").await?;
-    svc.create_relationship("adr1", "decided_by", "p1", json!({}))
-        .await?;
-    let advertised = rel_ops::get_related_nodes(&svc, get("p1", "decided_by", "in")).await?;
+    make_node(&svc, "22fb22df-4f21-52e7-ac88-2e0adaa56b0f", "adr").await?;
+    svc.create_relationship(
+        "22fb22df-4f21-52e7-ac88-2e0adaa56b0f",
+        "decided_by",
+        "99e6a416-b162-589d-97e9-af6fa8004f05",
+        json!({}),
+    )
+    .await?;
+    let advertised = rel_ops::get_related_nodes(
+        &svc,
+        get("99e6a416-b162-589d-97e9-af6fa8004f05", "decided_by", "in"),
+    )
+    .await?;
     assert_eq!(advertised.count, 1);
     Ok(())
 }
@@ -308,11 +394,14 @@ async fn undeclared_name_errors_instead_of_returning_zero() -> Result<()> {
 #[tokio::test]
 async fn unschema_d_node_type_reports_no_declared_relationships() -> Result<()> {
     let (svc, _t) = create_test_service().await?;
-    make_node(&svc, "t1", "text").await?;
+    make_node(&svc, "47b0416e-68db-58e9-805c-db17bfe8856d", "text").await?;
 
-    let err = rel_ops::get_related_nodes(&svc, get("t1", "decisions", "out"))
-        .await
-        .expect_err("a text node declares no typed relationships");
+    let err = rel_ops::get_related_nodes(
+        &svc,
+        get("47b0416e-68db-58e9-805c-db17bfe8856d", "decisions", "out"),
+    )
+    .await
+    .expect_err("a text node declares no typed relationships");
 
     match err {
         OpsError::InvalidParams(msg) => assert!(
@@ -329,12 +418,21 @@ async fn unschema_d_node_type_reports_no_declared_relationships() -> Result<()> 
 #[tokio::test]
 async fn builtin_relationship_names_still_traverse() -> Result<()> {
     let (svc, _t) = create_test_service().await?;
-    make_node(&svc, "t1", "text").await?;
-    make_node(&svc, "t2", "text").await?;
-    svc.create_relationship("t1", "mentions", "t2", json!({}))
-        .await?;
+    make_node(&svc, "47b0416e-68db-58e9-805c-db17bfe8856d", "text").await?;
+    make_node(&svc, "75489349-da91-5de1-bc06-2d7fe6ad7ccc", "text").await?;
+    svc.create_relationship(
+        "47b0416e-68db-58e9-805c-db17bfe8856d",
+        "mentions",
+        "75489349-da91-5de1-bc06-2d7fe6ad7ccc",
+        json!({}),
+    )
+    .await?;
 
-    let out = rel_ops::get_related_nodes(&svc, get("t1", "mentions", "out")).await?;
+    let out = rel_ops::get_related_nodes(
+        &svc,
+        get("47b0416e-68db-58e9-805c-db17bfe8856d", "mentions", "out"),
+    )
+    .await?;
     assert_eq!(out.relationship_name, "mentions");
     assert_eq!(out.direction, "out");
     assert_eq!(out.count, 1);
@@ -354,7 +452,7 @@ async fn untyped_reverse_name_resolves_only_where_edges_reach() -> Result<()> {
         &svc,
         json!({
             "name": "Tag",
-            "fields": [{ "name": "label", "type": "string", "protection": "user", "indexed": false }],
+            "fields": [{ "name": "label", "type": "text", "protection": "user", "indexed": false }],
             // No targetType: this relationship may point at anything.
             "relationships": [{
                 "name": "tagged_with",
@@ -368,17 +466,33 @@ async fn untyped_reverse_name_resolves_only_where_edges_reach() -> Result<()> {
     .await
     .map_err(|e| anyhow::anyhow!("tag schema: {e}"))?;
 
-    make_node(&svc, "tag1", "tag").await?;
-    make_node(&svc, "t1", "text").await?;
-    svc.create_relationship("tag1", "tagged_with", "t1", json!({}))
-        .await?;
+    make_node(&svc, "82e39005-79f5-52e7-ba49-41d40a809c4e", "tag").await?;
+    make_node(&svc, "47b0416e-68db-58e9-805c-db17bfe8856d", "text").await?;
+    svc.create_relationship(
+        "82e39005-79f5-52e7-ba49-41d40a809c4e",
+        "tagged_with",
+        "47b0416e-68db-58e9-805c-db17bfe8856d",
+        json!({}),
+    )
+    .await?;
 
     // A text node an untyped edge actually reaches: the reverse name answers.
-    let reached = rel_ops::get_related_nodes(&svc, get("t1", "tagged_items", "out")).await?;
+    let reached = rel_ops::get_related_nodes(
+        &svc,
+        get(
+            "47b0416e-68db-58e9-805c-db17bfe8856d",
+            "tagged_items",
+            "out",
+        ),
+    )
+    .await?;
     assert_eq!(reached.relationship_name, "tagged_with");
     assert_eq!(reached.direction, "in");
     assert_eq!(reached.count, 1);
-    assert_eq!(reached.related_nodes[0]["id"], "tag1");
+    assert_eq!(
+        reached.related_nodes[0]["id"],
+        "82e39005-79f5-52e7-ba49-41d40a809c4e"
+    );
 
     // A type no untyped edge reaches must NOT resolve to a guaranteed zero.
     make_node(&svc, "2026-01-15", "date").await?;
@@ -418,7 +532,7 @@ async fn reverse_name_is_scoped_to_its_declaring_type() -> Result<()> {
         &svc,
         json!({
             "name": "Reviewer",
-            "fields": [{ "name": "email", "type": "string", "protection": "user", "indexed": false }]
+            "fields": [{ "name": "email", "type": "text", "protection": "user", "indexed": false }]
         }),
     )
     .await
@@ -441,7 +555,7 @@ async fn reverse_name_is_scoped_to_its_declaring_type() -> Result<()> {
             &svc,
             json!({
                 "name": name,
-                "fields": [{ "name": "status", "type": "string", "protection": "user", "indexed": false }],
+                "fields": [{ "name": "status", "type": "text", "protection": "user", "indexed": false }],
                 "relationships": [rel]
             }),
         )
@@ -449,32 +563,50 @@ async fn reverse_name_is_scoped_to_its_declaring_type() -> Result<()> {
         .map_err(|e| anyhow::anyhow!("{name} schema: {e}"))?;
     }
 
-    make_node(&svc, "p1", "reviewer").await?;
-    make_node(&svc, "adr1", "adr").await?;
-    make_node(&svc, "memo1", "memo").await?;
-    svc.create_relationship("adr1", "decided_by", "p1", json!({}))
-        .await?;
-    svc.create_relationship("memo1", "decided_by", "p1", json!({}))
-        .await?;
+    make_node(&svc, "99e6a416-b162-589d-97e9-af6fa8004f05", "reviewer").await?;
+    make_node(&svc, "22fb22df-4f21-52e7-ac88-2e0adaa56b0f", "adr").await?;
+    make_node(&svc, "d7ac97fb-f0b6-5af0-bc46-80281a91c768", "memo").await?;
+    svc.create_relationship(
+        "22fb22df-4f21-52e7-ac88-2e0adaa56b0f",
+        "decided_by",
+        "99e6a416-b162-589d-97e9-af6fa8004f05",
+        json!({}),
+    )
+    .await?;
+    svc.create_relationship(
+        "d7ac97fb-f0b6-5af0-bc46-80281a91c768",
+        "decided_by",
+        "99e6a416-b162-589d-97e9-af6fa8004f05",
+        json!({}),
+    )
+    .await?;
 
-    let by_reverse = rel_ops::get_related_nodes(&svc, get("p1", "decisions", "out")).await?;
+    let by_reverse = rel_ops::get_related_nodes(
+        &svc,
+        get("99e6a416-b162-589d-97e9-af6fa8004f05", "decisions", "out"),
+    )
+    .await?;
     assert_eq!(
         by_reverse.count, 1,
         "`decisions` is adr's reverse name — it must not also collect memo's edges"
     );
     assert_eq!(
-        by_reverse.related_nodes[0]["id"], "adr1",
+        by_reverse.related_nodes[0]["id"], "22fb22df-4f21-52e7-ac88-2e0adaa56b0f",
         "wrong declaring type surfaced under the reverse name"
     );
 
     // The symmetric case: memo's own reverse name resolves only to memo's edge.
-    let by_memo_reverse = rel_ops::get_related_nodes(&svc, get("p1", "memos", "out")).await?;
+    let by_memo_reverse = rel_ops::get_related_nodes(
+        &svc,
+        get("99e6a416-b162-589d-97e9-af6fa8004f05", "memos", "out"),
+    )
+    .await?;
     assert_eq!(
         by_memo_reverse.count, 1,
         "`memos` is memo's reverse name — it must not also collect adr's edges"
     );
     assert_eq!(
-        by_memo_reverse.related_nodes[0]["id"], "memo1",
+        by_memo_reverse.related_nodes[0]["id"], "d7ac97fb-f0b6-5af0-bc46-80281a91c768",
         "wrong declaring type surfaced under the reverse name"
     );
     Ok(())
@@ -497,7 +629,7 @@ async fn self_referential_reverse_name_resolves() -> Result<()> {
         &svc,
         json!({
             "name": "Adr",
-            "fields": [{ "name": "status", "type": "string", "protection": "user", "indexed": false }],
+            "fields": [{ "name": "status", "type": "text", "protection": "user", "indexed": false }],
             "relationships": [{
                 "name": "supersedes",
                 "targetType": "adr",
@@ -511,37 +643,60 @@ async fn self_referential_reverse_name_resolves() -> Result<()> {
     .await
     .map_err(|e| anyhow::anyhow!("adr schema: {e}"))?;
 
-    make_node(&svc, "adr_new", "adr").await?;
-    make_node(&svc, "adr_old", "adr").await?;
+    make_node(&svc, "96282651-1fa7-5b69-8c4f-49b179899e10", "adr").await?;
+    make_node(&svc, "76f7b96c-152c-54a4-80f9-e8b0000dd5f0", "adr").await?;
     // The new ADR supersedes the old one.
-    svc.create_relationship("adr_new", "supersedes", "adr_old", json!({}))
-        .await?;
+    svc.create_relationship(
+        "96282651-1fa7-5b69-8c4f-49b179899e10",
+        "supersedes",
+        "76f7b96c-152c-54a4-80f9-e8b0000dd5f0",
+        json!({}),
+    )
+    .await?;
 
     // Forward, from the superseding end.
-    let forward = rel_ops::get_related_nodes(&svc, get("adr_new", "supersedes", "out")).await?;
+    let forward = rel_ops::get_related_nodes(
+        &svc,
+        get("96282651-1fa7-5b69-8c4f-49b179899e10", "supersedes", "out"),
+    )
+    .await?;
     assert_eq!(
         forward.count, 1,
         "forward traversal should find the old ADR"
     );
-    assert_eq!(forward.related_nodes[0]["id"], "adr_old");
+    assert_eq!(
+        forward.related_nodes[0]["id"],
+        "76f7b96c-152c-54a4-80f9-e8b0000dd5f0"
+    );
 
     // The reverse name, from the superseded end. This is the spelling the
     // guidance tells authors to use, and the one that returned a silent zero
     // before reverse-name resolution existed.
-    let reverse = rel_ops::get_related_nodes(&svc, get("adr_old", "superseded_by", "out")).await?;
+    let reverse = rel_ops::get_related_nodes(
+        &svc,
+        get(
+            "76f7b96c-152c-54a4-80f9-e8b0000dd5f0",
+            "superseded_by",
+            "out",
+        ),
+    )
+    .await?;
     assert_eq!(
         reverse.count, 1,
         "the declared reverseName must resolve on a self-referential relationship, \
          not return a silent zero: {reverse:?}"
     );
     assert_eq!(
-        reverse.related_nodes[0]["id"], "adr_new",
+        reverse.related_nodes[0]["id"], "96282651-1fa7-5b69-8c4f-49b179899e10",
         "superseded_by should surface the ADR that supersedes this one"
     );
 
     // And it must agree with the pre-existing spelling of the same traversal.
-    let inbound_forward =
-        rel_ops::get_related_nodes(&svc, get("adr_old", "supersedes", "in")).await?;
+    let inbound_forward = rel_ops::get_related_nodes(
+        &svc,
+        get("76f7b96c-152c-54a4-80f9-e8b0000dd5f0", "supersedes", "in"),
+    )
+    .await?;
     assert_eq!(
         inbound_forward.related_nodes[0]["id"], reverse.related_nodes[0]["id"],
         "reverseName and `--type supersedes --direction in` must agree"
@@ -569,7 +724,7 @@ async fn self_referential_reverse_name_with_direction_in_does_not_return_the_wro
         &svc,
         json!({
             "name": "Adr",
-            "fields": [{ "name": "status", "type": "string", "protection": "user", "indexed": false }],
+            "fields": [{ "name": "status", "type": "text", "protection": "user", "indexed": false }],
             "relationships": [{
                 "name": "supersedes",
                 "targetType": "adr",
@@ -583,25 +738,43 @@ async fn self_referential_reverse_name_with_direction_in_does_not_return_the_wro
     .await
     .map_err(|e| anyhow::anyhow!("adr schema: {e}"))?;
 
-    make_node(&svc, "adr_new", "adr").await?;
-    make_node(&svc, "adr_old", "adr").await?;
-    make_node(&svc, "adr_ancient", "adr").await?;
+    make_node(&svc, "96282651-1fa7-5b69-8c4f-49b179899e10", "adr").await?;
+    make_node(&svc, "76f7b96c-152c-54a4-80f9-e8b0000dd5f0", "adr").await?;
+    make_node(&svc, "18428cc9-47da-5d77-ab81-d8beda0d7cfa", "adr").await?;
     // adr_old sits in the middle of a chain: adr_new supersedes it, and it in
     // turn supersedes adr_ancient — giving it a real edge on BOTH sides of
     // `supersedes`, which is exactly what the old flip needed to return a
     // wrong-but-plausible answer instead of an empty one.
-    svc.create_relationship("adr_new", "supersedes", "adr_old", json!({}))
-        .await?;
-    svc.create_relationship("adr_old", "supersedes", "adr_ancient", json!({}))
-        .await?;
+    svc.create_relationship(
+        "96282651-1fa7-5b69-8c4f-49b179899e10",
+        "supersedes",
+        "76f7b96c-152c-54a4-80f9-e8b0000dd5f0",
+        json!({}),
+    )
+    .await?;
+    svc.create_relationship(
+        "76f7b96c-152c-54a4-80f9-e8b0000dd5f0",
+        "supersedes",
+        "18428cc9-47da-5d77-ab81-d8beda0d7cfa",
+        json!({}),
+    )
+    .await?;
 
-    let via_in = rel_ops::get_related_nodes(&svc, get("adr_old", "superseded_by", "in")).await?;
+    let via_in = rel_ops::get_related_nodes(
+        &svc,
+        get(
+            "76f7b96c-152c-54a4-80f9-e8b0000dd5f0",
+            "superseded_by",
+            "in",
+        ),
+    )
+    .await?;
     assert_eq!(
         via_in.count, 1,
         "superseded_by + --direction in must not double-reverse to the wrong edge"
     );
     assert_eq!(
-        via_in.related_nodes[0]["id"], "adr_new",
+        via_in.related_nodes[0]["id"], "96282651-1fa7-5b69-8c4f-49b179899e10",
         "must return what supersedes adr_old (the real answer), not what adr_old \
          itself supersedes (adr_ancient — the old flip's wrong answer)"
     );
@@ -622,7 +795,7 @@ async fn reverse_name_with_direction_in_matches_the_issue_repro() -> Result<()> 
         &svc,
         json!({
             "name": "Customer",
-            "fields": [{ "name": "email", "type": "string", "protection": "user", "indexed": false }]
+            "fields": [{ "name": "email", "type": "text", "protection": "user", "indexed": false }]
         }),
     )
     .await
@@ -646,26 +819,47 @@ async fn reverse_name_with_direction_in_matches_the_issue_repro() -> Result<()> 
     .await
     .map_err(|e| anyhow::anyhow!("invoice schema: {e}"))?;
 
-    make_node(&svc, "cust1", "customer").await?;
-    make_node(&svc, "inv1", "invoice").await?;
-    make_node(&svc, "inv2", "invoice").await?;
-    svc.create_relationship("inv1", "billed_to", "cust1", json!({}))
-        .await?;
-    svc.create_relationship("inv2", "billed_to", "cust1", json!({}))
-        .await?;
+    make_node(&svc, "ff7a62a9-a6a9-5e97-ad79-b38f7c4bacfe", "customer").await?;
+    make_node(&svc, "3ac61b2d-a4ab-5c12-8a4d-4c6ba252b5b9", "invoice").await?;
+    make_node(&svc, "6392861e-cd83-550e-8a78-620e4bca4d51", "invoice").await?;
+    svc.create_relationship(
+        "3ac61b2d-a4ab-5c12-8a4d-4c6ba252b5b9",
+        "billed_to",
+        "ff7a62a9-a6a9-5e97-ad79-b38f7c4bacfe",
+        json!({}),
+    )
+    .await?;
+    svc.create_relationship(
+        "6392861e-cd83-550e-8a78-620e4bca4d51",
+        "billed_to",
+        "ff7a62a9-a6a9-5e97-ad79-b38f7c4bacfe",
+        json!({}),
+    )
+    .await?;
 
     // `--type billed_to --direction in` — the pre-existing workaround.
-    let by_forward_in = rel_ops::get_related_nodes(&svc, get("cust1", "billed_to", "in")).await?;
+    let by_forward_in = rel_ops::get_related_nodes(
+        &svc,
+        get("ff7a62a9-a6a9-5e97-ad79-b38f7c4bacfe", "billed_to", "in"),
+    )
+    .await?;
     assert_eq!(by_forward_in.count, 2);
 
     // `--type invoices` (default out) — the declared reverseName.
-    let by_reverse_default =
-        rel_ops::get_related_nodes(&svc, get("cust1", "invoices", "out")).await?;
+    let by_reverse_default = rel_ops::get_related_nodes(
+        &svc,
+        get("ff7a62a9-a6a9-5e97-ad79-b38f7c4bacfe", "invoices", "out"),
+    )
+    .await?;
     assert_eq!(by_reverse_default.count, 2);
 
     // `--type invoices --direction in` — the reported bug. Must not silently
     // return 0; must agree with the other two spellings.
-    let by_reverse_in = rel_ops::get_related_nodes(&svc, get("cust1", "invoices", "in")).await?;
+    let by_reverse_in = rel_ops::get_related_nodes(
+        &svc,
+        get("ff7a62a9-a6a9-5e97-ad79-b38f7c4bacfe", "invoices", "in"),
+    )
+    .await?;
     assert_eq!(
         by_reverse_in.count, 2,
         "reverseName + --direction in must not silently double-reverse to zero"
@@ -697,16 +891,32 @@ async fn reverse_name_with_direction_in_matches_the_issue_repro() -> Result<()> 
 #[tokio::test]
 async fn builtin_reverse_name_ignores_the_requested_direction() -> Result<()> {
     let (svc, _t) = create_test_service().await?;
-    make_node(&svc, "parent1", "text").await?;
-    make_node(&svc, "child1", "text").await?;
-    svc.create_relationship("parent1", "has_child", "child1", json!({}))
-        .await?;
+    make_node(&svc, "5d930c78-9976-5386-9b7f-403a71a44b6b", "text").await?;
+    make_node(&svc, "f35b442a-882c-56a1-a396-e3e33ddb84a2", "text").await?;
+    svc.create_relationship(
+        "5d930c78-9976-5386-9b7f-403a71a44b6b",
+        "has_child",
+        "f35b442a-882c-56a1-a396-e3e33ddb84a2",
+        json!({}),
+    )
+    .await?;
 
-    let via_default = rel_ops::get_related_nodes(&svc, get("child1", "child_of", "out")).await?;
-    let via_in = rel_ops::get_related_nodes(&svc, get("child1", "child_of", "in")).await?;
+    let via_default = rel_ops::get_related_nodes(
+        &svc,
+        get("f35b442a-882c-56a1-a396-e3e33ddb84a2", "child_of", "out"),
+    )
+    .await?;
+    let via_in = rel_ops::get_related_nodes(
+        &svc,
+        get("f35b442a-882c-56a1-a396-e3e33ddb84a2", "child_of", "in"),
+    )
+    .await?;
 
     assert_eq!(via_default.count, 1);
-    assert_eq!(via_default.related_nodes[0]["id"], "parent1");
+    assert_eq!(
+        via_default.related_nodes[0]["id"],
+        "5d930c78-9976-5386-9b7f-403a71a44b6b"
+    );
     assert_eq!(
         via_in.count, 1,
         "built-in reverse name + --direction in must not double-reverse to zero"

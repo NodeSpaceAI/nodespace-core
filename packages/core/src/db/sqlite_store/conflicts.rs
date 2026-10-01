@@ -683,17 +683,18 @@ impl SqliteStore {
         let has_parent_after = survivor_parent.is_some() || takes_loser_parent;
 
         if has_parent_after {
-            if survivor.node_type == "collection" {
-                return Err(anyhow::Error::new(
-                    super::TreeInvariantViolation::collection_not_root(Some(survivor_id)),
-                ));
+            if let Some(root_type) = Self::root_only_type_of_in_tx(tx, &survivor.node_type).await? {
+                return Err(anyhow::Error::new(super::TreeInvariantViolation::not_root(
+                    root_type,
+                    Some(survivor_id),
+                )));
             }
-            if survivor.node_type == "schema" {
-                return Err(anyhow::Error::new(
-                    super::TreeInvariantViolation::schema_not_root(survivor_id),
-                ));
-            }
-            if !super::relationships::member_may_have_parent(&survivor.node_type) {
+            // A person's membership says who belongs to a collection, not
+            // where content is filed, so a person (or a subtype of one) may
+            // hold it below a parent.
+            if !Self::type_is_a_in_tx(tx, &survivor.node_type, crate::models::CoreNodeType::Person)
+                .await?
+            {
                 // Name the node that holds the membership, so the refusal
                 // points at the membership the user has to remove. When both
                 // do, the survivor is named first; a retry names the loser.

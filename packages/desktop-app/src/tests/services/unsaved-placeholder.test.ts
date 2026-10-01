@@ -16,6 +16,7 @@ const VIEWER = { type: 'viewer' as const, viewerId: 'test' };
 
 function placeholder(id: string): Node {
   return {
+    lifecycleStatus: 'active',
     id,
     nodeType: TYPE,
     content: '',

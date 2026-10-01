@@ -53,7 +53,7 @@ async fn create_base_and_subtype(svc: &Arc<NodeService>) -> Result<()> {
         svc,
         json!({
             "name": "completeness_ext_target",
-            "fields": [{ "name": "title", "type": "string", "protection": "user", "indexed": false }]
+            "fields": [{ "name": "title", "type": "text", "protection": "user", "indexed": false }]
         }),
     )
     .await
@@ -98,9 +98,16 @@ async fn create_base_and_subtype(svc: &Arc<NodeService>) -> Result<()> {
 async fn inherited_required_relationship_missing_reports_incomplete() -> Result<()> {
     let (svc, _t) = create_test_service().await?;
     create_base_and_subtype(&svc).await?;
-    make_node(&svc, "sub1", "completeness_ext_sub").await?;
+    make_node(
+        &svc,
+        "b1beb18c-b5fa-5cd1-ad04-f8ca4b02745c",
+        "completeness_ext_sub",
+    )
+    .await?;
 
-    let result = svc.check_node_completeness("sub1").await?;
+    let result = svc
+        .check_node_completeness("b1beb18c-b5fa-5cd1-ad04-f8ca4b02745c")
+        .await?;
 
     assert!(!result.is_complete);
     assert_eq!(result.missing_relationships, vec!["assignee".to_string()]);
@@ -113,15 +120,32 @@ async fn inherited_required_relationship_missing_reports_incomplete() -> Result<
 async fn inherited_required_relationship_satisfied_reports_complete() -> Result<()> {
     let (svc, _t) = create_test_service().await?;
     create_base_and_subtype(&svc).await?;
-    make_node(&svc, "target1", "completeness_ext_target").await?;
-    make_node(&svc, "sub1", "completeness_ext_sub").await?;
+    make_node(
+        &svc,
+        "a2b6557f-5da0-5f9b-a63a-55077d89680b",
+        "completeness_ext_target",
+    )
+    .await?;
+    make_node(
+        &svc,
+        "b1beb18c-b5fa-5cd1-ad04-f8ca4b02745c",
+        "completeness_ext_sub",
+    )
+    .await?;
 
     // The write path is already extends-chain aware -- this succeeds today
     // even though `assignee` is declared only on the ancestor schema.
-    svc.create_relationship("sub1", "assignee", "target1", json!({}))
-        .await?;
+    svc.create_relationship(
+        "b1beb18c-b5fa-5cd1-ad04-f8ca4b02745c",
+        "assignee",
+        "a2b6557f-5da0-5f9b-a63a-55077d89680b",
+        json!({}),
+    )
+    .await?;
 
-    let result = svc.check_node_completeness("sub1").await?;
+    let result = svc
+        .check_node_completeness("b1beb18c-b5fa-5cd1-ad04-f8ca4b02745c")
+        .await?;
 
     assert!(result.is_complete);
     assert!(result.missing_relationships.is_empty());
@@ -169,9 +193,16 @@ async fn create_inbound_required_schema(svc: &Arc<NodeService>) -> Result<()> {
 async fn required_inbound_relationship_missing_reports_incomplete() -> Result<()> {
     let (svc, _t) = create_test_service().await?;
     create_inbound_required_schema(&svc).await?;
-    make_node(&svc, "old", "completeness_in_adr").await?;
+    make_node(
+        &svc,
+        "ac012a23-2b8e-5fdc-9aca-df129fe90625",
+        "completeness_in_adr",
+    )
+    .await?;
 
-    let result = svc.check_node_completeness("old").await?;
+    let result = svc
+        .check_node_completeness("ac012a23-2b8e-5fdc-9aca-df129fe90625")
+        .await?;
 
     assert!(!result.is_complete);
     assert_eq!(
@@ -189,13 +220,30 @@ async fn required_inbound_relationship_missing_reports_incomplete() -> Result<()
 async fn required_inbound_relationship_satisfied_from_other_side_reports_complete() -> Result<()> {
     let (svc, _t) = create_test_service().await?;
     create_inbound_required_schema(&svc).await?;
-    make_node(&svc, "old", "completeness_in_adr").await?;
-    make_node(&svc, "new", "completeness_in_adr").await?;
+    make_node(
+        &svc,
+        "ac012a23-2b8e-5fdc-9aca-df129fe90625",
+        "completeness_in_adr",
+    )
+    .await?;
+    make_node(
+        &svc,
+        "15881b3b-b2c4-5713-8dc5-03428d288eb7",
+        "completeness_in_adr",
+    )
+    .await?;
 
-    svc.create_relationship("new", "supersedes", "old", json!({}))
+    svc.create_relationship(
+        "15881b3b-b2c4-5713-8dc5-03428d288eb7",
+        "supersedes",
+        "ac012a23-2b8e-5fdc-9aca-df129fe90625",
+        json!({}),
+    )
+    .await?;
+
+    let result = svc
+        .check_node_completeness("ac012a23-2b8e-5fdc-9aca-df129fe90625")
         .await?;
-
-    let result = svc.check_node_completeness("old").await?;
 
     assert!(
         result.is_complete,
@@ -206,7 +254,9 @@ async fn required_inbound_relationship_satisfied_from_other_side_reports_complet
 
     // The edge's source end is not satisfied by it: `new` has no inbound
     // `supersedes` edge of its own.
-    let source = svc.check_node_completeness("new").await?;
+    let source = svc
+        .check_node_completeness("15881b3b-b2c4-5713-8dc5-03428d288eb7")
+        .await?;
     assert_eq!(
         source.missing_relationships,
         vec!["superseded_by".to_string()]
@@ -222,13 +272,30 @@ async fn required_inbound_relationship_satisfied_from_other_side_reports_complet
 async fn required_inbound_relationship_written_through_in_name_reports_complete() -> Result<()> {
     let (svc, _t) = create_test_service().await?;
     create_inbound_required_schema(&svc).await?;
-    make_node(&svc, "old", "completeness_in_adr").await?;
-    make_node(&svc, "new", "completeness_in_adr").await?;
+    make_node(
+        &svc,
+        "ac012a23-2b8e-5fdc-9aca-df129fe90625",
+        "completeness_in_adr",
+    )
+    .await?;
+    make_node(
+        &svc,
+        "15881b3b-b2c4-5713-8dc5-03428d288eb7",
+        "completeness_in_adr",
+    )
+    .await?;
 
-    svc.create_relationship("old", "superseded_by", "new", json!({}))
+    svc.create_relationship(
+        "ac012a23-2b8e-5fdc-9aca-df129fe90625",
+        "superseded_by",
+        "15881b3b-b2c4-5713-8dc5-03428d288eb7",
+        json!({}),
+    )
+    .await?;
+
+    let result = svc
+        .check_node_completeness("ac012a23-2b8e-5fdc-9aca-df129fe90625")
         .await?;
-
-    let result = svc.check_node_completeness("old").await?;
 
     assert!(
         result.is_complete,
@@ -274,23 +341,52 @@ async fn required_inbound_relationship_narrows_by_source_type() -> Result<()> {
     .await
     .map_err(|e| anyhow::anyhow!("adr subtype schema: {e}"))?;
 
-    make_node(&svc, "old", "completeness_in_adr").await?;
-    make_node(&svc, "memo1", "completeness_in_memo").await?;
-    svc.create_relationship("memo1", "supersedes", "old", json!({}))
-        .await?;
+    make_node(
+        &svc,
+        "ac012a23-2b8e-5fdc-9aca-df129fe90625",
+        "completeness_in_adr",
+    )
+    .await?;
+    make_node(
+        &svc,
+        "d7ac97fb-f0b6-5af0-bc46-80281a91c768",
+        "completeness_in_memo",
+    )
+    .await?;
+    svc.create_relationship(
+        "d7ac97fb-f0b6-5af0-bc46-80281a91c768",
+        "supersedes",
+        "ac012a23-2b8e-5fdc-9aca-df129fe90625",
+        json!({}),
+    )
+    .await?;
 
-    let result = svc.check_node_completeness("old").await?;
+    let result = svc
+        .check_node_completeness("ac012a23-2b8e-5fdc-9aca-df129fe90625")
+        .await?;
     assert_eq!(
         result.missing_relationships,
         vec!["superseded_by".to_string()],
         "a memo's `supersedes` edge is not an adr superseding this one"
     );
 
-    make_node(&svc, "sub1", "completeness_in_adr_sub").await?;
-    svc.create_relationship("sub1", "supersedes", "old", json!({}))
-        .await?;
+    make_node(
+        &svc,
+        "b1beb18c-b5fa-5cd1-ad04-f8ca4b02745c",
+        "completeness_in_adr_sub",
+    )
+    .await?;
+    svc.create_relationship(
+        "b1beb18c-b5fa-5cd1-ad04-f8ca4b02745c",
+        "supersedes",
+        "ac012a23-2b8e-5fdc-9aca-df129fe90625",
+        json!({}),
+    )
+    .await?;
 
-    let result = svc.check_node_completeness("old").await?;
+    let result = svc
+        .check_node_completeness("ac012a23-2b8e-5fdc-9aca-df129fe90625")
+        .await?;
     assert!(
         result.is_complete,
         "an adr subtype source satisfies it; missing: {:?}",

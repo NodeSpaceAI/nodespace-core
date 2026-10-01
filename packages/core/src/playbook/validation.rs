@@ -2466,7 +2466,7 @@ mod tests {
                     "schemaVersion": schema_version,
                     "description": format!("{} schema", type_name),
                     "fields": [
-                        {"name": "status", "type": "string"}
+                        {"name": "status", "type": "text"}
                     ]
                 }),
             );
@@ -3344,7 +3344,7 @@ mod tests {
                 json!({
                     "name": "vp_epic_base",
                     "fields": [
-                        { "name": "priority", "type": "string", "protection": "user", "indexed": false }
+                        { "name": "priority", "type": "text", "protection": "user", "indexed": false }
                     ]
                 }),
             )
@@ -3419,7 +3419,7 @@ mod tests {
                 json!({
                     "name": "vp_rel_target",
                     "fields": [
-                        { "name": "status", "type": "string", "protection": "user", "indexed": false }
+                        { "name": "status", "type": "text", "protection": "user", "indexed": false }
                     ]
                 }),
             )
@@ -3526,7 +3526,7 @@ mod tests {
                 json!({
                     "name": "vp_prec_target",
                     "fields": [
-                        { "name": "label", "type": "string", "protection": "user", "indexed": false }
+                        { "name": "label", "type": "text", "protection": "user", "indexed": false }
                     ]
                 }),
             )
@@ -3568,7 +3568,7 @@ mod tests {
                 json!({
                     "schema_id": "vp_prec_base",
                     "add_fields": [
-                        { "name": "owner", "type": "string", "protection": "user", "indexed": false }
+                        { "name": "owner", "type": "text", "protection": "user", "indexed": false }
                     ]
                 }),
             )
@@ -3973,7 +3973,7 @@ mod tests {
             // Create a play that triggers on "vi_task"
             create_play(
                 &svc,
-                "pb-impact-1",
+                "ac2ab371-c058-5784-80fb-d3ba0e2ebb68",
                 json!([{
                     "name": "r1",
                     "trigger": { "type": "graph_event", "on": "node_created", "node_type": "vi_task" },
@@ -3988,7 +3988,7 @@ mod tests {
                     .await
                     .unwrap();
             assert_eq!(affected.len(), 1);
-            assert_eq!(affected[0].play_id, "pb-impact-1");
+            assert_eq!(affected[0].play_id, "ac2ab371-c058-5784-80fb-d3ba0e2ebb68");
 
             // Same play, same type, additive change: nothing to confirm. A new
             // field or enum value leaves every name this play references
@@ -4021,7 +4021,7 @@ mod tests {
             // Create a play that triggers on "vi_order" only
             create_play(
                 &svc,
-                "pb-impact-2",
+                "a7d0f4c6-f08e-5bb7-b51e-aabd45cc9d5c",
                 json!([{
                     "name": "r1",
                     "trigger": { "type": "graph_event", "on": "node_created", "node_type": "vi_order" },
@@ -4068,7 +4068,7 @@ mod tests {
             // Play triggers on vi_story but has a condition traversing through vi_epic
             create_play(
                 &svc,
-                "pb-impact-3",
+                "6b693b96-4fad-5846-bca3-545b1a7e53a7",
                 json!([{
                     "name": "r1",
                     "trigger": { "type": "graph_event", "on": "node_created", "node_type": "vi_story" },
@@ -4083,7 +4083,7 @@ mod tests {
                     .await
                     .unwrap();
             assert_eq!(affected.len(), 1);
-            assert_eq!(affected[0].play_id, "pb-impact-3");
+            assert_eq!(affected[0].play_id, "6b693b96-4fad-5846-bca3-545b1a7e53a7");
             assert!(
                 affected[0]
                     .broken_paths
@@ -4148,7 +4148,7 @@ mod tests {
         ///
         /// `vp_ghost` is a real node (so the relationship declaration's
         /// `out_node` foreign key is satisfied) but not a `schema` node
-        /// (`node_type: "text"`), so `get_schema_node("vp_ghost")` genuinely
+        /// (`node_type: "text"`), so `get_schema_node("807c97fb-408d-5416-8add-19693b1c1748")` genuinely
         /// returns `Ok(None)` — reproducing a declared-but-schemaless
         /// target_type without needing to break the database.
         #[tokio::test]
@@ -4156,7 +4156,7 @@ mod tests {
             let (svc, _tmp) = create_test_service().await;
 
             svc.create_node(Node::new_with_id(
-                "vp_ghost".to_string(),
+                "807c97fb-408d-5416-8add-19693b1c1748".to_string(),
                 "text".to_string(),
                 "not a schema".to_string(),
                 json!({}),
@@ -4170,7 +4170,7 @@ mod tests {
                 1,
                 json!([{
                     "name": "linked",
-                    "targetType": "vp_ghost",
+                    "targetType": "807c97fb-408d-5416-8add-19693b1c1748",
                     "direction": "out",
                     "cardinality": "one",
                     "reverseName": "linked_from",
@@ -4193,7 +4193,7 @@ mod tests {
                 errors.iter().any(|e| matches!(
                     e,
                     PlayValidationError::UnknownNodeType { node_type, .. }
-                        if node_type == "vp_ghost"
+                        if node_type == "807c97fb-408d-5416-8add-19693b1c1748"
                 )),
                 "expected an UnknownNodeType for the missing deeper-hop target schema: {:?}",
                 errors
@@ -4231,7 +4231,7 @@ mod tests {
                     "schemaVersion": schema_version,
                     "description": format!("{} schema", type_name),
                     "fields": [
-                        {"name": "status", "type": "string"}
+                        {"name": "status", "type": "text"}
                     ],
                     "relationships": []
                 }),
@@ -4248,7 +4248,7 @@ mod tests {
             // Don't create a schema for "nonexistent_type" — it should be rejected
 
             let play_node = Node::new_with_id(
-                "pb-gate-1".to_string(),
+                "b84f73c4-2ad1-5a50-a85d-9318d934c8d3".to_string(),
                 "play".to_string(),
                 "Test Play".to_string(),
                 json!({
@@ -4283,7 +4283,7 @@ mod tests {
             create_schema(&svc, "vg_widget", 1).await;
 
             let play_node = Node::new_with_id(
-                "pb-gate-2".to_string(),
+                "10932b15-f316-53c8-95ba-6c4f83fdb10e".to_string(),
                 "play".to_string(),
                 "Valid Play".to_string(),
                 json!({
@@ -4310,7 +4310,7 @@ mod tests {
             create_schema(&svc, "vg_item", 1).await;
 
             let play_node = Node::new_with_id(
-                "pb-gate-3".to_string(),
+                "a07b6b85-1fe7-5149-b662-bacc1dd23964".to_string(),
                 "play".to_string(),
                 "Bad CEL Play".to_string(),
                 json!({
@@ -4339,7 +4339,7 @@ mod tests {
             create_schema(&svc, "vg_cron_item", 1).await;
 
             let play_node = Node::new_with_id(
-                "pb-gate-6".to_string(),
+                "7bcd7cfd-7daf-564c-aaa4-62f416157b68".to_string(),
                 "play".to_string(),
                 "Bad Cron Play".to_string(),
                 json!({
@@ -4372,7 +4372,7 @@ mod tests {
 
             // Create a valid play first
             let play_node = Node::new_with_id(
-                "pb-gate-4".to_string(),
+                "9f81543d-1c33-52f0-afe0-43afddf7e8b6".to_string(),
                 "play".to_string(),
                 "Initially Valid Play".to_string(),
                 json!({
@@ -4399,7 +4399,9 @@ mod tests {
                 ..Default::default()
             };
 
-            let result = svc.update_node("pb-gate-4", 1, update).await;
+            let result = svc
+                .update_node("9f81543d-1c33-52f0-afe0-43afddf7e8b6", 1, update)
+                .await;
             assert!(
                 result.is_err(),
                 "update with broken rules should be rejected"
@@ -4418,7 +4420,7 @@ mod tests {
 
             // Play with an invalid trigger type
             let play_node = Node::new_with_id(
-                "pb-gate-5".to_string(),
+                "9f72f330-2778-57d0-b744-759e9aed6c67".to_string(),
                 "play".to_string(),
                 "Bad Trigger Play".to_string(),
                 json!({
@@ -4934,7 +4936,7 @@ mod tests {
                     "isCore": false,
                     "schemaVersion": 1,
                     "description": format!("{} schema", type_name),
-                    "fields": [{ "name": "status", "type": "string" }],
+                    "fields": [{ "name": "status", "type": "text" }],
                     "relationships": []
                 }),
             );
@@ -5603,7 +5605,7 @@ mod tests {
                     "isCore": false,
                     "schemaVersion": 1,
                     "description": format!("{} schema", type_name),
-                    "fields": [{ "name": "status", "type": "string" }],
+                    "fields": [{ "name": "status", "type": "text" }],
                     "relationships": []
                 }),
             );

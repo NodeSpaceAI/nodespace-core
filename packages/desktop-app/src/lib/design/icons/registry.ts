@@ -11,6 +11,7 @@
  * - Scalable architecture for future node types
  */
 
+import { isA } from '$lib/types/core-node-types';
 import type { Component, ComponentType } from 'svelte';
 import CircleIcon from './components/circle-icon.svelte';
 import TaskIcon from './components/task-icon.svelte';
@@ -286,7 +287,7 @@ export function resolveNodeState(
   }
 
   // For task and checkbox nodes, read state from metadata
-  if ((nodeType === 'task' || nodeType === 'checkbox') && additionalProps) {
+  if ((isA(nodeType, 'task') || isA(nodeType, 'checkbox')) && additionalProps) {
     const taskState = additionalProps.taskState as string;
     if (taskState && ['pending', 'inProgress', 'completed'].includes(taskState)) {
       return taskState as NodeState;

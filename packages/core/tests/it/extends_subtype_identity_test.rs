@@ -37,7 +37,7 @@ async fn seed_ticket_and_bug(svc: &Arc<NodeService>) {
         json!({
             "name": "Ticket",
             "fields": [
-                { "name": "status", "type": "string", "protection": "user", "indexed": false }
+                { "name": "status", "type": "text", "protection": "user", "indexed": false }
             ]
         }),
     )
@@ -50,7 +50,7 @@ async fn seed_ticket_and_bug(svc: &Arc<NodeService>) {
             "name": "Bug",
             "extends": "ticket",
             "fields": [
-                { "name": "severity", "type": "string", "protection": "user", "indexed": false }
+                { "name": "severity", "type": "text", "protection": "user", "indexed": false }
             ]
         }),
     )
@@ -190,7 +190,7 @@ async fn transitive_subtypes_are_matched_through_the_whole_chain() {
             "name": "Regression",
             "extends": "bug",
             "fields": [
-                { "name": "found_in", "type": "string", "protection": "user", "indexed": false }
+                { "name": "found_in", "type": "text", "protection": "user", "indexed": false }
             ]
         }),
     )
@@ -279,7 +279,7 @@ async fn required_inherited_field_is_validated_on_the_subtype() {
             "name": "Ticket",
             "fields": [{
                 "name": "status",
-                "type": "string",
+                "type": "text",
                 "protection": "user",
                 "indexed": false,
                 "required": true
@@ -317,7 +317,7 @@ async fn inherited_field_default_is_applied_and_correctly_bucketed() {
             "name": "Ticket",
             "fields": [{
                 "name": "status",
-                "type": "string",
+                "type": "text",
                 "protection": "user",
                 "indexed": false,
                 "default": "open"
@@ -332,7 +332,7 @@ async fn inherited_field_default_is_applied_and_correctly_bucketed() {
             "name": "Bug",
             "extends": "ticket",
             "fields": [
-                { "name": "severity", "type": "string", "protection": "user", "indexed": false }
+                { "name": "severity", "type": "text", "protection": "user", "indexed": false }
             ]
         }),
     )
@@ -639,7 +639,7 @@ async fn a_type_change_preserves_an_inherited_fields_existing_value() {
             "name": "Ticket",
             "fields": [{
                 "name": "status",
-                "type": "string",
+                "type": "text",
                 "protection": "user",
                 "indexed": false,
                 "default": "open"
@@ -694,7 +694,7 @@ async fn a_dormant_bucket_does_not_satisfy_a_required_inherited_field() {
             "name": "Ticket",
             "fields": [{
                 "name": "status",
-                "type": "string",
+                "type": "text",
                 "protection": "user",
                 "indexed": false,
                 "required": true
@@ -1178,7 +1178,7 @@ async fn create_instance_schemas(svc: &Arc<NodeService>) {
             json!({
                 "name": name,
                 "fields": [
-                    { "name": "note", "type": "string", "protection": "user", "indexed": false }
+                    { "name": "note", "type": "text", "protection": "user", "indexed": false }
                 ]
             }),
         )

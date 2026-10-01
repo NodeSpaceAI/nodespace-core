@@ -7536,7 +7536,11 @@ mod tests {
         )
         .await
         .unwrap();
-        for id in ["old", "new1", "new2"] {
+        for id in [
+            "ac012a23-2b8e-5fdc-9aca-df129fe90625",
+            "46b24f8a-39b8-5605-a0fa-dd268865d77d",
+            "a123b714-54cc-528d-bbbe-5b166e79416c",
+        ] {
             ns.create_node(Node::new_with_id(
                 id.to_string(),
                 "seam_adr".to_string(),
@@ -7555,21 +7559,25 @@ mod tests {
         let supersede = |by: &'static str| {
             executor.execute(
                 "create_relationship",
-                json!({ "from_id": "old", "to_id": by, "relationship_type": "superseded_by" }),
+                json!({ "from_id": "ac012a23-2b8e-5fdc-9aca-df129fe90625", "to_id": by, "relationship_type": "superseded_by" }),
             )
         };
 
-        let first = supersede("new1").await.unwrap();
+        let first = supersede("46b24f8a-39b8-5605-a0fa-dd268865d77d")
+            .await
+            .unwrap();
         let stored = json!({
-            "from_id": node_uri("new1"),
-            "to_id": node_uri("old"),
+            "from_id": node_uri("46b24f8a-39b8-5605-a0fa-dd268865d77d"),
+            "to_id": node_uri("ac012a23-2b8e-5fdc-9aca-df129fe90625"),
             "type": "supersedes",
         });
         for key in ["from_id", "to_id", "type"] {
             assert_eq!(first.result[key], stored[key], "{}", first.result);
         }
 
-        let second = supersede("new2").await.unwrap();
+        let second = supersede("a123b714-54cc-528d-bbbe-5b166e79416c")
+            .await
+            .unwrap();
         assert_eq!(
             second.result["replaced"],
             json!([stored]),

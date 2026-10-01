@@ -40,6 +40,7 @@ const addNodeToCollectionMock = vi.mocked(collectionService.addNodeToCollection)
 // filter cares about).
 function makeNode(id: string, nodeType: string): Node {
   return {
+    lifecycleStatus: 'active',
     id,
     nodeType,
     content: id,

@@ -6,6 +6,15 @@ import { nodeToQueryNode } from '$lib/types/query';
 import { nodeToAiChatNode } from '$lib/types/ai-chat-node';
 import { TYPED_CORE_DEFAULTS, TYPED_CORE_FIELDS } from '$lib/types/typed-core-fields';
 
+/** The typed wire shape each type with one is converted to, keyed by exact type. */
+const TYPED_WIRE_CONVERTERS: ReadonlyMap<string, (node: Node) => Node> = new Map([
+  ['task', (node) => nodeToTaskNode(node) as unknown as Node],
+  ['person', (node) => nodeToPersonNode(node) as unknown as Node],
+  ['project', (node) => nodeToProjectNode(node) as unknown as Node],
+  ['query', (node) => nodeToQueryNode(node) as unknown as Node],
+  ['ai-chat', (node) => nodeToAiChatNode(node) as unknown as Node]
+]);
+
 /**
  * Normalize raw node data from a sync boundary (Tauri domain events or SSE) to the
  * type-specific flat format expected by frontend stores and components.
@@ -14,20 +23,10 @@ import { TYPED_CORE_DEFAULTS, TYPED_CORE_FIELDS } from '$lib/types/typed-core-fi
  * so a future type branch (e.g. SchemaNode) is added in exactly one place.
  */
 export function normalizeNodeData(nodeData: Node): Node {
-  switch (nodeData.nodeType) {
-    case 'task':
-      return nodeToTaskNode(nodeData) as unknown as Node;
-    case 'person':
-      return nodeToPersonNode(nodeData) as unknown as Node;
-    case 'project':
-      return nodeToProjectNode(nodeData) as unknown as Node;
-    case 'query':
-      return nodeToQueryNode(nodeData) as unknown as Node;
-    case 'ai-chat':
-      return nodeToAiChatNode(nodeData) as unknown as Node;
-    default:
-      return nodeData;
-  }
+  // Keyed by exact type: a wire shape is never borrowed by a subtype, so a
+  // user-defined `issue extends task` stays the generic node.
+  const toTyped = TYPED_WIRE_CONVERTERS.get(nodeData.nodeType);
+  return toTyped ? toTyped(nodeData) : nodeData;
 }
 
 /**
@@ -173,17 +172,14 @@ export function storageNodeToApiFields(
     Object.entries(TYPED_CORE_DEFAULTS[nodeType] ?? {}).map(([k, v]) => [k, Array.isArray(v) ? [...v] : v])
   );
   for (const { storage, wire, date, structured } of TYPED_CORE_FIELDS[nodeType] ?? []) {
-    // Only task_node_to_value reads the legacy typed-key spelling, and it
-    // prefers it when the key is present at all (even as null) — `.get(wire)
-    // .or_else(storage)`. Every other type reads the storage key alone.
-    const raw = nodeType === 'task' && wire in properties ? properties[wire] : properties[storage];
+    // The conversion reads the storage key alone, for every type.
+    const raw = properties[storage];
     if (structured) {
       if (hasJsonShape(raw, structured)) promoted[wire] = raw;
     } else if (typeof raw === 'string') {
       promoted[wire] = date ? normalizeDate(raw) : raw;
     }
     delete properties[storage];
-    delete properties[wire];
   }
   for (const { from, to } of OPTIMISTIC_TYPED_FIELDS[nodeType] ?? []) {
     if (Object.prototype.hasOwnProperty.call(properties, from)) {

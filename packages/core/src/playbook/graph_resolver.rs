@@ -1440,7 +1440,7 @@ mod tests {
                     "isCore": false,
                     "schemaVersion": 1,
                     "description": format!("{} schema", type_name),
-                    "fields": [{"name": "status", "type": "string"}, {"name": "title", "type": "string"}]
+                    "fields": [{"name": "status", "type": "text"}, {"name": "title", "type": "text"}]
                 }),
             );
             svc.create_node(schema_node)
@@ -1482,7 +1482,11 @@ mod tests {
             let (svc, _tmp) = create_test_service().await;
             create_schema(&svc, "gr_task", json!([])).await;
 
-            let node = make_node("gr-t1", "gr_task", json!({"status": "open"}));
+            let node = make_node(
+                "a5fab10d-1e9c-5fb3-89f8-1f9288a0d2e7",
+                "gr_task",
+                json!({"status": "open"}),
+            );
             svc.create_node(node.clone()).await.unwrap();
 
             let mut resolver = GraphResolver::new(Arc::clone(&svc));
@@ -1498,7 +1502,11 @@ mod tests {
             let (svc, _tmp) = create_test_service().await;
             create_schema(&svc, "gr_task2", json!([])).await;
 
-            let node = make_node("gr-t2", "gr_task2", json!({"status": "open"}));
+            let node = make_node(
+                "82cead27-2991-5a3d-8822-dc0d548c481b",
+                "gr_task2",
+                json!({"status": "open"}),
+            );
             svc.create_node(node.clone()).await.unwrap();
 
             let mut resolver = GraphResolver::new(Arc::clone(&svc));
@@ -1530,21 +1538,34 @@ mod tests {
             .await;
 
             // Create nodes
-            let story = make_node("gr-s1", "gr_story", json!({"status": "active"}));
+            let story = make_node(
+                "c7c9cf0b-71a4-5bc1-833d-60e538bd42b7",
+                "gr_story",
+                json!({"status": "active"}),
+            );
             svc.create_node(story.clone()).await.unwrap();
 
-            let issue = make_node("gr-i1", "gr_issue", json!({"status": "open"}));
+            let issue = make_node(
+                "8c6a5e17-6d57-5ef5-8a93-cab9b3cb5089",
+                "gr_issue",
+                json!({"status": "open"}),
+            );
             svc.create_node(issue.clone()).await.unwrap();
 
             // Create relationship
-            svc.create_relationship("gr-i1", "story", "gr-s1", json!({}))
-                .await
-                .unwrap();
+            svc.create_relationship(
+                "8c6a5e17-6d57-5ef5-8a93-cab9b3cb5089",
+                "story",
+                "c7c9cf0b-71a4-5bc1-833d-60e538bd42b7",
+                json!({}),
+            )
+            .await
+            .unwrap();
 
             let mut resolver = GraphResolver::new(Arc::clone(&svc));
             let result = resolver.resolve_path(&issue, &["story".to_string()]).await;
             match result {
-                ResolvedValue::Node(n) => assert_eq!(n.id, "gr-s1"),
+                ResolvedValue::Node(n) => assert_eq!(n.id, "c7c9cf0b-71a4-5bc1-833d-60e538bd42b7"),
                 other => panic!("expected Node, got {:?}", other),
             }
         }
@@ -1577,7 +1598,11 @@ mod tests {
                 }]),
             )
             .await;
-            let issue = make_node("gr-ie1", "gr_issue_err", json!({"status": "open"}));
+            let issue = make_node(
+                "17d5e68b-85b7-5f36-81fd-b137954515bd",
+                "gr_issue_err",
+                json!({"status": "open"}),
+            );
             svc.create_node(issue.clone()).await.unwrap();
 
             let conditions = vec![CompiledCondition::compile("!has(node.story)").unwrap()];
@@ -1662,20 +1687,33 @@ mod tests {
             )
             .await;
 
-            let story = make_node("gr-s-ct1", "gr_story_ct", json!({"status": "active"}));
+            let story = make_node(
+                "c8848aed-f332-53d6-a408-a277e359f8ce",
+                "gr_story_ct",
+                json!({"status": "active"}),
+            );
             svc.create_node(story.clone()).await.unwrap();
 
-            let issue = make_node("gr-i-ct1", "gr_issue_ct", json!({"status": "open"}));
+            let issue = make_node(
+                "a023b9dc-00c7-510b-884e-da40974a72fc",
+                "gr_issue_ct",
+                json!({"status": "open"}),
+            );
             svc.create_node(issue.clone()).await.unwrap();
 
-            svc.create_relationship("gr-i-ct1", "story", "gr-s-ct1", json!({}))
-                .await
-                .unwrap();
+            svc.create_relationship(
+                "a023b9dc-00c7-510b-884e-da40974a72fc",
+                "story",
+                "c8848aed-f332-53d6-a408-a277e359f8ce",
+                json!({}),
+            )
+            .await
+            .unwrap();
 
             let mut resolver = GraphResolver::new(Arc::clone(&svc));
             let result = resolver.resolve_path(&issue, &["story".to_string()]).await;
             match result {
-                ResolvedValue::Node(n) => assert_eq!(n.id, "gr-s-ct1"),
+                ResolvedValue::Node(n) => assert_eq!(n.id, "c8848aed-f332-53d6-a408-a277e359f8ce"),
                 other => panic!("expected Node, got {:?}", other),
             }
 
@@ -1733,21 +1771,43 @@ mod tests {
             )
             .await;
 
-            let epic = make_node("gr-e1", "gr_epic", json!({"status": "in_progress"}));
+            let epic = make_node(
+                "2504876b-ac56-57ef-8353-22706def408f",
+                "gr_epic",
+                json!({"status": "in_progress"}),
+            );
             svc.create_node(epic).await.unwrap();
 
-            let story = make_node("gr-s3", "gr_story3", json!({"status": "active"}));
+            let story = make_node(
+                "27c083ca-7466-59cd-b737-a9c076bbf28c",
+                "gr_story3",
+                json!({"status": "active"}),
+            );
             svc.create_node(story).await.unwrap();
 
-            let task = make_node("gr-t3", "gr_task3", json!({"status": "open"}));
+            let task = make_node(
+                "1139a1a0-6f33-5282-97c4-3bf0c8db6f10",
+                "gr_task3",
+                json!({"status": "open"}),
+            );
             svc.create_node(task.clone()).await.unwrap();
 
-            svc.create_relationship("gr-t3", "story", "gr-s3", json!({}))
-                .await
-                .unwrap();
-            svc.create_relationship("gr-s3", "epic", "gr-e1", json!({}))
-                .await
-                .unwrap();
+            svc.create_relationship(
+                "1139a1a0-6f33-5282-97c4-3bf0c8db6f10",
+                "story",
+                "27c083ca-7466-59cd-b737-a9c076bbf28c",
+                json!({}),
+            )
+            .await
+            .unwrap();
+            svc.create_relationship(
+                "27c083ca-7466-59cd-b737-a9c076bbf28c",
+                "epic",
+                "2504876b-ac56-57ef-8353-22706def408f",
+                json!({}),
+            )
+            .await
+            .unwrap();
 
             let mut resolver = GraphResolver::new(Arc::clone(&svc));
 
@@ -1756,7 +1816,7 @@ mod tests {
                 .resolve_path(&task, &["story".to_string(), "epic".to_string()])
                 .await;
             match result {
-                ResolvedValue::Node(n) => assert_eq!(n.id, "gr-e1"),
+                ResolvedValue::Node(n) => assert_eq!(n.id, "2504876b-ac56-57ef-8353-22706def408f"),
                 other => panic!("expected Node for story.epic, got {:?}", other),
             }
 
@@ -1808,7 +1868,11 @@ mod tests {
 
             // Parent created with NO items ever attached -- the exact
             // "freshly created Cycle with no Issues yet" shape.
-            let parent = make_node("gr-p-empty", "gr_parent_empty", json!({}));
+            let parent = make_node(
+                "15bfaa70-906c-54ed-ae38-5b02022afb56",
+                "gr_parent_empty",
+                json!({}),
+            );
             svc.create_node(parent.clone()).await.unwrap();
 
             let mut resolver = GraphResolver::new(Arc::clone(&svc));
@@ -1854,7 +1918,11 @@ mod tests {
             .await;
 
             // Issue created with NO cycle relationship ever added.
-            let issue = make_node("gr-i-unset", "gr_issue_unset", json!({}));
+            let issue = make_node(
+                "d8d25f33-0604-59de-955c-e0fdc76bc325",
+                "gr_issue_unset",
+                json!({}),
+            );
             svc.create_node(issue.clone()).await.unwrap();
 
             let mut resolver = GraphResolver::new(Arc::clone(&svc));
@@ -1877,7 +1945,11 @@ mod tests {
             let (svc, _tmp) = create_test_service().await;
 
             create_schema(&svc, "gr_lonely", json!([])).await;
-            let node = make_node("gr-lonely-1", "gr_lonely", json!({}));
+            let node = make_node(
+                "9f68169c-2c13-59df-87d6-ecd6e7f418f0",
+                "gr_lonely",
+                json!({}),
+            );
             svc.create_node(node.clone()).await.unwrap();
 
             let mut resolver = GraphResolver::new(Arc::clone(&svc));
@@ -1911,13 +1983,26 @@ mod tests {
             )
             .await;
 
-            let story = make_node("gr-s4", "gr_story4", json!({"status": "done"}));
+            let story = make_node(
+                "107dc6a4-d317-5b21-9f39-6d1d8943c681",
+                "gr_story4",
+                json!({"status": "done"}),
+            );
             svc.create_node(story).await.unwrap();
-            let task = make_node("gr-t4", "gr_task4", json!({}));
+            let task = make_node(
+                "cc70c452-a76f-5ced-900f-87737c548736",
+                "gr_task4",
+                json!({}),
+            );
             svc.create_node(task.clone()).await.unwrap();
-            svc.create_relationship("gr-t4", "story", "gr-s4", json!({}))
-                .await
-                .unwrap();
+            svc.create_relationship(
+                "cc70c452-a76f-5ced-900f-87737c548736",
+                "story",
+                "107dc6a4-d317-5b21-9f39-6d1d8943c681",
+                json!({}),
+            )
+            .await
+            .unwrap();
 
             let mut resolver = GraphResolver::new(Arc::clone(&svc));
 
@@ -1953,20 +2038,42 @@ mod tests {
             )
             .await;
 
-            let sub1 = make_node("gr-sub1", "gr_subtask", json!({"status": "done"}));
-            let sub2 = make_node("gr-sub2", "gr_subtask", json!({"status": "open"}));
+            let sub1 = make_node(
+                "76d0533a-fca3-53fc-ae07-c8a6fff28407",
+                "gr_subtask",
+                json!({"status": "done"}),
+            );
+            let sub2 = make_node(
+                "197f434b-77de-5206-965b-5464fa621440",
+                "gr_subtask",
+                json!({"status": "open"}),
+            );
             svc.create_node(sub1).await.unwrap();
             svc.create_node(sub2).await.unwrap();
 
-            let parent = make_node("gr-p1", "gr_parent", json!({}));
+            let parent = make_node(
+                "fc562f69-fc5e-50c3-b4da-d89de50e6f79",
+                "gr_parent",
+                json!({}),
+            );
             svc.create_node(parent.clone()).await.unwrap();
 
-            svc.create_relationship("gr-p1", "subtasks", "gr-sub1", json!({}))
-                .await
-                .unwrap();
-            svc.create_relationship("gr-p1", "subtasks", "gr-sub2", json!({}))
-                .await
-                .unwrap();
+            svc.create_relationship(
+                "fc562f69-fc5e-50c3-b4da-d89de50e6f79",
+                "subtasks",
+                "76d0533a-fca3-53fc-ae07-c8a6fff28407",
+                json!({}),
+            )
+            .await
+            .unwrap();
+            svc.create_relationship(
+                "fc562f69-fc5e-50c3-b4da-d89de50e6f79",
+                "subtasks",
+                "197f434b-77de-5206-965b-5464fa621440",
+                json!({}),
+            )
+            .await
+            .unwrap();
 
             let mut resolver = GraphResolver::new(Arc::clone(&svc));
             let result = resolver
@@ -1976,8 +2083,8 @@ mod tests {
                 ResolvedValue::Collection(nodes) => {
                     assert_eq!(nodes.len(), 2);
                     let ids: Vec<&str> = nodes.iter().map(|n| n.id.as_str()).collect();
-                    assert!(ids.contains(&"gr-sub1"));
-                    assert!(ids.contains(&"gr-sub2"));
+                    assert!(ids.contains(&"76d0533a-fca3-53fc-ae07-c8a6fff28407"));
+                    assert!(ids.contains(&"197f434b-77de-5206-965b-5464fa621440"));
                 }
                 other => panic!("expected Collection, got {:?}", other),
             }
@@ -2002,13 +2109,26 @@ mod tests {
             )
             .await;
 
-            let target = make_node("gr-tgt5", "gr_target5", json!({"status": "ready"}));
+            let target = make_node(
+                "ac296fa4-9a76-56d8-b333-866646d27c09",
+                "gr_target5",
+                json!({"status": "ready"}),
+            );
             svc.create_node(target).await.unwrap();
-            let source = make_node("gr-src5", "gr_source5", json!({}));
+            let source = make_node(
+                "9147b150-a60c-550a-b49f-2fe7d9d20974",
+                "gr_source5",
+                json!({}),
+            );
             svc.create_node(source.clone()).await.unwrap();
-            svc.create_relationship("gr-src5", "target", "gr-tgt5", json!({}))
-                .await
-                .unwrap();
+            svc.create_relationship(
+                "9147b150-a60c-550a-b49f-2fe7d9d20974",
+                "target",
+                "ac296fa4-9a76-56d8-b333-866646d27c09",
+                json!({}),
+            )
+            .await
+            .unwrap();
 
             let mut resolver = GraphResolver::new(Arc::clone(&svc));
 
@@ -2036,13 +2156,17 @@ mod tests {
             let (svc, _tmp) = create_test_service().await;
             create_schema(&svc, "gr_task6", json!([])).await;
 
-            let node = make_node("gr-t6", "gr_task6", json!({}));
+            let node = make_node(
+                "49638dad-3ddf-51c0-9ee9-d01cf0d23db2",
+                "gr_task6",
+                json!({}),
+            );
             svc.create_node(node.clone()).await.unwrap();
 
             let mut resolver = GraphResolver::new(Arc::clone(&svc));
             let result = resolver.resolve_path(&node, &[]).await;
             match result {
-                ResolvedValue::Node(n) => assert_eq!(n.id, "gr-t6"),
+                ResolvedValue::Node(n) => assert_eq!(n.id, "49638dad-3ddf-51c0-9ee9-d01cf0d23db2"),
                 other => panic!("expected Node, got {:?}", other),
             }
         }
@@ -2052,7 +2176,11 @@ mod tests {
             let (svc, _tmp) = create_test_service().await;
             create_schema(&svc, "gr_task7", json!([])).await;
 
-            let node = make_node("gr-t7", "gr_task7", json!({"status": "open"}));
+            let node = make_node(
+                "6831fac3-a02b-5d53-a66b-814c006e379f",
+                "gr_task7",
+                json!({"status": "open"}),
+            );
             svc.create_node(node.clone()).await.unwrap();
 
             let mut resolver = GraphResolver::new(Arc::clone(&svc));
@@ -2100,19 +2228,41 @@ mod tests {
             )
             .await;
 
-            let epic = make_node("gr-e8", "gr_epic8", json!({"status": "in_progress"}));
+            let epic = make_node(
+                "169f3f29-1189-5671-b858-e6f349db079b",
+                "gr_epic8",
+                json!({"status": "in_progress"}),
+            );
             svc.create_node(epic).await.unwrap();
-            let story = make_node("gr-s8", "gr_story8", json!({"status": "active"}));
+            let story = make_node(
+                "7e8706b4-1465-5989-b7fd-e25d6288e32b",
+                "gr_story8",
+                json!({"status": "active"}),
+            );
             svc.create_node(story).await.unwrap();
-            let task = make_node("gr-t8", "gr_task8", json!({"status": "open"}));
+            let task = make_node(
+                "d80b5203-ae2f-5735-906d-7043d9e52394",
+                "gr_task8",
+                json!({"status": "open"}),
+            );
             svc.create_node(task.clone()).await.unwrap();
 
-            svc.create_relationship("gr-t8", "story", "gr-s8", json!({}))
-                .await
-                .unwrap();
-            svc.create_relationship("gr-s8", "epic", "gr-e8", json!({}))
-                .await
-                .unwrap();
+            svc.create_relationship(
+                "d80b5203-ae2f-5735-906d-7043d9e52394",
+                "story",
+                "7e8706b4-1465-5989-b7fd-e25d6288e32b",
+                json!({}),
+            )
+            .await
+            .unwrap();
+            svc.create_relationship(
+                "7e8706b4-1465-5989-b7fd-e25d6288e32b",
+                "epic",
+                "169f3f29-1189-5671-b858-e6f349db079b",
+                json!({}),
+            )
+            .await
+            .unwrap();
 
             let mut resolver = GraphResolver::new(Arc::clone(&svc));
 
@@ -2174,16 +2324,25 @@ mod tests {
             .await;
 
             let related = make_node(
-                "gr-rel11",
+                "fd1c1afe-18cb-558c-b0d3-9fc930d72c7b",
                 "gr_related11",
                 json!({"status": "active", "_playbookChainDepth": 7}),
             );
             svc.create_node(related).await.unwrap();
-            let root = make_node("gr-root11", "gr_root11", json!({}));
+            let root = make_node(
+                "cd5d5d14-9148-5bed-91cd-754185704f03",
+                "gr_root11",
+                json!({}),
+            );
             svc.create_node(root.clone()).await.unwrap();
-            svc.create_relationship("gr-root11", "related_node", "gr-rel11", json!({}))
-                .await
-                .unwrap();
+            svc.create_relationship(
+                "cd5d5d14-9148-5bed-91cd-754185704f03",
+                "related_node",
+                "fd1c1afe-18cb-558c-b0d3-9fc930d72c7b",
+                json!({}),
+            )
+            .await
+            .unwrap();
 
             let mut resolver = GraphResolver::new(Arc::clone(&svc));
 
@@ -2256,20 +2415,42 @@ mod tests {
             )
             .await;
 
-            let item1 = make_node("gr-i9a", "gr_item9", json!({"status": "done"}));
-            let item2 = make_node("gr-i9b", "gr_item9", json!({"status": "open"}));
+            let item1 = make_node(
+                "f1e99148-e345-55b0-a3bf-fc7289df6a41",
+                "gr_item9",
+                json!({"status": "done"}),
+            );
+            let item2 = make_node(
+                "fa650a80-244b-5e73-980e-cc70dd49adf7",
+                "gr_item9",
+                json!({"status": "open"}),
+            );
             svc.create_node(item1).await.unwrap();
             svc.create_node(item2).await.unwrap();
 
-            let parent = make_node("gr-p9", "gr_parent9", json!({}));
+            let parent = make_node(
+                "ceee2e5f-adf7-5091-b85a-67e5ae80ec1b",
+                "gr_parent9",
+                json!({}),
+            );
             svc.create_node(parent.clone()).await.unwrap();
 
-            svc.create_relationship("gr-p9", "items", "gr-i9a", json!({}))
-                .await
-                .unwrap();
-            svc.create_relationship("gr-p9", "items", "gr-i9b", json!({}))
-                .await
-                .unwrap();
+            svc.create_relationship(
+                "ceee2e5f-adf7-5091-b85a-67e5ae80ec1b",
+                "items",
+                "f1e99148-e345-55b0-a3bf-fc7289df6a41",
+                json!({}),
+            )
+            .await
+            .unwrap();
+            svc.create_relationship(
+                "ceee2e5f-adf7-5091-b85a-67e5ae80ec1b",
+                "items",
+                "fa650a80-244b-5e73-980e-cc70dd49adf7",
+                json!({}),
+            )
+            .await
+            .unwrap();
 
             let mut resolver = GraphResolver::new(Arc::clone(&svc));
 
@@ -2287,8 +2468,8 @@ mod tests {
                 .unwrap();
             assert_eq!(nodes.len(), 2, "should resolve 2 collection nodes");
             let ids: Vec<&str> = nodes.iter().map(|n| n.id.as_str()).collect();
-            assert!(ids.contains(&"gr-i9a"));
-            assert!(ids.contains(&"gr-i9b"));
+            assert!(ids.contains(&"f1e99148-e345-55b0-a3bf-fc7289df6a41"));
+            assert!(ids.contains(&"fa650a80-244b-5e73-980e-cc70dd49adf7"));
         }
 
         #[tokio::test(flavor = "multi_thread")]
@@ -2310,20 +2491,42 @@ mod tests {
             )
             .await;
 
-            let sub1 = make_node("gr-s10a", "gr_sub10", json!({"status": "done"}));
-            let sub2 = make_node("gr-s10b", "gr_sub10", json!({"status": "open"}));
+            let sub1 = make_node(
+                "d4ff61ea-e0fa-5cad-8db0-e0cdac5f32f2",
+                "gr_sub10",
+                json!({"status": "done"}),
+            );
+            let sub2 = make_node(
+                "87f5b39d-b67c-5d48-add2-1d7a7bcfc023",
+                "gr_sub10",
+                json!({"status": "open"}),
+            );
             svc.create_node(sub1).await.unwrap();
             svc.create_node(sub2).await.unwrap();
 
-            let parent = make_node("gr-p10", "gr_parent10", json!({}));
+            let parent = make_node(
+                "93150e2e-5d1d-5292-8bdc-77f86393d43f",
+                "gr_parent10",
+                json!({}),
+            );
             svc.create_node(parent.clone()).await.unwrap();
 
-            svc.create_relationship("gr-p10", "tasks", "gr-s10a", json!({}))
-                .await
-                .unwrap();
-            svc.create_relationship("gr-p10", "tasks", "gr-s10b", json!({}))
-                .await
-                .unwrap();
+            svc.create_relationship(
+                "93150e2e-5d1d-5292-8bdc-77f86393d43f",
+                "tasks",
+                "d4ff61ea-e0fa-5cad-8db0-e0cdac5f32f2",
+                json!({}),
+            )
+            .await
+            .unwrap();
+            svc.create_relationship(
+                "93150e2e-5d1d-5292-8bdc-77f86393d43f",
+                "tasks",
+                "87f5b39d-b67c-5d48-add2-1d7a7bcfc023",
+                json!({}),
+            )
+            .await
+            .unwrap();
 
             let mut resolver = GraphResolver::new(Arc::clone(&svc));
 
@@ -2376,21 +2579,34 @@ mod tests {
             let (svc, _tmp) = create_test_service().await;
             create_schema(&svc, "gr_rev_task", json!([])).await;
 
-            let parent = make_node("gr-rev-p1", "gr_rev_task", json!({"status": "open"}));
+            let parent = make_node(
+                "9c98927a-4041-56c4-b1d8-2c9a06d5723a",
+                "gr_rev_task",
+                json!({"status": "open"}),
+            );
             svc.create_node(parent.clone()).await.unwrap();
-            let child = make_node("gr-rev-c1", "gr_rev_task", json!({"status": "done"}));
+            let child = make_node(
+                "984353e4-bfac-5202-96f2-54010d96232c",
+                "gr_rev_task",
+                json!({"status": "done"}),
+            );
             svc.create_node(child.clone()).await.unwrap();
 
-            svc.create_relationship("gr-rev-p1", "has_child", "gr-rev-c1", json!({}))
-                .await
-                .unwrap();
+            svc.create_relationship(
+                "9c98927a-4041-56c4-b1d8-2c9a06d5723a",
+                "has_child",
+                "984353e4-bfac-5202-96f2-54010d96232c",
+                json!({}),
+            )
+            .await
+            .unwrap();
 
             let mut resolver = GraphResolver::new(Arc::clone(&svc));
             let result = resolver
                 .resolve_path(&child, &["child_of".to_string()])
                 .await;
             match result {
-                ResolvedValue::Node(n) => assert_eq!(n.id, "gr-rev-p1"),
+                ResolvedValue::Node(n) => assert_eq!(n.id, "9c98927a-4041-56c4-b1d8-2c9a06d5723a"),
                 other => panic!("expected the parent Node, got {:?}", other),
             }
 
@@ -2400,7 +2616,7 @@ mod tests {
                 .resolve_path(&parent, &["has_child".to_string()])
                 .await;
             match forward {
-                ResolvedValue::Node(n) => assert_eq!(n.id, "gr-rev-c1"),
+                ResolvedValue::Node(n) => assert_eq!(n.id, "984353e4-bfac-5202-96f2-54010d96232c"),
                 other => panic!("expected the child Node, got {:?}", other),
             }
         }
@@ -2419,16 +2635,32 @@ mod tests {
             let (svc, _tmp) = create_test_service().await;
             create_schema(&svc, "gr_core_task", json!([])).await;
 
-            let parent = make_node("gr-core-p1", "gr_core_task", json!({"status": "open"}));
+            let parent = make_node(
+                "61fc0710-eddf-5aa3-872b-12132075a3ab",
+                "gr_core_task",
+                json!({"status": "open"}),
+            );
             svc.create_node(parent.clone()).await.unwrap();
-            let child = make_node("gr-core-c1", "gr_core_task", json!({"status": "done"}));
+            let child = make_node(
+                "0ad70408-ba33-5384-aa53-9e6db860be23",
+                "gr_core_task",
+                json!({"status": "done"}),
+            );
             svc.create_node(child.clone()).await.unwrap();
-            svc.create_relationship("gr-core-p1", "has_child", "gr-core-c1", json!({}))
-                .await
-                .unwrap();
+            svc.create_relationship(
+                "61fc0710-eddf-5aa3-872b-12132075a3ab",
+                "has_child",
+                "0ad70408-ba33-5384-aa53-9e6db860be23",
+                json!({}),
+            )
+            .await
+            .unwrap();
 
             let mut resolver = GraphResolver::new(Arc::clone(&svc));
-            for (segment, want) in [("id", "gr-core-p1"), ("node_type", "gr_core_task")] {
+            for (segment, want) in [
+                ("id", "61fc0710-eddf-5aa3-872b-12132075a3ab"),
+                ("node_type", "gr_core_task"),
+            ] {
                 let result = resolver
                     .resolve_path(&child, &["child_of".to_string(), segment.to_string()])
                     .await;
@@ -2445,7 +2677,9 @@ mod tests {
             // A core field on the root node itself resolves the same way, with
             // no traversal involved.
             match resolver.resolve_path(&child, &["id".to_string()]).await {
-                ResolvedValue::Scalar(v) => assert_eq!(v.as_str(), Some("gr-core-c1")),
+                ResolvedValue::Scalar(v) => {
+                    assert_eq!(v.as_str(), Some("0ad70408-ba33-5384-aa53-9e6db860be23"))
+                }
                 other => panic!("expected the node's own id, got {other:?}"),
             }
         }
@@ -2475,24 +2709,33 @@ mod tests {
             .await;
 
             let person = make_node(
-                "gr-rev-u1",
+                "22396a0f-ef2c-5998-a93c-b626687a36da",
                 "gr_rev_person",
                 json!({"email": "ada@example.com"}),
             );
             svc.create_node(person.clone()).await.unwrap();
-            let ticket = make_node("gr-rev-k1", "gr_rev_ticket", json!({"status": "open"}));
+            let ticket = make_node(
+                "c00e5c50-aba9-5350-8a3f-ad2d4adca7a4",
+                "gr_rev_ticket",
+                json!({"status": "open"}),
+            );
             svc.create_node(ticket.clone()).await.unwrap();
 
-            svc.create_relationship("gr-rev-u1", "tasks", "gr-rev-k1", json!({}))
-                .await
-                .unwrap();
+            svc.create_relationship(
+                "22396a0f-ef2c-5998-a93c-b626687a36da",
+                "tasks",
+                "c00e5c50-aba9-5350-8a3f-ad2d4adca7a4",
+                json!({}),
+            )
+            .await
+            .unwrap();
 
             let mut resolver = GraphResolver::new(Arc::clone(&svc));
             let result = resolver
                 .resolve_path(&ticket, &["assignee".to_string()])
                 .await;
             match result {
-                ResolvedValue::Node(n) => assert_eq!(n.id, "gr-rev-u1"),
+                ResolvedValue::Node(n) => assert_eq!(n.id, "22396a0f-ef2c-5998-a93c-b626687a36da"),
                 other => panic!("expected the assignee Node, got {:?}", other),
             }
 
@@ -2548,20 +2791,42 @@ mod tests {
             )
             .await;
 
-            let person = make_node("gr-nar-u1", "gr_nar_person", json!({"email": "grace@x.io"}));
+            let person = make_node(
+                "de34e23d-e992-584a-b512-96a69307fb69",
+                "gr_nar_person",
+                json!({"email": "grace@x.io"}),
+            );
             svc.create_node(person.clone()).await.unwrap();
-            let project = make_node("gr-nar-pr1", "gr_nar_project", json!({"name": "Apollo"}));
+            let project = make_node(
+                "2052f379-c47b-5a08-8aa7-2be327e25aae",
+                "gr_nar_project",
+                json!({"name": "Apollo"}),
+            );
             svc.create_node(project.clone()).await.unwrap();
-            let ticket = make_node("gr-nar-k1", "gr_nar_ticket", json!({"status": "open"}));
+            let ticket = make_node(
+                "050d7c67-e214-512c-90f4-0667accac799",
+                "gr_nar_ticket",
+                json!({"status": "open"}),
+            );
             svc.create_node(ticket.clone()).await.unwrap();
 
             // The same ticket is linked from both ends, under the same name.
-            svc.create_relationship("gr-nar-u1", "tasks", "gr-nar-k1", json!({}))
-                .await
-                .unwrap();
-            svc.create_relationship("gr-nar-pr1", "tasks", "gr-nar-k1", json!({}))
-                .await
-                .unwrap();
+            svc.create_relationship(
+                "de34e23d-e992-584a-b512-96a69307fb69",
+                "tasks",
+                "050d7c67-e214-512c-90f4-0667accac799",
+                json!({}),
+            )
+            .await
+            .unwrap();
+            svc.create_relationship(
+                "2052f379-c47b-5a08-8aa7-2be327e25aae",
+                "tasks",
+                "050d7c67-e214-512c-90f4-0667accac799",
+                json!({}),
+            )
+            .await
+            .unwrap();
 
             let mut resolver = GraphResolver::new(Arc::clone(&svc));
             match resolver
@@ -2569,7 +2834,7 @@ mod tests {
                 .await
             {
                 ResolvedValue::Node(n) => assert_eq!(
-                    n.id, "gr-nar-u1",
+                    n.id, "de34e23d-e992-584a-b512-96a69307fb69",
                     "assignee must be the person, not the project"
                 ),
                 other => panic!("expected exactly the person Node, got {:?}", other),
@@ -2580,7 +2845,7 @@ mod tests {
                 .resolve_path(&ticket, &["project".to_string()])
                 .await
             {
-                ResolvedValue::Node(n) => assert_eq!(n.id, "gr-nar-pr1"),
+                ResolvedValue::Node(n) => assert_eq!(n.id, "2052f379-c47b-5a08-8aa7-2be327e25aae"),
                 other => panic!("expected exactly the project Node, got {:?}", other),
             }
         }
@@ -2595,16 +2860,32 @@ mod tests {
             let (svc, _tmp) = create_test_service().await;
             create_schema(&svc, "gr_sib_task", json!([])).await;
 
-            let parent = make_node("gr-sib-p1", "gr_sib_task", json!({"status": "open"}));
+            let parent = make_node(
+                "d2c02095-f68f-5e79-851a-2d28484980cf",
+                "gr_sib_task",
+                json!({"status": "open"}),
+            );
             svc.create_node(parent.clone()).await.unwrap();
-            for id in ["gr-sib-c1", "gr-sib-c2"] {
+            for id in [
+                "2e51a202-4d99-50c8-9d6c-e7dfda6b1c32",
+                "da1b5799-6677-53c9-b277-282337ff2d1b",
+            ] {
                 let child = make_node(id, "gr_sib_task", json!({"status": "done"}));
                 svc.create_node(child.clone()).await.unwrap();
-                svc.create_relationship("gr-sib-p1", "has_child", id, json!({}))
-                    .await
-                    .unwrap();
+                svc.create_relationship(
+                    "d2c02095-f68f-5e79-851a-2d28484980cf",
+                    "has_child",
+                    id,
+                    json!({}),
+                )
+                .await
+                .unwrap();
             }
-            let child = svc.get_node("gr-sib-c1").await.unwrap().unwrap();
+            let child = svc
+                .get_node("2e51a202-4d99-50c8-9d6c-e7dfda6b1c32")
+                .await
+                .unwrap()
+                .unwrap();
 
             let mut resolver = GraphResolver::new(Arc::clone(&svc));
             let result = resolver
@@ -2646,18 +2927,31 @@ mod tests {
             )
             .await;
 
-            let author = make_node("gr-inf-a1", "gr_inf_author", json!({"name": "Kay"}));
+            let author = make_node(
+                "05305480-70d4-5232-865e-3e0017a9b2f9",
+                "gr_inf_author",
+                json!({"name": "Kay"}),
+            );
             svc.create_node(author.clone()).await.unwrap();
-            let doc = make_node("gr-inf-d1", "gr_inf_doc", json!({"status": "draft"}));
+            let doc = make_node(
+                "5ffbd4e3-edac-54da-adc8-62e235f0e3f9",
+                "gr_inf_doc",
+                json!({"status": "draft"}),
+            );
             svc.create_node(doc.clone()).await.unwrap();
-            svc.create_relationship("gr-inf-a1", "wrote", "gr-inf-d1", json!({}))
-                .await
-                .unwrap();
+            svc.create_relationship(
+                "05305480-70d4-5232-865e-3e0017a9b2f9",
+                "wrote",
+                "5ffbd4e3-edac-54da-adc8-62e235f0e3f9",
+                json!({}),
+            )
+            .await
+            .unwrap();
 
             let mut resolver = GraphResolver::new(Arc::clone(&svc));
             // The doc spells the edge by the author's forward name.
             match resolver.resolve_path(&doc, &["wrote".to_string()]).await {
-                ResolvedValue::Node(n) => assert_eq!(n.id, "gr-inf-a1"),
+                ResolvedValue::Node(n) => assert_eq!(n.id, "05305480-70d4-5232-865e-3e0017a9b2f9"),
                 other => panic!("expected the author Node, got {:?}", other),
             }
 
@@ -2671,7 +2965,7 @@ mod tests {
             match resolver.resolve_path(&author, &["wrote".to_string()]).await {
                 ResolvedValue::Collection(nodes) => {
                     assert_eq!(nodes.len(), 1);
-                    assert_eq!(nodes[0].id, "gr-inf-d1");
+                    assert_eq!(nodes[0].id, "5ffbd4e3-edac-54da-adc8-62e235f0e3f9");
                 }
                 other => panic!("expected a Collection holding the doc, got {:?}", other),
             }
@@ -2706,17 +3000,26 @@ mod tests {
             .await;
 
             svc.create_node(make_node(
-                "gr-term-u1",
+                "dcbb6d10-5e53-544f-a363-e1cca6fba6dd",
                 "gr_term_person",
                 json!({"email": "ada@example.com"}),
             ))
             .await
             .unwrap();
-            let ticket = make_node("gr-term-k1", "gr_term_ticket", json!({"status": "open"}));
+            let ticket = make_node(
+                "9e86de83-ef32-573a-a09d-4326792b60a6",
+                "gr_term_ticket",
+                json!({"status": "open"}),
+            );
             svc.create_node(ticket.clone()).await.unwrap();
-            svc.create_relationship("gr-term-u1", "tasks", "gr-term-k1", json!({}))
-                .await
-                .unwrap();
+            svc.create_relationship(
+                "dcbb6d10-5e53-544f-a363-e1cca6fba6dd",
+                "tasks",
+                "9e86de83-ef32-573a-a09d-4326792b60a6",
+                json!({}),
+            )
+            .await
+            .unwrap();
 
             let mut resolver = GraphResolver::new(Arc::clone(&svc));
             let paths = vec![ExtractedPath {
@@ -2748,7 +3051,16 @@ mod tests {
             create_schema(&svc, "gr_cache_task", json!([])).await;
 
             // Two independent parent/child pairs.
-            for (parent, child) in [("gr-cc-p1", "gr-cc-c1"), ("gr-cc-p2", "gr-cc-c2")] {
+            for (parent, child) in [
+                (
+                    "00e9b22a-bdc6-5aef-a44b-002688132ed2",
+                    "4c2c749d-796e-5bb2-95c7-056b7127c2d6",
+                ),
+                (
+                    "63812817-f6d8-5e14-bcc4-c20c57761ffd",
+                    "a9e21afa-8f60-5975-bfa5-36a4bf85a6c9",
+                ),
+            ] {
                 svc.create_node(make_node(
                     parent,
                     "gr_cache_task",
@@ -2764,8 +3076,16 @@ mod tests {
                     .unwrap();
             }
 
-            let child1 = svc.get_node("gr-cc-c1").await.unwrap().unwrap();
-            let child2 = svc.get_node("gr-cc-c2").await.unwrap().unwrap();
+            let child1 = svc
+                .get_node("4c2c749d-796e-5bb2-95c7-056b7127c2d6")
+                .await
+                .unwrap()
+                .unwrap();
+            let child2 = svc
+                .get_node("a9e21afa-8f60-5975-bfa5-36a4bf85a6c9")
+                .await
+                .unwrap()
+                .unwrap();
 
             // One resolver, the same path, two different roots.
             let mut resolver = GraphResolver::new(Arc::clone(&svc));
@@ -2773,7 +3093,7 @@ mod tests {
                 .resolve_path(&child1, &["child_of".to_string()])
                 .await
             {
-                ResolvedValue::Node(n) => assert_eq!(n.id, "gr-cc-p1"),
+                ResolvedValue::Node(n) => assert_eq!(n.id, "00e9b22a-bdc6-5aef-a44b-002688132ed2"),
                 other => panic!("expected p1, got {:?}", other),
             }
             match resolver
@@ -2781,7 +3101,7 @@ mod tests {
                 .await
             {
                 ResolvedValue::Node(n) => assert_eq!(
-                    n.id, "gr-cc-p2",
+                    n.id, "63812817-f6d8-5e14-bcc4-c20c57761ffd",
                     "the second root must not be served the first root's cached parent"
                 ),
                 other => panic!("expected p2, got {:?}", other),
@@ -2800,7 +3120,11 @@ mod tests {
             let (svc, _tmp) = create_test_service().await;
             create_schema(&svc, "gr_unk_task", json!([])).await;
 
-            let node = make_node("gr-unk-1", "gr_unk_task", json!({"status": "open"}));
+            let node = make_node(
+                "6dc01f21-c30f-5698-9183-5871f63ce349",
+                "gr_unk_task",
+                json!({"status": "open"}),
+            );
             svc.create_node(node.clone()).await.unwrap();
 
             let mut resolver = GraphResolver::new(Arc::clone(&svc));
@@ -2872,7 +3196,11 @@ mod tests {
 
             // A subtype instance with NO items ever attached -- the relationship
             // is only declared on the ancestor, never redeclared here.
-            let parent = make_node("gr-ext-p1", "gr_ext_sub", json!({}));
+            let parent = make_node(
+                "aed64f08-54fd-51a3-bf3e-1a114273d61e",
+                "gr_ext_sub",
+                json!({}),
+            );
             svc.create_node(parent.clone()).await.unwrap();
 
             let mut resolver = GraphResolver::new(Arc::clone(&svc));
@@ -2927,7 +3255,11 @@ mod tests {
             // A project with NO tasks ever attached -- the relationship is
             // declared on `task` (the forward side), not on `project`, so
             // `project`'s own schema has no relationships of its own at all.
-            let project = make_node("gr-revmany-p1", "gr_revmany_project", json!({}));
+            let project = make_node(
+                "84dcef65-8d1e-5e2a-a148-730006f96faa",
+                "gr_revmany_project",
+                json!({}),
+            );
             svc.create_node(project.clone()).await.unwrap();
 
             let mut resolver = GraphResolver::new(Arc::clone(&svc));
@@ -2971,13 +3303,26 @@ mod tests {
             )
             .await;
 
-            let project = make_node("gr-revmany1-p1", "gr_revmany1_project", json!({}));
+            let project = make_node(
+                "4034b8e7-b8b9-589e-9633-695772d2b4df",
+                "gr_revmany1_project",
+                json!({}),
+            );
             svc.create_node(project.clone()).await.unwrap();
-            let task = make_node("gr-revmany1-t1", "gr_revmany1_task", json!({}));
+            let task = make_node(
+                "d145deac-8b96-5a23-83cf-2c3b94cbd877",
+                "gr_revmany1_task",
+                json!({}),
+            );
             svc.create_node(task.clone()).await.unwrap();
-            svc.create_relationship("gr-revmany1-t1", "project", "gr-revmany1-p1", json!({}))
-                .await
-                .unwrap();
+            svc.create_relationship(
+                "d145deac-8b96-5a23-83cf-2c3b94cbd877",
+                "project",
+                "4034b8e7-b8b9-589e-9633-695772d2b4df",
+                json!({}),
+            )
+            .await
+            .unwrap();
 
             let mut resolver = GraphResolver::new(Arc::clone(&svc));
             let result = resolver
@@ -2986,7 +3331,7 @@ mod tests {
             match result {
                 ResolvedValue::Collection(nodes) => {
                     assert_eq!(nodes.len(), 1);
-                    assert_eq!(nodes[0].id, "gr-revmany1-t1");
+                    assert_eq!(nodes[0].id, "d145deac-8b96-5a23-83cf-2c3b94cbd877");
                 }
                 other => panic!(
                     "expected a one-item Collection (not a bare Node) for a reverse-declared \
@@ -3040,7 +3385,11 @@ mod tests {
 
             // An ordinary instance of the BASE type -- not a schema node,
             // and no `extends`/`extended_by` edge ever points at it.
-            let base = make_node("gr-extlk-b1", "gr_extlk_base", json!({}));
+            let base = make_node(
+                "fcf3f955-9d07-57f3-96a9-101ddfe28607",
+                "gr_extlk_base",
+                json!({}),
+            );
             svc.create_node(base.clone()).await.unwrap();
 
             let mut resolver = GraphResolver::new(Arc::clone(&svc));
@@ -3093,7 +3442,11 @@ mod tests {
             .await;
 
             // A project with NO tasks ever attached.
-            let project = make_node("gr-infmany-p1", "gr_infmany_project", json!({}));
+            let project = make_node(
+                "39d73c85-e744-5931-a830-fcbb7e15cbf6",
+                "gr_infmany_project",
+                json!({}),
+            );
             svc.create_node(project.clone()).await.unwrap();
 
             let mut resolver = GraphResolver::new(Arc::clone(&svc));
@@ -3137,14 +3490,22 @@ mod tests {
             )
             .await;
 
-            let project = make_node("gr-infmany1-p1", "gr_infmany1_project", json!({}));
+            let project = make_node(
+                "e1b1f6b3-cc9c-58ef-8c58-9fbf29c13fe3",
+                "gr_infmany1_project",
+                json!({}),
+            );
             svc.create_node(project.clone()).await.unwrap();
-            let task = make_node("gr-infmany1-t1", "gr_infmany1_task", json!({}));
+            let task = make_node(
+                "29b9b1df-e10c-574d-ba78-09abe0b5549e",
+                "gr_infmany1_task",
+                json!({}),
+            );
             svc.create_node(task.clone()).await.unwrap();
             svc.create_relationship(
-                "gr-infmany1-t1",
+                "29b9b1df-e10c-574d-ba78-09abe0b5549e",
                 "owner_project",
-                "gr-infmany1-p1",
+                "e1b1f6b3-cc9c-58ef-8c58-9fbf29c13fe3",
                 json!({}),
             )
             .await
@@ -3157,7 +3518,7 @@ mod tests {
             match result {
                 ResolvedValue::Collection(nodes) => {
                     assert_eq!(nodes.len(), 1);
-                    assert_eq!(nodes[0].id, "gr-infmany1-t1");
+                    assert_eq!(nodes[0].id, "29b9b1df-e10c-574d-ba78-09abe0b5549e");
                 }
                 other => panic!(
                     "expected a one-item Collection (not a bare Node) for an InboundForward-resolved \
@@ -3233,17 +3594,30 @@ mod tests {
 
             // A subtype instance with a REAL edge attached, even though
             // `items` is only declared on the ancestor schema.
-            let parent = make_node("gr-ext-p2", "gr_ext_sub2", json!({}));
+            let parent = make_node(
+                "a2edd255-83dd-5de3-ba8d-76e3fa4195e9",
+                "gr_ext_sub2",
+                json!({}),
+            );
             svc.create_node(parent.clone()).await.unwrap();
-            let item = make_node("gr-ext-i1", "gr_ext_item2", json!({}));
+            let item = make_node(
+                "0224d98d-8686-5ae6-9f57-4d386d5fd0ed",
+                "gr_ext_item2",
+                json!({}),
+            );
             svc.create_node(item.clone()).await.unwrap();
 
-            svc.create_relationship("gr-ext-p2", "items", "gr-ext-i1", json!({}))
-                .await
-                .expect(
-                    "create_relationship must succeed for an inherited relationship -- the \
+            svc.create_relationship(
+                "a2edd255-83dd-5de3-ba8d-76e3fa4195e9",
+                "items",
+                "0224d98d-8686-5ae6-9f57-4d386d5fd0ed",
+                json!({}),
+            )
+            .await
+            .expect(
+                "create_relationship must succeed for an inherited relationship -- the \
                      write path is already extends-chain aware",
-                );
+            );
 
             let mut resolver = GraphResolver::new(Arc::clone(&svc));
             let result = resolver.resolve_path(&parent, &["items".to_string()]).await;
@@ -3256,7 +3630,7 @@ mod tests {
                          extends chain, got {} nodes",
                         nodes.len()
                     );
-                    assert_eq!(nodes[0].id, "gr-ext-i1");
+                    assert_eq!(nodes[0].id, "0224d98d-8686-5ae6-9f57-4d386d5fd0ed");
                 }
                 other => panic!(
                     "expected a populated Collection containing the real attached edge, got {:?}",

@@ -95,7 +95,7 @@
     return {
       name: `${field.name}[${index}]`,
       friendlyName: `${labelForField(field)} ${index + 1}`,
-      type: field.itemType ?? 'string',
+      type: field.itemType ?? 'text',
       protection: field.protection,
       indexed: false,
       coreValues: field.coreValues,

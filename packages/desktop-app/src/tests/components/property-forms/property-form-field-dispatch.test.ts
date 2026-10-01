@@ -40,11 +40,14 @@ function field(partial: Partial<SchemaField> & { name: string; type: string }): 
 const ADDRESS_FIELD = field({
   name: 'address',
   type: 'object',
-  fields: [field({ name: 'street', friendlyName: 'Street', type: 'string' })]
+  fields: [field({ name: 'street', friendlyName: 'Street', type: 'text' })]
 });
 
 function schemaWith(fields: SchemaField[], nodeType: string): SchemaNode {
   return {
+    nodeType: 'schema' as const,
+    lifecycleStatus: 'active' as const,
+    properties: {},
     id: `schema-${nodeType}`,
     content: nodeType,
     createdAt: '2026-01-01T00:00:00Z',

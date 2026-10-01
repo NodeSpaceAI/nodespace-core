@@ -45,6 +45,7 @@ describe('isNode type guard', () => {
 
     it('accepts root node (no parentId field)', () => {
       const rootNode: Node = {
+        lifecycleStatus: 'active',
         id: 'root-1',
         nodeType: 'text',
         content: 'Root node',
@@ -528,6 +529,7 @@ describe('createDefaultUIState', () => {
 describe('integration tests', () => {
   it('validates node and creates UI state', () => {
     const node: Node = {
+      lifecycleStatus: 'active',
       id: 'integration-1',
       nodeType: 'text',
       content: 'Test node',
@@ -545,6 +547,7 @@ describe('integration tests', () => {
 
   it('creates UI state for hierarchical nodes', () => {
     const rootNode: Node = {
+      lifecycleStatus: 'active',
       id: 'root',
       nodeType: 'text',
       content: 'Root',
@@ -555,6 +558,7 @@ describe('integration tests', () => {
     };
 
     const childNode: Node = {
+      lifecycleStatus: 'active',
       id: 'child',
       nodeType: 'text',
       content: 'Child',

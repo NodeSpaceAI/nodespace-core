@@ -37,6 +37,9 @@ import { schemasStore } from '$lib/stores/schemas.svelte';
 
 function makeSchema(id: string, isCore: boolean): SchemaNode {
   return {
+    nodeType: 'schema' as const,
+    lifecycleStatus: 'active' as const,
+    properties: {},
     id,
     content: id,
     createdAt: '2026-07-28T00:00:00Z',

@@ -89,7 +89,9 @@ describe('Node CRUD round-trip (HTTP → gRPC → SQLite)', () => {
     const id = crypto.randomUUID();
     // Properties travel flat in both directions: the daemon stores them under the
     // node-type bucket ("text"), and the transport flattens that bucket on read.
-    const properties = { priority: 'high', tags: ['a', 'b'], count: 42 };
+    // `text` is a core type with no fields of its own, so what it carries are
+    // namespaced extension fields.
+    const properties = { 'custom:priority': 'high', 'custom:tags': ['a', 'b'], 'custom:count': 42 };
 
     await h.adapter.createNode({ id, nodeType: 'text', content: 'with props', properties });
 

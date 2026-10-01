@@ -1021,6 +1021,15 @@ impl std::fmt::Display for NodeServiceTxError {
 
 impl std::error::Error for NodeServiceTxError {}
 
+/// Whether a property key is a namespaced extension field: one added to a
+/// core type by someone other than core, under one of the ADR-063 prefixes.
+pub(crate) fn is_extension_field_name(key: &str) -> bool {
+    const EXTENSION_PREFIXES: [&str; 3] = ["custom:", "org:", "plugin:"];
+    EXTENSION_PREFIXES
+        .iter()
+        .any(|prefix| key.len() > prefix.len() && key.starts_with(prefix))
+}
+
 /// Check if a string matches date node format: YYYY-MM-DD
 ///
 /// Valid examples: "2025-10-13", "2024-01-01"
@@ -2357,11 +2366,58 @@ impl NodeService {
         &self.behaviors
     }
 
-    /// Resolve the behavior for a node type, falling back to CustomNodeBehavior.
-    pub(crate) fn behavior_for(&self, node_type: &str) -> Arc<dyn crate::behaviors::NodeBehavior> {
-        self.behaviors
-            .get(node_type)
-            .unwrap_or_else(|| Arc::new(crate::behaviors::CustomNodeBehavior::new(node_type)))
+    /// `node_type`'s `extends` chain, nearest scope first, read from the
+    /// type-ancestry table. A core type's chain needs no read.
+    pub(crate) async fn type_chain(
+        &self,
+        node_type: &str,
+    ) -> Result<Vec<String>, NodeServiceError> {
+        self.store
+            .type_chain(node_type)
+            .await
+            .map_err(NodeServiceError::from_store)
+    }
+
+    /// The nearest core type `node_type` is or extends. Every rule a core
+    /// type has is applied through this, so it reaches the type's subtypes
+    /// (ADR-086 §5).
+    pub async fn core_type_of(
+        &self,
+        node_type: &str,
+    ) -> Result<Option<crate::models::CoreNodeType>, NodeServiceError> {
+        self.store
+            .core_type_of(node_type)
+            .await
+            .map_err(NodeServiceError::from_store)
+    }
+
+    /// Whether `node_type` is `base` or extends it.
+    pub async fn type_is_a(
+        &self,
+        node_type: &str,
+        base: crate::models::CoreNodeType,
+    ) -> Result<bool, NodeServiceError> {
+        self.store
+            .type_is_a(node_type, base)
+            .await
+            .map_err(NodeServiceError::from_store)
+    }
+
+    /// Run every behaviour in the node's type chain over it, base first: a
+    /// subtype is validated as the type it extends, plus its own rules.
+    pub(crate) async fn validate_behaviors(&self, node: &Node) -> Result<(), NodeServiceError> {
+        let chain = self.type_chain(&node.node_type).await?;
+        self.behaviors.validate_node(node, &chain)?;
+        Ok(())
+    }
+
+    /// The behaviour that decides a type's embedding and content rules: the
+    /// nearest one registered in its chain, else the schema-defined fallback.
+    pub(crate) async fn behavior_for(
+        &self,
+        node_type: &str,
+    ) -> Result<Arc<dyn crate::behaviors::NodeBehavior>, NodeServiceError> {
+        Ok(self.behaviors.resolve(&self.type_chain(node_type).await?))
     }
 
     /// Check if a node type is embeddable according to its behavior
@@ -2373,8 +2429,15 @@ impl NodeService {
     /// For types that are conditionally embeddable (based on content), this creates
     /// a probe node with non-empty content. If the behavior still returns `None`,
     /// the type is never embeddable.
-    fn is_embeddable_type(&self, node_type: &str) -> bool {
-        behavior_is_embeddable(&self.behaviors, node_type)
+    async fn is_embeddable_type(&self, node_type: &str) -> bool {
+        // An unreadable chain falls back to the type alone rather than
+        // failing the write this check rides on: the embedding queue is
+        // derived state.
+        let chain = self
+            .type_chain(node_type)
+            .await
+            .unwrap_or_else(|_| vec![node_type.to_string()]);
+        behavior_is_embeddable(&self.behaviors, &chain)
     }
 
     /// Create a new NodeService with a client identifier
@@ -2665,11 +2728,12 @@ impl NodeService {
 /// vs. non-embeddable containers (e.g. `date` pages).
 pub(crate) fn behavior_is_embeddable(
     behaviors: &crate::behaviors::NodeBehaviorRegistry,
-    node_type: &str,
+    chain: &[String],
 ) -> bool {
-    let behavior: Arc<dyn crate::behaviors::NodeBehavior> = behaviors
-        .get(node_type)
-        .unwrap_or_else(|| Arc::new(crate::behaviors::CustomNodeBehavior::new(node_type)));
+    // Resolved through the type's chain: a subtype is embedded exactly when
+    // the type it extends is.
+    let behavior = behaviors.resolve(chain);
+    let node_type = chain.first().map(String::as_str).unwrap_or_default();
     // Probe with non-empty content to see if the behavior can ever return Some.
     let probe = Node {
         id: "probe".to_string(),
@@ -2860,6 +2924,13 @@ impl NodeAccessor for NodeService {
             .await
             .map_err(NodeServiceError::from_store)
     }
+
+    async fn type_chain(&self, node_type: &str) -> Result<Vec<String>, NodeServiceError> {
+        self.store
+            .type_chain(node_type)
+            .await
+            .map_err(NodeServiceError::from_store)
+    }
 }
 
 #[cfg(test)]
@@ -2867,6 +2938,12 @@ mod tests {
     use super::*;
     use crate::db::SqliteStore;
     use crate::models::SkillNode;
+
+    /// A UUID derived from a readable name, for a test that creates many
+    /// nodes and needs to name them again.
+    fn test_id(name: &str) -> String {
+        uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_OID, name.as_bytes()).to_string()
+    }
     use crate::InsertPosition;
     use serde_json::json;
     use tempfile::TempDir;
@@ -3032,7 +3109,7 @@ mod tests {
             json!({
                 "name": "Ticket",
                 "fields": [
-                    { "name": "priority", "type": "string", "protection": "user", "indexed": false }
+                    { "name": "priority", "type": "text", "protection": "user", "indexed": false }
                 ]
             }),
         )
@@ -3045,7 +3122,7 @@ mod tests {
                 "name": "Bug",
                 "extends": "ticket",
                 "fields": [
-                    { "name": "severity", "type": "string", "protection": "user", "indexed": false }
+                    { "name": "severity", "type": "text", "protection": "user", "indexed": false }
                 ]
             }),
         )
@@ -3135,7 +3212,7 @@ mod tests {
             json!({
                 "name": "Ticket",
                 "fields": [
-                    { "name": "priority", "type": "string", "protection": "user", "indexed": false }
+                    { "name": "priority", "type": "text", "protection": "user", "indexed": false }
                 ]
             }),
         )
@@ -3200,7 +3277,7 @@ mod tests {
             json!({
                 "name": "Ticket",
                 "fields": [
-                    { "name": "state", "type": "string", "protection": "user", "indexed": false }
+                    { "name": "state", "type": "text", "protection": "user", "indexed": false }
                 ]
             }),
         )
@@ -3213,7 +3290,7 @@ mod tests {
                 "name": "Bug",
                 "extends": "ticket",
                 "fields": [
-                    { "name": "notes", "type": "string", "protection": "user", "indexed": false }
+                    { "name": "notes", "type": "text", "protection": "user", "indexed": false }
                 ]
             }),
         )
@@ -3254,7 +3331,7 @@ mod tests {
             json!({
                 "name": "Ticket",
                 "fields": [
-                    { "name": "priority", "type": "string", "protection": "user", "indexed": false }
+                    { "name": "priority", "type": "text", "protection": "user", "indexed": false }
                 ]
             }),
         )
@@ -3267,7 +3344,7 @@ mod tests {
                 "name": "Bug",
                 "extends": "ticket",
                 "fields": [
-                    { "name": "severity", "type": "string", "protection": "user", "indexed": false }
+                    { "name": "severity", "type": "text", "protection": "user", "indexed": false }
                 ]
             }),
         )
@@ -3659,7 +3736,7 @@ mod tests {
             matches!(
                 e,
                 NodeServiceError::TreeInvariantViolation(v)
-                    if v.rule == crate::db::TreeInvariantRule::CollectionNotRoot
+                    if v.rule == crate::db::TreeInvariantRule::NotRoot(crate::models::CoreNodeType::Collection)
             )
         };
 
@@ -3748,7 +3825,7 @@ mod tests {
             matches!(
                 e,
                 NodeServiceError::TreeInvariantViolation(v)
-                    if v.rule == crate::db::TreeInvariantRule::SchemaNotRoot
+                    if v.rule == crate::db::TreeInvariantRule::NotRoot(crate::models::CoreNodeType::Schema)
             )
         };
 
@@ -3796,7 +3873,10 @@ mod tests {
         let violation = err
             .downcast_ref::<crate::db::TreeInvariantViolation>()
             .unwrap_or_else(|| panic!("expected a typed refusal, got {err:#}"));
-        assert_eq!(violation.rule, crate::db::TreeInvariantRule::SchemaNotRoot);
+        assert_eq!(
+            violation.rule,
+            crate::db::TreeInvariantRule::NotRoot(crate::models::CoreNodeType::Schema)
+        );
         assert_eq!(violation.node_id.as_deref(), Some("my_widget"));
 
         // Moved under a parent.
@@ -4159,7 +4239,12 @@ mod tests {
     #[tokio::test]
     async fn add_existing_child_appends_in_order() {
         let (service, _temp) = create_test_service().await;
-        for id in ["p", "a", "b", "c"] {
+        for id in [
+            "0abc7c38-32f8-5fd4-b30e-3e1080535d94",
+            "7b9a12ed-d3ba-5b46-a6f6-7a952d22bd90",
+            "c9668a68-ab56-5b6a-b13d-1bef2f88c379",
+            "bff0a8d2-4776-5ce4-9176-c4dd4cfc8f19",
+        ] {
             service
                 .create_node(Node::new_with_id(
                     id.to_string(),
@@ -4171,9 +4256,18 @@ mod tests {
                 .unwrap();
         }
 
-        for child in ["a", "b", "c"] {
+        for child in [
+            "7b9a12ed-d3ba-5b46-a6f6-7a952d22bd90",
+            "c9668a68-ab56-5b6a-b13d-1bef2f88c379",
+            "bff0a8d2-4776-5ce4-9176-c4dd4cfc8f19",
+        ] {
             service
-                .create_relationship("p", "has_child", child, json!({}))
+                .create_relationship(
+                    "0abc7c38-32f8-5fd4-b30e-3e1080535d94",
+                    "has_child",
+                    child,
+                    json!({}),
+                )
                 .await
                 .unwrap();
         }
@@ -4181,17 +4275,29 @@ mod tests {
         // get_children sorts by the has_child edge order ASC, so insertion order
         // is preserved: each append landed after the previous max.
         let kids: Vec<String> = service
-            .get_children("p")
+            .get_children("0abc7c38-32f8-5fd4-b30e-3e1080535d94")
             .await
             .unwrap()
             .into_iter()
             .map(|k| k.id)
             .collect();
-        assert_eq!(kids, vec!["a", "b", "c"], "appends preserve sibling order");
+        assert_eq!(
+            kids,
+            vec![
+                "7b9a12ed-d3ba-5b46-a6f6-7a952d22bd90",
+                "c9668a68-ab56-5b6a-b13d-1bef2f88c379",
+                "bff0a8d2-4776-5ce4-9176-c4dd4cfc8f19"
+            ],
+            "appends preserve sibling order"
+        );
 
         let mut orders: Vec<f64> = service
             .store()
-            .get_relationship_orders("p", "has_child", "in_node")
+            .get_relationship_orders(
+                "0abc7c38-32f8-5fd4-b30e-3e1080535d94",
+                "has_child",
+                "in_node",
+            )
             .await
             .unwrap()
             .into_iter()
@@ -4221,14 +4327,17 @@ mod tests {
         // reorder target for the concurrent move.
         service
             .create_node(Node::new_with_id(
-                "p".to_string(),
+                "0abc7c38-32f8-5fd4-b30e-3e1080535d94".to_string(),
                 "text".to_string(),
-                "p".to_string(),
+                "0abc7c38-32f8-5fd4-b30e-3e1080535d94".to_string(),
                 json!({}),
             ))
             .await
             .unwrap();
-        for seed in ["seed0", "seed1"] {
+        for seed in [
+            "d4554b62-13f2-5686-95ab-a4de7749398f",
+            "b8b6063a-76be-5567-bc03-a4d83038236e",
+        ] {
             service
                 .create_node(Node::new_with_id(
                     seed.to_string(),
@@ -4239,7 +4348,12 @@ mod tests {
                 .await
                 .unwrap();
             service
-                .create_relationship("p", "has_child", seed, json!({}))
+                .create_relationship(
+                    "0abc7c38-32f8-5fd4-b30e-3e1080535d94",
+                    "has_child",
+                    seed,
+                    json!({}),
+                )
                 .await
                 .unwrap();
         }
@@ -4249,7 +4363,7 @@ mod tests {
         for i in 0..N {
             service
                 .create_node(Node::new_with_id(
-                    format!("n{i}"),
+                    test_id(&format!("n{i}")),
                     "text".to_string(),
                     format!("n{i}"),
                     json!({}),
@@ -4264,18 +4378,32 @@ mod tests {
             let service = service.clone();
             handles.push(tokio::spawn(async move {
                 service
-                    .create_relationship("p", "has_child", &format!("n{i}"), json!({}))
+                    .create_relationship(
+                        "0abc7c38-32f8-5fd4-b30e-3e1080535d94",
+                        "has_child",
+                        &test_id(&format!("n{i}")),
+                        json!({}),
+                    )
                     .await
                     .map(|_| ())
             }));
         }
         // A concurrent reorder contending on the same parent's sibling order.
         {
-            let version = service.get_node("seed1").await.unwrap().unwrap().version;
+            let version = service
+                .get_node("b8b6063a-76be-5567-bc03-a4d83038236e")
+                .await
+                .unwrap()
+                .unwrap()
+                .version;
             let service = service.clone();
             handles.push(tokio::spawn(async move {
                 service
-                    .reorder_node("seed1", version, crate::services::InsertPosition::Beginning)
+                    .reorder_node(
+                        "b8b6063a-76be-5567-bc03-a4d83038236e",
+                        version,
+                        crate::services::InsertPosition::Beginning,
+                    )
                     .await
             }));
         }
@@ -4286,13 +4414,20 @@ mod tests {
         }
 
         // All 2 seed + N appended children are present (none lost/duplicated).
-        let children = service.get_children("p").await.unwrap();
+        let children = service
+            .get_children("0abc7c38-32f8-5fd4-b30e-3e1080535d94")
+            .await
+            .unwrap();
         assert_eq!(children.len(), N + 2, "lost or duplicated a child");
 
         // Every has_child edge under the parent carries a DISTINCT order key.
         let mut orders: Vec<f64> = service
             .store()
-            .get_relationship_orders("p", "has_child", "in_node")
+            .get_relationship_orders(
+                "0abc7c38-32f8-5fd4-b30e-3e1080535d94",
+                "has_child",
+                "in_node",
+            )
             .await
             .unwrap()
             .into_iter()
@@ -4313,7 +4448,12 @@ mod tests {
     #[tokio::test]
     async fn bulk_create_has_child_edges_reproduces_order_and_is_idempotent() {
         let (service, _temp) = create_test_service().await;
-        for id in ["p", "a", "b", "c"] {
+        for id in [
+            "0abc7c38-32f8-5fd4-b30e-3e1080535d94",
+            "7b9a12ed-d3ba-5b46-a6f6-7a952d22bd90",
+            "c9668a68-ab56-5b6a-b13d-1bef2f88c379",
+            "bff0a8d2-4776-5ce4-9176-c4dd4cfc8f19",
+        ] {
             service
                 .create_node(Node::new_with_id(
                     id.to_string(),
@@ -4327,15 +4467,27 @@ mod tests {
         // Attach out of insertion order, with sibling orders b=1, a=2, c=3.
         let n = service
             .bulk_create_has_child_edges(&[
-                ("p".to_string(), "a".to_string(), 2.0),
-                ("p".to_string(), "b".to_string(), 1.0),
-                ("p".to_string(), "c".to_string(), 3.0),
+                (
+                    "0abc7c38-32f8-5fd4-b30e-3e1080535d94".to_string(),
+                    "7b9a12ed-d3ba-5b46-a6f6-7a952d22bd90".to_string(),
+                    2.0,
+                ),
+                (
+                    "0abc7c38-32f8-5fd4-b30e-3e1080535d94".to_string(),
+                    "c9668a68-ab56-5b6a-b13d-1bef2f88c379".to_string(),
+                    1.0,
+                ),
+                (
+                    "0abc7c38-32f8-5fd4-b30e-3e1080535d94".to_string(),
+                    "bff0a8d2-4776-5ce4-9176-c4dd4cfc8f19".to_string(),
+                    3.0,
+                ),
             ])
             .await
             .unwrap();
         assert_eq!(n, 3);
         let kids: Vec<String> = service
-            .get_children("p")
+            .get_children("0abc7c38-32f8-5fd4-b30e-3e1080535d94")
             .await
             .unwrap()
             .into_iter()
@@ -4343,21 +4495,33 @@ mod tests {
             .collect();
         assert_eq!(
             kids,
-            vec!["b", "a", "c"],
+            vec![
+                "c9668a68-ab56-5b6a-b13d-1bef2f88c379",
+                "7b9a12ed-d3ba-5b46-a6f6-7a952d22bd90",
+                "bff0a8d2-4776-5ce4-9176-c4dd4cfc8f19"
+            ],
             "children sorted by the given sibling order"
         );
 
         // Idempotent: a re-run skips already-parented children (no dup, no re-parent).
         let n2 = service
             .bulk_create_has_child_edges(&[
-                ("p".to_string(), "a".to_string(), 9.0),
-                ("p".to_string(), "b".to_string(), 9.0),
+                (
+                    "0abc7c38-32f8-5fd4-b30e-3e1080535d94".to_string(),
+                    "7b9a12ed-d3ba-5b46-a6f6-7a952d22bd90".to_string(),
+                    9.0,
+                ),
+                (
+                    "0abc7c38-32f8-5fd4-b30e-3e1080535d94".to_string(),
+                    "c9668a68-ab56-5b6a-b13d-1bef2f88c379".to_string(),
+                    9.0,
+                ),
             ])
             .await
             .unwrap();
         assert_eq!(n2, 0, "already-parented children are skipped");
         let kids2: Vec<String> = service
-            .get_children("p")
+            .get_children("0abc7c38-32f8-5fd4-b30e-3e1080535d94")
             .await
             .unwrap()
             .into_iter()
@@ -4365,7 +4529,11 @@ mod tests {
             .collect();
         assert_eq!(
             kids2,
-            vec!["b", "a", "c"],
+            vec![
+                "c9668a68-ab56-5b6a-b13d-1bef2f88c379",
+                "7b9a12ed-d3ba-5b46-a6f6-7a952d22bd90",
+                "bff0a8d2-4776-5ce4-9176-c4dd4cfc8f19"
+            ],
             "order unchanged on idempotent re-run"
         );
     }
@@ -4376,7 +4544,11 @@ mod tests {
     #[tokio::test]
     async fn bulk_create_has_child_edges_no_second_parent_within_one_batch() {
         let (service, _temp) = create_test_service().await;
-        for id in ["p", "q", "x"] {
+        for id in [
+            "0abc7c38-32f8-5fd4-b30e-3e1080535d94",
+            "198187fd-070f-5ccf-9410-f77afb61a628",
+            "6c453fe8-3e1e-5b84-9c1b-ba03442649a2",
+        ] {
             service
                 .create_node(Node::new_with_id(
                     id.to_string(),
@@ -4390,22 +4562,38 @@ mod tests {
         // Same child x under p then q in one batch.
         let n = service
             .bulk_create_has_child_edges(&[
-                ("p".to_string(), "x".to_string(), 1.0),
-                ("q".to_string(), "x".to_string(), 2.0),
+                (
+                    "0abc7c38-32f8-5fd4-b30e-3e1080535d94".to_string(),
+                    "6c453fe8-3e1e-5b84-9c1b-ba03442649a2".to_string(),
+                    1.0,
+                ),
+                (
+                    "198187fd-070f-5ccf-9410-f77afb61a628".to_string(),
+                    "6c453fe8-3e1e-5b84-9c1b-ba03442649a2".to_string(),
+                    2.0,
+                ),
             ])
             .await
             .unwrap();
         assert_eq!(n, 1, "only the first parent edge is created");
         let p_kids: Vec<String> = service
-            .get_children("p")
+            .get_children("0abc7c38-32f8-5fd4-b30e-3e1080535d94")
             .await
             .unwrap()
             .into_iter()
             .map(|k| k.id)
             .collect();
-        assert_eq!(p_kids, vec!["x"], "x attaches to the first parent p");
+        assert_eq!(
+            p_kids,
+            vec!["6c453fe8-3e1e-5b84-9c1b-ba03442649a2"],
+            "x attaches to the first parent p"
+        );
         assert!(
-            service.get_children("q").await.unwrap().is_empty(),
+            service
+                .get_children("198187fd-070f-5ccf-9410-f77afb61a628")
+                .await
+                .unwrap()
+                .is_empty(),
             "x is NOT also a child of q"
         );
     }
@@ -4727,7 +4915,7 @@ mod tests {
         service
             .bulk_update(vec![(
                 id.clone(),
-                NodeUpdate::new().with_properties(json!({"key": "value"})),
+                NodeUpdate::new().with_properties(json!({"custom:key": "value"})),
             )])
             .await
             .unwrap();
@@ -4736,7 +4924,7 @@ mod tests {
         assert_eq!(after_props_update.node_type, "text");
         let props = after_props_update.properties.to_string();
         assert!(
-            props.contains("key") && props.contains("value"),
+            props.contains("custom:key") && props.contains("value"),
             "property must be merged + normalized into the node: {props}"
         );
     }
@@ -5343,7 +5531,7 @@ mod tests {
         let mut rows: Vec<_> = (0..10_000)
             .map(|i| {
                 (
-                    format!("done-{i}"),
+                    test_id(&format!("done-{i}")),
                     "task".to_string(),
                     format!("Done task {i}"),
                     None,
@@ -5353,7 +5541,7 @@ mod tests {
             })
             .collect();
         rows.push((
-            "open-last".to_string(),
+            test_id("open-last"),
             "task".to_string(),
             "Open task".to_string(),
             None,
@@ -5376,7 +5564,7 @@ mod tests {
         let results = service.query_nodes(filter).await.unwrap();
         assert_eq!(
             results.iter().map(|n| n.id.as_str()).collect::<Vec<_>>(),
-            vec!["open-last"],
+            vec![test_id("open-last")],
             "the match past the first 10,000 rows must not be dropped"
         );
     }
@@ -9260,7 +9448,7 @@ mod tests {
         store
             .create_node(
                 Node::new_with_id(
-                    "g1".to_string(),
+                    "c842fee0-798a-56ce-a2a1-9d9b4d226b8c".to_string(),
                     "gadget".to_string(),
                     "Gadget One".to_string(),
                     serde_json::json!({}),
@@ -9273,7 +9461,7 @@ mod tests {
         store
             .create_node(
                 Node::new_with_id(
-                    "w1".to_string(),
+                    "5c115e74-4f2a-5af0-9741-d3d785a753b8".to_string(),
                     "widget".to_string(),
                     "Widget One".to_string(),
                     serde_json::json!({}),
@@ -9285,8 +9473,8 @@ mod tests {
             .unwrap();
         store
             .create_generic_relationship(
-                "g1",
-                "w1",
+                "c842fee0-798a-56ce-a2a1-9d9b4d226b8c",
+                "5c115e74-4f2a-5af0-9741-d3d785a753b8",
                 "assigned_to",
                 None,
                 &serde_json::json!({"role":"lead"}),
@@ -9295,9 +9483,12 @@ mod tests {
             .unwrap();
 
         // Outbound (from the source): assigned_to → widget, edge role=lead.
-        let out = crate::ops::rel_ops::get_node_relationships(&service, "g1")
-            .await
-            .unwrap();
+        let out = crate::ops::rel_ops::get_node_relationships(
+            &service,
+            "c842fee0-798a-56ce-a2a1-9d9b4d226b8c",
+        )
+        .await
+        .unwrap();
         let group = out
             .groups
             .iter()
@@ -9305,14 +9496,17 @@ mod tests {
             .expect("outbound assigned_to group present");
         assert_eq!(group.target_type.as_deref(), Some("widget"));
         assert_eq!(group.count, 1);
-        assert_eq!(group.related[0].id, "w1");
+        assert_eq!(group.related[0].id, "5c115e74-4f2a-5af0-9741-d3d785a753b8");
         assert_eq!(group.related[0].edge_properties["role"], "lead");
         assert!(group.edge_fields.is_some(), "edge_fields carried through");
 
         // Inbound (from the target): the SAME edge, labeled by reverse_name.
-        let inb = crate::ops::rel_ops::get_node_relationships(&service, "w1")
-            .await
-            .unwrap();
+        let inb = crate::ops::rel_ops::get_node_relationships(
+            &service,
+            "5c115e74-4f2a-5af0-9741-d3d785a753b8",
+        )
+        .await
+        .unwrap();
         let group = inb
             .groups
             .iter()
@@ -9322,7 +9516,7 @@ mod tests {
         assert_eq!(group.source_type, "gadget");
         assert_eq!(group.target_type.as_deref(), Some("gadget"));
         assert_eq!(group.count, 1);
-        assert_eq!(group.related[0].id, "g1");
+        assert_eq!(group.related[0].id, "c842fee0-798a-56ce-a2a1-9d9b4d226b8c");
         assert_eq!(group.related[0].edge_properties["role"], "lead");
 
         // Built-in structural relationships are excluded from both views.
@@ -9387,7 +9581,10 @@ mod tests {
             .unwrap();
 
         // Instances with NO edge between them.
-        for (id, ty) in [("g1", "gadget"), ("w1", "widget")] {
+        for (id, ty) in [
+            ("c842fee0-798a-56ce-a2a1-9d9b4d226b8c", "gadget"),
+            ("5c115e74-4f2a-5af0-9741-d3d785a753b8", "widget"),
+        ] {
             store
                 .create_node(
                     Node::new_with_id(
@@ -9404,9 +9601,12 @@ mod tests {
         }
 
         // Outbound side (already worked): empty group present.
-        let out = crate::ops::rel_ops::get_node_relationships(&service, "g1")
-            .await
-            .unwrap();
+        let out = crate::ops::rel_ops::get_node_relationships(
+            &service,
+            "c842fee0-798a-56ce-a2a1-9d9b4d226b8c",
+        )
+        .await
+        .unwrap();
         let og = out
             .groups
             .iter()
@@ -9417,9 +9617,12 @@ mod tests {
 
         // Inbound side (the fix): the empty group is now emitted too, so a type
         // reached only via a derived inbound relationship still surfaces it.
-        let inb = crate::ops::rel_ops::get_node_relationships(&service, "w1")
-            .await
-            .unwrap();
+        let inb = crate::ops::rel_ops::get_node_relationships(
+            &service,
+            "5c115e74-4f2a-5af0-9741-d3d785a753b8",
+        )
+        .await
+        .unwrap();
         let ig = inb
             .groups
             .iter()
@@ -9488,7 +9691,11 @@ mod tests {
                 .unwrap();
         }
 
-        for (id, ty) in [("g1", "gadget"), ("s1", "sprocket"), ("w1", "widget")] {
+        for (id, ty) in [
+            ("c842fee0-798a-56ce-a2a1-9d9b4d226b8c", "gadget"),
+            ("s1", "sprocket"),
+            ("5c115e74-4f2a-5af0-9741-d3d785a753b8", "widget"),
+        ] {
             store
                 .create_node(
                     Node::new_with_id(
@@ -9504,17 +9711,32 @@ mod tests {
                 .unwrap();
         }
         store
-            .create_generic_relationship("g1", "w1", "assigned_to", None, &serde_json::json!({}))
+            .create_generic_relationship(
+                "c842fee0-798a-56ce-a2a1-9d9b4d226b8c",
+                "5c115e74-4f2a-5af0-9741-d3d785a753b8",
+                "assigned_to",
+                None,
+                &serde_json::json!({}),
+            )
             .await
             .unwrap();
         store
-            .create_generic_relationship("s1", "w1", "assigned_to", None, &serde_json::json!({}))
+            .create_generic_relationship(
+                "s1",
+                "5c115e74-4f2a-5af0-9741-d3d785a753b8",
+                "assigned_to",
+                None,
+                &serde_json::json!({}),
+            )
             .await
             .unwrap();
 
-        let inb = crate::ops::rel_ops::get_node_relationships(&service, "w1")
-            .await
-            .unwrap();
+        let inb = crate::ops::rel_ops::get_node_relationships(
+            &service,
+            "5c115e74-4f2a-5af0-9741-d3d785a753b8",
+        )
+        .await
+        .unwrap();
         let inbound: Vec<_> = inb.groups.iter().filter(|g| g.direction == "in").collect();
 
         assert_eq!(
@@ -9527,7 +9749,7 @@ mod tests {
             .find(|g| g.source_type == "gadget")
             .expect("gadget inbound group");
         assert_eq!(gadget.count, 1);
-        assert_eq!(gadget.related[0].id, "g1");
+        assert_eq!(gadget.related[0].id, "c842fee0-798a-56ce-a2a1-9d9b4d226b8c");
         let sprocket = inbound
             .iter()
             .find(|g| g.source_type == "sprocket")
@@ -10662,7 +10884,7 @@ mod tests {
             json!({
                 "name": "Ticket",
                 "fields": [
-                    { "name": "state", "type": "string", "protection": "user", "indexed": false }
+                    { "name": "state", "type": "text", "protection": "user", "indexed": false }
                 ]
             }),
         )
@@ -10675,7 +10897,7 @@ mod tests {
                 "name": "Bug",
                 "extends": "ticket",
                 "fields": [
-                    { "name": "severity", "type": "string", "protection": "user", "indexed": false }
+                    { "name": "severity", "type": "text", "protection": "user", "indexed": false }
                 ]
             }),
         )
@@ -10828,7 +11050,7 @@ mod tests {
             json!({
                 "name": "Venue",
                 "fields": [
-                    { "name": "venue_name", "type": "string", "protection": "user", "indexed": false }
+                    { "name": "venue_name", "type": "text", "protection": "user", "indexed": false }
                 ],
                 "title_template": "{venue_name}"
             }),
@@ -11112,7 +11334,7 @@ mod tests {
             json!({
                 "name": "Ticket",
                 "fields": [
-                    { "name": "priority", "type": "string", "protection": "user", "indexed": false }
+                    { "name": "priority", "type": "text", "protection": "user", "indexed": false }
                 ]
             }),
         )
@@ -11125,7 +11347,7 @@ mod tests {
                 "name": "Bug",
                 "extends": "ticket",
                 "fields": [
-                    { "name": "severity", "type": "string", "protection": "user", "indexed": false }
+                    { "name": "severity", "type": "text", "protection": "user", "indexed": false }
                 ]
             }),
         )
@@ -11168,7 +11390,7 @@ mod tests {
             json!({
                 "name": "Ticket",
                 "fields": [
-                    { "name": "priority", "type": "string", "protection": "user", "indexed": false }
+                    { "name": "priority", "type": "text", "protection": "user", "indexed": false }
                 ]
             }),
         )
@@ -11181,7 +11403,7 @@ mod tests {
                 "name": "Bug",
                 "extends": "ticket",
                 "fields": [
-                    { "name": "severity", "type": "string", "protection": "user", "indexed": false }
+                    { "name": "severity", "type": "text", "protection": "user", "indexed": false }
                 ]
             }),
         )
@@ -11240,7 +11462,7 @@ mod tests {
             json!({
                 "name": "Ticket",
                 "fields": [
-                    { "name": "priority", "type": "string", "protection": "user", "indexed": false }
+                    { "name": "priority", "type": "text", "protection": "user", "indexed": false }
                 ]
             }),
         )
@@ -11253,7 +11475,7 @@ mod tests {
                 "name": "Bug",
                 "extends": "ticket",
                 "fields": [
-                    { "name": "severity", "type": "string", "protection": "user", "indexed": false }
+                    { "name": "severity", "type": "text", "protection": "user", "indexed": false }
                 ]
             }),
         )
@@ -11262,7 +11484,7 @@ mod tests {
 
         let ids = service
             .bulk_create_hierarchy(vec![(
-                "bug-row-1".to_string(),
+                "51661381-68f4-5929-918f-4839b3836216".to_string(),
                 "bug".to_string(),
                 "A bug".to_string(),
                 None,
@@ -11305,7 +11527,7 @@ mod tests {
             )
         };
         let err = service
-            .bulk_create_hierarchy(vec![unknown_row("incident-before")])
+            .bulk_create_hierarchy(vec![unknown_row("957ea383-f3c4-5d69-b0f5-e49fa1cd0f80")])
             .await
             .expect_err("a type with no schema must be rejected");
         assert!(
@@ -11324,30 +11546,39 @@ mod tests {
 
         let ids = service
             .bulk_create_hierarchy(vec![
-                unknown_row("incident-root"),
+                unknown_row("be7e72e7-9a9c-5dfd-b4a6-b58dd9b93270"),
                 (
-                    "incident-child".to_string(),
+                    "61ad0af2-aa0e-541c-9d11-c2365144e83b".to_string(),
                     "incident".to_string(),
                     "A follow-up".to_string(),
-                    Some("incident-root".to_string()),
+                    Some("be7e72e7-9a9c-5dfd-b4a6-b58dd9b93270".to_string()),
                     1.0,
                     json!({}),
                 ),
             ])
             .await
             .expect("a type registered after startup must be accepted");
-        assert_eq!(ids, vec!["incident-root", "incident-child"]);
+        assert_eq!(
+            ids,
+            vec![
+                "be7e72e7-9a9c-5dfd-b4a6-b58dd9b93270",
+                "61ad0af2-aa0e-541c-9d11-c2365144e83b"
+            ]
+        );
 
         let child = service
-            .get_node("incident-child")
+            .get_node("61ad0af2-aa0e-541c-9d11-c2365144e83b")
             .await
             .unwrap()
             .expect("child row must exist");
         assert_eq!(child.node_type, "incident");
-        let children = service.get_children("incident-root").await.unwrap();
+        let children = service
+            .get_children("be7e72e7-9a9c-5dfd-b4a6-b58dd9b93270")
+            .await
+            .unwrap();
         assert_eq!(
             children.iter().map(|n| n.id.as_str()).collect::<Vec<_>>(),
-            vec!["incident-child"]
+            vec!["61ad0af2-aa0e-541c-9d11-c2365144e83b"]
         );
     }
 
@@ -11368,7 +11599,7 @@ mod tests {
             json!({
                 "name": "Gizmo",
                 "fields": [
-                    { "name": "widget", "type": "string", "protection": "user", "indexed": false }
+                    { "name": "widget", "type": "text", "protection": "user", "indexed": false }
                 ]
             }),
         )
@@ -11443,7 +11674,7 @@ mod tests {
             json!({
                 "name": "Ticket",
                 "fields": [
-                    { "name": "priority", "type": "string", "protection": "user", "indexed": false }
+                    { "name": "priority", "type": "text", "protection": "user", "indexed": false }
                 ]
             }),
         )
@@ -11456,7 +11687,7 @@ mod tests {
                 "name": "Bug",
                 "extends": "ticket",
                 "fields": [
-                    { "name": "severity", "type": "string", "protection": "user", "indexed": false }
+                    { "name": "severity", "type": "text", "protection": "user", "indexed": false }
                 ]
             }),
         )
@@ -11536,7 +11767,7 @@ mod tests {
                 "fields": [
                     {
                         "name": "priority",
-                        "type": "string",
+                        "type": "text",
                         "protection": "user",
                         "indexed": false,
                         "default": "normal"
@@ -11553,7 +11784,7 @@ mod tests {
                 "name": "Bug",
                 "extends": "ticket",
                 "fields": [
-                    { "name": "severity", "type": "string", "protection": "user", "indexed": false }
+                    { "name": "severity", "type": "text", "protection": "user", "indexed": false }
                 ]
             }),
         )
@@ -11842,8 +12073,16 @@ mod tests {
             .unwrap();
 
         for (id, node_type, title) in [
-            ("g1", "gadget", "Gadget One"),
-            ("w1", "widget", "Widget One"),
+            (
+                "c842fee0-798a-56ce-a2a1-9d9b4d226b8c",
+                "gadget",
+                "Gadget One",
+            ),
+            (
+                "5c115e74-4f2a-5af0-9741-d3d785a753b8",
+                "widget",
+                "Widget One",
+            ),
         ] {
             store
                 .create_node(
@@ -11870,17 +12109,20 @@ mod tests {
 
         service
             .create_relationship(
-                "g1",
+                "c842fee0-798a-56ce-a2a1-9d9b4d226b8c",
                 "assigned_to",
-                "w1",
+                "5c115e74-4f2a-5af0-9741-d3d785a753b8",
                 serde_json::json!({"role": "owner"}),
             )
             .await
             .expect("a declared enum value must be accepted");
 
-        let view = crate::ops::rel_ops::get_node_relationships(&service, "g1")
-            .await
-            .unwrap();
+        let view = crate::ops::rel_ops::get_node_relationships(
+            &service,
+            "c842fee0-798a-56ce-a2a1-9d9b4d226b8c",
+        )
+        .await
+        .unwrap();
         let group = view
             .groups
             .iter()
@@ -11897,9 +12139,9 @@ mod tests {
 
         let err = service
             .create_relationship(
-                "g1",
+                "c842fee0-798a-56ce-a2a1-9d9b4d226b8c",
                 "assigned_to",
-                "w1",
+                "5c115e74-4f2a-5af0-9741-d3d785a753b8",
                 serde_json::json!({"role": "onwer"}),
             )
             .await
@@ -11911,9 +12153,12 @@ mod tests {
         );
 
         // Nothing was written.
-        let view = crate::ops::rel_ops::get_node_relationships(&service, "g1")
-            .await
-            .unwrap();
+        let view = crate::ops::rel_ops::get_node_relationships(
+            &service,
+            "c842fee0-798a-56ce-a2a1-9d9b4d226b8c",
+        )
+        .await
+        .unwrap();
         let group = view
             .groups
             .iter()
@@ -11928,9 +12173,9 @@ mod tests {
         let (service, _temp) = service_with_enum_edge_field().await;
         assert!(service
             .create_relationship(
-                "g1",
+                "c842fee0-798a-56ce-a2a1-9d9b4d226b8c",
                 "assigned_to",
-                "w1",
+                "5c115e74-4f2a-5af0-9741-d3d785a753b8",
                 serde_json::json!({"role": "Owner"})
             )
             .await
@@ -11945,17 +12190,20 @@ mod tests {
 
         service
             .create_relationship(
-                "g1",
+                "c842fee0-798a-56ce-a2a1-9d9b4d226b8c",
                 "assigned_to",
-                "w1",
+                "5c115e74-4f2a-5af0-9741-d3d785a753b8",
                 serde_json::json!({"role": "viewer", "note": "anything", "adhoc": 7}),
             )
             .await
             .expect("non-enum and undeclared edge keys must pass through");
 
-        let view = crate::ops::rel_ops::get_node_relationships(&service, "g1")
-            .await
-            .unwrap();
+        let view = crate::ops::rel_ops::get_node_relationships(
+            &service,
+            "c842fee0-798a-56ce-a2a1-9d9b4d226b8c",
+        )
+        .await
+        .unwrap();
         let props = &view
             .groups
             .iter()
@@ -11974,14 +12222,19 @@ mod tests {
         let (service, _temp) = service_with_enum_edge_field().await;
 
         service
-            .create_relationship("g1", "assigned_to", "w1", serde_json::json!({}))
+            .create_relationship(
+                "c842fee0-798a-56ce-a2a1-9d9b4d226b8c",
+                "assigned_to",
+                "5c115e74-4f2a-5af0-9741-d3d785a753b8",
+                serde_json::json!({}),
+            )
             .await
             .expect("an omitted enum edge value must be accepted");
         service
             .create_relationship(
-                "g1",
+                "c842fee0-798a-56ce-a2a1-9d9b4d226b8c",
                 "assigned_to",
-                "w1",
+                "5c115e74-4f2a-5af0-9741-d3d785a753b8",
                 serde_json::json!({"role": serde_json::Value::Null}),
             )
             .await
@@ -11994,7 +12247,12 @@ mod tests {
         let (service, _temp) = service_with_enum_edge_field().await;
 
         let err = service
-            .create_relationship("g1", "assigned_to", "w1", serde_json::json!({"role": 3}))
+            .create_relationship(
+                "c842fee0-798a-56ce-a2a1-9d9b4d226b8c",
+                "assigned_to",
+                "5c115e74-4f2a-5af0-9741-d3d785a753b8",
+                serde_json::json!({"role": 3}),
+            )
             .await
             .expect_err("a numeric enum value must be rejected");
         assert!(err.to_string().contains("must be a string"), "got: {err}");
@@ -12284,7 +12542,7 @@ mod tests {
         store
             .create_node(
                 Node::new_with_id(
-                    "g1".to_string(),
+                    "c842fee0-798a-56ce-a2a1-9d9b4d226b8c".to_string(),
                     "gadget".to_string(),
                     "Gadget One".to_string(),
                     serde_json::json!({}),
@@ -12297,7 +12555,7 @@ mod tests {
         store
             .create_node(
                 Node::new_with_id(
-                    "w1".to_string(),
+                    "5c115e74-4f2a-5af0-9741-d3d785a753b8".to_string(),
                     "widget".to_string(),
                     "Widget One".to_string(),
                     serde_json::json!({}),
@@ -12310,7 +12568,7 @@ mod tests {
         store
             .create_node(
                 Node::new_with_id(
-                    "w2".to_string(),
+                    "b3ab8c00-0ec7-5b5c-acd6-dd590aa18de0".to_string(),
                     "widget".to_string(),
                     "Widget Two".to_string(),
                     serde_json::json!({}),
@@ -12322,25 +12580,39 @@ mod tests {
             .unwrap();
 
         service
-            .create_relationship("g1", "primary_widget", "w1", serde_json::json!({}))
+            .create_relationship(
+                "c842fee0-798a-56ce-a2a1-9d9b4d226b8c",
+                "primary_widget",
+                "5c115e74-4f2a-5af0-9741-d3d785a753b8",
+                serde_json::json!({}),
+            )
             .await
             .expect("first edge from a cardinality-one source must succeed");
 
         let replaced = service
-            .create_relationship("g1", "primary_widget", "w2", serde_json::json!({}))
+            .create_relationship(
+                "c842fee0-798a-56ce-a2a1-9d9b4d226b8c",
+                "primary_widget",
+                "b3ab8c00-0ec7-5b5c-acd6-dd590aa18de0",
+                serde_json::json!({}),
+            )
             .await
             .expect("a second edge from a cardinality-one source must replace the first");
         assert_eq!(
             replaced.replaced,
             vec![StoredEdge {
-                source_id: "g1".to_string(),
+                source_id: "c842fee0-798a-56ce-a2a1-9d9b4d226b8c".to_string(),
                 relationship_name: "primary_widget".to_string(),
-                target_id: "w1".to_string(),
+                target_id: "5c115e74-4f2a-5af0-9741-d3d785a753b8".to_string(),
             }]
         );
 
         let targets = service
-            .get_related_nodes("g1", "primary_widget", "out")
+            .get_related_nodes(
+                "c842fee0-798a-56ce-a2a1-9d9b4d226b8c",
+                "primary_widget",
+                "out",
+            )
             .await
             .unwrap();
         assert_eq!(
@@ -12348,7 +12620,7 @@ mod tests {
             1,
             "g1 must hold exactly one primary_widget edge, not both"
         );
-        assert_eq!(targets[0].id, "w2");
+        assert_eq!(targets[0].id, "b3ab8c00-0ec7-5b5c-acd6-dd590aa18de0");
     }
 
     /// The exact scenario the reassignment machinery
@@ -12548,9 +12820,9 @@ mod tests {
 
         service
             .create_relationship(
-                "g1",
+                "c842fee0-798a-56ce-a2a1-9d9b4d226b8c",
                 "assigned_to",
-                "w1",
+                "5c115e74-4f2a-5af0-9741-d3d785a753b8",
                 serde_json::json!({"role": "viewer"}),
             )
             .await
@@ -12558,9 +12830,9 @@ mod tests {
 
         let err = service
             .update_relationship_properties(
-                "g1",
+                "c842fee0-798a-56ce-a2a1-9d9b4d226b8c",
                 "assigned_to",
-                "w1",
+                "5c115e74-4f2a-5af0-9741-d3d785a753b8",
                 serde_json::json!({"role": "superuser"}),
             )
             .await
@@ -12568,9 +12840,12 @@ mod tests {
         assert!(err.to_string().contains("superuser"), "got: {err}");
 
         // The original value survives the rejected edit.
-        let view = crate::ops::rel_ops::get_node_relationships(&service, "g1")
-            .await
-            .unwrap();
+        let view = crate::ops::rel_ops::get_node_relationships(
+            &service,
+            "c842fee0-798a-56ce-a2a1-9d9b4d226b8c",
+        )
+        .await
+        .unwrap();
         let group = view
             .groups
             .iter()
@@ -12581,9 +12856,9 @@ mod tests {
         // A legal edit still goes through.
         service
             .update_relationship_properties(
-                "g1",
+                "c842fee0-798a-56ce-a2a1-9d9b4d226b8c",
                 "assigned_to",
-                "w1",
+                "5c115e74-4f2a-5af0-9741-d3d785a753b8",
                 serde_json::json!({"role": "editor"}),
             )
             .await

@@ -81,6 +81,7 @@ vi.mock('$lib/stores/reactive-structure-tree.svelte', () => ({
 
 function makeNode(id: string): Node {
   return {
+    lifecycleStatus: 'active',
     id,
     nodeType: 'text',
     content: `Content ${id}`,

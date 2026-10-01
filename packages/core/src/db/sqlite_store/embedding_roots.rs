@@ -17,13 +17,16 @@ use super::*;
 const MAX_PARENT_CHAIN_DEPTH: usize = 1000;
 
 /// SQL for "the node `id_expr` is filed into a collection of its own": it
-/// holds a `member_of` edge and is not a `person`. A person's `member_of`
-/// edge makes the person a member of the collection; it does not file the
-/// person node as content, so it does not split the person from its root.
+/// holds a `member_of` edge and is not a `person` (or a subtype of one). A
+/// person's `member_of` edge makes the person a member of the collection; it
+/// does not file the person node as content, so it does not split the person
+/// from its root.
 fn filed_descendant_sql(id_expr: &str) -> String {
+    let not_a_person =
+        crate::db::schema::is_not_a_sql("cn.node_type", &[crate::models::CoreNodeType::Person]);
     format!(
         "EXISTS (SELECT 1 FROM node cn WHERE cn.id = {id_expr} \
-            AND cn.node_type != 'person' \
+            AND {not_a_person} \
             AND EXISTS (SELECT 1 FROM relationship cm \
                 WHERE cm.in_node = cn.id AND cm.relationship_type = 'member_of'))"
     )

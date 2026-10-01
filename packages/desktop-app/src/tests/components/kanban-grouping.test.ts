@@ -6,7 +6,7 @@
 
 import { describe, it, expect } from 'vitest';
 import type { Node } from '$lib/types';
-import type { SchemaField, SchemaNode } from '$lib/types/schema-node';
+import type { SchemaField, SchemaFieldType, SchemaNode } from '$lib/types/schema-node';
 import {
   UNASSIGNED,
   eligibleGroupByFields,
@@ -18,7 +18,7 @@ import {
   growRevealed
 } from '$lib/components/query/kanban-grouping';
 
-function field(name: string, type: string, extra: Partial<SchemaField> = {}): SchemaField {
+function field(name: string, type: SchemaFieldType, extra: Partial<SchemaField> = {}): SchemaField {
   return { name, type, friendlyName: name, protection: 'user', indexed: false, ...extra };
 }
 
@@ -45,13 +45,13 @@ const statusField = field('status', 'enum', {
 
 describe('eligibleGroupByFields', () => {
   it('returns only enum fields', () => {
-    const schema = { fields: [field('name', 'string'), statusField, field('count', 'number')] } as SchemaNode;
+    const schema = { fields: [field('name', 'text'), statusField, field('count', 'number')] } as SchemaNode;
     expect(eligibleGroupByFields(schema).map((f) => f.name)).toEqual(['status']);
   });
 
   it('returns [] for a null schema or a schema with no enum fields', () => {
     expect(eligibleGroupByFields(null)).toEqual([]);
-    expect(eligibleGroupByFields({ fields: [field('name', 'string')] } as SchemaNode)).toEqual([]);
+    expect(eligibleGroupByFields({ fields: [field('name', 'text')] } as SchemaNode)).toEqual([]);
   });
 
   it('excludes an enum field whose values include the UNASSIGNED sentinel', () => {

@@ -24,8 +24,8 @@ const addressField = field({
   name: 'address',
   type: 'object',
   fields: [
-    field({ name: 'street', friendlyName: 'Street', type: 'string' }),
-    field({ name: 'city', friendlyName: 'City', type: 'string' })
+    field({ name: 'street', friendlyName: 'Street', type: 'text' }),
+    field({ name: 'city', friendlyName: 'City', type: 'text' })
   ]
 });
 

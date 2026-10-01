@@ -17,6 +17,7 @@
  * - Real-time synchronization across multiple viewers
  */
 
+import { isA } from '$lib/types/core-node-types';
 import { v4 as uuidv4 } from 'uuid';
 import { parseHeaderLevel } from './markdown-utils';
 import { SharedNodeStore } from './shared-node-store.svelte';
@@ -239,6 +240,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     // The persistence path derives parent from structureTree.getParent(nodeId) at CREATE time.
     const newNode: Node & { insertPosition?: InsertPosition | null } = {
       id: nodeId,
+      lifecycleStatus: 'active',
       nodeType: nodeType,
       content: initialContent,
       createdAt: new Date().toISOString(),
@@ -1632,7 +1634,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
       };
 
       for (const node of nodes) {
-        const isPlaceholder = node.nodeType === 'text' && node.content.trim() === '';
+        const isPlaceholder = isA(node.nodeType, 'text') && node.content.trim() === '';
         const source = isPlaceholder ? viewerSource : databaseSource;
 
         // Only skip persistence for initial viewer placeholder (when no children exist)

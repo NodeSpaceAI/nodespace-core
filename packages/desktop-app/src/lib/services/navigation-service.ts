@@ -19,6 +19,7 @@
  * showing the node. See each method for which to reach for.
  */
 
+import { isA } from '$lib/types/core-node-types';
 import { v4 as uuidv4 } from 'uuid';
 import {
   addTab,
@@ -169,7 +170,7 @@ export class NavigationService {
    */
   private generateTabTitle(node: Node): string {
     // For date nodes, use formatted date
-    if (node.nodeType === 'date') {
+    if (isA(node.nodeType, 'date')) {
       const dateValue =
         node.properties && typeof node.properties === 'object' && 'date' in node.properties
           ? node.properties.date
