@@ -1947,37 +1947,34 @@ fn node_link_re() -> &'static Regex {
     RE.get_or_init(|| Regex::new(r"\[([^\]]+)\]\((nodespace://[^)\s]*)\)").unwrap())
 }
 
-/// Matches a link target with the shape of a generated node id: five
-/// `-`-separated alphanumeric groups of 8, 4, 4, 4 and 12 characters.
+/// Matches a link target that is a type name: lowercase letters and
+/// underscores, optionally behind a `schema:` prefix.
 ///
-/// Alphanumeric rather than hex on purpose: an invented id is often UUID-like
-/// without being a valid UUID, and it is the shape that makes it read as a
-/// real reference.
-fn generated_id_target_re() -> &'static Regex {
+/// This is the one shape the unlink step repairs, so it is deliberately
+/// narrow. A generated id has digits and hyphens and can never match, and
+/// neither can a miscounted, shortened or otherwise malformed one.
+fn type_name_target_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(
-            r"^nodespace://[0-9A-Za-z]{8}-[0-9A-Za-z]{4}-[0-9A-Za-z]{4}-[0-9A-Za-z]{4}-[0-9A-Za-z]{12}$",
-        )
-        .unwrap()
-    })
+    RE.get_or_init(|| Regex::new(r"^nodespace://(?:schema:)?[a-z][a-z_]*$").unwrap())
 }
 
-/// Reduce a titled node link to its label when its target is a name dressed up
-/// as a reference, and return the targets that were dropped.
+/// Reduce a titled node link to its label when its target is a type name
+/// dressed up as a reference, and return the targets that were dropped.
 ///
-/// The agent is told to link every node it names, and it extends that to
-/// things it has a name for but no id, most often a type from the schema list:
+/// The agent is told to link every node it names, and it extends that to a
+/// type from the schema list, which it has a name for but no id:
 /// `[Event Venue](nodespace://event_venue)`,
 /// `[invoice](nodespace://schema:invoice)`. The sentence around such a link is
 /// still a true answer and the label is the name the model meant, so the link
 /// is dropped and the reply is kept.
 ///
-/// A link is left alone, for the fabricated-id guard to judge, when its target
-/// is grounded or has the shape of a generated id. An ungrounded target of
-/// that shape is the mark of an invented node, and removing it would keep the
-/// claim while hiding the one sign that it is false. An invented id written
-/// bare has no label to fall back on and is likewise left for the guard.
+/// Every other ungrounded target is left in place for the fabricated-id guard,
+/// whatever its shape. An ungrounded id is the mark of an invented node, and
+/// removing it would keep the claim while hiding the one sign that it is
+/// false. So the repair recognises the safe case and nothing else: a target it
+/// does not recognise costs a replaced reply, never a false one shown. An
+/// invented id written bare has no label to fall back on and is likewise left
+/// for the guard.
 ///
 /// The whole target must be grounded, not just the id `node_uri_re` reads out
 /// of it: `nodespace://schema:invoice` is not the node `nodespace://schema`.
@@ -1988,7 +1985,7 @@ fn unlink_ungrounded_node_links(text: &str, grounded: &HashSet<String>) -> (Stri
     let unlinked = node_link_re()
         .replace_all(text, |caps: &regex::Captures| {
             let target = &caps[2];
-            if grounded.contains(target) || generated_id_target_re().is_match(target) {
+            if grounded.contains(target) || !type_name_target_re().is_match(target) {
                 caps[0].to_string()
             } else {
                 if !dropped.iter().any(|seen| seen == target) {
@@ -2944,11 +2941,11 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                 // resolves to nothing. Because the write usually DID land, the
                 // replacement says so rather than asking the user to confirm.
                 //
-                // A titled link whose target is a name rather than an id (a
-                // type, say) is not such a reference: its label still names
-                // what the model meant, so only the link is dropped first (see
-                // `unlink_ungrounded_node_links`). A titled link to an
-                // id-shaped target stays, and is judged here like a bare id.
+                // A titled link whose target is a type name is not such a
+                // reference: its label still names what the model meant, so
+                // only the link is dropped first (see
+                // `unlink_ungrounded_node_links`). Any other titled link stays,
+                // and is judged here like a bare id.
                 let normalized = if !normalized.is_empty() && normalized.contains("nodespace://") {
                     let grounded = session_grounded_node_uris(&all_tool_executions, session);
                     let (normalized, dropped_links) =
@@ -7980,12 +7977,29 @@ mod tests {
         assert_eq!(dropped, vec!["nodespace://schema:invoice".to_string()]);
     }
 
+    /// Only a type name is repaired. An invented id reaches the guard whatever
+    /// its shape: well formed, miscounted, undashed, short, the prompt's own
+    /// example id, or a slug.
     #[test]
-    fn unlink_leaves_a_link_to_an_ungrounded_generated_id_for_the_guard() {
-        let text = "I found [Budget 2025](nodespace://3f2a9c1e-7b4d-4e8f-9a1b-2c3d4e5f6a7b).";
-        let (out, dropped) = unlink_ungrounded_node_links(text, &HashSet::new());
-        assert_eq!(out, text);
-        assert!(dropped.is_empty());
+    fn unlink_leaves_every_ungrounded_target_that_is_not_a_type_name_for_the_guard() {
+        for target in [
+            "nodespace://3f2a9c1e-7b4d-4e8f-9a1b-2c3d4e5f6a7b",
+            "nodespace://3f2a9c1e-7b4d-4e8f-9a1b-2c3d4e5f6a7",
+            "nodespace://3f2a9c1e-7b4d-4e8f-9a1b-2c3d4e5f6a7b8",
+            "nodespace://3f2a9c1e7b4d4e8f9a1b2c3d4e5f6a7b",
+            "nodespace://3f2a9c1e",
+            "nodespace://abc-123",
+            "nodespace://node_1a2b3c",
+            "nodespace://budget-plan",
+            "nodespace://q3_report",
+            "nodespace://schema:create-node",
+            "nodespace://Budget",
+        ] {
+            let text = format!("I found [Budget 2025]({target}).");
+            let (out, dropped) = unlink_ungrounded_node_links(&text, &HashSet::new());
+            assert_eq!(out, text, "{target} must be left for the guard");
+            assert!(dropped.is_empty(), "{target} must not be dropped");
+        }
     }
 
     #[test]
