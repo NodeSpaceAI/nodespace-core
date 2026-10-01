@@ -164,9 +164,9 @@ impl<R: Runtime> AppExtensions<R> {
     /// Core spawns the task from its startup task, once the daemon start
     /// attempt has finished and core's node watcher and token stream are
     /// wired. It never awaits the task, so a slow or hanging task delays
-    /// nothing. Tasks start in the order they were added, each in its own
-    /// spawned task, and a task that panics is logged without affecting the
-    /// others.
+    /// nothing. Tasks are spawned in the order they were added, each as its
+    /// own task, but nothing orders when they start running. A task that
+    /// panics is logged without affecting the others.
     ///
     /// # What the task must tolerate
     ///
@@ -181,7 +181,13 @@ impl<R: Runtime> AppExtensions<R> {
     /// * **Channels get rebuilt.** A task that caches a client built on that
     ///   channel, or holds a stream open on it, keeps using the old
     ///   connection after a rebuild. It registers
-    ///   [`AppExtensions::on_channel_rebuilt`] to pick up the new one.
+    ///   [`AppExtensions::on_channel_rebuilt`] to pick up the new one, and it
+    ///   reads the channel and stores its client while holding the same lock
+    ///   the hook takes to replace that client. Core swaps the channel before
+    ///   it runs any hook, so the task then either reads the new channel or
+    ///   stores its client before the hook replaces it. Without the lock, a
+    ///   task that read the old channel can store its client after the hook
+    ///   ran and stay on the dead connection.
     /// * **Shutdown arrives through [`DaemonReady::shutdown`].** A task that
     ///   loops or holds a resource watches that token and returns when it is
     ///   cancelled.
@@ -352,8 +358,13 @@ pub fn spawn_daemon_ready_tasks<R: Runtime>(
             let outcome = AssertUnwindSafe(async move { task(ready).await })
                 .catch_unwind()
                 .await;
-            if outcome.is_err() {
-                tracing::error!("a daemon-ready task panicked");
+            if let Err(panic) = outcome {
+                let message = panic
+                    .downcast_ref::<&str>()
+                    .copied()
+                    .or_else(|| panic.downcast_ref::<String>().map(String::as_str))
+                    .unwrap_or("(the panic payload is not a string)");
+                tracing::error!(panic = message, "a daemon-ready task panicked");
             }
         });
     }

@@ -6,8 +6,6 @@
 //! they cannot show is that the channel a hook is handed is one that works, so
 //! these tests make a real RPC on it.
 
-use std::sync::{Arc, Mutex};
-
 use nodespace_app_lib::extensions::{spawn_daemon_ready_tasks, CancellationToken};
 use nodespace_app_lib::AppExtensions;
 use nodespace_app_test_support::{SpawnedDaemon, TauriTestApp, DAEMON_CONNECT_TIMEOUT};
@@ -67,6 +65,8 @@ fn silent_listener(path: &std::path::Path) -> tokio::task::JoinHandle<()> {
 #[cfg(unix)]
 #[tokio::test]
 async fn a_wedged_channel_rebuild_runs_the_hooks_before_recovery_returns() {
+    use std::sync::{Arc, Mutex};
+
     use nodespace_app_lib::commands::nodes::probe_and_recover;
     use nodespace_app_lib::services::GrpcClient;
     use nodespace_app_test_support::{hold_connect_mutex_and_socket_env, EnvGuard, CONNECT_MUTEX};
