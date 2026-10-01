@@ -10,11 +10,27 @@
 //! [`AppExtensions`] collects what an extension contributes and [`assemble`]
 //! applies it to a `tauri::Builder`. An app with no extension, built from
 //! [`AppExtensions::none`], behaves exactly as core alone does.
+//!
+//! Besides plugins, an extension can run work once the daemon is up
+//! ([`AppExtensions::on_daemon_ready`]) and react when the shared gRPC channel
+//! is rebuilt ([`AppExtensions::on_channel_rebuilt`]). Both ride the channel
+//! core owns, so an extension never dials the daemon socket itself.
 
 use std::collections::HashSet;
+use std::future::Future;
+use std::panic::AssertUnwindSafe;
+use std::sync::{Arc, Mutex, PoisonError};
+use std::time::Duration;
 
+use futures::future::BoxFuture;
+use futures::FutureExt;
 use tauri::plugin::Plugin;
-use tauri::{Builder, Runtime};
+use tauri::{AppHandle, Builder, Manager, Runtime};
+
+use crate::services::GrpcClient;
+
+pub use tokio_util::sync::CancellationToken;
+pub use tonic::transport::Channel;
 
 #[cfg(test)]
 mod fixture_tests;
@@ -93,7 +109,33 @@ pub(crate) fn register_core_plugins<R: Runtime>(builder: Builder<R>) -> Builder<
 /// `tauri::Wry` unless a test picks another runtime.
 pub struct AppExtensions<R: Runtime = tauri::Wry> {
     plugins: Vec<Box<dyn Plugin<R>>>,
+    daemon_ready: Vec<DaemonReadyTask<R>>,
+    channel_rebuilt: Vec<ChannelRebuiltHook<R>>,
 }
+
+/// What a daemon-ready task receives when core starts it.
+///
+/// Everything in it is cheap to clone and owned, so a task can move it into
+/// whatever it spawns.
+pub struct DaemonReady<R: Runtime = tauri::Wry> {
+    /// The running app.
+    pub app: AppHandle<R>,
+    /// A clone of the gRPC client core manages. Take services from
+    /// [`GrpcClient::channel`] rather than dialing the socket (see
+    /// [`AppExtensions::on_daemon_ready`]).
+    pub grpc: GrpcClient,
+    /// Cancelled when core shuts down. It is this task's own child of core's
+    /// shutdown token, so cancelling it affects neither core nor another task.
+    pub shutdown: CancellationToken,
+}
+
+type DaemonReadyTask<R> = Box<dyn FnOnce(DaemonReady<R>) -> BoxFuture<'static, ()> + Send>;
+type ChannelRebuiltHook<R> =
+    Arc<dyn Fn(AppHandle<R>, Channel) -> BoxFuture<'static, ()> + Send + Sync>;
+
+/// How long each [`AppExtensions::on_channel_rebuilt`] hook may run before core
+/// gives up on it and moves on.
+pub const CHANNEL_REBUILT_HOOK_TIMEOUT: Duration = Duration::from_secs(2);
 
 impl<R: Runtime> AppExtensions<R> {
     /// An extension that contributes nothing.
@@ -101,6 +143,8 @@ impl<R: Runtime> AppExtensions<R> {
     pub fn none() -> Self {
         Self {
             plugins: Vec::new(),
+            daemon_ready: Vec::new(),
+            channel_rebuilt: Vec::new(),
         }
     }
 
@@ -111,6 +155,83 @@ impl<R: Runtime> AppExtensions<R> {
     #[must_use]
     pub fn plugin<P: Plugin<R> + 'static>(mut self, plugin: P) -> Self {
         self.plugins.push(Box::new(plugin));
+        self
+    }
+
+    /// Runs `task` once per process, after core has made its attempt to start
+    /// the daemon.
+    ///
+    /// Core spawns the task from its startup task, once the daemon start
+    /// attempt has finished and core's node watcher and token stream are
+    /// wired. It never awaits the task, so a slow or hanging task delays
+    /// nothing. Tasks start in the order they were added, each in its own
+    /// spawned task, and a task that panics is logged without affecting the
+    /// others.
+    ///
+    /// # What the task must tolerate
+    ///
+    /// * **The daemon may be unreachable.** The start attempt can fail, and the
+    ///   daemon can stop at any time afterwards. A task must treat a failed
+    ///   call as an expected state and retry later, never as a reason to
+    ///   panic.
+    /// * **Use the shared channel.** A task makes its calls on
+    ///   [`GrpcClient::channel`] from [`DaemonReady::grpc`] and never dials the
+    ///   socket itself. A parallel channel to the same socket has failed with
+    ///   "Service was not ready: transport error" once a stream was dropped.
+    /// * **Channels get rebuilt.** A task that caches a client built on that
+    ///   channel, or holds a stream open on it, keeps using the old
+    ///   connection after a rebuild. It registers
+    ///   [`AppExtensions::on_channel_rebuilt`] to pick up the new one.
+    /// * **Shutdown arrives through [`DaemonReady::shutdown`].** A task that
+    ///   loops or holds a resource watches that token and returns when it is
+    ///   cancelled.
+    #[must_use]
+    pub fn on_daemon_ready<F, Fut>(mut self, task: F) -> Self
+    where
+        F: FnOnce(DaemonReady<R>) -> Fut + Send + 'static,
+        Fut: Future<Output = ()> + Send + 'static,
+    {
+        self.daemon_ready
+            .push(Box::new(move |ready| task(ready).boxed()));
+        self
+    }
+
+    /// Runs `hook` each time core rebuilds the shared gRPC channel, with the
+    /// new channel.
+    ///
+    /// Core rebuilds the channel when it finds the connection wedged: the
+    /// daemon answers a freshly dialed client while the long-lived channel
+    /// hangs. Core then runs every hook, one after another in the order they
+    /// were added, and only then probes the new channel again. A caller of the
+    /// recovery therefore sees the hooks' work done before it learns the
+    /// channel is healthy.
+    ///
+    /// Each hook is bounded by [`CHANNEL_REBUILT_HOOK_TIMEOUT`], because the
+    /// frontend waits on the recovery. A hook that runs past it is aborted and
+    /// logged, and a hook that panics is logged, and in both cases recovery
+    /// goes on with the next hook. A hook that has more to do than the timeout
+    /// allows spawns it and returns.
+    ///
+    /// # What a hook is for
+    ///
+    /// A channel handed out before the rebuild still points at the old
+    /// connection. Anything an extension built on one of those, such as a
+    /// service client it caches or a stream it holds open, keeps riding the
+    /// dead connection until the extension replaces it, and this hook is where
+    /// it does. An extension that takes a fresh channel from
+    /// [`GrpcClient::channel`] on every call needs no hook.
+    ///
+    /// The daemon may be unreachable when the hook runs, and the hook must
+    /// tolerate that the way a daemon-ready task does (see
+    /// [`AppExtensions::on_daemon_ready`]).
+    #[must_use]
+    pub fn on_channel_rebuilt<F, Fut>(mut self, hook: F) -> Self
+    where
+        F: Fn(AppHandle<R>, Channel) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = ()> + Send + 'static,
+    {
+        self.channel_rebuilt
+            .push(Arc::new(move |app, channel| hook(app, channel).boxed()));
         self
     }
 }
@@ -126,9 +247,14 @@ impl<R: Runtime> Default for AppExtensions<R> {
 /// Applies an extension's contributions to a `tauri::Builder`.
 ///
 /// This is the extension half of building the app. It registers each extension
-/// plugin, in the order it was added, and nothing else. Core's own plugins,
-/// commands and setup are applied by the desktop entry point, `run`, around
-/// this call.
+/// plugin, in the order it was added, and manages the daemon-ready tasks and
+/// channel-rebuilt hooks where core's startup and channel recovery find them
+/// (`ExtensionHooks`, which is managed even when there are none). Core's own
+/// plugins, commands and setup are applied by the desktop entry point, `run`,
+/// around this call.
+///
+/// Call it once per builder: the hook state is managed state, and Tauri
+/// refuses to manage one type twice.
 ///
 /// # Plugins
 ///
@@ -173,5 +299,104 @@ pub fn assemble<R: Runtime>(mut builder: Builder<R>, extensions: AppExtensions<R
         }
         builder = builder.plugin_boxed(plugin);
     }
-    builder
+    builder.manage(ExtensionHooks {
+        daemon_ready: Mutex::new(extensions.daemon_ready),
+        channel_rebuilt: extensions.channel_rebuilt,
+    })
+}
+
+/// The daemon-ready tasks and channel-rebuilt hooks of the assembled app, in
+/// managed state for core's startup and channel recovery to find.
+pub(crate) struct ExtensionHooks<R: Runtime> {
+    /// Taken by the first [`spawn_daemon_ready_tasks`], so a task runs once per
+    /// process.
+    daemon_ready: Mutex<Vec<DaemonReadyTask<R>>>,
+    channel_rebuilt: Vec<ChannelRebuiltHook<R>>,
+}
+
+/// Spawns every daemon-ready task, and returns without waiting for any of them.
+///
+/// Core's startup task calls this once the daemon start attempt has finished
+/// and the watcher and token stream are wired. Each task runs on Tauri's async
+/// runtime with `grpc`, a clone of the app handle, and its own child of
+/// `shutdown`. The tasks are taken, so a second call spawns nothing. A task
+/// that panics is logged and the others are unaffected. An app that was not
+/// built with [`assemble`] has no tasks, and this does nothing.
+///
+/// Not part of the extension API: only core's startup calls it, and the seam
+/// tests.
+#[doc(hidden)]
+pub fn spawn_daemon_ready_tasks<R: Runtime>(
+    app: &AppHandle<R>,
+    grpc: GrpcClient,
+    shutdown: &CancellationToken,
+) {
+    let Some(hooks) = app.try_state::<ExtensionHooks<R>>() else {
+        return;
+    };
+    let tasks = std::mem::take(
+        &mut *hooks
+            .daemon_ready
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner),
+    );
+    for task in tasks {
+        let ready = DaemonReady {
+            app: app.clone(),
+            grpc: grpc.clone(),
+            shutdown: shutdown.child_token(),
+        };
+        tauri::async_runtime::spawn(async move {
+            // The call to `task` is inside the guarded future too, so a task
+            // that panics before it returns its future is caught the same way.
+            let outcome = AssertUnwindSafe(async move { task(ready).await })
+                .catch_unwind()
+                .await;
+            if outcome.is_err() {
+                tracing::error!("a daemon-ready task panicked");
+            }
+        });
+    }
+}
+
+/// Runs every channel-rebuilt hook with `channel`, one after another in the
+/// order they were added, and returns when the last has finished.
+///
+/// Core's channel recovery calls this after it rebuilds the channel and before
+/// it probes the new one. Each hook runs as its own spawned task under
+/// [`CHANNEL_REBUILT_HOOK_TIMEOUT`]. A hook that times out is aborted and
+/// logged, a hook that panics is logged, and the next hook runs either way. An
+/// app that was not built with [`assemble`] has no hooks, and this does
+/// nothing.
+///
+/// Call it from inside a tokio runtime. Not part of the extension API: only
+/// core's channel recovery calls it, and the seam tests.
+#[doc(hidden)]
+pub async fn run_channel_rebuilt_hooks<R: Runtime>(app: &AppHandle<R>, channel: Channel) {
+    let Some(hooks) = app
+        .try_state::<ExtensionHooks<R>>()
+        .map(|state| state.channel_rebuilt.clone())
+    else {
+        return;
+    };
+
+    for hook in hooks {
+        let (app, channel) = (app.clone(), channel.clone());
+        // The hook is called inside the spawned task, so one that panics before
+        // it returns its future is contained like one that panics later.
+        let mut task = tokio::spawn(async move { hook(app, channel).await });
+        match tokio::time::timeout(CHANNEL_REBUILT_HOOK_TIMEOUT, &mut task).await {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                tracing::error!(%error, "a channel-rebuilt hook failed; recovery continues");
+            }
+            Err(_elapsed) => {
+                task.abort();
+                tracing::warn!(
+                    timeout = ?CHANNEL_REBUILT_HOOK_TIMEOUT,
+                    "a channel-rebuilt hook timed out and was aborted; recovery continues"
+                );
+            }
+        }
+    }
 }

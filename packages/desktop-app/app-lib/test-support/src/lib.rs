@@ -38,6 +38,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use nodespace_app_lib::services::GrpcClient;
+use nodespace_app_lib::{assemble, AppExtensions};
+use tauri::test::MockRuntime;
 use tauri::Manager;
 
 // Re-exported the same way `daemon_binary_freshness` below is: `pub` purely
@@ -300,6 +302,27 @@ impl TauriTestApp {
     pub async fn connect(daemon: &SpawnedDaemon, timeout: Duration) -> Self {
         let client = connected_client(daemon, timeout).await;
         let app = tauri::test::mock_app();
+        app.manage(client);
+        Self { app }
+    }
+
+    /// Like [`Self::connect`], but the app is built through [`assemble`] from
+    /// `extensions`, the way `run` builds the real one, so the plugins, the
+    /// daemon-ready tasks and the channel-rebuilt hooks of `extensions` are in
+    /// effect. The mock builder has no core setup, so nothing starts the
+    /// daemon-ready tasks: a test calls `spawn_daemon_ready_tasks` itself.
+    ///
+    /// Takes [`CONNECT_MUTEX`] for the connection, so it must not be called
+    /// while the caller holds that mutex.
+    pub async fn connect_assembled(
+        daemon: &SpawnedDaemon,
+        timeout: Duration,
+        extensions: AppExtensions<MockRuntime>,
+    ) -> Self {
+        let client = connected_client(daemon, timeout).await;
+        let app = assemble(tauri::test::mock_builder(), extensions)
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("the assembled app builds");
         app.manage(client);
         Self { app }
     }

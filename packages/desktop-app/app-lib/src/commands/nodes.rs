@@ -565,14 +565,29 @@ pub async fn find_duplicate(
 /// only if the rebuilt channel answers (the frontend then re-fires its
 /// reconnect listeners so panes re-fetch on the fresh channel).
 ///
+/// After a rebuild, the channel-rebuilt hooks of the app's extensions run before
+/// the re-probe, so anything an extension cached on the old channel is replaced
+/// before this returns (see [`AppExtensions::on_channel_rebuilt`]).
+///
 /// The Pro cloud-sync client caches its own clone of the shared channel, so
 /// after a rebuild it is rebound to the fresh channel too — otherwise every
 /// subsequent cloud-sync call would keep riding the dead connection.
+///
+/// [`AppExtensions::on_channel_rebuilt`]: crate::extensions::AppExtensions::on_channel_rebuilt
 #[tauri::command]
 pub async fn probe_and_recover_channel(
     app: AppHandle,
     client: State<'_, GrpcClient>,
 ) -> Result<bool, ()> {
+    Ok(probe_and_recover(&app, client.inner()).await)
+}
+
+/// The recovery [`probe_and_recover_channel`] runs, on any Tauri runtime so the
+/// seam tests can drive it on a mock app.
+pub async fn probe_and_recover<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    client: &GrpcClient,
+) -> bool {
     use std::time::Duration;
     const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
     const PROBE_ID: &str = "__ns_channel_probe__";
@@ -591,8 +606,8 @@ pub async fn probe_and_recover_channel(
         .await
     }
 
-    if probe(client.inner()).await.is_ok() {
-        return Ok(false);
+    if probe(client).await.is_ok() {
+        return false;
     }
 
     tracing::warn!("gRPC channel probe timed out — rebuilding wedged channel");
@@ -603,7 +618,8 @@ pub async fn probe_and_recover_channel(
     if let Some(pro) = app.try_state::<crate::services::ProClient>() {
         pro.rebind(client.channel().await).await;
     }
-    Ok(probe(client.inner()).await.is_ok())
+    crate::extensions::run_channel_rebuilt_hooks(app, client.channel().await).await;
+    probe(client).await.is_ok()
 }
 
 /// Update an existing node
@@ -1524,5 +1540,40 @@ mod tests {
             proto_node_data_to_node(sample_node_data(None)).expect("valid timestamps must convert");
 
         assert_eq!(node.title, None);
+    }
+
+    /// The channel-rebuilt hooks must run on the rebuilt channel and finish
+    /// before the re-probe whose result tells the frontend whether recovery
+    /// worked.
+    #[test]
+    fn probe_and_recover_runs_the_channel_rebuilt_hooks_between_the_rebuild_and_the_reprobe() {
+        let source = include_str!("nodes.rs");
+        let start = source
+            .find("pub async fn probe_and_recover<")
+            .expect("probe_and_recover not found in nodes.rs");
+        let end = source[start..]
+            .find("#[tauri::command]")
+            .map(|offset| start + offset)
+            .expect("the command after probe_and_recover not found in nodes.rs");
+        let body = &source[start..end];
+
+        let rebuilt = body
+            .find("client.reconnect().await")
+            .expect("probe_and_recover must rebuild the channel");
+        let hooks = body
+            .find("run_channel_rebuilt_hooks(")
+            .expect("probe_and_recover must run the channel-rebuilt hooks");
+        let reprobe = body
+            .rfind("probe(")
+            .expect("probe_and_recover must re-probe the rebuilt channel");
+
+        assert!(
+            rebuilt < hooks,
+            "the hooks run after the channel is rebuilt, so they get the new one"
+        );
+        assert!(
+            hooks < reprobe,
+            "the hooks run before the re-probe, so recovery reports healthy only after them"
+        );
     }
 }

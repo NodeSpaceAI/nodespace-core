@@ -16,6 +16,7 @@ mod cross_window_hierarchy_sync_test;
 mod daemon_binary_freshness_test;
 mod daemon_custom_socket_test;
 mod daemon_readiness_test;
+mod extension_hooks_test;
 mod indent_outdent_rapid_ordering_test;
 mod model_download_terminal_state_test;
 mod node_crud_tauri_seam_test;

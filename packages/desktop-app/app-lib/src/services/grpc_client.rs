@@ -167,12 +167,11 @@ struct GrpcClientInner {
     /// window's own writes on its `WatchNodes` echo-suppression check after a
     /// database switch.
     client_id: MetadataValue<Ascii>,
-    /// Underlying transport channel — held so Pro-tier services can
-    /// ride the same h2 connection via `GrpcClient::channel()`. One
-    /// channel, multiple service surfaces. Opening a parallel channel
-    /// caused "Service was not ready: transport error" during the
-    /// PoC when ProClient's separately-built channel got into a bad
-    /// state after the probe stream was dropped.
+    /// Underlying transport channel — held so extension services can ride the
+    /// same h2 connection via `GrpcClient::channel()`. One channel, multiple
+    /// service surfaces. Opening a parallel channel to the same socket failed
+    /// with "Service was not ready: transport error" after a stream was
+    /// dropped.
     channel: Channel,
 }
 
@@ -427,9 +426,13 @@ impl GrpcClient {
         self.db_generation.subscribe()
     }
 
-    /// Clone of the underlying `tonic::transport::Channel`. Used by
-    /// `ProClient` so the Pro-tier service rides the same h2
-    /// connection (one channel, multiple service surfaces).
+    /// Clone of the underlying `tonic::transport::Channel`, for extension
+    /// services to ride the same h2 connection (one channel, multiple service
+    /// surfaces).
+    ///
+    /// A clone handed out before [`GrpcClient::reconnect`] still points at the
+    /// old connection, so a caller that caches one registers
+    /// `AppExtensions::on_channel_rebuilt` to take the new channel.
     pub async fn channel(&self) -> Channel {
         self.inner.read().await.channel.clone()
     }
@@ -445,6 +448,8 @@ impl GrpcClient {
     /// sync can put the single shared connection into that state. Replacing the
     /// channel gives every surface a clean connection on its next call; bumping
     /// `db_generation` makes the node-event watcher re-open its stream on it.
+    ///
+    /// `probe_and_recover_channel` runs the channel-rebuilt hooks after it.
     #[cfg(unix)]
     pub async fn reconnect(&self) {
         let sock = resolve_socket_path();

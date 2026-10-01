@@ -553,6 +553,8 @@ fn run_app(extensions: AppExtensions, context: tauri::Context<tauri::Wry>) {
 
                 let app_handle = app.handle().clone();
                 let session_token = shutdown_token_for_setup.child_token();
+                // The parent of every daemon-ready task's own shutdown token.
+                let extension_shutdown = shutdown_token_for_setup.child_token();
                 #[cfg(windows)]
                 let log_rotation_token = shutdown_token_for_setup.child_token();
 
@@ -654,6 +656,9 @@ fn run_app(extensions: AppExtensions, context: tauri::Context<tauri::Wry>) {
                     use tauri::Manager;
                     let grpc_client = (*app_handle.state::<crate::services::GrpcClient>()).clone();
                     let channel = grpc_client.channel().await;
+                    // Cloned here because the token stream subscription below takes
+                    // `grpc_client` by value.
+                    let grpc_for_extensions = grpc_client.clone();
                     // The watcher rides the shared client so its WatchNodes stream
                     // targets the active database and re-subscribes on switch (ADR-053).
                     watcher::spawn(app_handle.clone(), grpc_client.clone(), session_token);
@@ -661,6 +666,15 @@ fn run_app(extensions: AppExtensions, context: tauri::Context<tauri::Wry>) {
                     commands::local_agent::start_token_stream_subscription(
                         app_handle.clone(),
                         grpc_client,
+                    );
+
+                    // The daemon start attempt is over and the watcher and token
+                    // stream are wired, so extensions' daemon-ready tasks can start.
+                    // They are spawned, never awaited: nothing below waits on them.
+                    extensions::spawn_daemon_ready_tasks(
+                        &app_handle,
+                        grpc_for_extensions,
+                        &extension_shutdown,
                     );
 
                     // Pro capability probe: a single WatchSyncStatus call on the same
@@ -1604,6 +1618,46 @@ mod run_wiring_tests {
         assert!(
             redirect < runtime_built,
             "stdio is redirected before anything else runs, so no diagnostic is lost"
+        );
+    }
+
+    #[test]
+    fn run_spawns_daemon_ready_tasks_once_the_watcher_and_token_stream_are_wired() {
+        let run = run_source();
+        let token_stream = position(run, "start_token_stream_subscription(");
+        let spawned = position(run, "spawn_daemon_ready_tasks(");
+        let reachability = position(run, "nodespaced unreachable after startup");
+
+        assert!(
+            token_stream < spawned,
+            "daemon-ready tasks start after the watcher and token stream are wired"
+        );
+        assert!(
+            spawned < reachability,
+            "daemon-ready tasks start before the reachability check, which comes after the \
+             startup work that can take seconds"
+        );
+
+        let call = &run[spawned..];
+        let statement = &call[..call.find(';').expect("the call ends in a semicolon")];
+        assert!(
+            !statement.contains(".await"),
+            "daemon-ready tasks are spawned, never awaited: {statement}"
+        );
+    }
+
+    #[test]
+    fn run_derives_the_daemon_ready_shutdown_from_the_shutdown_token() {
+        let run = run_source();
+
+        assert!(
+            run.contains("let extension_shutdown = shutdown_token_for_setup.child_token();"),
+            "the token daemon-ready tasks derive theirs from must be a child of the shutdown \
+             token, so quitting cancels them"
+        );
+        assert!(
+            run.contains("&extension_shutdown,"),
+            "daemon-ready tasks must be handed that child token"
         );
     }
 

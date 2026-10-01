@@ -51,6 +51,9 @@ semver = "1"
 
 [dev-dependencies]
 tempfile = "3"
+# `#[tokio::test(start_paused = true)]` lets the channel-rebuilt hook timeout be
+# tested without waiting it out.
+tokio = { workspace = true, features = ["test-util"] }
 # Adds tauri::test (mock AppHandle with a real event bus, no webview) for the
 # ADR-048 Tauri-seam integration tests — ONLY active for `cargo test`, since
 # Cargo unifies dev-dependency features into the main build for test targets
