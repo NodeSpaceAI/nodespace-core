@@ -15,11 +15,11 @@
 // `version.workspace = true` rather than hardcoding its own, so checking this
 // one field guards all seven at once. This matters at runtime, not just on
 // disk: nodespace-daemon reads it via `env!("CARGO_PKG_VERSION")` for both the
-// `nodespaced --version` flag (the installer's postinstall script queries it)
-// and the `get_daemon_version` gRPC RPC, and nodespace-cli's `--version` flag
-// reads it via clap's derived `version` field. Before this field existed, all
-// seven crates hardcoded a version nothing kept in sync with the app version,
-// so those surfaces silently reported a stale build.
+// `nodespaced --version` flag and the `get_daemon_version` gRPC RPC, and
+// nodespace-cli's `--version` flag reads it via clap's derived `version` field.
+// Before this field existed, all seven crates hardcoded a version nothing kept
+// in sync with the app version, so those surfaces silently reported a stale
+// build.
 //
 // Run standalone (prints + exits non-zero on drift):  bun scripts/check-version-sync.ts
 // Enforced automatically by the companion .test.ts under `bun test scripts/`

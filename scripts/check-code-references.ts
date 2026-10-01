@@ -38,7 +38,9 @@ export const SCAN_ROOTS = [
   "packages/agent",
   "packages/nlp-engine",
 ];
-const EXTENSIONS = new Set([".rs", ".ts", ".svelte", ".js"]);
+// Source files, plus `.proto`: a proto's comments become the generated
+// Rust's doc comments, so an issue number there reaches code too.
+const EXTENSIONS = new Set([".rs", ".ts", ".svelte", ".js", ".proto"]);
 // Generated build output, not source. `.svelte-kit` matters as much as the
 // rest: it inlines source comments into its bundles, so a build dir left over
 // from before a cleanup keeps reporting references the source no longer has —

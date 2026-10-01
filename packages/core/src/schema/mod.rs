@@ -395,10 +395,11 @@ async fn schema_is_core(
 /// `handle_update_schema` passes `None` — the schema it edits already exists,
 /// so a self-reference there resolves through the ordinary lookup.
 ///
-/// A relationship may never target `ai-chat`: chats are private, and a
-/// declared link to one is exactly the reference `NodeService` refuses at edge
-/// creation. Rejecting the declaration keeps a provenance-style field from
-/// being modelled at all, rather than failing on its first write.
+/// A relationship may never target `ai-chat`: no node may reference a chat
+/// (ADR-061 §8), and a declared link to one is exactly the reference
+/// `NodeService` refuses at edge creation. Rejecting the declaration keeps a
+/// provenance-style field from being modelled at all, rather than failing on
+/// its first write.
 async fn validate_relationship_targets(
     node_service: &Arc<NodeService>,
     relationships: &[crate::models::schema::SchemaRelationship],
@@ -410,8 +411,8 @@ async fn validate_relationship_targets(
         };
         if target_type == crate::models::AI_CHAT_NODE_TYPE {
             return Err(MarkdownError::invalid_params(format!(
-                "Relationship '{}' targets 'ai-chat'. AI chats are private and cannot be \
-                 referenced by any other node, so no relationship may target them.",
+                "Relationship '{}' targets 'ai-chat'. No node may reference an AI chat, \
+                 so no relationship may target one.",
                 rel.name
             )));
         }

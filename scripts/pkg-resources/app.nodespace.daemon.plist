@@ -4,7 +4,7 @@
 <plist version="1.0">
 <dict>
     <!-- Must match the label the bundled NodeSpace.app registers itself
-         under (daemon_setup.rs's launch_agent_label(), community build:
+         under (daemon_setup.rs's launch_agent_label(), release build:
          "app.nodespace.daemon") -- not an arbitrary pkg-specific name.
          Under a different label, the .pkg's system-wide LaunchAgent and
          the app's own first-launch registration are two independent

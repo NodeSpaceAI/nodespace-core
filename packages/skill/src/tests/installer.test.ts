@@ -51,7 +51,6 @@ const SEEDED_REFERENCES = [
   'references/cli.md',
   'references/extra-playbook.md',
   'references/graph-authored-guidance.md',
-  'references/shared-workspaces.md',
 ];
 
 function seedPkgRoot(root: string, agent: typeof AGENTS[number]): void {
@@ -821,7 +820,6 @@ describe('references and the install record', () => {
       install(['claude-code'], FAKE_PKG_ROOT);
 
       expect(existsSync(join(claude.installDir, 'references', 'cli.md'))).toBe(true);
-      expect(existsSync(join(claude.installDir, 'references', 'shared-workspaces.md'))).toBe(false);
       expect(existsSync(join(claude.installDir, 'references', 'graph-authored-guidance.md'))).toBe(false);
       expect(readRecord(claude).files).toEqual(['SKILL.md', 'references/cli.md']);
     });
@@ -947,7 +945,7 @@ describe('references and the install record', () => {
       ];
       for (const [label, content] of badRecords) {
         plant(claude.installDir, 'SKILL.md');
-        plant(claude.installDir, 'references/shared-workspaces.md');
+        plant(claude.installDir, 'references/graph-authored-guidance.md');
         writeFileSync(join(claude.installDir, INSTALL_RECORD), content, 'utf8');
 
         uninstall(['claude-code'], FAKE_PKG_ROOT);

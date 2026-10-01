@@ -44,9 +44,9 @@ Apple Silicon is the only supported macOS target. The cask installs a signed and
 | Windows | `.msi` or `.exe` |
 | Linux | `nodespace`/`nodespaced` binaries (CLI + daemon only — no packaged desktop app yet) |
 
-### Pro tier
+### Team collaboration
 
-Pro adds end-to-end encrypted cloud sync — the same local-first graph, kept in sync across your devices, with per-database access control for shared use. It's a separate signed build (`nodespaced-pro`) on top of the same desktop app, currently rolling out to invited tenants; reach out on [Discord](https://discord.gg/UHFZKzH9) for access.
+For team collaboration, contact [developer@nodespace.ai](mailto:developer@nodespace.ai).
 
 ### Build from Source
 

@@ -300,10 +300,10 @@ export function groupSupportsEdgeEditing(group: RelationshipGroupView): boolean 
  * by A" are one row — so an inbound group without edge fields accepts edges
  * here just as its outbound twin does on the other node.
  *
- * An inbound group that declares edge fields stays read-only: its values (an
- * access level, a role) are authored where the relationship is declared, and
+ * An inbound group that declares edge fields stays read-only: its values (a
+ * role, a rate) are authored where the relationship is declared, and
  * `groupSupportsEdgeEditing` already keeps them from being edited here. Letting
- * this end create or delete such an edge would grant or revoke what those
+ * this end create or delete such an edge would add or remove what those
  * values describe from the side that does not own them.
  */
 export function groupAcceptsEdgesHere(group: RelationshipGroupView): boolean {

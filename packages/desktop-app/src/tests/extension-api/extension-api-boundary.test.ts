@@ -2,7 +2,7 @@
  * The host API is a one-way boundary (ADR-082 §3.6):
  *   - core modules never import it, so it stays something core offers rather than
  *     something core depends on;
- *   - it never imports the edition-specific modules that are leaving core (the
+ *   - it never imports the edition-specific modules core does not ship (the
  *     sync variant machine and its stores, the membership store and service, and
  *     the built-in extension that renders them);
  *   - only its `/testing` entry reaches test code, so the other entries never
@@ -12,7 +12,7 @@
  *
  * Specifiers come from each file's syntax tree (see `importSpecifiers`), so
  * comments and strings never count. The edition-specific needles are built from
- * fragments so this file adds no boundary-ratchet markers.
+ * fragments so this file adds no boundary-check markers.
  */
 import fs from 'node:fs';
 import path from 'node:path';

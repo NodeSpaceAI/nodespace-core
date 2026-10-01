@@ -2831,9 +2831,10 @@ impl SqliteStore {
     /// forward guard `assert_root_only_membership` on the `member_of` INSERT
     /// sites. (Fresh-node attach sites can't pre-hold a membership;
     /// `move_children_to_parent` only moves already-interior nodes.) Rejects
-    /// rather than dropping the membership (a node can hold several grants,
-    /// each an independent access path). `person` (grantee, ADR-037 §4) nodes
-    /// are exempt.
+    /// rather than dropping the membership (a node can belong to several
+    /// collections, and dropping one would silently undo the user's filing).
+    /// `person` nodes are exempt: a person's membership says who belongs to a
+    /// collection, not where content is filed.
     ///
     /// Also refuses a `collection`, which is always a root (ADR-059 §2): see
     /// [`super::TreeInvariantViolation::collection_not_root`], and a `schema`

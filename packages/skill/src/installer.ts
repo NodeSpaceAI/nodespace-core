@@ -47,7 +47,6 @@ export const INSTALL_RECORD = '.nodespace-install.json';
  */
 export const PRE_RECORD_REFERENCES = [
   'references/cli.md',
-  'references/shared-workspaces.md',
   'references/graph-authored-guidance.md',
 ] as const;
 

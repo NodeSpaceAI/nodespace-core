@@ -13,8 +13,8 @@ impl SqliteStore {
         // `SqliteStore::like_contains_pattern`.
         let search_lower = Self::like_contains_pattern(search_query);
         // A schema is titled by its type name, but a type is not something to
-        // @mention — only its instances are. An ai-chat is private and can
-        // never be a mention target, so it is not offered either. Date pages
+        // @mention — only its instances are. An ai-chat can never be a mention
+        // target (ADR-061 §8), so it is not offered either. Date pages
         // stay: a date link is a real mention.
         let sql = format!(
             "SELECT * FROM node WHERE title IS NOT NULL AND node_type NOT IN ('collection', 'schema', 'ai-chat') AND LOWER(title) LIKE ?1 ESCAPE '\\' LIMIT {}",

@@ -502,15 +502,15 @@ impl SqliteStore {
     }
 
     /// ADR-059 §2 — a content node may hold a `member_of` edge only when it is a
-    /// **root** node (no `has_child` parent). Person nodes (grantee
-    /// membership, ADR-037 §4) are exempt. A collection needs no exemption: it
-    /// is always a root (the `collection_is_root_*` triggers). Enforced at the store's
-    /// three `member_of` INSERT sites (`add_to_collection`,
-    /// `bulk_add_to_collections`, and the generic `create_generic_relationship`
-    /// when its `rel_type` is `member_of`), so every write path is covered without
-    /// a per-path check: CLI, graph import, play `add_relationship`, and any
-    /// batched caller of `bulk_add_to_collections`. A batched, chunked query keeps
-    /// the bulk path a single round trip.
+    /// **root** node (no `has_child` parent). Person nodes are exempt: a person's
+    /// membership says who belongs to a collection, not where content is filed. A
+    /// collection needs no exemption: it is always a root (the `collection_is_root_*`
+    /// triggers). Enforced at the store's three `member_of` INSERT sites
+    /// (`add_to_collection`, `bulk_add_to_collections`, and the generic
+    /// `create_generic_relationship` when its `rel_type` is `member_of`), so every
+    /// write path is covered without a per-path check: CLI, graph import, play
+    /// `add_relationship`, and any batched caller of `bulk_add_to_collections`. A
+    /// batched, chunked query keeps the bulk path a single round trip.
     /// Members that don't exist yet are left to the INSERT's foreign-key check.
     async fn assert_root_only_membership(&self, member_ids: &[&str]) -> Result<()> {
         if member_ids.is_empty() {
@@ -1523,8 +1523,8 @@ impl SqliteStore {
         // `?`-propagation, so a single dangling link rolled back the WHOLE batch
         // and the import created ZERO cross-references. Pre-filter to pairs whose
         // BOTH endpoints exist; dangling links are skipped (and logged), never
-        // fatal. An ai-chat target is dropped the same way: chats are private,
-        // so nothing may reference one (see
+        // fatal. An ai-chat target is dropped the same way: nothing may
+        // reference a chat (ADR-061 §8; see
         // `NodeService::refuse_ai_chat_target`, the single-edge counterpart).
         let mut endpoints: std::collections::HashSet<String> = std::collections::HashSet::new();
         for m in &candidate {
@@ -1573,7 +1573,7 @@ impl SqliteStore {
         let skipped = candidate_len - valid_mentions.len();
         if skipped > 0 {
             tracing::warn!(
-                "bulk_create_mentions: skipped {} mention(s) with a missing or ai-chat target (dangling [[link]] or private chat); keeping {} valid",
+                "bulk_create_mentions: skipped {} mention(s) with a missing (dangling [[link]]) or ai-chat target; keeping {} valid",
                 skipped,
                 valid_mentions.len()
             );
