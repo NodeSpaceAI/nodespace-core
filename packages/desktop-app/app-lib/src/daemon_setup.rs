@@ -3916,7 +3916,13 @@ mod stale_socket_removal_tests {
         drop(UnixListener::bind(&socket).expect("bind test socket"));
         assert!(socket.exists(), "the stale file should still be on disk");
 
-        remove_socket_if_stale(&socket, Duration::ZERO);
+        // A grace, not zero: other tests in this process spawn subprocesses, and
+        // one spawned while the listener was open can hold a copy of it for a
+        // moment after the drop (on macOS the descriptor is marked close-on-exec
+        // only after it is created, so a child can keep it past its exec). A
+        // socket nothing answers on is removed at once, so the grace costs
+        // nothing unless such a child is still holding it.
+        remove_socket_if_stale(&socket, Duration::from_secs(5));
 
         assert!(!socket.exists());
     }
