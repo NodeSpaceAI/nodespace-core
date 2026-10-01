@@ -119,9 +119,73 @@ pub struct CommandError {
     /// Structured conflict payload for VERSION_CONFLICT errors
     #[serde(skip_serializing_if = "Option::is_none")]
     pub conflict_data: Option<serde_json::Value>,
+    /// What a refused database requires and how to present the refusal, on a
+    /// REQUIRES_EXTENSION error only (ADR-083 §2). Serialized as
+    /// `requiresExtension`. Boxed so the payload, present on one error code,
+    /// does not grow every `Result<_, CommandError>`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub requires_extension: Option<Box<RequiresExtensionPayload>>,
+}
+
+/// The payload of a REQUIRES_EXTENSION error: the extensions the database
+/// requires that this build does not support, and the refusal message and
+/// download link the app shows, rendered by the shared display-name module so
+/// the app says exactly what the CLI and the tray say (ADR-083 §2, ADR-084
+/// §1). Serialized camelCase: `{ unsupportedExtensions, message,
+/// downloadLabel, downloadUrl }`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RequiresExtensionPayload {
+    pub unsupported_extensions: Vec<String>,
+    pub message: String,
+    pub download_label: String,
+    pub download_url: String,
+}
+
+impl RequiresExtensionPayload {
+    fn for_unsupported(unsupported_extensions: Vec<String>) -> Self {
+        use nodespace_proto::extension_names::{refusal_message, DOWNLOAD_LABEL, DOWNLOAD_URL};
+        Self {
+            message: refusal_message(&unsupported_extensions),
+            unsupported_extensions,
+            download_label: DOWNLOAD_LABEL.to_string(),
+            download_url: DOWNLOAD_URL.to_string(),
+        }
+    }
+}
+
+/// The REQUIRES_EXTENSION error for a status that carries the daemon's
+/// required-extensions refusal (FAILED_PRECONDITION with the
+/// `x-requires-extension-bin` payload), or `None` for any other status. Every
+/// command that maps a status from a routed request checks this first, so a
+/// request to a refused database reaches the frontend as the same error
+/// whichever command made it.
+pub(crate) fn requires_extension_error(status: &tonic::Status) -> Option<CommandError> {
+    let unsupported = nodespace_proto::requires_extension::unsupported_extensions(status)?;
+    let payload = RequiresExtensionPayload::for_unsupported(unsupported);
+    Some(CommandError {
+        message: payload.message.clone(),
+        code: "REQUIRES_EXTENSION".to_string(),
+        details: Some(format!("{:?}", status.code())),
+        conflict_data: None,
+        requires_extension: Some(Box::new(payload)),
+    })
+}
+
+/// `fallback(status)`, unless `status` is the daemon's required-extensions
+/// refusal, which maps to REQUIRES_EXTENSION for every command alike. For a
+/// command that maps its other statuses to codes of its own.
+pub(crate) fn refusal_or(
+    status: tonic::Status,
+    fallback: impl FnOnce(tonic::Status) -> CommandError,
+) -> CommandError {
+    requires_extension_error(&status).unwrap_or_else(|| fallback(status))
 }
 
 pub(crate) fn status_to_command_error(status: tonic::Status) -> CommandError {
+    if let Some(refused) = requires_extension_error(&status) {
+        return refused;
+    }
     // A cascade delete refused by the ADR-041 subtree access gate carries the
     // inaccessible-node count in `x-subtree-inaccessible-count` metadata, and a
     // Play-rule rejection (ADR-060 §2) carries its own structured payload in
@@ -216,6 +280,7 @@ pub(crate) fn status_to_command_error(status: tonic::Status) -> CommandError {
         code,
         details: Some(format!("{:?}", status.code())),
         conflict_data,
+        requires_extension: None,
     }
 }
 
@@ -230,6 +295,7 @@ pub(crate) fn proto_node_data_to_node(nd: NodeData) -> Result<Node, CommandError
             code: "PARSE_ERROR".to_string(),
             details: Some(nd.created_at.clone()),
             conflict_data: None,
+            requires_extension: None,
         })?;
     let modified_at = DateTime::parse_from_rfc3339(&nd.modified_at)
         .map(|dt| dt.with_timezone(&Utc))
@@ -238,6 +304,7 @@ pub(crate) fn proto_node_data_to_node(nd: NodeData) -> Result<Node, CommandError
             code: "PARSE_ERROR".to_string(),
             details: Some(nd.modified_at.clone()),
             conflict_data: None,
+            requires_extension: None,
         })?;
 
     Ok(Node {
@@ -325,6 +392,7 @@ fn proto_node_response_to_node(resp: NodeResponse) -> Result<Node, CommandError>
         code: "GRPC_ERROR".to_string(),
         details: None,
         conflict_data: None,
+        requires_extension: None,
     })?;
     proto_node_data_to_node(nd)
 }
@@ -349,6 +417,7 @@ async fn validate_node_type(
                 code: "SCHEMA_NOT_FOUND".to_string(),
                 details: None,
                 conflict_data: None,
+                requires_extension: None,
             })
         }
         Err(s) => Err(status_to_command_error(s)),
@@ -362,6 +431,7 @@ pub fn node_to_typed_value(node: Node) -> Result<Value, CommandError> {
         code: "CONVERSION_ERROR".to_string(),
         details: Some(e),
         conflict_data: None,
+        requires_extension: None,
     })
 }
 
@@ -372,6 +442,7 @@ pub fn nodes_to_typed_values(nodes: Vec<Node>) -> Result<Vec<Value>, CommandErro
         code: "CONVERSION_ERROR".to_string(),
         details: Some(e),
         conflict_data: None,
+        requires_extension: None,
     })
 }
 
@@ -814,6 +885,7 @@ pub async fn get_children_tree(
         code: "PARSE_ERROR".to_string(),
         details: Some(tree_json),
         conflict_data: None,
+        requires_extension: None,
     })
 }
 
@@ -1184,6 +1256,7 @@ pub async fn update_query_node(
         code: "SERIALIZE_ERROR".to_string(),
         details: None,
         conflict_data: None,
+        requires_extension: None,
     })?;
     let req = UpdateQueryNodeRequest {
         node_id: id,
@@ -1226,6 +1299,7 @@ pub async fn get_node_relationships(
         code: "PARSE_ERROR".to_string(),
         details: Some(json),
         conflict_data: None,
+        requires_extension: None,
     })
 }
 
@@ -1257,6 +1331,7 @@ pub async fn create_relationship(
             code: "SERIALIZE_ERROR".to_string(),
             details: None,
             conflict_data: None,
+            requires_extension: None,
         })?),
         _ => None,
     };
@@ -1327,6 +1402,7 @@ pub async fn update_relationship_properties(
         code: "SERIALIZE_ERROR".to_string(),
         details: None,
         conflict_data: None,
+        requires_extension: None,
     })?;
     let mut c = client.client().await;
     c.update_relationship_properties(Request::new(UpdateRelationshipPropertiesRequest {
@@ -1361,6 +1437,75 @@ pub async fn delete_node_mention(
 mod tests {
     use super::*;
 
+    /// The refusal the daemon returns for a request routed to a database
+    /// that requires `ids`.
+    fn refusal(ids: &[&str]) -> tonic::Status {
+        let ids: Vec<String> = ids.iter().map(ToString::to_string).collect();
+        nodespace_proto::requires_extension::status(&ids)
+    }
+
+    /// The contract the frontend's refusal view codes against: code
+    /// REQUIRES_EXTENSION, the module's message, and a camelCase
+    /// `requiresExtension` payload with the ids, the message and the download
+    /// link.
+    #[test]
+    fn a_refusal_maps_to_requires_extension_with_its_payload() {
+        use nodespace_proto::extension_names::{refusal_message, DOWNLOAD_LABEL, DOWNLOAD_URL};
+
+        let err = status_to_command_error(refusal(&["pro"]));
+
+        assert_eq!(err.code, "REQUIRES_EXTENSION");
+        assert_eq!(err.message, refusal_message(&["pro"]));
+        assert!(err.conflict_data.is_none());
+        assert_eq!(
+            serde_json::to_value(&err).unwrap(),
+            serde_json::json!({
+                "message": refusal_message(&["pro"]),
+                "code": "REQUIRES_EXTENSION",
+                "details": "FailedPrecondition",
+                "requiresExtension": {
+                    "unsupportedExtensions": ["pro"],
+                    "message": refusal_message(&["pro"]),
+                    "downloadLabel": DOWNLOAD_LABEL,
+                    "downloadUrl": DOWNLOAD_URL,
+                },
+            })
+        );
+    }
+
+    /// Another FAILED_PRECONDITION is not the refusal, and an error that is
+    /// not a refusal carries no `requiresExtension` key at all.
+    #[test]
+    fn another_failed_precondition_is_not_a_refusal() {
+        let err = status_to_command_error(tonic::Status::failed_precondition("no"));
+        assert_ne!(err.code, "REQUIRES_EXTENSION");
+        assert!(err.requires_extension.is_none());
+        let json = serde_json::to_value(&err).unwrap();
+        assert!(json.get("requiresExtension").is_none(), "{json}");
+    }
+
+    /// A command that maps statuses to codes of its own still reports the
+    /// refusal as REQUIRES_EXTENSION, and keeps its own mapping for any other
+    /// status.
+    #[test]
+    fn refusal_or_takes_the_refusal_before_the_commands_own_mapping() {
+        let own = |s: tonic::Status| CommandError {
+            message: s.message().to_string(),
+            code: "OWN_CODE".to_string(),
+            details: None,
+            conflict_data: None,
+            requires_extension: None,
+        };
+        assert_eq!(
+            refusal_or(refusal(&["fixture"]), own).code,
+            "REQUIRES_EXTENSION"
+        );
+        assert_eq!(
+            refusal_or(tonic::Status::internal("boom"), own).code,
+            "OWN_CODE"
+        );
+    }
+
     #[test]
     fn test_command_error_serialization() {
         let err = CommandError {
@@ -1368,6 +1513,7 @@ mod tests {
             code: "TEST_ERROR".to_string(),
             details: Some("Debug info".to_string()),
             conflict_data: None,
+            requires_extension: None,
         };
 
         let json = serde_json::to_string(&err).unwrap();
@@ -1383,6 +1529,7 @@ mod tests {
             code: "SIMPLE".to_string(),
             details: None,
             conflict_data: None,
+            requires_extension: None,
         };
 
         let json = serde_json::to_string(&err).unwrap();

@@ -42,7 +42,10 @@ pub struct DatabaseEntry {
     pub name: String,
     pub path: String,
     pub is_default: bool,
-    /// "closed" | "open" | "missing" | "unknown".
+    /// "closed" | "open" | "missing" | "requires_extension" | "unknown".
+    /// "requires_extension": the database lists, in its settings node's
+    /// `required_extensions`, an extension this build does not support, so the
+    /// daemon refuses to open it (ADR-083 §2).
     pub status: String,
     pub created_at: String,
     pub last_opened_at: Option<String>,
@@ -66,6 +69,7 @@ fn status_str(status: i32) -> String {
         Ok(DatabaseStatus::Closed) => "closed",
         Ok(DatabaseStatus::Open) => "open",
         Ok(DatabaseStatus::Missing) => "missing",
+        Ok(DatabaseStatus::RequiresExtension) => "requires_extension",
         Err(_) => "unknown",
     }
     .to_string()
@@ -224,6 +228,20 @@ pub async fn set_active_database(
 mod tests {
     use super::*;
     use std::collections::{BTreeMap, HashMap};
+
+    /// A refused database reaches the frontend as the `requires_extension`
+    /// status the TypeScript `DatabaseInfo.status` documents.
+    #[test]
+    fn a_refused_database_has_the_requires_extension_status() {
+        let entry = to_entry(DatabaseInfo {
+            status: DatabaseStatus::RequiresExtension as i32,
+            unsupported_extensions: vec!["pro".to_string()],
+            ..Default::default()
+        });
+        assert_eq!(entry.status, "requires_extension");
+        assert_eq!(status_str(DatabaseStatus::Missing as i32), "missing");
+        assert_eq!(status_str(99), "unknown");
+    }
 
     /// The daemon's extension keys reach the frontend DTO unchanged, and the DTO
     /// serializes them under the camelCase `extensions` key the frontend type

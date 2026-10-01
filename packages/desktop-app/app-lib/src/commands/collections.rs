@@ -16,7 +16,7 @@ use tauri::State;
 use tonic::Request;
 
 use super::nodes::{
-    node_to_typed_value, nodes_to_typed_values, proto_node_data_to_node, CommandError,
+    node_to_typed_value, nodes_to_typed_values, proto_node_data_to_node, refusal_or, CommandError,
 };
 use crate::services::GrpcClient;
 
@@ -49,11 +49,14 @@ pub async fn get_all_collections(
     let resp = c
         .get_all_collections(Request::new(GetAllCollectionsRequest {}))
         .await
-        .map_err(|s| CommandError {
-            message: format!("Failed to query collections: {}", s.message()),
-            code: "QUERY_ERROR".to_string(),
-            details: Some(format!("{:?}", s.code())),
-            conflict_data: None,
+        .map_err(|s| {
+            refusal_or(s, |s| CommandError {
+                message: format!("Failed to query collections: {}", s.message()),
+                code: "QUERY_ERROR".to_string(),
+                details: Some(format!("{:?}", s.code())),
+                conflict_data: None,
+                requires_extension: None,
+            })
         })?;
 
     let collections = resp.into_inner().collections;
@@ -64,6 +67,7 @@ pub async fn get_all_collections(
             code: "GRPC_ERROR".to_string(),
             details: None,
             conflict_data: None,
+            requires_extension: None,
         })?;
         let node = proto_node_data_to_node(nd)?;
         let node_value = node_to_typed_value(node)?;
@@ -91,11 +95,14 @@ pub async fn get_collection_members(
     let resp = c
         .get_collection_members(Request::new(CollectionMembersRequest { collection_id }))
         .await
-        .map_err(|s| CommandError {
-            message: format!("Failed to get collection members: {}", s.message()),
-            code: "QUERY_ERROR".to_string(),
-            details: Some(format!("{:?}", s.code())),
-            conflict_data: None,
+        .map_err(|s| {
+            refusal_or(s, |s| CommandError {
+                message: format!("Failed to get collection members: {}", s.message()),
+                code: "QUERY_ERROR".to_string(),
+                details: Some(format!("{:?}", s.code())),
+                conflict_data: None,
+                requires_extension: None,
+            })
         })?;
 
     let nodes: Result<Vec<Node>, CommandError> = resp
@@ -122,14 +129,17 @@ pub async fn get_collection_members_recursive(
     let resp = c
         .get_collection_members_recursive(Request::new(CollectionMembersRequest { collection_id }))
         .await
-        .map_err(|s| CommandError {
-            message: format!(
-                "Failed to get recursive collection members: {}",
-                s.message()
-            ),
-            code: "QUERY_ERROR".to_string(),
-            details: Some(format!("{:?}", s.code())),
-            conflict_data: None,
+        .map_err(|s| {
+            refusal_or(s, |s| CommandError {
+                message: format!(
+                    "Failed to get recursive collection members: {}",
+                    s.message()
+                ),
+                code: "QUERY_ERROR".to_string(),
+                details: Some(format!("{:?}", s.code())),
+                conflict_data: None,
+                requires_extension: None,
+            })
         })?;
 
     let nodes: Result<Vec<Node>, CommandError> = resp
@@ -156,11 +166,14 @@ pub async fn get_node_collections(
     let resp = c
         .get_node_collections(Request::new(NodeCollectionsRequest { node_id }))
         .await
-        .map_err(|s| CommandError {
-            message: format!("Failed to get node collections: {}", s.message()),
-            code: "QUERY_ERROR".to_string(),
-            details: Some(format!("{:?}", s.code())),
-            conflict_data: None,
+        .map_err(|s| {
+            refusal_or(s, |s| CommandError {
+                message: format!("Failed to get node collections: {}", s.message()),
+                code: "QUERY_ERROR".to_string(),
+                details: Some(format!("{:?}", s.code())),
+                conflict_data: None,
+                requires_extension: None,
+            })
         })?;
 
     Ok(resp.into_inner().collection_ids)
@@ -183,11 +196,14 @@ pub async fn add_node_to_collection(
         collection_id,
     }))
     .await
-    .map_err(|s| CommandError {
-        message: format!("Failed to add node to collection: {}", s.message()),
-        code: "COLLECTION_ERROR".to_string(),
-        details: Some(format!("{:?}", s.code())),
-        conflict_data: None,
+    .map_err(|s| {
+        refusal_or(s, |s| CommandError {
+            message: format!("Failed to add node to collection: {}", s.message()),
+            code: "COLLECTION_ERROR".to_string(),
+            details: Some(format!("{:?}", s.code())),
+            conflict_data: None,
+            requires_extension: None,
+        })
     })?;
     Ok(())
 }
@@ -210,11 +226,14 @@ pub async fn add_node_to_collection_path(
             collection_path,
         }))
         .await
-        .map_err(|s| CommandError {
-            message: format!("Failed to add node to collection path: {}", s.message()),
-            code: "COLLECTION_ERROR".to_string(),
-            details: Some(format!("{:?}", s.code())),
-            conflict_data: None,
+        .map_err(|s| {
+            refusal_or(s, |s| CommandError {
+                message: format!("Failed to add node to collection path: {}", s.message()),
+                code: "COLLECTION_ERROR".to_string(),
+                details: Some(format!("{:?}", s.code())),
+                conflict_data: None,
+                requires_extension: None,
+            })
         })?;
 
     Ok(resp.into_inner().collection_id)
@@ -237,11 +256,14 @@ pub async fn remove_node_from_collection(
         collection_id,
     }))
     .await
-    .map_err(|s| CommandError {
-        message: format!("Failed to remove node from collection: {}", s.message()),
-        code: "COLLECTION_ERROR".to_string(),
-        details: Some(format!("{:?}", s.code())),
-        conflict_data: None,
+    .map_err(|s| {
+        refusal_or(s, |s| CommandError {
+            message: format!("Failed to remove node from collection: {}", s.message()),
+            code: "COLLECTION_ERROR".to_string(),
+            details: Some(format!("{:?}", s.code())),
+            conflict_data: None,
+            requires_extension: None,
+        })
     })?;
     Ok(())
 }
@@ -263,11 +285,14 @@ pub async fn find_collection_by_path(
             collection_path,
         }))
         .await
-        .map_err(|s| CommandError {
-            message: format!("Failed to find collection: {}", s.message()),
-            code: "QUERY_ERROR".to_string(),
-            details: Some(format!("{:?}", s.code())),
-            conflict_data: None,
+        .map_err(|s| {
+            refusal_or(s, |s| CommandError {
+                message: format!("Failed to find collection: {}", s.message()),
+                code: "QUERY_ERROR".to_string(),
+                details: Some(format!("{:?}", s.code())),
+                conflict_data: None,
+                requires_extension: None,
+            })
         })?;
 
     match resp.into_inner().node {
@@ -278,6 +303,7 @@ pub async fn find_collection_by_path(
                 code: "GRPC_ERROR".to_string(),
                 details: None,
                 conflict_data: None,
+                requires_extension: None,
             })?;
             let node = proto_node_data_to_node(nd)?;
             Ok(Some(node_to_typed_value(node)?))
@@ -300,11 +326,14 @@ pub async fn get_collection_by_name(
     let resp = c
         .get_collection_by_name(Request::new(GetCollectionByNameRequest { name }))
         .await
-        .map_err(|s| CommandError {
-            message: format!("Failed to get collection by name: {}", s.message()),
-            code: "QUERY_ERROR".to_string(),
-            details: Some(format!("{:?}", s.code())),
-            conflict_data: None,
+        .map_err(|s| {
+            refusal_or(s, |s| CommandError {
+                message: format!("Failed to get collection by name: {}", s.message()),
+                code: "QUERY_ERROR".to_string(),
+                details: Some(format!("{:?}", s.code())),
+                conflict_data: None,
+                requires_extension: None,
+            })
         })?;
 
     match resp.into_inner().node {
@@ -315,6 +344,7 @@ pub async fn get_collection_by_name(
                 code: "GRPC_ERROR".to_string(),
                 details: None,
                 conflict_data: None,
+                requires_extension: None,
             })?;
             let node = proto_node_data_to_node(nd)?;
             Ok(Some(node_to_typed_value(node)?))
@@ -341,17 +371,20 @@ pub async fn create_collection(
         }))
         .await
         .map_err(|s| {
-            let code = if s.code() == tonic::Code::AlreadyExists {
-                "COLLECTION_EXISTS"
-            } else {
-                "CREATE_ERROR"
-            };
-            CommandError {
-                message: format!("Failed to create collection: {}", s.message()),
-                code: code.to_string(),
-                details: Some(format!("{:?}", s.code())),
-                conflict_data: None,
-            }
+            refusal_or(s, |s| {
+                let code = if s.code() == tonic::Code::AlreadyExists {
+                    "COLLECTION_EXISTS"
+                } else {
+                    "CREATE_ERROR"
+                };
+                CommandError {
+                    message: format!("Failed to create collection: {}", s.message()),
+                    code: code.to_string(),
+                    details: Some(format!("{:?}", s.code())),
+                    conflict_data: None,
+                    requires_extension: None,
+                }
+            })
         })?;
 
     Ok(resp.into_inner().collection_id)
@@ -378,17 +411,20 @@ pub async fn rename_collection(
         }))
         .await
         .map_err(|s| {
-            let code = if s.code() == tonic::Code::AlreadyExists {
-                "COLLECTION_EXISTS"
-            } else {
-                "UPDATE_ERROR"
-            };
-            CommandError {
-                message: format!("Failed to rename collection: {}", s.message()),
-                code: code.to_string(),
-                details: Some(format!("{:?}", s.code())),
-                conflict_data: None,
-            }
+            refusal_or(s, |s| {
+                let code = if s.code() == tonic::Code::AlreadyExists {
+                    "COLLECTION_EXISTS"
+                } else {
+                    "UPDATE_ERROR"
+                };
+                CommandError {
+                    message: format!("Failed to rename collection: {}", s.message()),
+                    code: code.to_string(),
+                    details: Some(format!("{:?}", s.code())),
+                    conflict_data: None,
+                    requires_extension: None,
+                }
+            })
         })?;
 
     let nd = resp.into_inner().node_data.ok_or_else(|| CommandError {
@@ -396,6 +432,7 @@ pub async fn rename_collection(
         code: "GRPC_ERROR".to_string(),
         details: None,
         conflict_data: None,
+        requires_extension: None,
     })?;
     let node = proto_node_data_to_node(nd)?;
     node_to_typed_value(node)
@@ -421,11 +458,14 @@ pub async fn delete_collection(
         version,
     }))
     .await
-    .map_err(|s| CommandError {
-        message: format!("Failed to delete collection: {}", s.message()),
-        code: "DELETE_ERROR".to_string(),
-        details: Some(format!("{:?}", s.code())),
-        conflict_data: None,
+    .map_err(|s| {
+        refusal_or(s, |s| CommandError {
+            message: format!("Failed to delete collection: {}", s.message()),
+            code: "DELETE_ERROR".to_string(),
+            details: Some(format!("{:?}", s.code())),
+            conflict_data: None,
+            requires_extension: None,
+        })
     })?;
     Ok(())
 }

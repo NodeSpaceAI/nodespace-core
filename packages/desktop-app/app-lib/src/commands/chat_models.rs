@@ -5,7 +5,7 @@
 //! Tauri event channel.
 
 use crate::agent_events;
-use crate::commands::nodes::CommandError;
+use crate::commands::nodes::{refusal_or, CommandError};
 use crate::services::GrpcClient;
 use nodespace_proto::nodespace::{
     CancelModelDownloadRequest, DeleteModelRequest, DownloadModelRequest, GetSystemRamRequest,
@@ -22,6 +22,7 @@ fn model_error(message: impl Into<String>) -> CommandError {
         code: "MODEL_ERROR".to_string(),
         details: None,
         conflict_data: None,
+        requires_extension: None,
     }
 }
 
@@ -31,6 +32,7 @@ fn grpc_err(msg: impl std::fmt::Display) -> CommandError {
         code: "GRPC_ERROR".to_string(),
         details: None,
         conflict_data: None,
+        requires_extension: None,
     }
 }
 
@@ -56,7 +58,7 @@ pub async fn chat_model_list(
             force_refresh: force_refresh.unwrap_or(false),
         })
         .await
-        .map_err(|e| grpc_err(e.message()))?;
+        .map_err(|e| refusal_or(e, |e| grpc_err(e.message())))?;
 
     let models = resp
         .into_inner()

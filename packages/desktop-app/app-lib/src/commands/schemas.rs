@@ -12,7 +12,7 @@ use nodespace_proto::nodespace::{GetAllSchemasRequest, GetSchemaDefinitionReques
 use tauri::State;
 use tonic::Request;
 
-use super::nodes::{proto_node_data_to_node, CommandError};
+use super::nodes::{proto_node_data_to_node, refusal_or, CommandError};
 use crate::services::GrpcClient;
 
 /// Get all schema nodes with typed fields
@@ -31,11 +31,14 @@ pub async fn get_all_schemas(
     let resp = c
         .get_all_schemas(Request::new(GetAllSchemasRequest {}))
         .await
-        .map_err(|s| CommandError {
-            message: format!("Failed to retrieve schemas: {}", s.message()),
-            code: "SCHEMA_SERVICE_ERROR".to_string(),
-            details: Some(format!("{:?}", s.code())),
-            conflict_data: None,
+        .map_err(|s| {
+            refusal_or(s, |s| CommandError {
+                message: format!("Failed to retrieve schemas: {}", s.message()),
+                code: "SCHEMA_SERVICE_ERROR".to_string(),
+                details: Some(format!("{:?}", s.code())),
+                conflict_data: None,
+                requires_extension: None,
+            })
         })?;
 
     let schema_nodes: Vec<SchemaNode> = resp
@@ -75,21 +78,25 @@ pub async fn get_schema_definition(
         }))
         .await
         .map_err(|s| {
-            if s.code() == tonic::Code::NotFound {
-                CommandError {
-                    message: format!("Schema '{}' not found", schema_id),
-                    code: "SCHEMA_NOT_FOUND".to_string(),
-                    details: None,
-                    conflict_data: None,
+            refusal_or(s, |s| {
+                if s.code() == tonic::Code::NotFound {
+                    CommandError {
+                        message: format!("Schema '{}' not found", schema_id),
+                        code: "SCHEMA_NOT_FOUND".to_string(),
+                        details: None,
+                        conflict_data: None,
+                        requires_extension: None,
+                    }
+                } else {
+                    CommandError {
+                        message: format!("Schema operation failed: {}", s.message()),
+                        code: "SCHEMA_SERVICE_ERROR".to_string(),
+                        details: Some(format!("{:?}", s.code())),
+                        conflict_data: None,
+                        requires_extension: None,
+                    }
                 }
-            } else {
-                CommandError {
-                    message: format!("Schema operation failed: {}", s.message()),
-                    code: "SCHEMA_SERVICE_ERROR".to_string(),
-                    details: Some(format!("{:?}", s.code())),
-                    conflict_data: None,
-                }
-            }
+            })
         })?;
 
     let nd = resp.into_inner().node_data.ok_or_else(|| CommandError {
@@ -97,6 +104,7 @@ pub async fn get_schema_definition(
         code: "GRPC_ERROR".to_string(),
         details: None,
         conflict_data: None,
+        requires_extension: None,
     })?;
 
     let node = proto_node_data_to_node(nd)?;
@@ -106,6 +114,7 @@ pub async fn get_schema_definition(
         code: "SCHEMA_SERVICE_ERROR".to_string(),
         details: Some(format!("{:?}", e)),
         conflict_data: None,
+        requires_extension: None,
     })
 }
 
@@ -120,6 +129,7 @@ mod tests {
             code: "TEST_ERROR".to_string(),
             details: Some("Debug info".to_string()),
             conflict_data: None,
+            requires_extension: None,
         };
 
         let json = serde_json::to_string(&err).unwrap();
@@ -135,6 +145,7 @@ mod tests {
             code: "SIMPLE".to_string(),
             details: None,
             conflict_data: None,
+            requires_extension: None,
         };
 
         let json = serde_json::to_string(&err).unwrap();

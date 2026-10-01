@@ -6,7 +6,7 @@
 //! token events to the frontend via Tauri events.
 
 use crate::agent_events;
-use crate::commands::nodes::CommandError;
+use crate::commands::nodes::{refusal_or, CommandError};
 use crate::services::GrpcClient;
 use nodespace_proto::nodespace::{
     CancelTurnRequest, EnsureModelReadyRequest, GetLocalStatusRequest, ListModelsRequest,
@@ -22,6 +22,7 @@ fn grpc_err(msg: impl std::fmt::Display) -> CommandError {
         code: "GRPC_ERROR".to_string(),
         details: None,
         conflict_data: None,
+        requires_extension: None,
     }
 }
 
@@ -210,7 +211,7 @@ pub async fn local_agent_cancel_turn(
     client
         .cancel_turn(CancelTurnRequest { node_id })
         .await
-        .map_err(|e| grpc_err(e.message()))?;
+        .map_err(|e| refusal_or(e, |e| grpc_err(e.message())))?;
     Ok(())
 }
 
@@ -223,7 +224,7 @@ pub async fn local_agent_status(
     let resp = client
         .get_status(GetLocalStatusRequest { session_id: None })
         .await
-        .map_err(|e| grpc_err(e.message()))?;
+        .map_err(|e| refusal_or(e, |e| grpc_err(e.message())))?;
     serde_json::from_str(&resp.into_inner().status_json)
         .map_err(|e| grpc_err(format!("Failed to deserialize status: {e}")))
 }
@@ -259,14 +260,14 @@ pub async fn ensure_model_ready(
             model_id: model_id.clone(),
         })
         .await
-        .map_err(|e| grpc_err(e.message()))?
+        .map_err(|e| refusal_or(e, |e| grpc_err(e.message())))?
         .into_inner();
 
     let mut engine_swapped = false;
     let mut saw_terminal_event = false;
 
     while let Some(event_result) = stream.next().await {
-        let event = event_result.map_err(|e| grpc_err(e.message()))?;
+        let event = event_result.map_err(|e| refusal_or(e, |e| grpc_err(e.message())))?;
 
         match event.event_type.as_str() {
             "downloading" => {
@@ -357,7 +358,7 @@ pub async fn list_local_models(
             force_refresh: false,
         })
         .await
-        .map_err(|e| grpc_err(e.message()))?
+        .map_err(|e| refusal_or(e, |e| grpc_err(e.message())))?
         .into_inner();
 
     let models = resp

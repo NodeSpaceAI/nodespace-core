@@ -188,6 +188,11 @@ async fn with_timeout<T>(
 }
 
 fn status_to_command_error(status: tonic::Status) -> CommandError {
+    // Before the FAILED_PRECONDITION arm below: a request to a refused
+    // database is REQUIRES_EXTENSION, not an agent that is not ready.
+    if let Some(refused) = super::nodes::requires_extension_error(&status) {
+        return refused;
+    }
     let code = match status.code() {
         tonic::Code::NotFound => "SESSION_NOT_FOUND",
         tonic::Code::InvalidArgument => "INVALID_ARGUMENT",
@@ -200,6 +205,7 @@ fn status_to_command_error(status: tonic::Status) -> CommandError {
         code,
         details: Some(format!("{:?}", status.code())),
         conflict_data: None,
+        requires_extension: None,
     }
 }
 
@@ -455,6 +461,20 @@ pub async fn check_agent_availability(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A request routed to a refused database reports the refusal, not an
+    /// agent that is not ready, although both are FAILED_PRECONDITION.
+    #[test]
+    fn a_refusal_is_not_reported_as_an_agent_not_ready() {
+        let status = nodespace_proto::requires_extension::status(&["pro".to_string()]);
+        let err = status_to_command_error(status);
+        assert_eq!(err.code, "REQUIRES_EXTENSION");
+        assert!(err.requires_extension.is_some());
+        assert_eq!(
+            status_to_command_error(tonic::Status::failed_precondition("not ready")).code,
+            "AGENT_NOT_READY"
+        );
+    }
 
     #[test]
     fn registry_remove_drops_the_entry_without_cancelling() {
