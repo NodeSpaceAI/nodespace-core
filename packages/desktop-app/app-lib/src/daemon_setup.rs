@@ -42,6 +42,12 @@
 //!
 //! On subsequent launches:
 //!   - Check if the socket exists and the daemon responds (cheap path).
+//!   - If it responds, ask it which executable it runs and compare that with
+//!     the active [`DaemonProfile`]'s binary (see [`product_check`]). A daemon
+//!     running another binary is evicted: the app boots out its own service
+//!     registration, waits for the socket to clear, and registers its own daemon
+//!     below. A report that cannot be had changes nothing. Windows has no such
+//!     check.
 //!   - If already healthy: no-op.
 //!   - If service is registered but daemon crashed: restart it.
 //!   - If service is missing (e.g. clean install): re-run first-launch setup.
@@ -51,12 +57,15 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use nodespace_proto::nodespace::GetDaemonVersionRequest;
 use tauri::AppHandle;
 use tokio::time::timeout;
 #[cfg(any(windows, test))]
 use tokio_util::sync::CancellationToken;
+use tonic::Request;
 
 use crate::daemon_profile::{self, DaemonProfile};
+use crate::services::GrpcClient;
 #[cfg(windows)]
 use crate::window_routing;
 
@@ -543,6 +552,199 @@ mod daemon_starting_retry_tests {
     }
 }
 
+/// Whether the daemon answering on the socket runs the binary the active
+/// profile installs, judged from the executable path it reports.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProductCheck {
+    /// The reported executable is the profile's daemon binary.
+    Match,
+    /// The daemon runs another binary, or reported none, as a daemon built
+    /// before the report existed does.
+    Mismatch,
+    /// No report could be had, so nothing is known about the daemon.
+    Unknown,
+}
+
+/// Compares the executable a running daemon reports with the daemon binary of
+/// `profile`, by file name with any `.exe` suffix removed. `reported` is `None`
+/// when asking the daemon failed.
+///
+/// An empty report is a [`ProductCheck::Mismatch`], not an unknown: a daemon
+/// that answers but names no executable predates the report, and this app
+/// cannot vouch for it. Only the final `.exe` is dropped, so a name such as
+/// `nodespaced.old` does not pass for `nodespaced`.
+pub fn product_check(reported: Option<&str>, profile: &DaemonProfile) -> ProductCheck {
+    let Some(reported) = reported else {
+        return ProductCheck::Unknown;
+    };
+    let name = Path::new(reported)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(|name| name.strip_suffix(".exe").unwrap_or(name));
+    if name == Some(profile.binary_name) {
+        ProductCheck::Match
+    } else {
+        ProductCheck::Mismatch
+    }
+}
+
+/// How long [`running_daemon_executable`] waits for the daemon to answer.
+const PRODUCT_CHECK_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Asks the running daemon, over `client`, for the path of its own executable.
+///
+/// `None` when the call fails or does not finish within
+/// [`PRODUCT_CHECK_TIMEOUT`]; either way the answer is unknown, and the caller
+/// carries on as if it had not asked. A daemon built before the report existed
+/// answers with an empty string, which is `Some("")` here and not `None`.
+pub async fn running_daemon_executable(client: &GrpcClient) -> Option<String> {
+    let mut node = client.client().await;
+    let call = node.get_daemon_version(Request::new(GetDaemonVersionRequest {}));
+    match timeout(PRODUCT_CHECK_TIMEOUT, call).await {
+        Ok(Ok(response)) => Some(response.into_inner().executable_path),
+        Ok(Err(status)) => {
+            tracing::warn!(%status, "could not read the running daemon's executable");
+            None
+        }
+        Err(_) => {
+            tracing::warn!(
+                timeout = ?PRODUCT_CHECK_TIMEOUT,
+                "timed out reading the running daemon's executable"
+            );
+            None
+        }
+    }
+}
+
+/// How long eviction waits for a booted-out daemon to stop answering.
+#[cfg(unix)]
+const EVICTION_EXIT_GRACE: Duration = Duration::from_secs(5);
+
+/// The command that removes this build's service registration, and with it the
+/// daemon that registration runs.
+///
+/// macOS removes the launchd job outright. Linux stops the unit and leaves it
+/// enabled, which is enough: registering again enables and starts it, and a
+/// stop requested through systemd does not trigger `Restart=on-failure`.
+#[cfg(unix)]
+fn boot_out_command() -> (&'static str, Vec<String>) {
+    #[cfg(target_os = "macos")]
+    {
+        let target = format!("gui/{}/{}", get_uid(), launch_agent_label());
+        ("launchctl", vec!["bootout".to_string(), target])
+    }
+    #[cfg(target_os = "linux")]
+    {
+        (
+            "systemctl",
+            vec![
+                "--user".to_string(),
+                "stop".to_string(),
+                SYSTEMD_SERVICE_NAME.to_string(),
+            ],
+        )
+    }
+}
+
+/// Removes this build's service registration, stopping the daemon it runs.
+///
+/// Best effort and blocking: it can take as long as the daemon needs to exit,
+/// so callers run it off the async workers. A failure is logged and otherwise
+/// ignored, since the likely cause is that nothing was registered, and the
+/// socket check that follows decides what happens next either way.
+///
+/// The command is not run under `cfg(test)`: it acts on this machine's real
+/// service manager, under the label of a developer's own running dev daemon.
+/// [`boot_out_command`] is what the tests pin.
+#[cfg(unix)]
+fn boot_out_service_registration() {
+    let (program, args) = boot_out_command();
+    tracing::info!(program, ?args, "booting out the service registration");
+    #[cfg(not(test))]
+    match std::process::Command::new(program).args(&args).output() {
+        Ok(output) if output.status.success() => {
+            tracing::info!("service registration booted out");
+        }
+        Ok(output) => tracing::warn!(
+            status = %output.status,
+            stderr = %String::from_utf8_lossy(&output.stderr).trim(),
+            "booting out the service registration failed"
+        ),
+        Err(error) => tracing::warn!(%error, program, "could not run the service manager"),
+    }
+}
+
+/// Acts on what the running daemon reported about itself. Returns true when it
+/// is another binary's daemon and `boot_out` removed its registration.
+///
+/// After a boot-out this waits up to `exit_grace` for the socket to clear and
+/// then removes the file only if nothing answers on it. A daemon this app does
+/// not register (a Homebrew service, one started by hand) survives the
+/// boot-out and keeps its socket, and the daemon registered afterwards then
+/// exits on the single-instance lock; the app keeps using the survivor.
+///
+/// `boot_out` is a parameter so a test can stand in for the service manager.
+#[cfg(unix)]
+async fn evict_if_other_product(
+    socket_path: &Path,
+    reported: Option<&str>,
+    profile: &DaemonProfile,
+    exit_grace: Duration,
+    boot_out: impl FnOnce() + Send + 'static,
+) -> bool {
+    match product_check(reported, profile) {
+        ProductCheck::Match => false,
+        ProductCheck::Unknown => {
+            tracing::warn!("could not tell which daemon is running; leaving it in place");
+            false
+        }
+        ProductCheck::Mismatch => {
+            tracing::warn!(
+                reported = reported.unwrap_or_default(),
+                expected = profile.binary_name,
+                "the running daemon is not this app's daemon; booting out the registration"
+            );
+            let _ = tokio::task::spawn_blocking(boot_out).await;
+            wait_for_socket_release(socket_path, exit_grace).await;
+            true
+        }
+    }
+}
+
+/// The startup step: if a daemon answers on `socket_path`, asks it which
+/// executable it runs and evicts it when that is not the active profile's
+/// daemon. Returns true when it did.
+///
+/// The app's gRPC channel carried the question to the daemon just evicted, so
+/// it is rebuilt to dial whatever answers next.
+#[cfg(unix)]
+async fn evict_other_product_daemon(app: &AppHandle, socket_path: &Path) -> bool {
+    use tauri::Manager;
+
+    if check_daemon_socket(socket_path).await != DaemonStatus::Healthy {
+        return false;
+    }
+    let client = app.try_state::<GrpcClient>();
+    let reported = match &client {
+        Some(client) => running_daemon_executable(client).await,
+        None => None,
+    };
+    let evicted = evict_if_other_product(
+        socket_path,
+        reported.as_deref(),
+        daemon_profile::active(),
+        EVICTION_EXIT_GRACE,
+        boot_out_service_registration,
+    )
+    .await;
+    if evicted {
+        if let Some(client) = &client {
+            client.reconnect().await;
+        }
+    }
+    evicted
+}
+
 /// Ensure nodespaced is installed as a user service (launchd/systemd) and running.
 ///
 /// Call this from the Tauri setup block. It is non-fatal: logs errors
@@ -578,7 +780,18 @@ pub async fn ensure_daemon_running(app: &AppHandle) -> Result<DaemonStatus> {
     let binary_updated = extract_sidecar_if_changed(app, daemon_binary_name(), &bin_dir).await?;
     extract_sidecar_if_changed(app, CLI_BINARY_NAME, &bin_dir).await?;
 
-    if binary_updated {
+    // A daemon that answers but runs another binary is not ours to use, however
+    // healthy it looks. Windows has no second binary to tell apart.
+    #[cfg(unix)]
+    let evicted = evict_other_product_daemon(app, &socket_path).await;
+    #[cfg(not(unix))]
+    let evicted = false;
+
+    if evicted {
+        // Its registration is gone and the socket has been given time to clear:
+        // there is nothing left to kill, and no healthy daemon to return early
+        // on, so go straight on to register this app's own.
+    } else if binary_updated {
         tracing::info!("nodespaced binary updated — restarting daemon");
         kill_running_daemon(&socket_path).await;
     } else {
@@ -727,7 +940,17 @@ async fn kill_running_daemon_within(socket_path: &Path, exit_grace: Duration) {
         }
     }
 
-    // Give the daemon up to `exit_grace` to exit cleanly before proceeding.
+    wait_for_socket_release(socket_path, exit_grace).await;
+}
+
+/// Gives the daemon on `socket_path` up to `exit_grace` to stop answering, then
+/// removes the socket file if nothing answers on it any more.
+///
+/// A daemon the caller did not stop may still be serving the file, in which
+/// case it stays. The connect that decides this blocks, so it runs off the
+/// async workers.
+#[cfg(unix)]
+async fn wait_for_socket_release(socket_path: &Path, exit_grace: Duration) {
     let deadline = tokio::time::Instant::now() + exit_grace;
     while tokio::time::Instant::now() < deadline {
         tokio::time::sleep(Duration::from_millis(200)).await;
@@ -736,9 +959,6 @@ async fn kill_running_daemon_within(socket_path: &Path, exit_grace: Duration) {
         }
     }
 
-    // Remove the socket file only if nothing answers on it any more. A daemon
-    // this function did not signal may still be serving it. The connect that
-    // decides this blocks, so it runs off the async workers.
     let socket_path = socket_path.to_owned();
     let _ = tokio::task::spawn_blocking(move || {
         remove_socket_if_stale(&socket_path, Duration::ZERO);
@@ -3734,5 +3954,255 @@ mod stale_socket_removal_tests {
             socket.exists(),
             "the socket of a daemon that is still serving must not be deleted"
         );
+    }
+}
+
+#[cfg(test)]
+mod product_check_tests {
+    use super::{product_check, ProductCheck};
+    use crate::daemon_profile::DaemonProfile;
+
+    fn community() -> DaemonProfile {
+        DaemonProfile::community()
+    }
+
+    fn named(binary_name: &'static str) -> DaemonProfile {
+        DaemonProfile {
+            binary_name,
+            ..DaemonProfile::community()
+        }
+    }
+
+    #[test]
+    fn the_profiles_own_binary_name_matches() {
+        assert_eq!(
+            product_check(Some("nodespaced"), &community()),
+            ProductCheck::Match
+        );
+    }
+
+    #[test]
+    fn a_full_path_matches_on_its_file_name() {
+        assert_eq!(
+            product_check(Some("/Users/me/.nodespace/bin/nodespaced"), &community()),
+            ProductCheck::Match
+        );
+    }
+
+    #[test]
+    fn an_exe_suffix_is_ignored() {
+        assert_eq!(
+            product_check(Some("nodespaced.exe"), &community()),
+            ProductCheck::Match
+        );
+        assert_eq!(
+            product_check(Some("/opt/nodespace/nodespaced.exe"), &community()),
+            ProductCheck::Match
+        );
+    }
+
+    #[test]
+    fn another_binary_name_is_a_mismatch() {
+        assert_eq!(
+            product_check(Some("/opt/bin/custom-daemon"), &community()),
+            ProductCheck::Mismatch
+        );
+        assert_eq!(
+            product_check(Some("/opt/bin/nodespaced"), &named("custom-daemon")),
+            ProductCheck::Mismatch
+        );
+        assert_eq!(
+            product_check(Some("/opt/bin/custom-daemon.exe"), &named("custom-daemon")),
+            ProductCheck::Match
+        );
+    }
+
+    #[test]
+    fn an_empty_report_is_a_mismatch_not_an_unknown() {
+        assert_eq!(
+            product_check(Some(""), &community()),
+            ProductCheck::Mismatch,
+            "a daemon built before the report existed answers with an empty path"
+        );
+    }
+
+    #[test]
+    fn a_failed_report_is_unknown() {
+        assert_eq!(product_check(None, &community()), ProductCheck::Unknown);
+    }
+
+    #[test]
+    fn only_the_file_name_counts() {
+        // A directory called like the binary does not make its contents match.
+        assert_eq!(
+            product_check(Some("/opt/nodespaced/other-daemon"), &community()),
+            ProductCheck::Mismatch
+        );
+    }
+
+    #[test]
+    fn lookalike_names_are_a_mismatch() {
+        for lookalike in [
+            "nodespaced.old",
+            "nodespaced-extra",
+            "xnodespaced",
+            "nodespaced.exe.bak",
+            "nodespaced (deleted)",
+            ".exe",
+        ] {
+            assert_eq!(
+                product_check(Some(lookalike), &community()),
+                ProductCheck::Mismatch,
+                "{lookalike} must not pass for the community daemon"
+            );
+        }
+    }
+}
+
+/// What the app does about a running daemon that reports another executable.
+/// The service manager is stood in for by a closure, since the real one would
+/// act on this machine's own daemon; real Unix sockets held by this test
+/// process stand in for the daemons.
+#[cfg(all(test, unix))]
+mod product_eviction_tests {
+    use super::{boot_out_command, evict_if_other_product};
+    use crate::daemon_profile::DaemonProfile;
+    use std::os::unix::net::UnixListener;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    const GRACE: Duration = Duration::from_millis(400);
+
+    fn socket_in(dir: &tempfile::TempDir) -> PathBuf {
+        dir.path().join("d.sock")
+    }
+
+    fn counter() -> (Arc<AtomicUsize>, impl FnOnce() + Send + 'static) {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let seen = calls.clone();
+        (calls, move || {
+            seen.fetch_add(1, Ordering::SeqCst);
+        })
+    }
+
+    #[tokio::test]
+    async fn a_matching_daemon_is_left_alone() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let socket = socket_in(&dir);
+        let _serving = UnixListener::bind(&socket).expect("bind test socket");
+        let (booted_out, boot_out) = counter();
+
+        let evicted = evict_if_other_product(
+            &socket,
+            Some("/Users/me/.nodespace/bin/nodespaced"),
+            &DaemonProfile::community(),
+            GRACE,
+            boot_out,
+        )
+        .await;
+
+        assert!(!evicted);
+        assert_eq!(booted_out.load(Ordering::SeqCst), 0, "no boot-out");
+        assert!(socket.exists());
+    }
+
+    #[tokio::test]
+    async fn an_unknown_report_changes_nothing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let socket = socket_in(&dir);
+        let _serving = UnixListener::bind(&socket).expect("bind test socket");
+        let (booted_out, boot_out) = counter();
+
+        let evicted =
+            evict_if_other_product(&socket, None, &DaemonProfile::community(), GRACE, boot_out)
+                .await;
+
+        assert!(!evicted);
+        assert_eq!(booted_out.load(Ordering::SeqCst), 0, "no boot-out");
+        assert!(socket.exists());
+    }
+
+    #[tokio::test]
+    async fn a_mismatched_or_empty_report_boots_out_and_clears_the_socket() {
+        for reported in [Some("/opt/bin/custom-daemon"), Some("")] {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let socket = socket_in(&dir);
+            let serving = UnixListener::bind(&socket).expect("bind test socket");
+            let booted_out = Arc::new(AtomicUsize::new(0));
+            let seen = booted_out.clone();
+            // The boot-out stops the daemon, which is what releases its socket.
+            let boot_out = move || {
+                seen.fetch_add(1, Ordering::SeqCst);
+                drop(serving);
+            };
+
+            let evicted = evict_if_other_product(
+                &socket,
+                reported,
+                &DaemonProfile::community(),
+                Duration::from_secs(5),
+                boot_out,
+            )
+            .await;
+
+            assert!(evicted, "{reported:?} must be evicted");
+            assert_eq!(booted_out.load(Ordering::SeqCst), 1, "{reported:?}");
+            assert!(
+                !socket.exists(),
+                "the stale socket file left by the daemon must be removed for {reported:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_daemon_that_survives_the_boot_out_keeps_its_socket() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let socket = socket_in(&dir);
+        // Held by this test throughout: a daemon the service manager does not
+        // run, such as a Homebrew service, answers on after the boot-out.
+        let _survivor = UnixListener::bind(&socket).expect("bind test socket");
+        let (booted_out, boot_out) = counter();
+
+        let evicted = evict_if_other_product(
+            &socket,
+            Some("/opt/bin/custom-daemon"),
+            &DaemonProfile::community(),
+            GRACE,
+            boot_out,
+        )
+        .await;
+
+        assert!(evicted);
+        assert_eq!(booted_out.load(Ordering::SeqCst), 1);
+        assert!(
+            socket.exists(),
+            "deleting the socket of a daemon that is still serving strands it"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn boot_out_names_this_builds_launchd_label_in_the_users_gui_domain() {
+        let (program, args) = boot_out_command();
+
+        assert_eq!(program, "launchctl");
+        assert_eq!(args.len(), 2);
+        assert_eq!(args[0], "bootout");
+        let uid = unsafe { libc::getuid() };
+        assert_eq!(
+            args[1],
+            format!("gui/{uid}/{}", super::launch_agent_label())
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn boot_out_stops_the_users_service_unit() {
+        let (program, args) = boot_out_command();
+
+        assert_eq!(program, "systemctl");
+        assert_eq!(args, ["--user", "stop", "nodespace.service"]);
     }
 }
