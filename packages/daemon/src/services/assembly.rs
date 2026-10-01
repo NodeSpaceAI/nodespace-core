@@ -676,7 +676,7 @@ async fn build_unrouted_services(shared: &SharedContext) -> Result<DatabaseServi
 /// A default refused by the required-extensions guard (ADR-083 §2), because it
 /// requires an extension this daemon does not support or because the guard
 /// could not read what it requires, concerns that one database, not the
-/// daemon: it is logged, and an unrouted set ([`build_unrouted_services`]) is
+/// daemon: it is logged, and an unrouted set (`build_unrouted_services`) is
 /// returned so the daemon keeps serving the other databases. This differs from
 /// a table-shape refusal, which stops the daemon. Any other failure is
 /// returned unchanged.

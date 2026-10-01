@@ -199,7 +199,6 @@ fn uri_path(path: &str, windows: bool) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
 
     #[test]
     fn a_list_of_strings_parses_in_order_without_duplicates() {
@@ -240,7 +239,7 @@ mod tests {
         .await;
         let cwd = std::env::current_dir().unwrap();
         let ups = "../".repeat(cwd.components().count() - 1);
-        let relative = PathBuf::from(format!(
+        let relative = std::path::PathBuf::from(format!(
             "{ups}{}",
             path.strip_prefix("/").unwrap().display()
         ));
