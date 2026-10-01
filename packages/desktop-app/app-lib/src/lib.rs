@@ -24,6 +24,8 @@ pub mod watcher;
 // Which daemon binary and service environment this app installs and starts
 #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
 pub mod daemon_profile;
+#[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+pub use daemon_profile::DaemonProfile;
 
 // Daemon lifecycle: launchd (macOS), systemd (Linux), direct spawn (Windows)
 #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
@@ -322,11 +324,12 @@ fn parse_relaunch_database_arg(argv: &[String]) -> Option<String> {
 /// Builds the desktop app around `extensions` and runs it until it exits.
 ///
 /// `run` is the whole of an app's startup. In order, it redirects stdio to log
-/// files in a Windows release build, builds the tokio runtime and hands it to
-/// Tauri, registers core's own plugins, applies `extensions` with [`assemble`],
-/// then adds core's setup, menu handler and commands, builds the app with
-/// `context` and runs the event loop. All of that after the runtime is set
-/// happens inside the runtime, so the main thread stays inside it while the
+/// files in a Windows release build, installs the daemon profile (the one
+/// `extensions` names, or the build's default), builds the tokio runtime and
+/// hands it to Tauri, registers core's own plugins, applies `extensions` with
+/// [`assemble`], then adds core's setup, menu handler and commands, builds the
+/// app with `context` and runs the event loop. All of that after the runtime is
+/// set happens inside the runtime, so the main thread stays inside it while the
 /// event loop runs. An app with no extension passes [`AppExtensions::none`] and
 /// behaves exactly as core alone does.
 ///
@@ -356,7 +359,7 @@ fn parse_relaunch_database_arg(argv: &[String]) -> Option<String> {
 ///   crate's direct dependencies;
 /// * resolve the same Tauri and tonic versions as core's lockfile, so the app is
 ///   never built on a release of either that core has not run.
-pub fn run(extensions: AppExtensions, context: tauri::Context<tauri::Wry>) {
+pub fn run(mut extensions: AppExtensions, context: tauri::Context<tauri::Wry>) {
     // A release build has no console at all (see the `windows_subsystem`
     // attribute on the app crate's `main.rs`), so `eprintln!`/`println!`
     // anywhere in this process — notably `SchemaNode::from_node`'s
@@ -371,6 +374,13 @@ pub fn run(extensions: AppExtensions, context: tauri::Context<tauri::Wry>) {
     // the real-Windows verification behind this.
     #[cfg(all(windows, not(debug_assertions)))]
     daemon_setup::redirect_gui_stdio_to_log_files();
+
+    // Fix which daemon this process installs and starts before anything reads
+    // it. Its first reader is core's setup, which kills a stale daemon by binary
+    // name, and installing here, before the app is built, comes before every
+    // read. After the stdio redirect, so a Windows release build logs the panic
+    // of an install that came too late.
+    daemon_profile::install(extensions.take_daemon_profile());
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -1620,6 +1630,33 @@ mod run_wiring_tests {
         assert!(
             redirect < runtime_built,
             "stdio is redirected before anything else runs, so no diagnostic is lost"
+        );
+    }
+
+    #[test]
+    fn run_installs_the_extension_daemon_profile_before_building_the_app() {
+        let run = run_source();
+        let installed = position(
+            run,
+            "daemon_profile::install(extensions.take_daemon_profile());",
+        );
+        let runtime_built = position(run, "tokio::runtime::Builder::new_multi_thread()");
+        let builder_created = position(run, "tauri::Builder::default()");
+        let setup = position(run, ".setup(");
+
+        assert!(
+            installed < runtime_built,
+            "the profile is installed before the runtime exists, so no task can read it first"
+        );
+        assert!(
+            installed < builder_created && installed < setup,
+            "the profile is installed before the builder exists: plugin setup and core's \
+             setup, whose stale-daemon kill is the first reader, both run after it"
+        );
+        assert_eq!(
+            run.matches("daemon_profile::install(").count(),
+            1,
+            "run installs the profile exactly once; a second install panics"
         );
     }
 

@@ -11,6 +11,10 @@
 //! applies it to a `tauri::Builder`. An app with no extension, built from
 //! [`AppExtensions::none`], behaves exactly as core alone does.
 //!
+//! An extension can name the daemon the app installs and starts
+//! ([`AppExtensions::daemon_profile`]). `run` installs that profile before it
+//! builds the app, so it is the one part of an extension `assemble` ignores.
+//!
 //! Besides plugins, an extension can run work once the daemon is up
 //! ([`AppExtensions::on_daemon_ready`]) and react when the shared gRPC channel
 //! is rebuilt ([`AppExtensions::on_channel_rebuilt`]). Both ride the channel
@@ -30,6 +34,7 @@ use futures::FutureExt;
 use tauri::plugin::Plugin;
 use tauri::{AppHandle, Builder, Manager, Runtime};
 
+use crate::daemon_profile::DaemonProfile;
 use crate::services::GrpcClient;
 use crate::update_check::{builtin_update_source, UpdateSourceState};
 
@@ -113,6 +118,7 @@ pub(crate) fn register_core_plugins<R: Runtime>(builder: Builder<R>) -> Builder<
 /// methods below, then hand it to [`assemble`]. The runtime parameter is
 /// `tauri::Wry` unless a test picks another runtime.
 pub struct AppExtensions<R: Runtime = tauri::Wry> {
+    daemon_profile: Option<DaemonProfile>,
     plugins: Vec<Box<dyn Plugin<R>>>,
     daemon_ready: Vec<DaemonReadyTask<R>>,
     channel_rebuilt: Vec<ChannelRebuiltHook<R>>,
@@ -148,11 +154,68 @@ impl<R: Runtime> AppExtensions<R> {
     #[must_use]
     pub fn none() -> Self {
         Self {
+            daemon_profile: None,
             plugins: Vec::new(),
             daemon_ready: Vec::new(),
             channel_rebuilt: Vec::new(),
             update_source: None,
         }
+    }
+
+    /// Names the daemon this app installs, registers and starts, in place of
+    /// the build's default profile. If it is called more than once, the last
+    /// call wins.
+    ///
+    /// `run` installs the profile before it creates the app, and the profile
+    /// then stays fixed for the life of the process. [`assemble`] ignores it.
+    ///
+    /// What each field controls:
+    ///
+    /// * **`binary_name`**: the daemon binary the app installs, registers and
+    ///   starts, and the image name it kills on Windows. At startup the app
+    ///   also asks the daemon on the socket which executable it runs, and
+    ///   evicts it when that is not this binary.
+    /// * **`service_env`**: extra environment in the daemon's launchd
+    ///   registration, after core's own variables. The systemd unit and the
+    ///   Windows spawn do not carry it.
+    /// * **`product`**: the product the running daemon is expected to belong
+    ///   to.
+    ///
+    /// # What a profile cannot change
+    ///
+    /// The launchd label, the socket, the UI pid file and the
+    /// incompatible-database marker are core's shared service identity
+    /// (ADR-084, decision 2(a)). Every app built on core uses the same ones,
+    /// and no profile configures them.
+    ///
+    /// The daemon `binary_name` names must therefore honour ADR-084's
+    /// registration contract: it accepts the arguments and environment core's
+    /// launcher passes, its default socket, single-instance lock, UI pid file
+    /// and incompatible-database marker are the names in core's table, its exit
+    /// status means what the contract says, and it takes core's single-instance
+    /// lock.
+    ///
+    /// # Panics
+    ///
+    /// If a `service_env` key is one of the variables core's launcher sets
+    /// itself, `NODESPACED_SOCKET` or `NODESPACE_UI_BINARY`. launchd accepts
+    /// the repeated key, and the profile's value, which comes later, would
+    /// silently replace core's.
+    #[must_use]
+    pub fn daemon_profile(mut self, profile: DaemonProfile) -> Self {
+        if let Some(key) = profile.reserved_service_env_key() {
+            panic!(
+                "DaemonProfile::service_env sets `{key}`, which core's launcher sets itself; \
+                 a profile may only add variables of its own"
+            );
+        }
+        self.daemon_profile = Some(profile);
+        self
+    }
+
+    /// Takes the daemon profile for `run` to install, leaving none.
+    pub(crate) fn take_daemon_profile(&mut self) -> Option<DaemonProfile> {
+        self.daemon_profile.take()
     }
 
     /// Adds a Tauri plugin. Plugins are registered in the order they were added.
