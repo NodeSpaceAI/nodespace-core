@@ -4174,11 +4174,14 @@ impl GraphToolExecutor {
 impl AgentToolExecutor for GraphToolExecutor {
     /// Return typed `ToolDefinition`s generated from tool nodes in the graph.
     ///
-    /// Reads `node_type='tool'` nodes seeded at startup, builds a
-    /// `ToolDefinition` from each enabled node whose handler key is present in
-    /// the deterministic registry, then preserves the canonical registry ordering.
-    /// Falls back to the hardcoded list when the node service is unavailable or
-    /// the query returns no results.
+    /// Reads `node_type='tool'` nodes seeded at startup and builds a
+    /// `ToolDefinition` from each internal or enabled node, registry tools
+    /// first in canonical registry order. `query_nodes` returns the wire
+    /// shape, so the `tool` bucket's fields are read from the top level of
+    /// `properties`.
+    ///
+    /// Falls back to the hardcoded list when the node service is unavailable,
+    /// the query fails or returns nothing, or no node produces a definition.
     async fn available_tools(&self) -> Result<Vec<ToolDefinition>, ToolError> {
         let ns = match &self.node_service {
             Some(svc) => svc,
@@ -4264,7 +4267,13 @@ impl AgentToolExecutor for GraphToolExecutor {
         }
 
         if node_defs.is_empty() {
-            tracing::debug!("available_tools: no valid tool nodes found, using hardcoded list");
+            // Tool nodes exist but the surface would be empty. Loud, because a
+            // reader that stops matching the stored shape lands here too, and
+            // the fallback would otherwise hide it.
+            tracing::warn!(
+                tool_nodes = tool_nodes.len(),
+                "available_tools: no tool node produced a definition, using hardcoded list"
+            );
             return Ok(model_facing_tool_definitions());
         }
 
@@ -7716,6 +7725,198 @@ mod tests {
             .any(|t| t.name == "search_skills"));
         assert!(is_system_only_tool("search_skills"));
         assert!(!is_system_only_tool("search_nodes"));
+    }
+
+    /// `available_tools` against tool nodes seeded through the real seeding
+    /// path, so the reader is tested against the shape the writer stores.
+    mod available_tools_from_nodes {
+        use super::*;
+        use crate::skill_pipeline::seed_tool_nodes;
+        use nodespace_core::db::SqliteStore;
+        use nodespace_core::markdown::{prepare_nodes_from_template, NodeTemplate, SeedTier};
+        use std::sync::Mutex;
+        use tempfile::TempDir;
+
+        fn tool_template(
+            handler: &str,
+            description: &str,
+            parameter_schema: Value,
+            source: &str,
+            enabled: bool,
+        ) -> NodeTemplate {
+            NodeTemplate {
+                title: handler.to_string(),
+                content: None,
+                root_node_type: "tool".to_string(),
+                root_properties: json!({
+                    "handler": handler,
+                    "description": description,
+                    "parameter_schema": parameter_schema,
+                    "source": source,
+                    "enabled": enabled,
+                }),
+                child_node_type: None,
+                child_properties: None,
+                tier: SeedTier::System,
+                markdown_content: String::new(),
+            }
+        }
+
+        /// An executor over a fresh database seeded with `templates`.
+        async fn executor_seeded_with(
+            templates: Vec<NodeTemplate>,
+        ) -> (GraphToolExecutor, TempDir) {
+            let tmp = TempDir::new().unwrap();
+            let mut store: Arc<SqliteStore> =
+                Arc::new(SqliteStore::new(tmp.path().join("test.db")).await.unwrap());
+            let ns = Arc::new(NodeService::new(&mut store).await.unwrap());
+            ns.seed_nodes_from_templates(
+                templates
+                    .iter()
+                    .map(|t| prepare_nodes_from_template(t).unwrap())
+                    .collect(),
+            )
+            .await
+            .unwrap();
+
+            // The premise of every test here: stored tool fields live in the
+            // `tool` bucket, not at the top level of `properties`.
+            for node in ns.query_nodes_by_type("tool", None).await.unwrap() {
+                assert!(node.properties["tool"]["handler"].is_string());
+                assert!(node.properties.get("handler").is_none());
+            }
+
+            let executor = GraphToolExecutor {
+                node_service: Some(ns),
+                embedding_service: Arc::new(RwLock::new(None)),
+                inference_engine: None,
+                playbook_lifecycle: None,
+            };
+            (executor, tmp)
+        }
+
+        #[derive(Clone, Default)]
+        struct CaptureWriter(Arc<Mutex<Vec<u8>>>);
+
+        impl std::io::Write for CaptureWriter {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for CaptureWriter {
+            type Writer = CaptureWriter;
+            fn make_writer(&'a self) -> Self::Writer {
+                self.clone()
+            }
+        }
+
+        #[tokio::test]
+        async fn edited_description_and_parameter_schema_reach_the_definition() {
+            let edited_schema = json!({
+                "type": "object",
+                "properties": {"edited_param": {"type": "string"}},
+                "required": ["edited_param"],
+            });
+            let templates = seed_tool_nodes()
+                .into_iter()
+                .map(|t| {
+                    if t.title == "get_node" {
+                        tool_template(
+                            "get_node",
+                            "Edited description",
+                            edited_schema.clone(),
+                            "internal",
+                            true,
+                        )
+                    } else {
+                        t
+                    }
+                })
+                .collect();
+            let (executor, _tmp) = executor_seeded_with(templates).await;
+
+            let tools = executor.available_tools().await.unwrap();
+
+            let get_node = tools.iter().find(|t| t.name == "get_node").unwrap();
+            assert_eq!(get_node.description, "Edited description");
+            assert_eq!(get_node.parameters_schema, edited_schema);
+            // Unedited nodes still match the registry, in registry order.
+            let names: Vec<String> = tools.iter().map(|t| t.name.clone()).collect();
+            let expected: Vec<String> = model_facing_tool_definitions()
+                .into_iter()
+                .map(|t| t.name)
+                .collect();
+            assert_eq!(names, expected);
+        }
+
+        #[tokio::test]
+        async fn a_non_internal_tool_is_offered_only_when_enabled() {
+            let schema = json!({"type": "object", "properties": {}});
+            let (executor, _tmp) = executor_seeded_with(vec![
+                // Internal tools are trusted whatever `enabled` says.
+                tool_template("get_node", "Get a node", schema.clone(), "internal", false),
+                tool_template(
+                    "ext_disabled",
+                    "Disabled",
+                    schema.clone(),
+                    "external",
+                    false,
+                ),
+                tool_template("ext_enabled", "Enabled", schema.clone(), "external", true),
+            ])
+            .await;
+
+            let names: Vec<String> = executor
+                .available_tools()
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|t| t.name)
+                .collect();
+
+            assert_eq!(names, vec!["get_node", "ext_enabled"]);
+        }
+
+        #[tokio::test]
+        async fn tool_nodes_yielding_no_definition_warn_and_fall_back() {
+            let (executor, _tmp) = executor_seeded_with(vec![tool_template(
+                "ext_disabled",
+                "Disabled",
+                json!({"type": "object", "properties": {}}),
+                "external",
+                false,
+            )])
+            .await;
+
+            let logs = CaptureWriter::default();
+            let subscriber = tracing_subscriber::fmt()
+                .with_writer(logs.clone())
+                .with_ansi(false)
+                .finish();
+            let tools = {
+                let _guard = tracing::subscriber::set_default(subscriber);
+                executor.available_tools().await.unwrap()
+            };
+
+            let names: Vec<String> = tools.into_iter().map(|t| t.name).collect();
+            let expected: Vec<String> = model_facing_tool_definitions()
+                .into_iter()
+                .map(|t| t.name)
+                .collect();
+            assert_eq!(names, expected);
+
+            let logs = String::from_utf8(logs.0.lock().unwrap().clone()).unwrap();
+            let warning = logs
+                .lines()
+                .find(|l| l.contains("WARN") && l.contains("available_tools"))
+                .unwrap_or_else(|| panic!("expected an available_tools warning, got: {logs}"));
+            assert!(warning.contains("tool_nodes=1"), "{warning}");
+        }
     }
 
     // -- Embedding handle is read live (race fix) --
