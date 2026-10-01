@@ -22,6 +22,8 @@ import {
 describe('TaskNode Type Guard', () => {
   it('identifies task nodes correctly', () => {
     const taskNode: TaskNode = {
+      lifecycleStatus: 'active',
+      properties: {},
       id: 'test-1',
       nodeType: 'task',
       content: 'Fix the bug',
@@ -36,6 +38,7 @@ describe('TaskNode Type Guard', () => {
 
   it('rejects non-task nodes', () => {
     const textNode: Node = {
+      lifecycleStatus: 'active',
       id: 'test-2',
       nodeType: 'text',
       content: 'Regular text',
@@ -52,6 +55,8 @@ describe('TaskNode Type Guard', () => {
 describe('getTaskStatus', () => {
   it('returns status from flat structure', () => {
     const node: TaskNode = {
+      lifecycleStatus: 'active',
+      properties: {},
       id: 'test-3',
       nodeType: 'task',
       content: 'Test task',
@@ -81,6 +86,8 @@ describe('getTaskStatus', () => {
 describe('setTaskStatus', () => {
   it('sets status immutably', () => {
     const original: TaskNode = {
+      lifecycleStatus: 'active',
+      properties: {},
       id: 'test-5',
       nodeType: 'task',
       content: 'Test task',
@@ -104,6 +111,8 @@ describe('setTaskStatus', () => {
 describe('getTaskPriority', () => {
   it('returns priority from flat structure', () => {
     const node: TaskNode = {
+      lifecycleStatus: 'active',
+      properties: {},
       id: 'test-6',
       nodeType: 'task',
       content: 'Test task',
@@ -119,6 +128,8 @@ describe('getTaskPriority', () => {
 
   it('returns undefined when priority is not set', () => {
     const node: TaskNode = {
+      lifecycleStatus: 'active',
+      properties: {},
       id: 'test-7',
       nodeType: 'task',
       content: 'Test task',
@@ -133,6 +144,8 @@ describe('getTaskPriority', () => {
 
   it('handles string priority', () => {
     const node: TaskNode = {
+      lifecycleStatus: 'active',
+      properties: {},
       id: 'test-8',
       nodeType: 'task',
       content: 'Test task',
@@ -150,6 +163,8 @@ describe('getTaskPriority', () => {
 describe('setTaskPriority', () => {
   it('sets priority immutably', () => {
     const original: TaskNode = {
+      lifecycleStatus: 'active',
+      properties: {},
       id: 'test-9',
       nodeType: 'task',
       content: 'Test task',
@@ -170,6 +185,8 @@ describe('setTaskPriority', () => {
 describe('getTaskDueDate', () => {
   it('returns dueDate from flat structure', () => {
     const node: TaskNode = {
+      lifecycleStatus: 'active',
+      properties: {},
       id: 'test-10',
       nodeType: 'task',
       content: 'Test task',
@@ -185,6 +202,8 @@ describe('getTaskDueDate', () => {
 
   it('returns undefined when dueDate is null', () => {
     const node: TaskNode = {
+      lifecycleStatus: 'active',
+      properties: {},
       id: 'test-11',
       nodeType: 'task',
       content: 'Test task',
@@ -202,6 +221,8 @@ describe('getTaskDueDate', () => {
 describe('setTaskDueDate', () => {
   it('sets dueDate immutably', () => {
     const original: TaskNode = {
+      lifecycleStatus: 'active',
+      properties: {},
       id: 'test-12',
       nodeType: 'task',
       content: 'Test task',
@@ -219,6 +240,8 @@ describe('setTaskDueDate', () => {
 
   it('clears dueDate when set to undefined', () => {
     const original: TaskNode = {
+      lifecycleStatus: 'active',
+      properties: {},
       id: 'test-13',
       nodeType: 'task',
       content: 'Test task',
@@ -239,6 +262,8 @@ describe('TaskNodeHelpers', () => {
   describe('isCompleted', () => {
     it('returns true for done status', () => {
       const node: TaskNode = {
+        lifecycleStatus: 'active',
+        properties: {},
         id: 'test-18',
         nodeType: 'task',
         content: 'Test task',
@@ -253,6 +278,8 @@ describe('TaskNodeHelpers', () => {
 
     it('returns true for cancelled status', () => {
       const node: TaskNode = {
+        lifecycleStatus: 'active',
+        properties: {},
         id: 'test-19',
         nodeType: 'task',
         content: 'Test task',
@@ -267,6 +294,8 @@ describe('TaskNodeHelpers', () => {
 
     it('returns false for open status', () => {
       const node: TaskNode = {
+        lifecycleStatus: 'active',
+        properties: {},
         id: 'test-20',
         nodeType: 'task',
         content: 'Test task',
@@ -283,6 +312,8 @@ describe('TaskNodeHelpers', () => {
   describe('isActive', () => {
     it('returns true for in_progress status', () => {
       const node: TaskNode = {
+        lifecycleStatus: 'active',
+        properties: {},
         id: 'test-21',
         nodeType: 'task',
         content: 'Test task',
@@ -297,6 +328,8 @@ describe('TaskNodeHelpers', () => {
 
     it('returns false for other statuses', () => {
       const node: TaskNode = {
+        lifecycleStatus: 'active',
+        properties: {},
         id: 'test-22',
         nodeType: 'task',
         content: 'Test task',
@@ -313,6 +346,8 @@ describe('TaskNodeHelpers', () => {
   describe('isPending', () => {
     it('returns true for open status', () => {
       const node: TaskNode = {
+        lifecycleStatus: 'active',
+        properties: {},
         id: 'test-23',
         nodeType: 'task',
         content: 'Test task',
@@ -417,6 +452,8 @@ describe('TaskNodeHelpers', () => {
 describe('Integration', () => {
   it('works with type guard and helpers together', () => {
     const node: TaskNode = {
+      lifecycleStatus: 'active',
+      properties: {},
       id: 'integration-test',
       nodeType: 'task',
       content: 'Integration test task',
@@ -453,6 +490,8 @@ describe('Integration', () => {
 
     scenarios.forEach(({ status, priority, expectedComplete }) => {
       const node: TaskNode = {
+        lifecycleStatus: 'active',
+        properties: {},
         id: `test-${status}`,
         nodeType: 'task',
         content: `Task with ${status}`,

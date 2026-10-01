@@ -1,3 +1,4 @@
+import { isA } from '$lib/types/core-node-types';
 import { collectionService, type CollectionInfo } from '$lib/services/collection-service';
 import type { Node } from '$lib/types';
 import { createLogger } from '$lib/utils/logger';
@@ -63,13 +64,18 @@ export interface CollectionMember {
  * (text, header, task, checkbox, code-block, quote-block, ordered-list,
  * ai-chat, query, prompt, skill, date, …) is genuine content and kept.
  */
-export const NON_CONTENT_NODE_TYPES: ReadonlySet<string> = new Set([
+const NON_CONTENT_NODE_TYPES = [
   'schema',
   'person',
   'database-settings',
   'collection',
-  'horizontal-line',
-]);
+  'horizontal-line'
+] as const;
+
+/** Whether a node of this type is left out of a collection's contents, subtypes of these types included. */
+export function isNonContentNodeType(nodeType: string): boolean {
+  return NON_CONTENT_NODE_TYPES.some((type) => isA(nodeType, type));
+}
 
 export interface CollectionsState {
   /** Currently selected collection ID (for sub-panel display) */
@@ -426,7 +432,7 @@ class CollectionsStore {
         members
           // Keep user-authored content only; drop system/definition/decorative
           // nodes (schema, person, database-settings, collection, horizontal-line).
-          .filter((node) => !NON_CONTENT_NODE_TYPES.has(node.nodeType))
+          .filter((node) => !isNonContentNodeType(node.nodeType))
           .map((node) => ({
             id: node.id,
             // pluginRegistry.resolveDisplayTitle already picks title vs. content correctly

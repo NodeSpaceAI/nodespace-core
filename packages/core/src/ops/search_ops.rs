@@ -156,16 +156,14 @@ fn build_markdown_recursive(
         return;
     }
 
-    match node.node_type.as_str() {
-        "header" => {
+    // Rendering is by the node's own type: a type the renderer does not know,
+    // a subtype included, falls through to its plain content.
+    match crate::models::CoreNodeType::from_id(&node.node_type) {
+        Some(crate::models::CoreNodeType::Header | crate::models::CoreNodeType::Text) => {
             output.push_str(&node.content);
             output.push_str("\n\n");
         }
-        "text" => {
-            output.push_str(&node.content);
-            output.push_str("\n\n");
-        }
-        "task" => {
+        Some(crate::models::CoreNodeType::Task) => {
             let status = node
                 .properties
                 .get("status")
@@ -174,7 +172,7 @@ fn build_markdown_recursive(
             let checkbox = if status == "done" { "[x]" } else { "[ ]" };
             output.push_str(&format!("- {} {}\n", checkbox, node.content));
         }
-        "code-block" => {
+        Some(crate::models::CoreNodeType::CodeBlock) => {
             let language = node
                 .properties
                 .get("language")
@@ -182,13 +180,13 @@ fn build_markdown_recursive(
                 .unwrap_or("");
             output.push_str(&format!("```{}\n{}\n```\n\n", language, node.content));
         }
-        "quote-block" => {
+        Some(crate::models::CoreNodeType::QuoteBlock) => {
             for line in node.content.lines() {
                 output.push_str(&format!("> {}\n", line));
             }
             output.push('\n');
         }
-        "ordered-list" => {
+        Some(crate::models::CoreNodeType::OrderedList) => {
             output.push_str(&format!("1. {}\n", node.content));
         }
         _ => {

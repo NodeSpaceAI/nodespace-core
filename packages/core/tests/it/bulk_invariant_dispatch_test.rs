@@ -148,7 +148,7 @@ async fn bulk_create_hierarchy_rejects_the_whole_batch_when_one_row_violates() -
     create_schema(
         &service,
         "bi_hier",
-        json!([{ "name": "status", "type": "string" }]),
+        json!([{ "name": "status", "type": "text" }]),
     )
     .await?;
     let _engine = activate_rules(
@@ -158,25 +158,38 @@ async fn bulk_create_hierarchy_rejects_the_whole_batch_when_one_row_violates() -
 
     let err = service
         .bulk_create_hierarchy(vec![
-            row("bi-hier-root", "bi_hier", None, json!({ "status": "open" })),
             row(
-                "bi-hier-bad",
+                "10b02e82-b40c-50e5-8b6b-4c37e149e534",
                 "bi_hier",
-                Some("bi-hier-root"),
+                None,
+                json!({ "status": "open" }),
+            ),
+            row(
+                "fbde33eb-23ad-5708-b0d1-f32c738e599f",
+                "bi_hier",
+                Some("10b02e82-b40c-50e5-8b6b-4c37e149e534"),
                 json!({ "status": "blocked" }),
             ),
             row(
-                "bi-hier-after",
+                "a9eec89d-0028-5c5c-ac71-86a568be9949",
                 "bi_hier",
-                Some("bi-hier-root"),
+                Some("10b02e82-b40c-50e5-8b6b-4c37e149e534"),
                 json!({ "status": "open" }),
             ),
         ])
         .await
         .unwrap_err();
 
-    assert_rejected(&err, "bi-hier-bad");
-    assert_absent(&service, &["bi-hier-root", "bi-hier-bad", "bi-hier-after"]).await
+    assert_rejected(&err, "fbde33eb-23ad-5708-b0d1-f32c738e599f");
+    assert_absent(
+        &service,
+        &[
+            "10b02e82-b40c-50e5-8b6b-4c37e149e534",
+            "fbde33eb-23ad-5708-b0d1-f32c738e599f",
+            "a9eec89d-0028-5c5c-ac71-86a568be9949",
+        ],
+    )
+    .await
 }
 
 /// The rule's condition is a real gate: a batch that satisfies it commits,
@@ -189,7 +202,7 @@ async fn bulk_create_hierarchy_satisfying_rules_commits_and_runs_their_actions()
         &service,
         "bi_stamp",
         json!([
-            { "name": "status", "type": "string" },
+            { "name": "status", "type": "text" },
             { "name": "approved", "type": "boolean" }
         ]),
     )
@@ -199,27 +212,30 @@ async fn bulk_create_hierarchy_satisfying_rules_commits_and_runs_their_actions()
     service
         .bulk_create_hierarchy(vec![
             row(
-                "bi-stamp-root",
+                "7f52fe1b-c751-58d5-bd44-feccf2a9a8ae",
                 "bi_stamp",
                 None,
                 json!({ "status": "pending" }),
             ),
             row(
-                "bi-stamp-child",
+                "14a188d3-30cb-56a6-9bc0-a683811bf79f",
                 "bi_stamp",
-                Some("bi-stamp-root"),
+                Some("7f52fe1b-c751-58d5-bd44-feccf2a9a8ae"),
                 json!({ "status": "pending" }),
             ),
             row(
-                "bi-stamp-other",
+                "937dd53b-ec7c-56a7-b694-001ad50a2e1b",
                 "bi_stamp",
-                Some("bi-stamp-root"),
+                Some("7f52fe1b-c751-58d5-bd44-feccf2a9a8ae"),
                 json!({ "status": "open" }),
             ),
         ])
         .await?;
 
-    for id in ["bi-stamp-root", "bi-stamp-child"] {
+    for id in [
+        "7f52fe1b-c751-58d5-bd44-feccf2a9a8ae",
+        "14a188d3-30cb-56a6-9bc0-a683811bf79f",
+    ] {
         let node = service.get_node(id).await?.expect("row must be created");
         assert_eq!(
             user_field(&node, "bi_stamp", "approved"),
@@ -228,7 +244,7 @@ async fn bulk_create_hierarchy_satisfying_rules_commits_and_runs_their_actions()
         );
     }
     let other = service
-        .get_node("bi-stamp-other")
+        .get_node("937dd53b-ec7c-56a7-b694-001ad50a2e1b")
         .await?
         .expect("row must be created");
     assert_eq!(
@@ -248,7 +264,7 @@ async fn bulk_create_hierarchy_applies_a_base_type_rule_to_a_subtype_row() -> Re
         &service,
         json!({
             "name": "bi_ticket",
-            "fields": [{ "name": "state", "type": "string", "protection": "user", "indexed": false }]
+            "fields": [{ "name": "state", "type": "text", "protection": "user", "indexed": false }]
         }),
     )
     .await?;
@@ -269,25 +285,28 @@ async fn bulk_create_hierarchy_applies_a_base_type_rule_to_a_subtype_row() -> Re
 
     let err = service
         .bulk_create_hierarchy(vec![row(
-            "bi-bug-done",
+            "7dedc374-cba1-5308-a1bc-7bcf0dcb9828",
             "bi_bug",
             None,
             json!({ "state": "done" }),
         )])
         .await
         .unwrap_err();
-    assert_rejected(&err, "bi-bug-done");
-    assert_absent(&service, &["bi-bug-done"]).await?;
+    assert_rejected(&err, "7dedc374-cba1-5308-a1bc-7bcf0dcb9828");
+    assert_absent(&service, &["7dedc374-cba1-5308-a1bc-7bcf0dcb9828"]).await?;
 
     service
         .bulk_create_hierarchy(vec![row(
-            "bi-bug-open",
+            "f6a8c1b4-1518-5d67-98bc-4629f232486b",
             "bi_bug",
             None,
             json!({ "state": "open" }),
         )])
         .await?;
-    assert!(service.get_node("bi-bug-open").await?.is_some());
+    assert!(service
+        .get_node("f6a8c1b4-1518-5d67-98bc-4629f232486b")
+        .await?
+        .is_some());
 
     let _ = shutdown_tx.send(true);
     let _ = timeout(Duration::from_secs(2), task).await;
@@ -315,7 +334,7 @@ async fn bulk_create_rejects_the_whole_batch_when_one_node_violates() -> Result<
     create_schema(
         &service,
         "bi_flat",
-        json!([{ "name": "status", "type": "string" }]),
+        json!([{ "name": "status", "type": "text" }]),
     )
     .await?;
     let _engine = activate_rules(
@@ -359,7 +378,7 @@ async fn sync_tagged_bulk_create_does_not_run_invariant_rules() -> Result<()> {
     create_schema(
         &service,
         "bi_synced",
-        json!([{ "name": "status", "type": "string" }]),
+        json!([{ "name": "status", "type": "text" }]),
     )
     .await?;
     let _engine = activate_rules(
@@ -438,7 +457,7 @@ async fn bulk_create_hierarchy_trusted_still_enforces_invariant_rules() -> Resul
     create_schema(
         &service,
         "bi_trusted",
-        json!([{ "name": "status", "type": "string" }]),
+        json!([{ "name": "status", "type": "text" }]),
     )
     .await?;
     let _engine = activate_rules(
@@ -449,32 +468,42 @@ async fn bulk_create_hierarchy_trusted_still_enforces_invariant_rules() -> Resul
     let err = service
         .bulk_create_hierarchy_trusted(vec![
             row(
-                "bi-trusted-root",
+                "697f2ac5-34da-5f8a-85aa-d86d164c48fc",
                 "bi_trusted",
                 None,
                 json!({ "status": "open" }),
             ),
             row(
-                "bi-trusted-bad",
+                "7172e6ad-f7d2-5dbf-933e-6cab2b2f0d4a",
                 "bi_trusted",
-                Some("bi-trusted-root"),
+                Some("697f2ac5-34da-5f8a-85aa-d86d164c48fc"),
                 json!({ "status": "blocked" }),
             ),
         ])
         .await
         .unwrap_err();
-    assert_rejected(&err, "bi-trusted-bad");
-    assert_absent(&service, &["bi-trusted-root", "bi-trusted-bad"]).await?;
+    assert_rejected(&err, "7172e6ad-f7d2-5dbf-933e-6cab2b2f0d4a");
+    assert_absent(
+        &service,
+        &[
+            "697f2ac5-34da-5f8a-85aa-d86d164c48fc",
+            "7172e6ad-f7d2-5dbf-933e-6cab2b2f0d4a",
+        ],
+    )
+    .await?;
 
     service
         .bulk_create_hierarchy_trusted(vec![row(
-            "bi-trusted-ok",
+            "89c1e844-a777-55d7-ad4a-74c29d63b9ae",
             "bi_trusted",
             None,
             json!({ "status": "open" }),
         )])
         .await?;
-    assert!(service.get_node("bi-trusted-ok").await?.is_some());
+    assert!(service
+        .get_node("89c1e844-a777-55d7-ad4a-74c29d63b9ae")
+        .await?
+        .is_some());
     Ok(())
 }
 
@@ -512,7 +541,7 @@ async fn bulk_update_rejects_the_whole_batch_when_one_update_violates() -> Resul
     create_schema(
         &service,
         "bi_upd",
-        json!([{ "name": "status", "type": "string" }]),
+        json!([{ "name": "status", "type": "text" }]),
     )
     .await?;
     let _engine = activate_rules(&service, reject_on_status_change("bi_upd"));
@@ -575,8 +604,8 @@ async fn bulk_update_runs_update_invariant_actions_for_changed_properties_only()
         &service,
         "bi_verify",
         json!([
-            { "name": "status", "type": "string" },
-            { "name": "note", "type": "string" },
+            { "name": "status", "type": "text" },
+            { "name": "note", "type": "text" },
             { "name": "verified", "type": "boolean" }
         ]),
     )
@@ -725,7 +754,7 @@ async fn schema_description_violating_an_invariant_fails_the_schema_create() -> 
         json!({
             "name": "bi_described",
             "description": "a forbidden description paragraph",
-            "fields": [{ "name": "state", "type": "string", "protection": "user", "indexed": false }]
+            "fields": [{ "name": "state", "type": "text", "protection": "user", "indexed": false }]
         }),
     )
     .await;
@@ -740,7 +769,7 @@ async fn schema_description_violating_an_invariant_fails_the_schema_create() -> 
         json!({
             "name": "bi_described_ok",
             "description": "an allowed description paragraph",
-            "fields": [{ "name": "state", "type": "string", "protection": "user", "indexed": false }]
+            "fields": [{ "name": "state", "type": "text", "protection": "user", "indexed": false }]
         }),
     )
     .await?;
@@ -762,7 +791,7 @@ async fn rejected_bulk_create_inside_a_batch_guard_contributes_no_events() -> Re
     create_schema(
         &service,
         "bi_guarded",
-        json!([{ "name": "status", "type": "string" }]),
+        json!([{ "name": "status", "type": "text" }]),
     )
     .await?;
     let _engine = activate_rules(
@@ -808,7 +837,7 @@ async fn sync_tagged_bulk_update_does_not_run_invariant_rules() -> Result<()> {
     create_schema(
         &service,
         "bi_sync_upd",
-        json!([{ "name": "status", "type": "string" }]),
+        json!([{ "name": "status", "type": "text" }]),
     )
     .await?;
     let _engine = activate_rules(&service, reject_on_status_change("bi_sync_upd"));

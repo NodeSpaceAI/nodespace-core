@@ -2054,7 +2054,7 @@ async fn test_search_semantic_enumerate_property_filter_finds_inherited_field() 
         json!({
             "name": "Ticket",
             "fields": [
-                { "name": "status", "type": "string", "protection": "user", "indexed": false }
+                { "name": "status", "type": "text", "protection": "user", "indexed": false }
             ]
         }),
     )
@@ -2065,7 +2065,7 @@ async fn test_search_semantic_enumerate_property_filter_finds_inherited_field() 
             "name": "Bug",
             "extends": "ticket",
             "fields": [
-                { "name": "severity", "type": "string", "protection": "user", "indexed": false }
+                { "name": "severity", "type": "text", "protection": "user", "indexed": false }
             ]
         }),
     )

@@ -22,6 +22,7 @@
 -->
 
 <script lang="ts">
+import { isExactly } from '$lib/types/core-node-types';
   import { onMount } from 'svelte';
   import { Input } from '$lib/components/ui/input';
   import { backendAdapter } from '$lib/services/backend-adapter';
@@ -41,7 +42,7 @@
   let { nodeId }: { nodeId: string } = $props();
 
   const node = $derived(sharedNodeStore.getNode(nodeId));
-  const person = $derived(node?.nodeType === 'person' ? (node as PersonNode) : undefined);
+  const person = $derived(isExactly(node?.nodeType, 'person') ? (node as PersonNode) : undefined);
 
   const firstName = $derived(person?.firstName ?? '');
   const lastName = $derived(person?.lastName ?? '');

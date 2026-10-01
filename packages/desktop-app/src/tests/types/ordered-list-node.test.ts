@@ -13,6 +13,7 @@ import {
 describe('OrderedListNode Type Guard', () => {
   it('identifies ordered list nodes correctly', () => {
     const orderedListNode: Node = {
+      lifecycleStatus: 'active',
       id: 'test-1',
       nodeType: 'ordered-list',
       content: 'First item',
@@ -27,6 +28,7 @@ describe('OrderedListNode Type Guard', () => {
 
   it('rejects non-ordered-list nodes', () => {
     const textNode: Node = {
+      lifecycleStatus: 'active',
       id: 'test-2',
       nodeType: 'text',
       content: 'Regular text',
@@ -76,6 +78,7 @@ describe('OrderedListNodeHelpers', () => {
   describe('isMultiline', () => {
     it('returns true for multiline list items', () => {
       const multilineItem: OrderedListNode = {
+        lifecycleStatus: 'active',
         id: 'test-3',
         nodeType: 'ordered-list',
         content: 'First line\nSecond line\nThird line',
@@ -90,6 +93,7 @@ describe('OrderedListNodeHelpers', () => {
 
     it('returns false for single line list items', () => {
       const singleLineItem: OrderedListNode = {
+        lifecycleStatus: 'active',
         id: 'test-4',
         nodeType: 'ordered-list',
         content: 'A single line item',
@@ -106,6 +110,7 @@ describe('OrderedListNodeHelpers', () => {
   describe('getFirstLine', () => {
     it('returns first line from multiline item', () => {
       const item: OrderedListNode = {
+        lifecycleStatus: 'active',
         id: 'test-5',
         nodeType: 'ordered-list',
         content: 'First line\nSecond line\nThird line',
@@ -120,6 +125,7 @@ describe('OrderedListNodeHelpers', () => {
 
     it('returns content for single line item', () => {
       const item: OrderedListNode = {
+        lifecycleStatus: 'active',
         id: 'test-6',
         nodeType: 'ordered-list',
         content: 'Single line',
@@ -134,6 +140,7 @@ describe('OrderedListNodeHelpers', () => {
 
     it('returns empty string for empty item', () => {
       const item: OrderedListNode = {
+        lifecycleStatus: 'active',
         id: 'test-7',
         nodeType: 'ordered-list',
         content: '',
@@ -150,6 +157,7 @@ describe('OrderedListNodeHelpers', () => {
   describe('getLineCount', () => {
     it('returns correct count for multiline items', () => {
       const item: OrderedListNode = {
+        lifecycleStatus: 'active',
         id: 'test-8',
         nodeType: 'ordered-list',
         content: 'Line 1\nLine 2\nLine 3',
@@ -164,6 +172,7 @@ describe('OrderedListNodeHelpers', () => {
 
     it('returns 1 for single line items', () => {
       const item: OrderedListNode = {
+        lifecycleStatus: 'active',
         id: 'test-9',
         nodeType: 'ordered-list',
         content: 'Single line',
@@ -178,6 +187,7 @@ describe('OrderedListNodeHelpers', () => {
 
     it('returns 0 for empty items', () => {
       const item: OrderedListNode = {
+        lifecycleStatus: 'active',
         id: 'test-10',
         nodeType: 'ordered-list',
         content: '',
@@ -214,6 +224,7 @@ describe('OrderedListNodeHelpers', () => {
   describe('hasNumberPrefix', () => {
     it('returns true for items with number prefix', () => {
       const item: OrderedListNode = {
+        lifecycleStatus: 'active',
         id: 'test-11',
         nodeType: 'ordered-list',
         content: '1. First item',
@@ -228,6 +239,7 @@ describe('OrderedListNodeHelpers', () => {
 
     it('returns false for items without number prefix', () => {
       const item: OrderedListNode = {
+        lifecycleStatus: 'active',
         id: 'test-12',
         nodeType: 'ordered-list',
         content: 'No prefix here',
@@ -264,6 +276,7 @@ describe('OrderedListNodeHelpers', () => {
 describe('Integration', () => {
   it('works with type guard and helpers', () => {
     const node: Node = {
+      lifecycleStatus: 'active',
       id: 'test-13',
       nodeType: 'ordered-list',
       content: '1. First step: gather requirements\nSub-point a\nSub-point b',
@@ -310,6 +323,7 @@ describe('Integration', () => {
     scenarios.forEach(
       ({ content, expectedLines, expectedMultiline, expectedNumber, expectedHasPrefix }) => {
         const item: OrderedListNode = {
+          lifecycleStatus: 'active',
           id: `test-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`,
           nodeType: 'ordered-list',
           content,
@@ -329,6 +343,7 @@ describe('Integration', () => {
 
   it('preserves extra properties', () => {
     const node: OrderedListNode = {
+      lifecycleStatus: 'active',
       id: 'test-14',
       nodeType: 'ordered-list',
       content: '1. An item',

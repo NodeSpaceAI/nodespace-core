@@ -161,7 +161,7 @@ async fn object_property_round_trips_through_relationship_get() -> Result<()> {
         &svc,
         json!({
             "name": "Concert",
-            "fields": [{ "name": "billing", "type": "string", "protection": "user", "indexed": false }],
+            "fields": [{ "name": "billing", "type": "text", "protection": "user", "indexed": false }],
             "relationships": [{
                 "name": "held_at",
                 "targetType": "venue",

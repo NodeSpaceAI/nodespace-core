@@ -24,6 +24,7 @@
  * - Internal state uses $state for Svelte 5 reactivity
  */
 
+import { isA } from '$lib/types/core-node-types';
 import type { SlashCommandContext } from '$lib/services/slash-command-service';
 import { KeyboardCommandRegistry } from '$lib/services/keyboard-command-registry';
 import { CreateNodeCommand } from '$lib/commands/keyboard/create-node.command';
@@ -287,9 +288,9 @@ export class TextareaController {
       let effectiveSource: NodeCreationSource;
       if (creationSource) {
         effectiveSource = creationSource;
-      } else if (isInheritedType && nodeType !== 'text') {
+      } else if (isInheritedType && !isA(nodeType, 'text')) {
         effectiveSource = 'inherited';
-      } else if (isTypeConversion && nodeType !== 'text') {
+      } else if (isTypeConversion && !isA(nodeType, 'text')) {
         effectiveSource = 'pattern';
       } else {
         effectiveSource = 'user';
@@ -390,7 +391,7 @@ export class TextareaController {
 
       // Initialize pattern state for non-text types
       // This enables reversion to text type when the pattern is deleted
-      if (this.nodeType !== 'text') {
+      if (!isA(this.nodeType, 'text')) {
         // If this component is being created due to a type conversion (via pattern detection),
         // the patternState was already set to 'pattern' in constructor
         if (!isTypeConversion) {
@@ -1077,7 +1078,7 @@ export class TextareaController {
           // Record pattern match for reversion capability
           this.patternState.recordPluginPatternMatch(plugin);
         });
-      } else if (this.nodeType !== 'text' && this.patternState.canRevert) {
+      } else if (!isA(this.nodeType, 'text') && this.patternState.canRevert) {
         // No pattern detected and node is not text - revert to text
         // This handles both pattern-detected and inherited nodes when syntax is deleted
         // e.g., "# Hello" -> "#Hello" (space deleted, no longer matches header pattern)

@@ -42,6 +42,7 @@ function database(id: string): DatabaseInfo {
 
 function node(id: string, content: string): Node {
   return {
+    lifecycleStatus: 'active',
     id,
     nodeType: 'text',
     content,

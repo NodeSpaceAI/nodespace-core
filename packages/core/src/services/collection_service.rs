@@ -567,7 +567,15 @@ impl<'a> CollectionService<'a> {
                 ))
             })?;
 
-        if collection_node.node_type != "collection" {
+        let is_collection = self
+            .store
+            .type_is_a(
+                &collection_node.node_type,
+                crate::models::CoreNodeType::Collection,
+            )
+            .await
+            .map_err(|e| db_error(e, "Failed to resolve the collection's type"))?;
+        if !is_collection {
             return Err(NodeServiceError::InvalidCollectionPath(format!(
                 "Cannot add member to non-collection node: '{}' has type '{}'",
                 collection_id, collection_node.node_type

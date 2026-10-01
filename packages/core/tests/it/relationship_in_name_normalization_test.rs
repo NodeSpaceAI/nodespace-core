@@ -111,27 +111,74 @@ async fn related_ids(svc: &NodeService, id: &str, name: &str, dir: &str) -> Resu
 async fn write_through_in_name_stores_the_forward_edge() -> Result<()> {
     let (svc, _t) = create_test_service().await?;
     create_adr_schema(&svc).await?;
-    make_adr(&svc, "old").await?;
-    make_adr(&svc, "new").await?;
+    make_adr(&svc, "ac012a23-2b8e-5fdc-9aca-df129fe90625").await?;
+    make_adr(&svc, "15881b3b-b2c4-5713-8dc5-03428d288eb7").await?;
 
-    svc.create_relationship("old", "superseded_by", "new", json!({}))
-        .await?;
+    svc.create_relationship(
+        "ac012a23-2b8e-5fdc-9aca-df129fe90625",
+        "superseded_by",
+        "15881b3b-b2c4-5713-8dc5-03428d288eb7",
+        json!({}),
+    )
+    .await?;
 
     assert_eq!(
-        stored_edges(&svc, &["old", "new"]).await?,
-        vec![("new".into(), "old".into(), "supersedes".into())],
+        stored_edges(
+            &svc,
+            &[
+                "ac012a23-2b8e-5fdc-9aca-df129fe90625",
+                "15881b3b-b2c4-5713-8dc5-03428d288eb7"
+            ]
+        )
+        .await?,
+        vec![(
+            "15881b3b-b2c4-5713-8dc5-03428d288eb7".into(),
+            "ac012a23-2b8e-5fdc-9aca-df129fe90625".into(),
+            "supersedes".into()
+        )],
         "same row `create_relationship(new, supersedes, old)` stores"
     );
     assert_eq!(
-        related_ids(&svc, "new", "supersedes", "out").await?,
-        ["old"]
+        related_ids(
+            &svc,
+            "15881b3b-b2c4-5713-8dc5-03428d288eb7",
+            "supersedes",
+            "out"
+        )
+        .await?,
+        ["ac012a23-2b8e-5fdc-9aca-df129fe90625"]
     );
-    assert_eq!(related_ids(&svc, "old", "supersedes", "in").await?, ["new"]);
+    assert_eq!(
+        related_ids(
+            &svc,
+            "ac012a23-2b8e-5fdc-9aca-df129fe90625",
+            "supersedes",
+            "in"
+        )
+        .await?,
+        ["15881b3b-b2c4-5713-8dc5-03428d288eb7"]
+    );
 
     // Writing the forward spelling of the same edge is an idempotent no-op.
-    svc.create_relationship("new", "supersedes", "old", json!({}))
-        .await?;
-    assert_eq!(stored_edges(&svc, &["old", "new"]).await?.len(), 1);
+    svc.create_relationship(
+        "15881b3b-b2c4-5713-8dc5-03428d288eb7",
+        "supersedes",
+        "ac012a23-2b8e-5fdc-9aca-df129fe90625",
+        json!({}),
+    )
+    .await?;
+    assert_eq!(
+        stored_edges(
+            &svc,
+            &[
+                "ac012a23-2b8e-5fdc-9aca-df129fe90625",
+                "15881b3b-b2c4-5713-8dc5-03428d288eb7"
+            ]
+        )
+        .await?
+        .len(),
+        1
+    );
     Ok(())
 }
 
@@ -142,16 +189,20 @@ async fn write_through_in_name_stores_the_forward_edge() -> Result<()> {
 async fn write_through_in_name_reports_the_stored_edge() -> Result<()> {
     let (svc, _t) = create_test_service().await?;
     create_adr_schema(&svc).await?;
-    for id in ["old", "new1", "new2"] {
+    for id in [
+        "ac012a23-2b8e-5fdc-9aca-df129fe90625",
+        "46b24f8a-39b8-5605-a0fa-dd268865d77d",
+        "a123b714-54cc-528d-bbbe-5b166e79416c",
+    ] {
         make_adr(&svc, id).await?;
     }
 
     let first = rel_ops::create_relationship(
         &svc,
         rel_ops::CreateRelInput {
-            source_id: "old".into(),
+            source_id: "ac012a23-2b8e-5fdc-9aca-df129fe90625".into(),
             relationship_name: "superseded_by".into(),
-            target_id: "new1".into(),
+            target_id: "46b24f8a-39b8-5605-a0fa-dd268865d77d".into(),
             edge_data: None,
         },
     )
@@ -162,18 +213,27 @@ async fn write_through_in_name_reports_the_stored_edge() -> Result<()> {
             first.relationship_name.as_str(),
             first.target_id.as_str()
         ),
-        ("new1", "supersedes", "old")
+        (
+            "46b24f8a-39b8-5605-a0fa-dd268865d77d",
+            "supersedes",
+            "ac012a23-2b8e-5fdc-9aca-df129fe90625"
+        )
     );
 
     let second = svc
-        .create_relationship("old", "superseded_by", "new2", json!({}))
+        .create_relationship(
+            "ac012a23-2b8e-5fdc-9aca-df129fe90625",
+            "superseded_by",
+            "a123b714-54cc-528d-bbbe-5b166e79416c",
+            json!({}),
+        )
         .await?;
     assert_eq!(
         second.edge,
         StoredEdge {
-            source_id: "new2".into(),
+            source_id: "a123b714-54cc-528d-bbbe-5b166e79416c".into(),
             relationship_name: "supersedes".into(),
-            target_id: "old".into(),
+            target_id: "ac012a23-2b8e-5fdc-9aca-df129fe90625".into(),
         }
     );
     assert_eq!(
@@ -195,18 +255,44 @@ async fn write_through_in_name_reports_the_stored_edge() -> Result<()> {
 async fn write_through_in_name_enforces_reverse_cardinality() -> Result<()> {
     let (svc, _t) = create_test_service().await?;
     create_adr_schema(&svc).await?;
-    for id in ["old", "new1", "new2"] {
+    for id in [
+        "ac012a23-2b8e-5fdc-9aca-df129fe90625",
+        "46b24f8a-39b8-5605-a0fa-dd268865d77d",
+        "a123b714-54cc-528d-bbbe-5b166e79416c",
+    ] {
         make_adr(&svc, id).await?;
     }
 
-    svc.create_relationship("old", "superseded_by", "new1", json!({}))
-        .await?;
-    svc.create_relationship("old", "superseded_by", "new2", json!({}))
-        .await?;
+    svc.create_relationship(
+        "ac012a23-2b8e-5fdc-9aca-df129fe90625",
+        "superseded_by",
+        "46b24f8a-39b8-5605-a0fa-dd268865d77d",
+        json!({}),
+    )
+    .await?;
+    svc.create_relationship(
+        "ac012a23-2b8e-5fdc-9aca-df129fe90625",
+        "superseded_by",
+        "a123b714-54cc-528d-bbbe-5b166e79416c",
+        json!({}),
+    )
+    .await?;
 
     assert_eq!(
-        stored_edges(&svc, &["old", "new1", "new2"]).await?,
-        vec![("new2".into(), "old".into(), "supersedes".into())]
+        stored_edges(
+            &svc,
+            &[
+                "ac012a23-2b8e-5fdc-9aca-df129fe90625",
+                "46b24f8a-39b8-5605-a0fa-dd268865d77d",
+                "a123b714-54cc-528d-bbbe-5b166e79416c"
+            ]
+        )
+        .await?,
+        vec![(
+            "a123b714-54cc-528d-bbbe-5b166e79416c".into(),
+            "ac012a23-2b8e-5fdc-9aca-df129fe90625".into(),
+            "supersedes".into()
+        )]
     );
     Ok(())
 }
@@ -218,18 +304,44 @@ async fn write_through_in_name_enforces_reverse_cardinality() -> Result<()> {
 async fn write_through_in_name_enforces_forward_cardinality() -> Result<()> {
     let (svc, _t) = create_test_service().await?;
     create_adr_schema(&svc).await?;
-    for id in ["old1", "old2", "new"] {
+    for id in [
+        "c1480ac4-713a-590b-a31a-974e04e77598",
+        "4f291177-bef2-5b10-80ba-8b6aa7822fc4",
+        "15881b3b-b2c4-5713-8dc5-03428d288eb7",
+    ] {
         make_adr(&svc, id).await?;
     }
 
-    svc.create_relationship("new", "supersedes", "old1", json!({}))
-        .await?;
-    svc.create_relationship("old2", "superseded_by", "new", json!({}))
-        .await?;
+    svc.create_relationship(
+        "15881b3b-b2c4-5713-8dc5-03428d288eb7",
+        "supersedes",
+        "c1480ac4-713a-590b-a31a-974e04e77598",
+        json!({}),
+    )
+    .await?;
+    svc.create_relationship(
+        "4f291177-bef2-5b10-80ba-8b6aa7822fc4",
+        "superseded_by",
+        "15881b3b-b2c4-5713-8dc5-03428d288eb7",
+        json!({}),
+    )
+    .await?;
 
     assert_eq!(
-        stored_edges(&svc, &["old1", "old2", "new"]).await?,
-        vec![("new".into(), "old2".into(), "supersedes".into())]
+        stored_edges(
+            &svc,
+            &[
+                "c1480ac4-713a-590b-a31a-974e04e77598",
+                "4f291177-bef2-5b10-80ba-8b6aa7822fc4",
+                "15881b3b-b2c4-5713-8dc5-03428d288eb7"
+            ]
+        )
+        .await?,
+        vec![(
+            "15881b3b-b2c4-5713-8dc5-03428d288eb7".into(),
+            "4f291177-bef2-5b10-80ba-8b6aa7822fc4".into(),
+            "supersedes".into()
+        )]
     );
     Ok(())
 }
@@ -238,29 +350,56 @@ async fn write_through_in_name_enforces_forward_cardinality() -> Result<()> {
 async fn update_and_delete_resolve_the_in_name() -> Result<()> {
     let (svc, _t) = create_test_service().await?;
     create_adr_schema(&svc).await?;
-    make_adr(&svc, "old").await?;
-    make_adr(&svc, "new").await?;
+    make_adr(&svc, "ac012a23-2b8e-5fdc-9aca-df129fe90625").await?;
+    make_adr(&svc, "15881b3b-b2c4-5713-8dc5-03428d288eb7").await?;
 
-    svc.create_relationship("old", "superseded_by", "new", json!({}))
-        .await?;
+    svc.create_relationship(
+        "ac012a23-2b8e-5fdc-9aca-df129fe90625",
+        "superseded_by",
+        "15881b3b-b2c4-5713-8dc5-03428d288eb7",
+        json!({}),
+    )
+    .await?;
 
     // The forward declaration's edge fields validate an update through the
     // `in` name, and the update lands on the forward row.
     let bad = svc
-        .update_relationship_properties("old", "superseded_by", "new", json!({"reason": "nope"}))
+        .update_relationship_properties(
+            "ac012a23-2b8e-5fdc-9aca-df129fe90625",
+            "superseded_by",
+            "15881b3b-b2c4-5713-8dc5-03428d288eb7",
+            json!({"reason": "nope"}),
+        )
         .await;
     assert!(bad.is_err(), "enum edge field must be validated");
-    svc.update_relationship_properties("old", "superseded_by", "new", json!({"reason": "revised"}))
-        .await?;
+    svc.update_relationship_properties(
+        "ac012a23-2b8e-5fdc-9aca-df129fe90625",
+        "superseded_by",
+        "15881b3b-b2c4-5713-8dc5-03428d288eb7",
+        json!({"reason": "revised"}),
+    )
+    .await?;
     let edges = svc
-        .get_related_nodes_with_edges("new", "supersedes", "out")
+        .get_related_nodes_with_edges("15881b3b-b2c4-5713-8dc5-03428d288eb7", "supersedes", "out")
         .await?;
     assert_eq!(edges.len(), 1);
     assert_eq!(edges[0].1["reason"], "revised");
 
-    svc.delete_relationship("old", "superseded_by", "new")
-        .await?;
-    assert!(stored_edges(&svc, &["old", "new"]).await?.is_empty());
+    svc.delete_relationship(
+        "ac012a23-2b8e-5fdc-9aca-df129fe90625",
+        "superseded_by",
+        "15881b3b-b2c4-5713-8dc5-03428d288eb7",
+    )
+    .await?;
+    assert!(stored_edges(
+        &svc,
+        &[
+            "ac012a23-2b8e-5fdc-9aca-df129fe90625",
+            "15881b3b-b2c4-5713-8dc5-03428d288eb7"
+        ]
+    )
+    .await?
+    .is_empty());
     Ok(())
 }
 
@@ -270,15 +409,32 @@ async fn update_and_delete_resolve_the_in_name() -> Result<()> {
 async fn forward_written_edge_deletes_through_in_name() -> Result<()> {
     let (svc, _t) = create_test_service().await?;
     create_adr_schema(&svc).await?;
-    make_adr(&svc, "old").await?;
-    make_adr(&svc, "new").await?;
+    make_adr(&svc, "ac012a23-2b8e-5fdc-9aca-df129fe90625").await?;
+    make_adr(&svc, "15881b3b-b2c4-5713-8dc5-03428d288eb7").await?;
 
-    svc.create_relationship("new", "supersedes", "old", json!({}))
-        .await?;
-    svc.delete_relationship("old", "superseded_by", "new")
-        .await?;
+    svc.create_relationship(
+        "15881b3b-b2c4-5713-8dc5-03428d288eb7",
+        "supersedes",
+        "ac012a23-2b8e-5fdc-9aca-df129fe90625",
+        json!({}),
+    )
+    .await?;
+    svc.delete_relationship(
+        "ac012a23-2b8e-5fdc-9aca-df129fe90625",
+        "superseded_by",
+        "15881b3b-b2c4-5713-8dc5-03428d288eb7",
+    )
+    .await?;
 
-    assert!(stored_edges(&svc, &["old", "new"]).await?.is_empty());
+    assert!(stored_edges(
+        &svc,
+        &[
+            "ac012a23-2b8e-5fdc-9aca-df129fe90625",
+            "15881b3b-b2c4-5713-8dc5-03428d288eb7"
+        ]
+    )
+    .await?
+    .is_empty());
     Ok(())
 }
 
@@ -288,16 +444,21 @@ async fn forward_written_edge_deletes_through_in_name() -> Result<()> {
 async fn read_through_in_name_finds_the_forward_edge() -> Result<()> {
     let (svc, _t) = create_test_service().await?;
     create_adr_schema(&svc).await?;
-    make_adr(&svc, "old").await?;
-    make_adr(&svc, "new").await?;
+    make_adr(&svc, "ac012a23-2b8e-5fdc-9aca-df129fe90625").await?;
+    make_adr(&svc, "15881b3b-b2c4-5713-8dc5-03428d288eb7").await?;
 
-    svc.create_relationship("new", "supersedes", "old", json!({}))
-        .await?;
+    svc.create_relationship(
+        "15881b3b-b2c4-5713-8dc5-03428d288eb7",
+        "supersedes",
+        "ac012a23-2b8e-5fdc-9aca-df129fe90625",
+        json!({}),
+    )
+    .await?;
 
     let out = rel_ops::get_related_nodes(
         &svc,
         GetRelatedInput {
-            node_id: "old".to_string(),
+            node_id: "ac012a23-2b8e-5fdc-9aca-df129fe90625".to_string(),
             relationship_name: "superseded_by".to_string(),
             direction: "out".to_string(),
         },
@@ -306,7 +467,10 @@ async fn read_through_in_name_finds_the_forward_edge() -> Result<()> {
     assert_eq!(out.relationship_name, "supersedes");
     assert_eq!(out.direction, "in");
     assert_eq!(out.count, 1);
-    assert_eq!(out.related_nodes[0]["id"], "new");
+    assert_eq!(
+        out.related_nodes[0]["id"],
+        "15881b3b-b2c4-5713-8dc5-03428d288eb7"
+    );
     Ok(())
 }
 
@@ -370,9 +534,14 @@ async fn create_cross_type_schemas(svc: &Arc<NodeService>) -> Result<()> {
     )
     .await
     .map_err(|e| anyhow::anyhow!("doc approved_by: {e}"))?;
-    make_node(svc, "doc1", "in_norm_doc").await?;
-    make_node(svc, "p1", "in_norm_person").await?;
-    make_node(svc, "memo1", "in_norm_memo").await?;
+    make_node(svc, "ee5ab1a7-1de8-531f-a862-9e9c1b2a2167", "in_norm_doc").await?;
+    make_node(
+        svc,
+        "99e6a416-b162-589d-97e9-af6fa8004f05",
+        "in_norm_person",
+    )
+    .await?;
+    make_node(svc, "d7ac97fb-f0b6-5af0-bc46-80281a91c768", "in_norm_memo").await?;
     Ok(())
 }
 
@@ -381,13 +550,32 @@ async fn cross_type_write_through_in_name_stores_forward_edge() -> Result<()> {
     let (svc, _t) = create_test_service().await?;
     create_cross_type_schemas(&svc).await?;
 
-    svc.create_relationship("doc1", "approved_by", "p1", json!({}))
-        .await?;
+    svc.create_relationship(
+        "ee5ab1a7-1de8-531f-a862-9e9c1b2a2167",
+        "approved_by",
+        "99e6a416-b162-589d-97e9-af6fa8004f05",
+        json!({}),
+    )
+    .await?;
 
-    assert_eq!(related_ids(&svc, "p1", "approves", "out").await?, ["doc1"]);
-    assert!(related_ids(&svc, "doc1", "approved_by", "out")
-        .await?
-        .is_empty());
+    assert_eq!(
+        related_ids(
+            &svc,
+            "99e6a416-b162-589d-97e9-af6fa8004f05",
+            "approves",
+            "out"
+        )
+        .await?,
+        ["ee5ab1a7-1de8-531f-a862-9e9c1b2a2167"]
+    );
+    assert!(related_ids(
+        &svc,
+        "ee5ab1a7-1de8-531f-a862-9e9c1b2a2167",
+        "approved_by",
+        "out"
+    )
+    .await?
+    .is_empty());
     Ok(())
 }
 
@@ -398,11 +586,21 @@ async fn cross_type_write_through_in_name_stores_forward_edge() -> Result<()> {
 async fn cross_type_write_through_in_name_rejects_wrong_types() -> Result<()> {
     let (svc, _t) = create_test_service().await?;
     create_cross_type_schemas(&svc).await?;
-    make_node(&svc, "p2", "in_norm_person").await?;
+    make_node(
+        &svc,
+        "4f1f600c-d552-57c4-b1b1-1f4676f32c07",
+        "in_norm_person",
+    )
+    .await?;
 
     // p2 is not a doc, so `approved_by` is not declared on its type at all.
     let err = svc
-        .create_relationship("p2", "approved_by", "p1", json!({}))
+        .create_relationship(
+            "4f1f600c-d552-57c4-b1b1-1f4676f32c07",
+            "approved_by",
+            "99e6a416-b162-589d-97e9-af6fa8004f05",
+            json!({}),
+        )
         .await
         .expect_err("a person has no `approved_by`");
     assert!(
@@ -412,7 +610,12 @@ async fn cross_type_write_through_in_name_rejects_wrong_types() -> Result<()> {
     );
     // doc1 -> doc1: the far end is a doc, which does not declare `approves`.
     let err = svc
-        .create_relationship("doc1", "approved_by", "doc1", json!({}))
+        .create_relationship(
+            "ee5ab1a7-1de8-531f-a862-9e9c1b2a2167",
+            "approved_by",
+            "ee5ab1a7-1de8-531f-a862-9e9c1b2a2167",
+            json!({}),
+        )
         .await
         .expect_err("a doc cannot approve");
     assert!(
@@ -431,22 +634,35 @@ async fn cross_type_read_through_in_name_narrows_to_declared_type() -> Result<()
     let (svc, _t) = create_test_service().await?;
     create_cross_type_schemas(&svc).await?;
 
-    svc.create_relationship("doc1", "approved_by", "p1", json!({}))
-        .await?;
-    svc.create_relationship("memo1", "approves", "doc1", json!({}))
-        .await?;
+    svc.create_relationship(
+        "ee5ab1a7-1de8-531f-a862-9e9c1b2a2167",
+        "approved_by",
+        "99e6a416-b162-589d-97e9-af6fa8004f05",
+        json!({}),
+    )
+    .await?;
+    svc.create_relationship(
+        "d7ac97fb-f0b6-5af0-bc46-80281a91c768",
+        "approves",
+        "ee5ab1a7-1de8-531f-a862-9e9c1b2a2167",
+        json!({}),
+    )
+    .await?;
 
     let out = rel_ops::get_related_nodes(
         &svc,
         GetRelatedInput {
-            node_id: "doc1".to_string(),
+            node_id: "ee5ab1a7-1de8-531f-a862-9e9c1b2a2167".to_string(),
             relationship_name: "approved_by".to_string(),
             direction: "out".to_string(),
         },
     )
     .await?;
     assert_eq!(out.count, 1);
-    assert_eq!(out.related_nodes[0]["id"], "p1");
+    assert_eq!(
+        out.related_nodes[0]["id"],
+        "99e6a416-b162-589d-97e9-af6fa8004f05"
+    );
     Ok(())
 }
 
@@ -647,13 +863,24 @@ async fn in_declaration_mirroring_inherited_forward_is_accepted() -> Result<()> 
     .await
     .map_err(|e| anyhow::anyhow!("sub schema: {e}"))?;
 
-    make_node(&svc, "old", "in_norm_sub").await?;
-    make_node(&svc, "new", "in_norm_sub").await?;
-    svc.create_relationship("old", "superseded_by", "new", json!({}))
-        .await?;
+    make_node(&svc, "ac012a23-2b8e-5fdc-9aca-df129fe90625", "in_norm_sub").await?;
+    make_node(&svc, "15881b3b-b2c4-5713-8dc5-03428d288eb7", "in_norm_sub").await?;
+    svc.create_relationship(
+        "ac012a23-2b8e-5fdc-9aca-df129fe90625",
+        "superseded_by",
+        "15881b3b-b2c4-5713-8dc5-03428d288eb7",
+        json!({}),
+    )
+    .await?;
     assert_eq!(
-        related_ids(&svc, "new", "supersedes", "out").await?,
-        ["old"]
+        related_ids(
+            &svc,
+            "15881b3b-b2c4-5713-8dc5-03428d288eb7",
+            "supersedes",
+            "out"
+        )
+        .await?,
+        ["ac012a23-2b8e-5fdc-9aca-df129fe90625"]
     );
     Ok(())
 }
@@ -790,7 +1017,12 @@ async fn write_through_in_name_after_forward_dropped_below_save_is_rejected() ->
     svc.set_schema_relationships("in_norm_person", &[]).await?;
 
     let err = svc
-        .create_relationship("doc1", "approved_by", "p1", json!({}))
+        .create_relationship(
+            "ee5ab1a7-1de8-531f-a862-9e9c1b2a2167",
+            "approved_by",
+            "99e6a416-b162-589d-97e9-af6fa8004f05",
+            json!({}),
+        )
         .await
         .expect_err("in_norm_person no longer declares `approves`");
     let message = err.to_string();
@@ -809,10 +1041,15 @@ async fn write_through_in_name_after_forward_dropped_below_save_is_rejected() ->
 async fn panel_renders_in_declaration_edge_once() -> Result<()> {
     let (svc, _t) = create_test_service().await?;
     create_cross_type_schemas(&svc).await?;
-    svc.create_relationship("doc1", "approved_by", "p1", json!({}))
-        .await?;
+    svc.create_relationship(
+        "ee5ab1a7-1de8-531f-a862-9e9c1b2a2167",
+        "approved_by",
+        "99e6a416-b162-589d-97e9-af6fa8004f05",
+        json!({}),
+    )
+    .await?;
 
-    let doc = rel_ops::get_node_relationships(&svc, "doc1").await?;
+    let doc = rel_ops::get_node_relationships(&svc, "ee5ab1a7-1de8-531f-a862-9e9c1b2a2167").await?;
     assert!(
         !doc.groups
             .iter()
@@ -829,9 +1066,10 @@ async fn panel_renders_in_declaration_edge_once() -> Result<()> {
         })
         .expect("person.approves inbound group");
     let ids: Vec<_> = approvals.related.iter().map(|r| r.id.as_str()).collect();
-    assert_eq!(ids, ["p1"]);
+    assert_eq!(ids, ["99e6a416-b162-589d-97e9-af6fa8004f05"]);
 
-    let person = rel_ops::get_node_relationships(&svc, "p1").await?;
+    let person =
+        rel_ops::get_node_relationships(&svc, "99e6a416-b162-589d-97e9-af6fa8004f05").await?;
     assert!(
         !person
             .groups

@@ -12,18 +12,11 @@
  * Node content is the query's name (e.g. "All open high-priority tasks").
  */
 
-import type { Node } from './node';
+import type { Node, NodeEnvelope } from './node';
 
-export interface QueryNode {
-  id: string;
+/** `properties` carries extension fields only — query fields are the typed fields below. */
+export interface QueryNode extends NodeEnvelope {
   nodeType: 'query';
-  content: string;
-  title?: string | null;
-  version: number;
-  createdAt: string;
-  modifiedAt: string;
-  /** Extension fields only — query fields are the typed fields below. */
-  properties: Record<string, unknown>;
 
   /** Target node type, or '*' for all types */
   targetType: string;

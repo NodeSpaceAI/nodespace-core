@@ -64,6 +64,8 @@ const SCHEMA_ID = 'widget';
 
 function schema(): SchemaNode {
   return {
+    lifecycleStatus: 'active' as const,
+    properties: {},
     id: SCHEMA_ID,
     nodeType: 'schema',
     content: 'Widget',
@@ -90,6 +92,7 @@ function schema(): SchemaNode {
 /** A query node as the backend returns it: typed top-level fields. */
 function materializedQueryNode(id: string): QueryNode & Node {
   return {
+    lifecycleStatus: 'active',
     id,
     nodeType: 'query',
     content: 'Untitled Query',

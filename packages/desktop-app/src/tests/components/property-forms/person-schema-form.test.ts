@@ -91,9 +91,9 @@ function personSchema(emailFlags: { unique?: boolean; uniqueCaseInsensitive?: bo
     description: '',
     titleTemplate: '{first_name} {last_name}',
     fields: [
-      { name: 'first_name', friendlyName: 'First name', type: 'string', protection: 'core' },
-      { name: 'last_name', friendlyName: 'Last name', type: 'string', protection: 'core' },
-      { name: 'email', friendlyName: 'Email', type: 'string', protection: 'core', ...emailFlags }
+      { name: 'first_name', friendlyName: 'First name', type: 'text', protection: 'core' },
+      { name: 'last_name', friendlyName: 'Last name', type: 'text', protection: 'core' },
+      { name: 'email', friendlyName: 'Email', type: 'text', protection: 'core', ...emailFlags }
     ]
   };
 }

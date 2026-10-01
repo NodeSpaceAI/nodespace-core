@@ -39,7 +39,7 @@ async fn service_with_gizmo_schema(
         json!({
             "name": "Gizmo",
             "fields": [
-                { "name": "status", "type": "string", "protection": "user", "indexed": false }
+                { "name": "status", "type": "text", "protection": "user", "indexed": false }
             ],
             "relationships": [
                 {
@@ -75,28 +75,34 @@ async fn make_node(svc: &NodeService, id: &str, node_type: &str, title: &str) ->
 #[tokio::test]
 async fn update_relationship_properties_overwrites_edge_attributes() -> Result<()> {
     let (svc, _t) = service_with_gizmo_schema("many", false).await?;
-    make_node(&svc, "gizmo-1", "gizmo", "Ship it").await?;
-    make_node(&svc, "person-1", "person", "").await?;
+    make_node(
+        &svc,
+        "8160b75c-ba44-5791-ae15-8f95d5a891f0",
+        "gizmo",
+        "Ship it",
+    )
+    .await?;
+    make_node(&svc, "bf53417d-8511-5995-aecb-300ecf227fcb", "person", "").await?;
 
     svc.create_relationship(
-        "gizmo-1",
+        "8160b75c-ba44-5791-ae15-8f95d5a891f0",
         "assigned_to",
-        "person-1",
+        "bf53417d-8511-5995-aecb-300ecf227fcb",
         json!({ "role": "reviewer" }),
     )
     .await?;
 
     // Overwrite the edge's stored properties wholesale.
     svc.update_relationship_properties(
-        "gizmo-1",
+        "8160b75c-ba44-5791-ae15-8f95d5a891f0",
         "assigned_to",
-        "person-1",
+        "bf53417d-8511-5995-aecb-300ecf227fcb",
         json!({ "role": "owner" }),
     )
     .await?;
 
     let edges = svc
-        .get_related_nodes_with_edges("gizmo-1", "assigned_to", "out")
+        .get_related_nodes_with_edges("8160b75c-ba44-5791-ae15-8f95d5a891f0", "assigned_to", "out")
         .await?;
     assert_eq!(
         edges.len(),
@@ -115,16 +121,22 @@ async fn update_relationship_properties_overwrites_edge_attributes() -> Result<(
 #[tokio::test]
 async fn update_relationship_properties_on_missing_edge_errors() -> Result<()> {
     let (svc, _t) = service_with_gizmo_schema("many", false).await?;
-    make_node(&svc, "gizmo-1", "gizmo", "Ship it").await?;
-    make_node(&svc, "person-1", "person", "").await?;
+    make_node(
+        &svc,
+        "8160b75c-ba44-5791-ae15-8f95d5a891f0",
+        "gizmo",
+        "Ship it",
+    )
+    .await?;
+    make_node(&svc, "bf53417d-8511-5995-aecb-300ecf227fcb", "person", "").await?;
 
     // No edge was ever created — updating one must be a surfaced error, not a
     // silent no-op that reports success to the UI.
     let err = svc
         .update_relationship_properties(
-            "gizmo-1",
+            "8160b75c-ba44-5791-ae15-8f95d5a891f0",
             "assigned_to",
-            "person-1",
+            "bf53417d-8511-5995-aecb-300ecf227fcb",
             json!({ "role": "x" }),
         )
         .await;
@@ -135,16 +147,31 @@ async fn update_relationship_properties_on_missing_edge_errors() -> Result<()> {
 #[tokio::test]
 async fn required_relationship_blocks_deleting_its_last_edge() -> Result<()> {
     let (svc, _t) = service_with_gizmo_schema("many", true).await?;
-    make_node(&svc, "gizmo-1", "gizmo", "Ship it").await?;
-    make_node(&svc, "person-1", "person", "").await?;
-    make_node(&svc, "person-2", "person", "").await?;
+    make_node(
+        &svc,
+        "8160b75c-ba44-5791-ae15-8f95d5a891f0",
+        "gizmo",
+        "Ship it",
+    )
+    .await?;
+    make_node(&svc, "bf53417d-8511-5995-aecb-300ecf227fcb", "person", "").await?;
+    make_node(&svc, "52bbdfbc-16a2-524f-acb1-e83c08a4351a", "person", "").await?;
 
-    svc.create_relationship("gizmo-1", "assigned_to", "person-1", json!({}))
-        .await?;
+    svc.create_relationship(
+        "8160b75c-ba44-5791-ae15-8f95d5a891f0",
+        "assigned_to",
+        "bf53417d-8511-5995-aecb-300ecf227fcb",
+        json!({}),
+    )
+    .await?;
 
     // Single edge on a required relationship → deleting it is rejected.
     let last = svc
-        .delete_relationship("gizmo-1", "assigned_to", "person-1")
+        .delete_relationship(
+            "8160b75c-ba44-5791-ae15-8f95d5a891f0",
+            "assigned_to",
+            "bf53417d-8511-5995-aecb-300ecf227fcb",
+        )
         .await;
     assert!(
         last.is_err(),
@@ -152,15 +179,28 @@ async fn required_relationship_blocks_deleting_its_last_edge() -> Result<()> {
     );
 
     // Add a second edge; now removing either one is allowed (one remains).
-    svc.create_relationship("gizmo-1", "assigned_to", "person-2", json!({}))
-        .await?;
-    svc.delete_relationship("gizmo-1", "assigned_to", "person-1")
-        .await
-        .expect("removing a non-last edge of a required relationship is allowed");
+    svc.create_relationship(
+        "8160b75c-ba44-5791-ae15-8f95d5a891f0",
+        "assigned_to",
+        "52bbdfbc-16a2-524f-acb1-e83c08a4351a",
+        json!({}),
+    )
+    .await?;
+    svc.delete_relationship(
+        "8160b75c-ba44-5791-ae15-8f95d5a891f0",
+        "assigned_to",
+        "bf53417d-8511-5995-aecb-300ecf227fcb",
+    )
+    .await
+    .expect("removing a non-last edge of a required relationship is allowed");
 
     // Back to one edge → protected again.
     let now_last = svc
-        .delete_relationship("gizmo-1", "assigned_to", "person-2")
+        .delete_relationship(
+            "8160b75c-ba44-5791-ae15-8f95d5a891f0",
+            "assigned_to",
+            "52bbdfbc-16a2-524f-acb1-e83c08a4351a",
+        )
         .await;
     assert!(
         now_last.is_err(),
@@ -187,22 +227,38 @@ async fn required_relationship_blocks_deleting_its_last_edge() -> Result<()> {
 #[tokio::test]
 async fn required_cardinality_one_relationship_can_still_be_reassigned() -> Result<()> {
     let (svc, _t) = service_with_gizmo_schema("one", true).await?;
-    make_node(&svc, "gizmo-1", "gizmo", "Ship it").await?;
-    make_node(&svc, "person-1", "person", "").await?;
-    make_node(&svc, "person-2", "person", "").await?;
+    make_node(
+        &svc,
+        "8160b75c-ba44-5791-ae15-8f95d5a891f0",
+        "gizmo",
+        "Ship it",
+    )
+    .await?;
+    make_node(&svc, "bf53417d-8511-5995-aecb-300ecf227fcb", "person", "").await?;
+    make_node(&svc, "52bbdfbc-16a2-524f-acb1-e83c08a4351a", "person", "").await?;
 
-    svc.create_relationship("gizmo-1", "assigned_to", "person-1", json!({}))
-        .await?;
+    svc.create_relationship(
+        "8160b75c-ba44-5791-ae15-8f95d5a891f0",
+        "assigned_to",
+        "bf53417d-8511-5995-aecb-300ecf227fcb",
+        json!({}),
+    )
+    .await?;
 
-    svc.create_relationship("gizmo-1", "assigned_to", "person-2", json!({}))
-        .await
-        .expect(
-            "reassigning a required, cardinality-one relationship to a different \
+    svc.create_relationship(
+        "8160b75c-ba44-5791-ae15-8f95d5a891f0",
+        "assigned_to",
+        "52bbdfbc-16a2-524f-acb1-e83c08a4351a",
+        json!({}),
+    )
+    .await
+    .expect(
+        "reassigning a required, cardinality-one relationship to a different \
              target must succeed, not be rejected as \"deleting the last edge\"",
-        );
+    );
 
     let edges = svc
-        .get_related_nodes("gizmo-1", "assigned_to", "out")
+        .get_related_nodes("8160b75c-ba44-5791-ae15-8f95d5a891f0", "assigned_to", "out")
         .await?;
     assert_eq!(
         edges.len(),
@@ -210,7 +266,7 @@ async fn required_cardinality_one_relationship_can_still_be_reassigned() -> Resu
         "exactly one edge must remain after reassignment"
     );
     assert_eq!(
-        edges[0].id, "person-2",
+        edges[0].id, "52bbdfbc-16a2-524f-acb1-e83c08a4351a",
         "the survivor must be the new target"
     );
 
@@ -218,7 +274,11 @@ async fn required_cardinality_one_relationship_can_still_be_reassigned() -> Resu
     // there is again exactly one edge — the fix must not have accidentally
     // disabled the guard rather than just reordering around it.
     let last = svc
-        .delete_relationship("gizmo-1", "assigned_to", "person-2")
+        .delete_relationship(
+            "8160b75c-ba44-5791-ae15-8f95d5a891f0",
+            "assigned_to",
+            "52bbdfbc-16a2-524f-acb1-e83c08a4351a",
+        )
         .await;
     assert!(
         last.is_err(),
@@ -231,17 +291,32 @@ async fn required_cardinality_one_relationship_can_still_be_reassigned() -> Resu
 #[tokio::test]
 async fn non_required_relationship_allows_deleting_its_last_edge() -> Result<()> {
     let (svc, _t) = service_with_gizmo_schema("many", false).await?;
-    make_node(&svc, "gizmo-1", "gizmo", "Ship it").await?;
-    make_node(&svc, "person-1", "person", "").await?;
+    make_node(
+        &svc,
+        "8160b75c-ba44-5791-ae15-8f95d5a891f0",
+        "gizmo",
+        "Ship it",
+    )
+    .await?;
+    make_node(&svc, "bf53417d-8511-5995-aecb-300ecf227fcb", "person", "").await?;
 
-    svc.create_relationship("gizmo-1", "assigned_to", "person-1", json!({}))
-        .await?;
-    svc.delete_relationship("gizmo-1", "assigned_to", "person-1")
-        .await
-        .expect("a non-required relationship never blocks removal");
+    svc.create_relationship(
+        "8160b75c-ba44-5791-ae15-8f95d5a891f0",
+        "assigned_to",
+        "bf53417d-8511-5995-aecb-300ecf227fcb",
+        json!({}),
+    )
+    .await?;
+    svc.delete_relationship(
+        "8160b75c-ba44-5791-ae15-8f95d5a891f0",
+        "assigned_to",
+        "bf53417d-8511-5995-aecb-300ecf227fcb",
+    )
+    .await
+    .expect("a non-required relationship never blocks removal");
 
     let edges = svc
-        .get_related_nodes_with_edges("gizmo-1", "assigned_to", "out")
+        .get_related_nodes_with_edges("8160b75c-ba44-5791-ae15-8f95d5a891f0", "assigned_to", "out")
         .await?;
     assert!(edges.is_empty(), "the edge is gone after deletion");
     Ok(())
@@ -253,17 +328,28 @@ async fn delete_required_last_edge_surfaces_a_validation_error_not_internal() ->
     // layer must classify it as a validation error — which the daemon maps to
     // gRPC INVALID_ARGUMENT — not an opaque Internal/INTERNAL server error.
     let (svc, _t) = service_with_gizmo_schema("many", true).await?;
-    make_node(&svc, "gizmo-1", "gizmo", "Ship it").await?;
-    make_node(&svc, "person-1", "person", "").await?;
-    svc.create_relationship("gizmo-1", "assigned_to", "person-1", json!({}))
-        .await?;
+    make_node(
+        &svc,
+        "8160b75c-ba44-5791-ae15-8f95d5a891f0",
+        "gizmo",
+        "Ship it",
+    )
+    .await?;
+    make_node(&svc, "bf53417d-8511-5995-aecb-300ecf227fcb", "person", "").await?;
+    svc.create_relationship(
+        "8160b75c-ba44-5791-ae15-8f95d5a891f0",
+        "assigned_to",
+        "bf53417d-8511-5995-aecb-300ecf227fcb",
+        json!({}),
+    )
+    .await?;
 
     let err = rel_ops::delete_relationship(
         &svc,
         rel_ops::DeleteRelInput {
-            source_id: "gizmo-1".to_string(),
+            source_id: "8160b75c-ba44-5791-ae15-8f95d5a891f0".to_string(),
             relationship_name: "assigned_to".to_string(),
-            target_id: "person-1".to_string(),
+            target_id: "bf53417d-8511-5995-aecb-300ecf227fcb".to_string(),
         },
     )
     .await
@@ -278,12 +364,18 @@ async fn delete_required_last_edge_surfaces_a_validation_error_not_internal() ->
 #[tokio::test]
 async fn update_rejects_non_object_properties() -> Result<()> {
     let (svc, _t) = service_with_gizmo_schema("many", false).await?;
-    make_node(&svc, "gizmo-1", "gizmo", "Ship it").await?;
-    make_node(&svc, "person-1", "person", "").await?;
+    make_node(
+        &svc,
+        "8160b75c-ba44-5791-ae15-8f95d5a891f0",
+        "gizmo",
+        "Ship it",
+    )
+    .await?;
+    make_node(&svc, "bf53417d-8511-5995-aecb-300ecf227fcb", "person", "").await?;
     svc.create_relationship(
-        "gizmo-1",
+        "8160b75c-ba44-5791-ae15-8f95d5a891f0",
         "assigned_to",
-        "person-1",
+        "bf53417d-8511-5995-aecb-300ecf227fcb",
         json!({ "role": "reviewer" }),
     )
     .await?;
@@ -292,14 +384,19 @@ async fn update_rejects_non_object_properties() -> Result<()> {
     // downstream readers don't expect — reject it.
     for bad in [json!("oops"), json!(42), json!(null), json!(["a"])] {
         let err = svc
-            .update_relationship_properties("gizmo-1", "assigned_to", "person-1", bad.clone())
+            .update_relationship_properties(
+                "8160b75c-ba44-5791-ae15-8f95d5a891f0",
+                "assigned_to",
+                "bf53417d-8511-5995-aecb-300ecf227fcb",
+                bad.clone(),
+            )
             .await;
         assert!(err.is_err(), "non-object properties {bad} must be rejected");
     }
 
     // The valid edge is untouched by the rejected updates.
     let edges = svc
-        .get_related_nodes_with_edges("gizmo-1", "assigned_to", "out")
+        .get_related_nodes_with_edges("8160b75c-ba44-5791-ae15-8f95d5a891f0", "assigned_to", "out")
         .await?;
     assert_eq!(
         edges[0].1.get("role").and_then(|v| v.as_str()),

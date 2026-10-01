@@ -21,6 +21,9 @@ import { pluginRegistry } from '$lib/plugins/index';
 
 function schema(): SchemaNode {
   return {
+    nodeType: 'schema' as const,
+    lifecycleStatus: 'active' as const,
+    properties: {},
     id: 'widget',
     content: 'Widget',
     createdAt: '2026-01-01T00:00:00Z',
@@ -44,6 +47,7 @@ function schema(): SchemaNode {
 
 function baseNode(overrides: Partial<Node> = {}): Node {
   return {
+    lifecycleStatus: 'active',
     id: 'n1',
     nodeType: 'task',
     content: 'current content',

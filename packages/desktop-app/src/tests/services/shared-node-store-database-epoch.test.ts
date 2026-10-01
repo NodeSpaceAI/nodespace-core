@@ -23,6 +23,7 @@ describe('SharedNodeStore - ADR-053 database epoch guard', () => {
   let store: SharedNodeStore;
 
   const makeNode = (id: string): Node => ({
+    lifecycleStatus: 'active',
     id,
     nodeType: 'text',
     content: `content-${id}`,

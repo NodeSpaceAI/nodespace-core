@@ -15,10 +15,6 @@ pub(crate) fn default_version() -> i64 {
     1
 }
 
-pub(crate) fn is_active_lifecycle(s: &str) -> bool {
-    s == "active"
-}
-
 /// Returns `true` if `status` is one of the [`LIFECYCLE_STATUSES`].
 pub fn is_valid_lifecycle_status(status: &str) -> bool {
     LIFECYCLE_STATUSES.contains(&status)

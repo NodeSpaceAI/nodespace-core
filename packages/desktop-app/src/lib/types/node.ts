@@ -7,6 +7,8 @@
  * Philosophy: Single source of truth, zero schema drift.
  */
 
+import { isExactly } from './core-node-types';
+
 /**
  * Lightweight reference to a node for backlinks display
  *
@@ -55,17 +57,21 @@ export interface NodeRelationship {
   relationshipType: string;
 }
 
+/** Lifecycle status of a node: governance state, never a type-specific flag. */
+export type LifecycleStatus = 'active' | 'archived';
+
 /**
- * Node - Matches Rust backend schema exactly
+ * NodeEnvelope - the fields every node carries on the wire
  *
- * This is the authoritative node type. All services and components
- * must use this interface.
+ * Mirrors Rust's `NodeEnvelope` (`packages/nodespace-types/src/node.rs`). The
+ * generic `Node` and every typed node interface extend it, so no node
+ * interface restates or omits a universal field.
  *
  * Fields:
  * - Persisted: Stored in database
  * - Computed: Calculated on-demand, not stored
  */
-export interface Node {
+export interface NodeEnvelope {
   // ============================================================================
   // Persisted Fields (stored in database)
   // ============================================================================
@@ -156,6 +162,12 @@ export interface Node {
    */
   version: number;
 
+  /**
+   * Governance state, always present on the wire (ADR-087). Never read for a
+   * type-specific meaning: `archived` is not "done" or "retired" for any type.
+   */
+  lifecycleStatus: LifecycleStatus;
+
   /** All entity-specific fields (Pure JSON schema) */
   properties: Record<string, unknown>;
 
@@ -205,6 +217,16 @@ export interface Node {
   mentionedIn?: NodeReference[];
 }
 
+/**
+ * Node - the generic node: the envelope, with every field of its type inside
+ * `properties`. A primitive type has no fields, so this is also its whole
+ * wire shape.
+ *
+ * All services and components use this type for a node of any type; a type
+ * with its own fields has a typed interface that extends `NodeEnvelope`.
+ */
+export type Node = NodeEnvelope;
+
 // ============================================================================
 // Collection Node Types
 // ============================================================================
@@ -253,7 +275,7 @@ export interface Node {
  * | Path syntax | N/A | colon-separated (hr:policy) |
  *
  */
-export interface CollectionNode extends Node {
+export interface CollectionNode extends NodeEnvelope {
   /** Always 'collection' for collection nodes */
   nodeType: 'collection';
 
@@ -271,7 +293,7 @@ export interface CollectionNode extends Node {
  * Type guard to check if a node is a CollectionNode
  */
 export function isCollectionNode(node: Node): node is CollectionNode {
-  return node.nodeType === 'collection';
+  return isExactly(node.nodeType, 'collection');
 }
 
 /**

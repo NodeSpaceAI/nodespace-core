@@ -41,6 +41,8 @@ function createMockSchemaNode(
   } = {}
 ): SchemaNode {
   return {
+    lifecycleStatus: 'active' as const,
+    properties: {},
     id,
     nodeType: 'schema',
     // content is the schema display name (e.g. "Invoice", "Customer")

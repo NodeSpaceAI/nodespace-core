@@ -24,7 +24,7 @@
 //! - Content changes mark existing embeddings as stale
 //! - Background processor re-embeds stale entries
 
-use crate::behaviors::{CustomNodeBehavior, NodeBehavior, NodeBehaviorRegistry};
+use crate::behaviors::{NodeBehavior, NodeBehaviorRegistry};
 use crate::db::SqliteStore;
 use crate::models::{EmbeddingConfig, EmbeddingSearchResult, NewEmbedding, Node};
 use crate::services::error::NodeServiceError;
@@ -40,16 +40,16 @@ use std::sync::Arc;
 /// Built-in types the default `Knowledge` search scope returns: the user's own
 /// documents and records. User-defined types are admitted too, but are not
 /// known statically — see [`NodeEmbeddingService::matches_scope`].
-pub const KNOWLEDGE_CORE_TYPES: &[&str] = &[
-    "text",
-    "header",
-    "code-block",
-    "schema",
-    "table",
-    "task",
-    "date",
-    "project",
-    "person",
+pub const KNOWLEDGE_CORE_TYPES: &[crate::models::CoreNodeType] = &[
+    crate::models::CoreNodeType::Text,
+    crate::models::CoreNodeType::Header,
+    crate::models::CoreNodeType::CodeBlock,
+    crate::models::CoreNodeType::Schema,
+    crate::models::CoreNodeType::Table,
+    crate::models::CoreNodeType::Task,
+    crate::models::CoreNodeType::Date,
+    crate::models::CoreNodeType::Project,
+    crate::models::CoreNodeType::Person,
 ];
 
 // Re-export embedding dimension from nlp-engine as single source of truth
@@ -168,11 +168,17 @@ impl NodeEmbeddingService {
         &self.config
     }
 
-    /// Get the behavior for a node type, falling back to CustomNodeBehavior
-    fn behavior_for(&self, node_type: &str) -> Arc<dyn NodeBehavior> {
-        self.behaviors
-            .get(node_type)
-            .unwrap_or_else(|| Arc::new(CustomNodeBehavior::new(node_type)))
+    /// The behaviour that decides a type's embedding rules: the nearest one
+    /// registered in its `extends` chain, so a subtype is embedded exactly as
+    /// the type it extends is. A chain that cannot be read falls back to the
+    /// type alone.
+    async fn behavior_for(&self, node_type: &str) -> Arc<dyn NodeBehavior> {
+        let chain = self
+            .store
+            .type_chain(node_type)
+            .await
+            .unwrap_or_else(|_| vec![node_type.to_string()]);
+        self.behaviors.resolve(&chain)
     }
 
     // =========================================================================
@@ -214,7 +220,7 @@ impl NodeEmbeddingService {
         &self,
         node: &Node,
     ) -> Result<Option<String>, NodeServiceError> {
-        let behavior = self.behavior_for(&node.node_type);
+        let behavior = self.behavior_for(&node.node_type).await;
 
         // Phase 1: node's own content (sync, no I/O)
         let own_content = behavior.get_embeddable_content(node);
@@ -594,7 +600,7 @@ impl NodeEmbeddingService {
         };
 
         // Check if root type is embeddable via behavior (replaces is_embeddable_type)
-        let behavior = self.behavior_for(&root.node_type);
+        let behavior = self.behavior_for(&root.node_type).await;
         if behavior.get_embeddable_content(&root).is_none() {
             tracing::debug!(
                 "Root {} is not embeddable (type: {}), skipping queue",
@@ -743,7 +749,7 @@ impl NodeEmbeddingService {
         // documents (see `bm25_search_titles`).
         for result in &mut knn_results {
             if let Some(ref node) = result.node {
-                if node.node_type == "schema" {
+                if crate::models::CoreNodeType::Schema.is_exactly(&node.node_type) {
                     continue;
                 }
                 if let Some(ref title) = node.title {
@@ -877,12 +883,14 @@ impl NodeEmbeddingService {
     ) -> bool {
         match scope {
             SearchScope::Knowledge => {
-                KNOWLEDGE_CORE_TYPES.contains(&node_type) || user_types.contains(node_type)
+                crate::models::CoreNodeType::from_id(node_type)
+                    .is_some_and(|core| KNOWLEDGE_CORE_TYPES.contains(&core))
+                    || user_types.contains(node_type)
             }
             // ai-chat nodes are no longer embedded (ADR-029, as revised), so no
             // ai-chat rows exist in the vector index — this scope is effectively
             // a no-op that returns no results.
-            SearchScope::Conversations => node_type == "ai-chat",
+            SearchScope::Conversations => crate::models::CoreNodeType::AiChat.is_exactly(node_type),
             SearchScope::Everything => true,
             SearchScope::Custom {
                 include_types,
@@ -1079,6 +1087,7 @@ impl NodeEmbeddingService {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::behaviors::CustomNodeBehavior;
     use serde_json::json;
 
     #[test]
@@ -1397,6 +1406,13 @@ mod tests {
             _root_id: &str,
         ) -> Result<HashSet<String>, crate::services::error::NodeServiceError> {
             Ok(HashSet::new())
+        }
+
+        async fn type_chain(
+            &self,
+            node_type: &str,
+        ) -> Result<Vec<String>, crate::services::error::NodeServiceError> {
+            Ok(vec![node_type.to_string()])
         }
     }
 

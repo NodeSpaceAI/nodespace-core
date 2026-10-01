@@ -814,9 +814,13 @@ export type TypedNodeType = 'task' | 'person' | 'project' | 'query';
  * carries content.
  */
 function typedUpdateKeys(nodeType: TypedNodeType): string[] {
-  const keys = writableTypedCoreKeys(nodeType);
-  return nodeType === 'task' ? [...keys, 'content'] : keys;
+  return [...writableTypedCoreKeys(nodeType), ...(TYPED_UPDATE_EXTRA_KEYS[nodeType] ?? [])];
 }
+
+/** Keys a type's typed update carries beyond its typed core fields. */
+const TYPED_UPDATE_EXTRA_KEYS: Partial<Record<TypedNodeType, readonly string[]>> = {
+  task: ['content']
+};
 
 /**
  * Typed fields staged for a node but not yet sent (see `updateTypedNode()`),
@@ -838,17 +842,22 @@ function sendTypedUpdate(
   version: number,
   payload: Record<string, unknown>
 ): Promise<unknown> {
-  switch (nodeType) {
-    case 'task':
-      return backendAdapter.updateTaskNode(nodeId, version, payload as TaskNodeUpdate);
-    case 'person':
-      return backendAdapter.updatePersonNode(nodeId, version, payload as PersonNodeUpdate);
-    case 'project':
-      return backendAdapter.updateProjectNode(nodeId, version, payload as ProjectNodeUpdate);
-    case 'query':
-      return backendAdapter.updateQueryNode(nodeId, version, payload as QueryNodeUpdate);
-  }
+  return TYPED_UPDATERS[nodeType](nodeId, version, payload);
 }
+
+const TYPED_UPDATERS: Record<
+  TypedNodeType,
+  (nodeId: string, version: number, payload: Record<string, unknown>) => Promise<unknown>
+> = {
+  task: (nodeId, version, payload) =>
+    backendAdapter.updateTaskNode(nodeId, version, payload as TaskNodeUpdate),
+  person: (nodeId, version, payload) =>
+    backendAdapter.updatePersonNode(nodeId, version, payload as PersonNodeUpdate),
+  project: (nodeId, version, payload) =>
+    backendAdapter.updateProjectNode(nodeId, version, payload as ProjectNodeUpdate),
+  query: (nodeId, version, payload) =>
+    backendAdapter.updateQueryNode(nodeId, version, payload as QueryNodeUpdate)
+};
 
 /**
  * Batch structure for atomic multi-property updates
@@ -1761,6 +1770,7 @@ export class SharedNodeStore {
     if (isValidDateId(nodeId)) {
       const now = new Date().toISOString();
       const virtualDateNode: Node = {
+        lifecycleStatus: 'active',
         id: nodeId,
         nodeType: 'date',
         content: '',
@@ -3949,6 +3959,7 @@ export class SharedNodeStore {
         if (isValidDateId(parentId)) {
           const now = new Date().toISOString();
           const virtualDateNode: Node = {
+            lifecycleStatus: 'active',
             id: parentId,
             nodeType: 'date',
             content: '',

@@ -120,12 +120,10 @@ pub enum TreeInvariantRule {
     /// A node holding `member_of` would sit below a `has_child` parent — only
     /// root nodes may hold collection membership (ADR-059 §2).
     MemberOfNotRoot,
-    /// A collection would gain a `has_child` parent; collections are always
-    /// roots and nest through `member_of` (ADR-059 §2).
-    CollectionNotRoot,
-    /// A schema node would gain a `has_child` parent; schemas are always
-    /// roots.
-    SchemaNotRoot,
+    /// A node of a root-only type would gain a `has_child` parent. The type
+    /// is the root-only core type the node is or extends: a collection
+    /// (which nests through `member_of`, ADR-059 §2) or a schema.
+    NotRoot(crate::models::CoreNodeType),
     /// The write would make a node its own `has_child` ancestor.
     Cycle,
 }
@@ -134,12 +132,13 @@ impl TreeInvariantRule {
     /// The rule's stable wire name, carried to clients as structured data.
     /// It also prefixes the refusal's message, matching the schema triggers'
     /// `RAISE` text so every path that refuses a rule reads the same.
-    pub fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> String {
         match self {
-            Self::MemberOfNotRoot => "member_of_not_root",
-            Self::CollectionNotRoot => "collection_not_root",
-            Self::SchemaNotRoot => "schema_not_root",
-            Self::Cycle => "cycle",
+            Self::MemberOfNotRoot => "member_of_not_root".to_string(),
+            Self::NotRoot(root_type) => {
+                format!("{}_not_root", root_type.as_str().replace('-', "_"))
+            }
+            Self::Cycle => "cycle".to_string(),
         }
     }
 }
@@ -166,34 +165,35 @@ pub struct TreeInvariantViolation {
 }
 
 impl TreeInvariantViolation {
-    /// Giving a collection a parent.
-    pub fn collection_not_root(collection_id: Option<&str>) -> Self {
-        let subject = match collection_id {
-            Some(id) => format!("collection '{}'", id),
-            None => "a new collection".to_string(),
+    /// Giving a node of a root-only type a parent. `root_type` is the
+    /// root-only core type the node is or extends; `node_id` is `None` only
+    /// for a node refused before it was given an id.
+    pub fn not_root(root_type: crate::models::CoreNodeType, node_id: Option<&str>) -> Self {
+        let subject = match node_id {
+            Some(id) => format!("{} '{}'", root_type, id),
+            None => format!("a new {}", root_type),
+        };
+        let reason = if root_type == crate::models::CoreNodeType::Collection {
+            "collections nest through member_of, not has_child (ADR-059 §2)".to_string()
+        } else {
+            format!("a {} is always a root", root_type)
         };
         Self {
-            rule: TreeInvariantRule::CollectionNotRoot,
-            node_id: collection_id.map(str::to_string),
+            rule: TreeInvariantRule::NotRoot(root_type),
+            node_id: node_id.map(str::to_string),
             related_ids: Vec::new(),
-            detail: format!(
-                "{} cannot have a parent; collections nest through member_of, not has_child (ADR-059 §2)",
-                subject
-            ),
+            detail: format!("{} cannot have a parent; {}", subject, reason),
         }
+    }
+
+    /// Giving a collection a parent.
+    pub fn collection_not_root(collection_id: Option<&str>) -> Self {
+        Self::not_root(crate::models::CoreNodeType::Collection, collection_id)
     }
 
     /// Giving a schema node a parent.
     pub fn schema_not_root(schema_id: &str) -> Self {
-        Self {
-            rule: TreeInvariantRule::SchemaNotRoot,
-            node_id: Some(schema_id.to_string()),
-            related_ids: Vec::new(),
-            detail: format!(
-                "schema '{}' cannot have a parent; schemas are always roots",
-                schema_id
-            ),
-        }
+        Self::not_root(crate::models::CoreNodeType::Schema, Some(schema_id))
     }
 
     /// A member of `collection_ids` that has, or would gain, a parent.
@@ -595,12 +595,18 @@ impl SqliteStore {
             return Err(anyhow::anyhow!("Node type cannot be empty"));
         }
         // `schema` is the type of the schema nodes themselves.
-        if node_type == "schema" {
+        if crate::models::CoreNodeType::Schema.is_exactly(node_type) {
             return Ok(());
         }
         let mut rows = conn
             .query(
-                "SELECT 1 FROM node WHERE id = ?1 AND node_type = 'schema'",
+                &format!(
+                    "SELECT 1 FROM node WHERE id = ?1 AND {}",
+                    crate::db::schema::is_exactly_sql(
+                        "node_type",
+                        crate::models::CoreNodeType::Schema
+                    )
+                ),
                 libsql::params![node_type],
             )
             .await
@@ -761,6 +767,7 @@ pub use nodes::{BulkNodeRow, ChildPlacement, ResolvedEntity};
 mod relationships;
 mod search;
 pub(crate) mod tx;
+mod type_ancestry;
 
 #[cfg(test)]
 mod tests {
@@ -1619,7 +1626,7 @@ mod tests {
             .expect_err("a collection cannot be created under a parent");
         assert_eq!(
             tree_violation(&err).rule,
-            TreeInvariantRule::CollectionNotRoot
+            TreeInvariantRule::NotRoot(crate::models::CoreNodeType::Collection)
         );
 
         // End-to-end: a task inside a filed project still works. The project

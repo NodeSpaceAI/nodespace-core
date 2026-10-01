@@ -17,7 +17,8 @@
  * ```
  */
 
-import type { Node } from './node';
+import type { Node, NodeEnvelope } from './node';
+import { isExactly } from './core-node-types';
 
 /**
  * HeaderNode interface extending base Node
@@ -25,7 +26,7 @@ import type { Node } from './node';
  * Represents a header/heading node with level derived from content.
  * Level is determined by counting # characters at the start of content.
  */
-export interface HeaderNode extends Node {
+export interface HeaderNode extends NodeEnvelope {
   nodeType: 'header';
 }
 
@@ -44,7 +45,7 @@ export interface HeaderNode extends Node {
  * ```
  */
 export function isHeaderNode(node: Node): node is HeaderNode {
-  return node.nodeType === 'header';
+  return isExactly(node.nodeType, 'header');
 }
 
 /**
@@ -125,6 +126,7 @@ export const HeaderNodeHelpers = {
   createHeaderNode(text: string, level: number = 1): HeaderNode {
     const clampedLevel = Math.max(1, Math.min(6, level));
     return {
+      lifecycleStatus: 'active',
       id: `header-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`,
       nodeType: 'header',
       content: '#'.repeat(clampedLevel) + ' ' + text,

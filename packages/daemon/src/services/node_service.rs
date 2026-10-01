@@ -520,6 +520,13 @@ impl GrpcNodeService for NodeServiceImpl {
             None => None,
         };
 
+        if let (true, Some(patch)) = (req.typed_client, properties.as_ref()) {
+            this.node_service
+                .ensure_no_typed_core_fields(&req.node_id, req.node_type.as_deref(), patch)
+                .await
+                .map_err(service_error_to_status)?;
+        }
+
         let input = node_ops::UpdateNodeInput {
             node_id: req.node_id,
             version: req.version,
@@ -1952,7 +1959,7 @@ impl GrpcNodeService for NodeServiceImpl {
                 // failed_precondition; present schema node that failed to parse
                 // → internal (a stored-data bug, not a caller error).
                 let node = fetch_node(&this.node_service, &req.schema_id).await?;
-                if node.node_type == "schema" {
+                if nodespace_core::models::CoreNodeType::Schema.is_exactly(&node.node_type) {
                     return Err(Status::internal(format!(
                         "Schema node '{}' exists but could not be parsed as a schema definition",
                         req.schema_id
@@ -3683,8 +3690,8 @@ mod tests {
         let schema_params = serde_json::json!({
             "name": "Ticket",
             "fields": [
-                { "name": "severity", "type": "string" },
-                { "name": "subject", "type": "string" }
+                { "name": "severity", "type": "text" },
+                { "name": "subject", "type": "text" }
             ],
             "title_template": "{severity}: {subject}"
         });
@@ -4038,9 +4045,82 @@ mod tests {
             add_to_collection_ids: Vec::new(),
             remove_from_collection_ids: Vec::new(),
             lifecycle_status: None,
+            typed_client: false,
         });
         let updated = svc.update_node(update_req).await.unwrap().into_inner();
         assert_eq!(updated.node_data.unwrap().content, "updated");
+    }
+
+    /// A typed client writes a core type's fields through that type's typed
+    /// update, so its generic UpdateNode refuses a patch naming one. The same
+    /// patch from a client that writes bare keys (the CLI's `node update
+    /// --property`) goes through the validated pipeline and lands.
+    #[tokio::test]
+    async fn update_node_from_a_typed_client_refuses_a_typed_core_field() {
+        let (svc, _tmp) = make_service().await;
+
+        let created = svc
+            .create_node(Request::new(crate::nodespace::CreateNodeRequest {
+                id: None,
+                node_type: "task".to_string(),
+                content: "Ship it".to_string(),
+                parent_id: None,
+                collections: Vec::new(),
+                collection_ids: Vec::new(),
+                lifecycle_status: None,
+                properties: "{}".to_string(),
+                position: None,
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        let node_id = created.node_id;
+
+        let update = |properties: &str, typed_client: bool| {
+            Request::new(crate::nodespace::UpdateNodeRequest {
+                node_id: node_id.clone(),
+                content: None,
+                node_type: None,
+                properties: Some(properties.to_string()),
+                version: None,
+                add_to_collections: Vec::new(),
+                add_to_collection_ids: Vec::new(),
+                remove_from_collection_ids: Vec::new(),
+                lifecycle_status: None,
+                typed_client,
+            })
+        };
+
+        let refused = svc
+            .update_node(update(r#"{"status": "done"}"#, true))
+            .await
+            .expect_err("a typed client must use the typed task update for `status`");
+        assert!(
+            refused.message().contains("typed task update"),
+            "{}",
+            refused.message()
+        );
+        let stored = svc.node_service.get_node(&node_id).await.unwrap().unwrap();
+        assert_eq!(stored.properties["task"]["status"], "open");
+
+        // The typed client's generic update still writes an extension field.
+        svc.update_node(update(r#"{"custom:store": "Costco"}"#, true))
+            .await
+            .expect("an extension field has no typed path");
+
+        // The bare-key client writes the same core field.
+        svc.update_node(update(r#"{"status": "done"}"#, false))
+            .await
+            .expect("the flat update is validated by the shared pipeline");
+        let stored = svc.node_service.get_node(&node_id).await.unwrap().unwrap();
+        assert_eq!(stored.properties["task"]["status"], "done");
+        assert_eq!(stored.properties["task"]["custom:store"], "Costco");
+
+        // ...and is validated there: a value outside the vocabulary is refused.
+        assert!(svc
+            .update_node(update(r#"{"status": "nonsense"}"#, false))
+            .await
+            .is_err());
     }
 
     /// update_node with add_to_collection then remove_from_collection must transition membership.
@@ -4074,6 +4154,7 @@ mod tests {
             add_to_collection_ids: Vec::new(),
             remove_from_collection_ids: Vec::new(),
             lifecycle_status: None,
+            typed_client: false,
         });
         svc.update_node(add_req).await.unwrap();
 
@@ -4098,6 +4179,7 @@ mod tests {
             add_to_collection_ids: Vec::new(),
             remove_from_collection_ids: vec![collection_id.clone()],
             lifecycle_status: None,
+            typed_client: false,
         });
         svc.update_node(remove_req).await.unwrap();
 
@@ -4164,6 +4246,7 @@ mod tests {
             add_to_collection_ids: Vec::new(),
             remove_from_collection_ids: Vec::new(),
             lifecycle_status: None,
+            typed_client: false,
         }))
         .await
         .unwrap();
@@ -4733,6 +4816,7 @@ mod tests {
             add_to_collection_ids: Vec::new(),
             remove_from_collection_ids: Vec::new(),
             lifecycle_status: None,
+            typed_client: false,
         });
         let err = svc
             .update_node(conflict_req)
@@ -5297,7 +5381,7 @@ mod tests {
             serde_json::json!({
                 "name": "Ticket",
                 "fields": [
-                    { "name": "status", "type": "string", "protection": "user", "indexed": false }
+                    { "name": "status", "type": "text", "protection": "user", "indexed": false }
                 ]
             }),
         )
@@ -5309,7 +5393,7 @@ mod tests {
                 "name": "Bug",
                 "extends": "ticket",
                 "fields": [
-                    { "name": "severity", "type": "string", "protection": "user", "indexed": false }
+                    { "name": "severity", "type": "text", "protection": "user", "indexed": false }
                 ]
             }),
         )
@@ -5361,7 +5445,7 @@ mod tests {
             serde_json::json!({ "name": "Owner", "fields": [] }),
             serde_json::json!({
                 "name": "Ticket",
-                "fields": [{ "name": "status", "type": "string" }],
+                "fields": [{ "name": "status", "type": "text" }],
                 "relationships": [{
                     "name": "owned_by",
                     "targetType": "owner",
@@ -5374,7 +5458,7 @@ mod tests {
             serde_json::json!({
                 "name": "Bug",
                 "extends": "ticket",
-                "fields": [{ "name": "severity", "type": "string" }]
+                "fields": [{ "name": "severity", "type": "text" }]
             }),
         ] {
             handle_create_schema(&core, params)

@@ -67,6 +67,10 @@ pub trait NodeAccessor: Send + Sync {
         &self,
         root_id: &str,
     ) -> Result<std::collections::HashSet<String>, error::NodeServiceError>;
+
+    /// `node_type`'s `extends` chain, nearest scope first, so a behaviour can
+    /// treat a subtype as the type it extends (ADR-086 §5).
+    async fn type_chain(&self, node_type: &str) -> Result<Vec<String>, error::NodeServiceError>;
 }
 
 /// Scope for semantic search queries
@@ -235,31 +239,26 @@ pub(crate) fn chain_for_type(
         .unwrap_or_else(|| vec![node_type.to_string()])
 }
 
-/// Resolve the `extends` chain (ADR-078) for each of `node_types`, nearest-
-/// first, from a single store round trip — the parent-edge map is the same
-/// for every type in one call, so fetching it once and resolving every
-/// chain from it in memory avoids an avoidable per-type query. Callers that
-/// pre-resolve chains for a batch of search results before filtering
+/// Resolve the `extends` chain (ADR-078) for each of `node_types`, nearest
+/// first. Every chain is read from the type-ancestry table, the one resolved
+/// form of the `extends` edges; a core type's chain needs no read. Callers
+/// that pre-resolve chains for a batch of search results before filtering
 /// (`NodeEmbeddingService::semantic_search_nodes`,
-/// `ops::search_ops::resolve_type_chains_for_filters`) use this instead of
-/// looping [`resolve_type_chain_from_store`] once per distinct type.
+/// `ops::search_ops::resolve_type_chains_for_filters`) pass the distinct types
+/// of the batch.
 pub(crate) async fn resolve_type_chains_from_store<'a>(
     store: &crate::db::SqliteStore,
     node_types: impl IntoIterator<Item = &'a str>,
 ) -> Result<std::collections::HashMap<String, Vec<String>>, error::NodeServiceError> {
-    let parent_map = store.get_extends_parent_map().await.map_err(|e| {
-        error::NodeServiceError::query_failed(format!("Failed to load extends edges: {e}"))
-    })?;
-
     let mut chains = std::collections::HashMap::new();
     for node_type in node_types {
-        let chain = if parent_map.is_empty() {
-            vec![node_type.to_string()]
-        } else {
-            let lookup = |id: &str| parent_map.get(id).cloned();
-            crate::schema::extends_chain::resolve_ancestor_chain(node_type, &lookup)
-        };
-        chains.insert(node_type.to_string(), chain);
+        if chains.contains_key(node_type) {
+            continue;
+        }
+        chains.insert(
+            node_type.to_string(),
+            resolve_type_chain_from_store(store, node_type).await?,
+        );
     }
     Ok(chains)
 }
@@ -267,18 +266,16 @@ pub(crate) async fn resolve_type_chains_from_store<'a>(
 /// Resolve a single node type's `extends` ancestor chain directly against
 /// the store, nearest-first (ADR-078) — same semantics as
 /// [`node_service::NodeService::resolve_type_chain`] (which delegates here),
-/// for callers that hold a `SqliteStore` but not a `NodeService`. Resolving
-/// more than one type in the same call? Prefer
-/// [`resolve_type_chains_from_store`] — it resolves every chain from a
-/// single store fetch instead of one per type.
+/// for callers that hold a `SqliteStore` but not a `NodeService`.
 pub(crate) async fn resolve_type_chain_from_store(
     store: &crate::db::SqliteStore,
     node_type: &str,
 ) -> Result<Vec<String>, error::NodeServiceError> {
-    let mut chains = resolve_type_chains_from_store(store, std::iter::once(node_type)).await?;
-    Ok(chains
-        .remove(node_type)
-        .unwrap_or_else(|| vec![node_type.to_string()]))
+    store.type_chain(node_type).await.map_err(|e| {
+        error::NodeServiceError::query_failed(format!(
+            "Failed to resolve the type chain of '{node_type}': {e}"
+        ))
+    })
 }
 
 /// Explicit insertion position for hierarchy operations.

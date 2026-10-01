@@ -100,6 +100,7 @@ async fn set_lifecycle_status(
             remove_from_collection_ids: vec![],
             lifecycle_status: Some(lifecycle_status.to_string()),
             add_to_collection_ids: vec![],
+            typed_client: false,
         })
         .await
         .context("UpdateNode RPC failed")?

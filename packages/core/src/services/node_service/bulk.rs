@@ -145,10 +145,11 @@ impl NodeService {
             String,
             (Vec<crate::models::SchemaField>, Vec<String>),
         > = std::collections::HashMap::new();
+        let mut type_chains = std::collections::HashMap::new();
         for node in &mut nodes {
-            // Step 1: Core behavior validation
-            self.behaviors.validate_node(node)?;
-            Self::ensure_not_creating_core_schema(node)?;
+            // Step 1: Type, id and behavior validation
+            self.ensure_creatable_in_batch(node, &mut type_chains)
+                .await?;
 
             // A create: always held to the templated-type content rule.
             if !schemas.contains_key(&node.node_type) {
@@ -161,7 +162,7 @@ impl NodeService {
             )?;
 
             // Step 2: Chain-aware schema validation + re-bucketing
-            if node.node_type != "schema" {
+            if !crate::models::CoreNodeType::Schema.is_exactly(&node.node_type) {
                 self.rebucket_and_validate(node, false).await?;
             }
 
@@ -215,7 +216,22 @@ impl NodeService {
         // stored row — this row's lowercased content against an earlier
         // active collection's lowercased title — so a batch detects exactly
         // what the same rows created one at a time would have.
-        for node in nodes.iter().filter(|n| n.node_type == "collection") {
+        // Which of the batch's types are collections, resolved through each
+        // type's `extends` chain once rather than per row.
+        let mut collection_types: std::collections::HashMap<String, bool> =
+            std::collections::HashMap::new();
+        for node in nodes.iter() {
+            if !collection_types.contains_key(&node.node_type) {
+                let is_collection = self
+                    .type_is_a(&node.node_type, crate::models::CoreNodeType::Collection)
+                    .await?;
+                collection_types.insert(node.node_type.clone(), is_collection);
+            }
+        }
+        for node in nodes
+            .iter()
+            .filter(|n| collection_types.get(&n.node_type) == Some(&true))
+        {
             let name = node.content.to_lowercase();
             let stored = self
                 .store
@@ -495,7 +511,7 @@ impl NodeService {
         let mut chain_cache: std::collections::HashMap<String, FieldOwnershipInfo> =
             std::collections::HashMap::new();
         for node_type in unique_types {
-            if node_type == "schema" {
+            if crate::models::CoreNodeType::Schema.is_exactly(node_type) {
                 continue;
             }
 
@@ -549,6 +565,7 @@ impl NodeService {
             .collect();
 
         // Validate all nodes before insertion using the resolved chain.
+        let mut type_chains = std::collections::HashMap::new();
         for (id, node_type, content, _, _, properties) in &nodes_normalized {
             // Build temporary Node for validation
             let temp_node = Node {
@@ -565,13 +582,14 @@ impl NodeService {
                 lifecycle_status: "active".to_string(),
             };
 
-            // Validate via behaviors
-            self.behaviors.validate_node(&temp_node)?;
-            Self::ensure_not_creating_core_schema(&temp_node)?;
+            // Type, id and behavior validation
+            self.ensure_creatable_in_batch(&temp_node, &mut type_chains)
+                .await?;
 
             // Validate against the chain-resolved schema (skip for schema
             // nodes themselves)
-            if let Some((fields, _owners, chain)) = chain_cache.get(node_type) {
+            if let Some((fields, owners, chain)) = chain_cache.get(node_type) {
+                Self::reject_undeclared_core_keys(&temp_node, owners, chain)?;
                 if !fields.is_empty() {
                     self.validate_node_with_fields(&temp_node, fields, Some(chain))?;
                 }
@@ -683,6 +701,7 @@ impl NodeService {
             .collect();
 
         // Validate via behaviors only (type-specific rules, no schema)
+        let mut type_chains = std::collections::HashMap::new();
         for (id, node_type, content, _, _, properties) in &nodes_normalized {
             let temp_node = Node {
                 id: id.clone(),
@@ -698,17 +717,25 @@ impl NodeService {
                 lifecycle_status: "active".to_string(),
             };
 
-            // Only behavior validation - skip schema validation
-            self.behaviors.validate_node(&temp_node)?;
-            Self::ensure_not_creating_core_schema(&temp_node)?;
+            // Type, id and behavior validation only - skip schema validation
+            self.ensure_creatable_in_batch(&temp_node, &mut type_chains)
+                .await?;
         }
 
         // Collect embeddable root node IDs (nodes with no parent AND embeddable type)
         // Only these need embedding markers - matches single-create logic
+        let mut embeddable_types: std::collections::HashMap<String, bool> =
+            std::collections::HashMap::new();
+        for (_, node_type, _, parent_id, _, _) in nodes_normalized.iter() {
+            if parent_id.is_none() && !embeddable_types.contains_key(node_type) {
+                let embeddable = self.is_embeddable_type(node_type).await;
+                embeddable_types.insert(node_type.clone(), embeddable);
+            }
+        }
         let root_ids: Vec<String> = nodes_normalized
             .iter()
             .filter_map(|(id, node_type, _, parent_id, _, _)| {
-                if parent_id.is_none() && self.is_embeddable_type(node_type) {
+                if parent_id.is_none() && embeddable_types.get(node_type) == Some(&true) {
                     Some(id.clone())
                 } else {
                     None
@@ -860,7 +887,7 @@ impl NodeService {
             let mut properties_changed = false;
             if let Some(properties) = &update.properties {
                 properties_changed = true;
-                if updated.node_type == "schema" {
+                if crate::models::CoreNodeType::Schema.is_exactly(&updated.node_type) {
                     // Schema nodes use a flat (non-namespaced) format — deep-merge as-is.
                     Self::deep_merge_namespaced_properties(
                         &mut updated.properties,
@@ -887,13 +914,16 @@ impl NodeService {
             // an unextended type `rebucket_and_validate` is a no-op reshuffle,
             // so this changes nothing for the common case.
             Self::ensure_schema_core_status_unchanged(existing, &updated)?;
-            Self::ensure_not_retyped_to_ai_chat(existing, &updated)?;
-            self.behaviors.validate_node(&updated).map_err(|e| {
-                NodeServiceError::bulk_operation_failed(format!(
-                    "Failed to validate node {}: {}",
-                    id, e
-                ))
-            })?;
+            self.ensure_retype_allowed(existing, &updated).await?;
+            let chain = self.type_chain(&updated.node_type).await?;
+            self.behaviors
+                .validate_node(&updated, &chain)
+                .map_err(|e| {
+                    NodeServiceError::bulk_operation_failed(format!(
+                        "Failed to validate node {}: {}",
+                        id, e
+                    ))
+                })?;
             if update.content.is_some() || node_type_changed {
                 if !schemas.contains_key(&updated.node_type) {
                     let schema = self.title_schema(&updated.node_type).await;
@@ -910,7 +940,7 @@ impl NodeService {
                     ))
                 })?;
             }
-            if updated.node_type != "schema" {
+            if !crate::models::CoreNodeType::Schema.is_exactly(&updated.node_type) {
                 self.rebucket_and_validate(&mut updated, node_type_changed)
                     .await
                     .map_err(|e| {

@@ -50,6 +50,22 @@ use crate::methodology::{
 use crate::services::QueryDefinition;
 use serde_json::json;
 
+// The fixed ids of the nodes this playbook seeds. A seeded node's identity
+// is its id (ADR-086 §10), and ADR-060 §5 orders rules across plays by play
+// id, so each is a literal UUID rather than one minted per install.
+/// The `spec-driven-plan-approval-gate` play.
+pub const PLAN_APPROVAL_GATE_ID: &str = "2f8b6c15-9e04-4d7a-b3c8-6a1e5f7d9b01";
+/// The `spec-driven-task-lineage-gate` play.
+pub const TASK_LINEAGE_GATE_ID: &str = "2f8b6c15-9e04-4d7a-b3c8-6a1e5f7d9b02";
+/// The `spec-driven-task-verification-gate` play.
+pub const TASK_VERIFICATION_GATE_ID: &str = "2f8b6c15-9e04-4d7a-b3c8-6a1e5f7d9b03";
+/// The `spec-driven-supersession-lock` play.
+pub const SUPERSESSION_LOCK_ID: &str = "2f8b6c15-9e04-4d7a-b3c8-6a1e5f7d9b04";
+/// The `spec-driven-specs-by-status` saved view.
+pub const SPECS_BY_STATUS_ID: &str = "2f8b6c15-9e04-4d7a-b3c8-6a1e5f7d9b05";
+/// The `spec-driven-plans-by-status` saved view.
+pub const PLANS_BY_STATUS_ID: &str = "2f8b6c15-9e04-4d7a-b3c8-6a1e5f7d9b06";
+
 /// The spec-driven playbook.
 pub fn playbook() -> MethodologyPlaybook {
     MethodologyPlaybook {
@@ -106,7 +122,7 @@ fn text_field(name: &str, friendly_name: &str, description: &str) -> serde_json:
     json!({
         "name": name,
         "friendlyName": friendly_name,
-        "type": "string",
+        "type": "text",
         "protection": "user",
         "indexed": false,
         "required": false,
@@ -267,7 +283,7 @@ fn verification_method_field() -> FieldValueExtension {
             "add_fields": [{
                 "name": "custom:verification_method",
                 "friendlyName": "Verification method",
-                "type": "string",
+                "type": "text",
                 "protection": "user",
                 "indexed": false,
                 "required": false,
@@ -298,7 +314,7 @@ const IN_METHODOLOGY: &str = "has(node.plan) || (has(node.spec) && size(node.spe
 /// no `spec` link yet — so that rule rejects outright and says why.
 fn plan_approval_gate() -> PlayStep {
     PlayStep {
-        play_id: "spec-driven-plan-approval-gate",
+        play_id: PLAN_APPROVAL_GATE_ID,
         name: "Require an approved spec before approving a plan",
         description: "Rejects approving a plan unless it is linked to a spec whose spec_status is \
              approved. Approve the spec first, or link the plan to the spec it implements.",
@@ -368,7 +384,7 @@ fn plan_approval_gate() -> PlayStep {
 /// reads are `has()`-guarded for the reason given on [`plan_approval_gate`].
 fn task_lineage_gate() -> PlayStep {
     PlayStep {
-        play_id: "spec-driven-task-lineage-gate",
+        play_id: TASK_LINEAGE_GATE_ID,
         name: "Require an approved plan and a spec before starting planned work",
         description:
             "Rejects moving a task linked to a plan into in_progress or done unless that plan \
@@ -408,7 +424,7 @@ fn task_lineage_gate() -> PlayStep {
 /// The seeded skill carries that half.
 fn task_verification_gate() -> PlayStep {
     PlayStep {
-        play_id: "spec-driven-task-verification-gate",
+        play_id: TASK_VERIFICATION_GATE_ID,
         name: "Require a verification method before closing spec-driven work",
         description: "Rejects marking a task linked to a plan or spec done until its verification \
              method records how the work was checked.",
@@ -512,7 +528,7 @@ fn supersession_lock() -> PlayStep {
     }
 
     PlayStep {
-        play_id: "spec-driven-supersession-lock",
+        play_id: SUPERSESSION_LOCK_ID,
         name: "Lock superseded specs and plans",
         description:
             "Rejects edits to a superseded spec's or plan's content, and rejects moving it back \
@@ -530,7 +546,7 @@ fn supersession_lock() -> PlayStep {
 /// been replaced.
 fn specs_by_status_view() -> ViewStep {
     ViewStep {
-        view_id: "spec-driven-specs-by-status",
+        view_id: SPECS_BY_STATUS_ID,
         name: "Specs by Status",
         definition: QueryDefinition {
             target_type: "spec".to_string(),
@@ -549,7 +565,7 @@ fn specs_by_status_view() -> ViewStep {
 /// plan in it is holding its planned tasks at `open`.
 fn plans_by_status_view() -> ViewStep {
     ViewStep {
-        view_id: "spec-driven-plans-by-status",
+        view_id: PLANS_BY_STATUS_ID,
         name: "Plans by Status",
         definition: QueryDefinition {
             target_type: "plan".to_string(),

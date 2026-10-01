@@ -30,6 +30,8 @@ const TYPE = 'gadget';
 
 function schema(fields: SchemaNode['fields']): SchemaNode {
   return {
+    lifecycleStatus: 'active' as const,
+    properties: {},
     id: TYPE,
     nodeType: 'schema',
     content: 'Gadget',
@@ -46,7 +48,7 @@ function schema(fields: SchemaNode['fields']): SchemaNode {
 const requiredDescription = {
   name: 'description',
   friendlyName: 'Description',
-  type: 'string',
+  type: 'text',
   protection: 'user',
   indexed: false,
   required: true
@@ -55,7 +57,7 @@ const requiredDescription = {
 const optionalNote = {
   name: 'note',
   friendlyName: 'Note',
-  type: 'string',
+  type: 'text',
   protection: 'user',
   indexed: false
 } as SchemaNode['fields'][number];
@@ -138,6 +140,7 @@ describe('QueryNodeViewer — "+ New" with required fields', () => {
       id === TYPE
         ? null
         : ({
+            lifecycleStatus: 'active',
             id,
             nodeType: TYPE,
             content: '',

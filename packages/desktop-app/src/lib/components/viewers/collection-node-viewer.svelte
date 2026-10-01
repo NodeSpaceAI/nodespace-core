@@ -18,7 +18,7 @@
   import { onMount } from 'svelte';
   import Icon from '$lib/design/icons/icon.svelte';
   import { collectionService } from '$lib/services/collection-service';
-  import { collectionsData, NON_CONTENT_NODE_TYPES } from '$lib/stores/collections.svelte';
+  import { collectionsData, isNonContentNodeType } from '$lib/stores/collections.svelte';
   import { createNodeInCollection, searchAddableNodes } from '$lib/services/collection-authoring';
   import type { Node, CollectionNode } from '$lib/types';
   import { getNavigationService } from '$lib/services/navigation-service';
@@ -71,13 +71,14 @@
       // also returns non-content members — chiefly `person` nodes and system
       // nodes. Filter them out (mirrors the sidebar sub-panel's
       // `selectedCollectionMembers`).
-      members = memberNodes.filter((n) => !NON_CONTENT_NODE_TYPES.has(n.nodeType));
+      members = memberNodes.filter((n) => !isNonContentNodeType(n.nodeType));
 
       // Try to get collection details from cached store data first (by ID)
       const cachedCollection = collectionsData.getCollectionById(collectionId);
       if (cachedCollection) {
         // Convert CollectionInfo to CollectionNode format
         collection = {
+          lifecycleStatus: 'active',
           id: cachedCollection.id,
           nodeType: 'collection',
           content: cachedCollection.content,
@@ -95,6 +96,7 @@
         } else {
           // Last resort: Create placeholder with ID as name
           collection = {
+            lifecycleStatus: 'active',
             id: collectionId,
             nodeType: 'collection',
             content: collectionId,
@@ -139,7 +141,7 @@
   // initial load), used after any add/remove so the count and rows stay honest.
   async function reloadContentMembers() {
     members = (await collectionService.getCollectionMembers(nodeId)).filter(
-      (n) => !NON_CONTENT_NODE_TYPES.has(n.nodeType)
+      (n) => !isNonContentNodeType(n.nodeType)
     );
   }
 

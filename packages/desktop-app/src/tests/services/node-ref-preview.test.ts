@@ -21,6 +21,7 @@ import type { Node } from '../../lib/types';
 
 function makeNode(overrides: Partial<Node> = {}): Node {
   return {
+    lifecycleStatus: 'active',
     id: 'node-1',
     nodeType: 'text',
     content: 'Body content',

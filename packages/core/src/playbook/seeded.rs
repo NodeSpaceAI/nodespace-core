@@ -124,13 +124,13 @@ mod tests {
     #[test]
     fn is_seeded_play_true_only_with_seed_marker() {
         let seeded = Node::new_with_id(
-            "pb-1".to_string(),
+            "b3a71e70-3e65-5eed-a513-7b6bf83e00da".to_string(),
             "play".to_string(),
             "Seeded Play".to_string(),
             json!({ "rules": [], "_seed": { "default_rules": [] } }),
         );
         let user_authored = Node::new_with_id(
-            "pb-2".to_string(),
+            "458637b5-29b0-5c91-b6ef-f283a95efa88".to_string(),
             "play".to_string(),
             "User Play".to_string(),
             json!({ "rules": [] }),
@@ -215,7 +215,10 @@ mod tests {
                 "conditions": [],
                 "actions": []
             }]);
-            let play = seeded_play_node("pb-seeded-1", default_rules.clone());
+            let play = seeded_play_node(
+                "f7eb8adf-4f35-5528-8094-91c27c51b810",
+                default_rules.clone(),
+            );
             svc.create_node(play).await.unwrap();
 
             // Simulate a user edit: replace rules with something else entirely.
@@ -227,14 +230,23 @@ mod tests {
                     "actions": []
                 }]
             }));
-            let after_edit = svc.get_node("pb-seeded-1").await.unwrap().unwrap();
-            svc.update_node("pb-seeded-1", after_edit.version, edited)
+            let after_edit = svc
+                .get_node("f7eb8adf-4f35-5528-8094-91c27c51b810")
                 .await
+                .unwrap()
                 .unwrap();
+            svc.update_node(
+                "f7eb8adf-4f35-5528-8094-91c27c51b810",
+                after_edit.version,
+                edited,
+            )
+            .await
+            .unwrap();
 
-            let restored = reset_seeded_play_to_default(&svc, "pb-seeded-1")
-                .await
-                .expect("reset must succeed for a seeded play with a recorded default");
+            let restored =
+                reset_seeded_play_to_default(&svc, "f7eb8adf-4f35-5528-8094-91c27c51b810")
+                    .await
+                    .expect("reset must succeed for a seeded play with a recorded default");
 
             let rules = restored
                 .properties
@@ -252,16 +264,17 @@ mod tests {
         async fn reset_rejects_a_non_seeded_play() {
             let (svc, _tmp) = create_test_service().await;
             let play = Node::new_with_id(
-                "pb-user-1".to_string(),
+                "19f637b3-bb42-5edc-988d-2d63aef2020f".to_string(),
                 "play".to_string(),
                 "User Play".to_string(),
                 json!({ "rules": [] }),
             );
             svc.create_node(play).await.unwrap();
 
-            let result = reset_seeded_play_to_default(&svc, "pb-user-1").await;
+            let result =
+                reset_seeded_play_to_default(&svc, "19f637b3-bb42-5edc-988d-2d63aef2020f").await;
             assert!(
-                matches!(result, Err(ResetSeededPlayError::NotSeeded(id)) if id == "pb-user-1")
+                matches!(result, Err(ResetSeededPlayError::NotSeeded(id)) if id == "19f637b3-bb42-5edc-988d-2d63aef2020f")
             );
         }
 
@@ -269,17 +282,18 @@ mod tests {
         async fn reset_rejects_a_seed_marker_with_no_recorded_default() {
             let (svc, _tmp) = create_test_service().await;
             let play = Node::new_with_id(
-                "pb-broken-seed".to_string(),
+                "6710251f-045c-506e-be5e-ffa8ce5f875a".to_string(),
                 "play".to_string(),
                 "Broken Seed".to_string(),
                 json!({ "rules": [], "_seed": { "tier": "starter" } }),
             );
             svc.create_node(play).await.unwrap();
 
-            let result = reset_seeded_play_to_default(&svc, "pb-broken-seed").await;
+            let result =
+                reset_seeded_play_to_default(&svc, "6710251f-045c-506e-be5e-ffa8ce5f875a").await;
             assert!(matches!(
                 result,
-                Err(ResetSeededPlayError::NoDefaultRulesRecorded(id)) if id == "pb-broken-seed"
+                Err(ResetSeededPlayError::NoDefaultRulesRecorded(id)) if id == "6710251f-045c-506e-be5e-ffa8ce5f875a"
             ));
         }
     }

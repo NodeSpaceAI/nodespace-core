@@ -31,7 +31,7 @@ const log = createLogger('UniqueFieldCheck');
  * serve: a text field, the only control that commits on blur.
  */
 export function isUniqueField(field: SchemaField | undefined): boolean {
-  return field?.unique === true && (field.type === 'string' || field.type === 'text');
+  return field?.unique === true && field.type === 'text';
 }
 
 export class UniqueFieldCheck {

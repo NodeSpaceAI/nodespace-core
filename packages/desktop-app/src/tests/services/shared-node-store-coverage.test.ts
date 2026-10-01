@@ -25,6 +25,7 @@ import {
 describe('SharedNodeStore - Coverage Completion', () => {
   let store: SharedNodeStore;
   const mockNode: Node = {
+    lifecycleStatus: 'active',
     id: 'test-node-1',
     nodeType: 'text',
     content: 'Test content',

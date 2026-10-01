@@ -15,6 +15,7 @@
 -->
 
 <script lang="ts">
+import { isA } from '$lib/types/core-node-types';
   import { createEventDispatcher, getContext } from 'svelte';
   import BaseNode from './base-node.svelte';
   import { DEFAULT_PANE_ID } from '$lib/stores/navigation.svelte';
@@ -153,7 +154,7 @@
     }
 
     // For quote blocks: Enter creates new quote-block below with "> " prefix
-    if (detail.nodeType === 'quote-block') {
+    if (isA(detail.nodeType, 'quote-block')) {
       detail.currentContent = content; // Keep current node unchanged
       detail.newContent = '> '; // New quote-block with "> " prefix ready
       detail.newNodeCursorPosition = 2; // Cursor after "> "

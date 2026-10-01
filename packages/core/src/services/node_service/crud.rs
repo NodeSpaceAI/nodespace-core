@@ -42,21 +42,35 @@ impl NodeService {
         Ok(())
     }
 
-    /// Refuse retyping an existing node into an `ai-chat`.
+    /// Refuse a type change the type system does not allow.
     ///
-    /// No node may reference an ai-chat node (ADR-061 §8), and that holds only
-    /// because it is enforced when an edge is *created*: edges onto an ai-chat
-    /// are refused there (see `refuse_ai_chat_target`). A retype would carry
-    /// the node's existing inbound mentions and relationships into the chat, so
-    /// a chat can only come into being by being created as one. Retyping *out
-    /// of* ai-chat is deliberately allowed: the node gains no inbound
+    /// **Into an abstract type.** No node has an abstract type as its
+    /// `node_type` (ADR-086 §6), so a retype into one is refused exactly as a
+    /// create is.
+    ///
+    /// **Into an `ai-chat`** (or a subtype of one). No node may reference an
+    /// ai-chat node (ADR-061 §8), and that holds only because it is enforced
+    /// when an edge is *created*: edges onto an ai-chat are refused there (see
+    /// `refuse_ai_chat_target`). A retype would carry the node's existing
+    /// inbound mentions and relationships into the chat, so a chat can only
+    /// come into being by being created as one. Retyping *out of* ai-chat, or
+    /// between two chat types, is allowed: the node gains no inbound
     /// references, so the invariant still holds.
-    pub(crate) fn ensure_not_retyped_to_ai_chat(
+    pub(crate) async fn ensure_retype_allowed(
+        &self,
         existing: &Node,
         updated: &Node,
     ) -> Result<(), NodeServiceError> {
-        if updated.node_type == crate::models::AI_CHAT_NODE_TYPE
-            && existing.node_type != crate::models::AI_CHAT_NODE_TYPE
+        if existing.node_type == updated.node_type {
+            return Ok(());
+        }
+        self.ensure_instantiable(&updated.node_type).await?;
+        if self
+            .type_is_a(&updated.node_type, crate::models::CoreNodeType::AiChat)
+            .await?
+            && !self
+                .type_is_a(&existing.node_type, crate::models::CoreNodeType::AiChat)
+                .await?
         {
             return Err(NodeServiceError::invalid_update(format!(
                 "Node '{}' cannot be converted to an ai-chat node; create a new ai-chat instead",
@@ -64,6 +78,151 @@ impl NodeService {
             )));
         }
         Ok(())
+    }
+
+    /// Refuse a generic properties patch from a typed client when it names a
+    /// declared field of a core type that has a typed update (ADR-086 §7).
+    ///
+    /// A typed client (the desktop app, the dev-proxy) writes a core type's
+    /// fields only through that type's typed update, so each field has one
+    /// write path from it and one typed shape. The generic update stays for
+    /// content, extension fields and types with no typed update. The CLI and
+    /// the agent are not typed clients: they name core fields as bare keys
+    /// and are validated by the same pipeline the typed update lowers into.
+    ///
+    /// The rule is the core type's own. A node of a type that *extends* one
+    /// travels as a generic node and has no typed update to prefer, so its
+    /// inherited fields are written through the generic update.
+    ///
+    /// `new_node_type` is the type the update retypes the node to, if any;
+    /// the patch is read against the type the node will have.
+    pub async fn ensure_no_typed_core_fields(
+        &self,
+        node_id: &str,
+        new_node_type: Option<&str>,
+        properties: &serde_json::Value,
+    ) -> Result<(), NodeServiceError> {
+        let Some(patch) = properties.as_object() else {
+            return Ok(());
+        };
+        let node_type = match new_node_type {
+            Some(node_type) => node_type.to_string(),
+            None => match self.get_node(node_id).await? {
+                Some(node) => node.node_type,
+                // A missing node is the update's own error to report.
+                None => return Ok(()),
+            },
+        };
+        let Some(core) = crate::models::CoreNodeType::from_id(&node_type) else {
+            return Ok(());
+        };
+        let typed = nodespace_types::typed_update_fields(core);
+        if typed.is_empty() {
+            return Ok(());
+        }
+        // The patch may be flat (`{"status": ..}`) or already bucketed under
+        // the type (`{"task": {"status": ..}}`); both name the same fields.
+        let bucket = patch.get(core.as_str()).and_then(|v| v.as_object());
+        let named = patch
+            .keys()
+            .chain(bucket.into_iter().flat_map(|b| b.keys()));
+        for key in named {
+            if typed
+                .iter()
+                .any(|(storage, wire)| key == storage || key == wire)
+            {
+                return Err(NodeServiceError::invalid_update(format!(
+                    "'{key}' is a field of the core type '{core}' and is written through the \
+                     typed {core} update, not the generic node update"
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// The checks every create owes a node before anything is written,
+    /// whichever path creates it (single, with a parent, bulk, hierarchy
+    /// import, an invariant action): its type can be instantiated, its id has
+    /// a legal form, every behaviour in its type chain accepts it, and it is
+    /// not a hand-made core schema.
+    pub(crate) async fn ensure_creatable(&self, node: &Node) -> Result<(), NodeServiceError> {
+        self.ensure_creatable_in_batch(node, &mut std::collections::HashMap::new())
+            .await
+    }
+
+    /// [`Self::ensure_creatable`] for one node of a batch. What depends only
+    /// on the node's type (whether it can be instantiated, and its chain) is
+    /// resolved once per distinct type and kept in `type_chains`, so a large
+    /// import does not repeat the read per row.
+    pub(crate) async fn ensure_creatable_in_batch(
+        &self,
+        node: &Node,
+        type_chains: &mut std::collections::HashMap<String, Vec<String>>,
+    ) -> Result<(), NodeServiceError> {
+        if !type_chains.contains_key(&node.node_type) {
+            self.ensure_instantiable(&node.node_type).await?;
+            let chain = self.type_chain(&node.node_type).await?;
+            type_chains.insert(node.node_type.clone(), chain);
+        }
+        self.ensure_valid_node_id(node).await?;
+        self.behaviors
+            .validate_node(node, &type_chains[&node.node_type])?;
+        Self::ensure_not_creating_core_schema(node)
+    }
+
+    /// Refuse `node_type` as the type of a node when it is abstract
+    /// (ADR-086 §6). An abstract type is a real type — queryable, and a valid
+    /// `extends` target — but only its subtypes are ever instantiated. Checked
+    /// here, in the service, so it holds for every surface that creates or
+    /// retypes a node.
+    pub(crate) async fn ensure_instantiable(
+        &self,
+        node_type: &str,
+    ) -> Result<(), NodeServiceError> {
+        let is_abstract = self
+            .store
+            .is_abstract_type(node_type)
+            .await
+            .map_err(NodeServiceError::from_store)?;
+        if is_abstract {
+            return Err(NodeServiceError::abstract_node_type(node_type));
+        }
+        Ok(())
+    }
+
+    /// Refuse a provided id that is not a UUID (ADR-086 §10). Three id forms
+    /// are not UUIDs, and each belongs to one type: a `date` node's id is its
+    /// date (`YYYY-MM-DD`), a `schema` node's id is the type name, and the
+    /// settings singleton has a fixed id. Every other node, seeded or not, has
+    /// a UUID.
+    pub(crate) async fn ensure_valid_node_id(&self, node: &Node) -> Result<(), NodeServiceError> {
+        if uuid::Uuid::parse_str(&node.id).is_ok() {
+            return Ok(());
+        }
+        if crate::models::CoreNodeType::Schema.is_exactly(&node.node_type) && !node.id.is_empty() {
+            return Ok(());
+        }
+        // `create_node` has already forced a date-shaped id to the `date` type.
+        if crate::models::CoreNodeType::Date.is_exactly(&node.node_type)
+            && is_date_node_id(&node.id)
+        {
+            return Ok(());
+        }
+        if node.id == DATABASE_SETTINGS_NODE_ID
+            && self
+                .type_is_a(
+                    &node.node_type,
+                    crate::models::CoreNodeType::DatabaseSettings,
+                )
+                .await?
+        {
+            return Ok(());
+        }
+        Err(NodeServiceError::invalid_update(format!(
+            "Provided ID '{}' is not a valid UUID. Only a date node (YYYY-MM-DD), a schema \
+             node (its type name) and the settings singleton ('{}') take a non-UUID id.",
+            node.id, DATABASE_SETTINGS_NODE_ID
+        )))
     }
 
     /// Create a new node
@@ -118,7 +277,7 @@ impl NodeService {
         // NOTE: Date nodes can have custom content (not required to match ID).
         // We only enforce the node_type, not the content.
         if is_date_node_id(&node.id) {
-            node.node_type = "date".to_string();
+            node.node_type = crate::models::CoreNodeType::Date.as_str().to_string();
             // Content is preserved - date nodes can have custom content like "Custom Date Content"
         }
 
@@ -126,9 +285,15 @@ impl NodeService {
         // creation idempotent: if one already exists, treat a second create as a no-op
         // and return the existing id rather than erroring. Mirrors the collection-name
         // uniqueness guard in SqliteStore::create_node, but non-fatal.
-        if node.node_type == "database-settings" {
+        if self
+            .type_is_a(
+                &node.node_type,
+                crate::models::CoreNodeType::DatabaseSettings,
+            )
+            .await?
+        {
             if let Some(existing) = self
-                .query_nodes_by_type("database-settings", None)
+                .query_nodes_by_type(crate::models::CoreNodeType::DatabaseSettings.as_str(), None)
                 .await?
                 .into_iter()
                 .next()
@@ -152,7 +317,10 @@ impl NodeService {
         // safe before commit) and marks after it (once the node is durably
         // committed), exactly preserving `SqliteStore::create_node`'s prior
         // before/after timing for a plain top-level collection create.
-        let colliding_collection = if node.node_type == "collection" {
+        let colliding_collection = if self
+            .type_is_a(&node.node_type, crate::models::CoreNodeType::Collection)
+            .await?
+        {
             self.store
                 .get_collection_by_name(&node.content)
                 .await
@@ -299,7 +467,7 @@ impl NodeService {
     /// Whether `node` is a core schema — the same test the store's delete
     /// refusal applies (`isCore` must be the boolean `true`).
     fn is_core_schema(node: &Node) -> bool {
-        node.node_type == "schema"
+        crate::models::CoreNodeType::Schema.is_exactly(&node.node_type)
             && node.properties.get("isCore").and_then(|v| v.as_bool()) == Some(true)
     }
 
@@ -325,14 +493,13 @@ impl NodeService {
         is_root: bool,
     ) -> Result<Node, NodeServiceError> {
         if is_date_node_id(&node.id) {
-            node.node_type = "date".to_string();
+            node.node_type = crate::models::CoreNodeType::Date.as_str().to_string();
         }
 
-        self.behaviors.validate_node(&node)?;
-        Self::ensure_not_creating_core_schema(&node)?;
+        self.ensure_creatable(&node).await?;
         self.validate_templated_content(&node).await?;
 
-        if node.node_type != "schema" {
+        if !crate::models::CoreNodeType::Schema.is_exactly(&node.node_type) {
             node.properties =
                 Self::normalize_flat_properties_to_namespace(&node.node_type, &node.properties);
             // Resolve the full `extends` chain rather than this type's own
@@ -345,6 +512,9 @@ impl NodeService {
                 self.apply_schema_defaults_with_fields(&mut node, &fields, Some(&chain))?;
                 node.properties =
                     Self::bucket_properties_by_owner(&node.node_type, &node.properties, &owners);
+            }
+            Self::reject_undeclared_core_keys(&node, &owners, &chain)?;
+            if !fields.is_empty() {
                 self.validate_node_with_fields(&node, &fields, Some(&chain))?;
             }
         }
@@ -353,7 +523,10 @@ impl NodeService {
             node.title = self.compute_title(&node, Some(is_root)).await?;
         }
 
-        if node.node_type == "play" {
+        if self
+            .type_is_a(&node.node_type, crate::models::CoreNodeType::Play)
+            .await?
+        {
             self.validate_play_rules(&node.properties).await?;
         }
 
@@ -538,17 +711,21 @@ impl NodeService {
         // Refuse a parent for a type that is always a root — before step 2,
         // so a rejected call leaves no auto-created date container behind.
         if params.parent_id.is_some() {
-            if params.node_type == "collection" {
-                return Err(
-                    TreeInvariantViolation::collection_not_root(params.id.as_deref()).into(),
-                );
-            }
-            if params.node_type == "schema" {
-                let schema_id = params
-                    .id
-                    .clone()
-                    .unwrap_or_else(|| normalize_schema_id(&params.content));
-                return Err(TreeInvariantViolation::schema_not_root(&schema_id).into());
+            let root_only = self
+                .store
+                .root_only_type_of(&params.node_type)
+                .await
+                .map_err(NodeServiceError::from_store)?;
+            if let Some(root_type) = root_only {
+                // A schema not yet given an id is named by the id it would get.
+                let node_id = match (&params.id, root_type) {
+                    (Some(id), _) => Some(id.clone()),
+                    (None, crate::models::CoreNodeType::Schema) => {
+                        Some(normalize_schema_id(&params.content))
+                    }
+                    (None, _) => None,
+                };
+                return Err(TreeInvariantViolation::not_root(root_type, node_id.as_deref()).into());
             }
         }
 
@@ -566,6 +743,7 @@ impl NodeService {
 
             if !self
                 .behavior_for(&parent_node.node_type)
+                .await?
                 .can_have_children()
             {
                 return Err(NodeServiceError::not_a_container(
@@ -606,22 +784,12 @@ impl NodeService {
         // Step 5: Generate or validate node ID
         let node_id = if let Some(provided_id) = params.id {
             // Validate ID format based on node type
-            if params.node_type == "date" || params.node_type == "schema" {
-                // Date and schema nodes use their own ID format
-                provided_id
-            } else {
-                // Production nodes must use UUID format
-                uuid::Uuid::parse_str(&provided_id).map_err(|_| {
-                    NodeServiceError::invalid_update(format!(
-                        "Provided ID '{}' is not a valid UUID format (required for non-date/non-schema nodes)",
-                        provided_id
-                    ))
-                })?;
-                provided_id
-            }
-        } else if params.node_type == "date" {
+            // The id form is checked on the insert itself
+            // (`ensure_valid_node_id`), which every create path reaches.
+            provided_id
+        } else if crate::models::CoreNodeType::Date.is_exactly(&params.node_type) {
             params.content.clone()
-        } else if params.node_type == "schema" {
+        } else if crate::models::CoreNodeType::Schema.is_exactly(&params.node_type) {
             let id = normalize_schema_id(&params.content);
             if id.is_empty() {
                 return Err(NodeServiceError::invalid_update(
@@ -643,7 +811,9 @@ impl NodeService {
         // Normalize properties to namespaced format so compute_title can find fields correctly.
         // (create_node will normalize again, but the result is idempotent)
         let title = {
-            let normalized_props = if params.node_type != "schema" {
+            let normalized_props = if !crate::models::CoreNodeType::Schema
+                .is_exactly(&params.node_type)
+            {
                 Self::normalize_flat_properties_to_namespace(&params.node_type, &params.properties)
             } else {
                 params.properties.clone()
@@ -735,7 +905,7 @@ impl NodeService {
             // unconditionally (even without the `nlp` feature) so a build
             // re-enabled with NLP picks up existing roots without a manual
             // resync.
-            if self.is_embeddable_type(node_type) {
+            if self.is_embeddable_type(node_type).await {
                 if let Err(e) = self.store.create_stale_embedding_marker(created_id).await {
                     tracing::warn!(
                         "Failed to create embedding marker for new root {}: {}",
@@ -945,7 +1115,7 @@ impl NodeService {
             properties_changed = true;
             // Normalize flat client properties to namespaced format before merging
             // Skip for schema nodes - they use a special non-namespaced format
-            if updated.node_type == "schema" {
+            if crate::models::CoreNodeType::Schema.is_exactly(&updated.node_type) {
                 // Schema nodes use flat properties format (relationships, fields, etc.)
                 Self::deep_merge_namespaced_properties(&mut updated.properties, properties);
             } else {
@@ -963,13 +1133,13 @@ impl NodeService {
 
         // Step 1: Core behavior validation (PROTECTED)
         Self::ensure_schema_core_status_unchanged(&existing, &updated)?;
-        Self::ensure_not_retyped_to_ai_chat(&existing, &updated)?;
-        self.behaviors.validate_node(&updated)?;
+        self.ensure_retype_allowed(&existing, &updated).await?;
+        self.validate_behaviors(&updated).await?;
 
         // Step 1.5: Apply schema defaults and validate (if node type changed)
         // Apply default values for missing fields when node type changes
         // Skip for schema nodes to avoid circular dependency
-        if updated.node_type != "schema" {
+        if !crate::models::CoreNodeType::Schema.is_exactly(&updated.node_type) {
             // On a type change, default the new type's fields first. Either
             // way the properties are re-bucketed before validation: an update
             // naming an inherited field arrives flat, normalizes into the
@@ -1072,7 +1242,7 @@ impl NodeService {
 
         if let Some(properties) = update.properties {
             properties_changed = true;
-            if updated.node_type == "schema" {
+            if crate::models::CoreNodeType::Schema.is_exactly(&updated.node_type) {
                 Self::deep_merge_namespaced_properties(&mut updated.properties, properties);
             } else {
                 let normalized_properties =
@@ -1085,10 +1255,10 @@ impl NodeService {
         }
 
         Self::ensure_schema_core_status_unchanged(&existing, &updated)?;
-        Self::ensure_not_retyped_to_ai_chat(&existing, &updated)?;
-        self.behaviors.validate_node(&updated)?;
+        self.ensure_retype_allowed(&existing, &updated).await?;
+        self.validate_behaviors(&updated).await?;
 
-        if updated.node_type != "schema" {
+        if !crate::models::CoreNodeType::Schema.is_exactly(&updated.node_type) {
             // Chain-resolved, per ADR-078 — see `rebucket_and_validate`.
             self.rebucket_and_validate(&mut updated, node_type_changed)
                 .await?;
@@ -1193,7 +1363,7 @@ impl NodeService {
 
         if let Some(properties) = update.properties {
             properties_changed = true;
-            if updated.node_type == "schema" {
+            if crate::models::CoreNodeType::Schema.is_exactly(&updated.node_type) {
                 Self::deep_merge_namespaced_properties(&mut updated.properties, properties);
             } else {
                 let normalized_properties =
@@ -1210,10 +1380,10 @@ impl NodeService {
         }
 
         Self::ensure_schema_core_status_unchanged(&existing, &updated)?;
-        Self::ensure_not_retyped_to_ai_chat(&existing, &updated)?;
-        self.behaviors.validate_node(&updated)?;
+        self.ensure_retype_allowed(&existing, &updated).await?;
+        self.validate_behaviors(&updated).await?;
 
-        if updated.node_type != "schema" {
+        if !crate::models::CoreNodeType::Schema.is_exactly(&updated.node_type) {
             // Chain-resolved, per ADR-078 — see `rebucket_and_validate`.
             self.rebucket_and_validate(&mut updated, node_type_changed)
                 .await?;
@@ -1317,7 +1487,11 @@ impl NodeService {
                     .node_type
                     .clone()
                     .unwrap_or_else(|| previous.node_type.clone());
-                if updated_node_type == "collection" && updated_content != previous.content {
+                if updated_content != previous.content
+                    && self
+                        .type_is_a(&updated_node_type, crate::models::CoreNodeType::Collection)
+                        .await?
+                {
                     self.store
                         .get_collection_by_name(&updated_content)
                         .await
@@ -1462,7 +1636,7 @@ impl NodeService {
             properties_changed = true;
             // Normalize flat client properties to namespaced format before merging
             // Skip for schema nodes - they use a special non-namespaced format
-            if updated.node_type == "schema" {
+            if crate::models::CoreNodeType::Schema.is_exactly(&updated.node_type) {
                 // Schema nodes use flat properties format (relationships, fields, etc.)
                 Self::deep_merge_namespaced_properties(&mut updated.properties, properties);
             } else {
@@ -1478,8 +1652,8 @@ impl NodeService {
 
         // Step 1: Core behavior validation (PROTECTED)
         Self::ensure_schema_core_status_unchanged(&existing, &updated)?;
-        Self::ensure_not_retyped_to_ai_chat(&existing, &updated)?;
-        self.behaviors.validate_node(&updated)?;
+        self.ensure_retype_allowed(&existing, &updated).await?;
+        self.validate_behaviors(&updated).await?;
 
         // Step 2: Schema validation (USER-EXTENSIBLE)
         // Every type that declares a schema is validated, user-defined types
@@ -1488,7 +1662,7 @@ impl NodeService {
         // like this one are safe from inside a write transaction — same
         // precedent as `insert_node_in_tx_no_invariant_dispatch`'s own
         // schema/title/play-validation calls.
-        if updated.node_type != "schema" {
+        if !crate::models::CoreNodeType::Schema.is_exactly(&updated.node_type) {
             // Re-bucket before validating, same reasoning as the update paths
             // above: an inherited field arrives flat and must be moved to its
             // declaring ancestor's bucket, or it exists in two places. No
@@ -1497,7 +1671,11 @@ impl NodeService {
         }
 
         // Synchronous play validation gate — reject invalid rule changes before persist
-        if updated.node_type == "play" && properties_changed {
+        if properties_changed
+            && self
+                .type_is_a(&updated.node_type, crate::models::CoreNodeType::Play)
+                .await?
+        {
             self.validate_play_rules(&updated.properties).await?;
         }
 
@@ -2199,23 +2377,6 @@ impl NodeService {
         }
     }
 
-    /// Validate a node's properties against its schema definition
-    pub(crate) async fn validate_node_against_schema(
-        &self,
-        node: &Node,
-    ) -> Result<(), NodeServiceError> {
-        // Resolve the full `extends` chain (ADR-078), so an extending type's
-        // inherited fields are validated rather than skipped. An empty result
-        // means no schema anywhere in the chain — not all types have one, and
-        // validation passes for those.
-        let (fields, _owners, chain) = self.resolve_field_owners(&node.node_type).await?;
-        if fields.is_empty() {
-            return Ok(());
-        }
-
-        self.validate_node_with_fields(node, &fields, Some(&chain))
-    }
-
     /// Validate play rules before persisting.
     pub(crate) async fn validate_play_rules(
         &self,
@@ -2482,10 +2643,10 @@ impl NodeService {
         let (fields, owners, chain) = self.resolve_field_owners(&node.node_type).await?;
 
         if fields.is_empty() {
-            if !apply_defaults {
-                self.validate_node_against_schema(node).await?;
-            }
-            return Ok(());
+            // A type that declares no fields has nothing to default or
+            // validate, but a core one is still closed: its bucket takes no
+            // undeclared key.
+            return Self::reject_undeclared_core_keys(node, &owners, &chain);
         }
 
         if apply_defaults {
@@ -2493,8 +2654,49 @@ impl NodeService {
         }
         node.properties =
             Self::bucket_properties_by_owner(&node.node_type, &node.properties, &owners);
+        Self::reject_undeclared_core_keys(node, &owners, &chain)?;
         self.validate_node_with_fields(node, &fields, Some(&chain))?;
 
+        Ok(())
+    }
+
+    /// Refuse an undeclared key in a core type's bucket (ADR-086 §7).
+    ///
+    /// A core type's schema is closed: a key in its bucket must be declared by
+    /// that type's schema, be a namespaced extension field (`custom:`, `org:`,
+    /// `plugin:`, ADR-063), or start with `_` (bookkeeping). A subtype's own
+    /// bucket follows its own schema's rules, and a user-defined type stays
+    /// open, so only the core scopes of the chain are checked.
+    ///
+    /// `owners` maps each declared field to the schema that declares it, so a
+    /// key is declared for a core bucket exactly when that core type owns it.
+    pub(crate) fn reject_undeclared_core_keys(
+        node: &Node,
+        owners: &std::collections::HashMap<String, String>,
+        chain: &[String],
+    ) -> Result<(), NodeServiceError> {
+        let Some(buckets) = node.properties.as_object() else {
+            return Ok(());
+        };
+        for scope in chain {
+            if crate::models::CoreNodeType::from_id(scope).is_none() {
+                continue;
+            }
+            let Some(bucket) = buckets.get(scope.as_str()).and_then(|v| v.as_object()) else {
+                continue;
+            };
+            for key in bucket.keys() {
+                let declared = owners.get(key).is_some_and(|owner| owner == scope);
+                if declared || key.starts_with('_') || is_extension_field_name(key) {
+                    continue;
+                }
+                return Err(NodeServiceError::invalid_update(format!(
+                    "'{key}' is not a field of the core type '{scope}'. A core type takes only \
+                     its declared fields; to add your own, use a namespace prefix \
+                     (e.g. 'custom:{key}')."
+                )));
+            }
+        }
         Ok(())
     }
 
@@ -2655,7 +2857,7 @@ impl NodeService {
             return Ok(());
         }
 
-        if field.field_type == "enum" {
+        if field.field_type == crate::models::SchemaFieldType::Enum {
             let Some(value_str) = value.as_str() else {
                 return Err(format!(
                     "Enum field '{}' must be a string or null",
@@ -2687,19 +2889,26 @@ impl NodeService {
         // `item_type: "object"` must hold an array whose every element is a
         // JSON object.
         //
-        // Deliberately NOT recursive: a nested `object` field declared via
-        // `fields`/`item_fields` (e.g. `ai-chat.messages[].args`, which
-        // core_schemas.rs leaves without declared sub-fields on purpose,
-        // since tool-call arguments are freeform) is not walked into. Only a
-        // type's top-level `fields` list is ever checked here.
-        if field.field_type == "object" && !value.is_object() {
-            return Err(format!(
-                "Field '{}' is declared as type 'object' but received {}",
-                field.name,
-                crate::schema::json_type_name(value)
-            ));
+        // Nested declarations are validated recursively (ADR-086 §7): where an
+        // `object` field declares `fields`, or an array of objects declares
+        // `item_fields`, each nested value gets the same type, enum and
+        // required checks as a top-level one, at every depth. An object with no
+        // nested declaration is an open leaf and is not walked into.
+        if field.field_type == crate::models::SchemaFieldType::Object {
+            let Some(object) = value.as_object() else {
+                return Err(format!(
+                    "Field '{}' is declared as type 'object' but received {}",
+                    field.name,
+                    crate::schema::json_type_name(value)
+                ));
+            };
+            if let Some(nested) = field.fields.as_deref() {
+                Self::check_nested_fields(&field.name, nested, object)?;
+            }
         }
-        if field.field_type == "array" && field.item_type.as_deref() == Some("object") {
+        if field.field_type == crate::models::SchemaFieldType::Array
+            && field.item_type == Some(crate::models::SchemaFieldType::Object)
+        {
             let Some(items) = value.as_array() else {
                 return Err(format!(
                     "Field '{}' is declared as type 'array' (item type 'object') but received {}",
@@ -2715,6 +2924,17 @@ impl NodeService {
                     index,
                     crate::schema::json_type_name(item)
                 ));
+            }
+            if let Some(nested) = field.item_fields.as_deref() {
+                for (index, item) in items.iter().enumerate() {
+                    if let Some(object) = item.as_object() {
+                        Self::check_nested_fields(
+                            &format!("{}[{}]", field.name, index),
+                            nested,
+                            object,
+                        )?;
+                    }
+                }
             }
         }
 
@@ -2752,6 +2972,33 @@ impl NodeService {
             ));
         }
 
+        Ok(())
+    }
+
+    /// Check an object value against the nested fields its declaration lists
+    /// (`fields` of an object, `item_fields` of an array of objects): a
+    /// required nested field must be present, and every present one must
+    /// satisfy its declaration, recursively. `path` names the enclosing value
+    /// in a rejection, so a nested failure reads `messages[2].role`.
+    fn check_nested_fields(
+        path: &str,
+        nested: &[crate::models::SchemaField],
+        object: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<(), String> {
+        for nested_field in nested {
+            match object.get(&nested_field.name) {
+                Some(nested_value) => Self::check_field_value(nested_field, nested_value)
+                    .map_err(|e| format!("in '{}': {}", path, e))?,
+                None => {
+                    if nested_field.required.unwrap_or(false) && nested_field.default.is_none() {
+                        return Err(format!(
+                            "Required field '{}' is missing from '{}'",
+                            nested_field.name, path
+                        ));
+                    }
+                }
+            }
+        }
         Ok(())
     }
 
@@ -2805,11 +3052,21 @@ impl NodeService {
                 )));
             }
         }
-        if is_root || matches!(node.node_type.as_str(), "task" | "collection") {
+        if is_root || self.is_always_titled(&node.node_type).await? {
             Ok(Some(crate::utils::strip_markdown(&node.content)))
         } else {
             Ok(None)
         }
+    }
+
+    /// Whether a type is titled by its content at any depth, not only as a
+    /// root: the registry's always-titled rule (a task, a collection), which
+    /// every type extending one inherits.
+    pub(crate) async fn is_always_titled(&self, node_type: &str) -> Result<bool, NodeServiceError> {
+        Ok(self
+            .core_type_of(node_type)
+            .await?
+            .is_some_and(|core| core.always_titled()))
     }
 
     /// A type with a `titleTemplate` takes its name from the template's fields,
@@ -2889,7 +3146,7 @@ impl NodeService {
     /// falls back to no schema (the content rule) rather than blocking the
     /// write.
     pub(crate) async fn title_schema(&self, node_type: &str) -> Option<crate::models::SchemaNode> {
-        match self.get_schema_node(node_type).await {
+        match self.nearest_title_schema(node_type).await {
             Ok(schema) => schema,
             Err(e) => {
                 tracing::warn!(
@@ -2900,6 +3157,28 @@ impl NodeService {
                 None
             }
         }
+    }
+
+    /// The schema a type's title comes from: the nearest one in its `extends`
+    /// chain that declares a `titleTemplate`, so a subtype is titled as the
+    /// type it extends (ADR-086 §5). A chain with no template yields the
+    /// type's own schema, and the content rule applies.
+    async fn nearest_title_schema(
+        &self,
+        node_type: &str,
+    ) -> Result<Option<crate::models::SchemaNode>, NodeServiceError> {
+        let own = self.get_schema_node(node_type).await?;
+        if own.as_ref().is_some_and(|s| s.title_template.is_some()) {
+            return Ok(own);
+        }
+        for ancestor in self.type_chain(node_type).await?.iter().skip(1) {
+            if let Some(schema) = self.get_schema_node(ancestor).await? {
+                if schema.title_template.is_some() {
+                    return Ok(Some(schema));
+                }
+            }
+        }
+        Ok(own)
     }
 
     /// Compute the indexed title for a node — [`Self::derive_title`] with the
@@ -2915,7 +3194,7 @@ impl NodeService {
             .as_ref()
             .and_then(|s| s.title_template.as_ref())
             .is_none()
-            && !matches!(node.node_type.as_str(), "task" | "collection");
+            && !self.is_always_titled(&node.node_type).await?;
         let is_root = match is_root {
             Some(v) => v,
             None if rootness_matters => self

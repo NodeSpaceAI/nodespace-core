@@ -74,7 +74,7 @@ async fn create_fixture_schemas(svc: &Arc<NodeService>) -> Result<()> {
         svc,
         json!({
             "name": "Customer",
-            "fields": [{ "name": "name", "type": "string" }]
+            "fields": [{ "name": "name", "type": "text" }]
         }),
     )
     .await

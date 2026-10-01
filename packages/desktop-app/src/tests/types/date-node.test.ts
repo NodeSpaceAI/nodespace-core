@@ -28,6 +28,7 @@ afterEach(() => {
 describe('DateNode Type Guard', () => {
   it('identifies date nodes correctly', () => {
     const dateNode: DateNode = {
+      lifecycleStatus: 'active',
       id: '2025-01-15',
       nodeType: 'date',
       content: '',
@@ -42,6 +43,7 @@ describe('DateNode Type Guard', () => {
 
   it('rejects non-date nodes', () => {
     const textNode: Node = {
+      lifecycleStatus: 'active',
       id: 'text-node-1',
       nodeType: 'text',
       content: 'Regular text',
@@ -56,6 +58,7 @@ describe('DateNode Type Guard', () => {
 
   it('rejects nodes with date-like IDs but wrong nodeType', () => {
     const fakeNode: Node = {
+      lifecycleStatus: 'active',
       id: '2025-01-15',
       nodeType: 'text',
       content: 'Not really a date node',
@@ -72,6 +75,7 @@ describe('DateNode Type Guard', () => {
 describe('getDate', () => {
   it('extracts date from date node ID', () => {
     const dateNode: DateNode = {
+      lifecycleStatus: 'active',
       id: '2025-01-15',
       nodeType: 'date',
       content: '',
@@ -86,6 +90,7 @@ describe('getDate', () => {
 
   it('returns ID for leap year dates', () => {
     const dateNode: DateNode = {
+      lifecycleStatus: 'active',
       id: '2024-02-29',
       nodeType: 'date',
       content: '',
@@ -102,6 +107,7 @@ describe('getDate', () => {
 describe('getDateObject', () => {
   it('converts date node to Date object', () => {
     const dateNode: DateNode = {
+      lifecycleStatus: 'active',
       id: '2025-01-15',
       nodeType: 'date',
       content: '',
@@ -120,6 +126,7 @@ describe('getDateObject', () => {
 
   it('handles edge case dates correctly', () => {
     const dateNode: DateNode = {
+      lifecycleStatus: 'active',
       id: '2000-01-01',
       nodeType: 'date',
       content: '',
@@ -137,6 +144,7 @@ describe('getDateObject', () => {
 
   it('handles leap year dates', () => {
     const dateNode: DateNode = {
+      lifecycleStatus: 'active',
       id: '2024-02-29',
       nodeType: 'date',
       content: '',
@@ -154,6 +162,7 @@ describe('getDateObject', () => {
 
   it('preserves timezone at midnight', () => {
     const dateNode: DateNode = {
+      lifecycleStatus: 'active',
       id: '2025-06-15',
       nodeType: 'date',
       content: '',

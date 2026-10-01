@@ -42,7 +42,7 @@
 
 pub use nodespace_types::{
     derive_friendly_name, EdgeField, EnumValue, RelationshipCardinality, RelationshipDirection,
-    SchemaField, SchemaProtectionLevel, SchemaRelationship,
+    SchemaField, SchemaFieldType, SchemaProtectionLevel, SchemaRelationship,
 };
 
 /// Built-in structural relationship types, paired with the name each reads by

@@ -1,8 +1,7 @@
-use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::helpers::default_version;
-use crate::node::Node;
+use crate::core_type::CoreNodeType;
+use crate::node::{Node, NodeEnvelope};
 
 fn default_schema_version() -> u32 {
     1
@@ -144,6 +143,89 @@ impl std::fmt::Display for SchemaProtectionLevel {
     }
 }
 
+/// The type of a schema field: the one field-type vocabulary, shared by the
+/// wire type, the schema validator and the frontend (ADR-086 §7a).
+///
+/// `text` is the string type. `string` is not a field type and is refused,
+/// with a message that names `text`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum SchemaFieldType {
+    #[default]
+    Text,
+    Number,
+    Boolean,
+    Date,
+    Datetime,
+    Enum,
+    Array,
+    Object,
+}
+
+impl SchemaFieldType {
+    /// Every field type, in the order they are listed to a user.
+    pub const ALL: [SchemaFieldType; 8] = [
+        SchemaFieldType::Text,
+        SchemaFieldType::Number,
+        SchemaFieldType::Boolean,
+        SchemaFieldType::Date,
+        SchemaFieldType::Datetime,
+        SchemaFieldType::Enum,
+        SchemaFieldType::Array,
+        SchemaFieldType::Object,
+    ];
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            SchemaFieldType::Text => "text",
+            SchemaFieldType::Number => "number",
+            SchemaFieldType::Boolean => "boolean",
+            SchemaFieldType::Date => "date",
+            SchemaFieldType::Datetime => "datetime",
+            SchemaFieldType::Enum => "enum",
+            SchemaFieldType::Array => "array",
+            SchemaFieldType::Object => "object",
+        }
+    }
+}
+
+impl std::fmt::Display for SchemaFieldType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl std::str::FromStr for SchemaFieldType {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if let Some(found) = Self::ALL.into_iter().find(|t| t.as_str() == s) {
+            return Ok(found);
+        }
+        let valid = Self::ALL.map(SchemaFieldType::as_str).join(", ");
+        if s == "string" {
+            return Err(format!(
+                "'string' is not a field type; use 'text'. Valid field types: {valid}"
+            ));
+        }
+        Err(format!(
+            "unknown field type '{s}'. Valid field types: {valid}"
+        ))
+    }
+}
+
+impl Serialize for SchemaFieldType {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for SchemaFieldType {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(deserializer)?;
+        s.parse().map_err(serde::de::Error::custom)
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SchemaField {
@@ -161,7 +243,7 @@ pub struct SchemaField {
     #[serde(default)]
     pub friendly_name: String,
     #[serde(rename = "type")]
-    pub field_type: String,
+    pub field_type: SchemaFieldType,
     #[serde(default)]
     pub protection: SchemaProtectionLevel,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -183,8 +265,9 @@ pub struct SchemaField {
     /// now that [`SchemaField::friendly_name`] carries the display label.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// The element type of an `array` field, from the same vocabulary.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub item_type: Option<String>,
+    pub item_type: Option<SchemaFieldType>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fields: Option<Vec<SchemaField>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -313,14 +396,21 @@ pub struct SchemaRelationship {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SchemaNode {
-    pub id: String,
-    pub content: String,
-    #[serde(default = "default_version")]
-    pub version: i64,
-    pub created_at: DateTime<Utc>,
-    pub modified_at: DateTime<Utc>,
+    /// The fields every node carries. A schema's stored properties are all
+    /// typed fields below, so `properties` here is empty.
+    #[serde(flatten)]
+    pub envelope: NodeEnvelope,
     #[serde(default)]
     pub is_core: bool,
+    /// An abstract type is never instantiated: no node is created with it as
+    /// its `node_type` or retyped into it. It stays a valid `extends` target
+    /// and query scope (ADR-086 §6).
+    #[serde(default, rename = "abstract", skip_serializing_if = "is_false")]
+    pub is_abstract: bool,
+    /// The schema id of the type this one extends (ADR-078), so a client can
+    /// resolve a user-defined subtype to the type whose rules it takes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extends: Option<String>,
     #[serde(default = "default_schema_version")]
     pub schema_version: u32,
     #[serde(default)]
@@ -409,8 +499,12 @@ fn parse_relationships(
 
 impl SchemaNode {
     pub fn from_node(node: Node) -> Result<Self, String> {
-        if node.node_type != "schema" {
-            return Err(format!("Expected 'schema', got '{}'", node.node_type));
+        if !CoreNodeType::Schema.is_exactly(&node.node_type) {
+            return Err(format!(
+                "Expected '{}', got '{}'",
+                CoreNodeType::Schema,
+                node.node_type
+            ));
         }
 
         let is_core = node
@@ -418,6 +512,18 @@ impl SchemaNode {
             .get("isCore")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
+
+        let is_abstract = node
+            .properties
+            .get("abstract")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        let extends = node
+            .properties
+            .get("extends")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
 
         let schema_version = node
             .properties
@@ -457,12 +563,13 @@ impl SchemaNode {
             .map(|s| s.to_string());
 
         Ok(Self {
-            id: node.id,
-            content: node.content,
-            version: node.version,
-            created_at: node.created_at,
-            modified_at: node.modified_at,
+            envelope: NodeEnvelope {
+                properties: serde_json::json!({}),
+                ..node
+            },
             is_core,
+            is_abstract,
+            extends,
             schema_version,
             description,
             fields,
@@ -478,11 +585,64 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    /// The wire schema carries the envelope, and the `abstract` and `extends`
+    /// declarations a client needs to resolve a type.
+    #[test]
+    fn test_from_node_carries_the_envelope_abstract_and_extends() {
+        let node = Node::new_with_id(
+            "issue".to_string(),
+            "schema".to_string(),
+            "Issue".to_string(),
+            json!({ "isCore": false, "abstract": true, "extends": "task", "fields": [] }),
+        );
+        let schema = SchemaNode::from_node(node).unwrap();
+        assert!(schema.is_abstract);
+        assert_eq!(schema.extends.as_deref(), Some("task"));
+
+        let wire = serde_json::to_value(&schema).unwrap();
+        assert_eq!(wire["id"], "issue");
+        assert_eq!(wire["nodeType"], "schema");
+        assert_eq!(wire["lifecycleStatus"], "active");
+        assert_eq!(wire["properties"], json!({}));
+        assert_eq!(wire["abstract"], true);
+        assert_eq!(wire["extends"], "task");
+
+        // Neither is serialized for a concrete, unextended type.
+        let plain = SchemaNode::from_node(Node::new_with_id(
+            "invoice".to_string(),
+            "schema".to_string(),
+            "Invoice".to_string(),
+            json!({ "fields": [] }),
+        ))
+        .unwrap();
+        let wire = serde_json::to_value(&plain).unwrap();
+        assert!(wire.get("abstract").is_none());
+        assert!(wire.get("extends").is_none());
+    }
+
+    #[test]
+    fn test_field_type_vocabulary_is_closed() {
+        for field_type in SchemaFieldType::ALL {
+            let parsed: SchemaFieldType =
+                serde_json::from_value(json!(field_type.as_str())).unwrap();
+            assert_eq!(parsed, field_type);
+            assert_eq!(
+                serde_json::to_value(field_type).unwrap(),
+                json!(field_type.as_str())
+            );
+        }
+        let error = serde_json::from_value::<SchemaFieldType>(json!("string"))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("use 'text'"), "{error}");
+        assert!(serde_json::from_value::<SchemaFieldType>(json!("varchar")).is_err());
+    }
+
     fn create_test_field() -> SchemaField {
         SchemaField {
             name: "status".to_string(),
             friendly_name: "Status".to_string(),
-            field_type: "enum".to_string(),
+            field_type: SchemaFieldType::Enum,
             protection: SchemaProtectionLevel::Core,
             local_only: false,
             core_values: Some(vec![
@@ -626,7 +786,7 @@ mod tests {
 
         let field: SchemaField = serde_json::from_value(json).unwrap();
         assert_eq!(field.name, "status");
-        assert_eq!(field.field_type, "enum");
+        assert_eq!(field.field_type, SchemaFieldType::Enum);
         assert_eq!(field.protection, SchemaProtectionLevel::Core);
         assert!(field.indexed);
 
@@ -679,7 +839,7 @@ mod tests {
         let address_field = SchemaField {
             name: "address".to_string(),
             friendly_name: "Address".to_string(),
-            field_type: "object".to_string(),
+            field_type: SchemaFieldType::Object,
             protection: SchemaProtectionLevel::User,
             local_only: false,
             core_values: None,
@@ -694,7 +854,7 @@ mod tests {
                 SchemaField {
                     name: "street".to_string(),
                     friendly_name: "Street".to_string(),
-                    field_type: "string".to_string(),
+                    field_type: SchemaFieldType::Text,
                     protection: SchemaProtectionLevel::User,
                     local_only: false,
                     core_values: None,
@@ -713,7 +873,7 @@ mod tests {
                 SchemaField {
                     name: "city".to_string(),
                     friendly_name: "City".to_string(),
-                    field_type: "string".to_string(),
+                    field_type: SchemaFieldType::Text,
                     protection: SchemaProtectionLevel::User,
                     local_only: false,
                     core_values: None,
@@ -753,7 +913,7 @@ mod tests {
             "fields": [
                 {
                     "name": "city",
-                    "type": "string",
+                    "type": "text",
                     "protection": "user",
                     "indexed": true
                 }
@@ -762,7 +922,7 @@ mod tests {
 
         let field: SchemaField = serde_json::from_value(json).unwrap();
         assert_eq!(field.name, "address");
-        assert_eq!(field.field_type, "object");
+        assert_eq!(field.field_type, SchemaFieldType::Object);
 
         let nested_fields = field.fields.as_ref().unwrap();
         assert_eq!(nested_fields.len(), 1);
@@ -775,7 +935,7 @@ mod tests {
         let contacts_field = SchemaField {
             name: "contacts".to_string(),
             friendly_name: "Contacts".to_string(),
-            field_type: "array".to_string(),
+            field_type: SchemaFieldType::Array,
             protection: SchemaProtectionLevel::User,
             local_only: false,
             core_values: None,
@@ -785,12 +945,12 @@ mod tests {
             extensible: None,
             default: None,
             description: Some("Contact list".to_string()),
-            item_type: Some("object".to_string()),
+            item_type: Some(SchemaFieldType::Object),
             fields: None,
             item_fields: Some(vec![SchemaField {
                 name: "email".to_string(),
                 friendly_name: "Email".to_string(),
-                field_type: "string".to_string(),
+                field_type: SchemaFieldType::Text,
                 protection: SchemaProtectionLevel::User,
                 local_only: false,
                 core_values: None,

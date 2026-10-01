@@ -8,13 +8,15 @@ import {
   collectionsData,
   findCollectionById,
   buildCollectionsTree,
-  NON_CONTENT_NODE_TYPES,
+  isNonContentNodeType,
   type CollectionsState,
   type CollectionItem,
   type CollectionMember
 } from '$lib/stores/collections.svelte';
 import type { CollectionInfo } from '$lib/services/collection-service';
 import type { Node } from '$lib/types';
+import type { SchemaNode } from '$lib/types/schema-node';
+import { schemasStore } from '$lib/stores/schemas.svelte';
 import { mockCollections, mockMembers } from '../fixtures/collections-fixtures';
 import { pluginRegistry } from '$lib/plugins/index';
 import { uiExtensionRegistry } from '$lib/plugins/ui-extensions';
@@ -62,6 +64,7 @@ function createTestMembers(): Map<string, Node[]> {
         id: m.id,
         content: m.name,
         title: m.name,
+        lifecycleStatus: 'active' as const,
         nodeType: m.nodeType,
         createdAt: new Date().toISOString(),
         modifiedAt: new Date().toISOString(),
@@ -141,6 +144,7 @@ describe('Collections Store', () => {
           'col-1',
           [
             {
+              lifecycleStatus: 'active',
               id: 'imported-root',
               content: '# ACP Integration Architecture',
               title: '',
@@ -471,6 +475,7 @@ describe('Collections Store', () => {
           'col-1',
           [
             {
+              lifecycleStatus: 'active',
               id: 'node-1',
               content: 'Another Task',
               title: '/',
@@ -508,6 +513,7 @@ describe('Collections Store', () => {
           'col-1',
           [
             {
+              lifecycleStatus: 'active',
               id: 'node-1',
               content: 'raw',
               title: 'Jane Doe',
@@ -549,6 +555,7 @@ describe('Collections Store', () => {
           'col-1',
           [
             {
+              lifecycleStatus: 'active',
               id: 'node-1',
               content: 'raw',
               title: 'Jane_Doe',
@@ -888,10 +895,11 @@ describe('Collections Store', () => {
     });
   });
 
-  describe('NON_CONTENT_NODE_TYPES member filter', () => {
+  describe('non-content node type member filter', () => {
     // Build a full Node for a given type (only the fields the filter/mapper read).
     function mkNode(id: string, nodeType: string, name: string): Node {
       return {
+        lifecycleStatus: 'active',
         id,
         content: name,
         title: name,
@@ -905,11 +913,21 @@ describe('Collections Store', () => {
 
     it('exports the expected non-content node types', () => {
       for (const t of ['schema', 'person', 'database-settings', 'collection', 'horizontal-line']) {
-        expect(NON_CONTENT_NODE_TYPES.has(t)).toBe(true);
+        expect(isNonContentNodeType(t)).toBe(true);
       }
       // Genuine user-authored content types are NOT in the set.
       for (const t of ['text', 'task', 'header', 'code-block', 'date']) {
-        expect(NON_CONTENT_NODE_TYPES.has(t)).toBe(false);
+        expect(isNonContentNodeType(t)).toBe(false);
+      }
+    });
+
+    it('applies a non-content type to its subtypes', () => {
+      schemasStore.schemas = [{ id: 'pro-collection', extends: 'collection' } as SchemaNode];
+      try {
+        expect(isNonContentNodeType('pro-collection')).toBe(true);
+        expect(isNonContentNodeType('issue')).toBe(false);
+      } finally {
+        schemasStore.schemas = [];
       }
     });
 
@@ -935,7 +953,7 @@ describe('Collections Store', () => {
       const members = collectionsState.selectedCollectionMembers;
       // Only genuine content survives, in original order.
       expect(members.map((m) => m.id)).toEqual(['text-1', 'task-1', 'code-1']);
-      expect(members.every((m) => !NON_CONTENT_NODE_TYPES.has(m.nodeType))).toBe(true);
+      expect(members.every((m) => !isNonContentNodeType(m.nodeType))).toBe(true);
     });
   });
 

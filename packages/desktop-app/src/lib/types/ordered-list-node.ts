@@ -16,14 +16,15 @@
  * ```
  */
 
-import type { Node } from './node';
+import type { Node, NodeEnvelope } from './node';
+import { isExactly } from './core-node-types';
 
 /**
  * OrderedList node interface extending base Node
  *
  * Represents an item in an ordered (numbered) list.
  */
-export interface OrderedListNode extends Node {
+export interface OrderedListNode extends NodeEnvelope {
   nodeType: 'ordered-list';
 }
 
@@ -42,7 +43,7 @@ export interface OrderedListNode extends Node {
  * ```
  */
 export function isOrderedListNode(node: Node): node is OrderedListNode {
-  return node.nodeType === 'ordered-list';
+  return isExactly(node.nodeType, 'ordered-list');
 }
 
 /**
@@ -71,6 +72,7 @@ export const OrderedListNodeHelpers = {
    */
   createOrderedListItem(content: string): OrderedListNode {
     return {
+      lifecycleStatus: 'active',
       id: `ordered-list-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`,
       nodeType: 'ordered-list',
       content,

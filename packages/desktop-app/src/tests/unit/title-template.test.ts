@@ -105,7 +105,7 @@ describe('evaluateTitleTemplate', () => {
       const subjectField: SchemaField = {
         name: 'subject',
         friendlyName: 'Subject',
-        type: 'string',
+        type: 'text',
         protection: 'user',
         indexed: false
       };

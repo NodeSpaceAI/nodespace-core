@@ -14,6 +14,7 @@ import type { UpdateSource, NodeUpdate } from '../../lib/types/update-protocol';
 describe('Phase 3: MCP Integration (Simulated)', () => {
   let store: SharedNodeStore;
   const mockNode: Node = {
+    lifecycleStatus: 'active',
     id: 'test-node-1',
     nodeType: 'text',
     content: 'Initial content',

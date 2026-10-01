@@ -301,6 +301,21 @@ async fn create_schema_resolving_collisions(
     }
 }
 
+/// The id a node is re-keyed to when its preferred id is taken: a UUID
+/// derived from the preferred id and the attempt number.
+///
+/// Every node other than a date, a schema and the settings singleton has a
+/// UUID (ADR-086 §10), so a re-key cannot append a suffix the way a schema's
+/// type name does. Deriving it keeps the re-keyed id the same on every device
+/// that hits the same collision.
+///
+/// `None` when the preferred id is not a UUID: there is then nothing to derive
+/// a distinct id from, and a seeded node's id must be one.
+fn rekeyed_node_id(preferred_id: &str, attempt: u32) -> Option<String> {
+    let namespace = uuid::Uuid::parse_str(preferred_id).ok()?;
+    Some(uuid::Uuid::new_v5(&namespace, attempt.to_string().as_bytes()).to_string())
+}
+
 /// Create a node under `preferred_id`, re-keying if that id is taken.
 ///
 /// Mirrors `create_schema_resolving_collisions` above: the create is
@@ -324,7 +339,16 @@ async fn create_node_resolving_collisions(
         let id = if n == 0 {
             preferred_id.to_string()
         } else {
-            format!("{preferred_id}__{}", n + 1)
+            match rekeyed_node_id(preferred_id, n + 1) {
+                Some(id) => id,
+                None => {
+                    return StepOutcome::Failed {
+                        message: format!(
+                            "`{preferred_id}` is taken and is not a UUID, so it cannot be re-keyed"
+                        ),
+                    }
+                }
+            }
         };
 
         let node = Node::new_with_id(

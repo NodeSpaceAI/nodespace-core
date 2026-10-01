@@ -11,7 +11,7 @@ import type { SchemaField, SchemaNode } from '$lib/types/schema-node';
 
 function field(overrides: Partial<SchemaField> & { name: string }): SchemaField {
   return {
-    type: 'string',
+    type: 'text',
     protection: 'user',
     indexed: false,
     ...overrides

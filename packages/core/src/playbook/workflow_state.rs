@@ -799,7 +799,7 @@ mod tests {
 
     fn make_test_node(node_type: &str, properties: serde_json::Value) -> Node {
         Node {
-            id: "test-node-1".to_string(),
+            id: "ac843a66-ff9a-5917-9592-2d200db6f451".to_string(),
             node_type: node_type.to_string(),
             content: "Test content".to_string(),
             version: 1,
@@ -864,7 +864,7 @@ mod tests {
             "story".to_string(),
             json!({
                 "isCore": false, "schemaVersion": 1, "description": "story",
-                "fields": [{"name": "status", "friendlyName": "Status", "type": "string"}],
+                "fields": [{"name": "status", "friendlyName": "Status", "type": "text"}],
                 "relationships": []
             }),
         );
@@ -876,7 +876,7 @@ mod tests {
             "wf_task".to_string(),
             json!({
                 "isCore": false, "schemaVersion": 1, "description": "wf_task",
-                "fields": [{"name": "status", "friendlyName": "Status", "type": "string"}],
+                "fields": [{"name": "status", "friendlyName": "Status", "type": "text"}],
                 "relationships": []
             }),
         );
@@ -935,7 +935,7 @@ mod tests {
             &svc,
             json!({
                 "name": "wf_ticket",
-                "fields": [{ "name": "state", "type": "string", "protection": "user", "indexed": false }]
+                "fields": [{ "name": "state", "type": "text", "protection": "user", "indexed": false }]
             }),
         )
         .await
@@ -995,7 +995,7 @@ mod tests {
             "story_mh".to_string(),
             json!({
                 "isCore": false, "schemaVersion": 1, "description": "story_mh",
-                "fields": [{"name": "status", "friendlyName": "Status", "type": "string"}],
+                "fields": [{"name": "status", "friendlyName": "Status", "type": "text"}],
                 "relationships": []
             }),
         );
@@ -1069,7 +1069,7 @@ mod tests {
             "wf_task2".to_string(),
             json!({
                 "isCore": false, "schemaVersion": 1, "description": "wf_task2",
-                "fields": [{"name": "status", "friendlyName": "Status", "type": "string"}],
+                "fields": [{"name": "status", "friendlyName": "Status", "type": "text"}],
                 "relationships": []
             }),
         );
@@ -1114,7 +1114,7 @@ mod tests {
             "wf_task3".to_string(),
             json!({
                 "isCore": false, "schemaVersion": 1, "description": "wf_task3",
-                "fields": [{"name": "status", "friendlyName": "Status", "type": "string"}],
+                "fields": [{"name": "status", "friendlyName": "Status", "type": "text"}],
                 "relationships": []
             }),
         );
@@ -1197,7 +1197,7 @@ mod tests {
             "wf_task4".to_string(),
             json!({
                 "isCore": false, "schemaVersion": 1, "description": "wf_task4",
-                "fields": [{"name": "status", "friendlyName": "Status", "type": "string"}],
+                "fields": [{"name": "status", "friendlyName": "Status", "type": "text"}],
                 "relationships": []
             }),
         );
@@ -1264,7 +1264,7 @@ mod tests {
             json!({
                 "name": "wf_base_pc",
                 "fields": [
-                    { "name": "status", "type": "string", "protection": "user", "indexed": false }
+                    { "name": "status", "type": "text", "protection": "user", "indexed": false }
                 ]
             }),
         )
@@ -1336,7 +1336,7 @@ mod tests {
             json!({
                 "name": "wf_base_cf",
                 "fields": [
-                    { "name": "status", "type": "string", "protection": "user", "indexed": false }
+                    { "name": "status", "type": "text", "protection": "user", "indexed": false }
                 ]
             }),
         )
@@ -1401,7 +1401,7 @@ mod tests {
             json!({
                 "name": "wf_rel_target",
                 "fields": [
-                    { "name": "status", "type": "string", "protection": "user", "indexed": false }
+                    { "name": "status", "type": "text", "protection": "user", "indexed": false }
                 ]
             }),
         )
@@ -1486,7 +1486,7 @@ mod tests {
             json!({
                 "name": "wf_ext_base",
                 "fields": [
-                    { "name": "status", "type": "string", "protection": "user", "indexed": false }
+                    { "name": "status", "type": "text", "protection": "user", "indexed": false }
                 ]
             }),
         )
@@ -1549,7 +1549,7 @@ mod tests {
             json!({
                 "name": "wf_base_cron",
                 "fields": [
-                    { "name": "status", "type": "string", "protection": "user", "indexed": false }
+                    { "name": "status", "type": "text", "protection": "user", "indexed": false }
                 ]
             }),
         )
@@ -1626,7 +1626,7 @@ mod tests {
             json!({
                 "name": "wf_base_cron_stale",
                 "fields": [
-                    { "name": "status", "type": "string", "protection": "user", "indexed": false }
+                    { "name": "status", "type": "text", "protection": "user", "indexed": false }
                 ]
             }),
         )
@@ -1756,7 +1756,7 @@ mod tests {
             "wf_degraded".to_string(),
             json!({
                 "isCore": false, "schemaVersion": 1, "description": "wf_degraded",
-                "fields": [{"name": "status", "friendlyName": "Status", "type": "string"}],
+                "fields": [{"name": "status", "friendlyName": "Status", "type": "text"}],
                 "relationships": []
             }),
         );

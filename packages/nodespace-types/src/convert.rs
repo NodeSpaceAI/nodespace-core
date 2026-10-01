@@ -2,7 +2,8 @@ use chrono::{DateTime, NaiveDate, Utc};
 use std::str::FromStr;
 
 use crate::ai_chat::{AiChatMessage, AiChatNode};
-use crate::node::Node;
+use crate::core_type::CoreNodeType;
+use crate::node::{Node, NodeEnvelope};
 use crate::person::PersonNode;
 use crate::project::{ProjectNode, DEFAULT_PROJECT_STATUS};
 use crate::query::{QueryFields, QueryNode};
@@ -24,9 +25,13 @@ fn normalize_date_field(s: &str) -> String {
 
 /// Convert a `Node` to its strongly-typed JSON representation for the frontend.
 ///
-/// For typed nodes (`task`, `person`, `project`, `query`, `ai-chat`, `schema`), promotes type-specific
-/// properties to top-level fields. For all other types, returns the generic
-/// node shape. Adds a `nodespace://` URI field for rich client rendering.
+/// For a core type with a typed wire struct (`WireShape::Typed` in the
+/// registry), promotes the type's fields to top-level fields. Every other
+/// node travels in the generic shape: a primitive, a core type whose fields
+/// stay in `properties`, and any user-defined or extension type. A subtype is
+/// never converted to its base's struct (ADR-086 §5), so the match is on the
+/// node's exact type. Adds a `nodespace://` URI field for rich client
+/// rendering.
 ///
 /// This is the single canonical implementation used by all entry points
 /// (Tauri commands, MCP, HTTP) and the SOLE authority for property flattening
@@ -39,16 +44,38 @@ pub fn node_to_typed_value(node: Node) -> Result<serde_json::Value, String> {
     flatten_properties_for_api(&mut node);
 
     let node_id = node.id.clone();
-    let mut value = match node.node_type.as_str() {
-        "task" => task_node_to_value(node),
-        "ai-chat" => ai_chat_node_to_value(node),
-        "person" => person_node_to_value(node),
-        "project" => project_node_to_value(node),
-        "query" => query_node_to_value(node),
-        "schema" => SchemaNode::from_node(node).and_then(|s| {
+    let generic = |node: Node| {
+        serde_json::to_value(node).map_err(|e| format!("Failed to serialize node: {}", e))
+    };
+    // No catch-all over the core types: a new variant has to say here which
+    // shape it travels in.
+    let mut value = match CoreNodeType::from_id(&node.node_type) {
+        Some(CoreNodeType::Task) => task_node_to_value(node),
+        Some(CoreNodeType::AiChat) => ai_chat_node_to_value(node),
+        Some(CoreNodeType::Person) => person_node_to_value(node),
+        Some(CoreNodeType::Project) => project_node_to_value(node),
+        Some(CoreNodeType::Query) => query_node_to_value(node),
+        Some(CoreNodeType::Schema) => SchemaNode::from_node(node).and_then(|s| {
             serde_json::to_value(s).map_err(|e| format!("Failed to serialize schema: {}", e))
         }),
-        _ => serde_json::to_value(node).map_err(|e| format!("Failed to serialize node: {}", e)),
+        Some(
+            CoreNodeType::Text
+            | CoreNodeType::Header
+            | CoreNodeType::CodeBlock
+            | CoreNodeType::QuoteBlock
+            | CoreNodeType::OrderedList
+            | CoreNodeType::Checkbox
+            | CoreNodeType::HorizontalLine
+            | CoreNodeType::Table
+            | CoreNodeType::Date
+            | CoreNodeType::AgentGuidance
+            | CoreNodeType::Collection
+            | CoreNodeType::Skill
+            | CoreNodeType::DatabaseSettings
+            | CoreNodeType::Play
+            | CoreNodeType::Tool,
+        ) => generic(node),
+        None => generic(node),
     }?;
 
     if let Some(obj) = value.as_object_mut() {
@@ -176,26 +203,39 @@ fn flatten_properties_for_api(node: &mut Node) {
 /// model-facing property map) rebuild it with [`flat_properties_view`] rather
 /// than hard-coding these lists.
 pub fn promoted_fields(node_type: &str) -> &'static [(&'static str, &'static str)] {
-    match node_type {
-        "task" => &[
+    match CoreNodeType::from_id(node_type) {
+        Some(core) => core_promoted_fields(core),
+        None => &[],
+    }
+}
+
+/// [`promoted_fields`] for a core type. Matched without a catch-all, so a new
+/// core type has to state which of its fields its wire struct promotes.
+///
+/// `ai-chat` and `schema` have typed wire structs but promote nothing through
+/// this list: their structs are built field by field from properties that the
+/// flat property view never carries back.
+pub fn core_promoted_fields(core: CoreNodeType) -> &'static [(&'static str, &'static str)] {
+    match core {
+        CoreNodeType::Task => &[
             ("status", "status"),
             ("priority", "priority"),
             ("due_date", "dueDate"),
             ("started_at", "startedAt"),
             ("completed_at", "completedAt"),
         ],
-        "person" => &[
+        CoreNodeType::Person => &[
             ("first_name", "firstName"),
             ("last_name", "lastName"),
             ("email", "email"),
         ],
-        "project" => &[
+        CoreNodeType::Project => &[
             ("status", "status"),
             ("priority", "priority"),
             ("start_date", "startDate"),
             ("end_date", "endDate"),
         ],
-        "query" => &[
+        CoreNodeType::Query => &[
             ("target_type", "targetType"),
             ("filters", "filters"),
             ("sorting", "sorting"),
@@ -206,17 +246,44 @@ pub fn promoted_fields(node_type: &str) -> &'static [(&'static str, &'static str
             ("last_executed", "lastExecuted"),
             ("view_config", "viewConfig"),
         ],
-        _ => &[],
+        CoreNodeType::Text
+        | CoreNodeType::Header
+        | CoreNodeType::CodeBlock
+        | CoreNodeType::QuoteBlock
+        | CoreNodeType::OrderedList
+        | CoreNodeType::Checkbox
+        | CoreNodeType::HorizontalLine
+        | CoreNodeType::Table
+        | CoreNodeType::Date
+        | CoreNodeType::AgentGuidance
+        | CoreNodeType::Collection
+        | CoreNodeType::Skill
+        | CoreNodeType::DatabaseSettings
+        | CoreNodeType::Schema
+        | CoreNodeType::Play
+        | CoreNodeType::AiChat
+        | CoreNodeType::Tool => &[],
     }
 }
 
-/// Remove a type's promoted core fields from its flat `properties`, under both
-/// spellings a stored node can carry (`due_date` and the legacy `dueDate`).
-fn without_promoted(mut properties: serde_json::Value, node_type: &str) -> serde_json::Value {
+/// The storage keys a typed client must write through `core`'s typed update
+/// rather than the generic one: the promoted fields of a core type that has a
+/// typed update (ADR-086 §7). Empty for every other type, whose fields have no
+/// typed write path to prefer.
+pub fn typed_update_fields(core: CoreNodeType) -> &'static [(&'static str, &'static str)] {
+    match core.wire() {
+        crate::core_type::WireShape::Typed { update: true } => core_promoted_fields(core),
+        crate::core_type::WireShape::Typed { update: false }
+        | crate::core_type::WireShape::Generic
+        | crate::core_type::WireShape::Envelope => &[],
+    }
+}
+
+/// Remove a type's promoted core fields from its flat `properties`.
+fn without_promoted(mut properties: serde_json::Value, core: CoreNodeType) -> serde_json::Value {
     if let Some(obj) = properties.as_object_mut() {
-        for (storage_key, wire_key) in promoted_fields(node_type) {
+        for (storage_key, _wire_key) in core_promoted_fields(core) {
             obj.remove(*storage_key);
-            obj.remove(*wire_key);
         }
     }
     properties
@@ -262,35 +329,22 @@ fn task_node_to_value(node: Node) -> Result<serde_json::Value, String> {
         .map(|s| TaskPriority::from_str(s).unwrap_or_default());
 
     let due_date = props
-        .get("dueDate")
-        .or_else(|| props.get("due_date"))
+        .get("due_date")
         .and_then(|v| v.as_str())
         .map(normalize_date_field);
 
     let started_at = props
-        .get("startedAt")
-        .or_else(|| props.get("started_at"))
+        .get("started_at")
         .and_then(|v| v.as_str())
         .map(normalize_date_field);
 
     let completed_at = props
-        .get("completedAt")
-        .or_else(|| props.get("completed_at"))
+        .get("completed_at")
         .and_then(|v| v.as_str())
         .map(normalize_date_field);
 
-    let lifecycle_status = node.lifecycle_status.clone();
-    let title = node.title.clone();
     let task = TaskNode {
-        id: node.id,
-        node_type: node.node_type,
-        content: node.content,
-        title,
-        version: node.version,
-        created_at: node.created_at,
-        modified_at: node.modified_at,
-        properties: without_promoted(node.properties, "task"),
-        lifecycle_status,
+        envelope: extension_envelope(node, CoreNodeType::Task),
         status,
         priority,
         due_date,
@@ -299,6 +353,14 @@ fn task_node_to_value(node: Node) -> Result<serde_json::Value, String> {
     };
 
     serde_json::to_value(&task).map_err(|e| format!("Failed to serialize task node: {}", e))
+}
+
+/// The envelope of a typed node: the node with its promoted core fields taken
+/// out of `properties`, which then holds extension fields only.
+fn extension_envelope(node: Node, core: CoreNodeType) -> NodeEnvelope {
+    let Node { properties, .. } = &node;
+    let properties = without_promoted(properties.clone(), core);
+    NodeEnvelope { properties, ..node }
 }
 
 fn string_prop(props: &serde_json::Value, key: &str) -> Option<String> {
@@ -312,15 +374,7 @@ fn person_node_to_value(node: Node) -> Result<serde_json::Value, String> {
     let email = string_prop(props, "email");
 
     let person = PersonNode {
-        id: node.id,
-        node_type: node.node_type,
-        content: node.content,
-        title: node.title,
-        version: node.version,
-        created_at: node.created_at,
-        modified_at: node.modified_at,
-        properties: without_promoted(node.properties, "person"),
-        lifecycle_status: node.lifecycle_status,
+        envelope: extension_envelope(node, CoreNodeType::Person),
         first_name,
         last_name,
         email,
@@ -343,15 +397,7 @@ fn project_node_to_value(node: Node) -> Result<serde_json::Value, String> {
         .map(normalize_date_field);
 
     let project = ProjectNode {
-        id: node.id,
-        node_type: node.node_type,
-        content: node.content,
-        title: node.title,
-        version: node.version,
-        created_at: node.created_at,
-        modified_at: node.modified_at,
-        properties: without_promoted(node.properties, "project"),
-        lifecycle_status: node.lifecycle_status,
+        envelope: extension_envelope(node, CoreNodeType::Project),
         status,
         priority,
         start_date,
@@ -374,15 +420,7 @@ fn query_node_to_value(node: Node) -> Result<serde_json::Value, String> {
     });
 
     let query = QueryNode {
-        id: node.id,
-        node_type: node.node_type,
-        content: node.content,
-        title: node.title,
-        version: node.version,
-        created_at: node.created_at,
-        modified_at: node.modified_at,
-        properties: without_promoted(node.properties, "query"),
-        lifecycle_status: node.lifecycle_status,
+        envelope: extension_envelope(node, CoreNodeType::Query),
         fields,
     };
 
@@ -433,16 +471,8 @@ fn ai_chat_node_to_value(node: Node) -> Result<serde_json::Value, String> {
         })
         .unwrap_or_default();
 
-    let lifecycle_status = node.lifecycle_status.clone();
     let chat = AiChatNode {
-        id: node.id,
-        node_type: node.node_type,
-        content: node.content,
-        version: node.version,
-        created_at: node.created_at,
-        modified_at: node.modified_at,
-        properties: node.properties,
-        lifecycle_status,
+        envelope: node,
         turn_status,
         session_status,
         provider,
@@ -488,22 +518,6 @@ mod wire_contract {
         );
         // URI is injected by the backend.
         assert!(out["uri"].as_str().unwrap().starts_with("nodespace://"));
-    }
-
-    #[test]
-    fn task_removes_both_date_spellings_from_properties() {
-        let node = Node::new(
-            "task".to_string(),
-            "Buy milk".to_string(),
-            serde_json::json!({
-                "task": { "due_date": "2026-05-01", "startedAt": "2026-04-01" }
-            }),
-        );
-        let out = node_to_typed_value(node).unwrap();
-
-        assert_eq!(out["dueDate"], "2026-05-01");
-        assert_eq!(out["startedAt"], "2026-04-01");
-        assert_eq!(out["properties"], serde_json::json!({}));
     }
 
     #[test]
@@ -973,9 +987,9 @@ mod promotion_proptests {
                     "task": {
                         "status": status,
                         "priority": priority,
-                        "dueDate": due_date,
-                        "startedAt": started_at,
-                        "completedAt": completed_at,
+                        "due_date": due_date,
+                        "started_at": started_at,
+                        "completed_at": completed_at,
                     }
                 }),
             );

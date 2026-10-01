@@ -7,6 +7,7 @@
 -->
 
 <script lang="ts">
+import { isA } from '$lib/types/core-node-types';
   import { onMount, onDestroy, getContext, tick } from 'svelte';
   import { htmlToMarkdown } from '$lib/utils/markdown.js';
   import BacklinksPanel from '$lib/design/components/backlinks-panel.svelte';
@@ -129,6 +130,7 @@
     if (shouldShowPlaceholder) {
       return {
         id: getOrCreatePlaceholderId(),
+        lifecycleStatus: 'active',
         nodeType: 'text',
         content: '',
         createdAt: new Date().toISOString(),
@@ -424,6 +426,7 @@
       `[promotePlaceholder] promoting ${placeholder.id.substring(0, 8)} under parent ${parentNodeId.substring(0, 8)}`
     );
     return {
+      lifecycleStatus: 'active',
       id: placeholder.id,
       nodeType: overrides.nodeType ?? placeholder.nodeType,
       content: overrides.content ?? placeholder.content,
@@ -628,7 +631,7 @@
       // which sets pattern state to 'inherited' (reverts to text only if the plugin's canRevert allows).
       // This is different from pattern-detected type conversions which CAN revert.
       if (newNodeCursorPosition !== undefined && !focusOriginalNode) {
-        if (nodeType !== 'text') {
+        if (!isA(nodeType, 'text')) {
           // Non-text inherited nodes: Use inherited-type signal (pattern state = 'inherited')
           focusManager.focusNodeFromInheritedType(newNodeId, newNodeCursorPosition, paneId);
         } else {
@@ -1018,7 +1021,7 @@
     }
 
     // Normalize content for code-block conversion
-    if (newNodeType === 'code-block') {
+    if (isA(newNodeType, 'code-block')) {
       cleanedContent = normalizeCodeBlockContent(cleanedContent);
     }
 

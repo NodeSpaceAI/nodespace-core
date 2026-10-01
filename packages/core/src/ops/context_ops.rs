@@ -1255,13 +1255,14 @@ mod tests {
             created_at: chrono::Utc::now(),
             modified_at: chrono::Utc::now(),
             is_core: false,
+            is_abstract: false,
             schema_version: 1,
             fields: fields
                 .iter()
                 .map(|name| SchemaField {
                     name: name.to_string(),
                     friendly_name: name.to_string(),
-                    field_type: "string".to_string(),
+                    field_type: crate::models::SchemaFieldType::Text,
                     local_only: false,
                     protection: crate::models::schema::SchemaProtectionLevel::User,
                     core_values: None,
@@ -1333,7 +1334,7 @@ mod tests {
         assert!(output.contains("customer \"Customer\""));
         // Each field carries its type, so the node-creation guidance's
         // instruction to read field names *and* types has a referent.
-        assert!(output.contains("name: string; email: string"));
+        assert!(output.contains("name: text; email: text"));
     }
 
     #[test]
@@ -1344,7 +1345,7 @@ mod tests {
         schema.fields.push(SchemaField {
             name: "amount".to_string(),
             friendly_name: "Amount".to_string(),
-            field_type: "number".to_string(),
+            field_type: crate::models::SchemaFieldType::Number,
             protection: SchemaProtectionLevel::User,
             core_values: None,
             user_values: None,
@@ -1368,7 +1369,7 @@ mod tests {
         // Required-ness is rendered; the guidance conditions inclusion on it.
         assert!(output.contains("amount: number, required"));
         // Fields without the flag are not marked required.
-        assert!(output.contains("reference: string;"));
+        assert!(output.contains("reference: text;"));
         assert!(!output.contains("reference: string, required"));
     }
 
@@ -1380,7 +1381,7 @@ mod tests {
         schema.fields.push(SchemaField {
             name: "status".to_string(),
             friendly_name: "Status".to_string(),
-            field_type: "enum".to_string(),
+            field_type: crate::models::SchemaFieldType::Enum,
             protection: SchemaProtectionLevel::User,
             core_values: Some(vec![EnumValue::new("open".to_string(), "Open".to_string())]),
             user_values: Some(vec![EnumValue::new(

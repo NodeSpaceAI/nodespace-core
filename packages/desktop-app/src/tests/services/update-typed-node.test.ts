@@ -178,6 +178,26 @@ describe('updateNode routing for typed core types', () => {
     expect((store.getNode('q1') as unknown as QueryNode).executionCount).toBe(0);
   });
 
+  it('keeps a subtype of a typed core type on the generic update, status included', async () => {
+    // A user-defined `issue extends task` is the generic node: its fields live in
+    // `properties`, and the typed task update is not its write path.
+    store.setNode(makeNode('i1', 'issue', { properties: { status: 'open' } }), dbSource);
+    const genericSpy = vi.spyOn(backendAdapter, 'updateNode').mockImplementation(
+      async (id, version) =>
+        ({
+          ...makeNode(id, 'issue', { properties: { status: 'done' } }),
+          version: version + 1
+        }) as Node
+    );
+    const typedSpy = vi.spyOn(backendAdapter, 'updateTaskNode');
+
+    store.updateNode('i1', { properties: { status: 'done' } }, viewerSource);
+
+    await vi.waitFor(() => expect(genericSpy).toHaveBeenCalledTimes(1));
+    expect(genericSpy.mock.calls[0][2]).toEqual({ properties: { status: 'done' } });
+    expect(typedSpy).not.toHaveBeenCalled();
+  });
+
   it('persists an extension-field write on a task through the generic update', async () => {
     // User-defined fields on a core type live in `properties` and must
     // persist — previously the task updater rejected a `properties` write.

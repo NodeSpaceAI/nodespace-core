@@ -469,7 +469,7 @@ mod tests {
 
             // Manually create a play node with a scheduled trigger and activate it
             let play_node = Node {
-                id: "pb-cron-1".to_string(),
+                id: "f63d374f-e304-519e-9876-3213bae0b20a".to_string(),
                 node_type: "play".to_string(),
                 content: "cron play".to_string(),
                 version: 1,
@@ -515,7 +515,7 @@ mod tests {
                     "isCore": false,
                     "schemaVersion": 1,
                     "description": "cr_task schema",
-                    "fields": [{"name": "status", "type": "string"}],
+                    "fields": [{"name": "status", "type": "text"}],
                     "relationships": []
                 }),
             );
@@ -523,13 +523,13 @@ mod tests {
 
             // Create active nodes of type "cr_task"
             let node1 = Node::new_with_id(
-                "cr-t1".to_string(),
+                "c3a9129b-ee73-5379-b845-e13aef9e81a6".to_string(),
                 "cr_task".to_string(),
                 "task 1".to_string(),
                 json!({"status": "open"}),
             );
             let node2 = Node::new_with_id(
-                "cr-t2".to_string(),
+                "2806fa65-22e1-5e87-a087-874666c63f01".to_string(),
                 "cr_task".to_string(),
                 "task 2".to_string(),
                 json!({"status": "open"}),
@@ -565,8 +565,8 @@ mod tests {
                 .iter()
                 .map(|w| w.trigger_node.id.as_str())
                 .collect();
-            assert!(ids.contains(&"cr-t1"));
-            assert!(ids.contains(&"cr-t2"));
+            assert!(ids.contains(&"c3a9129b-ee73-5379-b845-e13aef9e81a6"));
+            assert!(ids.contains(&"2806fa65-22e1-5e87-a087-874666c63f01"));
         }
 
         #[tokio::test]
@@ -589,7 +589,7 @@ mod tests {
             svc.create_node(schema).await.unwrap();
 
             let node = Node::new_with_id(
-                "cr-t3".to_string(),
+                "9607d693-7b48-5724-9923-ad25df0c4278".to_string(),
                 "cr_task2".to_string(),
                 "task 3".to_string(),
                 json!({}),
@@ -631,7 +631,7 @@ mod tests {
             );
             svc.create_node(schema).await.unwrap();
             let node = Node::new_with_id(
-                "cr-t5".to_string(),
+                "6645c195-4778-5ecc-83c3-a647c8dd9620".to_string(),
                 "cr_task_gap".to_string(),
                 "task 5".to_string(),
                 json!({}),
@@ -658,7 +658,7 @@ mod tests {
                     .await;
             assert_eq!(
                 rx.try_recv().expect("work item enqueued").trigger_node.id,
-                "cr-t5",
+                "6645c195-4778-5ecc-83c3-a647c8dd9620",
                 "the window must reach back to the previous check's end"
             );
             assert!(
@@ -679,14 +679,14 @@ mod tests {
                     "isCore": false,
                     "schemaVersion": 1,
                     "description": "cr_task_poison schema",
-                    "fields": [{"name": "status", "type": "string"}],
+                    "fields": [{"name": "status", "type": "text"}],
                     "relationships": []
                 }),
             );
             svc.create_node(schema).await.unwrap();
 
             let node = Node::new_with_id(
-                "cr-t4".to_string(),
+                "348bc89e-0178-526d-a678-50d1e84f2813".to_string(),
                 "cr_task_poison".to_string(),
                 "task 4".to_string(),
                 json!({"status": "open"}),

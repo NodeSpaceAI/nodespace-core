@@ -1,5 +1,5 @@
 /**
- * `TYPED_CORE_FIELDS` is the frontend mirror of Rust's `promoted_fields`
+ * `TYPED_CORE_FIELDS` is the frontend mirror of Rust's `core_promoted_fields`
  * (`packages/nodespace-types/src/convert.rs`). The two are hand-synced across
  * the language boundary, so this reads the Rust source and asserts they list
  * the same `(storage key, wire key)` pairs per type. A drift would make the
@@ -10,28 +10,31 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
 import { TYPED_CORE_FIELDS, typedCoreField } from '$lib/types/typed-core-fields';
+import { nodespaceTypesSource, rustVariantIds } from '../helpers/rust-core-type-registry';
 
-/** Parse `promoted_fields`' match arms into `{ nodeType: [[storage, wire], ...] }`. */
+/**
+ * Parse `core_promoted_fields`' match arms into `{ nodeType: [[storage, wire], ...] }`,
+ * mapping each `CoreNodeType` variant to its stored id through the registry.
+ */
 function rustPromotedFields(): Record<string, Array<[string, string]>> {
-  // __dirname-relative, not cwd-relative, so it resolves from any runner cwd.
-  const source = readFileSync(
-    resolve(__dirname, '../../../../nodespace-types/src/convert.rs'),
-    'utf8'
-  );
-  const start = source.indexOf('pub fn promoted_fields(');
-  expect(start, 'promoted_fields not found in convert.rs').toBeGreaterThan(-1);
-  const body = source.slice(start, source.indexOf('_ => &[]', start));
+  const source = nodespaceTypesSource('convert.rs');
+  const start = source.indexOf('pub fn core_promoted_fields(');
+  expect(start, 'core_promoted_fields not found in convert.rs').toBeGreaterThan(-1);
+  const body = source.slice(start, source.indexOf('/// The storage keys a typed client', start));
 
+  const ids = rustVariantIds();
   const result: Record<string, Array<[string, string]>> = {};
-  const armRe = /"([a-z-]+)"\s*=>\s*&\[([\s\S]*?)\]/g;
+  const armRe = /CoreNodeType::(\w+)\s*=>\s*&\[([\s\S]*?)\]/g;
   for (const arm of body.matchAll(armRe)) {
     const pairs = [...arm[2].matchAll(/\("([^"]+)",\s*"([^"]+)"\)/g)].map(
       (m) => [m[1], m[2]] as [string, string]
     );
-    result[arm[1]] = pairs;
+    // An arm with no pairs is a type that promotes nothing.
+    if (pairs.length === 0) continue;
+    const id = ids[arm[1]];
+    expect(id, `${arm[1]} is not a CoreNodeType variant in core_type.rs`).toBeDefined();
+    result[id] = pairs;
   }
   return result;
 }

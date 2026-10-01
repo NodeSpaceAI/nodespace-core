@@ -27,7 +27,7 @@ import { sharedNodeStore } from '$lib/services/shared-node-store.svelte';
 import { backendAdapter } from '$lib/services/backend-adapter';
 
 function stringField(name: string, friendlyName: string): SchemaField {
-  return { name, friendlyName, type: 'string', protection: 'user', indexed: false, required: false };
+  return { name, friendlyName, type: 'text', protection: 'user', indexed: false, required: false };
 }
 
 function enumField(
@@ -48,6 +48,9 @@ function enumField(
 }
 
 const TICKET_SCHEMA: SchemaNode = {
+  nodeType: 'schema' as const,
+  lifecycleStatus: 'active' as const,
+  properties: {},
   id: 'ticket',
   content: 'Ticket',
   createdAt: '2026-01-01T00:00:00Z',

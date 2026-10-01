@@ -24,6 +24,9 @@ import { sharedNodeStore } from '$lib/services/shared-node-store.svelte';
 
 function schemaWithEnum(): SchemaNode {
   return {
+    nodeType: 'schema' as const,
+    lifecycleStatus: 'active' as const,
+    properties: {},
     id: 'widget',
     content: 'Widget',
     createdAt: '2026-01-01T00:00:00Z',
@@ -48,6 +51,9 @@ function schemaWithEnum(): SchemaNode {
 function schemaWithoutEnum(): SchemaNode {
   return {
     id: 'widget',
+    nodeType: 'schema',
+    lifecycleStatus: 'active',
+    properties: {},
     content: 'Widget',
     createdAt: '2026-01-01T00:00:00Z',
     modifiedAt: '2026-01-01T00:00:00Z',
@@ -55,13 +61,14 @@ function schemaWithoutEnum(): SchemaNode {
     isCore: false,
     schemaVersion: 1,
     fields: [
-      { name: 'note', friendlyName: 'Note', type: 'string', protection: 'user', indexed: false }
+      { name: 'note', friendlyName: 'Note', type: 'text', protection: 'user', indexed: false }
     ]
   };
 }
 
 function node(id: string, overrides: Partial<Node> = {}): Node {
   return {
+    lifecycleStatus: 'active',
     id,
     nodeType: 'widget',
     content: `Card ${id}`,

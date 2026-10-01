@@ -303,6 +303,7 @@ async fn update(client: &mut NodeClient, args: UpdateArgs, json: bool) -> Result
             add_to_collection_ids: args.collection_ids,
             remove_from_collection_ids: args.remove_collection_ids,
             lifecycle_status: None,
+            typed_client: false,
         })
         .await
         .context("UpdateNode RPC failed")?
@@ -332,6 +333,7 @@ async fn set_status(client: &mut NodeClient, args: SetStatusArgs, json: bool) ->
             add_to_collection_ids: Vec::new(),
             remove_from_collection_ids: Vec::new(),
             lifecycle_status: None,
+            typed_client: false,
         })
         .await
         .context("UpdateNode RPC failed")?

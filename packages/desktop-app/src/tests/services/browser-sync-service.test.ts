@@ -65,6 +65,7 @@ const testableService = browserSyncService as unknown as TestableBrowserSyncServ
  */
 function createTestNode(id: string, content = 'Test node'): Node {
   return {
+    lifecycleStatus: 'active',
     id,
     nodeType: 'text',
     content,
@@ -864,6 +865,7 @@ describe('BrowserSyncService - SSE Event Ordering', () => {
     it('should normalize task nodes from SSE events', async () => {
       // Task nodes need to be normalized from properties to flat format
       const taskNodeData: Node = {
+        lifecycleStatus: 'active',
         id: 'task1',
         nodeType: 'task',
         content: 'Buy groceries',

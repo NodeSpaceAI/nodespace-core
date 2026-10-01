@@ -30,6 +30,7 @@ describe('SharedNodeStore → conflictNotifications (PLAY_RULE_REJECTED)', () =>
   const databaseSource: UpdateSource = { type: 'database', reason: 'seed' };
 
   const makeNode = (id: string, content: string, version = 1): Node => ({
+    lifecycleStatus: 'active',
     id,
     nodeType: 'text',
     content,

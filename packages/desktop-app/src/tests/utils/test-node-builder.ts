@@ -179,6 +179,7 @@ export class TestNodeBuilder {
     }
 
     return {
+      lifecycleStatus: 'active',
       id: this.node.id,
       nodeType: this.node.nodeType,
       content: this.node.content,

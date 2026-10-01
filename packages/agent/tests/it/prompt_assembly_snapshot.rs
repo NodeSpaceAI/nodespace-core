@@ -176,7 +176,7 @@ fn schema_field(name: &str, field_type: &str, required: bool) -> SchemaField {
     SchemaField {
         name: name.to_string(),
         friendly_name: String::new(),
-        field_type: field_type.to_string(),
+        field_type: field_type.parse().expect("a field type"),
         protection: SchemaProtectionLevel::User,
         core_values: None,
         user_values: None,
@@ -217,6 +217,7 @@ fn fixture_schema_ticket() -> nodespace_core::models::SchemaNode {
         created_at: now,
         modified_at: now,
         is_core: false,
+        is_abstract: false,
         schema_version: 1,
         fields: vec![
             schema_field("title", "text", true),
@@ -251,6 +252,7 @@ fn fixture_schema_adr() -> nodespace_core::models::SchemaNode {
         created_at: now,
         modified_at: now,
         is_core: false,
+        is_abstract: false,
         schema_version: 1,
         fields: vec![
             schema_field("title", "text", true),
@@ -274,6 +276,7 @@ fn fixture_schema_release() -> nodespace_core::models::SchemaNode {
         created_at: now,
         modified_at: now,
         is_core: false,
+        is_abstract: false,
         schema_version: 1,
         fields: Vec::new(),
         relationships: Vec::new(),

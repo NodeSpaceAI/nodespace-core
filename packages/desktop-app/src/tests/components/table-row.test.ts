@@ -22,6 +22,7 @@ import { pluginRegistry } from '$lib/plugins/index';
 
 function baseNode(overrides: Partial<Node> = {}): Node {
   return {
+    lifecycleStatus: 'active',
     id: 'n1',
     nodeType: 'task',
     content: 'current content',

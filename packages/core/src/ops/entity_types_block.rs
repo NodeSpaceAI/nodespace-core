@@ -139,7 +139,7 @@ impl EntityFieldDescriptor {
             .collect();
         Self {
             name: f.name.clone(),
-            field_type: f.field_type.clone(),
+            field_type: f.field_type.to_string(),
             enum_values,
             required: f.required.unwrap_or(false),
             description: f.description.clone(),
@@ -383,7 +383,7 @@ impl EntityTypeDescriptor {
     /// decode adjacent is what stops it from becoming a second renderer.
     ///
     /// One intentional difference from the projection this replaced: that code
-    /// emitted `enum_values` only when `field_type == "enum"`, whereas this
+    /// emitted `enum_values` only for an `enum` field, whereas this
     /// emits them whenever a field carries values. The two agree on every
     /// seeded core schema (none has a non-enum field with values), but they can
     /// differ at runtime: validation only enforces enum ⇒ has-values, never the
@@ -668,7 +668,7 @@ mod tests {
         SchemaField {
             name: name.to_string(),
             friendly_name: name.to_string(),
-            field_type: ty.to_string(),
+            field_type: ty.parse().expect("a field type"),
             protection: SchemaProtectionLevel::User,
             core_values: None,
             user_values: None,
@@ -707,8 +707,9 @@ mod tests {
             created_at: chrono::Utc::now(),
             modified_at: chrono::Utc::now(),
             is_core: false,
+            is_abstract: false,
             schema_version: 1,
-            fields: vec![field("reference", "string"), amount, status],
+            fields: vec![field("reference", "text"), amount, status],
             relationships: vec![SchemaRelationship {
                 name: "billed_to".to_string(),
                 target_type: Some("customer".to_string()),
@@ -738,7 +739,7 @@ mod tests {
 
         assert_eq!(
             d.render_line(),
-            "- invoice \"Invoice\" -> reference: string; amount: number, required; \
+            "- invoice \"Invoice\" -> reference: text; amount: number, required; \
              status: enum {draft, sent} ~> billed_to (customer) [title_template: {reference}]"
         );
     }
@@ -827,7 +828,7 @@ mod tests {
             "type_id": "invoice",
             "name": "Invoice",
             "fields": [
-                {"name": "reference", "type": "string"},
+                {"name": "reference", "type": "text"},
                 {"name": "amount", "type": "number", "required": true},
                 {"name": "status", "type": "enum", "enum_values": ["draft", "sent"]}
             ],
@@ -988,7 +989,7 @@ mod tests {
         recurring.content = "Recurring Invoice".to_string();
         // Redeclares `status` without its enum values: the nearer
         // declaration must win, not the ancestor's.
-        recurring.fields = vec![field("interval", "string"), field("status", "string")];
+        recurring.fields = vec![field("interval", "text"), field("status", "text")];
         recurring.relationships =
             vec![crate::schema::extends_chain::extends_declaration("invoice")];
         recurring.title_template = None;

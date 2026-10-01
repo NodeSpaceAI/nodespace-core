@@ -100,13 +100,13 @@ impl SkillUpdater {
     fn is_schema_event(&self, event: &DomainEvent) -> bool {
         matches!(
             event,
-            DomainEvent::NodeCreated { node_type, .. } if node_type == "schema"
+            DomainEvent::NodeCreated { node_type, .. } if crate::models::CoreNodeType::Schema.is_exactly(node_type)
         ) || matches!(
             event,
-            DomainEvent::NodeUpdated { node_type, .. } if node_type == "schema"
+            DomainEvent::NodeUpdated { node_type, .. } if crate::models::CoreNodeType::Schema.is_exactly(node_type)
         ) || matches!(
             event,
-            DomainEvent::NodeDeleted { node_type, .. } if node_type == "schema"
+            DomainEvent::NodeDeleted { node_type, .. } if crate::models::CoreNodeType::Schema.is_exactly(node_type)
         )
     }
 

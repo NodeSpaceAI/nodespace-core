@@ -41,8 +41,8 @@ async fn test_create_schema_with_valid_title_template() {
         json!({
             "name": "Customer",
             "fields": [
-                { "name": "first_name", "type": "string", "protection": "user", "indexed": false },
-                { "name": "last_name",  "type": "string", "protection": "user", "indexed": false }
+                { "name": "first_name", "type": "text", "protection": "user", "indexed": false },
+                { "name": "last_name",  "type": "text", "protection": "user", "indexed": false }
             ],
             "title_template": "{first_name} {last_name}"
         }),
@@ -68,7 +68,7 @@ async fn test_create_schema_title_template_undefined_field_rejected() {
         json!({
             "name": "Customer",
             "fields": [
-                { "name": "first_name", "type": "string", "protection": "user", "indexed": false }
+                { "name": "first_name", "type": "text", "protection": "user", "indexed": false }
             ],
             "title_template": "{nonexistent}"
         }),
@@ -201,7 +201,7 @@ async fn test_create_schema_duplicate_rejection_carries_existing_definition() {
 async fn create_base_schema(svc: &Arc<NodeService>, name: &str, field_names: &[&str]) -> String {
     let fields: Vec<_> = field_names
         .iter()
-        .map(|n| json!({ "name": n, "type": "string", "protection": "user", "indexed": false }))
+        .map(|n| json!({ "name": n, "type": "text", "protection": "user", "indexed": false }))
         .collect();
 
     let result = handle_create_schema(svc, json!({ "name": name, "fields": fields }))
@@ -285,8 +285,8 @@ async fn test_update_schema_remove_field_referenced_by_existing_template_rejecte
         json!({
             "name": "Employee",
             "fields": [
-                { "name": "first_name", "type": "string", "protection": "user", "indexed": false },
-                { "name": "last_name",  "type": "string", "protection": "user", "indexed": false }
+                { "name": "first_name", "type": "text", "protection": "user", "indexed": false },
+                { "name": "last_name",  "type": "text", "protection": "user", "indexed": false }
             ],
             "title_template": "{first_name} {last_name}"
         }),
@@ -327,8 +327,8 @@ async fn test_update_schema_remove_field_and_clear_template_succeeds() {
         json!({
             "name": "Widget",
             "fields": [
-                { "name": "sku",   "type": "string", "protection": "user", "indexed": false },
-                { "name": "color", "type": "string", "protection": "user", "indexed": false }
+                { "name": "sku",   "type": "text", "protection": "user", "indexed": false },
+                { "name": "color", "type": "text", "protection": "user", "indexed": false }
             ],
             "title_template": "{sku}"
         }),
@@ -369,9 +369,9 @@ async fn test_update_schema_remove_unrelated_field_with_template_succeeds() {
         json!({
             "name": "Product",
             "fields": [
-                { "name": "name",  "type": "string", "protection": "user", "indexed": false },
-                { "name": "sku",   "type": "string", "protection": "user", "indexed": false },
-                { "name": "notes", "type": "string", "protection": "user", "indexed": false }
+                { "name": "name",  "type": "text", "protection": "user", "indexed": false },
+                { "name": "sku",   "type": "text", "protection": "user", "indexed": false },
+                { "name": "notes", "type": "text", "protection": "user", "indexed": false }
             ],
             "title_template": "{name} ({sku})"
         }),
@@ -411,8 +411,8 @@ async fn test_rename_field_updates_schema_definition() {
         json!({
             "name": "RenameTest",
             "fields": [
-                { "name": "old_name", "type": "string", "protection": "user", "indexed": false },
-                { "name": "keep_me",  "type": "string", "protection": "user", "indexed": false }
+                { "name": "old_name", "type": "text", "protection": "user", "indexed": false },
+                { "name": "keep_me",  "type": "text", "protection": "user", "indexed": false }
             ]
         }),
     )
@@ -469,7 +469,7 @@ async fn test_rename_field_not_found_returns_error() {
         json!({
             "name": "RenameErrorTest",
             "fields": [
-                { "name": "existing", "type": "string", "protection": "user", "indexed": false }
+                { "name": "existing", "type": "text", "protection": "user", "indexed": false }
             ]
         }),
     )
@@ -500,8 +500,8 @@ async fn test_rename_field_to_existing_field_returns_error() {
         json!({
             "name": "RenameConflictTest",
             "fields": [
-                { "name": "field_a", "type": "string", "protection": "user", "indexed": false },
-                { "name": "field_b", "type": "string", "protection": "user", "indexed": false }
+                { "name": "field_a", "type": "text", "protection": "user", "indexed": false },
+                { "name": "field_b", "type": "text", "protection": "user", "indexed": false }
             ]
         }),
     )
@@ -538,7 +538,7 @@ async fn test_rename_field_migrates_node_data() {
         json!({
             "name": "DataMigrateTest",
             "fields": [
-                { "name": "old_field", "type": "string", "protection": "user", "indexed": false }
+                { "name": "old_field", "type": "text", "protection": "user", "indexed": false }
             ]
         }),
     )
@@ -965,7 +965,7 @@ async fn test_update_schema_rename_fields_validates_destination_grammar_before_p
         json!({
             "schema_id": "venue",
             "add_fields": [
-                { "name": "address", "type": "string", "protection": "user", "indexed": false }
+                { "name": "address", "type": "text", "protection": "user", "indexed": false }
             ]
         }),
     )
@@ -984,7 +984,7 @@ async fn test_rename_field_friendly_name_only_updates_label_without_migrating_da
         json!({
             "name": "DisplayRenameTest",
             "fields": [
-                { "name": "priority", "type": "string", "protection": "user", "indexed": false, "friendlyName": "Priority" }
+                { "name": "priority", "type": "text", "protection": "user", "indexed": false, "friendlyName": "Priority" }
             ]
         }),
     )
@@ -1219,7 +1219,7 @@ async fn test_rename_field_from_equals_to_with_no_friendly_name_is_rejected() {
         json!({
             "name": "NoOpRenameTest",
             "fields": [
-                { "name": "status", "type": "string", "protection": "user", "indexed": false }
+                { "name": "status", "type": "text", "protection": "user", "indexed": false }
             ]
         }),
     )
@@ -1253,7 +1253,7 @@ async fn test_rename_field_friendly_name_only_field_not_found_returns_error() {
         json!({
             "name": "DisplayRenameMissingFieldTest",
             "fields": [
-                { "name": "existing", "type": "string", "protection": "user", "indexed": false }
+                { "name": "existing", "type": "text", "protection": "user", "indexed": false }
             ]
         }),
     )
@@ -1289,7 +1289,7 @@ async fn test_rename_field_combined_identity_and_friendly_name_rename() {
         json!({
             "name": "CombinedRenameTest",
             "fields": [
-                { "name": "old_name", "type": "string", "protection": "user", "indexed": false, "friendlyName": "Old Name" }
+                { "name": "old_name", "type": "text", "protection": "user", "indexed": false, "friendlyName": "Old Name" }
             ]
         }),
     )
@@ -2652,7 +2652,7 @@ async fn test_update_schema_user_defined_type_allows_bare_names() {
         &svc,
         json!({
             "schema_id": "venue",
-            "add_fields": [{ "name": "address", "type": "string" }],
+            "add_fields": [{ "name": "address", "type": "text" }],
             "rename_fields": [{ "from": "capacity", "to": "seats" }]
         }),
     )
@@ -2780,7 +2780,7 @@ async fn test_create_schema_rejects_relationship_targeting_ai_chat() {
         json!({
             "name": "Finding",
             "fields": [
-                { "name": "summary", "type": "string", "protection": "user", "indexed": false }
+                { "name": "summary", "type": "text", "protection": "user", "indexed": false }
             ],
             "relationships": [
                 { "name": "source_chat", "targetType": "ai-chat", "direction": "out", "cardinality": "one", "reverseName": "findings", "reverseCardinality": "many" }
@@ -3195,7 +3195,7 @@ async fn test_create_schema_accepts_self_referential_relationship() {
         json!({
             "name": "ADR",
             "fields": [
-                { "name": "status", "type": "string", "protection": "user", "indexed": false }
+                { "name": "status", "type": "text", "protection": "user", "indexed": false }
             ],
             "relationships": [
                 { "name": "supersedes", "targetType": "adr", "direction": "out", "cardinality": "one", "reverseName": "superseded_by", "reverseCardinality": "one" }
@@ -3231,7 +3231,7 @@ async fn test_create_schema_accepts_self_reference_alongside_existing_target() {
         json!({
             "name": "ADR",
             "fields": [
-                { "name": "status", "type": "string", "protection": "user", "indexed": false }
+                { "name": "status", "type": "text", "protection": "user", "indexed": false }
             ],
             "relationships": [
                 { "name": "supersedes", "targetType": "adr", "direction": "out", "cardinality": "one", "reverseName": "superseded_by", "reverseCardinality": "one" },
@@ -3264,7 +3264,7 @@ async fn test_create_schema_self_reference_reverse_edge_resolves() {
         json!({
             "name": "ADR",
             "fields": [
-                { "name": "status", "type": "string", "protection": "user", "indexed": false }
+                { "name": "status", "type": "text", "protection": "user", "indexed": false }
             ],
             "relationships": [
                 { "name": "supersedes", "targetType": "adr", "direction": "out", "cardinality": "one", "reverseName": "superseded_by", "reverseCardinality": "one" },
@@ -3306,7 +3306,7 @@ async fn test_create_schema_self_reference_uses_normalized_schema_id() {
         json!({
             "name": "Design Decision",
             "fields": [
-                { "name": "status", "type": "string", "protection": "user", "indexed": false }
+                { "name": "status", "type": "text", "protection": "user", "indexed": false }
             ],
             "relationships": [
                 { "name": "supersedes", "targetType": "design_decision", "direction": "out", "cardinality": "one", "reverseName": "superseded_by", "reverseCardinality": "one" }
@@ -3342,7 +3342,7 @@ async fn test_create_schema_self_reference_by_display_name_is_rejected() {
         json!({
             "name": "Design Decision",
             "fields": [
-                { "name": "status", "type": "string", "protection": "user", "indexed": false }
+                { "name": "status", "type": "text", "protection": "user", "indexed": false }
             ],
             "relationships": [
                 { "name": "supersedes", "targetType": "Design Decision", "direction": "out", "cardinality": "one", "reverseName": "superseded_by", "reverseCardinality": "one" }
@@ -3378,7 +3378,7 @@ async fn test_punctuation_only_name_does_not_make_the_exemption_vacuous() {
         json!({
             "name": "!!!",
             "fields": [
-                { "name": "status", "type": "string", "protection": "user", "indexed": false }
+                { "name": "status", "type": "text", "protection": "user", "indexed": false }
             ],
             "relationships": [
                 { "name": "supersedes", "targetType": "", "direction": "out", "cardinality": "one", "reverseName": "superseded_by", "reverseCardinality": "one" }
@@ -3412,7 +3412,7 @@ async fn test_self_referential_declaration_writes_a_self_loop_row() {
         json!({
             "name": "ADR",
             "fields": [
-                { "name": "status", "type": "string", "protection": "user", "indexed": false }
+                { "name": "status", "type": "text", "protection": "user", "indexed": false }
             ],
             "relationships": [
                 { "name": "supersedes", "targetType": "adr", "direction": "out", "cardinality": "one", "reverseName": "superseded_by", "reverseCardinality": "one" },
@@ -3478,7 +3478,7 @@ async fn test_self_reference_does_not_bypass_the_already_exists_check() {
         json!({
             "name": "ADR",
             "fields": [
-                { "name": "status", "type": "string", "protection": "user", "indexed": false }
+                { "name": "status", "type": "text", "protection": "user", "indexed": false }
             ],
             "relationships": [
                 { "name": "supersedes", "targetType": "adr", "direction": "out", "cardinality": "one", "reverseName": "superseded_by", "reverseCardinality": "one" }
@@ -3581,7 +3581,7 @@ async fn test_rejected_create_persists_no_schema_node() {
             json!({
                 "name": "ADR",
                 "fields": [
-                    { "name": "status", "type": "string", "protection": "user", "indexed": false }
+                    { "name": "status", "type": "text", "protection": "user", "indexed": false }
                 ],
                 "relationships": relationships,
             }),
@@ -3799,8 +3799,8 @@ async fn test_create_schema_disambiguates_friendly_name_colliding_within_same_ba
         json!({
             "name": "Employee",
             "fields": [
-                { "name": "employee_name", "type": "string", "protection": "user", "indexed": false },
-                { "name": "employeeName", "type": "string", "protection": "user", "indexed": false }
+                { "name": "employee_name", "type": "text", "protection": "user", "indexed": false },
+                { "name": "employeeName", "type": "text", "protection": "user", "indexed": false }
             ]
         }),
     )
@@ -3896,7 +3896,7 @@ async fn create_schema_accepts_a_well_formed_enum_edge_field() {
         &svc,
         json!({
             "name": "Grant",
-            "fields": [{ "name": "note", "type": "string", "protection": "user", "indexed": false }],
+            "fields": [{ "name": "note", "type": "text", "protection": "user", "indexed": false }],
             "relationships": [rel_with_enum_edge_field(json!([
                 {"value": "owner", "label": "Owner"},
                 {"value": "viewer", "label": "Viewer"}
@@ -3920,7 +3920,7 @@ async fn create_schema_rejects_an_enum_edge_field_without_core_values() {
         &svc,
         json!({
             "name": "Grant",
-            "fields": [{ "name": "note", "type": "string", "protection": "user", "indexed": false }],
+            "fields": [{ "name": "note", "type": "text", "protection": "user", "indexed": false }],
             "relationships": [{
                 "name": "granted_on",
                 "targetType": "widget",
@@ -3951,7 +3951,7 @@ async fn create_schema_rejects_an_enum_edge_field_default_outside_the_set() {
         &svc,
         json!({
             "name": "Grant",
-            "fields": [{ "name": "note", "type": "string", "protection": "user", "indexed": false }],
+            "fields": [{ "name": "note", "type": "text", "protection": "user", "indexed": false }],
             "relationships": [{
                 "name": "granted_on",
                 "targetType": "widget",
@@ -4043,7 +4043,7 @@ async fn schema_declaring_an_edge_field_on_a_builtin_relationship_is_rejected() 
         &svc,
         json!({
             "name": "Grant",
-            "fields": [{ "name": "note", "type": "string", "protection": "user", "indexed": false }],
+            "fields": [{ "name": "note", "type": "text", "protection": "user", "indexed": false }],
             "relationships": [{
                 "name": "member_of",
                 "targetType": "collection",
@@ -4254,7 +4254,7 @@ async fn test_add_field_values_rejects_duplicate_within_same_call() {
 #[tokio::test]
 async fn test_add_field_values_rejects_non_enum_field_even_if_extensible() {
     // user_values/core_values are only ever read by get_enum_values /
-    // get_enum_value_strings, which both gate on field_type == "enum" —
+    // get_enum_value_strings, which both gate on the field being an `enum` —
     // add_field_values must reject a non-enum field even if it were somehow
     // marked extensible: true, rather than silently writing values nothing
     // surfaces or validates against.
@@ -4266,7 +4266,7 @@ async fn test_add_field_values_rejects_non_enum_field_even_if_extensible() {
             "name": "Widget",
             "fields": [{
                 "name": "note",
-                "type": "string",
+                "type": "text",
                 "protection": "user",
                 "extensible": true
             }]
@@ -4367,7 +4367,7 @@ async fn test_create_schema_with_extends_persists_the_edge() {
             "name": "Bug",
             "extends": "ticket",
             "fields": [
-                { "name": "severity", "type": "string", "protection": "user", "indexed": false }
+                { "name": "severity", "type": "text", "protection": "user", "indexed": false }
             ]
         }),
     )
@@ -4495,7 +4495,7 @@ async fn test_redeclaring_an_inherited_field_rejected() {
             "name": "Bug",
             "extends": "ticket",
             "fields": [
-                { "name": "status", "type": "string", "protection": "user", "indexed": false }
+                { "name": "status", "type": "text", "protection": "user", "indexed": false }
             ]
         }),
     )
@@ -4529,7 +4529,7 @@ async fn test_redeclaring_a_field_inherited_from_a_grandparent_rejected() {
             "name": "Leaf",
             "extends": "mid",
             "fields": [
-                { "name": "shared", "type": "string", "protection": "user", "indexed": false }
+                { "name": "shared", "type": "text", "protection": "user", "indexed": false }
             ]
         }),
     )
@@ -4563,7 +4563,7 @@ async fn test_extends_allows_a_genuinely_new_field() {
             "name": "Bug",
             "extends": "ticket",
             "fields": [
-                { "name": "severity", "type": "string", "protection": "user", "indexed": false }
+                { "name": "severity", "type": "text", "protection": "user", "indexed": false }
             ]
         }),
     )
@@ -4678,7 +4678,7 @@ async fn test_update_without_extends_leaves_the_edge_untouched() {
         json!({
             "schema_id": "bug",
             "add_fields": [
-                { "name": "severity", "type": "string", "protection": "user", "indexed": false }
+                { "name": "severity", "type": "text", "protection": "user", "indexed": false }
             ]
         }),
     )
@@ -4702,7 +4702,7 @@ async fn test_resolve_effective_fields_composes_the_chain() {
             "name": "Mid",
             "extends": "root",
             "fields": [
-                { "name": "mid_field", "type": "string", "protection": "user", "indexed": false }
+                { "name": "mid_field", "type": "text", "protection": "user", "indexed": false }
             ]
         }),
     )
@@ -4714,7 +4714,7 @@ async fn test_resolve_effective_fields_composes_the_chain() {
             "name": "Leaf",
             "extends": "mid",
             "fields": [
-                { "name": "leaf_field", "type": "string", "protection": "user", "indexed": false }
+                { "name": "leaf_field", "type": "text", "protection": "user", "indexed": false }
             ]
         }),
     )
@@ -4857,7 +4857,7 @@ async fn test_resolve_effective_fields_agrees_with_resolve_field_owners_across_e
             "name": "Mid",
             "extends": "root",
             "fields": [
-                { "name": "mid_field", "type": "string", "protection": "user", "indexed": false }
+                { "name": "mid_field", "type": "text", "protection": "user", "indexed": false }
             ]
         }),
     )
@@ -4869,7 +4869,7 @@ async fn test_resolve_effective_fields_agrees_with_resolve_field_owners_across_e
             "name": "Leaf",
             "extends": "mid",
             "fields": [
-                { "name": "leaf_field", "type": "string", "protection": "user", "indexed": false }
+                { "name": "leaf_field", "type": "text", "protection": "user", "indexed": false }
             ]
         }),
     )
@@ -5022,7 +5022,7 @@ async fn test_add_fields_only_call_rejects_a_field_inherited_from_a_grandparent(
         json!({
             "schema_id": "leaf",
             "add_fields": [
-                { "name": "shared", "type": "string", "protection": "user", "indexed": false }
+                { "name": "shared", "type": "text", "protection": "user", "indexed": false }
             ]
         }),
     )
@@ -5064,7 +5064,7 @@ async fn test_add_fields_only_call_still_allows_a_genuinely_new_field() {
         json!({
             "schema_id": "bug",
             "add_fields": [
-                { "name": "severity", "type": "string", "protection": "user", "indexed": false }
+                { "name": "severity", "type": "text", "protection": "user", "indexed": false }
             ]
         }),
     )
@@ -5103,7 +5103,7 @@ async fn test_add_fields_call_that_also_retargets_extends_is_checked_against_the
             "schema_id": "child",
             "extends": "new_parent",
             "add_fields": [
-                { "name": "status", "type": "string", "protection": "user", "indexed": false }
+                { "name": "status", "type": "text", "protection": "user", "indexed": false }
             ]
         }),
     )
@@ -5143,7 +5143,7 @@ async fn test_add_fields_call_that_also_retargets_extends_still_rejects_a_collis
             "schema_id": "child",
             "extends": "new_parent",
             "add_fields": [
-                { "name": "shared", "type": "string", "protection": "user", "indexed": false }
+                { "name": "shared", "type": "text", "protection": "user", "indexed": false }
             ]
         }),
     )
@@ -5193,7 +5193,7 @@ async fn test_extends_retarget_rejects_a_field_inherited_from_the_new_parents_gr
             "schema_id": "child",
             "extends": "new_parent",
             "add_fields": [
-                { "name": "shared", "type": "string", "protection": "user", "indexed": false }
+                { "name": "shared", "type": "text", "protection": "user", "indexed": false }
             ]
         }),
     )
@@ -5748,7 +5748,7 @@ async fn test_create_schema_field_colliding_with_inherited_relationship_rejected
             "name": "Bug",
             "extends": "ticket",
             "fields": [
-                { "name": "widgets", "type": "string", "protection": "user", "indexed": false }
+                { "name": "widgets", "type": "text", "protection": "user", "indexed": false }
             ]
         }),
     )
@@ -5821,7 +5821,7 @@ async fn test_add_fields_only_call_rejects_a_field_colliding_with_an_inherited_r
         json!({
             "schema_id": "bug",
             "add_fields": [
-                { "name": "widgets", "type": "string", "protection": "user", "indexed": false }
+                { "name": "widgets", "type": "text", "protection": "user", "indexed": false }
             ]
         }),
     )
@@ -5896,7 +5896,7 @@ async fn test_extends_retarget_rejects_a_field_colliding_with_the_new_parents_re
             "name": "Child",
             "extends": "beta",
             "fields": [
-                { "name": "widgets", "type": "string", "protection": "user", "indexed": false }
+                { "name": "widgets", "type": "text", "protection": "user", "indexed": false }
             ]
         }),
     )
@@ -5974,7 +5974,7 @@ async fn test_create_schema_rejects_a_field_and_relationship_sharing_a_name_with
         json!({
             "name": "Bug",
             "fields": [
-                { "name": "owner", "type": "string", "protection": "user", "indexed": false }
+                { "name": "owner", "type": "text", "protection": "user", "indexed": false }
             ],
             "relationships": [widget_relationship("owner", "widget", "owned_bugs")]
         }),
@@ -6014,7 +6014,7 @@ async fn test_add_fields_rejects_a_name_already_used_by_an_existing_relationship
         json!({
             "schema_id": "bug",
             "add_fields": [
-                { "name": "owner", "type": "string", "protection": "user", "indexed": false }
+                { "name": "owner", "type": "text", "protection": "user", "indexed": false }
             ]
         }),
     )
@@ -6072,7 +6072,7 @@ async fn test_add_fields_and_add_relationships_in_the_same_call_rejects_a_shared
         json!({
             "schema_id": "bug",
             "add_fields": [
-                { "name": "owner", "type": "string", "protection": "user", "indexed": false }
+                { "name": "owner", "type": "text", "protection": "user", "indexed": false }
             ],
             "add_relationships": [widget_relationship("owner", "widget", "owned_bugs")]
         }),
@@ -6114,7 +6114,7 @@ async fn test_rename_fields_rejects_a_destination_colliding_with_an_inherited_re
             "name": "Bug",
             "extends": "ticket",
             "fields": [
-                { "name": "notes", "type": "string", "protection": "user", "indexed": false }
+                { "name": "notes", "type": "text", "protection": "user", "indexed": false }
             ]
         }),
     )
@@ -6166,7 +6166,7 @@ async fn test_rename_fields_rejects_a_destination_colliding_with_an_existing_rel
         json!({
             "name": "Bug",
             "fields": [
-                { "name": "notes", "type": "string", "protection": "user", "indexed": false }
+                { "name": "notes", "type": "text", "protection": "user", "indexed": false }
             ],
             "relationships": [widget_relationship("owner", "widget", "owned_bugs")]
         }),
@@ -6231,7 +6231,7 @@ async fn test_rename_fields_still_allows_a_genuinely_new_destination_name() {
             "name": "Bug",
             "extends": "ticket",
             "fields": [
-                { "name": "notes", "type": "string", "protection": "user", "indexed": false }
+                { "name": "notes", "type": "text", "protection": "user", "indexed": false }
             ]
         }),
     )
@@ -6262,7 +6262,7 @@ async fn test_rename_fields_rejects_a_destination_colliding_with_a_same_call_add
         json!({
             "name": "Bug",
             "fields": [
-                { "name": "notes", "type": "string", "protection": "user", "indexed": false }
+                { "name": "notes", "type": "text", "protection": "user", "indexed": false }
             ]
         }),
     )
@@ -6317,7 +6317,7 @@ async fn test_rename_fields_rejects_a_destination_colliding_with_a_same_call_add
             "schema_id": "bug",
             "rename_fields": [{ "from": "notes", "to": "extra" }],
             "add_fields": [
-                { "name": "extra", "type": "string", "protection": "user", "indexed": false }
+                { "name": "extra", "type": "text", "protection": "user", "indexed": false }
             ]
         }),
     )
@@ -6366,7 +6366,7 @@ async fn test_rename_fields_checks_the_new_parent_when_combined_with_extends_ret
             "name": "Bug",
             "extends": "oldparent",
             "fields": [
-                { "name": "notes", "type": "string", "protection": "user", "indexed": false }
+                { "name": "notes", "type": "text", "protection": "user", "indexed": false }
             ]
         }),
     )
@@ -6430,7 +6430,7 @@ async fn test_rename_fields_allows_a_destination_colliding_only_with_the_abandon
             "name": "Bug",
             "extends": "oldparent",
             "fields": [
-                { "name": "notes", "type": "string", "protection": "user", "indexed": false }
+                { "name": "notes", "type": "text", "protection": "user", "indexed": false }
             ]
         }),
     )
@@ -6467,7 +6467,7 @@ async fn test_rename_fields_allows_a_destination_freed_by_the_same_calls_remove_
         json!({
             "name": "Bug",
             "fields": [
-                { "name": "notes", "type": "string", "protection": "user", "indexed": false }
+                { "name": "notes", "type": "text", "protection": "user", "indexed": false }
             ],
             "relationships": [widget_relationship("owner", "widget", "owned_bugs")]
         }),
@@ -6619,7 +6619,7 @@ async fn test_display_only_rename_combined_with_an_invalid_extends_does_not_rela
             "fields": [
                 {
                     "name": "notes",
-                    "type": "string",
+                    "type": "text",
                     "protection": "user",
                     "indexed": false,
                     "friendlyName": "Notes"
@@ -6687,7 +6687,7 @@ async fn create_race_schema(svc: &Arc<NodeService>, i: usize) -> String {
         json!({
             "name": format!("RaceType{i}"),
             "fields": [
-                { "name": "priority", "type": "string", "protection": "user", "indexed": false }
+                { "name": "priority", "type": "text", "protection": "user", "indexed": false }
             ]
         }),
     )
@@ -6733,7 +6733,7 @@ async fn concurrent_update_schema_cannot_revert_a_committed_rename() {
                     json!({
                         "schema_id": schema_id,
                         "add_fields": [
-                            { "name": "notes", "type": "string", "protection": "user", "indexed": false }
+                            { "name": "notes", "type": "text", "protection": "user", "indexed": false }
                         ]
                     }),
                 )
@@ -6944,7 +6944,7 @@ async fn create_ticket_with_string_points(svc: &Arc<NodeService>) {
         json!({
             "name": "Ticket",
             "fields": [
-                { "name": "points", "type": "string", "protection": "user", "indexed": false }
+                { "name": "points", "type": "text", "protection": "user", "indexed": false }
             ]
         }),
     )
@@ -7023,7 +7023,10 @@ async fn test_redeclare_field_type_in_same_call_rejected_over_incompatible_value
 
     // The refusal left the schema as it was, so the node stays editable.
     let schema = svc.get_schema_node("ticket").await.unwrap().unwrap();
-    assert_eq!(schema.get_field("points").unwrap().field_type, "string");
+    assert_eq!(
+        schema.get_field("points").unwrap().field_type,
+        crate::models::SchemaFieldType::Text
+    );
     edit_content(&svc, &node_id)
         .await
         .expect("a content-only edit still succeeds");
@@ -7169,7 +7172,7 @@ async fn test_redeclare_field_type_sees_a_subtype_bucket_shadowing_the_base_one(
             "name": "Bug",
             "extends": "ticket",
             "fields": [
-                { "name": "points", "type": "string", "protection": "user", "indexed": false }
+                { "name": "points", "type": "text", "protection": "user", "indexed": false }
             ]
         }),
     )
@@ -7440,7 +7443,7 @@ async fn test_required_field_without_default_rejected_over_nodes_lacking_it() {
         json!({
             "name": "Sized",
             "fields": [{
-                "name": "size", "type": "string", "protection": "user", "indexed": false,
+                "name": "size", "type": "text", "protection": "user", "indexed": false,
                 "required": true
             }]
         }),

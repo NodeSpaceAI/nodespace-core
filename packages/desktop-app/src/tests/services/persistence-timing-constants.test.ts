@@ -26,6 +26,7 @@ describe('persistence timing constants stay in sync with SharedNodeStore', () =>
   let store: SharedNodeStore;
 
   const mockNode: Node = {
+    lifecycleStatus: 'active',
     id: 'timing-guard-node',
     nodeType: 'text',
     content: 'Test content',

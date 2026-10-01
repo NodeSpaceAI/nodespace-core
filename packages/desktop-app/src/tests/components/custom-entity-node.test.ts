@@ -32,6 +32,8 @@ function createMockSchemaNode(
   } = {}
 ): SchemaNode {
   return {
+    lifecycleStatus: 'active' as const,
+    properties: {},
     id,
     nodeType: 'schema',
     content: id,

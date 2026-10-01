@@ -387,6 +387,7 @@ function createMockReactiveNodeService() {
 
 function createMockNode(id: string, content: string, _parentId: string | null = null): Node {
   return {
+    lifecycleStatus: 'active',
     id,
     nodeType: 'text',
     content,

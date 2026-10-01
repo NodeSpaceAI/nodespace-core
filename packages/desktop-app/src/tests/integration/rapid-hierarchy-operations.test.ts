@@ -83,6 +83,7 @@ describe('Rapid Hierarchy Operations - Stress Tests', () => {
     // moveNode returns the updated node plus its placement (none in this mock)
     mockMoveNode.mockResolvedValue({
       node: {
+        lifecycleStatus: 'active',
         id: 'mock-node',
         nodeType: 'text',
         content: 'mock',
@@ -119,6 +120,7 @@ describe('Rapid Hierarchy Operations - Stress Tests', () => {
    */
   function createTestNode(id: string): Node {
     const node: Node = {
+      lifecycleStatus: 'active',
       id,
       nodeType: 'text',
       content: `Content for ${id}`,
@@ -310,6 +312,7 @@ describe('Stress Test - High Volume Operations', () => {
     // moveNode returns the updated node plus its placement (none in this mock)
     mockMoveNode.mockResolvedValue({
       node: {
+        lifecycleStatus: 'active',
         id: 'mock-node',
         nodeType: 'text',
         content: 'mock',
@@ -339,6 +342,7 @@ describe('Stress Test - High Volume Operations', () => {
 
   function createTestNode(id: string): Node {
     const node: Node = {
+      lifecycleStatus: 'active',
       id,
       nodeType: 'text',
       content: `Content for ${id}`,

@@ -37,10 +37,10 @@ pub use ai_chat_node::{
 };
 pub use conflict::{ConflictKind, ConflictRecord, ConflictStatus, Resolution};
 pub use node::{
-    DeleteResult, FilterOperator, Node, NodeFilter, NodeQuery, NodeReference, NodeRelationship,
-    NodeUpdate, OrderBy, PropertyFilter, TraversalDirection, ValidationError,
+    DeleteResult, FilterOperator, Node, NodeEnvelope, NodeFilter, NodeQuery, NodeReference,
+    NodeRelationship, NodeUpdate, OrderBy, PropertyFilter, TraversalDirection, ValidationError,
 };
-pub use schema::{RelationshipDirection, SchemaField, SchemaProtectionLevel};
+pub use schema::{RelationshipDirection, SchemaField, SchemaFieldType, SchemaProtectionLevel};
 pub use time::{SystemTimeProvider, TimeProvider};
 
 // Export type-safe wrappers
@@ -49,6 +49,13 @@ pub use nodespace_types::{SkillNode, DEFAULT_SKILL_MAX_ITERATIONS, SKILL_NODE_TY
 pub use priority::Priority;
 pub use schema_node::SchemaNode;
 pub use task_node::{TaskNode, TaskNodeUpdate, TaskStatus};
+
+// The core type registry (ADR-086 §3): the one list of the types NodeSpace
+// ships, and what each records.
+pub use nodespace_types::{
+    ChildrenRule, ContentRole, CoreNodeType, CoreTypeInfo, CoreTypeKind, ParentRule,
+    ParticipationRules, StructuralRules, TypeCategory, WireShape,
+};
 
 // node_to_typed_value and nodes_to_typed_values are the single canonical
 // implementations in nodespace-types, re-exported here for all entry points.

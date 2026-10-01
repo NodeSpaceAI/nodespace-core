@@ -823,7 +823,10 @@ async fn merge_refuses_to_give_a_collection_survivor_a_parent() -> Result<()> {
         .expect_err("a collection must stay a root");
 
     let violation = tree_violation(&err);
-    assert_eq!(violation.rule, TreeInvariantRule::CollectionNotRoot);
+    assert_eq!(
+        violation.rule,
+        TreeInvariantRule::NotRoot(nodespace_core::models::CoreNodeType::Collection)
+    );
     assert_eq!(violation.node_id.as_deref(), Some(survivor.as_str()));
     assert_eq!(parent_id(&svc, &survivor).await?, None);
     Ok(())

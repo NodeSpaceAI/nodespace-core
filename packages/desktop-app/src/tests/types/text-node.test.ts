@@ -11,6 +11,7 @@ import { type TextNode, isTextNode, TextNodeHelpers } from '$lib/types/text-node
 describe('TextNode Type Guard', () => {
   it('identifies text nodes correctly', () => {
     const textNode: TextNode = {
+      lifecycleStatus: 'active',
       id: 'test-1',
       nodeType: 'text',
       content: 'This is a text node',
@@ -25,6 +26,7 @@ describe('TextNode Type Guard', () => {
 
   it('rejects non-text nodes', () => {
     const taskNode: Node = {
+      lifecycleStatus: 'active',
       id: 'test-2',
       nodeType: 'task',
       content: 'This is a task',
@@ -39,6 +41,7 @@ describe('TextNode Type Guard', () => {
 
   it('rejects date nodes', () => {
     const dateNode: Node = {
+      lifecycleStatus: 'active',
       id: 'test-3',
       nodeType: 'date',
       content: '2025-12-05',
@@ -53,6 +56,7 @@ describe('TextNode Type Guard', () => {
 
   it('works with type narrowing', () => {
     const node: Node = {
+      lifecycleStatus: 'active',
       id: 'test-4',
       nodeType: 'text',
       content: 'Sample text',
@@ -259,6 +263,7 @@ describe('TextNodeHelpers.getWordCount', () => {
 describe('TextNodeHelpers.isTextNode (namespace method)', () => {
   it('matches the standalone isTextNode function', () => {
     const textNode: TextNode = {
+      lifecycleStatus: 'active',
       id: 'test-5',
       nodeType: 'text',
       content: 'Test',
@@ -275,6 +280,7 @@ describe('TextNodeHelpers.isTextNode (namespace method)', () => {
 
   it('rejects non-text nodes consistently', () => {
     const taskNode: Node = {
+      lifecycleStatus: 'active',
       id: 'test-6',
       nodeType: 'task',
       content: 'Task',

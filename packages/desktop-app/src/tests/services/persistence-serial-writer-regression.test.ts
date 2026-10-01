@@ -17,6 +17,7 @@ import type { Node } from '../../lib/types';
 import { CASCADE_SETTLE_TIMEOUT_MS, PERSISTENCE_DEBOUNCE_MS } from '../utils/test-constants';
 
 const makeNode = (id: string, content: string, version = 1): Node => ({
+  lifecycleStatus: 'active',
   id,
   nodeType: 'text',
   content,
@@ -62,6 +63,7 @@ describe('Persistence serial writer regression', () => {
       callCount++;
       await new Promise((resolve) => setTimeout(resolve, 300));
       return {
+        lifecycleStatus: 'active' as const,
         id: nodeId,
         nodeType: 'text',
         content: String(node.content ?? ''),
@@ -116,6 +118,7 @@ describe('Persistence serial writer regression', () => {
       versionsSeen.push(version);
       await new Promise((resolve) => setTimeout(resolve, 300));
       return {
+        lifecycleStatus: 'active' as const,
         id: nodeId,
         nodeType: 'text',
         content: String(node.content ?? ''),

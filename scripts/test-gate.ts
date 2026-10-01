@@ -201,6 +201,17 @@ await run({
   timeoutMs: 5 * MINUTE,
   nice: !merge,
 });
+// Literal node-type comparisons (ADR-086 section 5): a `node_type == "task"` is
+// false for every type that extends task, so each one is a rule a subtype falls
+// out of. Like the boundary check above, most such lines land in diffs that
+// test:changed routes around the scripts tier, so the push is where they are
+// first seen.
+await run({
+  label: "check-node-type-literals (ADR-086 chain-aware type rules)",
+  command: "bun run scripts/check-node-type-literals.ts",
+  timeoutMs: 5 * MINUTE,
+  nice: !merge,
+});
 
 if (!merge) {
   console.log("\n✓ Push check passed — pushing.\n");

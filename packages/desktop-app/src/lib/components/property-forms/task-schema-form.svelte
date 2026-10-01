@@ -23,6 +23,7 @@
 -->
 
 <script lang="ts">
+import { isExactly } from '$lib/types/core-node-types';
   import { onMount } from 'svelte';
   import { backendAdapter } from '$lib/services/backend-adapter';
   import { sharedNodeStore } from '$lib/services/shared-node-store.svelte';
@@ -58,7 +59,7 @@
   const node = $derived.by(() => {
     if (!nodeId) return null;
     const rawNode = sharedNodeStore.getNode(nodeId);
-    return rawNode?.nodeType === 'task' ? nodeToTaskNode(rawNode) : null;
+    return rawNode && isExactly(rawNode.nodeType, 'task') ? nodeToTaskNode(rawNode) : null;
   });
 
   // Load the task schema once on mount (constant type — never re-fetches). ADR-049:

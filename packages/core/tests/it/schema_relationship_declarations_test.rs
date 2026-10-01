@@ -43,7 +43,7 @@ async fn create_widget_pair(svc: &Arc<NodeService>) -> Result<()> {
         svc,
         json!({
             "name": "Widget",
-            "fields": [{ "name": "label", "type": "string", "protection": "user", "indexed": false }]
+            "fields": [{ "name": "label", "type": "text", "protection": "user", "indexed": false }]
         }),
     )
     .await
@@ -53,7 +53,7 @@ async fn create_widget_pair(svc: &Arc<NodeService>) -> Result<()> {
         svc,
         json!({
             "name": "Assembly",
-            "fields": [{ "name": "title", "type": "string", "protection": "user", "indexed": false }],
+            "fields": [{ "name": "title", "type": "text", "protection": "user", "indexed": false }],
             "relationships": [{
                 "name": "widgets",
                 "targetType": "widget",
@@ -191,8 +191,9 @@ async fn all_read_paths_agree_on_the_declaration_set() -> Result<()> {
     );
 
     // Path 4: the relationship viewer's outbound aggregation.
-    make_node(&svc, "a1", "assembly").await?;
-    let viewer = rel_ops::get_node_relationships(&svc, "a1").await?;
+    make_node(&svc, "85b8139f-92d2-5b40-959c-140253882714", "assembly").await?;
+    let viewer =
+        rel_ops::get_node_relationships(&svc, "85b8139f-92d2-5b40-959c-140253882714").await?;
     let group = viewer
         .groups
         .iter()
@@ -201,13 +202,20 @@ async fn all_read_paths_agree_on_the_declaration_set() -> Result<()> {
     assert_eq!(group.target_type.as_deref(), Some("widget"));
 
     // Path 5: create_relationship validates against the same declaration set.
-    make_node(&svc, "w1", "widget").await?;
-    svc.create_relationship("a1", "widgets", "w1", json!({}))
-        .await
-        .expect("declared relationship accepted on the write path");
-    let related = svc.get_related_nodes("a1", "widgets", "out").await?;
+    make_node(&svc, "5c115e74-4f2a-5af0-9741-d3d785a753b8", "widget").await?;
+    svc.create_relationship(
+        "85b8139f-92d2-5b40-959c-140253882714",
+        "widgets",
+        "5c115e74-4f2a-5af0-9741-d3d785a753b8",
+        json!({}),
+    )
+    .await
+    .expect("declared relationship accepted on the write path");
+    let related = svc
+        .get_related_nodes("85b8139f-92d2-5b40-959c-140253882714", "widgets", "out")
+        .await?;
     assert_eq!(related.len(), 1);
-    assert_eq!(related[0].id, "w1");
+    assert_eq!(related[0].id, "5c115e74-4f2a-5af0-9741-d3d785a753b8");
     Ok(())
 }
 
@@ -215,20 +223,28 @@ async fn all_read_paths_agree_on_the_declaration_set() -> Result<()> {
 async fn declaration_edges_do_not_leak_into_instance_queries() -> Result<()> {
     let (svc, _t) = create_test_service().await?;
     create_widget_pair(&svc).await?;
-    make_node(&svc, "a1", "assembly").await?;
-    make_node(&svc, "w1", "widget").await?;
-    svc.create_relationship("a1", "widgets", "w1", json!({}))
-        .await?;
+    make_node(&svc, "85b8139f-92d2-5b40-959c-140253882714", "assembly").await?;
+    make_node(&svc, "5c115e74-4f2a-5af0-9741-d3d785a753b8", "widget").await?;
+    svc.create_relationship(
+        "85b8139f-92d2-5b40-959c-140253882714",
+        "widgets",
+        "5c115e74-4f2a-5af0-9741-d3d785a753b8",
+        json!({}),
+    )
+    .await?;
 
     // The declaration edge (assembly→widget schema nodes) shares
     // relationship_type "widgets" with the instance edge — instance traversal
     // keyed by instance ids must see exactly the instance edge.
-    let related = svc.get_related_nodes("a1", "widgets", "out").await?;
+    let related = svc
+        .get_related_nodes("85b8139f-92d2-5b40-959c-140253882714", "widgets", "out")
+        .await?;
     assert_eq!(related.len(), 1);
-    assert_eq!(related[0].id, "w1");
+    assert_eq!(related[0].id, "5c115e74-4f2a-5af0-9741-d3d785a753b8");
 
     // And the viewer on the instance shows a count of 1, not 2.
-    let viewer = rel_ops::get_node_relationships(&svc, "a1").await?;
+    let viewer =
+        rel_ops::get_node_relationships(&svc, "85b8139f-92d2-5b40-959c-140253882714").await?;
     let group = viewer
         .groups
         .iter()
@@ -514,10 +530,15 @@ async fn a_builtin_inverse_always_resolves_to_the_builtin() -> Result<()> {
 async fn removing_a_declaration_with_live_edges_is_blocked() -> Result<()> {
     let (svc, _t) = create_test_service().await?;
     create_widget_pair(&svc).await?;
-    make_node(&svc, "a1", "assembly").await?;
-    make_node(&svc, "w1", "widget").await?;
-    svc.create_relationship("a1", "widgets", "w1", json!({}))
-        .await?;
+    make_node(&svc, "85b8139f-92d2-5b40-959c-140253882714", "assembly").await?;
+    make_node(&svc, "5c115e74-4f2a-5af0-9741-d3d785a753b8", "widget").await?;
+    svc.create_relationship(
+        "85b8139f-92d2-5b40-959c-140253882714",
+        "widgets",
+        "5c115e74-4f2a-5af0-9741-d3d785a753b8",
+        json!({}),
+    )
+    .await?;
 
     let err = handle_update_schema(
         &svc,
@@ -535,7 +556,12 @@ async fn removing_a_declaration_with_live_edges_is_blocked() -> Result<()> {
     assert_eq!(schema.relationships.len(), 1);
 
     // After the edge is deleted, removal succeeds.
-    svc.delete_relationship("a1", "widgets", "w1").await?;
+    svc.delete_relationship(
+        "85b8139f-92d2-5b40-959c-140253882714",
+        "widgets",
+        "5c115e74-4f2a-5af0-9741-d3d785a753b8",
+    )
+    .await?;
     handle_update_schema(
         &svc,
         json!({ "schema_id": "assembly", "remove_relationships": ["widgets"] }),
@@ -554,10 +580,15 @@ async fn retargeting_a_declaration_with_live_edges_is_blocked() -> Result<()> {
     handle_create_schema(&svc, json!({ "name": "Gear", "fields": [] }))
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
-    make_node(&svc, "a1", "assembly").await?;
-    make_node(&svc, "w1", "widget").await?;
-    svc.create_relationship("a1", "widgets", "w1", json!({}))
-        .await?;
+    make_node(&svc, "85b8139f-92d2-5b40-959c-140253882714", "assembly").await?;
+    make_node(&svc, "5c115e74-4f2a-5af0-9741-d3d785a753b8", "widget").await?;
+    svc.create_relationship(
+        "85b8139f-92d2-5b40-959c-140253882714",
+        "widgets",
+        "5c115e74-4f2a-5af0-9741-d3d785a753b8",
+        json!({}),
+    )
+    .await?;
 
     // remove + re-add under the same name with a different target = retarget.
     let err = handle_update_schema(
@@ -676,11 +707,16 @@ async fn deleting_an_extending_schema_succeeds_but_deleting_its_parent_is_still_
 async fn create_relationship_refuses_schema_node_endpoints() -> Result<()> {
     let (svc, _t) = create_test_service().await?;
     create_widget_pair(&svc).await?;
-    make_node(&svc, "w1", "widget").await?;
+    make_node(&svc, "5c115e74-4f2a-5af0-9741-d3d785a753b8", "widget").await?;
 
     // Schema node as source.
     let err = svc
-        .create_relationship("assembly", "widgets", "w1", json!({}))
+        .create_relationship(
+            "assembly",
+            "widgets",
+            "5c115e74-4f2a-5af0-9741-d3d785a753b8",
+            json!({}),
+        )
         .await
         .expect_err("schema node as relationship source must be refused");
     assert!(err.to_string().contains("schema node"), "got: {err}");
@@ -696,9 +732,14 @@ async fn create_relationship_refuses_schema_node_endpoints() -> Result<()> {
     )
     .await
     .map_err(|e| anyhow::anyhow!("{e}"))?;
-    make_node(&svc, "b1", "board").await?;
+    make_node(&svc, "1aa41ebc-ae40-5059-ab0c-19b72e2c9c72", "board").await?;
     let err = svc
-        .create_relationship("b1", "pins", "widget", json!({}))
+        .create_relationship(
+            "1aa41ebc-ae40-5059-ab0c-19b72e2c9c72",
+            "pins",
+            "widget",
+            json!({}),
+        )
         .await
         .expect_err("schema node as relationship target must be refused");
     assert!(err.to_string().contains("schema node"), "got: {err}");
@@ -709,10 +750,15 @@ async fn create_relationship_refuses_schema_node_endpoints() -> Result<()> {
 async fn delete_relationship_refuses_to_delete_a_declaration_edge() -> Result<()> {
     let (svc, _t) = create_test_service().await?;
     create_widget_pair(&svc).await?;
-    make_node(&svc, "a1", "assembly").await?;
-    make_node(&svc, "w1", "widget").await?;
-    svc.create_relationship("a1", "widgets", "w1", json!({}))
-        .await?;
+    make_node(&svc, "85b8139f-92d2-5b40-959c-140253882714", "assembly").await?;
+    make_node(&svc, "5c115e74-4f2a-5af0-9741-d3d785a753b8", "widget").await?;
+    svc.create_relationship(
+        "85b8139f-92d2-5b40-959c-140253882714",
+        "widgets",
+        "5c115e74-4f2a-5af0-9741-d3d785a753b8",
+        json!({}),
+    )
+    .await?;
 
     // Addressing a declaration edge with the instance-edge delete API must be
     // refused — otherwise it would bypass the live-instance-edge protection

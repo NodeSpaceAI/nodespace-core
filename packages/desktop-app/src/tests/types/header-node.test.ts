@@ -19,6 +19,7 @@ import {
 describe('HeaderNode Type Guard', () => {
   it('identifies header nodes correctly', () => {
     const headerNode: HeaderNode = {
+      lifecycleStatus: 'active',
       id: 'test-1',
       nodeType: 'header',
       content: '# My Header',
@@ -33,6 +34,7 @@ describe('HeaderNode Type Guard', () => {
 
   it('rejects non-header nodes', () => {
     const textNode: Node = {
+      lifecycleStatus: 'active',
       id: 'test-2',
       nodeType: 'text',
       content: 'Regular text',
@@ -47,6 +49,7 @@ describe('HeaderNode Type Guard', () => {
 
   it('rejects task nodes', () => {
     const taskNode: Node = {
+      lifecycleStatus: 'active',
       id: 'test-3',
       nodeType: 'task',
       content: '- [ ] Task item',
@@ -63,6 +66,7 @@ describe('HeaderNode Type Guard', () => {
 describe('getHeaderLevel', () => {
   it('returns level 1 for single # header', () => {
     const node: HeaderNode = {
+      lifecycleStatus: 'active',
       id: 'test-4',
       nodeType: 'header',
       content: '# H1 Header',
@@ -77,6 +81,7 @@ describe('getHeaderLevel', () => {
 
   it('returns level 2 for ## header', () => {
     const node: HeaderNode = {
+      lifecycleStatus: 'active',
       id: 'test-5',
       nodeType: 'header',
       content: '## H2 Header',
@@ -91,6 +96,7 @@ describe('getHeaderLevel', () => {
 
   it('returns level 3 for ### header', () => {
     const node: HeaderNode = {
+      lifecycleStatus: 'active',
       id: 'test-6',
       nodeType: 'header',
       content: '### H3 Header',
@@ -105,6 +111,7 @@ describe('getHeaderLevel', () => {
 
   it('returns level 4 for #### header', () => {
     const node: HeaderNode = {
+      lifecycleStatus: 'active',
       id: 'test-7',
       nodeType: 'header',
       content: '#### H4 Header',
@@ -119,6 +126,7 @@ describe('getHeaderLevel', () => {
 
   it('returns level 5 for ##### header', () => {
     const node: HeaderNode = {
+      lifecycleStatus: 'active',
       id: 'test-8',
       nodeType: 'header',
       content: '##### H5 Header',
@@ -133,6 +141,7 @@ describe('getHeaderLevel', () => {
 
   it('returns level 6 for ###### header', () => {
     const node: HeaderNode = {
+      lifecycleStatus: 'active',
       id: 'test-9',
       nodeType: 'header',
       content: '###### H6 Header',
@@ -147,6 +156,7 @@ describe('getHeaderLevel', () => {
 
   it('clamps level at 6 for more than 6 # characters (with space)', () => {
     const node: HeaderNode = {
+      lifecycleStatus: 'active',
       id: 'test-10',
       nodeType: 'header',
       content: '####### Too Many Hashes',
@@ -162,6 +172,7 @@ describe('getHeaderLevel', () => {
 
   it('clamps level at 6 for exactly 7 # characters with space', () => {
     const node: HeaderNode = {
+      lifecycleStatus: 'active',
       id: 'test-10b',
       nodeType: 'header',
       content: '####### Too Many',
@@ -177,6 +188,7 @@ describe('getHeaderLevel', () => {
 
   it('returns 1 as default when no # prefix found', () => {
     const node: HeaderNode = {
+      lifecycleStatus: 'active',
       id: 'test-11',
       nodeType: 'header',
       content: 'Plain text header',
@@ -191,6 +203,7 @@ describe('getHeaderLevel', () => {
 
   it('requires space after # for valid header', () => {
     const node: HeaderNode = {
+      lifecycleStatus: 'active',
       id: 'test-12',
       nodeType: 'header',
       content: '#NoSpace',
@@ -205,6 +218,7 @@ describe('getHeaderLevel', () => {
 
   it('handles headers with multiple spaces after #', () => {
     const node: HeaderNode = {
+      lifecycleStatus: 'active',
       id: 'test-13',
       nodeType: 'header',
       content: '##  Multiple Spaces',
@@ -221,6 +235,7 @@ describe('getHeaderLevel', () => {
 describe('getHeaderText', () => {
   it('removes single # prefix and space', () => {
     const node: HeaderNode = {
+      lifecycleStatus: 'active',
       id: 'test-14',
       nodeType: 'header',
       content: '# My Header',
@@ -235,6 +250,7 @@ describe('getHeaderText', () => {
 
   it('removes ## prefix and space', () => {
     const node: HeaderNode = {
+      lifecycleStatus: 'active',
       id: 'test-15',
       nodeType: 'header',
       content: '## Second Level',
@@ -249,6 +265,7 @@ describe('getHeaderText', () => {
 
   it('removes ###### prefix and space', () => {
     const node: HeaderNode = {
+      lifecycleStatus: 'active',
       id: 'test-16',
       nodeType: 'header',
       content: '###### Sixth Level',
@@ -263,6 +280,7 @@ describe('getHeaderText', () => {
 
   it('returns original content when no # prefix', () => {
     const node: HeaderNode = {
+      lifecycleStatus: 'active',
       id: 'test-17',
       nodeType: 'header',
       content: 'No prefix header',
@@ -277,6 +295,7 @@ describe('getHeaderText', () => {
 
   it('handles headers with # characters in the text', () => {
     const node: HeaderNode = {
+      lifecycleStatus: 'active',
       id: 'test-18',
       nodeType: 'header',
       content: '# Header with # in text',
@@ -291,6 +310,7 @@ describe('getHeaderText', () => {
 
   it('handles empty header text', () => {
     const node: HeaderNode = {
+      lifecycleStatus: 'active',
       id: 'test-19',
       nodeType: 'header',
       content: '## ',
@@ -305,6 +325,7 @@ describe('getHeaderText', () => {
 
   it('preserves trailing whitespace in header text', () => {
     const node: HeaderNode = {
+      lifecycleStatus: 'active',
       id: 'test-20',
       nodeType: 'header',
       content: '# Header with spaces   ',
@@ -319,6 +340,7 @@ describe('getHeaderText', () => {
 
   it('handles headers with only # prefix and no space', () => {
     const node: HeaderNode = {
+      lifecycleStatus: 'active',
       id: 'test-21',
       nodeType: 'header',
       content: '#',
@@ -336,6 +358,7 @@ describe('getHeaderText', () => {
 describe('setHeaderLevel', () => {
   it('sets header level immutably', () => {
     const original: HeaderNode = {
+      lifecycleStatus: 'active',
       id: 'test-22',
       nodeType: 'header',
       content: '# Original',
@@ -357,6 +380,7 @@ describe('setHeaderLevel', () => {
 
   it('changes level from 1 to 3', () => {
     const node: HeaderNode = {
+      lifecycleStatus: 'active',
       id: 'test-23',
       nodeType: 'header',
       content: '# Header Text',
@@ -372,6 +396,7 @@ describe('setHeaderLevel', () => {
 
   it('changes level from 5 to 2', () => {
     const node: HeaderNode = {
+      lifecycleStatus: 'active',
       id: 'test-24',
       nodeType: 'header',
       content: '##### Fifth Level',
@@ -387,6 +412,7 @@ describe('setHeaderLevel', () => {
 
   it('clamps level at 1 for values below 1', () => {
     const node: HeaderNode = {
+      lifecycleStatus: 'active',
       id: 'test-25',
       nodeType: 'header',
       content: '## Header',
@@ -402,6 +428,7 @@ describe('setHeaderLevel', () => {
 
   it('clamps level at 1 for negative values', () => {
     const node: HeaderNode = {
+      lifecycleStatus: 'active',
       id: 'test-26',
       nodeType: 'header',
       content: '### Header',
@@ -417,6 +444,7 @@ describe('setHeaderLevel', () => {
 
   it('clamps level at 6 for values above 6', () => {
     const node: HeaderNode = {
+      lifecycleStatus: 'active',
       id: 'test-27',
       nodeType: 'header',
       content: '# Header',
@@ -432,6 +460,7 @@ describe('setHeaderLevel', () => {
 
   it('preserves header text content exactly', () => {
     const node: HeaderNode = {
+      lifecycleStatus: 'active',
       id: 'test-28',
       nodeType: 'header',
       content: '# Text with special chars !@#$%^&*()',
@@ -447,6 +476,7 @@ describe('setHeaderLevel', () => {
 
   it('handles headers without prefix', () => {
     const node: HeaderNode = {
+      lifecycleStatus: 'active',
       id: 'test-29',
       nodeType: 'header',
       content: 'Plain text',
@@ -462,6 +492,7 @@ describe('setHeaderLevel', () => {
 
   it('preserves properties and metadata', () => {
     const node: HeaderNode = {
+      lifecycleStatus: 'active',
       id: 'test-30',
       nodeType: 'header',
       content: '# Header',
@@ -557,6 +588,7 @@ describe('HeaderNodeHelpers', () => {
   describe('isTopLevel', () => {
     it('returns true for H1 headers', () => {
       const node: HeaderNode = {
+        lifecycleStatus: 'active',
         id: 'test-31',
         nodeType: 'header',
         content: '# Top Level',
@@ -571,6 +603,7 @@ describe('HeaderNodeHelpers', () => {
 
     it('returns false for H2 headers', () => {
       const node: HeaderNode = {
+        lifecycleStatus: 'active',
         id: 'test-32',
         nodeType: 'header',
         content: '## Second Level',
@@ -585,6 +618,7 @@ describe('HeaderNodeHelpers', () => {
 
     it('returns false for H3 headers', () => {
       const node: HeaderNode = {
+        lifecycleStatus: 'active',
         id: 'test-33',
         nodeType: 'header',
         content: '### Third Level',
@@ -599,6 +633,7 @@ describe('HeaderNodeHelpers', () => {
 
     it('returns false for H6 headers', () => {
       const node: HeaderNode = {
+        lifecycleStatus: 'active',
         id: 'test-34',
         nodeType: 'header',
         content: '###### Sixth Level',
@@ -613,6 +648,7 @@ describe('HeaderNodeHelpers', () => {
 
     it('returns true for headers without prefix (default level 1)', () => {
       const node: HeaderNode = {
+        lifecycleStatus: 'active',
         id: 'test-35',
         nodeType: 'header',
         content: 'No prefix',
@@ -629,6 +665,7 @@ describe('HeaderNodeHelpers', () => {
   describe('isSubHeading', () => {
     it('returns false for H1 headers', () => {
       const node: HeaderNode = {
+        lifecycleStatus: 'active',
         id: 'test-36',
         nodeType: 'header',
         content: '# Top Level',
@@ -643,6 +680,7 @@ describe('HeaderNodeHelpers', () => {
 
     it('returns true for H2 headers', () => {
       const node: HeaderNode = {
+        lifecycleStatus: 'active',
         id: 'test-37',
         nodeType: 'header',
         content: '## Sub Heading',
@@ -657,6 +695,7 @@ describe('HeaderNodeHelpers', () => {
 
     it('returns true for H3 headers', () => {
       const node: HeaderNode = {
+        lifecycleStatus: 'active',
         id: 'test-38',
         nodeType: 'header',
         content: '### Sub Heading',
@@ -671,6 +710,7 @@ describe('HeaderNodeHelpers', () => {
 
     it('returns true for H6 headers', () => {
       const node: HeaderNode = {
+        lifecycleStatus: 'active',
         id: 'test-39',
         nodeType: 'header',
         content: '###### Deep Sub Heading',
@@ -685,6 +725,7 @@ describe('HeaderNodeHelpers', () => {
 
     it('returns false for headers without prefix (default level 1)', () => {
       const node: HeaderNode = {
+        lifecycleStatus: 'active',
         id: 'test-40',
         nodeType: 'header',
         content: 'No prefix',
@@ -720,6 +761,7 @@ describe('HeaderNodeHelpers', () => {
 describe('Integration', () => {
   it('works with type guard and helpers together', () => {
     const node: HeaderNode = {
+      lifecycleStatus: 'active',
       id: 'integration-test',
       nodeType: 'header',
       content: '## Integration Test',
@@ -758,6 +800,7 @@ describe('Integration', () => {
 
     scenarios.forEach(({ content, expectedLevel, expectedText, isTop, isSub }) => {
       const node: HeaderNode = {
+        lifecycleStatus: 'active',
         id: `test-${expectedLevel}`,
         nodeType: 'header',
         content,

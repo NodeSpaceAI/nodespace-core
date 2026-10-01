@@ -100,7 +100,7 @@ mod offline_convergence_tests {
             .create_node(Node::new(
                 "person".to_string(),
                 String::new(),
-                json!({ "person": { "name": "Alice", "email": "alice@example.com" } }),
+                json!({ "person": { "first_name": "Alice", "email": "alice@example.com" } }),
             ))
             .await?;
 
@@ -113,7 +113,7 @@ mod offline_convergence_tests {
             .create_node(Node::new(
                 "person".to_string(),
                 String::new(),
-                json!({ "person": { "name": "Alice B", "email": "ALICE@example.com" } }),
+                json!({ "person": { "first_name": "Alice B", "email": "ALICE@example.com" } }),
             ))
             .await?;
 
@@ -162,7 +162,7 @@ mod offline_convergence_tests {
         let name = |node: &Node| {
             node.properties
                 .get("person")
-                .and_then(|p| p.get("name"))
+                .and_then(|p| p.get("first_name"))
                 .and_then(|v| v.as_str())
                 .map(str::to_string)
         };
@@ -262,7 +262,7 @@ mod offline_convergence_tests {
             .create_node(Node::new(
                 "person".to_string(),
                 String::new(),
-                json!({ "person": { "name": "Alice", "email": "alice@example.com" } }),
+                json!({ "person": { "first_name": "Alice", "email": "alice@example.com" } }),
             ))
             .await?;
 
@@ -272,7 +272,7 @@ mod offline_convergence_tests {
             .create_node(Node::new(
                 "person".to_string(),
                 String::new(),
-                json!({ "person": { "name": "Bob", "email": "bob@example.com" } }),
+                json!({ "person": { "first_name": "Bob", "email": "bob@example.com" } }),
             ))
             .await?;
 
@@ -326,7 +326,7 @@ mod offline_convergence_tests {
                 .create_node(Node::new(
                     "person".to_string(),
                     String::new(),
-                    json!({ "person": { "name": format!("Alice (device {i})"), "email": email } }),
+                    json!({ "person": { "first_name": format!("Alice (device {i})"), "email": email } }),
                 ))
                 .await?;
             let node = d.service.get_node(&id).await?.unwrap();
@@ -383,7 +383,7 @@ mod offline_convergence_tests {
             .create_node(Node::new(
                 "person".to_string(),
                 String::new(),
-                json!({ "person": { "name": "Alice", "email": "alice@example.com" } }),
+                json!({ "person": { "first_name": "Alice", "email": "alice@example.com" } }),
             ))
             .await?;
 
@@ -394,7 +394,7 @@ mod offline_convergence_tests {
             .create_node(Node::new(
                 "person".to_string(),
                 String::new(),
-                json!({ "person": { "name": "Bob", "email": "bob@example.com" } }),
+                json!({ "person": { "first_name": "Bob", "email": "bob@example.com" } }),
             ))
             .await?;
         let bob_before = hub.service.get_node(&bob_id).await?.unwrap();
@@ -412,7 +412,7 @@ mod offline_convergence_tests {
                 &bob_id,
                 bob_before.version,
                 NodeUpdate::new().with_properties(
-                    json!({ "person": { "name": "Bob", "email": "ALICE@example.com" } }),
+                    json!({ "person": { "first_name": "Bob", "email": "ALICE@example.com" } }),
                 ),
             )
             .await
@@ -473,7 +473,7 @@ mod offline_convergence_tests {
             .create_node(Node::new(
                 "person".to_string(),
                 String::new(),
-                json!({ "person": { "name": "Alice A", "email": "concurrent@example.com" } }),
+                json!({ "person": { "first_name": "Alice A", "email": "concurrent@example.com" } }),
             ))
             .await?;
         let a_node = device_a.service.get_node(&a_id).await?.unwrap();
@@ -484,7 +484,7 @@ mod offline_convergence_tests {
             .create_node(Node::new(
                 "person".to_string(),
                 String::new(),
-                json!({ "person": { "name": "Alice B", "email": "CONCURRENT@example.com" } }),
+                json!({ "person": { "first_name": "Alice B", "email": "CONCURRENT@example.com" } }),
             ))
             .await?;
         let b_node = device_b.service.get_node(&b_id).await?.unwrap();
@@ -522,7 +522,7 @@ mod offline_convergence_tests {
             .create_node(Node::new(
                 "person".to_string(),
                 String::new(),
-                json!({ "person": { "name": "Alice", "email": "alice@example.com" } }),
+                json!({ "person": { "first_name": "Alice", "email": "alice@example.com" } }),
             ))
             .await?;
         let device_b = device().await?;
@@ -531,7 +531,7 @@ mod offline_convergence_tests {
             .create_node(Node::new(
                 "person".to_string(),
                 String::new(),
-                json!({ "person": { "name": "Bob", "email": "alice@example.com" } }),
+                json!({ "person": { "first_name": "Bob", "email": "alice@example.com" } }),
             ))
             .await?;
         let bobs_node = device_b.service.get_node(&bob_id).await?.unwrap();
@@ -549,7 +549,7 @@ mod offline_convergence_tests {
             .update_node(
                 &bob_id,
                 bob_current.version,
-                NodeUpdate::new().with_properties(json!({ "name": "Bob (renamed)" })),
+                NodeUpdate::new().with_properties(json!({ "first_name": "Bob (renamed)" })),
             )
             .await?;
 
@@ -583,7 +583,7 @@ mod offline_convergence_tests {
             .create_node(Node::new(
                 "person".to_string(),
                 String::new(),
-                json!({ "person": { "name": "Alice", "email": "alice@example.com" } }),
+                json!({ "person": { "first_name": "Alice", "email": "alice@example.com" } }),
             ))
             .await?;
         let device_b = device().await?;
@@ -592,7 +592,7 @@ mod offline_convergence_tests {
             .create_node(Node::new(
                 "person".to_string(),
                 String::new(),
-                json!({ "person": { "name": "Bob", "email": "alice@example.com" } }),
+                json!({ "person": { "first_name": "Bob", "email": "alice@example.com" } }),
             ))
             .await?;
         let bobs_node = device_b.service.get_node(&bob_id).await?.unwrap();
@@ -632,7 +632,7 @@ mod offline_convergence_tests {
             .create_node(Node::new(
                 "person".to_string(),
                 String::new(),
-                json!({ "person": { "name": "Alice", "email": "alice@example.com" } }),
+                json!({ "person": { "first_name": "Alice", "email": "alice@example.com" } }),
             ))
             .await?;
         let device_b = device().await?;
@@ -641,7 +641,7 @@ mod offline_convergence_tests {
             .create_node(Node::new(
                 "person".to_string(),
                 String::new(),
-                json!({ "person": { "name": "Bob", "email": "alice@example.com" } }),
+                json!({ "person": { "first_name": "Bob", "email": "alice@example.com" } }),
             ))
             .await?;
         let bobs_node = device_b.service.get_node(&bob_id).await?.unwrap();
@@ -670,7 +670,7 @@ mod offline_convergence_tests {
             .update_node(
                 &bob_id,
                 bob_current.version,
-                NodeUpdate::new().with_properties(json!({ "name": "Bob (still colliding)" })),
+                NodeUpdate::new().with_properties(json!({ "first_name": "Bob (still colliding)" })),
             )
             .await?;
 

@@ -7,18 +7,12 @@
  * (`custom:…`), never `first_name`/`last_name`/`email`.
  */
 
-import type { Node } from './node';
+import type { Node, NodeEnvelope } from './node';
+import { isExactly } from './core-node-types';
 
-export interface PersonNode {
-  id: string;
+/** `properties` carries extension fields only — core fields are the typed fields below. */
+export interface PersonNode extends NodeEnvelope {
   nodeType: 'person';
-  content: string;
-  title?: string | null;
-  version: number;
-  createdAt: string;
-  modifiedAt: string;
-  /** Extension fields only — core fields are the typed fields below. */
-  properties?: Record<string, unknown>;
 
   firstName?: string;
   lastName?: string;
@@ -36,7 +30,7 @@ export interface PersonNodeUpdate {
 }
 
 export function isPersonNode(node: Node | PersonNode): node is PersonNode {
-  return node.nodeType === 'person';
+  return isExactly(node.nodeType, 'person');
 }
 
 /**

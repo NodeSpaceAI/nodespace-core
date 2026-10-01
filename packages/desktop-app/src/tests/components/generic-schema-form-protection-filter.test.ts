@@ -43,11 +43,14 @@ const SYSTEM_MARKER_FIELD = field({
   default: false
 });
 
-const NAME_FIELD = field({ name: 'name', friendlyName: 'Name', type: 'string', protection: 'core' });
-const EMAIL_FIELD = field({ name: 'email', friendlyName: 'Email', type: 'string', protection: 'core' });
+const NAME_FIELD = field({ name: 'name', friendlyName: 'Name', type: 'text', protection: 'core' });
+const EMAIL_FIELD = field({ name: 'email', friendlyName: 'Email', type: 'text', protection: 'core' });
 
 function schemaWith(fields: SchemaField[]): SchemaNode {
   return {
+    nodeType: 'schema' as const,
+    lifecycleStatus: 'active' as const,
+    properties: {},
     id: 'person-like',
     content: 'PersonLike',
     createdAt: '2026-01-01T00:00:00Z',

@@ -17,6 +17,7 @@
  * All relationship types use unified RelationshipCreated/Updated/Deleted events.
  */
 
+import { isA, isExactly } from '$lib/types/core-node-types';
 import { listen } from '@tauri-apps/api/event';
 import type {
   NodeEventData,
@@ -223,7 +224,7 @@ async function flushPendingNodeFetches(): Promise<void> {
  * fatal to the node update itself.
  */
 function maybeRefreshSchemaPlugin(node: Node): void {
-  if (node.nodeType !== 'schema') return;
+  if (!isExactly(node.nodeType, 'schema')) return;
   registerSchemaPlugin(node.id).catch((err) =>
     log.error('Failed to refresh schema plugin on node event:', err)
   );
@@ -244,7 +245,7 @@ function maybeRefreshSchemaPlugin(node: Node): void {
  * content" (mirrors `maybeRefreshSchemaPlugin`'s reasoning for `node:updated`).
  */
 function maybeRefreshAiChats(node: Node): void {
-  if (node.nodeType !== 'ai-chat') return;
+  if (!isA(node.nodeType, 'ai-chat')) return;
   scheduleAiChatRefresh();
 }
 
@@ -254,7 +255,7 @@ function maybeRefreshAiChats(node: Node): void {
  * for the same reason as `maybeRefreshAiChats`: `node:updated` carries no type.
  */
 function maybeRefreshSavedQueries(node: Node): void {
-  if (node.nodeType !== 'query') return;
+  if (!isA(node.nodeType, 'query')) return;
   scheduleSavedQueryRefresh();
 }
 
@@ -393,12 +394,12 @@ export async function initializeTauriSyncListeners(): Promise<void> {
       log.debug(`Node created: ${event.payload.id} (type: ${event.payload.nodeType})`);
 
       // If a collection node is created, refresh collections sidebar
-      if (event.payload.nodeType === 'collection') {
+      if (isA(event.payload.nodeType, 'collection')) {
         scheduleCollectionRefresh();
       }
 
       // If a schema node is created, refresh the node types sidebar
-      if (event.payload.nodeType === 'schema') {
+      if (isExactly(event.payload.nodeType, 'schema')) {
         scheduleSchemaRefresh();
         registerSchemaPlugin(event.payload.id).catch((err) =>
           log.error('Failed to register schema plugin:', err)
@@ -406,7 +407,7 @@ export async function initializeTauriSyncListeners(): Promise<void> {
       }
 
       // If a query node is created, refresh the saved queries in the sidebar
-      if (event.payload.nodeType === 'query') {
+      if (isA(event.payload.nodeType, 'query')) {
         scheduleSavedQueryRefresh();
       }
 

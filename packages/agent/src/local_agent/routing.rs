@@ -2013,14 +2013,14 @@ mod tests {
             "type_id": "invoice",
             "title_template": "{reference} - {amount}",
             "fields": [
-                {"name": "reference", "type": "string"},
+                {"name": "reference", "type": "text"},
                 {"name": "amount", "type": "number", "required": true}
             ]
         }]);
         let rendered = render_candidates_for_prompt(&[c]).unwrap();
         // Same notation the workspace-context block uses; both land in one prompt.
         assert!(
-            rendered.contains("- invoice -> reference: string; amount: number, required"),
+            rendered.contains("- invoice -> reference: text; amount: number, required"),
             "got: {rendered}"
         );
         // create_node's description promises the template is shown here.
@@ -2109,7 +2109,7 @@ mod tests {
                 "type_id": "invoice",
                 "name": "Invoice",
                 "fields": [
-                    {"name": "reference", "type": "string"},
+                    {"name": "reference", "type": "text"},
                     {"name": "amount", "type": "number", "required": true},
                     {"name": "status", "type": "enum", "enum_values": ["draft", "sent", "paid"]}
                 ],
@@ -2119,8 +2119,8 @@ mod tests {
                 "type_id": "customer",
                 "name": "Customer",
                 "fields": [
-                    {"name": "name", "type": "string", "required": true},
-                    {"name": "email", "type": "string"}
+                    {"name": "name", "type": "text", "required": true},
+                    {"name": "email", "type": "text"}
                 ]
             }
         ]);

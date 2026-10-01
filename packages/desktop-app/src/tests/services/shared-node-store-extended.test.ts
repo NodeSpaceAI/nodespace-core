@@ -18,6 +18,7 @@ import { backendAdapter } from '../../lib/services/backend-adapter';
 describe('SharedNodeStore - Extended Coverage', () => {
   let store: SharedNodeStore;
   const mockNode: Node = {
+    lifecycleStatus: 'active',
     id: 'test-node-1',
     nodeType: 'text',
     content: 'Test content',
@@ -702,6 +703,7 @@ describe('SharedNodeStore - Extended Coverage', () => {
 
   describe('Backlinks as a separate, independently-refreshed resource', () => {
     const targetNode: Node = {
+      lifecycleStatus: 'active',
       id: 'target-node-1',
       nodeType: 'text',
       content: 'Target node content',

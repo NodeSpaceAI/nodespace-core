@@ -255,7 +255,7 @@ async fn the_install_report_serializes_to_the_shape_clients_decode() -> Result<(
         serde_json::json!({
             "name": "Cycle",
             "description": "A bicycle in the shed",
-            "fields": [{ "name": "colour", "type": "string", "protection": "user" }],
+            "fields": [{ "name": "colour", "type": "text", "protection": "user" }],
         }),
     )
     .await
@@ -346,7 +346,7 @@ async fn an_existing_schema_id_is_re_keyed_and_disclosed_not_adopted() -> Result
         serde_json::json!({
             "name": "Cycle",
             "description": "A bicycle in the shed",
-            "fields": [{ "name": "colour", "type": "string", "protection": "user" }],
+            "fields": [{ "name": "colour", "type": "text", "protection": "user" }],
         }),
     )
     .await
@@ -391,7 +391,7 @@ async fn re_keying_follows_through_to_the_plays_that_reference_it() -> Result<()
         serde_json::json!({
             "name": "Cycle",
             "description": "A bicycle in the shed",
-            "fields": [{ "name": "colour", "type": "string", "protection": "user" }],
+            "fields": [{ "name": "colour", "type": "text", "protection": "user" }],
         }),
     )
     .await
@@ -403,7 +403,7 @@ async fn re_keying_follows_through_to_the_plays_that_reference_it() -> Result<()
     let new_id = report.suffixed()[0].1.to_string();
 
     let play = service
-        .get_node("linear-cycle-rollover")
+        .get_node(nodespace_core::methodology::linear::CYCLE_ROLLOVER_ID)
         .await?
         .expect("the rollover play should exist");
     let rules = play
@@ -475,7 +475,7 @@ async fn a_re_key_is_disclosed_in_the_seeded_guidance() -> Result<()> {
         serde_json::json!({
             "name": "Cycle",
             "description": "A bicycle in the shed",
-            "fields": [{ "name": "colour", "type": "string", "protection": "user" }],
+            "fields": [{ "name": "colour", "type": "text", "protection": "user" }],
         }),
     )
     .await
@@ -558,7 +558,7 @@ async fn the_bundle_skill_names_a_re_keyed_schema_by_its_real_id() -> Result<()>
         serde_json::json!({
             "name": "Cycle",
             "description": "A bicycle in the shed",
-            "fields": [{ "name": "colour", "type": "string", "protection": "user" }],
+            "fields": [{ "name": "colour", "type": "text", "protection": "user" }],
         }),
     )
     .await
@@ -619,7 +619,7 @@ async fn a_later_schema_step_follows_an_earlier_step_s_re_key() -> Result<()> {
         serde_json::json!({
             "name": "Widget",
             "description": "Someone else's widget, unrelated to this playbook",
-            "fields": [{ "name": "colour", "type": "string", "protection": "user" }],
+            "fields": [{ "name": "colour", "type": "text", "protection": "user" }],
         }),
     )
     .await
@@ -635,7 +635,7 @@ async fn a_later_schema_step_follows_an_earlier_step_s_re_key() -> Result<()> {
                 params: serde_json::json!({
                     "name": "Widget",
                     "description": "The playbook's own widget",
-                    "fields": [{ "name": "size", "type": "string", "protection": "user" }],
+                    "fields": [{ "name": "size", "type": "text", "protection": "user" }],
                 }),
             },
             SchemaStep {
@@ -711,7 +711,7 @@ async fn a_field_named_like_a_re_keyed_schema_is_not_rewritten() -> Result<()> {
         serde_json::json!({
             "name": "Cycle",
             "description": "Someone else's cycle",
-            "fields": [{ "name": "colour", "type": "string", "protection": "user" }],
+            "fields": [{ "name": "colour", "type": "text", "protection": "user" }],
         }),
     )
     .await
@@ -727,7 +727,7 @@ async fn a_field_named_like_a_re_keyed_schema_is_not_rewritten() -> Result<()> {
                 params: serde_json::json!({
                     "name": "Cycle",
                     "description": "The playbook's own cycle",
-                    "fields": [{ "name": "length", "type": "string", "protection": "user" }],
+                    "fields": [{ "name": "length", "type": "text", "protection": "user" }],
                 }),
             },
             SchemaStep {
@@ -736,8 +736,8 @@ async fn a_field_named_like_a_re_keyed_schema_is_not_rewritten() -> Result<()> {
                     "name": "Report",
                     "description": "Has a field called `cycle`, which is not a schema reference",
                     "fields": [
-                        { "name": "cycle", "type": "string", "protection": "user" },
-                        { "name": "summary", "type": "string", "protection": "user" },
+                        { "name": "cycle", "type": "text", "protection": "user" },
+                        { "name": "summary", "type": "text", "protection": "user" },
                     ],
                     "title_template": "{cycle} report",
                 }),
@@ -803,7 +803,7 @@ async fn a_vocabulary_extension_targets_the_field_the_playbook_wrote() -> Result
         serde_json::json!({
             "name": "Cycle",
             "description": "Someone else's cycle",
-            "fields": [{ "name": "colour", "type": "string", "protection": "user" }],
+            "fields": [{ "name": "colour", "type": "text", "protection": "user" }],
         }),
     )
     .await
@@ -819,7 +819,7 @@ async fn a_vocabulary_extension_targets_the_field_the_playbook_wrote() -> Result
                 params: serde_json::json!({
                     "name": "Cycle",
                     "description": "The playbook's own cycle",
-                    "fields": [{ "name": "length", "type": "string", "protection": "user" }],
+                    "fields": [{ "name": "length", "type": "text", "protection": "user" }],
                 }),
             },
             SchemaStep {
@@ -916,7 +916,7 @@ async fn a_re_keyed_trigger_keeps_its_property_key_namespace_consistent() -> Res
         serde_json::json!({
             "name": "Issue",
             "description": "Someone else's issue",
-            "fields": [{ "name": "colour", "type": "string", "protection": "user" }],
+            "fields": [{ "name": "colour", "type": "text", "protection": "user" }],
         }),
     )
     .await
@@ -925,7 +925,10 @@ async fn a_re_keyed_trigger_keeps_its_property_key_namespace_consistent() -> Res
     let report = install_playbook(&service, &linear()).await;
     assert!(report.success, "install failed: {:?}", report.failure());
 
-    for play_id in ["linear-sub-issue-gate", "linear-blocker-gate"] {
+    for play_id in [
+        nodespace_core::methodology::linear::SUB_ISSUE_GATE_ID,
+        nodespace_core::methodology::linear::BLOCKER_GATE_ID,
+    ] {
         let play = service
             .get_node(play_id)
             .await?
@@ -994,7 +997,7 @@ async fn the_issues_board_is_seeded_as_a_saved_kanban_that_finds_issues() -> Res
         .await?;
 
     let view = service
-        .get_node("linear-issues-by-status")
+        .get_node(nodespace_core::methodology::linear::ISSUES_BY_STATUS_ID)
         .await?
         .expect("the issues board should be seeded");
     // Stored properties are namespaced under the node's type, under the
@@ -1074,7 +1077,7 @@ async fn a_re_keyed_schema_retargets_the_views_seeded_over_it() -> Result<()> {
         .expect("the issue schema should have re-keyed");
 
     let view = service
-        .get_node("linear-issues-by-status")
+        .get_node(nodespace_core::methodology::linear::ISSUES_BY_STATUS_ID)
         .await?
         .expect("the issues board should be seeded");
     let fields = QueryFields::from_node(&view)?;
@@ -1089,7 +1092,7 @@ async fn a_re_keyed_schema_retargets_the_views_seeded_over_it() -> Result<()> {
     );
 
     let cycles = service
-        .get_node("linear-cycles")
+        .get_node(nodespace_core::methodology::linear::CYCLES_ID)
         .await?
         .expect("the cycles view should be seeded");
     assert_eq!(
@@ -1128,7 +1131,8 @@ async fn every_view_names_fields_its_target_type_has() -> Result<()> {
                 )
             });
             assert_eq!(
-                group_field.field_type, "enum",
+                group_field.field_type,
+                nodespace_core::models::SchemaFieldType::Enum,
                 "{}: a Kanban's columns come from an enum's values",
                 view.view_id
             );

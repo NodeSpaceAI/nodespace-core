@@ -655,7 +655,7 @@ impl LocalAgentServiceImpl {
                             _ => continue,
                         };
 
-                        if node_type != "ai-chat" {
+                        if !nodespace_core::models::CoreNodeType::AiChat.is_exactly(&node_type) {
                             continue;
                         }
 

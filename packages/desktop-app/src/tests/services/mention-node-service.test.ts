@@ -44,6 +44,7 @@ describe('createMentionTargetNode', () => {
   it('populates the real store from the backend read', async () => {
     vi.spyOn(backendAdapter, 'createNode').mockResolvedValue({ id: 'x', placement: null });
     vi.spyOn(backendAdapter, 'getNode').mockImplementation(async (id: string) => ({
+      lifecycleStatus: 'active' as const,
       id,
       nodeType: 'text',
       content: 'Fresh',

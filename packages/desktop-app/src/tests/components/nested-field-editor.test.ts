@@ -29,8 +29,8 @@ describe('NestedFieldEditor — object of leaves', () => {
     name: 'address',
     type: 'object',
     fields: [
-      field({ name: 'street', friendlyName: 'Street', type: 'string' }),
-      field({ name: 'city', friendlyName: 'City', type: 'string' })
+      field({ name: 'street', friendlyName: 'Street', type: 'text' }),
+      field({ name: 'city', friendlyName: 'City', type: 'text' })
     ]
   });
 
@@ -83,7 +83,7 @@ describe('NestedFieldEditor — array of objects', () => {
     name: 'contacts',
     type: 'array',
     itemType: 'object',
-    itemFields: [field({ name: 'email', type: 'string' })]
+    itemFields: [field({ name: 'email', type: 'text' })]
   });
 
   it('renders an Item row per element plus an Add item control', () => {
@@ -123,7 +123,7 @@ describe('NestedFieldEditor — array of objects', () => {
 });
 
 describe('NestedFieldEditor — array of scalars', () => {
-  const scalarArrayField = field({ name: 'tags', type: 'array', itemType: 'string' });
+  const scalarArrayField = field({ name: 'tags', type: 'array', itemType: 'text' });
 
   it('replaces the element at an index on edit', async () => {
     const onChange = vi.fn();

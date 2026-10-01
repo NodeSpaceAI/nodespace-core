@@ -338,6 +338,7 @@ describe('Backend Adapter - HttpAdapter (Browser Dev Mode)', () => {
       const adapter = getBackendAdapter();
 
       const mockNode: Node = {
+        lifecycleStatus: 'active',
         id: 'node-1',
         nodeType: 'text',
         content: 'Content',
@@ -382,6 +383,7 @@ describe('Backend Adapter - HttpAdapter (Browser Dev Mode)', () => {
       const adapter = getBackendAdapter();
 
       const mockNode: Node = {
+        lifecycleStatus: 'active',
         id: 'node-1',
         nodeType: 'text',
         content: 'Updated content',
@@ -415,6 +417,8 @@ describe('Backend Adapter - HttpAdapter (Browser Dev Mode)', () => {
       const adapter = getBackendAdapter();
 
       const mockTaskNode: TaskNode = {
+        lifecycleStatus: 'active',
+        properties: {},
         id: 'task-1',
         nodeType: 'task',
         content: 'Task content',
@@ -495,6 +499,7 @@ describe('Backend Adapter - HttpAdapter (Browser Dev Mode)', () => {
 
       const mockChildren: Node[] = [
         {
+          lifecycleStatus: 'active',
           id: 'child-1',
           nodeType: 'text',
           content: 'Child 1',
@@ -607,11 +612,11 @@ describe('Backend Adapter - HttpAdapter (Browser Dev Mode)', () => {
       const adapter = getBackendAdapter();
 
       const level1: Node[] = [
-        { id: 'child-1', nodeType: 'text', content: 'Child 1', version: 1, createdAt: '2025-01-01T00:00:00Z', modifiedAt: '2025-01-01T00:00:00Z', properties: {} },
-        { id: 'child-2', nodeType: 'text', content: 'Child 2', version: 1, createdAt: '2025-01-01T00:00:00Z', modifiedAt: '2025-01-01T00:00:00Z', properties: {} }
+        { lifecycleStatus: 'active', id: 'child-1', nodeType: 'text', content: 'Child 1', version: 1, createdAt: '2025-01-01T00:00:00Z', modifiedAt: '2025-01-01T00:00:00Z', properties: {} },
+        { lifecycleStatus: 'active', id: 'child-2', nodeType: 'text', content: 'Child 2', version: 1, createdAt: '2025-01-01T00:00:00Z', modifiedAt: '2025-01-01T00:00:00Z', properties: {} }
       ];
       const level2a: Node[] = [
-        { id: 'grandchild-1', nodeType: 'text', content: 'Grandchild 1', version: 1, createdAt: '2025-01-01T00:00:00Z', modifiedAt: '2025-01-01T00:00:00Z', properties: {} }
+        { lifecycleStatus: 'active', id: 'grandchild-1', nodeType: 'text', content: 'Grandchild 1', version: 1, createdAt: '2025-01-01T00:00:00Z', modifiedAt: '2025-01-01T00:00:00Z', properties: {} }
       ];
       const level2b: Node[] = [];
 
@@ -812,7 +817,7 @@ describe('Backend Adapter - HttpAdapter (Browser Dev Mode)', () => {
       const adapter = getBackendAdapter();
 
       const mockResults: Node[] = [
-        { id: 'result-1', nodeType: 'text', content: 'Result', version: 1, createdAt: '2025-01-01T00:00:00Z', modifiedAt: '2025-01-01T00:00:00Z', properties: {} }
+        { lifecycleStatus: 'active', id: 'result-1', nodeType: 'text', content: 'Result', version: 1, createdAt: '2025-01-01T00:00:00Z', modifiedAt: '2025-01-01T00:00:00Z', properties: {} }
       ];
 
       mockFetch.mockResolvedValueOnce({
@@ -840,7 +845,7 @@ describe('Backend Adapter - HttpAdapter (Browser Dev Mode)', () => {
       const adapter = getBackendAdapter();
 
       const mockResults: Node[] = [
-        { id: 'match-1', nodeType: 'text', content: 'Match', version: 1, createdAt: '2025-01-01T00:00:00Z', modifiedAt: '2025-01-01T00:00:00Z', properties: {} }
+        { lifecycleStatus: 'active', id: 'match-1', nodeType: 'text', content: 'Match', version: 1, createdAt: '2025-01-01T00:00:00Z', modifiedAt: '2025-01-01T00:00:00Z', properties: {} }
       ];
 
       mockFetch.mockResolvedValueOnce({
@@ -900,6 +905,8 @@ describe('Backend Adapter - HttpAdapter (Browser Dev Mode)', () => {
 
       const mockSchemas: SchemaNode[] = [
         {
+          lifecycleStatus: 'active' as const,
+          properties: {},
           id: 'schema-1',
           nodeType: 'schema',
           content: 'Schema 1',
@@ -933,6 +940,8 @@ describe('Backend Adapter - HttpAdapter (Browser Dev Mode)', () => {
       const adapter = getBackendAdapter();
 
       const mockSchema: SchemaNode = {
+        lifecycleStatus: 'active' as const,
+        properties: {},
         id: 'schema-1',
         nodeType: 'schema',
         content: 'Schema 1',
@@ -1297,6 +1306,7 @@ describe('Backend Adapter - TauriAdapter (Tauri IPC Mode)', () => {
       const adapter = getBackendAdapter();
 
       const mockNode: Node = {
+        lifecycleStatus: 'active',
         id: 'node-1',
         nodeType: 'text',
         content: 'Content',
@@ -1319,6 +1329,7 @@ describe('Backend Adapter - TauriAdapter (Tauri IPC Mode)', () => {
       const adapter = getBackendAdapter();
 
       const mockNode: Node = {
+        lifecycleStatus: 'active',
         id: 'node-1',
         nodeType: 'text',
         content: 'Updated',
@@ -1346,6 +1357,8 @@ describe('Backend Adapter - TauriAdapter (Tauri IPC Mode)', () => {
       const adapter = getBackendAdapter();
 
       const mockTaskNode: TaskNode = {
+        lifecycleStatus: 'active',
+        properties: {},
         id: 'task-1',
         nodeType: 'task',
         content: 'Task',
@@ -1396,7 +1409,7 @@ describe('Backend Adapter - TauriAdapter (Tauri IPC Mode)', () => {
       const adapter = getBackendAdapter();
 
       const mockChildren: Node[] = [
-        { id: 'child-1', nodeType: 'text', content: 'Child', version: 1, createdAt: '2025-01-01T00:00:00Z', modifiedAt: '2025-01-01T00:00:00Z', properties: {} }
+        { lifecycleStatus: 'active', id: 'child-1', nodeType: 'text', content: 'Child', version: 1, createdAt: '2025-01-01T00:00:00Z', modifiedAt: '2025-01-01T00:00:00Z', properties: {} }
       ];
 
       mockInvoke.mockResolvedValueOnce(mockChildren);
@@ -1470,11 +1483,11 @@ describe('Backend Adapter - TauriAdapter (Tauri IPC Mode)', () => {
       const adapter = getBackendAdapter();
 
       const level1: Node[] = [
-        { id: 'child-1', nodeType: 'text', content: 'Child 1', version: 1, createdAt: '2025-01-01T00:00:00Z', modifiedAt: '2025-01-01T00:00:00Z', properties: {} },
-        { id: 'child-2', nodeType: 'text', content: 'Child 2', version: 1, createdAt: '2025-01-01T00:00:00Z', modifiedAt: '2025-01-01T00:00:00Z', properties: {} }
+        { lifecycleStatus: 'active', id: 'child-1', nodeType: 'text', content: 'Child 1', version: 1, createdAt: '2025-01-01T00:00:00Z', modifiedAt: '2025-01-01T00:00:00Z', properties: {} },
+        { lifecycleStatus: 'active', id: 'child-2', nodeType: 'text', content: 'Child 2', version: 1, createdAt: '2025-01-01T00:00:00Z', modifiedAt: '2025-01-01T00:00:00Z', properties: {} }
       ];
       const level2: Node[] = [
-        { id: 'grandchild-1', nodeType: 'text', content: 'Grandchild', version: 1, createdAt: '2025-01-01T00:00:00Z', modifiedAt: '2025-01-01T00:00:00Z', properties: {} }
+        { lifecycleStatus: 'active', id: 'grandchild-1', nodeType: 'text', content: 'Grandchild', version: 1, createdAt: '2025-01-01T00:00:00Z', modifiedAt: '2025-01-01T00:00:00Z', properties: {} }
       ];
 
       mockInvoke
@@ -1620,7 +1633,7 @@ describe('Backend Adapter - TauriAdapter (Tauri IPC Mode)', () => {
       const adapter = getBackendAdapter();
 
       const mockResults: Node[] = [
-        { id: 'result-1', nodeType: 'text', content: 'Result', version: 1, createdAt: '2025-01-01T00:00:00Z', modifiedAt: '2025-01-01T00:00:00Z', properties: {} }
+        { lifecycleStatus: 'active', id: 'result-1', nodeType: 'text', content: 'Result', version: 1, createdAt: '2025-01-01T00:00:00Z', modifiedAt: '2025-01-01T00:00:00Z', properties: {} }
       ];
 
       mockInvoke.mockResolvedValueOnce(mockResults);
@@ -1637,7 +1650,7 @@ describe('Backend Adapter - TauriAdapter (Tauri IPC Mode)', () => {
       const adapter = getBackendAdapter();
 
       const mockResults: Node[] = [
-        { id: 'match-1', nodeType: 'text', content: 'Match', version: 1, createdAt: '2025-01-01T00:00:00Z', modifiedAt: '2025-01-01T00:00:00Z', properties: {} }
+        { lifecycleStatus: 'active', id: 'match-1', nodeType: 'text', content: 'Match', version: 1, createdAt: '2025-01-01T00:00:00Z', modifiedAt: '2025-01-01T00:00:00Z', properties: {} }
       ];
 
       mockInvoke.mockResolvedValueOnce(mockResults);
@@ -1708,6 +1721,8 @@ describe('Backend Adapter - TauriAdapter (Tauri IPC Mode)', () => {
 
       const mockSchemas: SchemaNode[] = [
         {
+          lifecycleStatus: 'active' as const,
+          properties: {},
           id: 'schema-1',
           nodeType: 'schema',
           content: 'Schema',
@@ -1734,6 +1749,8 @@ describe('Backend Adapter - TauriAdapter (Tauri IPC Mode)', () => {
       const adapter = getBackendAdapter();
 
       const mockSchema: SchemaNode = {
+        lifecycleStatus: 'active' as const,
+        properties: {},
         id: 'schema-1',
         nodeType: 'schema',
         content: 'Schema',

@@ -328,7 +328,7 @@ mod tests {
     fn field(name: &str) -> SchemaField {
         SchemaField {
             name: name.to_string(),
-            field_type: "string".to_string(),
+            field_type: crate::models::SchemaFieldType::Text,
             ..Default::default()
         }
     }
@@ -463,7 +463,7 @@ mod tests {
     fn enum_field(name: &str, core: &[&str], user: &[(&str, &str)]) -> SchemaField {
         SchemaField {
             name: name.to_string(),
-            field_type: "enum".to_string(),
+            field_type: crate::models::SchemaFieldType::Enum,
             extensible: Some(true),
             core_values: Some(core.iter().map(|v| EnumValue::new(*v, *v)).collect()),
             user_values: Some(

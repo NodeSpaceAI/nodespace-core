@@ -428,7 +428,7 @@ async fn run_rollover(service: &Arc<NodeService>, trigger_id: &str) -> Result<()
     use nodespace_core::db::events::{DomainEvent, PlaybookExecutionContext};
     use nodespace_core::playbook::types::{parse_rule, parse_rules_from_properties};
 
-    let play_id = "linear-cycle-rollover";
+    let play_id = nodespace_core::methodology::linear::CYCLE_ROLLOVER_ID;
     let play = service
         .get_node(play_id)
         .await?

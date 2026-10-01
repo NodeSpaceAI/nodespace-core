@@ -5,6 +5,7 @@
  * External plugins can register their own slash commands dynamically.
  */
 
+import { isA } from '$lib/types/core-node-types';
 import type { NodeType } from '$lib/design/icons';
 import { pluginRegistry } from '$lib/plugins/index';
 
@@ -91,13 +92,7 @@ export class SlashCommandService {
     const nodeType = this.inferNodeTypeFromCommand(cmd);
 
     // Map node types to icons
-    switch (nodeType) {
-      case 'task':
-        return 'task';
-      case 'text':
-      default:
-        return 'text';
-    }
+    return isA(nodeType, 'task') ? 'task' : 'text';
   }
 
   /**

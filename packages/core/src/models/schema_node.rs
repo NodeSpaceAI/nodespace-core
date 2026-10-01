@@ -71,6 +71,16 @@ pub struct SchemaNode {
     #[serde(default)]
     pub is_core: bool,
 
+    /// Whether the type is abstract: no node is created with it as its
+    /// `node_type` or retyped into it. It stays a valid `extends` target and
+    /// query scope (ADR-086 §6).
+    #[serde(
+        default,
+        rename = "abstract",
+        skip_serializing_if = "std::ops::Not::not"
+    )]
+    pub is_abstract: bool,
+
     /// Schema version number (increments on schema changes)
     #[serde(default = "default_schema_version")]
     pub schema_version: u32,
@@ -125,7 +135,7 @@ impl SchemaNode {
     ///
     /// Returns `ValidationError::InvalidNodeType` if the node type is not "schema".
     pub fn from_node(node: Node) -> Result<Self, ValidationError> {
-        if node.node_type != "schema" {
+        if !crate::models::CoreNodeType::Schema.is_exactly(&node.node_type) {
             return Err(ValidationError::InvalidNodeType(format!(
                 "Expected 'schema', got '{}'",
                 node.node_type
@@ -136,6 +146,12 @@ impl SchemaNode {
         let is_core = node
             .properties
             .get("isCore")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        let is_abstract = node
+            .properties
+            .get("abstract")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
@@ -188,6 +204,7 @@ impl SchemaNode {
             created_at: node.created_at,
             modified_at: node.modified_at,
             is_core,
+            is_abstract,
             schema_version,
             fields,
             // Declarations are relationship-table rows; the store's schema
@@ -212,6 +229,10 @@ impl SchemaNode {
             "schemaVersion": self.schema_version,
             "fields": self.fields,
         });
+
+        if self.is_abstract {
+            properties["abstract"] = serde_json::Value::Bool(true);
+        }
 
         if let Some(template) = self.title_template {
             properties["titleTemplate"] = serde_json::Value::String(template);
@@ -299,7 +320,7 @@ impl SchemaNode {
         let field = self.get_field(field_name)?;
 
         // Only return values for enum fields
-        if field.field_type != "enum" {
+        if field.field_type != crate::models::SchemaFieldType::Enum {
             return None;
         }
 
@@ -516,7 +537,10 @@ mod tests {
 
         let status_field = schema.get_field("status");
         assert!(status_field.is_some());
-        assert_eq!(status_field.unwrap().field_type, "enum");
+        assert_eq!(
+            status_field.unwrap().field_type,
+            crate::models::SchemaFieldType::Enum
+        );
 
         let missing_field = schema.get_field("nonexistent");
         assert!(missing_field.is_none());
@@ -541,7 +565,7 @@ mod tests {
         let new_field = SchemaField {
             name: "priority".to_string(),
             friendly_name: "Priority".to_string(),
-            field_type: "number".to_string(),
+            field_type: crate::models::SchemaFieldType::Number,
             local_only: false,
             protection: SchemaProtectionLevel::User,
             core_values: None,

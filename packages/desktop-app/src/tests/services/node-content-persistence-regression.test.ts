@@ -12,6 +12,7 @@ import { conflictNotifications } from '../../lib/stores/conflict-notifications.s
 import type { Node } from '../../lib/types';
 
 const makeNode = (id: string, content: string, version = 1): Node => ({
+  lifecycleStatus: 'active',
   id,
   nodeType: 'text',
   content,
@@ -82,6 +83,7 @@ describe('Node content persistence regression', () => {
     const updateSpy = vi.spyOn(backendAdapter, 'updateNode').mockImplementation(async (_id, _v, node) => {
       callCount++;
       return {
+        lifecycleStatus: 'active' as const,
         id: nodeId,
         nodeType: node.nodeType ?? 'text',
         content: node.content ?? '',
@@ -173,6 +175,7 @@ describe('Node content persistence regression', () => {
     vi.spyOn(backendAdapter, 'updateNode').mockImplementation(async (_id, _v, node) => {
       updateCallCount++;
       return {
+        lifecycleStatus: 'active' as const,
         id: nodeId,
         nodeType: node.nodeType ?? 'text',
         content: node.content ?? '',

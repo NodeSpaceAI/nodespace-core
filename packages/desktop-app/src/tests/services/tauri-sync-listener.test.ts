@@ -46,6 +46,7 @@ import {
  */
 function createTestNode(id: string, content = 'Test node'): Node {
   return {
+    lifecycleStatus: 'active',
     id,
     nodeType: 'text',
     content,
@@ -296,6 +297,9 @@ describe('TauriSyncListener', () => {
 
     function mockSchema(id: string, titleTemplate?: string): SchemaNode {
       return {
+        nodeType: 'schema' as const,
+        lifecycleStatus: 'active' as const,
+        properties: {},
         id,
         content: 'Test Schema',
         createdAt: new Date().toISOString(),
@@ -318,6 +322,7 @@ describe('TauriSyncListener', () => {
       registerMockNode({
         id: schemaId,
         nodeType: 'schema',
+        lifecycleStatus: 'active',
         content: 'Test Schema',
         properties: {},
         mentions: [],
@@ -364,6 +369,7 @@ describe('TauriSyncListener', () => {
 
     function mockAiChatNode(id: string, content: string): Node {
       return {
+        lifecycleStatus: 'active',
         id,
         nodeType: 'ai-chat',
         content,
@@ -1201,6 +1207,9 @@ describe('TauriSyncListener', () => {
 
     it('node:created for a schema adds it to the sidebar type list', async () => {
       const spec: SchemaNode = {
+        nodeType: 'schema' as const,
+        lifecycleStatus: 'active' as const,
+        properties: {},
         id: 'spec',
         content: 'Spec',
         createdAt: new Date().toISOString(),
@@ -1347,6 +1356,7 @@ describe('TauriSyncListener', () => {
 
     it('should normalize task nodes with flat status field', async () => {
       const taskNode: Node = {
+        lifecycleStatus: 'active',
         id: 'task1',
         nodeType: 'task',
         content: 'Test task',

@@ -416,6 +416,13 @@ message UpdateNodeRequest {
   // Collection IDs to add the node to. Repeated. The ID-based counterpart of
   // `add_to_collections`; the two are mutually exclusive on one request.
   repeated string add_to_collection_ids = 9;
+  // Set by a client that writes a core type's fields through that type's
+  // typed update (UpdateTaskNode, UpdatePersonNode, ...). The properties patch
+  // is then refused when it names a declared field of a core type that has a
+  // typed update, so such a field has exactly one write path from that
+  // client. A client that writes fields as bare keys leaves it unset; its
+  // patch is validated by the same pipeline the typed update lowers into.
+  bool typed_client = 10;
 }
 
 // UpdateNode returns NodeResponse.

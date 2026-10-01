@@ -20,6 +20,7 @@
  * than rendering Svelte components.
  */
 
+import { isExactly } from '$lib/types/core-node-types';
 import type { Node } from '$lib/types';
 import type { QueryDefinition, QueryFilter, QueryNode } from '$lib/types/query';
 import { resolveFieldValue } from '$lib/components/schema/schema-field-resolution';
@@ -54,7 +55,7 @@ export type ViewerMode = 'default' | 'saved';
  * tab's decorative `nodeType: 'query'` flag is not trusted; the loaded node is.
  */
 export function resolveViewerMode(node: Node | null | undefined): ViewerMode {
-  return node?.nodeType === 'query' ? 'saved' : 'default';
+  return isExactly(node?.nodeType, 'query') ? 'saved' : 'default';
 }
 
 /**

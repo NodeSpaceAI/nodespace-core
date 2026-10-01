@@ -13,6 +13,7 @@ import {
 describe('QuoteBlockNode Type Guard', () => {
   it('identifies quote block nodes correctly', () => {
     const quoteBlockNode: Node = {
+      lifecycleStatus: 'active',
       id: 'test-1',
       nodeType: 'quote-block',
       content: 'To be or not to be',
@@ -27,6 +28,7 @@ describe('QuoteBlockNode Type Guard', () => {
 
   it('rejects non-quote-block nodes', () => {
     const textNode: Node = {
+      lifecycleStatus: 'active',
       id: 'test-2',
       nodeType: 'text',
       content: 'Regular text',
@@ -78,6 +80,7 @@ describe('QuoteBlockNodeHelpers', () => {
   describe('isMultiline', () => {
     it('returns true for multiline quotes', () => {
       const multilineQuote: QuoteBlockNode = {
+        lifecycleStatus: 'active',
         id: 'test-3',
         nodeType: 'quote-block',
         content: 'First line\nSecond line\nThird line',
@@ -92,6 +95,7 @@ describe('QuoteBlockNodeHelpers', () => {
 
     it('returns false for single line quotes', () => {
       const singleLineQuote: QuoteBlockNode = {
+        lifecycleStatus: 'active',
         id: 'test-4',
         nodeType: 'quote-block',
         content: 'A single line quote',
@@ -108,6 +112,7 @@ describe('QuoteBlockNodeHelpers', () => {
   describe('getFirstLine', () => {
     it('returns first line from multiline quote', () => {
       const quote: QuoteBlockNode = {
+        lifecycleStatus: 'active',
         id: 'test-5',
         nodeType: 'quote-block',
         content: 'First line\nSecond line\nThird line',
@@ -122,6 +127,7 @@ describe('QuoteBlockNodeHelpers', () => {
 
     it('returns content for single line quote', () => {
       const quote: QuoteBlockNode = {
+        lifecycleStatus: 'active',
         id: 'test-6',
         nodeType: 'quote-block',
         content: 'Single line',
@@ -136,6 +142,7 @@ describe('QuoteBlockNodeHelpers', () => {
 
     it('returns empty string for empty quote', () => {
       const quote: QuoteBlockNode = {
+        lifecycleStatus: 'active',
         id: 'test-7',
         nodeType: 'quote-block',
         content: '',
@@ -152,6 +159,7 @@ describe('QuoteBlockNodeHelpers', () => {
   describe('getLineCount', () => {
     it('returns correct count for multiline quotes', () => {
       const quote: QuoteBlockNode = {
+        lifecycleStatus: 'active',
         id: 'test-8',
         nodeType: 'quote-block',
         content: 'Line 1\nLine 2\nLine 3',
@@ -166,6 +174,7 @@ describe('QuoteBlockNodeHelpers', () => {
 
     it('returns 1 for single line quotes', () => {
       const quote: QuoteBlockNode = {
+        lifecycleStatus: 'active',
         id: 'test-9',
         nodeType: 'quote-block',
         content: 'Single line',
@@ -180,6 +189,7 @@ describe('QuoteBlockNodeHelpers', () => {
 
     it('returns 0 for empty quotes', () => {
       const quote: QuoteBlockNode = {
+        lifecycleStatus: 'active',
         id: 'test-10',
         nodeType: 'quote-block',
         content: '',
@@ -197,6 +207,7 @@ describe('QuoteBlockNodeHelpers', () => {
 describe('Integration', () => {
   it('works with type guard and helpers', () => {
     const node: Node = {
+      lifecycleStatus: 'active',
       id: 'test-11',
       nodeType: 'quote-block',
       content: 'Be yourself; everyone else is already taken.\n— Oscar Wilde',
@@ -237,6 +248,7 @@ describe('Integration', () => {
 
     scenarios.forEach(({ content, expectedLines, expectedMultiline }) => {
       const quote: QuoteBlockNode = {
+        lifecycleStatus: 'active',
         id: `test-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`,
         nodeType: 'quote-block',
         content,
@@ -253,6 +265,7 @@ describe('Integration', () => {
 
   it('preserves extra properties', () => {
     const node: QuoteBlockNode = {
+      lifecycleStatus: 'active',
       id: 'test-12',
       nodeType: 'quote-block',
       content: 'A quote',

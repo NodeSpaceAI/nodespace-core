@@ -60,6 +60,9 @@ function dateField(name: string, friendlyName: string): SchemaField {
 
 /** Mirrors the `project` SchemaNode exactly as declared in core_schemas.rs. */
 const PROJECT_SCHEMA: SchemaNode = {
+  nodeType: 'schema' as const,
+  lifecycleStatus: 'active' as const,
+  properties: {},
   id: 'project',
   content: 'Project',
   createdAt: '2026-01-01T00:00:00Z',

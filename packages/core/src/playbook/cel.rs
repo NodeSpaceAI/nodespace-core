@@ -385,7 +385,7 @@ pub(crate) fn scoped_node_value(node: &Node, scope: Option<&CelScope>) -> Value 
 fn field_is_enum(fields: &[crate::models::SchemaField], name: &str) -> bool {
     fields
         .iter()
-        .any(|f| f.name == name && f.field_type == "enum")
+        .any(|f| f.name == name && f.field_type == crate::models::SchemaFieldType::Enum)
 }
 
 /// Build a CEL `Value` (Map) from a Node in wire format.

@@ -14,6 +14,7 @@ export const COLLECTION_NAME = 'Architecture';
 
 function collectionNode(id: string): CollectionNode {
   return {
+    lifecycleStatus: 'active',
     id,
     nodeType: 'collection',
     content: COLLECTION_NAME,
