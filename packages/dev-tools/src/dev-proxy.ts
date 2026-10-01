@@ -239,6 +239,10 @@ function error(code: string, message: string, status = 500, conflictData?: unkno
   return json(body, status);
 }
 
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === 'string');
+}
+
 // Mirrors the Tauri command layer's status_to_command_error
 // (packages/desktop-app/app-lib/src/commands/nodes.rs): inspects the same
 // gRPC trailer metadata to build SUBTREE_ACCESS_DENIED/VERSION_CONFLICT codes
@@ -447,8 +451,17 @@ async function handleRequest(req: Request): Promise<Response> {
       if (body.nodeType && body.nodeType !== '') request.nodeType = body.nodeType;
       if (body.content !== undefined) request.content = String(body.content);
       if (body.properties !== undefined) request.properties = JSON.stringify(body.properties);
-      if (body.addToCollection && body.addToCollection !== '') request.addToCollection = body.addToCollection;
-      if (body.removeFromCollection && body.removeFromCollection !== '') request.removeFromCollection = body.removeFromCollection;
+      // The proto's collection fields are all repeated. Paths and ids are
+      // mutually exclusive on one request; the daemon rejects a request
+      // carrying both, so both are forwarded as sent.
+      for (const field of ['addToCollections', 'addToCollectionIds', 'removeFromCollectionIds']) {
+        const value = body[field];
+        if (value === undefined || value === null) continue;
+        if (!isStringArray(value)) {
+          return error('INVALID_ARGUMENT', `${field} must be an array of strings`, 400);
+        }
+        if (value.length > 0) request[field] = value;
+      }
       if (body.lifecycleStatus && body.lifecycleStatus !== '') request.lifecycleStatus = body.lifecycleStatus;
       const res = await call<typeof request, { nodeData?: ProtoNodeData }>(
         (nodeClient as unknown as Record<string, Function>).updateNode,

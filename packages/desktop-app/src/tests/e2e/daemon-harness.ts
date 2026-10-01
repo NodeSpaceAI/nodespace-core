@@ -335,6 +335,11 @@ export class DaemonTestHarness {
     await waitForSocket(this.socketPath, timeoutMs);
   }
 
+  /** Base URL of the dev-proxy, for requests the adapter has no method for. */
+  get baseUrl(): string {
+    return `http://localhost:${this.proxyPort}`;
+  }
+
   /** SSE endpoint URL for WatchNodes event tests. */
   get sseUrl(): string {
     return `http://localhost:${this.proxyPort}/api/events`;
