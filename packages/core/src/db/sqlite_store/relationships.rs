@@ -7,7 +7,7 @@ use crate::models::schema::{
 /// The recursive `extends` closure query, for a given endpoint direction.
 ///
 /// **`INDEXED BY` is load-bearing, not decoration.** This is the same hazard
-/// [`MENTION_CONTAINERS_QUERY`] documents: left to its own planning, SQLite
+/// [`mention_containers_query`] documents: left to its own planning, SQLite
 /// picks `idx_rel_type (relationship_type)` as the driving index for the
 /// recursive step and scans every edge of that type per level, rather than
 /// using `idx_rel_out`/`idx_rel_in`'s `(endpoint, relationship_type)`
@@ -152,8 +152,9 @@ pub struct SchemaDeclarationChanges {
 /// seeding one row per mentioning source and walking `has_child` upward from
 /// each seed in lockstep (one recursive step per depth level, not per source)
 /// until each branch runs out of parents. `top` keeps only the deepest row per
-/// source (its root), unless the source is itself a task/ai-chat node, which
-/// is its own container. Takes one bound parameter (`?1`, the target node id).
+/// source (its root), unless the source is itself a task or a chat (or of a
+/// type extending one), which is its own container. Takes one bound parameter
+/// (`?1`, the target node id).
 ///
 /// IMPORTANT: the recursive step is written as a correlated subquery
 /// (`(SELECT r.in_node FROM relationship r WHERE r.out_node = w.nid AND
@@ -165,9 +166,11 @@ pub struct SchemaDeclarationChanges {
 /// (out_node, relationship_type)` instead, which is the difference between an
 /// 8ms query and a 393ms query on a database with ~31k `has_child` edges. Do
 /// not "simplify" this back into a join — the query-plan regression test in
-/// this file's `#[cfg(test)] mod tests` binds this exact constant and fails if
+/// this file's `#[cfg(test)] mod tests` runs this exact query and fails if
 /// the plan ever falls back to `idx_rel_type`.
-const MENTION_CONTAINERS_QUERY: &str = r#"WITH RECURSIVE
+fn mention_containers_query() -> String {
+    format!(
+        r#"WITH RECURSIVE
     src(sid) AS (
         SELECT DISTINCT in_node FROM relationship
         WHERE out_node = ?1 AND relationship_type = 'mentions'
@@ -189,9 +192,18 @@ const MENTION_CONTAINERS_QUERY: &str = r#"WITH RECURSIVE
         FROM walk
     )
 SELECT DISTINCT
-    CASE WHEN (SELECT node_type FROM node WHERE id = t.sid) IN ('task', 'ai-chat')
+    CASE WHEN {own_container}
          THEN t.sid ELSE t.nid END AS container_id
-FROM top t WHERE t.rn = 1"#;
+FROM top t WHERE t.rn = 1"#,
+        own_container = crate::db::schema::is_a_sql(
+            "(SELECT node_type FROM node WHERE id = t.sid)",
+            &[
+                crate::models::CoreNodeType::Task,
+                crate::models::CoreNodeType::AiChat
+            ],
+        )
+    )
+}
 
 /// `IN (...)` chunk size for the root-only membership check — well under
 /// SQLite's compiled SQLITE_MAX_VARIABLE_NUMBER (32766).
@@ -357,7 +369,7 @@ impl SqliteStore {
                 .read()
                 .await?
                 .query(
-                    MENTION_CONTAINERS_QUERY,
+                    &mention_containers_query(),
                     libsql::params![node_id.to_string()],
                 )
                 .await
@@ -2207,7 +2219,7 @@ impl SqliteStore {
     /// instead of descendants.
     ///
     /// The recursive step is a **correlated subquery, not a join** — the same
-    /// constraint `MENTION_CONTAINERS_QUERY` documents at length. The join form
+    /// constraint `mention_containers_query` documents at length. The join form
     /// lets SQLite drive off `idx_rel_type` and scan every edge of that type
     /// per step; the correlated form forces `idx_rel_out (out_node,
     /// relationship_type)`. Do not "simplify" it.
@@ -2809,13 +2821,13 @@ mod tests {
         let store = SqliteStore::new(db_path).await?;
 
         // Binds the exact same query text `get_incoming_mention_containers`
-        // runs (see `MENTION_CONTAINERS_QUERY`'s doc comment) — this can't
+        // runs (see `mention_containers_query`'s doc comment) — this can't
         // silently drift out of sync with the production query.
         let mut rows = store
             .read()
             .await?
             .query(
-                &format!("EXPLAIN QUERY PLAN {MENTION_CONTAINERS_QUERY}"),
+                &format!("EXPLAIN QUERY PLAN {}", mention_containers_query()),
                 libsql::params!["x".to_string()],
             )
             .await

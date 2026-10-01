@@ -1,5 +1,5 @@
 /**
- * AiChatNodeViewer Component Tests
+ * AiChatNativeNodeViewer Component Tests
  *
  * Unit tests for the AI chat viewer logic extracted from the component.
  * Tests cover:
@@ -28,7 +28,7 @@ vi.mock('$lib/utils/logger', () => ({
 }));
 
 // =============================================================================
-// Extracted logic from ai-chat-node-viewer.svelte (testable without rendering)
+// Extracted logic from ai-chat-native-node-viewer.svelte (testable without rendering)
 // =============================================================================
 
 const SOFT_MESSAGE_CAP = 500;
@@ -166,7 +166,7 @@ function makeToolExecution(
 // Tests
 // =============================================================================
 
-describe('AiChatNodeViewer Logic', () => {
+describe('AiChatNativeNodeViewer Logic', () => {
   beforeEach(() => {
     vi.useFakeTimers();
   });

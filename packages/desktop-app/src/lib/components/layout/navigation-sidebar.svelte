@@ -240,15 +240,15 @@
   }
 
   /**
-   * Open (or focus) an ai-chat node in a tab, routed to `AiChatNodeViewer` via
-   * `nodeType: 'ai-chat'` instead of `handleSchemaClick`'s hardcoded `'query'`.
+   * Open (or focus) a chat node in a tab, routed to its subtype's viewer via
+   * the chat's own `nodeType` instead of `handleSchemaClick`'s hardcoded `'query'`.
    */
-  function handleAiChatClick(chatId: string) {
-    getNavigationService().focusOrOpenNode(chatId, { nodeType: 'ai-chat' });
+  function handleAiChatClick(chatId: string, nodeType: string) {
+    getNavigationService().focusOrOpenNode(chatId, { nodeType });
   }
 
   /**
-   * "+ New chat": create an ai-chat node immediately (no name prompt — a
+   * "+ New chat": create an ai-chat-native node immediately (no name prompt — a
    * chat's title comes from its content later) and open it. On failure,
    * `aiChatsData.createChat` leaves `createError` set for the section to
    * display; nothing to open in that case.
@@ -256,7 +256,7 @@
   async function handleNewChat() {
     const created = await aiChatsData.createChat();
     if (created) {
-      handleAiChatClick(created.id);
+      handleAiChatClick(created.id, created.nodeType);
     }
   }
 
@@ -661,7 +661,7 @@
               <span class="schema-type-empty">No chats yet</span>
             {:else}
               {#each aiChats as chat (chat.id)}
-                <button class="ai-chat-item" onclick={() => handleAiChatClick(chat.id)}>
+                <button class="ai-chat-item" onclick={() => handleAiChatClick(chat.id, chat.nodeType)}>
                   <span class="ai-chat-name">{aiChatDisplayTitle(chat.content)}</span>
                 </button>
               {/each}

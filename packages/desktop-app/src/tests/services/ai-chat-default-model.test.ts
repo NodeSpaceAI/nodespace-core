@@ -1,7 +1,7 @@
 /**
- * New ai-chat nodes start on the user's default model (Settings → AI Models).
+ * New ai-chat-native nodes start on the user's default model (Settings → AI Models).
  * Covers the resolver and the creation path (`createSchemaInstance`, used by
- * the sidebar "+ New chat" and the ai-chat type view's "+ New").
+ * the sidebar "+ New chat" and the ai-chat-native type view's "+ New").
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -36,7 +36,7 @@ function seedConfigs(ids: string[]): void {
 function created(id: string, props: Record<string, unknown>): Node {
   return {
     id,
-    nodeType: 'ai-chat',
+    nodeType: 'ai-chat-native',
     content: 'Untitled',
     createdAt: '2026-01-01T00:00:00.000Z',
     modifiedAt: '2026-01-01T00:00:00.000Z',
@@ -85,11 +85,6 @@ describe('getDefaultAiChatModelProperties', () => {
     });
   });
 
-  it('does not seed a pty default (its view has no model selector)', () => {
-    saveDefaultModelSelection({ provider: 'pty', modelId: 'claude-code' });
-    expect(getDefaultAiChatModelProperties()).toBeNull();
-  });
-
   it('ignores a native default with an empty model id', () => {
     saveDefaultModelSelection({ provider: 'native', modelId: '' });
     expect(getDefaultAiChatModelProperties()).toBeNull();
@@ -106,22 +101,26 @@ describe('getDefaultAiChatModelProperties', () => {
   });
 });
 
-describe('createSchemaInstance for ai-chat', () => {
-  it('writes the default provider + model at creation', async () => {
+describe('createSchemaInstance for ai-chat-native', () => {
+  it('writes the agent and the default provider + model at creation', async () => {
     saveDefaultModelSelection({ provider: 'native', modelId: 'qwen3-4b' });
-    await createSchemaInstance('ai-chat');
+    await createSchemaInstance('ai-chat-native');
     expect(createNodeMock.mock.calls[0][0]).toEqual(
       expect.objectContaining({
-        nodeType: 'ai-chat',
-        properties: { provider: 'native', model: 'qwen3-4b' }
+        nodeType: 'ai-chat-native',
+        content: 'Untitled',
+        properties: { agent: 'nodespace', provider: 'native', model: 'qwen3-4b' }
       })
     );
   });
 
-  it('creates with no model properties when no default is set', async () => {
-    await createSchemaInstance('ai-chat');
+  it('creates with only the required agent when no default is set', async () => {
+    await createSchemaInstance('ai-chat-native');
     expect(createNodeMock.mock.calls[0][0]).toEqual(
-      expect.objectContaining({ nodeType: 'ai-chat', properties: {} })
+      expect.objectContaining({
+        nodeType: 'ai-chat-native',
+        properties: { agent: 'nodespace' }
+      })
     );
   });
 

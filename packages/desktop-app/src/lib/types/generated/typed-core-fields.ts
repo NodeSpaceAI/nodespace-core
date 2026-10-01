@@ -31,6 +31,32 @@ export const TYPED_CORE_FIELDS: Readonly<Record<string, readonly TypedCoreField[
     { storage: 'execution_count', wire: 'executionCount', structured: 'number', readOnly: true },
     { storage: 'last_executed', wire: 'lastExecuted', readOnly: true },
     { storage: 'view_config', wire: 'viewConfig', structured: 'object' }
+  ],
+  'ai-chat': [
+    { storage: 'agent', wire: 'agent' },
+    { storage: 'model', wire: 'model' },
+    { storage: 'summary', wire: 'summary' },
+    { storage: 'last_active', wire: 'lastActive' }
+  ],
+  'ai-chat-native': [
+    { storage: 'agent', wire: 'agent' },
+    { storage: 'model', wire: 'model' },
+    { storage: 'summary', wire: 'summary' },
+    { storage: 'last_active', wire: 'lastActive' },
+    { storage: 'provider', wire: 'provider' },
+    { storage: 'turn_status', wire: 'turnStatus' },
+    { storage: 'context_tokens', wire: 'contextTokens', structured: 'number' },
+    { storage: 'messages', wire: 'messages', structured: 'array' }
+  ],
+  'ai-chat-pty': [
+    { storage: 'agent', wire: 'agent' },
+    { storage: 'model', wire: 'model' },
+    { storage: 'summary', wire: 'summary' },
+    { storage: 'last_active', wire: 'lastActive' },
+    { storage: 'session_status', wire: 'sessionStatus' },
+    { storage: 'session_id', wire: 'sessionId' },
+    { storage: 'transcript', wire: 'transcript' },
+    { storage: 'exit_code', wire: 'exitCode', structured: 'number' }
   ]
 };
 
@@ -41,5 +67,13 @@ export const TYPED_CORE_FIELDS: Readonly<Record<string, readonly TypedCoreField[
 export const TYPED_CORE_DEFAULTS: Readonly<Record<string, Readonly<Record<string, unknown>>>> = {
   task: { status: 'open' },
   project: { status: 'planning' },
-  query: { executionCount: 0, filters: [], generatedBy: 'user', targetType: '*' }
+  query: { executionCount: 0, filters: [], generatedBy: 'user', targetType: '*' },
+  'ai-chat-native': {
+    agent: '',
+    contextTokens: 0,
+    messages: [],
+    provider: 'native',
+    turnStatus: 'idle'
+  },
+  'ai-chat-pty': { agent: '', sessionStatus: 'active' }
 };

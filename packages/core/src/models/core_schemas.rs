@@ -14,6 +14,9 @@
 //! - **ordered-list** - Numbered list items
 //! - **checkbox** - Checkbox items
 //! - **query** - Query/search nodes
+//! - **ai-chat** - Abstract base of the chat family (agent, model, summary)
+//! - **ai-chat-native** - A conversation run by NodeSpace's agent loop
+//! - **ai-chat-pty** - An external coding agent in a terminal
 //! - **collection** - Collection containers
 //! - **horizontal-line** - Horizontal rule / thematic break
 //! - **table** - GFM markdown table
@@ -28,12 +31,23 @@ use crate::models::schema::{
     EnumValue, RelationshipCardinality, RelationshipDirection, SchemaField, SchemaProtectionLevel,
     SchemaRelationship,
 };
-use crate::models::{SchemaNode, AI_CHAT_PROVIDERS};
+use crate::models::{AiChatProvider, AiChatSessionStatus, AiChatTurnStatus, SchemaNode};
 use chrono::Utc;
 
 /// The `database-settings` field that lists the extensions a reader needs in
 /// order to read a database correctly (ADR-083 §2).
 pub const REQUIRED_EXTENSIONS_FIELD: &str = "required_extensions";
+
+/// A closed enum's values and labels, as a schema field's `core_values`, read
+/// from the wire enum so the schema advertises exactly what the type holds.
+fn enum_values<T: Copy>(
+    all: &[(T, &'static str)],
+    as_str: fn(T) -> &'static str,
+) -> Vec<EnumValue> {
+    all.iter()
+        .map(|(value, label)| EnumValue::new(as_str(*value).to_string(), label.to_string()))
+        .collect()
+}
 
 /// Get all core schema definitions as SchemaNode instances
 ///
@@ -573,7 +587,8 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             title_template: None,
             properties_header_summary_template: None,
         },
-        // AI Chat schema - conversation nodes with messages as nested properties
+        // AI Chat (ADR-088): the abstract base of the chat family. Never
+        // instantiated; every subtype inherits these fields in the `ai-chat` bucket.
         SchemaNode {
             id: "ai-chat".to_string(),
             content: "AI Chat".to_string(),
@@ -581,31 +596,22 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             created_at: now,
             modified_at: now,
             is_core: true,
-            is_abstract: false,
+            is_abstract: true,
             schema_version: 1,
             fields: vec![
                 SchemaField {
-                    name: "provider".to_string(),
-                    friendly_name: "Provider".to_string(),
-                    field_type: crate::models::SchemaFieldType::Enum,
+                    name: "agent".to_string(),
+                    friendly_name: "Agent".to_string(),
+                    field_type: crate::models::SchemaFieldType::Text,
                     local_only: false,
                     protection: SchemaProtectionLevel::Core,
-                    // Closed set: validation rejects any provider outside
-                    // `AI_CHAT_PROVIDERS`, so the enum can't be extensible.
-                    core_values: Some(
-                        AI_CHAT_PROVIDERS
-                            .iter()
-                            .map(|(value, label)| {
-                                EnumValue::new(value.to_string(), label.to_string())
-                            })
-                            .collect(),
-                    ),
-                    user_values: Some(vec![]),
+                    core_values: None,
+                    user_values: None,
                     indexed: true,
                     required: Some(true),
-                    extensible: Some(false),
-                    default: Some(serde_json::json!("native")),
-                    description: Some("AI provider for this conversation".to_string()),
+                    extensible: None,
+                    default: None,
+                    description: Some("Who runs the conversation: nodespace, or a terminal harness (claude-code, codex, ...)".to_string()),
                     item_type: None,
                     fields: None,
                     item_fields: None,
@@ -624,7 +630,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                     required: Some(false),
                     extensible: None,
                     default: None,
-                    description: Some("Model identifier used for this conversation".to_string()),
+                    description: Some("Model identifier used for this conversation, when known".to_string()),
                     item_type: None,
                     fields: None,
                     item_fields: None,
@@ -632,51 +638,18 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                     unique_case_insensitive: None,
                 },
                 SchemaField {
-                    name: "turn_status".to_string(),
-                    friendly_name: "Turn status".to_string(),
-                    field_type: crate::models::SchemaFieldType::Enum,
+                    name: "summary".to_string(),
+                    friendly_name: "Summary".to_string(),
+                    field_type: crate::models::SchemaFieldType::Text,
                     local_only: false,
-                    protection: SchemaProtectionLevel::Core,
-                    // Daemon-owned: the inference turn state, independent of the
-                    // PTY session lifecycle (`session_status` below). See the
-                    // module docs on `AiChatNode` for why these were split out
-                    // of one shared `status` key.
-                    core_values: Some(vec![
-                        EnumValue::new("idle".to_string(), "Idle".to_string()),
-                        EnumValue::new("processing".to_string(), "Processing".to_string()),
-                    ]),
-                    user_values: Some(vec![]),
-                    indexed: true,
-                    required: Some(true),
-                    extensible: Some(false),
-                    default: Some(serde_json::json!("idle")),
-                    description: Some("Inference turn state, daemon-owned".to_string()),
-                    item_type: None,
-                    fields: None,
-                    item_fields: None,
-                    unique: None,
-                    unique_case_insensitive: None,
-                },
-                SchemaField {
-                    name: "session_status".to_string(),
-                    friendly_name: "Session status".to_string(),
-                    field_type: crate::models::SchemaFieldType::Enum,
-                    local_only: false,
-                    protection: SchemaProtectionLevel::Core,
-                    // PTY-owned: the session lifecycle, independent of the
-                    // inference turn state (`turn_status` above). See the
-                    // module docs on `AiChatNode` for why these were split out
-                    // of one shared `status` key.
-                    core_values: Some(vec![
-                        EnumValue::new("active".to_string(), "Active".to_string()),
-                        EnumValue::new("archived".to_string(), "Archived".to_string()),
-                    ]),
-                    user_values: Some(vec![]),
-                    indexed: true,
-                    required: Some(true),
-                    extensible: Some(false),
-                    default: Some(serde_json::json!("active")),
-                    description: Some("Session lifecycle, PTY-owned".to_string()),
+                    protection: SchemaProtectionLevel::System,
+                    core_values: None,
+                    user_values: None,
+                    indexed: false,
+                    required: Some(false),
+                    extensible: None,
+                    default: None,
+                    description: Some("Prose summary of the conversation".to_string()),
                     item_type: None,
                     fields: None,
                     item_fields: None,
@@ -702,6 +675,61 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                     unique: None,
                     unique_case_insensitive: None,
                 },
+            ],
+            relationships: vec![],
+            title_template: None,
+            properties_header_summary_template: None,
+        },
+        // AI Chat (native): a conversation run by NodeSpace's own agent loop, with
+        // local inference or a compatible endpoint.
+        SchemaNode {
+            id: "ai-chat-native".to_string(),
+            content: "AI Chat (Native)".to_string(),
+            version: 1,
+            created_at: now,
+            modified_at: now,
+            is_core: true,
+            is_abstract: false,
+            schema_version: 1,
+            fields: vec![
+                SchemaField {
+                    name: "provider".to_string(),
+                    friendly_name: "Provider".to_string(),
+                    field_type: crate::models::SchemaFieldType::Enum,
+                    local_only: false,
+                    protection: SchemaProtectionLevel::Core,
+                    core_values: Some(enum_values(&AiChatProvider::ALL, AiChatProvider::as_str)),
+                    user_values: Some(vec![]),
+                    indexed: true,
+                    required: Some(true),
+                    extensible: Some(false),
+                    default: Some(serde_json::json!("native")),
+                    description: Some("Where this conversation's inference runs".to_string()),
+                    item_type: None,
+                    fields: None,
+                    item_fields: None,
+                    unique: None,
+                    unique_case_insensitive: None,
+                },
+                SchemaField {
+                    name: "turn_status".to_string(),
+                    friendly_name: "Turn status".to_string(),
+                    field_type: crate::models::SchemaFieldType::Enum,
+                    local_only: false,
+                    protection: SchemaProtectionLevel::Core,
+                    core_values: Some(enum_values(&AiChatTurnStatus::ALL, AiChatTurnStatus::as_str)),
+                    user_values: Some(vec![]),
+                    indexed: true,
+                    required: Some(true),
+                    extensible: Some(false),
+                    default: Some(serde_json::json!("idle")),
+                    description: Some("Inference turn state, daemon-owned".to_string()),
+                    item_type: None,
+                    fields: None,
+                    item_fields: None,
+                    unique: None,
+                    unique_case_insensitive: None,
+                },
                 SchemaField {
                     name: "context_tokens".to_string(),
                     friendly_name: "Context tokens".to_string(),
@@ -714,31 +742,8 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                     required: Some(false),
                     extensible: None,
                     default: Some(serde_json::json!(0)),
-                    description: Some(
-                        "Approximate token count of conversation context".to_string(),
-                    ),
+                    description: Some("Approximate token count of conversation context".to_string()),
                     item_type: None,
-                    fields: None,
-                    item_fields: None,
-                    unique: None,
-                    unique_case_insensitive: None,
-                },
-                SchemaField {
-                    name: "created_nodes".to_string(),
-                    friendly_name: "Created nodes".to_string(),
-                    field_type: crate::models::SchemaFieldType::Array,
-                    local_only: false,
-                    protection: SchemaProtectionLevel::System,
-                    core_values: None,
-                    user_values: None,
-                    indexed: false,
-                    required: Some(false),
-                    extensible: None,
-                    default: Some(serde_json::json!([])),
-                    description: Some(
-                        "IDs of nodes created by the agent during this chat".to_string(),
-                    ),
-                    item_type: Some(crate::models::SchemaFieldType::Text),
                     fields: None,
                     item_fields: None,
                     unique: None,
@@ -759,228 +764,49 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                     description: Some("Conversation messages array".to_string()),
                     item_type: Some(crate::models::SchemaFieldType::Object),
                     fields: None,
-                    item_fields: Some(vec![
-                        SchemaField {
-                            name: "role".to_string(),
-                            friendly_name: "Message sender role".to_string(),
-                            field_type: crate::models::SchemaFieldType::Enum,
-                            local_only: false,
-                            protection: SchemaProtectionLevel::Core,
-                            core_values: Some(vec![
-                                EnumValue::new("user".to_string(), "User".to_string()),
-                                EnumValue::new("assistant".to_string(), "Assistant".to_string()),
-                                EnumValue::new("tool_call".to_string(), "Tool Call".to_string()),
-                                EnumValue::new("system".to_string(), "System".to_string()),
-                            ]),
-                            user_values: Some(vec![]),
-                            indexed: false,
-                            required: Some(true),
-                            extensible: Some(false),
-                            default: None,
-                            description: Some("Message sender role".to_string()),
-                            item_type: None,
-                            fields: None,
-                            item_fields: None,
-                            unique: None,
-                            unique_case_insensitive: None,
-                        },
-                        SchemaField {
-                            name: "content".to_string(),
-                            friendly_name: "Message text content".to_string(),
-                            field_type: crate::models::SchemaFieldType::Text,
-                            local_only: false,
-                            protection: SchemaProtectionLevel::Core,
-                            core_values: None,
-                            user_values: None,
-                            indexed: false,
-                            required: Some(false),
-                            extensible: None,
-                            default: None,
-                            description: Some("Message text content".to_string()),
-                            item_type: None,
-                            fields: None,
-                            item_fields: None,
-                            unique: None,
-                            unique_case_insensitive: None,
-                        },
-                        SchemaField {
-                            name: "reasoning".to_string(),
-                            friendly_name: "Reasoning".to_string(),
-                            field_type: crate::models::SchemaFieldType::Text,
-                            local_only: false,
-                            protection: SchemaProtectionLevel::Core,
-                            core_values: None,
-                            user_values: None,
-                            indexed: false,
-                            required: Some(false),
-                            extensible: None,
-                            default: None,
-                            description: Some(
-                                "Model chain-of-thought reasoning toward the answer".to_string(),
-                            ),
-                            item_type: None,
-                            fields: None,
-                            item_fields: None,
-                            unique: None,
-                            unique_case_insensitive: None,
-                        },
-                        SchemaField {
-                            name: "timestamp".to_string(),
-                            friendly_name: "Message timestamp".to_string(),
-                            field_type: crate::models::SchemaFieldType::Datetime,
-                            local_only: false,
-                            protection: SchemaProtectionLevel::System,
-                            core_values: None,
-                            user_values: None,
-                            indexed: false,
-                            required: Some(false),
-                            extensible: None,
-                            default: None,
-                            description: Some("Message timestamp".to_string()),
-                            item_type: None,
-                            fields: None,
-                            item_fields: None,
-                            unique: None,
-                            unique_case_insensitive: None,
-                        },
-                        SchemaField {
-                            name: "referenced_nodes".to_string(),
-                            friendly_name: "Referenced nodes".to_string(),
-                            field_type: crate::models::SchemaFieldType::Array,
-                            local_only: false,
-                            protection: SchemaProtectionLevel::Core,
-                            core_values: None,
-                            user_values: None,
-                            indexed: false,
-                            required: Some(false),
-                            extensible: None,
-                            default: None,
-                            description: Some("Node IDs referenced in this message".to_string()),
-                            item_type: Some(crate::models::SchemaFieldType::Text),
-                            fields: None,
-                            item_fields: None,
-                            unique: None,
-                            unique_case_insensitive: None,
-                        },
-                        SchemaField {
-                            name: "tool".to_string(),
-                            friendly_name: "Tool".to_string(),
-                            field_type: crate::models::SchemaFieldType::Text,
-                            local_only: false,
-                            protection: SchemaProtectionLevel::Core,
-                            core_values: None,
-                            user_values: None,
-                            indexed: false,
-                            required: Some(false),
-                            extensible: None,
-                            default: None,
-                            description: Some(
-                                "Tool name (for tool_call role messages)".to_string(),
-                            ),
-                            item_type: None,
-                            fields: None,
-                            item_fields: None,
-                            unique: None,
-                            unique_case_insensitive: None,
-                        },
-                        SchemaField {
-                            name: "args".to_string(),
-                            friendly_name: "Args".to_string(),
-                            field_type: crate::models::SchemaFieldType::Object,
-                            local_only: false,
-                            protection: SchemaProtectionLevel::Core,
-                            core_values: None,
-                            user_values: None,
-                            indexed: false,
-                            required: Some(false),
-                            extensible: None,
-                            default: None,
-                            description: Some(
-                                "Tool call arguments (for tool_call role messages)".to_string(),
-                            ),
-                            item_type: None,
-                            fields: None,
-                            item_fields: None,
-                            unique: None,
-                            unique_case_insensitive: None,
-                        },
-                        SchemaField {
-                            name: "status".to_string(),
-                            friendly_name: "Status".to_string(),
-                            field_type: crate::models::SchemaFieldType::Enum,
-                            local_only: false,
-                            protection: SchemaProtectionLevel::Core,
-                            core_values: Some(vec![
-                                EnumValue::new("completed".to_string(), "Completed".to_string()),
-                                EnumValue::new("error".to_string(), "Error".to_string()),
-                            ]),
-                            user_values: Some(vec![]),
-                            indexed: false,
-                            required: Some(false),
-                            extensible: Some(false),
-                            default: None,
-                            description: Some(
-                                "Tool execution status (for tool_call role messages)".to_string(),
-                            ),
-                            item_type: None,
-                            fields: None,
-                            item_fields: None,
-                            unique: None,
-                            unique_case_insensitive: None,
-                        },
-                        SchemaField {
-                            name: "result_summary".to_string(),
-                            friendly_name: "Result summary".to_string(),
-                            field_type: crate::models::SchemaFieldType::Text,
-                            local_only: false,
-                            protection: SchemaProtectionLevel::Core,
-                            core_values: None,
-                            user_values: None,
-                            indexed: false,
-                            required: Some(false),
-                            extensible: None,
-                            default: None,
-                            description: Some(
-                                "Archived summary of tool result (full result nulled at write time)"
-                                    .to_string(),
-                            ),
-                            item_type: None,
-                            fields: None,
-                            item_fields: None,
-                            unique: None,
-                            unique_case_insensitive: None,
-                        },
-                        SchemaField {
-                            name: "duration_ms".to_string(),
-                            friendly_name: "Duration ms".to_string(),
-                            field_type: crate::models::SchemaFieldType::Number,
-                            local_only: false,
-                            protection: SchemaProtectionLevel::System,
-                            core_values: None,
-                            user_values: None,
-                            indexed: false,
-                            required: Some(false),
-                            extensible: None,
-                            default: None,
-                            description: Some(
-                                "Duration of tool execution in milliseconds".to_string(),
-                            ),
-                            item_type: None,
-                            fields: None,
-                            item_fields: None,
-                            unique: None,
-                            unique_case_insensitive: None,
-                        },
-                    ]),
+                    item_fields: None,
                     unique: None,
                     unique_case_insensitive: None,
                 },
-                // PTY-capture (mode 2d) properties. session_id + transcript are
-                // localOnly (machine-bound resume handle / content-risk raw
-                // scrollback) — never pushed, ignored on pull. The derived summary
-                // is the intended cross-device artifact and syncs like any field.
+            ],
+            relationships: vec![crate::schema::extends_chain::extends_declaration("ai-chat")],
+            title_template: None,
+            properties_header_summary_template: None,
+        },
+        // AI Chat (terminal): an external coding agent in a terminal. It holds no
+        // messages; capture records these fields and the base's `summary` when the
+        // session ends. `session_id` and `transcript` never leave the machine.
+        SchemaNode {
+            id: "ai-chat-pty".to_string(),
+            content: "AI Chat (Terminal)".to_string(),
+            version: 1,
+            created_at: now,
+            modified_at: now,
+            is_core: true,
+            is_abstract: false,
+            schema_version: 1,
+            fields: vec![
                 SchemaField {
-                    name: "capture:session_id".to_string(),
+                    name: "session_status".to_string(),
+                    friendly_name: "Session status".to_string(),
+                    field_type: crate::models::SchemaFieldType::Enum,
+                    local_only: false,
+                    protection: SchemaProtectionLevel::Core,
+                    core_values: Some(enum_values(&AiChatSessionStatus::ALL, AiChatSessionStatus::as_str)),
+                    user_values: Some(vec![]),
+                    indexed: true,
+                    required: Some(true),
+                    extensible: Some(false),
+                    default: Some(serde_json::json!("active")),
+                    description: Some("Whether the terminal session is running".to_string()),
+                    item_type: None,
+                    fields: None,
+                    item_fields: None,
+                    unique: None,
+                    unique_case_insensitive: None,
+                },
+                SchemaField {
+                    name: "session_id".to_string(),
                     friendly_name: "Session id".to_string(),
                     field_type: crate::models::SchemaFieldType::Text,
                     local_only: true,
@@ -991,11 +817,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                     required: Some(false),
                     extensible: None,
                     default: None,
-                    description: Some(
-                        "Agent session id — a resume handle that names state on this \
-                         machine (e.g. under ~/.claude/); local-only, never synced."
-                            .to_string(),
-                    ),
+                    description: Some("The session's id: names state on this machine, so it stays here".to_string()),
                     item_type: None,
                     fields: None,
                     item_fields: None,
@@ -1003,7 +825,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                     unique_case_insensitive: None,
                 },
                 SchemaField {
-                    name: "capture:transcript".to_string(),
+                    name: "transcript".to_string(),
                     friendly_name: "Transcript".to_string(),
                     field_type: crate::models::SchemaFieldType::Text,
                     local_only: true,
@@ -1014,13 +836,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                     required: Some(false),
                     extensible: None,
                     default: None,
-                    description: Some(
-                        "Raw PTY terminal scrollback — local-only on content-risk \
-                         grounds (may contain secrets, tokens, absolute paths); \
-                         never synced. The derived summary carries the cross-device \
-                         value instead."
-                            .to_string(),
-                    ),
+                    description: Some("Raw terminal scrollback: may hold secrets, tokens and absolute paths, so it stays on this machine".to_string()),
                     item_type: None,
                     fields: None,
                     item_fields: None,
@@ -1028,52 +844,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                     unique_case_insensitive: None,
                 },
                 SchemaField {
-                    name: "capture:summary".to_string(),
-                    friendly_name: "Summary".to_string(),
-                    field_type: crate::models::SchemaFieldType::Text,
-                    local_only: false,
-                    protection: SchemaProtectionLevel::System,
-                    core_values: None,
-                    user_values: None,
-                    indexed: false,
-                    required: Some(false),
-                    extensible: None,
-                    default: None,
-                    description: Some(
-                        "Derived conversation summary — locally-generated prose, the \
-                         intended cross-device artifact; syncs."
-                            .to_string(),
-                    ),
-                    item_type: None,
-                    fields: None,
-                    item_fields: None,
-                    unique: None,
-                    unique_case_insensitive: None,
-                },
-                SchemaField {
-                    name: "capture:agent_type".to_string(),
-                    friendly_name: "Agent".to_string(),
-                    field_type: crate::models::SchemaFieldType::Text,
-                    local_only: false,
-                    protection: SchemaProtectionLevel::System,
-                    core_values: None,
-                    user_values: None,
-                    indexed: false,
-                    required: Some(false),
-                    extensible: None,
-                    default: None,
-                    description: Some(
-                        "The external agent a terminal session runs (claude-code, codex, ...)"
-                            .to_string(),
-                    ),
-                    item_type: None,
-                    fields: None,
-                    item_fields: None,
-                    unique: None,
-                    unique_case_insensitive: None,
-                },
-                SchemaField {
-                    name: "capture:exit_code".to_string(),
+                    name: "exit_code".to_string(),
                     friendly_name: "Exit code".to_string(),
                     field_type: crate::models::SchemaFieldType::Number,
                     local_only: false,
@@ -1084,10 +855,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                     required: Some(false),
                     extensible: None,
                     default: None,
-                    description: Some(
-                        "Exit code of the terminal session's process, once it has ended"
-                            .to_string(),
-                    ),
+                    description: Some("Exit code of the terminal session's process, once it has ended".to_string()),
                     item_type: None,
                     fields: None,
                     item_fields: None,
@@ -1095,7 +863,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                     unique_case_insensitive: None,
                 },
             ],
-            relationships: vec![],
+            relationships: vec![crate::schema::extends_chain::extends_declaration("ai-chat")],
             title_template: None,
             properties_header_summary_template: None,
         },
@@ -1822,6 +1590,8 @@ mod tests {
             [
                 "agent-guidance",
                 "ai-chat",
+                "ai-chat-native",
+                "ai-chat-pty",
                 "checkbox",
                 "code-block",
                 "collection",
@@ -1990,48 +1760,68 @@ mod tests {
     /// also what keeps it true to the schemas.
     #[test]
     fn typed_wire_shapes_promote_their_schemas_fields() {
+        use crate::models::SchemaFieldType as T;
+        use nodespace_types::PromotedShape as S;
+
         for core in CoreNodeType::ALL {
             let promoted = nodespace_types::core_promoted_fields(core);
-            match core.wire() {
-                WireShape::Typed { update: true } => {
-                    let schema = core_schema(core).expect("a typed core type has a schema");
-                    let mut declared: Vec<&str> =
-                        schema.fields.iter().map(|f| f.name.as_str()).collect();
-                    declared.sort_unstable();
-                    let mut storage: Vec<&str> = promoted.iter().map(|f| f.storage).collect();
-                    storage.sort_unstable();
-                    assert_eq!(storage, declared, "{core}: promoted fields");
-                    for promoted in promoted {
-                        use crate::models::SchemaFieldType as T;
-                        use nodespace_types::PromotedShape as S;
-                        let field = schema.get_field(promoted.storage).expect("declared above");
-                        let shape = match field.field_type {
-                            T::Text | T::Enum | T::Datetime => S::Text,
-                            T::Date => S::Date,
-                            T::Number => S::Number,
-                            T::Array => S::Array,
-                            T::Object => S::Object,
-                            T::Boolean => panic!(
-                                "{core}.{}: a boolean field needs a promoted shape",
-                                field.name
-                            ),
-                        };
-                        assert_eq!(promoted.shape, shape, "{core}.{}: shape", field.name);
-                        assert_eq!(
-                            promoted.read_only,
-                            field.protection == SchemaProtectionLevel::System,
-                            "{core}.{}: a system field is read-only",
-                            field.name
-                        );
-                    }
-                    assert_eq!(nodespace_types::typed_update_fields(core), promoted);
+            let has_typed_update = match core.wire() {
+                WireShape::Typed { update } => update,
+                WireShape::Generic | WireShape::Envelope => {
+                    assert!(promoted.is_empty(), "{core} promotes nothing");
+                    false
                 }
-                WireShape::Typed { update: false } | WireShape::Generic | WireShape::Envelope => {
-                    assert!(
-                        nodespace_types::typed_update_fields(core).is_empty(),
-                        "{core} has no typed update"
-                    );
-                }
+            };
+            if !has_typed_update {
+                assert!(
+                    nodespace_types::typed_update_fields(core).is_empty(),
+                    "{core} has no typed update"
+                );
+            }
+            // `schema` travels typed but promotes nothing through this list.
+            if promoted.is_empty() {
+                assert!(!has_typed_update, "{core}: a typed update needs fields");
+                continue;
+            }
+
+            // A type promotes exactly the fields its schema chain declares:
+            // its own, and for a subtype the ones it inherits.
+            let fields = chain_fields(core);
+            let mut declared: Vec<&str> = fields.iter().map(|f| f.name.as_str()).collect();
+            declared.sort_unstable();
+            let mut storage: Vec<&str> = promoted.iter().map(|f| f.storage).collect();
+            storage.sort_unstable();
+            assert_eq!(storage, declared, "{core}: promoted fields");
+
+            for promoted in promoted {
+                let field = fields
+                    .iter()
+                    .find(|f| f.name == promoted.storage)
+                    .expect("declared above");
+                let shape = match field.field_type {
+                    T::Text | T::Enum | T::Datetime => S::Text,
+                    T::Date => S::Date,
+                    T::Number => S::Number,
+                    T::Array => S::Array,
+                    T::Object => S::Object,
+                    T::Boolean => panic!(
+                        "{core}.{}: a boolean field needs a promoted shape",
+                        field.name
+                    ),
+                };
+                assert_eq!(promoted.shape, shape, "{core}.{}: shape", field.name);
+                // `read_only` says what a typed update may set, so it follows
+                // the schema's protection where there is a typed update and
+                // is unset where there is none.
+                assert_eq!(
+                    promoted.read_only,
+                    has_typed_update && field.protection == SchemaProtectionLevel::System,
+                    "{core}.{}: read-only",
+                    field.name
+                );
+            }
+            if has_typed_update {
+                assert_eq!(nodespace_types::typed_update_fields(core), promoted);
             }
         }
     }
@@ -2267,51 +2057,149 @@ mod tests {
         assert!(query.get_field("view_config").is_some());
     }
 
+    fn field_names(schema: &SchemaNode) -> Vec<&str> {
+        schema.fields.iter().map(|f| f.name.as_str()).collect()
+    }
+
+    /// The chat family's fields, schema by schema (ADR-088 §1, §2). Each
+    /// subtype declares only its own: the base's reach it through `extends`.
     #[test]
-    fn test_ai_chat_schema_has_fields() {
+    fn test_the_ai_chat_family_declares_each_field_once() {
         let schemas = get_core_schemas();
-        let ai_chat = schemas.iter().find(|s| s.id == "ai-chat").unwrap();
+        let find = |id: &str| schemas.iter().find(|s| s.id == id).unwrap();
 
-        assert_eq!(ai_chat.fields.len(), 13);
-        assert!(ai_chat.get_field("provider").is_some());
-        assert!(ai_chat.get_field("model").is_some());
-        assert!(ai_chat.get_field("turn_status").is_some());
-        assert!(ai_chat.get_field("session_status").is_some());
-        assert!(ai_chat.get_field("last_active").is_some());
-        assert!(ai_chat.get_field("context_tokens").is_some());
-        assert!(ai_chat.get_field("created_nodes").is_some());
-        assert!(ai_chat.get_field("messages").is_some());
-
-        // PTY-capture (mode 2d) fields + their localOnly classification: the
-        // machine-bound session id and the content-risk raw transcript are
-        // localOnly (never synced); the derived summary syncs.
-        assert!(ai_chat.get_field("capture:session_id").unwrap().local_only);
-        assert!(ai_chat.get_field("capture:transcript").unwrap().local_only);
-        assert!(!ai_chat.get_field("capture:summary").unwrap().local_only);
-        // Every non-capture field syncs (not localOnly) — parity with prior behavior.
-        assert!(!ai_chat.get_field("provider").unwrap().local_only);
-        assert!(!ai_chat.get_field("messages").unwrap().local_only);
-
-        // Verify messages has item_fields (nested schema for message objects)
-        let messages_field = ai_chat.get_field("messages").unwrap();
+        let base = find("ai-chat");
+        assert!(base.is_abstract);
         assert_eq!(
-            messages_field.field_type,
-            crate::models::SchemaFieldType::Array
+            field_names(base),
+            ["agent", "model", "summary", "last_active"]
+        );
+        assert_eq!(base.get_field("agent").unwrap().required, Some(true));
+        assert!(base.get_field("agent").unwrap().default.is_none());
+
+        let native = find("ai-chat-native");
+        assert!(!native.is_abstract);
+        assert_eq!(
+            field_names(native),
+            ["provider", "turn_status", "context_tokens", "messages"]
+        );
+
+        let pty = find("ai-chat-pty");
+        assert!(!pty.is_abstract);
+        assert_eq!(
+            field_names(pty),
+            ["session_status", "session_id", "transcript", "exit_code"]
+        );
+
+        for subtype in [native, pty] {
+            assert_eq!(
+                crate::schema::extends_chain::declared_parent(subtype).as_deref(),
+                Some("ai-chat"),
+                "{} extends ai-chat",
+                subtype.id
+            );
+        }
+    }
+
+    /// The machine-bound fields are `local_only`; everything else, the summary
+    /// included, is not (ADR-061 §6, §7).
+    #[test]
+    fn test_only_the_session_id_and_transcript_are_local_only() {
+        for schema in get_core_schemas() {
+            if !CoreNodeType::from_id(&schema.id).is_some_and(|c| c.is_a(CoreNodeType::AiChat)) {
+                continue;
+            }
+            for field in &schema.fields {
+                let machine_bound = matches!(field.name.as_str(), "session_id" | "transcript");
+                assert_eq!(
+                    field.local_only, machine_bound,
+                    "{}.{}: local_only",
+                    schema.id, field.name
+                );
+            }
+        }
+    }
+
+    /// The closed enums advertise exactly the wire enums' values, and a
+    /// finished terminal session is `ended`: `archived` is governance's word
+    /// (ADR-087), and no chat field takes it.
+    #[test]
+    fn test_ai_chat_enum_fields_match_the_wire_enums() {
+        let schemas = get_core_schemas();
+        let values = |schema_id: &str, field: &str| -> Vec<String> {
+            schemas
+                .iter()
+                .find(|s| s.id == schema_id)
+                .unwrap()
+                .get_field(field)
+                .unwrap()
+                .core_values
+                .as_ref()
+                .unwrap()
+                .iter()
+                .map(|v| v.value.clone())
+                .collect()
+        };
+        assert_eq!(
+            values("ai-chat-native", "provider"),
+            ["native", "openai-compat"]
         );
         assert_eq!(
-            messages_field.item_type,
-            Some(crate::models::SchemaFieldType::Object)
+            values("ai-chat-native", "turn_status"),
+            ["idle", "processing"]
         );
-        let item_fields = messages_field.item_fields.as_ref().unwrap();
-        assert!(item_fields.iter().any(|f| f.name == "role"));
-        assert!(item_fields.iter().any(|f| f.name == "content"));
-        assert!(item_fields.iter().any(|f| f.name == "timestamp"));
-        assert!(item_fields.iter().any(|f| f.name == "referenced_nodes"));
-        assert!(item_fields.iter().any(|f| f.name == "tool"));
-        assert!(item_fields.iter().any(|f| f.name == "args"));
-        assert!(item_fields.iter().any(|f| f.name == "status"));
-        assert!(item_fields.iter().any(|f| f.name == "result_summary"));
-        assert!(item_fields.iter().any(|f| f.name == "duration_ms"));
+        assert_eq!(values("ai-chat-pty", "session_status"), ["active", "ended"]);
+        for schema in &schemas {
+            for field in &schema.fields {
+                for value in field.core_values.iter().flatten() {
+                    assert_ne!(
+                        value.value, "archived",
+                        "{}.{} borrows governance's word",
+                        schema.id, field.name
+                    );
+                }
+            }
+        }
+    }
+
+    /// No chat schema declares a prefixed field: the capture fields are
+    /// core's own, under bare names.
+    #[test]
+    fn test_no_ai_chat_field_is_prefixed() {
+        for schema in get_core_schemas() {
+            if !schema.id.starts_with("ai-chat") {
+                continue;
+            }
+            for field in &schema.fields {
+                assert!(
+                    !field.name.contains(':'),
+                    "{}.{} is prefixed",
+                    schema.id,
+                    field.name
+                );
+            }
+        }
+    }
+
+    /// A chat subtype's wire struct promotes exactly the fields its schema
+    /// chain declares: its own and the base's.
+    #[test]
+    fn test_ai_chat_wire_structs_promote_their_whole_chain() {
+        for core in [
+            CoreNodeType::AiChat,
+            CoreNodeType::AiChatNative,
+            CoreNodeType::AiChatPty,
+        ] {
+            let mut declared: Vec<String> =
+                chain_fields(core).into_iter().map(|f| f.name).collect();
+            declared.sort_unstable();
+            let mut promoted: Vec<String> = nodespace_types::core_promoted_fields(core)
+                .iter()
+                .map(|field| field.storage.to_string())
+                .collect();
+            promoted.sort_unstable();
+            assert_eq!(promoted, declared, "{core}: promoted fields");
+        }
     }
 
     #[test]

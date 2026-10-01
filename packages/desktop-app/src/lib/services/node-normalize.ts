@@ -3,8 +3,13 @@ import { nodeToTaskNode } from '$lib/types/task-node';
 import { nodeToPersonNode } from '$lib/types/person-node';
 import { nodeToProjectNode } from '$lib/types/project-node';
 import { nodeToQueryNode } from '$lib/types/query';
-import { nodeToAiChatNode } from '$lib/types/ai-chat-node';
-import { TYPED_CORE_DEFAULTS, TYPED_CORE_FIELDS } from '$lib/types/typed-core-fields';
+import { nodeToAiChatNativeNode, nodeToAiChatPtyNode } from '$lib/types/ai-chat-node';
+import { typeChain } from '$lib/types/core-node-types';
+import {
+  hasTypedUpdate,
+  TYPED_CORE_DEFAULTS,
+  TYPED_CORE_FIELDS
+} from '$lib/types/typed-core-fields';
 
 /** The typed wire shape each type with one is converted to, keyed by exact type. */
 const TYPED_WIRE_CONVERTERS: ReadonlyMap<string, (node: Node) => Node> = new Map([
@@ -12,7 +17,8 @@ const TYPED_WIRE_CONVERTERS: ReadonlyMap<string, (node: Node) => Node> = new Map
   ['person', (node) => nodeToPersonNode(node) as unknown as Node],
   ['project', (node) => nodeToProjectNode(node) as unknown as Node],
   ['query', (node) => nodeToQueryNode(node) as unknown as Node],
-  ['ai-chat', (node) => nodeToAiChatNode(node) as unknown as Node]
+  ['ai-chat-native', (node) => nodeToAiChatNativeNode(node) as unknown as Node],
+  ['ai-chat-pty', (node) => nodeToAiChatPtyNode(node) as unknown as Node]
 ]);
 
 /**
@@ -28,45 +34,6 @@ export function normalizeNodeData(nodeData: Node): Node {
   const toTyped = TYPED_WIRE_CONVERTERS.get(nodeData.nodeType);
   return toTyped ? toTyped(nodeData) : nodeData;
 }
-
-/**
- * One ai-chat field the backend promotes: `from` is the property key the write
- * payload uses (what `changesProperties`/`mergedProperties` are keyed by), `to`
- * is the top-level `Node` key viewers read. They differ for the canonical
- * snake_case keys (`turn_status` → `turnStatus`) — see `ai_chat_node_to_value`
- * in `packages/nodespace-types/src/convert.rs`.
- */
-interface PromotedField {
-  from: string;
-  to: string;
-}
-
-/**
- * ai-chat fields the backend lifts from `properties` to the top level while
- * also leaving them in `properties` — ai-chat writes them through the
- * generic properties path, unlike the typed core types (`task`, `person`,
- * `project`, see `TYPED_CORE_FIELDS`), whose core fields have exactly one home.
- *
- * Two consumers:
- * - `promoteTypedFields`, for an optimistic (pre-round-trip) `updateNode` —
- *   reflects these fields immediately instead of waiting a full RPC round
- *   trip. The backend response is spread over the node afterward, so drift
- *   here degrades optimistic latency only.
- * - `storageNodeToApiFields`, for the browser/dev-proxy transport. Drift there
- *   is NOT latency-only: a field this map omits never reaches the top level
- *   over that transport (e.g. `AiChatNodeViewer`'s `node?.provider`).
- *
- * Keep in sync with convert.rs.
- */
-export const OPTIMISTIC_TYPED_FIELDS: Record<string, readonly PromotedField[]> = {
-  'ai-chat': [
-    { from: 'turn_status', to: 'turnStatus' },
-    { from: 'session_status', to: 'sessionStatus' },
-    { from: 'provider', to: 'provider' },
-    { from: 'model', to: 'model' },
-    { from: 'messages', to: 'messages' }
-  ]
-};
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -87,6 +54,13 @@ export function mergeProperties(
 /**
  * Compute the top-level typed fields to promote for an optimistic update.
  *
+ * Applies to a type whose typed fields are written as generic `properties`
+ * patches (the chat family, see `hasTypedUpdate`) — the property key a write
+ * uses is the field's storage name (`turn_status`), the key viewers read is its
+ * wire name (`turnStatus`). Reflecting the write immediately instead of
+ * waiting a full RPC round trip degrades latency only if it drifts: the
+ * backend response is spread over the node afterward.
+ *
  * Only promotes a field that is actually present in this write. That guard is
  * load-bearing: it prevents overwriting an existing top-level value with
  * `undefined` when a caller omits a field (e.g. sending a message writes
@@ -98,9 +72,10 @@ export function promoteTypedFields(
   mergedProperties: Record<string, unknown>
 ): Record<string, unknown> {
   const promoted: Record<string, unknown> = {};
-  for (const { from, to } of OPTIMISTIC_TYPED_FIELDS[nodeType] ?? []) {
-    if (Object.prototype.hasOwnProperty.call(changesProperties, from)) {
-      promoted[to] = mergedProperties[from];
+  if (hasTypedUpdate(nodeType)) return promoted;
+  for (const { storage, wire } of TYPED_CORE_FIELDS[nodeType] ?? []) {
+    if (Object.prototype.hasOwnProperty.call(changesProperties, storage)) {
+      promoted[wire] = mergedProperties[storage];
     }
   }
   return promoted;
@@ -146,8 +121,9 @@ function hasJsonShape(value: unknown, shape: 'array' | 'number' | 'object'): boo
  * - Typed core types (`TYPED_CORE_FIELDS`) move each core field to its typed
  *   key — read under either spelling, typed key first, as the Rust converters
  *   do — normalize dates, fill the backend's defaults, and drop both
- *   spellings from `properties`.
- * - ai-chat promotes its fields and leaves them in `properties`.
+ *   spellings from `properties`. The chat subtypes are typed this way too.
+ * - A subtype's own bucket and its ancestors' buckets (`ai-chat-native`, then
+ *   `ai-chat`) are merged, the nearest type winning.
  */
 export function storageNodeToApiFields(
   nodeType: string,
@@ -155,10 +131,17 @@ export function storageNodeToApiFields(
 ): { properties: Record<string, unknown> } & Record<string, unknown> {
   const properties: Record<string, unknown> = {};
   if (isPlainObject(storageProperties)) {
-    const bucket = storageProperties[nodeType];
-    if (isPlainObject(bucket)) {
-      for (const [key, value] of Object.entries(bucket)) {
-        if (!key.startsWith('_')) properties[key] = value;
+    // A subtype's fields sit in its own bucket and an ancestor's in that
+    // ancestor's, so the buckets of the whole `extends` chain are merged,
+    // nearest type winning.
+    const buckets = typeChain(nodeType)
+      .map((id) => storageProperties[id])
+      .filter(isPlainObject);
+    if (buckets.length > 0) {
+      for (const bucket of buckets.reverse()) {
+        for (const [key, value] of Object.entries(bucket)) {
+          if (!key.startsWith('_')) properties[key] = value;
+        }
       }
     } else {
       for (const [key, value] of Object.entries(storageProperties)) {
@@ -180,11 +163,6 @@ export function storageNodeToApiFields(
       promoted[wire] = date ? normalizeDate(raw) : raw;
     }
     delete properties[storage];
-  }
-  for (const { from, to } of OPTIMISTIC_TYPED_FIELDS[nodeType] ?? []) {
-    if (Object.prototype.hasOwnProperty.call(properties, from)) {
-      promoted[to] = properties[from];
-    }
   }
   return { ...promoted, properties };
 }

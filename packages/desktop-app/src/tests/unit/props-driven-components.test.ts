@@ -47,12 +47,12 @@ describe('BacklinksPanel props contract', () => {
       date: 'calendar',
       task: 'circle',
       text: 'text',
-      'ai-chat': 'aiSquare'
+      'ai-chat-native': 'aiSquare'
     };
     expect(iconMap['date']).toBe('calendar');
     expect(iconMap['task']).toBe('circle');
     expect(iconMap['text']).toBe('text');
-    expect(iconMap['ai-chat']).toBe('aiSquare');
+    expect(iconMap['ai-chat-native']).toBe('aiSquare');
     expect(iconMap['unknown'] || 'text').toBe('text');
   });
 

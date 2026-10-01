@@ -5,11 +5,14 @@
  * promoted fields (`./generated`, `core_promoted_fields` in
  * `packages/nodespace-types/src/convert.rs`).
  *
- * For `task`, `person`, `project` and `query`, the backend moves each
- * schema-declared core field out of `properties` to a top-level typed field:
- * `due_date` is stored in the `task` bucket and travels as `dueDate`. The
- * frontend reads and writes those fields only by their typed key; `properties`
- * holds extension fields alone.
+ * For `task`, `person`, `project`, `query` and the chat subtypes, the backend
+ * moves each schema-declared core field out of `properties` to a top-level
+ * typed field: `due_date` is stored in the `task` bucket and travels as
+ * `dueDate`. The frontend reads those fields by their typed key, and
+ * `properties` holds extension fields alone. A type with a typed update
+ * command is written by typed key too; the chat family has none, so its
+ * writes are `properties` patches keyed by the storage name (see
+ * `hasTypedUpdate`).
  *
  * One table serves every consumer that has to know the mapping:
  * - the dev-proxy's storage → wire conversion (`storageNodeToApiFields`),
@@ -17,15 +20,20 @@
  * - schema-driven forms, which address fields by their schema (storage) name.
  */
 
+import { coreTypeEntry } from './core-node-types';
 import { TYPED_CORE_DEFAULTS, TYPED_CORE_FIELDS } from './generated';
 import type { TypedCoreField } from './generated';
 
 export { TYPED_CORE_DEFAULTS, TYPED_CORE_FIELDS };
 export type { TypedCoreField };
 
-/** True when `nodeType` has typed core fields. */
-export function hasTypedCoreFields(nodeType: string | undefined): boolean {
-  return nodeType !== undefined && nodeType in TYPED_CORE_FIELDS;
+/**
+ * True when `nodeType`'s typed fields are written through a typed backend
+ * update (`updateTaskNode` and its siblings) rather than as a generic
+ * `properties` patch. The registry says which types have one.
+ */
+export function hasTypedUpdate(nodeType: string | undefined): boolean {
+  return coreTypeEntry(nodeType)?.typedUpdate === true;
 }
 
 /**

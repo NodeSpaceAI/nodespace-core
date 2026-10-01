@@ -1,19 +1,18 @@
 #!/usr/bin/env bun
 /**
- * aichat.ts — drive an ai-chat node end-to-end through the CLI, no UI.
+ * aichat.ts — drive a native AI chat (`ai-chat-native`) end-to-end through the CLI, no UI.
  *
  * Used to iterate on agent prompting. Talks to a freshly-built nodespaced over a
  * dedicated test socket/DB so it never touches the user's real ~/.nodespace data.
  *
  * Mechanism: there is no "send message" RPC. The daemon's event watcher runs an
- * inference turn when an ai-chat node's properties['ai-chat'] has
- * turn_status:"processing" AND a trailing role:"user" message. On completion
- * it appends the assistant reply and sets turn_status:"idle" — a separate,
- * PTY-owned session_status axis is never touched by this flow. So a turn is:
- * batch-update (append user msg + turn_status:processing) → poll get until idle.
+ * inference turn when an ai-chat-native node has turn_status:"processing" AND
+ * a trailing role:"user" message. On completion it appends the assistant reply
+ * and sets turn_status:"idle". So a turn is: batch-update (append user msg +
+ * turn_status:processing) → poll get until idle.
  *
  * Commands:
- *   bun run scripts/aichat.ts new                  Create an ai-chat node; prints its ID.
+ *   bun run scripts/aichat.ts new                  Create a native chat; prints its ID.
  *   bun run scripts/aichat.ts send <id> "message"  Run one turn; prints reply + tool calls.
  *   bun run scripts/aichat.ts ask "message"        Shorthand: new + send.
  *   bun run scripts/aichat.ts show <id>            Dump the full message history.
@@ -37,11 +36,14 @@ const NS_LOG = process.env.NS_LOG ?? "/tmp/nodespaced-test/daemon.log";
 const NS_MODEL = process.env.NS_MODEL ?? "gemma-4-e4b-q4km";
 const TIMEOUT_MS = Number(process.env.NS_TIMEOUT_MS ?? 180_000);
 
+/** The type of the chat this harness drives: one NodeSpace's own agent loop runs. */
+export const CHAT_NODE_TYPE = "ai-chat-native";
+
 interface AiChat {
+  agent: string;
   provider: string;
   model: string;
   turn_status: string;
-  session_status: string;
   messages: Array<{ role: string; content: string; timestamp?: string }>;
 }
 
@@ -79,11 +81,10 @@ function nsRaw(args: string[]): void {
 interface NodeJson {
   id: string;
   version: number;
-  // The CLI's `--json` output is flat — an ai-chat node's own fields
-  // (turn_status, messages, ...) sit directly on `properties`, not nested
-  // under an "ai-chat" key. Writes still go through batchUpdateProps nested
-  // under "ai-chat", which the daemon's `AiChatNode::from_node` accepts
-  // (nested-or-flat) regardless of how the CLI echoes it back.
+  // The CLI's `--json` output is flat — the chat's fields (turn_status,
+  // messages, ...), inherited ones included, sit directly on `properties`.
+  // Writes are flat too: the daemon places each key in the bucket of the
+  // schema that declares it.
   properties: Partial<AiChat>;
 }
 
@@ -93,10 +94,10 @@ function getNode(id: string): NodeJson {
 
 function defaultAiChat(): AiChat {
   return {
+    agent: "nodespace",
     provider: "native",
     model: NS_MODEL,
     turn_status: "idle",
-    session_status: "active",
     messages: [],
   };
 }
@@ -116,14 +117,17 @@ function cmdNew(): string {
     "node",
     "create",
     "--type",
-    "ai-chat",
+    CHAT_NODE_TYPE,
     "--content",
     "CLI test chat",
+    // `agent` is required on create: it says who runs the conversation.
+    "--property",
+    "agent=nodespace",
   ]) as {
     id: string;
   };
   if (!created?.id) throw new Error("create returned no id");
-  batchUpdateProps(created.id, null, { "ai-chat": defaultAiChat() });
+  batchUpdateProps(created.id, null, { ...defaultAiChat() });
   return created.id;
 }
 
@@ -411,7 +415,10 @@ async function cmdSend(id: string, message: string): Promise<void> {
     timestamp: new Date().toISOString(),
   });
   aichat.turn_status = "processing";
-  batchUpdateProps(id, node.version, { "ai-chat": aichat });
+  batchUpdateProps(id, node.version, {
+    turn_status: aichat.turn_status,
+    messages: aichat.messages,
+  });
 
   const deadline = Date.now() + TIMEOUT_MS;
   let latest = aichat;

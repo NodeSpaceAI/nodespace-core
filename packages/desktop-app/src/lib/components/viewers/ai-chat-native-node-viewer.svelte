@@ -1,39 +1,36 @@
 <!--
-  AiChatNodeViewer - Page-level viewer for AI chat conversation nodes
+  AiChatNativeNodeViewer - Page-level viewer for native AI chat conversation nodes
 
-  Per ADR-034, `ai-chat` is one node type with multiple provider modes. This is THE
-  single dispatcher for the type. It renders a header (title + unified model selector)
-  and routes on `properties.provider` (+ `properties.model`):
-    - pty                           → embedded terminal session (AiChatPtySession).
-    - native | openai-compat → message UI (chat input + streamed messages[]).
-    - model not yet set             → prompt to select a model via the header selector.
+  `ai-chat-native` is a chat NodeSpace's own agent loop answers, with a local
+  model or an OpenAI-compatible endpoint (ADR-088). Terminal chats are a
+  separate subtype with their own viewer (AiChatPtyNodeViewer). This viewer
+  renders the shared header (title + unified model selector) and:
+    - no model chosen yet → a prompt to select one via the header selector.
+    - model chosen        → message UI (chat input + streamed messages[]).
 
   The header selector (AiChatModelSelector) replaces the two-step provider → model
   picker flow. It is locked (disabled) after the first user message is sent.
+  Picking a terminal harness in it retypes the node to `ai-chat-pty`; the pane
+  then swaps this viewer for the terminal one.
 
   Node-as-message-queue architecture: the node is the single source of truth.
   - Frontend writes `updateNode` to append the user message and set
     `turn_status: 'processing'` — that write is the trigger the daemon watches
     for. WRITES use the canonical snake_case schema key (`turn_status`), not
-    the camelCase `turnStatus` the confirmed node reads back as: ai-chat has
-    no dedicated typed write command like `task` does, so whatever property
+    the camelCase `turnStatus` the confirmed node reads back as: the chat family
+    has no dedicated typed write command like `task` does, so whatever property
     key this component uses reaches storage verbatim, and a wrong-cased write
-    key silently never reaches the daemon's inference trigger at all (see
-    `AiChatNode::from_node`'s doc comment on the Rust side for the full
-    story). The daemon owns every subsequent turn_status write for the turn.
+    key silently never reaches the daemon's inference trigger at all. The
+    daemon owns every subsequent turn_status write for the turn.
   - LocalAgentService in the daemon reacts to node changes and drives inference.
   - Streaming tokens arrive via Tauri events (local-agent://chunk) and accumulate
     in a local `streamingContent` buffer. The buffer is cleared when WatchNodes
     delivers the completed assistant message.
   - Typing indicator driven by the node's top-level `turnStatus === 'processing'`
     — a READ, so this uses the promoted camelCase field the daemon always
-    returns, regardless of which case the write used. The daemon flattens the
-    `ai-chat` namespace before it reaches the frontend, so this reads
-    `node.turnStatus`, never `node.properties['ai-chat'].turn_status`.
-  - `turnStatus`/`turn_status` and `sessionStatus`/`session_status` are
-    independent axes (turn/inference state vs. PTY session lifecycle) — see
-    `ai-chat-node.ts`'s doc comments. This viewer only reads/writes the turn
-    axis; the session axis belongs to `AiChatPtySession`.
+    returns, regardless of which case the write used. The backend promotes the
+    node's declared fields to the top level, so this reads `node.turnStatus`,
+    never `node.properties.turn_status`.
 -->
 
 <script lang="ts">
@@ -42,13 +39,13 @@
   import { sharedNodeStore } from '$lib/services/shared-node-store.svelte';
   import ChatMessage from '$lib/components/chat/chat-message.svelte';
   import ChatInput from '$lib/components/chat/chat-input.svelte';
-  import AiChatPtySession from './ai-chat-pty-session.svelte';
+  import AiChatHeader from './ai-chat-header.svelte';
   import AiChatModelSelector from './ai-chat-model-selector.svelte';
   import type { ModelSelection } from './ai-chat-model-selector.svelte';
   import type { DisplayMessage } from '$lib/components/chat/types';
   import type { StreamingChunk } from '$lib/types/agent-types';
   import { AGENT_EVENTS } from '$lib/types/agent-types';
-  import type { AiChatNode } from '$lib/types/ai-chat-node';
+  import type { AiChatNativeNode } from '$lib/types/ai-chat-node';
   import {
     localAgentCancelTurn,
     ensureModelReady,
@@ -58,17 +55,8 @@
   import { statusBar } from '$lib/stores/status-bar.svelte';
   import { createLogger } from '$lib/utils/logger';
   import { toError } from '$lib/types/errors';
-  import { aiChatsData } from '$lib/stores/ai-chats.svelte';
-  import {
-    aiChatDisplayTitle,
-    resolveChatTitleCommit,
-    UNTITLED_CHAT_LABEL
-  } from '$lib/utils/ai-chat-title';
 
-  const log = createLogger('AiChatNodeViewer');
-
-  /** Provider modes that render the message UI. */
-  const MESSAGE_PROVIDERS = ['native', 'openai-compat'] as const;
+  const log = createLogger('AiChatNativeNodeViewer');
 
   let {
     nodeId,
@@ -95,23 +83,13 @@
    */
   let ensuringModelPhase = $state<'verifying' | 'loading' | null>(null);
 
-  // --- Title editing ---------------------------------------------------
-  /** True while the header title is an editable input rather than static text. */
-  let editingTitle = $state(false);
-  /** The in-progress edit. Only meaningful while editingTitle is true. */
-  let titleDraft = $state('');
-  let titleInputEl: HTMLInputElement | undefined = $state();
-
   const SOFT_MESSAGE_CAP = 500;
 
   // --- Reactive node lookup ---
-  const node = $derived(sharedNodeStore.getNode(nodeId) as AiChatNode | undefined);
+  const node = $derived(sharedNodeStore.getNode(nodeId) as AiChatNativeNode | undefined);
 
   const provider = $derived(node?.provider);
   const model = $derived(node?.model ?? '');
-  const isMessageProvider = $derived(
-    provider !== undefined && (MESSAGE_PROVIDERS as readonly string[]).includes(provider)
-  );
 
   /** True while the daemon is processing an inference turn for this node. */
   const isProcessing = $derived(node?.turnStatus === 'processing');
@@ -129,9 +107,7 @@
     provider && model
       ? provider === 'openai-compat'
         ? model                      // model = full daemon ID "openai-compat:<config>[:<model>]"
-        : provider === 'pty'
-          ? `pty:${model}`           // model = agent id, e.g. "claude-code"
-          : `native:${model}`
+        : `native:${model}`
       : ''
   );
 
@@ -178,49 +154,22 @@
    * catalog list) this shows the download modal. The download modal listens for
    * MODEL_DOWNLOAD_PROGRESS events and clears itself on MODEL_DOWNLOAD_READY.
    * For openai-compat: write provider + model to the node immediately.
+   * For a terminal harness: retype the node to `ai-chat-pty`.
    */
   function handleModelSelect(selection: ModelSelection): void {
-    if (selection.provider === 'native') {
-      // Persist the selection regardless of download status so the node
-      // remembers what model was chosen. The send path (handleSend) calls
-      // ensureModelReady which also triggers download if needed.
-      const current = sharedNodeStore.getNode(nodeId) as unknown as AiChatNode | undefined;
-      sharedNodeStore.updateNode(
-        nodeId,
-        {
-          properties: {
-            messages: current?.messages ?? [],
-            // Canonical snake_case keys, matching the schema's declared field
-            // names — ai-chat has no dedicated typed write command like task
-            // does, so whatever key this object uses reaches storage
-            // verbatim. See AiChatNode::from_node's doc comment for why a
-            // camelCase key here would silently break inference triggering.
-            turn_status: current?.turnStatus ?? 'idle',
-            session_status: current?.sessionStatus ?? 'active',
-            provider: 'native',
-            model: selection.modelId,
-          },
-        },
-        { type: 'viewer', viewerId: 'ai-chat-viewer' }
-      );
-      return;
-    }
-
     if (selection.provider === 'pty') {
-      // PTY sessions store no messages — the conversation lives in the
-      // external harness. `model` holds the chosen agent id (e.g.
-      // "claude-code") so AiChatPtySession can pre-select it in the launch
-      // config; capture:* properties are filled in separately once launched.
-      const current = sharedNodeStore.getNode(nodeId) as unknown as AiChatNode | undefined;
+      // The conversation lives in the external harness, so the chat becomes a
+      // PTY chat: `agent` names the harness (AiChatPtySession pre-selects it in
+      // the launch config), `model` is cleared because it only ever holds a
+      // model identifier. Writes use canonical snake_case keys — the chat
+      // family has no typed write command, so a key here reaches storage verbatim.
       sharedNodeStore.updateNode(
         nodeId,
         {
+          nodeType: 'ai-chat-pty',
           properties: {
-            messages: current?.messages ?? [],
-            turn_status: current?.turnStatus ?? 'idle',
-            session_status: current?.sessionStatus ?? 'active',
-            provider: 'pty',
-            model: selection.modelId || null,
+            agent: selection.modelId,
+            model: null,
           },
         },
         { type: 'viewer', viewerId: 'ai-chat-viewer' }
@@ -228,15 +177,13 @@
       return;
     }
 
-    // openai-compat: write directly.
-    const current = sharedNodeStore.getNode(nodeId) as unknown as AiChatNode | undefined;
+    // Native selections persist regardless of download status so the node
+    // remembers what model was chosen. The send path (handleSend) calls
+    // ensureModelReady which also triggers download if needed.
     sharedNodeStore.updateNode(
       nodeId,
       {
         properties: {
-          messages: current?.messages ?? [],
-          turn_status: current?.turnStatus ?? 'idle',
-          session_status: current?.sessionStatus ?? 'active',
           provider: selection.provider,
           model: selection.modelId,
         },
@@ -277,7 +224,9 @@
       return;
     }
 
-    const existingMessages = Array.isArray((current as unknown as AiChatNode).messages) ? (current as unknown as AiChatNode).messages : [];
+    const existingMessages = Array.isArray((current as unknown as AiChatNativeNode).messages)
+      ? (current as unknown as AiChatNativeNode).messages
+      : [];
     const newMessage = {
       role: 'user' as const,
       content: trimmed,
@@ -303,9 +252,8 @@
     }
 
     // Set turn_status:'processing' (the canonical, schema-declared key — see
-    // the note in handleModelSelect) so the typing indicator appears and the
-    // daemon picks up the turn via NodeUpdated. Model is guaranteed loaded
-    // above. session_status is untouched — this write only owns the turn axis.
+    // the note in the header comment) so the typing indicator appears and the
+    // daemon picks up the turn via NodeUpdated. Model is guaranteed loaded above.
     sharedNodeStore.updateNode(
       nodeId,
       {
@@ -336,57 +284,6 @@
     }
   }
 
-  // --- Title editing --------------------------------------------------------
-
-  /** Enter edit mode, seeded with the node's raw (untrimmed, possibly empty)
-   *  content — never the "Untitled chat" placeholder, which is a display
-   *  fallback, not a value to edit. */
-  function startEditingTitle(): void {
-    if (editingTitle) return;
-    titleDraft = node?.content ?? '';
-    editingTitle = true;
-  }
-
-  /** Persist the edit if it actually changed anything, then leave edit mode. */
-  function commitTitle(): void {
-    if (!editingTitle) return;
-    editingTitle = false;
-    const toPersist = resolveChatTitleCommit(node?.content ?? '', titleDraft);
-    if (toPersist === null) return;
-    sharedNodeStore.updateNode(
-      nodeId,
-      { content: toPersist },
-      { type: 'viewer', viewerId: 'ai-chat-viewer' }
-    );
-    // Keep the sidebar's chat list in sync without a full reload — mirrors
-    // how `aiChatsData.createChat` already prepends optimistically.
-    aiChatsData.updateChatContent(nodeId, toPersist);
-  }
-
-  /** Leave edit mode without persisting — the draft is simply discarded. */
-  function cancelEditingTitle(): void {
-    editingTitle = false;
-  }
-
-  function onTitleKeydown(event: KeyboardEvent): void {
-    if (event.key === 'Enter') {
-      event.preventDefault();
-      commitTitle();
-    } else if (event.key === 'Escape') {
-      event.preventDefault();
-      cancelEditingTitle();
-    }
-  }
-
-  // Focus (and select) the input the moment it mounts, so entering edit mode
-  // drops the user straight into typing rather than requiring a second click.
-  $effect(() => {
-    if (editingTitle && titleInputEl) {
-      titleInputEl.focus();
-      titleInputEl.select();
-    }
-  });
-
   // --- Lifecycle ---
 
   let destroyed = false;
@@ -405,7 +302,7 @@
   }
 
   onMount(async () => {
-    log.debug('AiChatNodeViewer mounted', { nodeId });
+    log.debug('AiChatNativeNodeViewer mounted', { nodeId });
 
     try {
       if (isTauri()) {
@@ -525,67 +422,29 @@
 </script>
 
 <div class="ai-chat-viewer">
-  <!-- Header (shown in every mode): title + unified model selector. -->
-  <div class="chat-viewer-header">
-    <div class="chat-viewer-header-left">
-      {#if editingTitle}
-        <input
-          bind:this={titleInputEl}
-          class="chat-viewer-title-input"
-          type="text"
-          value={titleDraft}
-          oninput={(e) => (titleDraft = e.currentTarget.value)}
-          onblur={commitTitle}
-          onkeydown={onTitleKeydown}
-          aria-label="Chat title"
-          placeholder={UNTITLED_CHAT_LABEL}
-        />
-      {:else}
-        <h2 class="chat-viewer-title">
-          <button
-            type="button"
-            class="chat-viewer-title-button"
-            onclick={startEditingTitle}
-            aria-label="Rename chat"
-          >
-            {aiChatDisplayTitle(node?.content)}
-          </button>
-        </h2>
-      {/if}
-    </div>
-    <div class="chat-viewer-header-right">
-      {#if provider !== 'pty'}
-        <AiChatModelSelector
-          {nodeId}
-          disabled={hasMessages}
-          currentValue={selectorCurrentValue}
-          onSelect={handleModelSelect}
-        />
-      {/if}
-    </div>
-  </div>
+  <AiChatHeader {nodeId}>
+    {#snippet actions()}
+      <AiChatModelSelector
+        {nodeId}
+        disabled={hasMessages}
+        currentValue={selectorCurrentValue}
+        onSelect={handleModelSelect}
+      />
+    {/snippet}
+  </AiChatHeader>
 
   {#if !nodeReady}
     <div class="provider-prompt">
       <p class="provider-prompt-text">Loading…</p>
     </div>
-  {:else if provider === undefined}
+  {:else if !model}
     <div class="provider-prompt">
       <p class="provider-prompt-text">Choose a model to get started</p>
       <p class="provider-prompt-hint">
         Select a model from the dropdown above to begin the conversation.
       </p>
     </div>
-  {:else if provider === 'pty'}
-    <AiChatPtySession {nodeId} />
-  {:else if isMessageProvider && !model}
-    <div class="provider-prompt">
-      <p class="provider-prompt-text">Choose a model to get started</p>
-      <p class="provider-prompt-hint">
-        Select a model from the dropdown above to begin the conversation.
-      </p>
-    </div>
-  {:else if isMessageProvider}
+  {:else}
     <div
       class="chat-viewer-messages"
       bind:this={messagesContainer}
@@ -681,82 +540,6 @@
     height: 100%;
     background: hsl(var(--background));
     position: relative;
-  }
-
-  .chat-viewer-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 0.75rem 1rem;
-    border-bottom: 1px solid hsl(var(--border));
-    background: hsl(var(--background));
-    flex-shrink: 0;
-    gap: 0.75rem;
-  }
-
-  .chat-viewer-header-left {
-    display: flex;
-    flex-direction: column;
-    gap: 0.25rem;
-    min-width: 0;
-  }
-
-  .chat-viewer-header-right {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    flex-shrink: 0;
-  }
-
-  .chat-viewer-title {
-    font-size: 1rem;
-    font-weight: 600;
-    margin: 0;
-    color: hsl(var(--foreground));
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    min-width: 0;
-  }
-
-  .chat-viewer-title-button {
-    display: block;
-    width: 100%;
-    max-width: 100%;
-    padding: 0.125rem 0.25rem;
-    margin: -0.125rem -0.25rem;
-    border: none;
-    border-radius: 0.25rem;
-    background: transparent;
-    font: inherit;
-    color: inherit;
-    text-align: left;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    cursor: text;
-  }
-
-  .chat-viewer-title-button:hover {
-    background: hsl(var(--muted) / 0.6);
-  }
-
-  .chat-viewer-title-input {
-    width: 100%;
-    max-width: 100%;
-    padding: 0.125rem 0.25rem;
-    margin: -0.125rem -0.25rem;
-    border: 1px solid hsl(var(--border));
-    border-radius: 0.25rem;
-    background: hsl(var(--background));
-    font-size: 1rem;
-    font-weight: 600;
-    color: hsl(var(--foreground));
-  }
-
-  .chat-viewer-title-input:focus {
-    outline: none;
-    border-color: hsl(var(--primary));
   }
 
   .provider-prompt {
@@ -865,9 +648,9 @@
     margin: 0.5rem 1rem;
     padding: 0.5rem 0.75rem;
     border-radius: 0.375rem;
-    background: hsl(0 72% 51% / 0.1);
-    border: 1px solid hsl(0 72% 51% / 0.3);
-    color: hsl(0 72% 51%);
+    background: hsl(var(--destructive) / 0.1);
+    border: 1px solid hsl(var(--destructive) / 0.3);
+    color: hsl(var(--destructive));
     font-size: 0.8125rem;
   }
 
@@ -890,7 +673,6 @@
     border: 1px solid hsl(var(--border));
     border-radius: 0.75rem;
     padding: 1.25rem 1.75rem;
-    box-shadow: 0 8px 32px hsl(0 0% 0% / 0.12);
   }
 
   .ensure-model-spinner {

@@ -1724,7 +1724,7 @@ describe('PluginRegistry - Core Functionality', () => {
   describe('Backspace Deletion Protection', () => {
     it('should return false for plugins with deletableViaBackspace: false', () => {
       const plugin: PluginDefinition = {
-        id: 'ai-chat',
+        id: 'ai-chat-native',
         name: 'AI Chat',
         description: 'AI conversation node',
         version: '1.0.0',
@@ -1736,7 +1736,7 @@ describe('PluginRegistry - Core Functionality', () => {
 
       registry.register(plugin);
 
-      expect(registry.deletableViaBackspace('ai-chat')).toBe(false);
+      expect(registry.deletableViaBackspace('ai-chat-native')).toBe(false);
     });
 
     it('should return true for plugins with deletableViaBackspace: true', () => {

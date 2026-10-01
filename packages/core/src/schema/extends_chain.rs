@@ -32,7 +32,7 @@ use crate::models::{SchemaField, SchemaNode};
 /// Maximum `extends` chain depth.
 ///
 /// Mirrors the depth cap the recursive relationship queries already use
-/// (`MENTION_CONTAINERS_QUERY`, the collection-subtree query). Cycle detection
+/// (`mention_containers_query`, the collection-subtree query). Cycle detection
 /// below makes an unbounded walk impossible in practice; this is the
 /// belt-and-braces guard for a chain that is merely absurd rather than cyclic,
 /// and it keeps a corrupted edge set from hanging a write path.

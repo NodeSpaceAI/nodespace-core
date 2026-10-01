@@ -1,13 +1,15 @@
 /**
  * Resolves the user's default model (Settings → AI Models) into the
- * `provider` + `model` properties an ai-chat node stores, so a chat is created
- * already knowing which model it starts with.
+ * `provider` + `model` properties an ai-chat-native node stores, so a chat is
+ * created already knowing which model it starts with.
  *
- * The mapping mirrors `handleModelSelect` in `ai-chat-node-viewer.svelte`:
+ * The mapping mirrors `handleModelSelect` in `ai-chat-native-node-viewer.svelte`:
  *  - native        → provider 'native', model = the model id
  *  - openai-compat → provider 'openai-compat', model = the daemon's full
  *                    "openai-compat:<config>[:<model>]" id
- *  - pty           → provider 'pty', model = the agent id
+ *
+ * `model` is always a model identifier. A terminal harness is a chat's `agent`,
+ * never its model.
  */
 
 import type { AiChatProvider } from '$lib/types/ai-chat-node';
@@ -16,6 +18,9 @@ import {
   getOpenAiConfigs,
   type ModelSelection,
 } from '$lib/stores/settings.svelte';
+
+/** The `agent` of a chat NodeSpace's own agent loop answers. */
+export const NATIVE_CHAT_AGENT = 'nodespace';
 
 export interface AiChatModelProperties {
   provider: AiChatProvider;
@@ -52,11 +57,6 @@ export function getDefaultAiChatModelProperties(): AiChatModelProperties | null 
 
   const props = selectionToAiChatProperties(selection);
   if (!props) return null;
-
-  // A pty chat opens straight into the terminal view, which has no model
-  // selector, so seeding it would leave the user unable to pick another model
-  // before the first message. Only message-based providers are seeded.
-  if (props.provider === 'pty') return null;
 
   if (props.provider === 'openai-compat') {
     const configId = props.model.slice('openai-compat:'.length).split(':')[0];

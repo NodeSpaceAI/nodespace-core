@@ -78,8 +78,8 @@ async fn launch(client: &mut SessionClient, args: LaunchArgs) -> Result<()> {
             prompt: args.prompt,
             cols,
             rows,
-            // CLI-launched sessions are not tied to an ai-chat node, so there
-            // is nothing to backfill — capture skips when node_id is absent.
+            // CLI-launched sessions are not tied to an ai-chat-pty node, so
+            // nothing is written when the session ends.
             node_id: None,
         }))
         .await

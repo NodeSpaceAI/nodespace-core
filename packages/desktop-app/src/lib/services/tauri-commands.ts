@@ -182,10 +182,9 @@ export interface PtyLaunchInput {
   cols: number;
   rows: number;
   /**
-   * ID of the `ai-chat` node this PTY session is a view onto (provider mode 2d,
-   * per ADR-034). When set, capture backfills this node at session end instead
-   * of minting a new one. Omit to launch a session not bound to a node (capture
-   * is then skipped).
+   * ID of the `ai-chat-pty` node this PTY session is a view onto (ADR-088).
+   * When set, the session's end is recorded on this node instead of a new one.
+   * Omit to launch a session not bound to a node (nothing is then written).
    */
   nodeId?: string | null;
 }

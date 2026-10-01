@@ -351,11 +351,11 @@ function nodeDataToApiNode(n: ProtoNodeData): Record<string, unknown> {
     // (`{"person": {...}}`) — this proxy has no access to the Rust
     // `node_to_typed_value` that the Tauri IPC layer routes every node
     // through to flatten `properties` and promote type-specific fields
-    // (ai-chat's provider/model, task's status/priority, ...) to the top
+    // (a chat's provider/model, task's status/priority, ...) to the top
     // level. Without this spread the frontend would receive a different
     // shape over this transport than over Tauri: property forms would read
     // empty fields, and the `nodeTo*` converters (which trust promotion
-    // already happened — see `ai-chat-node.ts`'s doc comment) would read
+    // already happened — see `ai-chat-node.ts`'s doc comments) would read
     // typed fields as `undefined`.
     ...storageNodeToApiFields(n.nodeType, properties)
   };

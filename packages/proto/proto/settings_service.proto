@@ -43,7 +43,8 @@ enum CaptureContentLevel {
 message GetCaptureSettingsRequest {}
 
 message UpdateCaptureSettingsRequest {
-  // Whether to create an ai-chat node at session end. Default: false.
+  // Whether to save a finished session's summary and transcript to its
+  // ai-chat-pty node. Default: false.
   // Only updated when present; use optional to distinguish "no change" from
   // explicit false.
   optional bool enabled = 1;

@@ -169,7 +169,7 @@
       {
         id: 'mock-node-4',
         title: 'AI Research Chat',
-        nodeType: 'ai-chat',
+        nodeType: 'ai-chat-native',
         subtitle: 'Conversation about machine learning and AI development',
         metadata: '5 days ago'
       },

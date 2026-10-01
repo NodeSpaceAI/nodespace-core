@@ -30,7 +30,7 @@ struct Declared {
     file: File,
 }
 
-/// `AiChatNode` to `ai-chat-node`: the frontend's file naming.
+/// `AiChatPtyNode` to `ai-chat-pty-node`: the frontend's file naming.
 fn kebab(name: &str) -> String {
     let mut out = String::new();
     for (i, ch) in name.chars().enumerate() {
@@ -127,7 +127,12 @@ fn declarations(cfg: &Config) -> Vec<Declared> {
         AiChatPendingDeletion,
         AiChatTurnOutcome,
         AiChatMessage,
-        AiChatNode,
+        AiChatProvider,
+        AiChatTurnStatus,
+        AiChatSessionStatus,
+        AiChatBase,
+        AiChatNativeNode,
+        AiChatPtyNode,
         // registry
         CoreNodeType,
         CoreTypeKind,
@@ -154,6 +159,10 @@ struct CoreTypeEntry {
     is_abstract: bool,
     /// Offered by the `@` mention picker (the effective rule: it narrows down the chain).
     mentionable: bool,
+    /// Whether the type's typed fields are written through a typed update
+    /// command. A type without one writes them as a `properties` patch keyed
+    /// by storage name.
+    typed_update: bool,
 }
 
 /// The JSON shape of a typed core field that is not a string.
@@ -220,6 +229,7 @@ fn core_node_types_file() -> File {
             parent: core.parent(),
             is_abstract: core.is_abstract(),
             mentionable: core.participation().mentionable,
+            typed_update: core.wire() == (WireShape::Typed { update: true }),
         };
         writeln!(contents, "  {},", json(&entry)).unwrap();
     }

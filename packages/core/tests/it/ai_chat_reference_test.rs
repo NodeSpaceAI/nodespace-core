@@ -29,8 +29,19 @@ async fn create_test_service() -> Result<(NodeService, Arc<SqliteStore>, TempDir
     Ok((service, store, temp_dir))
 }
 
+/// The chats these tests reference. Any chat type would do: the rules are
+/// the abstract `ai-chat` base's, and every subtype inherits them.
+const CHAT: &str = "ai-chat-native";
+
 async fn create_typed_node(service: &NodeService, node_type: &str, content: &str) -> Result<Node> {
-    let node = Node::new(node_type.to_string(), content.to_string(), json!({}));
+    // A chat names who runs it; nothing else these tests create has a
+    // required field.
+    let properties = if node_type == CHAT {
+        json!({ "agent": "nodespace" })
+    } else {
+        json!({})
+    };
+    let node = Node::new(node_type.to_string(), content.to_string(), properties);
     service
         .with_client(TEST_CLIENT_ID)
         .create_node(node.clone())
@@ -48,7 +59,7 @@ async fn create_typed_node(service: &NodeService, node_type: &str, content: &str
 async fn content_mention_of_ai_chat_creates_no_edge() -> Result<()> {
     let (service, _store, _t) = create_test_service().await?;
 
-    let chat = create_typed_node(&service, "ai-chat", "Private chat").await?;
+    let chat = create_typed_node(&service, CHAT, "Private chat").await?;
     let page = create_typed_node(&service, "text", "Some page").await?;
     let source = create_typed_node(&service, "text", "draft").await?;
 
@@ -82,7 +93,7 @@ async fn content_mention_of_ai_chat_creates_no_edge() -> Result<()> {
 async fn create_mention_rejects_ai_chat_target() -> Result<()> {
     let (service, _store, _t) = create_test_service().await?;
 
-    let chat = create_typed_node(&service, "ai-chat", "Private chat").await?;
+    let chat = create_typed_node(&service, CHAT, "Private chat").await?;
     let source = create_typed_node(&service, "text", "note").await?;
 
     let err = service
@@ -101,7 +112,7 @@ async fn create_mention_rejects_ai_chat_target() -> Result<()> {
 async fn create_relationship_rejects_ai_chat_target() -> Result<()> {
     let (service, _store, _t) = create_test_service().await?;
 
-    let chat = create_typed_node(&service, "ai-chat", "Private chat").await?;
+    let chat = create_typed_node(&service, CHAT, "Private chat").await?;
     let source = create_typed_node(&service, "text", "note").await?;
 
     let err = service
@@ -134,7 +145,7 @@ async fn untyped_declared_relationship_rejects_ai_chat_target() -> Result<()> {
     .await
     .map_err(|e| anyhow::anyhow!("schema: {e}"))?;
 
-    let chat = create_typed_node(&service, "ai-chat", "Private chat").await?;
+    let chat = create_typed_node(&service, CHAT, "Private chat").await?;
     let page = create_typed_node(&service, "text", "page").await?;
     let finding = create_typed_node(&service, "finding", "A finding").await?;
 
@@ -167,7 +178,7 @@ async fn existing_node_cannot_be_retyped_to_ai_chat() -> Result<()> {
             &target.id,
             target.version,
             NodeUpdate {
-                node_type: Some("ai-chat".to_string()),
+                node_type: Some(CHAT.to_string()),
                 ..NodeUpdate::new()
             },
         )
@@ -190,7 +201,7 @@ async fn existing_node_cannot_be_retyped_to_ai_chat() -> Result<()> {
 async fn ai_chat_can_still_mention_other_nodes() -> Result<()> {
     let (service, _store, _t) = create_test_service().await?;
 
-    let chat = create_typed_node(&service, "ai-chat", "Private chat").await?;
+    let chat = create_typed_node(&service, CHAT, "Private chat").await?;
     let target = create_typed_node(&service, "text", "page").await?;
 
     service.create_mention(&chat.id, &target.id).await?;
@@ -205,7 +216,7 @@ async fn has_child_onto_ai_chat_is_still_allowed() -> Result<()> {
     let (service, _store, _t) = create_test_service().await?;
 
     let page = create_typed_node(&service, "text", "Topic page").await?;
-    let chat = create_typed_node(&service, "ai-chat", "Private chat").await?;
+    let chat = create_typed_node(&service, CHAT, "Private chat").await?;
 
     service
         .create_relationship(&page.id, "has_child", &chat.id, json!({}))
@@ -223,7 +234,7 @@ async fn has_child_onto_ai_chat_is_still_allowed() -> Result<()> {
 async fn bulk_create_mentions_skips_ai_chat_target() -> Result<()> {
     let (service, store, _t) = create_test_service().await?;
 
-    let chat = create_typed_node(&service, "ai-chat", "Private chat").await?;
+    let chat = create_typed_node(&service, CHAT, "Private chat").await?;
     let page = create_typed_node(&service, "text", "page").await?;
     let source = create_typed_node(&service, "text", "note").await?;
 
@@ -244,7 +255,7 @@ async fn bulk_create_mentions_skips_ai_chat_target() -> Result<()> {
 async fn mention_autocomplete_does_not_offer_ai_chats() -> Result<()> {
     let (service, _store, _t) = create_test_service().await?;
 
-    let chat = create_typed_node(&service, "ai-chat", "Quarterly planning").await?;
+    let chat = create_typed_node(&service, CHAT, "Quarterly planning").await?;
     let page = create_typed_node(&service, "text", "Quarterly planning notes").await?;
 
     let results = service.mention_autocomplete("quarterly", None).await?;

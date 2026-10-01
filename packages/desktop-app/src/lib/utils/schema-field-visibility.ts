@@ -2,7 +2,7 @@
  * Single shared predicate for "should this schema field be shown to a user?".
  *
  * `protection: 'system'` marks a field the backend owns end to end — an
- * ai-chat session bookkeeping field like `capture:transcript`. Nothing a user
+ * PTY chat session bookkeeping field like `transcript`. Nothing a user
  * types, and on a local-only install several of them are empty by
  * construction. They must not render as an editable control, and equally must
  * not render as a table column that can never be filled.

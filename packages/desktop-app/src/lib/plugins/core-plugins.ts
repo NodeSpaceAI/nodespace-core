@@ -536,37 +536,62 @@ export const collectionNodePlugin: PluginDefinition = {
 };
 
 /**
- * AI Chat Node Plugin
+ * AI Chat Node Plugins
  *
- * AI chat conversations stored as first-class knowledge graph nodes.
- * Messages are nested properties (ADR-028), so a chat can be linked and
- * grouped into collections like any other node. Chats are not embedded.
+ * AI chat conversations stored as first-class knowledge graph nodes, so a chat
+ * can be linked and grouped into collections like any other node. Chats are
+ * not embedded.
+ *
+ * `ai-chat` is the abstract base (ADR-088): no node is ever of exactly that
+ * type, so it has no plugin. Each concrete subtype registers its own, with its
+ * own page-level viewer.
  */
-export const aiChatNodePlugin: PluginDefinition = {
-  id: 'ai-chat',
-  name: 'AI Chat',
-  description: 'AI conversation node',
-  version: '1.0.0',
-  // The conversation lives in properties.messages, not .content — a start-of-node
-  // Backspace must never silently delete or merge it away (enforced in
-  // handleDeleteNode / handleCombineWithPrevious in base-node-viewer.svelte).
+const aiChatPluginConfig = {
+  // The conversation lives outside `.content`, not in a normal editable text
+  // field — a start-of-node Backspace must never silently delete or merge it
+  // away (enforced in handleDeleteNode / handleCombineWithPrevious in
+  // base-node-viewer.svelte), and it must not absorb a Backspace-merge from
+  // the node below it (like code-block / quote-block).
   deletableViaBackspace: false,
-  // ai-chat's .content is not a normal editable text field, so (like code-block /
-  // quote-block) it must not absorb a Backspace-merge from the node below it.
   acceptsContentMerge: false,
   config: {
     // No slash command — entity types are not slash-creatable. AI chats are created
     // via the sidebar's dedicated "AI Chats" section ("+ New chat").
     slashCommands: [],
+    // An editor choice, not the structural rule: a chat may hold children,
+    // but the outline does not offer indenting a node under one while how the
+    // chat viewer shows non-message children is undecided.
     canHaveChildren: false,
     canBeChild: true
   },
-  viewer: {
-    lazyLoad: () => import('../components/viewers/ai-chat-node-viewer.svelte'),
-    priority: 1
-  },
   reference: {
     component: BaseNodeReference as NodeReferenceComponent,
+    priority: 1
+  }
+} satisfies Partial<PluginDefinition>;
+
+/** A chat NodeSpace's own agent loop answers; messages live in a nested `messages[]` field. */
+export const aiChatNativeNodePlugin: PluginDefinition = {
+  ...aiChatPluginConfig,
+  id: 'ai-chat-native',
+  name: 'AI Chat',
+  description: 'AI conversation node',
+  version: '1.0.0',
+  viewer: {
+    lazyLoad: () => import('../components/viewers/ai-chat-native-node-viewer.svelte'),
+    priority: 1
+  }
+};
+
+/** A chat an external agent harness runs in a terminal. */
+export const aiChatPtyNodePlugin: PluginDefinition = {
+  ...aiChatPluginConfig,
+  id: 'ai-chat-pty',
+  name: 'AI Terminal Chat',
+  description: 'External agent terminal session node',
+  version: '1.0.0',
+  viewer: {
+    lazyLoad: () => import('../components/viewers/ai-chat-pty-node-viewer.svelte'),
     priority: 1
   }
 };
@@ -623,8 +648,8 @@ export const personNodePlugin: PluginDefinition = {
  * typed in ad hoc mid-outline. They stay reachable: most core entity types are listed in
  * the sidenav as user-queryable types and open to schema-driven properties forms
  * (`SIDENAV_CORE_TYPES`), and the rest reach creation through a surface of their own —
- * `person` and every user-defined type through the sidenav's type view, `ai-chat` through
- * its own dedicated sidebar section.
+ * `person` and every user-defined type through the sidenav's type view, the chat types through
+ * their own dedicated sidebar section.
  *
  * `project` therefore has no plugin here at all. If you are here because `/project` seems
  * to be "missing", it is absent by decision, not by oversight. Note that `project` renders
@@ -644,7 +669,8 @@ export const corePlugins = [
   tableNodePlugin,
   queryNodePlugin,
   collectionNodePlugin,
-  aiChatNodePlugin,
+  aiChatNativeNodePlugin,
+  aiChatPtyNodePlugin,
   personNodePlugin
 ];
 

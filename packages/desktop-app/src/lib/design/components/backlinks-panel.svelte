@@ -24,7 +24,8 @@
       date: 'calendar',
       task: 'circle',
       text: 'text',
-      'ai-chat': 'aiSquare'
+      'ai-chat-native': 'aiSquare',
+      'ai-chat-pty': 'aiSquare'
     };
     return iconMap[nodeType] || 'text';
   }

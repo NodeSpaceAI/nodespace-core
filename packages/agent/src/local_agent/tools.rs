@@ -3160,7 +3160,7 @@ impl GraphToolExecutor {
                     // model actually asked for.
                     // `nodeType` is the serialized spelling on every path that
                     // carries one: the generic `Node` camelCases it, and
-                    // `TaskNode`/`AiChatNode` rename to it explicitly.
+                    // the typed node structs flatten the same envelope.
                     //
                     // `SchemaNode` is the exception — it has no `node_type`
                     // field at all, so a schema node emits no `nodeType` and

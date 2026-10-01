@@ -4,6 +4,7 @@
   import { navigationStore, updateTabContent, closeTab } from '$lib/stores/navigation.svelte';
   import { pluginRegistry } from '$lib/plugins/plugin-registry';
   import { sharedNodeStore } from '$lib/services/shared-node-store.svelte';
+  import { resolveViewerNodeType } from '$lib/utils/viewer-node-type';
   import { onDaemonReconnect } from '$lib/services/daemon-status';
   import type { Pane } from '$lib/stores/navigation.svelte';
   import { createLogger } from '$lib/utils/logger';
@@ -100,24 +101,28 @@
     }
   }
 
+  // The node type the active tab's viewer is chosen by: the node's current type
+  // for the chat family (a chat can be retyped in place, so the pane swaps
+  // viewers when it changes), the tab's own type otherwise.
+  const viewerNodeType = $derived.by(() => {
+    const tabType = activeTab?.content?.nodeType ?? 'text';
+    const nodeId = activeTab?.content?.nodeId;
+    if (!nodeId) return tabType;
+    return resolveViewerNodeType(tabType, sharedNodeStore.getNode(nodeId)?.nodeType);
+  });
+
   // Derive viewer component for active tab.
   // Returns null while the viewer module is still loading (prevents BaseNodeViewer fallback
   // from rendering with an incompatible nodeId, e.g. a schema id passed to QueryNodeViewer)
   const ViewerComponent = $derived.by(() => {
-    const nodeType = activeTab?.content?.nodeType ?? 'text';
+    const nodeType = viewerNodeType;
     if (viewerLoading.has(nodeType)) return null;
     return (viewerComponents.get(nodeType) ?? BaseNodeViewer) as typeof BaseNodeViewer;
   });
 
-  const loadError = $derived.by(() => {
-    const nodeType = activeTab?.content?.nodeType ?? 'text';
-    return viewerLoadErrors.get(nodeType);
-  });
+  const loadError = $derived(viewerLoadErrors.get(viewerNodeType));
 
-  const isViewerLoading = $derived.by(() => {
-    const nodeType = activeTab?.content?.nodeType ?? 'text';
-    return viewerLoading.has(nodeType);
-  });
+  const isViewerLoading = $derived(viewerLoading.has(viewerNodeType));
 
   const isNodeHydrated = $derived.by(() => {
     const nodeId = activeTab?.content?.nodeId;
@@ -133,7 +138,7 @@
   // and both are read back via the $derived values above. tabId is captured here so a
   // not-found close targets the tab that triggered the fetch.
   $effect(() => {
-    const nodeType = activeTab?.content?.nodeType;
+    const nodeType = activeTab?.content ? viewerNodeType : undefined;
     const nodeId = activeTab?.content?.nodeId;
     const tabId = activeTabId;
     if (nodeType) {
@@ -173,7 +178,7 @@
   <ConflictsPane />
 {:else if activeTab?.content}
   {@const content = activeTab.content}
-  {@const nodeType = content.nodeType ?? 'text'}
+  {@const nodeType = viewerNodeType}
 
   {#if loadError}
     <!-- Plugin loading error -->

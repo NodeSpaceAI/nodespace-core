@@ -8,16 +8,16 @@
  * a `member_of` grouping — so this helper only creates the node.
  */
 
-import { isA } from '$lib/types/core-node-types';
+import { isA, isExactly } from '$lib/types/core-node-types';
 import { v4 as uuidv4 } from 'uuid';
 import { backendAdapter } from '$lib/services/backend-adapter';
 import { humanizeSchemaId } from '$lib/plugins/schema-plugin-loader';
-import { getDefaultAiChatModelProperties } from '$lib/services/ai-chat-default-model';
+import { getDefaultAiChatModelProperties, NATIVE_CHAT_AGENT } from '$lib/services/ai-chat-default-model';
 import { UNTITLED_CHAT_TITLE } from '$lib/utils/ai-chat-title';
 import type { Node } from '$lib/types';
 import type { SchemaField, SchemaNode } from '$lib/types/schema-node';
 import { sharedNodeStore } from '$lib/services/shared-node-store.svelte';
-import { hasTypedCoreFields } from '$lib/types/typed-core-fields';
+import { hasTypedUpdate } from '$lib/types/typed-core-fields';
 import { resolveFieldValue } from '$lib/components/schema/schema-field-resolution';
 import { isUserVisibleField } from '$lib/utils/schema-field-visibility';
 
@@ -38,26 +38,18 @@ import { isUserVisibleField } from '$lib/utils/schema-field-visibility';
 const NAME_AS_CONTENT_TYPES = new Set(['project', 'skill', 'collection', 'agent-guidance', 'tool']);
 
 /**
- * Types whose seed content is a fixed string rather than the
- * `"Untitled {Type}"` form `NAME_AS_CONTENT_TYPES` derives.
- *
- * `ai-chat` seeds the bare `"Untitled"`: that exact value is the sentinel the
- * daemon's background titler tests for before generating a title, so it has to
- * match `UNTITLED_CHAT_TITLE` byte for byte — `humanizeSchemaId` would yield
- * "Untitled Ai Chat" and the titler would read it as a user-chosen title and
- * leave it alone forever.
- */
-const SEED_CONTENT_OVERRIDES = new Map<string, string>([['ai-chat', UNTITLED_CHAT_TITLE]]);
-
-/**
  * The seed `content` a fresh instance of `typeId` starts with — shared by the
  * immediate create and the unsaved placeholder so both start identically.
+ *
+ * Every chat seeds the bare `"Untitled"`: that exact value is the sentinel the
+ * daemon's background titler tests for before generating a title, so it has to
+ * match `UNTITLED_CHAT_TITLE` byte for byte — `humanizeSchemaId` would yield
+ * "Untitled Ai Chat Native" and the titler would read it as a user-chosen
+ * title and leave it alone forever.
  */
 function seedContent(typeId: string): string {
-  return (
-    SEED_CONTENT_OVERRIDES.get(typeId) ??
-    (NAME_AS_CONTENT_TYPES.has(typeId) ? `Untitled ${humanizeSchemaId(typeId)}` : '')
-  );
+  if (isA(typeId, 'ai-chat')) return UNTITLED_CHAT_TITLE;
+  return NAME_AS_CONTENT_TYPES.has(typeId) ? `Untitled ${humanizeSchemaId(typeId)}` : '';
 }
 
 /**
@@ -92,7 +84,7 @@ export function missingRequiredFields(node: Node, required: SchemaField[]): stri
  * the type's typed update, which needs a persisted node.
  */
 export function needsUnsavedPlaceholder(schema: SchemaNode | null): boolean {
-  if (!schema || hasTypedCoreFields(schema.id)) return false;
+  if (!schema || hasTypedUpdate(schema.id)) return false;
   return requiredFieldsWithoutDefault(schema).length > 0;
 }
 
@@ -128,20 +120,21 @@ export function createInstancePlaceholder(schema: SchemaNode): Node {
  *
  * The node is created as a root (`parentId: null`) with no properties; the
  * schema-driven form UI fills in the fields once the node is opened. An
- * `ai-chat` is the exception: it is seeded with the user's default model, if
- * any. `nodeType` is the schema's id — the same key `QueryNodeViewer` queries
- * on — so the new node matches that type's result list. Body-content types start empty ("start
- * typing"); name-as-content Core types (see `NAME_AS_CONTENT_TYPES`) seed
- * `"Untitled {Type}"` so they pass their non-empty-content validation; types in
- * `SEED_CONTENT_OVERRIDES` seed a fixed string instead.
+ * `ai-chat-native` is the exception: it is seeded with its required `agent`
+ * and the user's default model, if any. `nodeType` is the schema's id — the
+ * same key `QueryNodeViewer` queries on — so the new node matches that type's
+ * result list. Body-content types start empty ("start typing"); name-as-content
+ * Core types (see `NAME_AS_CONTENT_TYPES`) seed `"Untitled {Type}"` so they
+ * pass their non-empty-content validation; chats seed `"Untitled"`.
  */
 export async function createSchemaInstance(typeId: string): Promise<Node> {
   const newId = uuidv4();
   const content = seedContent(typeId);
-  // A new ai-chat starts on the user's default model, written at creation so
-  // the node records it from the first moment (no later write to race an echo).
-  const properties: Record<string, unknown> =
-    isA(typeId, 'ai-chat') ? { ...getDefaultAiChatModelProperties() } : {};
+  // A new native chat starts on the user's default model, written at creation
+  // so the node records it from the first moment (no later write to race an echo).
+  const properties: Record<string, unknown> = isExactly(typeId, 'ai-chat-native')
+    ? { agent: NATIVE_CHAT_AGENT, ...getDefaultAiChatModelProperties() }
+    : {};
   await backendAdapter.createNode({
     id: newId,
     nodeType: typeId,

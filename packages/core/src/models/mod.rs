@@ -4,7 +4,7 @@
 //!
 //! - `Node` - Universal node model for all content types
 //! - `Embedding` - Vector embeddings for semantic search (root-aggregate model)
-//! - Type-safe wrappers (SkillNode, AiChatNode, SchemaNode) for ergonomic access
+//! - Type-safe wrappers (SkillNode, SchemaNode) for ergonomic access
 //! - Core schema definitions for built-in node types
 //!
 //! All entities use the Pure JSON schema approach with data stored in the
@@ -18,21 +18,18 @@ pub mod schema;
 pub mod time;
 
 // Type-safe node wrappers
-mod ai_chat_node;
 mod schema_node;
 
-#[cfg(test)]
-#[path = "ai_chat_node_test.rs"]
-mod ai_chat_node_test;
-
-pub use ai_chat_node::{
-    AiChatCompletedWrite, AiChatMessage, AiChatNode, AiChatPendingDeletion, AiChatResolvedEntity,
-    AiChatTurnOutcome, AI_CHAT_NODE_TYPE, AI_CHAT_PROVIDERS,
-};
+// The AI-chat family (ADR-088) is defined once, in nodespace-types.
 pub use conflict::{ConflictKind, ConflictRecord, ConflictStatus, Resolution};
 pub use node::{
     DeleteResult, FilterOperator, Node, NodeEnvelope, NodeFilter, NodeQuery, NodeReference,
     NodeRelationship, NodeUpdate, OrderBy, PropertyFilter, TraversalDirection, ValidationError,
+};
+pub use nodespace_types::{
+    AiChatBase, AiChatCompletedWrite, AiChatMessage, AiChatNativeNode, AiChatPendingDeletion,
+    AiChatProvider, AiChatPtyNode, AiChatResolvedEntity, AiChatSessionStatus, AiChatTurnOutcome,
+    AiChatTurnStatus, NODESPACE_AGENT,
 };
 pub use schema::{RelationshipDirection, SchemaField, SchemaFieldType, SchemaProtectionLevel};
 pub use time::{SystemTimeProvider, TimeProvider};

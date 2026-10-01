@@ -30,7 +30,7 @@ mod nodespace_tests {
             if self.content.trim().is_empty() {
                 return Err("Content cannot be empty".to_string());
             }
-            if !["text", "task", "ai-chat"].contains(&self.node_type.as_str()) {
+            if !["text", "task", "ai-chat-native"].contains(&self.node_type.as_str()) {
                 return Err("Invalid node type".to_string());
             }
             Ok(())
@@ -289,7 +289,7 @@ mod nodespace_tests {
 
     #[test]
     fn test_node_type_validation() {
-        let valid_types = ["text", "task", "ai-chat"];
+        let valid_types = ["text", "task", "ai-chat-native"];
 
         for node_type in valid_types {
             let node = SimpleNode::new("Valid content".to_string(), node_type.to_string());

@@ -63,7 +63,7 @@ export const MOCK_DOCUMENT_NODE: Node = createTestNode({
  */
 export const MOCK_AI_CHAT_NODE: Node = createTestNode({
   id: 'mock-chat-1',
-  nodeType: 'ai-chat',
+  nodeType: 'ai-chat-native',
   content: 'Help me understand this concept',
   createdAt: '2024-01-01T13:00:00Z',
   modifiedAt: '2024-01-01T13:10:00Z'

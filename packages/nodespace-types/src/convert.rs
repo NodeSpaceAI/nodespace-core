@@ -1,6 +1,6 @@
 use chrono::{DateTime, NaiveDate, Utc};
 
-use crate::ai_chat::{AiChatMessage, AiChatNode};
+use crate::ai_chat::{AiChatNativeNode, AiChatPtyNode};
 use crate::core_type::CoreNodeType;
 use crate::node::{Node, NodeEnvelope};
 use crate::person::PersonNode;
@@ -51,7 +51,8 @@ pub fn node_to_typed_value(node: Node) -> Result<serde_json::Value, String> {
     // shape it travels in.
     let mut value = match CoreNodeType::from_id(&node.node_type) {
         Some(CoreNodeType::Task) => task_node_to_value(node),
-        Some(CoreNodeType::AiChat) => ai_chat_node_to_value(node),
+        Some(CoreNodeType::AiChatNative) => ai_chat_native_node_to_value(node),
+        Some(CoreNodeType::AiChatPty) => ai_chat_pty_node_to_value(node),
         Some(CoreNodeType::Person) => person_node_to_value(node),
         Some(CoreNodeType::Project) => project_node_to_value(node),
         Some(CoreNodeType::Query) => query_node_to_value(node),
@@ -73,6 +74,9 @@ pub fn node_to_typed_value(node: Node) -> Result<serde_json::Value, String> {
             | CoreNodeType::Skill
             | CoreNodeType::DatabaseSettings
             | CoreNodeType::Play
+            // Abstract: no node has it as its type, and a subtype read at its
+            // scope keeps the generic shape rather than borrowing a struct.
+            | CoreNodeType::AiChat
             | CoreNodeType::Tool,
         ) => generic(node),
         None => generic(node),
@@ -182,14 +186,22 @@ pub fn flatten_namespaced_properties_at_scope(
 
 /// Flatten namespaced properties for API response, in place.
 ///
-/// Single-scope by design: this crate has no store access and cannot resolve
-/// an `extends` chain. The service layer collapses a node's inherited buckets
-/// into its own before the wire boundary
+/// A core type's chain is the registry's, so a core subtype's inherited
+/// buckets are read here directly. For any other type this is single-scope by
+/// design: this crate has no store access and cannot resolve a user-defined
+/// `extends` chain. The service layer collapses such a node's inherited
+/// buckets into its own before the wire boundary
 /// (`NodeService::collapse_chain_for_wire`), so one bucket carries the whole
 /// effective property set by the time it reaches here — and a dormant bucket
 /// left by an earlier type change stays excluded, as it always has been.
 fn flatten_properties_for_api(node: &mut Node) {
-    node.properties = flatten_namespaced_properties(&node.properties, &node.node_type);
+    node.properties = match CoreNodeType::from_id(&node.node_type) {
+        Some(core) => {
+            let chain: Vec<&str> = core.chain().into_iter().map(CoreNodeType::as_str).collect();
+            flatten_namespaced_properties_at_scope(&node.properties, &chain)
+        }
+        None => flatten_namespaced_properties(&node.properties, &node.node_type),
+    };
 }
 
 /// The core fields a typed conversion promotes out of `properties`:
@@ -267,9 +279,10 @@ impl PromotedField {
 /// [`promoted_fields`] for a core type. Matched without a catch-all, so a new
 /// core type has to state which of its fields its wire struct promotes.
 ///
-/// `ai-chat` and `schema` have typed wire structs but promote nothing through
-/// this list: their structs are built field by field from properties that the
-/// flat property view never carries back.
+/// A core subtype's list covers its whole chain: the fields it inherits and
+/// its own. `schema` has a typed wire struct but promotes nothing through this
+/// list: its struct is built from properties the flat property view never
+/// carries back.
 pub fn core_promoted_fields(core: CoreNodeType) -> &'static [PromotedField] {
     use PromotedField as F;
     use PromotedShape::{Array, Number, Object};
@@ -334,8 +347,49 @@ pub fn core_promoted_fields(core: CoreNodeType) -> &'static [PromotedField] {
         | CoreNodeType::DatabaseSettings
         | CoreNodeType::Schema
         | CoreNodeType::Play
-        | CoreNodeType::AiChat
         | CoreNodeType::Tool => &[],
+        // The chat family (ADR-088). The base's fields come first in each
+        // subtype's list, as each subtype's struct embeds them. None is marked
+        // read-only: the flag says what a typed update may set, and the
+        // family has no typed update.
+        CoreNodeType::AiChat => {
+            const {
+                &[
+                    F::text("agent", "agent"),
+                    F::text("model", "model"),
+                    F::text("summary", "summary"),
+                    F::text("last_active", "lastActive"),
+                ]
+            }
+        }
+        CoreNodeType::AiChatNative => {
+            const {
+                &[
+                    F::text("agent", "agent"),
+                    F::text("model", "model"),
+                    F::text("summary", "summary"),
+                    F::text("last_active", "lastActive"),
+                    F::text("provider", "provider"),
+                    F::text("turn_status", "turnStatus"),
+                    F::new("context_tokens", "contextTokens", Number),
+                    F::new("messages", "messages", Array),
+                ]
+            }
+        }
+        CoreNodeType::AiChatPty => {
+            const {
+                &[
+                    F::text("agent", "agent"),
+                    F::text("model", "model"),
+                    F::text("summary", "summary"),
+                    F::text("last_active", "lastActive"),
+                    F::text("session_status", "sessionStatus"),
+                    F::text("session_id", "sessionId"),
+                    F::text("transcript", "transcript"),
+                    F::new("exit_code", "exitCode", Number),
+                ]
+            }
+        }
     }
 }
 
@@ -501,60 +555,23 @@ fn query_node_to_value(node: Node) -> Result<serde_json::Value, String> {
     serde_json::to_value(&query).map_err(|e| format!("Failed to serialize query node: {}", e))
 }
 
-fn ai_chat_node_to_value(node: Node) -> Result<serde_json::Value, String> {
-    let props = &node.properties;
+/// A chat with an unreadable message keeps the rest of its conversation: one
+/// bad message must not blank the whole chat in the UI.
+fn ai_chat_native_node_to_value(node: Node) -> Result<serde_json::Value, String> {
+    let (chat, unreadable) =
+        AiChatNativeNode::from_node_reporting(node).map_err(|e| e.to_string())?;
+    for error in unreadable {
+        eprintln!(
+            "ai-chat-native node '{}' has an unreadable message: {error}",
+            chat.envelope.id
+        );
+    }
+    serde_json::to_value(&chat).map_err(|e| format!("Failed to serialize ai-chat-native node: {e}"))
+}
 
-    // Canonical snake_case only — see `nodespace_core::models::AiChatNode::
-    // from_node`'s doc comment for why a camelCase fallback here would be
-    // actively wrong (a stale camelCase key permanently shadowing fresh
-    // canonical writes), not just redundant.
-    let turn_status = props
-        .get("turn_status")
-        .and_then(|v| v.as_str())
-        .unwrap_or_default()
-        .to_string();
-
-    let session_status = props
-        .get("session_status")
-        .and_then(|v| v.as_str())
-        .unwrap_or_default()
-        .to_string();
-
-    let provider = props
-        .get("provider")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
-
-    let model = props
-        .get("model")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
-
-    // Decoded per message, not as one `Vec`: decoding the whole array at once
-    // means a single unreadable message blanks the entire conversation in the
-    // UI. Matches `AiChatNode::from_node`, which contains the same failure the
-    // same way — the invariant has to hold on both paths or the stricter
-    // message type just relocates the problem.
-    let messages = props
-        .get("messages")
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|m| serde_json::from_value::<AiChatMessage>(m.clone()).ok())
-                .collect()
-        })
-        .unwrap_or_default();
-
-    let chat = AiChatNode {
-        envelope: node,
-        turn_status,
-        session_status,
-        provider,
-        model,
-        messages,
-    };
-
-    serde_json::to_value(&chat).map_err(|e| format!("Failed to serialize ai-chat node: {}", e))
+fn ai_chat_pty_node_to_value(node: Node) -> Result<serde_json::Value, String> {
+    let chat = AiChatPtyNode::from_node(node).map_err(|e| e.to_string())?;
+    serde_json::to_value(&chat).map_err(|e| format!("Failed to serialize ai-chat-pty node: {e}"))
 }
 
 #[cfg(test)]
@@ -789,87 +806,114 @@ mod wire_contract {
     }
 
     #[test]
-    fn ai_chat_promotes_fields_top_level_and_flattens_properties() {
+    fn ai_chat_native_promotes_its_chain_and_empties_properties() {
         let node = Node::new(
-            "ai-chat".to_string(),
+            "ai-chat-native".to_string(),
             "Chat".to_string(),
             serde_json::json!({
-                "ai-chat": {
-                    "turn_status": "idle",
-                    "session_status": "active",
+                "ai-chat": { "agent": "nodespace", "model": "gemma-4-e4b" },
+                "ai-chat-native": {
+                    "turn_status": "processing",
                     "provider": "openai-compat",
-                    "messages": [{ "role": "user", "content": "hi" }]
+                    "context_tokens": 12,
+                    "messages": [{ "role": "user", "content": "hi" }],
+                    "custom:pinned": true
                 }
             }),
         );
         let out = node_to_typed_value(node).unwrap();
 
-        assert_eq!(out["turnStatus"], "idle");
-        assert_eq!(out["sessionStatus"], "active");
+        assert_eq!(out["nodeType"], "ai-chat-native");
+        assert_eq!(out["agent"], "nodespace");
+        assert_eq!(out["model"], "gemma-4-e4b");
+        assert_eq!(out["turnStatus"], "processing");
         assert_eq!(out["provider"], "openai-compat");
+        assert_eq!(out["contextTokens"], 12);
         assert_eq!(out["messages"][0]["content"], "hi");
-        assert!(out["properties"].get("ai-chat").is_none());
+        // A native chat has no session state, and an unset optional field is
+        // absent rather than null.
+        assert!(out.get("sessionStatus").is_none());
+        assert!(out.get("summary").is_none());
+        // Each declared field has one home: `properties` keeps extension
+        // fields only.
+        assert_eq!(
+            out["properties"],
+            serde_json::json!({ "custom:pinned": true })
+        );
         assert!(out["uri"].as_str().unwrap().starts_with("nodespace://"));
     }
 
-    /// The split's wire-level guarantee: archiving a session must not disturb
-    /// the promoted turn-state field, and vice versa — both are promoted
-    /// independently rather than through one shared `status` key.
     #[test]
-    fn ai_chat_turn_status_and_session_status_promote_independently() {
+    fn ai_chat_pty_promotes_its_chain_and_empties_properties() {
         let node = Node::new(
-            "ai-chat".to_string(),
-            "Chat".to_string(),
+            "ai-chat-pty".to_string(),
+            "Session".to_string(),
             serde_json::json!({
-                "ai-chat": {
-                    "turn_status": "processing",
-                    "session_status": "archived",
-                    "messages": []
+                "ai-chat": { "agent": "claude-code", "summary": "Fixed the build" },
+                "ai-chat-pty": {
+                    "session_status": "ended",
+                    "session_id": "s-1",
+                    "transcript": "hello",
+                    "exit_code": 0
                 }
             }),
         );
         let out = node_to_typed_value(node).unwrap();
 
-        assert_eq!(
-            out["turnStatus"], "processing",
-            "turn_status must promote even while the session is archived"
-        );
-        assert_eq!(
-            out["sessionStatus"], "archived",
-            "session_status must promote even while a turn is processing"
-        );
+        assert_eq!(out["nodeType"], "ai-chat-pty");
+        assert_eq!(out["agent"], "claude-code");
+        assert_eq!(out["summary"], "Fixed the build");
+        assert_eq!(out["sessionStatus"], "ended");
+        assert_eq!(out["sessionId"], "s-1");
+        assert_eq!(out["transcript"], "hello");
+        assert_eq!(out["exitCode"], 0);
+        // A terminal chat has no messages, turn state or provider.
+        for absent in ["messages", "turnStatus", "provider", "model"] {
+            assert!(out.get(absent).is_none(), "{absent} must be absent");
+        }
+        assert_eq!(out["properties"], serde_json::json!({}));
     }
 
-    /// Deliberately NOT recognized: see `nodespace_core::models::AiChatNode::
-    /// from_node`'s doc comment. Writes here deep-merge onto the existing
-    /// stored object rather than replacing it, so a camelCase key, once
-    /// written, is never cleaned up — recognizing it would let a stale value
-    /// permanently shadow every subsequent fresh canonical write. Every
-    /// writer must use the canonical snake_case name; this promotion must
-    /// stay blind to the camelCase form, not just deprioritize it.
+    /// Absent closed-enum fields read as the schema's defaults, so the wire
+    /// shape always carries a value from the vocabulary.
     #[test]
-    fn ai_chat_ignores_camel_case_turn_and_session_status() {
+    fn ai_chat_absent_enums_read_as_the_schema_defaults() {
+        let native = node_to_typed_value(Node::new(
+            "ai-chat-native".to_string(),
+            "Chat".to_string(),
+            serde_json::json!({}),
+        ))
+        .unwrap();
+        assert_eq!(native["provider"], "native");
+        assert_eq!(native["turnStatus"], "idle");
+        assert_eq!(native["contextTokens"], 0);
+        assert_eq!(native["messages"], serde_json::json!([]));
+
+        let pty = node_to_typed_value(Node::new(
+            "ai-chat-pty".to_string(),
+            "Session".to_string(),
+            serde_json::json!({}),
+        ))
+        .unwrap();
+        assert_eq!(pty["sessionStatus"], "active");
+    }
+
+    /// Only the declared snake_case names are read. Writes deep-merge onto
+    /// the stored object, so a camelCase key, once written, is never cleaned
+    /// up: recognizing it would let a stale value shadow every later write of
+    /// the declared name.
+    #[test]
+    fn ai_chat_ignores_camel_case_field_names() {
         let node = Node::new(
-            "ai-chat".to_string(),
+            "ai-chat-native".to_string(),
             "Chat".to_string(),
             serde_json::json!({
-                "ai-chat": {
-                    "turnStatus": "processing",
-                    "sessionStatus": "archived",
-                    "messages": []
-                }
+                "ai-chat-native": { "turnStatus": "processing", "messages": [] }
             }),
         );
         let out = node_to_typed_value(node).unwrap();
 
-        assert_eq!(
-            out["turnStatus"], "",
-            "camelCase must not promote the turn axis"
-        );
-        assert_eq!(
-            out["sessionStatus"], "",
-            "camelCase must not promote the session axis"
-        );
+        assert_eq!(out["turnStatus"], "idle", "camelCase must not be read");
     }
 
     /// One unreadable message must not blank the whole conversation in the UI.
@@ -881,12 +925,11 @@ mod wire_contract {
     #[test]
     fn ai_chat_one_unreadable_message_does_not_blank_the_conversation() {
         let node = Node::new(
-            "ai-chat".to_string(),
+            "ai-chat-native".to_string(),
             "Chat".to_string(),
             serde_json::json!({
-                "ai-chat": {
+                "ai-chat-native": {
                     "turn_status": "idle",
-                    "session_status": "active",
                     "messages": [
                         { "role": "user", "content": "hi" },
                         {
@@ -907,6 +950,52 @@ mod wire_contract {
         assert_eq!(messages.len(), 2, "only the unreadable message may be lost");
         assert_eq!(messages[0]["content"], "hi");
         assert_eq!(messages[1]["content"], "thanks");
+    }
+
+    /// A chat subtype's promoted fields are exactly its wire struct's own
+    /// keys, so the flat property view can fold every one of them back.
+    #[test]
+    fn ai_chat_promoted_fields_are_the_wire_structs_keys() {
+        let full_native = serde_json::json!({
+            "agent": "nodespace", "model": "m", "summary": "s",
+            "last_active": "2026-01-01T00:00:00Z", "provider": "native",
+            "turn_status": "idle", "context_tokens": 1, "messages": []
+        });
+        let full_pty = serde_json::json!({
+            "agent": "codex", "model": "m", "summary": "s",
+            "last_active": "2026-01-01T00:00:00Z", "session_status": "active",
+            "session_id": "s-1", "transcript": "t", "exit_code": 0
+        });
+        for (core, props) in [
+            (CoreNodeType::AiChatNative, full_native),
+            (CoreNodeType::AiChatPty, full_pty),
+        ] {
+            let node = Node::new(core.as_str().to_string(), "Chat".to_string(), props.clone());
+            let out = node_to_typed_value(node).unwrap();
+            for field in core_promoted_fields(core) {
+                assert!(
+                    out.get(field.wire).is_some(),
+                    "{core}: {} is not on the wire",
+                    field.wire
+                );
+                assert!(
+                    props.get(field.storage).is_some(),
+                    "{core}: {} is not stored",
+                    field.storage
+                );
+            }
+            assert_eq!(
+                core_promoted_fields(core).len(),
+                props.as_object().unwrap().len(),
+                "{core}: a stored field is not promoted"
+            );
+            assert_eq!(out["properties"], serde_json::json!({}));
+            // The flat view carries every field back under its storage key.
+            assert_eq!(flat_properties_view(&out), props);
+            // A subtype's list starts with the base's.
+            let base = core_promoted_fields(CoreNodeType::AiChat);
+            assert_eq!(&core_promoted_fields(core)[..base.len()], base);
+        }
     }
 
     #[test]
@@ -1021,7 +1110,7 @@ mod wire_contract {
 /// `properties.<type>` namespace is promoted to a top-level key in the output**.
 ///
 /// If someone adds a field to the stored shape but forgets to model it on the
-/// wire struct (`TaskNode` / `AiChatNode`), the promoted field vanishes from the
+/// wire struct (`TaskNode` / `AiChatNativeNode`), the promoted field vanishes from the
 /// output and the corresponding proptest fails — turning a silent data-drop into
 /// a test failure, which is the whole point of this guard.
 #[cfg(test)]
@@ -1098,28 +1187,34 @@ mod promotion_proptests {
             prop_assert!(out["uri"].as_str().unwrap().starts_with("nodespace://"));
         }
 
-        /// Every ai-chat field stored under `properties.ai-chat` is promoted to a
-        /// top-level key, and the `nodespace://` uri is injected. `turn_status`
-        /// and `session_status` promote independently — arbitrary, unrelated
-        /// generated values for each must both survive without either clobbering
-        /// the other.
+        /// Every field a native chat stores, in its own bucket or the inherited
+        /// `ai-chat` one, is promoted to a top-level key, and the
+        /// `nodespace://` uri is injected.
         #[test]
-        fn ai_chat_promotes_all_stored_fields(
-            turn_status in "[a-z][a-z_]{0,15}",
-            session_status in "[a-z][a-z_]{0,15}",
-            provider in "[a-z][a-z0-9_-]{0,15}",
+        fn ai_chat_native_promotes_all_stored_fields(
+            processing in any::<bool>(),
+            remote in any::<bool>(),
             model in "[a-zA-Z0-9._:-]{1,25}",
+            summary in "[ -~]{1,40}",
+            context_tokens in 0u64..1_000_000,
             message in "[ -~]{0,40}",
         ) {
+            let turn_status = if processing { "processing" } else { "idle" };
+            let provider = if remote { "openai-compat" } else { "native" };
             let node = Node::new(
-                "ai-chat".to_string(),
+                "ai-chat-native".to_string(),
                 "A chat".to_string(),
                 serde_json::json!({
                     "ai-chat": {
-                        "turn_status": turn_status,
-                        "session_status": session_status,
-                        "provider": provider,
+                        "agent": "nodespace",
                         "model": model,
+                        "summary": summary,
+                        "last_active": "2026-01-01T00:00:00Z",
+                    },
+                    "ai-chat-native": {
+                        "turn_status": turn_status,
+                        "provider": provider,
+                        "context_tokens": context_tokens,
                         "messages": [{ "role": "user", "content": message }],
                     }
                 }),
@@ -1127,13 +1222,50 @@ mod promotion_proptests {
 
             let out = node_to_typed_value(node).unwrap();
 
-            prop_assert_eq!(&out["turnStatus"], &serde_json::json!(turn_status));
-            prop_assert_eq!(&out["sessionStatus"], &serde_json::json!(session_status));
-            prop_assert_eq!(&out["provider"], &serde_json::json!(provider));
+            prop_assert_eq!(&out["agent"], &serde_json::json!("nodespace"));
             prop_assert_eq!(&out["model"], &serde_json::json!(model));
+            prop_assert_eq!(&out["summary"], &serde_json::json!(summary));
+            prop_assert_eq!(&out["lastActive"], &serde_json::json!("2026-01-01T00:00:00Z"));
+            prop_assert_eq!(&out["turnStatus"], &serde_json::json!(turn_status));
+            prop_assert_eq!(&out["provider"], &serde_json::json!(provider));
+            prop_assert_eq!(&out["contextTokens"], &serde_json::json!(context_tokens));
             prop_assert_eq!(&out["messages"][0]["content"], &serde_json::json!(message));
-            prop_assert!(out["properties"].get("ai-chat").is_none());
+            prop_assert_eq!(&out["properties"], &serde_json::json!({}));
             prop_assert!(out["uri"].as_str().unwrap().starts_with("nodespace://"));
+        }
+
+        /// Every field a terminal chat stores is promoted to a top-level key.
+        #[test]
+        fn ai_chat_pty_promotes_all_stored_fields(
+            ended in any::<bool>(),
+            agent in "[a-z][a-z-]{0,15}",
+            session_id in "[a-f0-9-]{1,36}",
+            transcript in "[ -~]{0,40}",
+            exit_code in -1i64..256,
+        ) {
+            let session_status = if ended { "ended" } else { "active" };
+            let node = Node::new(
+                "ai-chat-pty".to_string(),
+                "A session".to_string(),
+                serde_json::json!({
+                    "ai-chat": { "agent": agent },
+                    "ai-chat-pty": {
+                        "session_status": session_status,
+                        "session_id": session_id,
+                        "transcript": transcript,
+                        "exit_code": exit_code,
+                    }
+                }),
+            );
+
+            let out = node_to_typed_value(node).unwrap();
+
+            prop_assert_eq!(&out["agent"], &serde_json::json!(agent));
+            prop_assert_eq!(&out["sessionStatus"], &serde_json::json!(session_status));
+            prop_assert_eq!(&out["sessionId"], &serde_json::json!(session_id));
+            prop_assert_eq!(&out["transcript"], &serde_json::json!(transcript));
+            prop_assert_eq!(&out["exitCode"], &serde_json::json!(exit_code));
+            prop_assert_eq!(&out["properties"], &serde_json::json!({}));
         }
 
         /// Every schema field stored in the schema node's flat properties is

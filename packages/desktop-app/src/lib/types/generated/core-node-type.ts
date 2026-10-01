@@ -24,4 +24,6 @@ export type CoreNodeType =
   | 'schema'
   | 'play'
   | 'ai-chat'
+  | 'ai-chat-native'
+  | 'ai-chat-pty'
   | 'tool';

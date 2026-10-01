@@ -5,11 +5,10 @@
 //! There is no dedicated "send chat message" Tauri command or gRPC RPC.
 //! Per `scripts/aichat.ts`'s doc comment (the existing CLI harness for this
 //! same mechanism): the daemon's event watcher runs an inference turn when
-//! an ai-chat node's `properties['ai-chat']` has `turn_status: "processing"`
-//! AND a trailing `role: "user"` message. So a turn is: create/update the
-//! node with that shape, then poll `get_node` until `turn_status` returns to
-//! `"idle"` with a new assistant message appended. `session_status` is a
-//! separate, PTY-owned axis this flow never touches.
+//! an `ai-chat-native` node has `turn_status: "processing"` AND a trailing
+//! `role: "user"` message. So a turn is: create/update the node with that
+//! shape, then poll `get_node` until `turn_status` returns to `"idle"` with a
+//! new assistant message appended.
 //!
 //! No lightweight stub/test-double model backend exists anywhere in this
 //! codebase (confirmed: `ChatInferenceEngine`'s only implementors are the
@@ -52,18 +51,16 @@ fn ai_chat_input(
 ) -> CreateNodeInput {
     CreateNodeInput {
         id: id.to_string(),
-        node_type: "ai-chat".to_string(),
+        node_type: "ai-chat-native".to_string(),
         content: "Test chat".to_string(),
         parent_id: None,
         insert_position: None,
         properties: json!({
-            "ai-chat": {
-                "provider": "native",
-                "model": provider_model,
-                "turn_status": turn_status,
-                "session_status": "active",
-                "messages": messages
-            }
+            "agent": "nodespace",
+            "provider": "native",
+            "model": provider_model,
+            "turn_status": turn_status,
+            "messages": messages
         }),
     }
 }
@@ -157,31 +154,24 @@ async fn ai_chat_send_reaches_idle_with_no_stuck_processing_state() {
     // "Send a message": append a user message and flip turn_status to
     // processing — the exact mechanism scripts/aichat.ts's cmdSend
     // documents, and the exact key shape the real frontend's handleSend
-    // actually sends: the canonical snake_case `turn_status`, matching the
-    // schema's declared field name. This matters more than it looks: ai-chat
-    // has no dedicated typed write command like task does, so the generic
-    // updateNode path forwards whatever key the frontend used verbatim all
-    // the way into storage — a camelCase `turnStatus` write once reached
-    // storage but was never recognized by anything that reads the turn axis,
-    // so a real "Send" click silently never triggered a turn at all (see
-    // `AiChatNode::from_node`'s doc comment for the full incident). Every
-    // writer, frontend included, must use this exact key. session_status is
-    // deliberately untouched: this write owns only the turn axis, mirroring
-    // handleSend.
+    // actually sends: the declared snake_case `turn_status`. This matters
+    // more than it looks: a chat has no dedicated typed write command like
+    // task does, so the generic updateNode path carries the frontend's own
+    // keys, and only the schema's declared names are read back
+    // (`AiChatNativeNode::from_node`). The chat's bucket is closed, so a
+    // camelCase `turnStatus` is refused rather than stored unread.
     let after_send = update_node(
         state.clone(),
         id.clone(),
         1,
         NodeUpdate {
             properties: Some(json!({
-                "ai-chat": {
-                    "provider": "native",
-                    "model": MODEL_ID,
-                    "turn_status": "processing",
-                    "messages": [
-                        { "role": "user", "content": "Reply with exactly one word: OK" }
-                    ]
-                }
+                "provider": "native",
+                "model": MODEL_ID,
+                "turn_status": "processing",
+                "messages": [
+                    { "role": "user", "content": "Reply with exactly one word: OK" }
+                ]
             })),
             ..Default::default()
         },

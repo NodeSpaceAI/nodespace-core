@@ -36,7 +36,7 @@ import type {
   TaskNodeUpdate
 } from '$lib/types';
 import {
-  hasTypedCoreFields,
+  hasTypedUpdate,
   typedCoreKeys,
   writableTypedCoreKeys
 } from '$lib/types/typed-core-fields';
@@ -1868,7 +1868,7 @@ export class SharedNodeStore {
       source.type !== 'database';
     const convertsType =
       changes.nodeType !== undefined && changes.nodeType !== existingNode?.nodeType;
-    if (existingNode && persists && !convertsType && hasTypedCoreFields(existingNode.nodeType)) {
+    if (existingNode && persists && !convertsType && hasTypedUpdate(existingNode.nodeType)) {
       const nodeType = existingNode.nodeType as TypedNodeType;
       const typedKeys = typedCoreKeys(nodeType);
       const typed: Record<string, unknown> = {};
@@ -1930,7 +1930,7 @@ export class SharedNodeStore {
           : mergeProperties(existingNode.properties, changes.properties)
         : existingNode.properties;
       const promotedFields = changes.properties
-        ? promoteTypedFields(existingNode.nodeType, changes.properties, mergedProperties)
+        ? promoteTypedFields(changes.nodeType ?? existingNode.nodeType, changes.properties, mergedProperties)
         : {};
       const updatedNode: Node = {
         ...existingNode,
@@ -2168,7 +2168,7 @@ export class SharedNodeStore {
                     // sends the UN-flattened `{ properties: {...} }` shape
                     // (matching storage, not the wire contract), so viewers
                     // reading those top-level fields directly (e.g.
-                    // AiChatNodeViewer's `node?.provider`) never saw them
+                    // AiChatNativeNodeViewer's `node?.provider`) never saw them
                     // become defined until a later daemon broadcast happened
                     // to re-hydrate the node via `setNode()`. Spread the
                     // response's fields over the local node so every
@@ -2822,7 +2822,7 @@ export class SharedNodeStore {
                   // response. The optimistic write above sent the UN-flattened
                   // `{ properties: {...} }` shape client-side (matching storage, not
                   // the wire contract), so the local node's top-level typed fields —
-                  // read directly by viewers like AiChatNodeViewer's
+                  // read directly by viewers like AiChatNativeNodeViewer's
                   // `node?.provider` — never got corrected to match. Previously only
                   // `.version` was synced here, so e.g. an ai-chat model selection
                   // persisted correctly server-side but the local node never

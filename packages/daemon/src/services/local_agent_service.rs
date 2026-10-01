@@ -1,8 +1,9 @@
 //! tonic `LocalAgentService` implementation — node-as-message-queue architecture.
 //!
-//! The daemon watches for `NodeUpdated`/`NodeCreated` events on `ai-chat` nodes.
-//! When the last message in `properties['ai-chat']['messages']` has `role: 'user'`
-//! and `status == 'processing'`, it triggers an inference turn in-process.
+//! The daemon watches for `NodeUpdated`/`NodeCreated` events on
+//! `ai-chat-native` nodes. When the last of a chat's `messages` has
+//! `role: 'user'` and its `turn_status` is `processing`, it triggers an
+//! inference turn in-process.
 //!
 //! Streaming tokens are broadcast to any connected `SubscribeTokenStream` client
 //! (the Tauri process), which translates them to Tauri events for the frontend.
@@ -28,8 +29,8 @@ use nodespace_agent::local_agent::tools::{
     is_cross_turn_guarded_tool, resolves_entities_tool, GraphToolExecutor, SharedEmbeddingService,
 };
 use nodespace_core::models::{
-    AiChatCompletedWrite, AiChatMessage, AiChatNode, AiChatPendingDeletion, AiChatResolvedEntity,
-    AiChatTurnOutcome, NodeFilter, NodeUpdate,
+    AiChatCompletedWrite, AiChatMessage, AiChatNativeNode, AiChatPendingDeletion,
+    AiChatResolvedEntity, AiChatTurnOutcome, AiChatTurnStatus, NodeFilter, NodeUpdate,
 };
 use nodespace_core::services::{NodeEmbeddingService, NodeService, NodeServiceError};
 
@@ -655,7 +656,11 @@ impl LocalAgentServiceImpl {
                             _ => continue,
                         };
 
-                        if !nodespace_core::models::CoreNodeType::AiChat.is_exactly(&node_type) {
+                        // Only a native chat takes inference turns; a terminal
+                        // chat's harness runs its own.
+                        if !nodespace_core::models::CoreNodeType::AiChatNative
+                            .is_exactly(&node_type)
+                        {
                             continue;
                         }
 
@@ -690,15 +695,14 @@ impl LocalAgentServiceImpl {
             }
         };
 
-        let ai_chat = match AiChatNode::from_node(node) {
+        let ai_chat = match read_native_chat(node) {
             Ok(c) => c,
             Err(_) => return,
         };
 
-        // Only trigger when the frontend has set status: processing, signalling
-        // it wants an inference turn. Any other status (idle, error) is not
-        // actionable here.
-        if ai_chat.turn_status != "processing" {
+        // Only trigger when the frontend has set `turn_status: processing`,
+        // signalling it wants an inference turn.
+        if ai_chat.turn_status != AiChatTurnStatus::Processing {
             return;
         }
 
@@ -750,7 +754,10 @@ impl LocalAgentServiceImpl {
         let history = node_history_from_messages(messages);
         if history.is_empty() {
             tracing::warn!(node_id, "ai-chat history empty — skipping turn");
-            if let Err(e) = self.write_ai_chat_turn_status(&node_id, "idle", None).await {
+            if let Err(e) = self
+                .write_ai_chat_turn_status(&node_id, AiChatTurnStatus::Idle)
+                .await
+            {
                 tracing::warn!(node_id, error = %e, "failed to reset ai-chat status to idle");
             }
             self.end_turn(&node_id).await;
@@ -762,7 +769,10 @@ impl LocalAgentServiceImpl {
             Some(m) if m.role == Role::User => m.content.clone(),
             _ => {
                 tracing::warn!(node_id, "ai-chat last message is not from user — skipping");
-                if let Err(e) = self.write_ai_chat_turn_status(&node_id, "idle", None).await {
+                if let Err(e) = self
+                    .write_ai_chat_turn_status(&node_id, AiChatTurnStatus::Idle)
+                    .await
+                {
                     tracing::warn!(node_id, error = %e, "failed to reset ai-chat status to idle");
                 }
                 self.end_turn(&node_id).await;
@@ -1018,7 +1028,10 @@ impl LocalAgentServiceImpl {
         }
 
         if needs_idle_reset {
-            if let Err(e) = self.write_ai_chat_turn_status(&node_id, "idle", None).await {
+            if let Err(e) = self
+                .write_ai_chat_turn_status(&node_id, AiChatTurnStatus::Idle)
+                .await
+            {
                 tracing::warn!(node_id, error = %e, "failed to reset ai-chat status to idle");
             }
         }
@@ -1083,7 +1096,10 @@ impl LocalAgentServiceImpl {
             .await
         {
             tracing::warn!(node_id, error = %e, "failed to append delete confirmation reply");
-            if let Err(e) = self.write_ai_chat_turn_status(node_id, "idle", None).await {
+            if let Err(e) = self
+                .write_ai_chat_turn_status(node_id, AiChatTurnStatus::Idle)
+                .await
+            {
                 tracing::warn!(node_id, error = %e, "failed to reset ai-chat status to idle");
             }
         }
@@ -1093,10 +1109,9 @@ impl LocalAgentServiceImpl {
     ///
     /// Called only from the tail of [`Self::run_ai_chat_turn`], which is the
     /// daemon-driven native turn path the AI-Chat UI drives. That placement is
-    /// the scope guard: PTY-captured sessions never mint ai-chat nodes and
-    /// never run this path (see `capture_service`), so an external agent's
-    /// conversation is not titled here — those carry their own
-    /// `capture:summary` instead.
+    /// the scope guard: a terminal chat (`ai-chat-pty`) holds no messages and
+    /// never runs this path (see `capture_service`), so an external agent's
+    /// conversation is not titled here — it carries a `summary` instead.
     ///
     /// Spawned rather than awaited: a turn is finished once its reply is
     /// stored, and titling must not hold the turn's task open or delay the
@@ -1107,7 +1122,7 @@ impl LocalAgentServiceImpl {
         let Ok(Some(node)) = self.inner.node_service.get_node(node_id).await else {
             return;
         };
-        let Ok(chat) = AiChatNode::from_node(node) else {
+        let Ok(chat) = AiChatNativeNode::from_node(node) else {
             return;
         };
         if !ai_chat_title::needs_title(&chat) {
@@ -1132,7 +1147,7 @@ impl LocalAgentServiceImpl {
             let Ok(Some(node)) = node_service.get_node(&node_id).await else {
                 return;
             };
-            let Ok(chat) = AiChatNode::from_node(node) else {
+            let Ok(chat) = AiChatNativeNode::from_node(node) else {
                 return;
             };
             if !ai_chat_title::needs_title(&chat) {
@@ -1158,9 +1173,14 @@ impl LocalAgentServiceImpl {
     /// and retry their turns (handles daemon restart mid-turn).
     async fn recover_stuck_turns(&self) {
         // Recovery is about a turn left running, not about a list: a chat
-        // archived mid-turn is recovered like any other.
+        // archived mid-turn is recovered like any other. Only a native chat
+        // takes turns.
         let filter = NodeFilter::new()
-            .with_node_type("ai-chat".to_string())
+            .with_node_type(
+                nodespace_core::models::CoreNodeType::AiChatNative
+                    .as_str()
+                    .to_string(),
+            )
             .with_include_archived(true);
 
         let nodes = match self.inner.node_service.query_nodes(filter).await {
@@ -1173,11 +1193,11 @@ impl LocalAgentServiceImpl {
 
         for node in nodes {
             let node_id = node.id.clone();
-            let ai_chat = match AiChatNode::from_node(node) {
+            let ai_chat = match read_native_chat(node) {
                 Ok(c) => c,
                 Err(_) => continue,
             };
-            if ai_chat.turn_status != "processing" {
+            if ai_chat.turn_status != AiChatTurnStatus::Processing {
                 continue;
             }
             // Verify last message is from user before retrying.
@@ -1201,7 +1221,10 @@ impl LocalAgentServiceImpl {
                 // This is the recovery sweep for already-stuck nodes, so a silent
                 // failure here means recovery quietly did not happen and the node
                 // stays stuck across restarts with nothing in the log to find it by.
-                if let Err(e) = self.write_ai_chat_turn_status(&node_id, "idle", None).await {
+                if let Err(e) = self
+                    .write_ai_chat_turn_status(&node_id, AiChatTurnStatus::Idle)
+                    .await
+                {
                     tracing::warn!(
                         node_id,
                         error = %e,
@@ -1216,22 +1239,20 @@ impl LocalAgentServiceImpl {
     // Node write helpers
     // ---------------------------------------------------------------------------
 
-    /// Write `properties['ai-chat']['turn_status']` to the node.
+    /// Write the chat's `turn_status`.
     ///
-    /// Daemon-owned axis only — never touches `session_status` (the PTY-owned
-    /// lifecycle), so this cannot un-archive or archive a session as a side
-    /// effect of a turn-state write.
+    /// A patch of that one field: the update merges it into the stored
+    /// properties, so nothing else on the node is rewritten.
     ///
-    /// Retries the full read-modify-write on version conflict: the frontend
-    /// writes to the same node (appending a user message, setting
-    /// `processing`), so a conflict here is an ordinary race, not a fault.
-    /// Giving up early would drop the turn's terminal status write and strand
-    /// the node in `processing` forever.
+    /// Retries on version conflict: the frontend writes to the same node
+    /// (appending a user message, setting `processing`), so a conflict here
+    /// is an ordinary race, not a fault. Giving up early would drop the
+    /// turn's terminal status write and strand the node in `processing`
+    /// forever.
     async fn write_ai_chat_turn_status(
         &self,
         node_id: &str,
-        turn_status: &str,
-        model: Option<&str>,
+        turn_status: AiChatTurnStatus,
     ) -> Result<(), String> {
         for attempt in 0..MAX_WRITE_ATTEMPTS {
             let node = self
@@ -1242,23 +1263,12 @@ impl LocalAgentServiceImpl {
                 .map_err(|e| e.to_string())?
                 .ok_or_else(|| format!("node {node_id} not found"))?;
 
-            let version = node.version;
-            let mut props = node.properties.clone();
-            let mut ai_chat = AiChatNode::from_node(node).map_err(|e| e.to_string())?;
-
-            ai_chat.turn_status = turn_status.to_string();
-            if let Some(m) = model {
-                ai_chat.model = Some(m.to_string());
-            }
-
-            // Splice the updated namespace back, preserving sibling namespaces.
-            props["ai-chat"] = ai_chat.to_properties_value();
-
-            let update = NodeUpdate::new().with_properties(props);
+            let update = NodeUpdate::new()
+                .with_properties(serde_json::json!({ "turn_status": turn_status }));
             match self
                 .inner
                 .node_service
-                .update_node(node_id, version, update)
+                .update_node(node_id, node.version, update)
                 .await
             {
                 Ok(_) => return Ok(()),
@@ -1283,7 +1293,7 @@ impl LocalAgentServiceImpl {
         ))
     }
 
-    /// Append an assistant message to `properties['ai-chat']['messages']`.
+    /// Append an assistant message to the chat's `messages`.
     ///
     /// Retries the full read-modify-write on version conflict for the same
     /// reason as `write_ai_chat_turn_status` — losing this write loses the reply.
@@ -1317,8 +1327,7 @@ impl LocalAgentServiceImpl {
                 .ok_or_else(|| format!("node {node_id} not found"))?;
 
             let version = node.version;
-            let mut props = node.properties.clone();
-            let mut ai_chat = AiChatNode::from_node(node).map_err(|e| e.to_string())?;
+            let mut ai_chat = read_native_chat(node)?;
 
             // Persist reasoning only when the model produced some, keeping the
             // message shape minimal for plain answers.
@@ -1341,12 +1350,9 @@ impl LocalAgentServiceImpl {
             });
 
             // Set status to idle here too (atomic with message append).
-            ai_chat.turn_status = "idle".to_string();
+            ai_chat.turn_status = AiChatTurnStatus::Idle;
 
-            // Splice the updated namespace back, preserving sibling namespaces.
-            props["ai-chat"] = ai_chat.to_properties_value();
-
-            let update = NodeUpdate::new().with_properties(props);
+            let update = NodeUpdate::new().with_properties(ai_chat.conversation_patch());
             match self
                 .inner
                 .node_service
@@ -2897,13 +2903,31 @@ async fn load_chat_messages(node_service: &Arc<NodeService>, node_id: &str) -> V
         }
     };
 
-    match AiChatNode::from_node(node) {
+    match read_native_chat(node) {
         Ok(c) => c.messages,
         Err(e) => {
-            tracing::warn!(node_id, error = %e, "node is not an ai-chat node");
+            tracing::warn!(node_id, error = %e, "node is not a native ai-chat node");
             vec![]
         }
     }
+}
+
+/// Read a native chat from its node, logging each message that could not be
+/// decoded. Such a message is left out and the rest of the conversation is
+/// kept; a caller that then writes the messages back persists that, so the
+/// loss must not be silent.
+fn read_native_chat(node: nodespace_core::models::Node) -> Result<AiChatNativeNode, String> {
+    let node_id = node.id.clone();
+    let (chat, unreadable) =
+        AiChatNativeNode::from_node_reporting(node).map_err(|e| e.to_string())?;
+    for error in unreadable {
+        tracing::error!(
+            node_id = %node_id,
+            error = %error,
+            "dropping unreadable ai-chat message; the rest of the conversation is preserved"
+        );
+    }
+    Ok(chat)
 }
 
 /// Render a single completed write as a short "Fact: ..." statement, pulling
@@ -3396,9 +3420,9 @@ mod tests {
 
     async fn create_ai_chat_node(node_service: &Arc<NodeService>) -> String {
         let node = Node::new(
-            "ai-chat".to_string(),
+            "ai-chat-native".to_string(),
             "Test chat".to_string(),
-            serde_json::json!({ "ai-chat": { "messages": [] } }),
+            serde_json::json!({ "agent": "nodespace", "messages": [] }),
         );
         node_service
             .create_node(node)
@@ -3675,8 +3699,8 @@ mod tests {
             .expect("get node")
             .expect("node exists");
         let version = node.version;
-        let mut ai_chat = AiChatNode::from_node(node).expect("from_node");
-        ai_chat.turn_status = "processing".to_string();
+        let mut ai_chat = AiChatNativeNode::from_node(node).expect("from_node");
+        ai_chat.turn_status = AiChatTurnStatus::Processing;
         ai_chat.messages.push(AiChatMessage {
             role: "user".to_string(),
             content: user_text.to_string(),
@@ -3689,8 +3713,7 @@ mod tests {
             pending_deletions: Vec::new(),
             outcome: None,
         });
-        let mut props = serde_json::json!({});
-        props["ai-chat"] = ai_chat.to_properties_value();
+        let props = ai_chat.conversation_patch();
         node_service
             .update_node(&node_id, version, NodeUpdate::new().with_properties(props))
             .await
@@ -3698,13 +3721,13 @@ mod tests {
         node_id
     }
 
-    async fn get_ai_chat(node_service: &Arc<NodeService>, node_id: &str) -> AiChatNode {
+    async fn get_ai_chat(node_service: &Arc<NodeService>, node_id: &str) -> AiChatNativeNode {
         let node = node_service
             .get_node(node_id)
             .await
             .expect("get node")
             .expect("node exists");
-        AiChatNode::from_node(node).expect("from_node")
+        AiChatNativeNode::from_node(node).expect("from_node")
     }
 
     // -- Stub inference engine -------------------------------------------
@@ -4391,7 +4414,8 @@ mod tests {
 
         let ai_chat = get_ai_chat(&node_service, &node_id).await;
         assert_eq!(
-            ai_chat.turn_status, "idle",
+            ai_chat.turn_status,
+            AiChatTurnStatus::Idle,
             "turn must terminate, never stuck processing"
         );
         let assistant = ai_chat
@@ -4456,15 +4480,14 @@ mod tests {
         let chat_id = create_ai_chat_node(node_service).await;
         let node = node_service.get_node(&chat_id).await.unwrap().unwrap();
         let version = node.version;
-        let mut ai_chat = AiChatNode::from_node(node).unwrap();
-        ai_chat.turn_status = "processing".to_string();
+        let mut ai_chat = AiChatNativeNode::from_node(node).unwrap();
+        ai_chat.turn_status = AiChatTurnStatus::Processing;
         ai_chat.messages = vec![
             chat_message("user", "delete the old plan"),
             asked,
             chat_message("user", reply),
         ];
-        let mut props = serde_json::json!({});
-        props["ai-chat"] = ai_chat.to_properties_value();
+        let props = ai_chat.conversation_patch();
         node_service
             .update_node(&chat_id, version, NodeUpdate::new().with_properties(props))
             .await
@@ -4493,7 +4516,7 @@ mod tests {
 
         assert!(!node_exists(&node_service, &target_id).await);
         let ai_chat = get_ai_chat(&node_service, &chat_id).await;
-        assert_eq!(ai_chat.turn_status, "idle");
+        assert_eq!(ai_chat.turn_status, AiChatTurnStatus::Idle);
         let reply = ai_chat.messages.last().unwrap();
         assert_eq!(reply.content, "Deleted \"Old plan\" (text).");
         assert_eq!(reply.completed_writes.len(), 1);
@@ -4547,13 +4570,12 @@ mod tests {
 
         let node = node_service.get_node(&chat_id).await.unwrap().unwrap();
         let version = node.version;
-        let mut ai_chat = AiChatNode::from_node(node).unwrap();
-        ai_chat.turn_status = "processing".to_string();
+        let mut ai_chat = AiChatNativeNode::from_node(node).unwrap();
+        ai_chat.turn_status = AiChatTurnStatus::Processing;
         ai_chat
             .messages
             .push(chat_message("user", deletion_confirmation::CONFIRM_OPTION));
-        let mut props = serde_json::json!({});
-        props["ai-chat"] = ai_chat.to_properties_value();
+        let props = ai_chat.conversation_patch();
         node_service
             .update_node(&chat_id, version, NodeUpdate::new().with_properties(props))
             .await
@@ -4578,7 +4600,7 @@ mod tests {
 
         assert!(node_exists(&node_service, &target_id).await);
         let ai_chat = get_ai_chat(&node_service, &chat_id).await;
-        assert_eq!(ai_chat.turn_status, "idle");
+        assert_eq!(ai_chat.turn_status, AiChatTurnStatus::Idle);
         let reply = ai_chat.messages.last().unwrap();
         assert_eq!(reply.content, deletion_confirmation::DECLINED_TEXT);
         assert!(reply.completed_writes.is_empty());
@@ -4711,10 +4733,13 @@ mod tests {
     /// of the explicit trigger and the database's own event watcher claims it
     /// first — they dedup on the same claim — so tests wait for the node to
     /// settle rather than assuming which one got there.
-    async fn await_settled_ai_chat(node_service: &Arc<NodeService>, node_id: &str) -> AiChatNode {
+    async fn await_settled_ai_chat(
+        node_service: &Arc<NodeService>,
+        node_id: &str,
+    ) -> AiChatNativeNode {
         for _ in 0..200 {
             let chat = get_ai_chat(node_service, node_id).await;
-            if chat.turn_status != "processing" {
+            if chat.turn_status != AiChatTurnStatus::Processing {
                 return chat;
             }
             tokio::time::sleep(std::time::Duration::from_millis(25)).await;
@@ -4883,7 +4908,8 @@ mod tests {
 
         let ai_chat = await_settled_ai_chat(&node_service, &node_id).await;
         assert_eq!(
-            ai_chat.turn_status, "idle",
+            ai_chat.turn_status,
+            AiChatTurnStatus::Idle,
             "turn must terminate, never stuck"
         );
         let assistant = ai_chat
@@ -4954,7 +4980,8 @@ mod tests {
 
         let ai_chat = get_ai_chat(&node_service, &node_id).await;
         assert_eq!(
-            ai_chat.turn_status, "idle",
+            ai_chat.turn_status,
+            AiChatTurnStatus::Idle,
             "a failed turn must still terminate, never stuck processing"
         );
         let assistant = ai_chat
@@ -5007,7 +5034,7 @@ mod tests {
             .expect("delete node");
 
         assert!(
-            svc.write_ai_chat_turn_status(&node_id, "idle", None)
+            svc.write_ai_chat_turn_status(&node_id, AiChatTurnStatus::Idle)
                 .await
                 .is_err(),
             "a status write to a missing node must return Err"
@@ -5036,7 +5063,7 @@ mod tests {
         // recover_stuck_turns spawns the retry; poll briefly for completion.
         let mut ai_chat = get_ai_chat(&node_service, &node_id).await;
         for _ in 0..50 {
-            if ai_chat.turn_status == "idle" {
+            if ai_chat.turn_status == AiChatTurnStatus::Idle {
                 break;
             }
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
@@ -5044,7 +5071,8 @@ mod tests {
         }
 
         assert_eq!(
-            ai_chat.turn_status, "idle",
+            ai_chat.turn_status,
+            AiChatTurnStatus::Idle,
             "a node stuck in processing at startup must recover to idle, not stay stuck"
         );
         assert!(ai_chat.messages.iter().any(|m| m.role == "assistant"));
@@ -5090,7 +5118,8 @@ mod tests {
 
         let ai_chat = get_ai_chat(&node_service, &node_id).await;
         assert_eq!(
-            ai_chat.turn_status, "idle",
+            ai_chat.turn_status,
+            AiChatTurnStatus::Idle,
             "cancelled turn must reset to idle, not stay stuck"
         );
         assert!(
@@ -5116,7 +5145,7 @@ mod tests {
         svc.maybe_handle_ai_chat_node(&node_id_1).await;
         assert_eq!(
             get_ai_chat(&node_service, &node_id_1).await.turn_status,
-            "idle"
+            AiChatTurnStatus::Idle
         );
 
         // A second "load" of the same model_id must be a no-op swap — this is
@@ -5134,7 +5163,7 @@ mod tests {
         svc.maybe_handle_ai_chat_node(&node_id_2).await;
 
         let ai_chat_2 = get_ai_chat(&node_service, &node_id_2).await;
-        assert_eq!(ai_chat_2.turn_status, "idle");
+        assert_eq!(ai_chat_2.turn_status, AiChatTurnStatus::Idle);
         // Because the swap was skipped, the ORIGINAL engine (first reply) is
         // still the one wired in and answers the second turn too.
         let assistant = ai_chat_2
@@ -7290,7 +7319,7 @@ model = "model-b"
         svc.maybe_handle_ai_chat_node(&node_id).await;
 
         let ai_chat = get_ai_chat(&node_service, &node_id).await;
-        assert_eq!(ai_chat.turn_status, "idle");
+        assert_eq!(ai_chat.turn_status, AiChatTurnStatus::Idle);
         assert_eq!(ai_chat.messages.len(), 2);
         assert_eq!(ai_chat.messages[1].role, "assistant");
         assert_eq!(ai_chat.messages[1].content, "Hello there");
@@ -7314,9 +7343,9 @@ model = "model-b"
             })
             .collect();
         let node = Node::new(
-            "ai-chat".to_string(),
+            "ai-chat-native".to_string(),
             ai_chat_title::UNTITLED_CHAT_TITLE.to_string(),
-            serde_json::json!({ "ai-chat": { "messages": history, "turn_status": "idle" } }),
+            serde_json::json!({ "agent": "nodespace", "messages": history, "turn_status": "idle" }),
         );
         node_service
             .create_node(node)
@@ -7387,13 +7416,13 @@ model = "model-b"
         let (_svc, node_service, _tempdir) = test_service().await;
 
         let node = Node::new(
-            "ai-chat".to_string(),
+            "ai-chat-native".to_string(),
             "Deployment runbook".to_string(),
-            serde_json::json!({ "ai-chat": { "messages": [
+            serde_json::json!({ "agent": "nodespace", "messages": [
                 {"role": "user", "content": "a"},
                 {"role": "assistant", "content": "b"},
                 {"role": "user", "content": "c"},
-            ] } }),
+            ] }),
         );
         let node_id = node_service.create_node(node).await.expect("create");
 
@@ -7413,7 +7442,7 @@ model = "model-b"
         .expect("write must not error");
         assert!(!wrote, "the titler must refuse to overwrite a user's title");
         assert_eq!(
-            get_ai_chat(&node_service, &node_id).await.content,
+            get_ai_chat(&node_service, &node_id).await.envelope.content,
             "Deployment runbook"
         );
     }
@@ -7442,7 +7471,7 @@ model = "model-b"
         assert!(wrote);
 
         let after = get_ai_chat(&node_service, &node_id).await;
-        assert_eq!(after.content, "Deploy pipeline");
+        assert_eq!(after.envelope.content, "Deploy pipeline");
         // The conversation itself is untouched — titling reads it, never writes it.
         assert_eq!(after.messages.len(), before.messages.len());
         for (a, b) in after.messages.iter().zip(before.messages.iter()) {
@@ -7485,8 +7514,8 @@ model = "model-b"
 
         // Generation alone persists nothing at all.
         let after = get_ai_chat(&node_service, &node_id).await;
-        assert_eq!(after.content, ai_chat_title::UNTITLED_CHAT_TITLE);
+        assert_eq!(after.envelope.content, ai_chat_title::UNTITLED_CHAT_TITLE);
         assert_eq!(after.messages.len(), before.messages.len());
-        assert_eq!(after.version, before.version);
+        assert_eq!(after.envelope.version, before.envelope.version);
     }
 }

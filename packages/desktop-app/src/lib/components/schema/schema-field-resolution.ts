@@ -8,7 +8,9 @@
  * - **Typed core field** — a core type's schema-declared field (`task.status`,
  *   `person.first_name`, `project.start_date`; see `TYPED_CORE_FIELDS`). It
  *   travels as a top-level typed field (`node.status`, `node.firstName`,
- *   `node.startDate`) and is written through the type's typed update.
+ *   `node.startDate`) and is written through the type's typed update, or, for
+ *   a type with none (the chat family), as a `properties` patch keyed by the
+ *   storage name.
  * - **Extension field** — every other field: a `custom:` field on a core type
  *   or any field of a user-defined type. It lives flat in `node.properties`.
  *
@@ -17,7 +19,7 @@
  */
 
 import type { Node } from '$lib/types';
-import { typedCoreField } from '$lib/types/typed-core-fields';
+import { hasTypedUpdate, typedCoreField } from '$lib/types/typed-core-fields';
 
 export interface FieldValueSource {
   nodeType: string;
@@ -55,8 +57,11 @@ export function buildFieldWrite(
   value: unknown
 ): Partial<Node> {
   const typed = typedCoreField(node.nodeType, fieldName);
-  if (typed) {
+  if (typed && hasTypedUpdate(node.nodeType)) {
     return { [typed.wire]: value === '' ? null : value } as Partial<Node>;
+  }
+  if (typed) {
+    return { properties: { ...(node.properties ?? {}), [typed.storage]: value } };
   }
   return { properties: { ...(node.properties ?? {}), [fieldName]: value } };
 }

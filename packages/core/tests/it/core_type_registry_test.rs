@@ -918,9 +918,14 @@ async fn a_subtype_of_ai_chat_cannot_be_referenced() {
     .to_string();
     assert!(error.contains("AI chat"), "{error}");
 
-    let chat = create(&svc, "support_chat", "Help", json!({}))
-        .await
-        .unwrap();
+    let chat = create(
+        &svc,
+        "support_chat",
+        "Help",
+        json!({ "agent": "nodespace" }),
+    )
+    .await
+    .unwrap();
     let page = create(&svc, "text", "A page", json!({})).await.unwrap();
     let other = create(&svc, "text", "Another page", json!({}))
         .await

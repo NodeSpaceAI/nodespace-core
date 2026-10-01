@@ -31,10 +31,15 @@ vi.mock('$lib/services/schema-authoring', () => ({
 import { aiChatsData } from '$lib/stores/ai-chats.svelte';
 import { sharedNodeStore } from '$lib/services/shared-node-store.svelte';
 
-function makeChat(id: string, content: string, modifiedAt: string): Node {
+function makeChat(
+  id: string,
+  content: string,
+  modifiedAt: string,
+  nodeType: 'ai-chat-native' | 'ai-chat-pty' = 'ai-chat-native'
+): Node {
   return {
     id,
-    nodeType: 'ai-chat',
+    nodeType,
     content,
     createdAt: modifiedAt,
     modifiedAt,
@@ -50,6 +55,34 @@ describe('aiChatsData', () => {
   });
 
   describe('loadAiChats', () => {
+    it('lists both chat subtypes returned by the base-type query', async () => {
+      mockQueryNodes.mockResolvedValue([
+        makeChat('native-chat', 'Native', '2026-01-01T00:00:00.000Z', 'ai-chat-native'),
+        makeChat('pty-chat', 'Terminal', '2026-02-01T00:00:00.000Z', 'ai-chat-pty')
+      ]);
+
+      await aiChatsData.loadAiChats();
+
+      // The base `ai-chat` is abstract; the backend's subtype-aware query
+      // returns both, and each list item keeps its subtype so the sidebar
+      // opens it in the right viewer.
+      expect(mockQueryNodes).toHaveBeenCalledWith({ nodeType: 'ai-chat' });
+      expect(aiChatsData.state.chats).toEqual([
+        {
+          id: 'pty-chat',
+          nodeType: 'ai-chat-pty',
+          content: 'Terminal',
+          modifiedAt: '2026-02-01T00:00:00.000Z'
+        },
+        {
+          id: 'native-chat',
+          nodeType: 'ai-chat-native',
+          content: 'Native',
+          modifiedAt: '2026-01-01T00:00:00.000Z'
+        }
+      ]);
+    });
+
     it('queries ai-chat nodes with no fetch-side limit', async () => {
       mockQueryNodes.mockResolvedValue([]);
 
@@ -217,7 +250,8 @@ describe('aiChatsData', () => {
 
       const result = await aiChatsData.createChat();
 
-      expect(mockCreateSchemaInstance).toHaveBeenCalledWith('ai-chat');
+      // An abstract type cannot be instantiated: a new chat is a native one.
+      expect(mockCreateSchemaInstance).toHaveBeenCalledWith('ai-chat-native');
       expect(result).toEqual(created);
       expect(aiChatsData.state.chats.map((c) => c.id)).toEqual(['new-chat', 'existing']);
     });
@@ -370,8 +404,8 @@ describe('aiChatsData', () => {
       aiChatsData.updateChatContent('b', 'Renamed chat B');
 
       expect(aiChatsData.state.chats).toEqual([
-        { id: 'a', content: 'Chat A', modifiedAt: '2026-01-02T00:00:00.000Z' },
-        { id: 'b', content: 'Renamed chat B', modifiedAt: '2026-01-01T00:00:00.000Z' }
+        { id: 'a', nodeType: 'ai-chat-native', content: 'Chat A', modifiedAt: '2026-01-02T00:00:00.000Z' },
+        { id: 'b', nodeType: 'ai-chat-native', content: 'Renamed chat B', modifiedAt: '2026-01-01T00:00:00.000Z' }
       ]);
     });
 
@@ -383,7 +417,7 @@ describe('aiChatsData', () => {
       aiChatsData.updateChatContent('missing-id', 'Should not appear');
 
       expect(aiChatsData.state.chats).toEqual([
-        { id: 'a', content: 'Chat A', modifiedAt: '2026-01-01T00:00:00.000Z' }
+        { id: 'a', nodeType: 'ai-chat-native', content: 'Chat A', modifiedAt: '2026-01-01T00:00:00.000Z' }
       ]);
     });
   });
