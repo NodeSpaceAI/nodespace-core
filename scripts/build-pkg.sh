@@ -189,7 +189,20 @@ pkgbuild \
 echo "==> Building distribution .pkg"
 mkdir -p "${OUTPUT_DIR}"
 
-# Write a minimal distribution XML so productbuild can produce a flat pkg
+# Write a minimal distribution XML so productbuild can produce a flat pkg.
+#
+# The installation check refuses to install over another NodeSpace product
+# before the Installer UI goes any further, and shows the reason in a dialog.
+# scripts/pkg-resources/preinstall makes the same decision for installs that
+# never reach the GUI, so keep the two in step. Both read only static data
+# (the installed bundle's NodeSpaceProduct key, or for bundles built before
+# that key existed, whether Contents/MacOS holds the other product's daemon)
+# and never run anything the previous install left on disk.
+#
+# This is an unquoted heredoc: the script below must not contain a dollar
+# sign, a backtick or a backslash, or the shell would expand it.
+#
+# --- BEGIN distribution-xml (verified by scripts/pkg-installation-check.test.ts) ---
 DIST_XML="${BUILD_DIR}/distribution.xml"
 cat > "${DIST_XML}" <<DIST_XML_EOF
 <?xml version="1.0" encoding="utf-8"?>
@@ -198,6 +211,50 @@ cat > "${DIST_XML}" <<DIST_XML_EOF
     <organization>com.nodespace</organization>
     <domains enable_localSystem="true"/>
     <options customize="never" require-scripts="true" rootVolumeOnly="true"/>
+    <installation-check script="nodespaceInstallationCheck()"/>
+    <script><![CDATA[
+function nodespaceInstallationCheck() {
+    try {
+        var app = '/Applications/NodeSpace.app';
+        if (!system.files.fileExistsAtPath(app)) {
+            return true;
+        }
+        var info = null;
+        try {
+            info = system.files.plistAtPath(app + '/Contents/Info.plist');
+        } catch (plistError) {
+            // Same as preinstall when the plist cannot be read: no key, so
+            // the decision falls to the daemon-file check below. Logged under
+            // the same prefix as the outer catch, which the release workflow
+            // greps for.
+            system.log('NodeSpace installation check failed reading Info.plist: ' + plistError);
+        }
+        var product = (info && info.NodeSpaceProduct) ? String(info.NodeSpaceProduct) : '';
+        if (product === '') {
+            // No key: a bundle built before NodeSpaceProduct existed. The
+            // other product's build of those puts its own daemon next to the
+            // community one. Removed once no such build is supported.
+            product = system.files.fileExistsAtPath(app + '/Contents/MacOS/nodespaced-pro') ? 'pro' : 'community';
+        }
+        if (product === 'community') {
+            return true;
+        }
+        // Scripted installs only: the Installer app has no way to set this.
+        if (system.env && system.env.NODESPACE_FORCE_COMMUNITY === '1') {
+            return true;
+        }
+        my.result.type = 'Fatal';
+        my.result.title = 'NodeSpace Pro is installed';
+        my.result.message = 'NodeSpace Pro is installed. To switch back to the free NodeSpace, uninstall Pro first (NodeSpace → Uninstall NodeSpace Pro…). Your databases stay on this Mac.';
+        return false;
+    } catch (e) {
+        // The pre-install script makes the same decision, so an unreadable
+        // bundle here must not block an install that script would allow.
+        system.log('NodeSpace installation check failed: ' + e);
+        return true;
+    }
+}
+    ]]></script>
     <pkg-ref id="com.nodespace.pkg"/>
     <choices-outline>
         <line choice="default">
@@ -211,6 +268,7 @@ cat > "${DIST_XML}" <<DIST_XML_EOF
     <pkg-ref id="com.nodespace.pkg" version="${PKG_VERSION}" onConclusion="none">NodeSpace-component.pkg</pkg-ref>
 </installer-gui-script>
 DIST_XML_EOF
+# --- END distribution-xml ---
 
 productbuild \
     --distribution "${DIST_XML}" \

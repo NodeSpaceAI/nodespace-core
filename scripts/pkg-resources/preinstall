@@ -1,0 +1,59 @@
+#!/bin/bash
+# preinstall — runs as root before the .pkg payload is written.
+#
+# Refuses to install over another NodeSpace product. The other product
+# installs to the same /Applications/NodeSpace.app path, so this package would
+# otherwise overwrite it. The installer's Distribution check (build-pkg.sh)
+# makes the same decision earlier, in the GUI, with a proper dialog; this
+# script is the backstop that also covers `installer` on the command line.
+#
+# It reads only static data from the installed bundle and never runs anything
+# the previous install left on disk. This is root, before a single file has
+# been written: a binary under the old bundle or /usr/local/bin is not
+# something to execute here, and asking it which product it is would mean
+# trusting it. So the product is read from the NodeSpaceProduct key in the
+# bundle's Info.plist, and every system tool is called by absolute path.
+#
+# The installed app is located through $3, the target volume, so a package
+# installed to another volume checks that volume's copy. macOS Installer
+# passes: $1 package path, $2 target location, $3 target volume, $4 startup
+# disk.
+#
+# A scripted install can override the refusal with the variable checked at the
+# bottom of this script. Whether it reaches this script depends on how
+# Installer was launched; it is not guaranteed under `sudo installer`.
+
+set -euo pipefail
+
+# $3 is "/" for the startup disk. Strip trailing slashes so it becomes "" and
+# the app path stays /Applications/NodeSpace.app.
+VOLUME="${3:-/}"
+while [[ "${VOLUME}" == */ ]]; do
+    VOLUME="${VOLUME%/}"
+done
+APP="${VOLUME}/Applications/NodeSpace.app"
+
+if [[ ! -e "${APP}" ]]; then
+    exit 0
+fi
+
+product="$(/usr/bin/plutil -extract NodeSpaceProduct raw -o - "${APP}/Contents/Info.plist" 2>/dev/null || true)"
+
+if [[ -z "${product}" ]]; then
+    # No key: a bundle built before NodeSpaceProduct existed. The other
+    # product's build of those puts its own daemon next to the community one
+    # in Contents/MacOS. This fallback is removed once no such build is
+    # supported (ADR-084 §5).
+    if [[ -e "${APP}/Contents/MacOS/nodespaced-pro" ]]; then
+        product="pro"
+    else
+        product="community"
+    fi
+fi
+
+if [[ "${product}" != "community" && "${NODESPACE_FORCE_COMMUNITY:-}" != "1" ]]; then
+    echo "NodeSpace Pro is installed. To switch back to the free NodeSpace, uninstall Pro first (NodeSpace → Uninstall NodeSpace Pro…). Your databases stay on this Mac." >&2
+    exit 1
+fi
+
+exit 0

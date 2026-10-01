@@ -590,7 +590,18 @@ jobs:
               test -x "${bin}" || { echo "::error::${bin} is missing or not executable"; exit 1; }
             done
 
-            echo "    /Applications/NodeSpace.app (incl. all Contents/MacOS/* executables), nodespace, nodespaced all present"
+            # The installed bundle must declare the free product. The
+            # installer's pre-install guard and Distribution check read this
+            # key from whatever is already at /Applications/NodeSpace.app to
+            # tell the products apart. A bundle that lost it would be judged
+            # by which daemon sits beside the app instead, and one that
+            # declared another product would make the second install below
+            # refuse.
+            local product
+            product="$(plutil -extract NodeSpaceProduct raw -o - /Applications/NodeSpace.app/Contents/Info.plist)" || { echo "::error::/Applications/NodeSpace.app/Contents/Info.plist has no NodeSpaceProduct key"; exit 1; }
+            test "${product}" = "community" || { echo "::error::NodeSpaceProduct is '${product}' in the installed Info.plist, expected 'community'"; exit 1; }
+
+            echo "    /Applications/NodeSpace.app (incl. all Contents/MacOS/* executables), nodespace, nodespaced all present, NodeSpaceProduct = community"
           }
 
           # Install once against a clean runner (the common case), then install
@@ -607,6 +618,20 @@ jobs:
           echo "==> Second install (daemon already registered from the first install)"
           sudo installer -pkg "${PKG}" -target / -verbose
           verify_layout
+
+          # The Distribution installation check fails open when its script
+          # throws (preinstall makes the same decision, so the install still
+          # gets guarded), which would quietly turn the GUI refusal off. It
+          # logs through system.log, and Installer writes that to
+          # install.log, so fail the build if the check ever reported a
+          # failure, including an Info.plist it could not read (the bundle
+          # here is freshly built, so that means a broken Installer API or
+          # bundle). A missing or unreadable log matches nothing and passes.
+          if grep -a -q "NodeSpace installation check failed" /var/log/install.log 2>/dev/null; then
+            echo "::error::The Distribution installation check threw during install (see /var/log/install.log); the GUI refusal would be silently off"
+            grep -a "NodeSpace installation check failed" /var/log/install.log | tail -5
+            exit 1
+          fi
 
           # Bundle relocation itself needs a Spotlight/LaunchServices-known
           # decoy bundle elsewhere on disk to trigger — unreliable to fake
