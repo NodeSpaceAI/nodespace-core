@@ -333,7 +333,7 @@ async fn create_schema_objects(conn: &libsql::Connection) -> Result<()> {
     // `member_of`, never `has_child`. A collection may still HAVE `has_child`
     // children; it may not BE one. Enforced here rather than at each Rust
     // insert site because `has_child` edges are written from a dozen places
-    // (create, append, move, bulk hierarchy, sync cold-sweep, seeding, generic
+    // (create, append, move, bulk hierarchy attach, seeding, generic
     // relationship create) and a node can become a collection by a type switch.
     // Foreign keys are immediate, so a child's node row always exists by the
     // time its edge is inserted.

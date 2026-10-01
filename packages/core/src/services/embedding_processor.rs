@@ -544,7 +544,7 @@ mod tests {
     }
 
     /// With no active database, a batch acquires the gate immediately (no
-    /// deferral) — the community single-database path is unaffected.
+    /// deferral) — the single-database path is unaffected.
     #[tokio::test]
     async fn scheduler_grants_immediately_when_no_active_database() {
         let scheduler = EmbeddingScheduler::new();

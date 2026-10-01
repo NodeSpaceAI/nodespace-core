@@ -173,11 +173,11 @@ impl NodeService {
             // one was supplied — a strictly broader rule than the
             // single-node path's, which gets away with the plain
             // `is_none()` check only because its one real caller always
-            // sends `title: None` for every row. A *batched* sync-apply
-            // create can't make that same assumption — it sends a non-null
-            // placeholder for every row, including templated ones — so an
-            // `is_none()`-only check here would silently miss exactly the
-            // case this method exists to fix. A templated type's title is
+            // sends `title: None` for every row. A *batched* caller applying
+            // writes made elsewhere can't make that same assumption — it may
+            // send a non-null placeholder for every row, including templated
+            // ones — so an `is_none()`-only check here would silently miss
+            // exactly the case this method exists to fix. A templated type's title is
             // never legitimately caller-controlled anyway — its `content`
             // must already be empty (the rule enforced above) — so
             // overriding a non-null placeholder is correct, not just
@@ -927,8 +927,8 @@ impl NodeService {
             // Recompute the title exactly when content, type, or properties
             // change — the same trigger the single-node update paths use
             // (`update_with_version_check_returning_node_in_tx`) — so a
-            // batched sync-apply update re-renders a `title_template` the
-            // same way a live per-row edit does. This intentionally does
+            // batched update re-renders a `title_template` the same way a
+            // live per-row edit does. This intentionally does
             // NOT read the caller's own `update.title`: no NodeService-level
             // update path honors a caller-supplied title (only the
             // lower-level `SqliteStore::update_node` does), so bulk_update

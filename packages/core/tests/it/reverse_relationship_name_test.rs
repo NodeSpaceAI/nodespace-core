@@ -290,7 +290,7 @@ async fn no_write_path_leaves_the_reverse_name_unpopulated() {
         .await
         .expect("appending a child must succeed");
 
-    // The bulk attach path used by the sync cold sweep.
+    // The bulk attach path (`bulk_create_has_child_edges`).
     let bulk_parent = service
         .create_node_with_parent(params("bulk parent", None))
         .await

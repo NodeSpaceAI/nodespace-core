@@ -974,11 +974,9 @@ impl Phase2Writer {
 
         if !memberships.is_empty() {
             // Route through the notifying variant so each new `member_of` edge
-            // emits a RelationshipCreated event and thus PUSHES to cloud. The
+            // emits a RelationshipCreated event that every subscriber sees. The
             // raw `store.bulk_add_to_collections` writes the rows but emits
-            // nothing, so the memberships would land only in the local DB —
-            // every other device (and any first-time puller) would then see
-            // these collections empty.
+            // nothing, so no subscriber would learn of these memberships.
             match self
                 .node_service
                 .bulk_add_to_collections_notify(&memberships)

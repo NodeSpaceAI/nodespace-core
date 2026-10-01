@@ -23,7 +23,7 @@ import {
  *
  * ## Event Flow
  *
- * 1. Backend emits domain events via DomainEventForwarder
+ * 1. The daemon streams domain events to the desktop watcher (`WatchNodes`)
  * 2. Tauri event system forwards events to frontend
  * 3. TauriSyncListener handles events and updates stores
  *

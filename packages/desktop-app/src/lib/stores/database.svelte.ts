@@ -682,10 +682,10 @@ onDaemonReconnect(() => {
 
 /**
  * True when a `database_id` event envelope belongs to the active database.
- * An empty id (single-database / Pro daemon) or an as-yet-unloaded selection
- * always applies — the guard only drops events explicitly tagged for a
- * different database, closing the race where a watch stream open across a
- * switch delivers the previous database's events.
+ * An empty id (an event from an impl not opened through the registry) or an
+ * as-yet-unloaded selection always applies — the guard only drops events
+ * explicitly tagged for a different database, closing the race where a watch
+ * stream open across a switch delivers the previous database's events.
  */
 export function isActiveDatabaseEvent(databaseId: string | undefined): boolean {
   if (!databaseId) return true;

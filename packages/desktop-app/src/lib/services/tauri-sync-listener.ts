@@ -2,8 +2,8 @@
  * Tauri Domain Event Listener
  *
  * Listens for real-time synchronization events emitted from the Rust backend
- * via domain events. The backend's DomainEventForwarder service subscribes
- * to NodeService domain events and forwards them to the frontend via Tauri events.
+ * via domain events. The desktop watcher opens the daemon's `WatchNodes`
+ * stream and forwards each node event to the frontend as a Tauri event.
  *
  * This module handles:
  * - Node events (created, updated, deleted) → updates SharedNodeStore

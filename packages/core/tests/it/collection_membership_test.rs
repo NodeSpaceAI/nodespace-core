@@ -734,9 +734,10 @@ mod collection_service_tests {
     async fn test_collection_name_uniqueness_is_best_effort_not_enforced() -> Result<()> {
         // NodeSpace is local-first: a collection-name collision is suggest-don't-block
         // (a non-blocking `CollectionNameCollision` conflict record naming both
-        // sides — ADR-068), never a hard rejection — a hard error here would
-        // propagate straight out of `nodespace-sync`'s `apply_node_upsert` and
-        // permanently wedge the sync cursor on a benign duplicate name. See
+        // sides — ADR-068), never a hard rejection — two offline devices can each
+        // validly create the same name, and a hard error here would propagate out
+        // of any caller applying another device's writes through `create_node`,
+        // stalling it permanently on a benign duplicate name. See
         // `tests/it/collection_name_convergence_test.rs` for the full adversarial
         // convergence coverage of this behavior; this test only re-confirms that
         // `resolve_path`'s deterministic-id get-or-create still avoids ever hitting

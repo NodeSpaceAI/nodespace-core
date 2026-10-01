@@ -467,17 +467,15 @@ pub struct CreateNodeParams {
 }
 
 /// Broadcast channel capacity for domain events — the LIVE channel `emit_event`
-/// publishes on and every consumer (`subscribe_to_events`) reads, including the
-/// cloud-sync push consumer.
+/// publishes on and every consumer (`subscribe_to_events`) reads.
 ///
 /// It must comfortably buffer a bulk import's burst: relationship events are not
-/// node-keyed, so they broadcast immediately (they bypass the batch guard), and
-/// the push consumer replicates each `member_of` edge with its own network
-/// round-trip, so it drains slower than a batch import emits. A broadcast
-/// receiver only misses events if it falls MORE than this many behind, so a burst
-/// larger than the buffer makes the push consumer lag and DROP edges (memberships
-/// then never reach cloud, leaving those collections empty on other devices). 128
-/// overflowed on a ~320-edge collection import; 4096 covers a realistic
+/// node-keyed, so they broadcast immediately (they bypass the batch guard), and a
+/// subscriber doing slow per-event work (for example, forwarding each
+/// `member_of` edge over the network) drains slower than a batch import emits. A
+/// broadcast receiver only misses events if it falls MORE than this many behind,
+/// so a burst larger than the buffer makes such a subscriber lag and DROP edges.
+/// 128 overflowed on a ~320-edge collection import; 4096 covers a realistic
 /// multi-collection import while staying tiny in memory (each envelope is a few
 /// small ids).
 const DOMAIN_EVENT_CHANNEL_CAPACITY: usize = 4096;
@@ -1323,7 +1321,8 @@ pub struct NodeService {
     /// Behavior registry for validation
     pub(crate) behaviors: Arc<NodeBehaviorRegistry>,
 
-    /// Broadcast channel for domain events (128 subscriber capacity)
+    /// Broadcast channel for domain events (buffers
+    /// `DOMAIN_EVENT_CHANNEL_CAPACITY` events)
     /// Changed from DomainEvent to EventEnvelope
     pub(crate) event_tx: broadcast::Sender<crate::db::events::EventEnvelope>,
 
@@ -5197,11 +5196,11 @@ mod tests {
         assert_eq!(node.content, "Will not change");
     }
 
-    /// The batched cold-pull/reconnect apply path (`nodespaced-pro`'s
-    /// `apply.rs`) routes creates through `bulk_create`, and — because it
-    /// doesn't know how to render a schema `title_template` itself —
-    /// supplies a generic, content-derived placeholder title for every row,
-    /// which is blank for a templated type (its `content` must be empty).
+    /// A batched caller applying writes made elsewhere routes creates through
+    /// `bulk_create`, and — because it doesn't know how to render a schema
+    /// `title_template` itself — supplies a generic, content-derived
+    /// placeholder title for every row, which is blank for a templated type
+    /// (its `content` must be empty).
     /// `bulk_create` used to persist that placeholder verbatim; it must
     /// instead derive the real title the same way `create_node` does,
     /// overwriting whatever was supplied. An untemplated type's
@@ -5268,8 +5267,8 @@ mod tests {
     /// `bulk_update` must re-render a `title_template` when a field the
     /// template reads changes — the same trigger
     /// `update_with_version_check_returning_node_in_tx` uses
-    /// (content/node_type/properties changed) — so a batched sync-apply
-    /// update stays title-searchable exactly like a live per-row edit.
+    /// (content/node_type/properties changed) — so a batched update stays
+    /// title-searchable exactly like a live per-row edit.
     #[tokio::test]
     async fn bulk_update_recomputes_a_templated_title_when_a_template_field_changes() {
         let (service, _temp) = create_test_service().await;
@@ -9016,11 +9015,11 @@ mod tests {
 
     /// The batch importer assigns collection membership via
     /// `bulk_add_to_collections_notify`, and each newly created `member_of` edge
-    /// MUST emit a RelationshipCreated event so the cloud-sync push replicates it.
-    /// The raw store insert emits nothing — that gap is why imported collections
-    /// showed up populated only on the importing device and empty on a fresh pull.
+    /// MUST emit a RelationshipCreated event so every event subscriber sees the
+    /// new membership. The raw store insert emits nothing, so without this no
+    /// subscriber would learn of the imported edges.
     #[tokio::test]
-    async fn bulk_add_to_collections_notify_emits_push_events() {
+    async fn bulk_add_to_collections_notify_emits_relationship_events() {
         let (service, _temp) = create_test_service().await;
 
         // A stand-in collection plus two content nodes. The store bulk-insert does
@@ -9061,11 +9060,11 @@ mod tests {
         }
         assert_eq!(
             member_of_events, 2,
-            "each new member_of edge must emit a RelationshipCreated event so it pushes to cloud",
+            "each new member_of edge must emit a RelationshipCreated event",
         );
 
         // Idempotent re-assert: an already-present edge creates nothing and, so,
-        // emits nothing (no spurious re-push).
+        // emits nothing (no spurious re-emit).
         let mut rx2 = service.subscribe_to_events();
         let again = service
             .bulk_add_to_collections_notify(&[(a.clone(), coll.clone())])
@@ -9079,10 +9078,10 @@ mod tests {
     }
 
     /// A bulk import's membership burst must not overflow the domain-event
-    /// broadcast and drop edges — the exact failure that leaves a collection empty
-    /// on other devices. Emit a burst LARGER than the old 128 capacity and assert a
-    /// subscriber receives every event (no `Lagged`). This guards the channel
-    /// capacity: at 128 this burst would drop events; at 4096 it does not.
+    /// broadcast and drop edges for a lagging subscriber. Emit a burst LARGER
+    /// than the old 128 capacity and assert a subscriber receives every event
+    /// (no `Lagged`). This guards the channel capacity: at 128 this burst
+    /// would drop events; at 4096 it does not.
     #[tokio::test]
     async fn bulk_membership_burst_does_not_overflow_the_event_channel() {
         use tokio::sync::broadcast::error::TryRecvError;
