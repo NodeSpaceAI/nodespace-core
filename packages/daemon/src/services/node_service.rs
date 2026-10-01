@@ -1551,37 +1551,25 @@ impl GrpcNodeService for NodeServiceImpl {
         let this = self.route(&request).await?;
         let req = request.into_inner();
 
-        let update = build_task_node_update(
-            req.status,
-            req.priority,
-            req.due_date,
-            req.started_at,
-            req.completed_at,
-            req.content,
-        )
-        .map_err(Status::invalid_argument)?;
+        let update = TaskNodeUpdate {
+            status: req.status.as_deref().map(TaskStatus::from_value),
+            priority: optional_priority_clear(req.priority),
+            due_date: parse_optional_timestamp(req.due_date, "due_date")
+                .map_err(Status::invalid_argument)?,
+            started_at: parse_optional_timestamp(req.started_at, "started_at")
+                .map_err(Status::invalid_argument)?,
+            completed_at: parse_optional_timestamp(req.completed_at, "completed_at")
+                .map_err(Status::invalid_argument)?,
+        };
 
-        let task = match this
+        match this
             .node_service
             .update_task_node(&req.node_id, req.version, update)
             .await
         {
-            Ok(t) => t,
-            Err(e) => return Err(typed_update_error_to_status(&this.node_service, e).await),
-        };
-
-        // Convert TaskNode back to Node for proto wire shape. Frontend reconstructs
-        // the typed view via task_node_to_typed_value on the Tauri side.
-        let node: Node = task.into_node();
-        let node_type = node.node_type.clone();
-        let node_id = node.id.clone();
-
-        Ok(Response::new(NodeResponse {
-            placement: None,
-            node_id,
-            node_type,
-            node_data: Some(node_to_proto(node)),
-        }))
+            Ok(node) => Ok(Response::new(node_response(node))),
+            Err(e) => Err(typed_update_error_to_status(&this.node_service, e).await),
+        }
     }
 
     async fn update_person_node(
@@ -1616,7 +1604,7 @@ impl GrpcNodeService for NodeServiceImpl {
 
         let update = ProjectNodeUpdate {
             status: req.status,
-            priority: optional_string_clear(req.priority),
+            priority: optional_priority_clear(req.priority),
             start_date: parse_optional_timestamp(req.start_date, "start_date")
                 .map_err(Status::invalid_argument)?,
             end_date: parse_optional_timestamp(req.end_date, "end_date")
@@ -3072,51 +3060,9 @@ fn optional_string_clear(wrapper: Option<OptionalStringClear>) -> Option<Option<
     wrapper.map(|w| if w.clear { None } else { Some(w.value) })
 }
 
-/// Build a `TaskNodeUpdate` from the proto's tri-state wrappers.
-///
-/// `OptionalStringClear`/`OptionalTimestampClear` encode the
-/// Option<Option<T>> pattern: outer `None` ⇒ field unset on the wire, which we
-/// surface as "no change". When the wrapper is present, `clear=true` writes
-/// `Some(None)` (clear value) and `clear=false` writes `Some(Some(parsed))`.
-fn build_task_node_update(
-    status: Option<String>,
-    priority: Option<OptionalStringClear>,
-    due_date: Option<OptionalTimestampClear>,
-    started_at: Option<OptionalTimestampClear>,
-    completed_at: Option<OptionalTimestampClear>,
-    content: Option<String>,
-) -> Result<TaskNodeUpdate, String> {
-    let status = match status {
-        None => None,
-        Some(s) => Some(
-            serde_json::from_value::<TaskStatus>(serde_json::Value::String(s.clone()))
-                .map_err(|e| format!("Invalid task status '{}': {}", s, e))?,
-        ),
-    };
-
-    let priority = match priority {
-        None => None,
-        Some(w) if w.clear => Some(None),
-        Some(w) => Some(Some(parse_task_priority(&w.value)?)),
-    };
-
-    let due_date = parse_optional_timestamp(due_date, "due_date")?;
-    let started_at = parse_optional_timestamp(started_at, "started_at")?;
-    let completed_at = parse_optional_timestamp(completed_at, "completed_at")?;
-
-    Ok(TaskNodeUpdate {
-        status,
-        priority,
-        due_date,
-        started_at,
-        completed_at,
-        content,
-    })
-}
-
-fn parse_task_priority(value: &str) -> Result<Priority, String> {
-    serde_json::from_value::<Priority>(serde_json::Value::String(value.to_string()))
-        .map_err(|e| format!("Invalid task priority '{}': {}", value, e))
+/// [`optional_string_clear`] for a `priority` field on the shared scale.
+fn optional_priority_clear(wrapper: Option<OptionalStringClear>) -> Option<Option<Priority>> {
+    optional_string_clear(wrapper).map(|value| value.as_deref().map(Priority::from_value))
 }
 
 fn parse_optional_timestamp(
@@ -4577,8 +4523,6 @@ mod tests {
             due_date: None,
             started_at: None,
             completed_at: None,
-            content: None,
-            properties: None,
         });
 
         let err = svc
@@ -4602,11 +4546,8 @@ mod tests {
 
         assert_eq!(json["node_id"], task_id);
         assert_eq!(json["expected"], 1);
-        // `update_task_node` now runs its version check inside the same
-        // transaction as the write (ADR-060 §2, wiring invariant-rule
-        // dispatch), reusing the real persisted version the transaction
-        // observed instead of a placeholder — the winning writer landed at
-        // version 2, so that's what's reported here.
+        // The version check runs inside the write's transaction and reports
+        // the persisted version it observed: the winning writer landed at 2.
         assert_eq!(json["actual"], 2);
 
         // current_node must be non-null — the handler fetches it before returning.
@@ -4628,6 +4569,106 @@ mod tests {
             "current_node must carry the post-conflict version (got {})",
             embedded_version
         );
+    }
+
+    /// UpdateTaskNode answers with the node as stored: an archived task stays
+    /// archived in the response and keeps its extension field, and a cleared
+    /// priority is gone.
+    #[tokio::test]
+    async fn update_task_node_response_is_the_stored_node() {
+        let (svc, _tmp) = make_service().await;
+        let task_id = "d1b2c3d4-e5f6-7890-abcd-ef1234567890";
+        svc.create_node(Request::new(crate::nodespace::CreateNodeRequest {
+            id: Some(task_id.to_string()),
+            node_type: "task".to_string(),
+            content: "Retired task".to_string(),
+            parent_id: None,
+            collections: Vec::new(),
+            collection_ids: Vec::new(),
+            lifecycle_status: Some("archived".to_string()),
+            properties: r#"{"priority":"high","custom:estimate":3}"#.to_string(),
+            position: None,
+        }))
+        .await
+        .unwrap();
+
+        let resp = svc
+            .update_task_node(Request::new(crate::nodespace::UpdateTaskNodeRequest {
+                node_id: task_id.to_string(),
+                version: 1,
+                status: Some("done".to_string()),
+                priority: Some(crate::nodespace::OptionalStringClear {
+                    clear: true,
+                    value: String::new(),
+                }),
+                due_date: None,
+                started_at: None,
+                completed_at: None,
+            }))
+            .await
+            .expect("typed task update succeeds")
+            .into_inner();
+
+        let data = resp.node_data.expect("response carries the node");
+        assert_eq!(data.lifecycle_status, "archived");
+        assert_eq!(data.version, 2);
+        // The stored shape: the extension field sits beside the core fields
+        // in the `task` bucket, and a cleared field holds `null`.
+        let properties: serde_json::Value = serde_json::from_str(&data.properties).unwrap();
+        assert_eq!(
+            properties,
+            serde_json::json!({
+                "task": { "status": "done", "priority": null, "custom:estimate": 3 }
+            })
+        );
+
+        // What a client sees of it, through the typed conversion.
+        let node = svc.node_service.get_node(task_id).await.unwrap().unwrap();
+        let typed = nodespace_core::models::node_to_typed_value(node).unwrap();
+        assert_eq!(typed["lifecycleStatus"], "archived");
+        assert_eq!(typed["status"], "done");
+        assert!(typed.get("priority").is_none(), "{typed}");
+        assert_eq!(
+            typed["properties"],
+            serde_json::json!({ "custom:estimate": 3 })
+        );
+    }
+
+    /// An absent priority is left unchanged.
+    #[tokio::test]
+    async fn update_task_node_without_a_priority_keeps_it() {
+        let (svc, _tmp) = make_service().await;
+        let task_id = "e1b2c3d4-e5f6-7890-abcd-ef1234567890";
+        svc.create_node(Request::new(crate::nodespace::CreateNodeRequest {
+            id: Some(task_id.to_string()),
+            node_type: "task".to_string(),
+            content: "Task".to_string(),
+            parent_id: None,
+            collections: Vec::new(),
+            collection_ids: Vec::new(),
+            lifecycle_status: None,
+            properties: r#"{"priority":"high"}"#.to_string(),
+            position: None,
+        }))
+        .await
+        .unwrap();
+
+        svc.update_task_node(Request::new(crate::nodespace::UpdateTaskNodeRequest {
+            node_id: task_id.to_string(),
+            version: 1,
+            status: Some("in_progress".to_string()),
+            priority: None,
+            due_date: None,
+            started_at: None,
+            completed_at: None,
+        }))
+        .await
+        .expect("typed task update succeeds");
+
+        let node = svc.node_service.get_node(task_id).await.unwrap().unwrap();
+        let typed = nodespace_core::models::node_to_typed_value(node).unwrap();
+        assert_eq!(typed["priority"], "high");
+        assert_eq!(typed["status"], "in_progress");
     }
 
     fn create_person_request(id: &str) -> Request<crate::nodespace::CreateNodeRequest> {

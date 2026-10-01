@@ -957,25 +957,17 @@ message OptionalTimestampClear {
   string value = 2;
 }
 
-// status uses a plain optional string because TaskStatus has no "clear" path
-// in TaskNodeUpdate (the field type is Option<TaskStatus>, not
-// Option<Option<TaskStatus>>).
+// The task schema's fields and nothing else: content and extension fields
+// (`custom:…`) are written through UpdateNode. status has no clear path (the
+// task schema requires it).
 message UpdateTaskNodeRequest {
   string node_id = 1;
   int64 version = 2;
-  optional string status = 3;            // TaskStatus serialized as string
+  optional string status = 3;
   optional OptionalStringClear priority = 4;
   optional OptionalTimestampClear due_date = 5;
-  reserved 6;
-  reserved "assignee";
   optional OptionalTimestampClear started_at = 7;
   optional OptionalTimestampClear completed_at = 8;
-  // Generic content/properties updates also accepted; mirrors the
-  // catch-all fields on the Rust TaskNodeUpdate when it falls back to a
-  // NodeUpdate for content changes.
-  optional string content = 9;
-  // JSON-encoded properties patch; unset = no change.
-  optional string properties = 10;
 }
 
 // ---------------------------------------------------------------------------

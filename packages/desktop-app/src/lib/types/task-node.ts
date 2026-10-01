@@ -178,8 +178,9 @@ export function setTaskDueDate(node: TaskNode, dueDate: string | undefined): Tas
 /**
  * Partial update structure for task nodes
  *
- * Supports updating task-specific properties (status, priority, dueDate)
- * and node fields (content). All fields are optional - only include fields to update.
+ * Carries the task schema's fields and nothing else: `content` and extension
+ * fields (`custom:…`) are written through the generic node update. All fields
+ * are optional - only include fields to update.
  *
  * This interface matches the Rust `TaskNodeUpdate` struct for type-safe CRUD operations.
  *
@@ -193,9 +194,6 @@ export function setTaskDueDate(node: TaskNode, dueDate: string | undefined): Tas
  *   status: 'done',
  *   dueDate: null  // Explicitly clear the field
  * };
- *
- * // Update content (hub field)
- * const update: TaskNodeUpdate = { content: 'Updated task description' };
  * ```
  */
 export interface TaskNodeUpdate {
@@ -213,9 +211,6 @@ export interface TaskNodeUpdate {
 
   /** Update completed_at date (type-specific field) - null to clear */
   completedAt?: string | null;
-
-  /** Update content (node field) */
-  content?: string;
 }
 
 /**

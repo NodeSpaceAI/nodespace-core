@@ -295,13 +295,32 @@ export interface TaskNodeUpdatePatch {
   dueDate: ClearableField<string>;
   startedAt: ClearableField<string>;
   completedAt: ClearableField<string>;
-  content?: string;
 }
 
 function clearable(value: string | null | undefined): ClearableField<string> {
   if (value === undefined) return undefined;
   if (value === null) return { clear: true };
   return { clear: false, value };
+}
+
+/** The fields a typed task update carries: the task schema's, by wire name. */
+const TASK_NODE_UPDATE_FIELDS: readonly string[] = [
+  'status',
+  'priority',
+  'dueDate',
+  'startedAt',
+  'completedAt'
+] satisfies ReadonlyArray<keyof TaskNodeUpdate>;
+
+/**
+ * The keys of a typed task update request body that are not task update
+ * fields (`version` travels beside them). `content` and `properties` are the
+ * ones a caller is likely to send: both belong to the generic node update.
+ */
+export function unknownTaskNodeUpdateKeys(body: Record<string, unknown>): string[] {
+  return Object.keys(body).filter(
+    (key) => key !== 'version' && !TASK_NODE_UPDATE_FIELDS.includes(key)
+  );
 }
 
 /**
@@ -317,7 +336,6 @@ export function buildTaskNodeUpdatePatch(update: TaskNodeUpdate): TaskNodeUpdate
     dueDate: clearable(update.dueDate),
     startedAt: clearable(update.startedAt),
     completedAt: clearable(update.completedAt),
-    content: update.content,
   };
 }
 

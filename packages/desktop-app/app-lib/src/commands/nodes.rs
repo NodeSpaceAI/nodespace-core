@@ -6,7 +6,7 @@
 use crate::types::{
     node_to_typed_value as types_node_to_typed_value,
     nodes_to_typed_values as types_nodes_to_typed_values, DeleteResult, Node, NodeQuery,
-    NodeReference, NodeUpdate, PersonNodeUpdate, ProjectNodeUpdate, QueryNodeUpdate,
+    NodeReference, NodeUpdate, PersonNodeUpdate, Priority, ProjectNodeUpdate, QueryNodeUpdate,
     TaskNodeUpdate,
 };
 use chrono::{DateTime, Utc};
@@ -1115,76 +1115,6 @@ pub async fn get_mentioning_roots(
     Ok(references)
 }
 
-/// Build UpdateTaskNodeRequest from TaskNodeUpdate
-fn task_update_to_proto(id: &str, version: i64, update: TaskNodeUpdate) -> UpdateTaskNodeRequest {
-    UpdateTaskNodeRequest {
-        node_id: id.to_string(),
-        version,
-        status: update.status.map(|s| s.as_str().to_string()),
-        priority: update.priority.map(|opt| match opt {
-            None => OptionalStringClear {
-                clear: true,
-                value: String::new(),
-            },
-            Some(p) => OptionalStringClear {
-                clear: false,
-                value: p.as_str().to_string(),
-            },
-        }),
-        due_date: update.due_date.map(|opt| match opt {
-            None => OptionalTimestampClear {
-                clear: true,
-                value: String::new(),
-            },
-            Some(s) => OptionalTimestampClear {
-                clear: false,
-                value: s,
-            },
-        }),
-        started_at: update.started_at.map(|opt| match opt {
-            None => OptionalTimestampClear {
-                clear: true,
-                value: String::new(),
-            },
-            Some(s) => OptionalTimestampClear {
-                clear: false,
-                value: s,
-            },
-        }),
-        completed_at: update.completed_at.map(|opt| match opt {
-            None => OptionalTimestampClear {
-                clear: true,
-                value: String::new(),
-            },
-            Some(s) => OptionalTimestampClear {
-                clear: false,
-                value: s,
-            },
-        }),
-        content: update.content,
-        properties: None,
-    }
-}
-
-/// Update a task node with type-safe property updates
-#[tauri::command]
-pub async fn update_task_node(
-    client: State<'_, GrpcClient>,
-    id: String,
-    version: i64,
-    update: TaskNodeUpdate,
-) -> Result<Value, CommandError> {
-    let mut c = client.echo_suppressed_client().await;
-    let req = task_update_to_proto(&id, version, update);
-    let resp = c
-        .update_task_node(Request::new(req))
-        .await
-        .map_err(status_to_command_error)?;
-
-    let node = proto_node_response_to_node(resp.into_inner())?;
-    node_to_typed_value(node)
-}
-
 /// Encode a tri-state update field for the proto's clearable wrapper:
 /// `None` → unset (no change), `Some(None)` → clear, `Some(Some(v))` → set.
 fn string_clear(value: Option<Option<String>>) -> Option<OptionalStringClear> {
@@ -1194,12 +1124,45 @@ fn string_clear(value: Option<Option<String>>) -> Option<OptionalStringClear> {
     })
 }
 
+/// [`string_clear`] for a `priority` field on the shared scale.
+fn priority_clear(value: Option<Option<Priority>>) -> Option<OptionalStringClear> {
+    string_clear(value.map(|opt| opt.map(|priority| priority.as_str().to_string())))
+}
+
 /// Date variant of [`string_clear`].
 fn timestamp_clear(value: Option<Option<String>>) -> Option<OptionalTimestampClear> {
     value.map(|opt| OptionalTimestampClear {
         clear: opt.is_none(),
         value: opt.unwrap_or_default(),
     })
+}
+
+/// Update a task node's core fields (status, priority, due/started/completed
+/// dates).
+#[tauri::command]
+pub async fn update_task_node(
+    client: State<'_, GrpcClient>,
+    id: String,
+    version: i64,
+    update: TaskNodeUpdate,
+) -> Result<Value, CommandError> {
+    let mut c = client.echo_suppressed_client().await;
+    let req = UpdateTaskNodeRequest {
+        node_id: id,
+        version,
+        status: update.status.map(|status| status.as_str().to_string()),
+        priority: priority_clear(update.priority),
+        due_date: timestamp_clear(update.due_date),
+        started_at: timestamp_clear(update.started_at),
+        completed_at: timestamp_clear(update.completed_at),
+    };
+    let resp = c
+        .update_task_node(Request::new(req))
+        .await
+        .map_err(status_to_command_error)?;
+
+    let node = proto_node_response_to_node(resp.into_inner())?;
+    node_to_typed_value(node)
 }
 
 /// Update a person node's core fields (first name, last name, email).
@@ -1240,7 +1203,7 @@ pub async fn update_project_node(
         node_id: id,
         version,
         status: update.status,
-        priority: string_clear(update.priority),
+        priority: priority_clear(update.priority),
         start_date: timestamp_clear(update.start_date),
         end_date: timestamp_clear(update.end_date),
     };

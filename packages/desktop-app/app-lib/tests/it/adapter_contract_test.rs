@@ -21,7 +21,7 @@ use nodespace_app_lib::commands::nodes::{
     update_task_node, CreateNodeInput, InsertPositionInput,
 };
 use nodespace_app_lib::types::{
-    PersonNodeUpdate, QueryNodeUpdate, TaskNodeUpdate, TaskPriority, TaskStatus,
+    PersonNodeUpdate, Priority, QueryNodeUpdate, TaskNodeUpdate, TaskStatus,
 };
 use nodespace_app_test_support::{SpawnedDaemon, TauriTestApp, DAEMON_CONNECT_TIMEOUT};
 use serde_json::json;
@@ -67,7 +67,7 @@ async fn task_tri_state_update_clear_set_no_change_matches_the_http_adapter_cont
         id.clone(),
         1,
         TaskNodeUpdate {
-            priority: Some(Some(TaskPriority::High)),
+            priority: Some(Some(Priority::High)),
             status: Some(TaskStatus::InProgress),
             ..Default::default()
         },

@@ -19,6 +19,7 @@ import {
   buildTaskNodeUpdatePatch,
   encodeInsertPosition,
   HTTP_ROUTE_PATTERNS,
+  unknownTaskNodeUpdateKeys,
   type ChildPlacement,
   type CreatedNode,
   type InsertPosition,
@@ -524,6 +525,17 @@ async function handleRequest(req: Request): Promise<Response> {
     const nodeId = decodeURIComponent(taskMatch[1]);
     try {
       const body = await req.json() as Record<string, unknown>;
+      // The typed update carries the task schema's fields only; `content`
+      // and `properties` go through PATCH /api/nodes/:id. Refused rather
+      // than dropped, as the Tauri command refuses them.
+      const unknown = unknownTaskNodeUpdateKeys(body);
+      if (unknown.length > 0) {
+        return error(
+          'INVALID_ARGUMENT',
+          `Not a task update field: ${unknown.join(', ')}`,
+          400
+        );
+      }
       // buildTaskNodeUpdatePatch is the single authoritative tri-state
       // encoder (packages/desktop-app/src/lib/services/adapter-core.ts) —
       // absent field = no change, null = clear, value = set. Reused here so
@@ -535,7 +547,6 @@ async function handleRequest(req: Request): Promise<Response> {
         dueDate?: string | null;
         startedAt?: string | null;
         completedAt?: string | null;
-        content?: string;
       });
       const request = {
         nodeId,
@@ -544,9 +555,7 @@ async function handleRequest(req: Request): Promise<Response> {
         priority: patch.priority ?? null,
         dueDate: patch.dueDate ?? null,
         startedAt: patch.startedAt ?? null,
-        completedAt: patch.completedAt ?? null,
-        content: patch.content ?? null,
-        properties: body.properties !== undefined ? JSON.stringify(body.properties) : null
+        completedAt: patch.completedAt ?? null
       };
       const res = await call<typeof request, { nodeData?: ProtoNodeData }>(
         (nodeClient as unknown as Record<string, Function>).updateTaskNode,

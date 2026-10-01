@@ -3589,7 +3589,7 @@ export class SharedNodeStore {
   }
 
   /**
-   * Update a task node's typed fields (status, priority, dates) and content.
+   * Update a task node's typed fields (status, priority, dates).
    * See `updateTypedNode()` for the write path.
    */
   updateTaskNode(

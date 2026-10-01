@@ -4,10 +4,10 @@ use crate::ai_chat::{AiChatMessage, AiChatNode};
 use crate::core_type::CoreNodeType;
 use crate::node::{Node, NodeEnvelope};
 use crate::person::PersonNode;
+use crate::priority::priority_prop;
 use crate::project::{ProjectNode, DEFAULT_PROJECT_STATUS};
 use crate::query::{QueryFields, QueryNode};
 use crate::schema::SchemaNode;
-use crate::priority::priority_prop;
 use crate::task::{TaskNode, TaskStatus};
 
 fn normalize_date_field(s: &str) -> String {

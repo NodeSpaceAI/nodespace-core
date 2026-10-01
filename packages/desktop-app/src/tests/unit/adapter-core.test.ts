@@ -5,6 +5,7 @@ import {
   encodeInsertPosition,
   normalizeChildrenTree,
   insertPosition,
+  unknownTaskNodeUpdateKeys,
 } from '$lib/services/adapter-core';
 
 describe('adapter-core: buildCreateNodeFields', () => {
@@ -51,10 +52,29 @@ describe('adapter-core: buildTaskNodeUpdatePatch (tri-state clearable encoding)'
     expect(patch.dueDate).toEqual({ clear: false, value: '2026-01-01T00:00:00Z' });
   });
 
-  it('passes status and content straight through (no clear semantics)', () => {
-    const patch = buildTaskNodeUpdatePatch({ status: 'in_progress', content: 'updated body' });
+  it('passes status straight through (no clear semantics)', () => {
+    const patch = buildTaskNodeUpdatePatch({ status: 'in_progress' });
     expect(patch.status).toBe('in_progress');
-    expect(patch.content).toBe('updated body');
+  });
+
+  it('names the keys of a request body that are not task update fields', () => {
+    expect(
+      unknownTaskNodeUpdateKeys({ version: 3, status: 'done', priority: null, dueDate: '2026-01-01' })
+    ).toEqual([]);
+    expect(
+      unknownTaskNodeUpdateKeys({ version: 3, content: 'Renamed', properties: { 'custom:x': 1 } })
+    ).toEqual(['content', 'properties']);
+  });
+
+  it('carries the task schema fields only', () => {
+    const patch = buildTaskNodeUpdatePatch({ status: 'done' });
+    expect(Object.keys(patch).sort()).toEqual([
+      'completedAt',
+      'dueDate',
+      'priority',
+      'startedAt',
+      'status'
+    ]);
   });
 
   it('treats a null priority the same as any other clearable field', () => {

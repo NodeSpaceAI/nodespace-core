@@ -16,20 +16,26 @@ pub enum TaskStatus {
 }
 
 impl FromStr for TaskStatus {
-    type Err = String;
+    type Err = std::convert::Infallible;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(match s {
+        Ok(Self::from_value(s))
+    }
+}
+
+impl TaskStatus {
+    /// The status a stored or wire string names. Every string is one: a
+    /// value outside the core statuses is a user-defined status.
+    pub fn from_value(s: &str) -> Self {
+        match s {
             "open" => Self::Open,
             "in_progress" => Self::InProgress,
             "done" => Self::Done,
             "cancelled" => Self::Cancelled,
             other => Self::User(other.to_string()),
-        })
+        }
     }
-}
 
-impl TaskStatus {
     pub fn as_str(&self) -> &str {
         match self {
             Self::Open => "open",
@@ -55,8 +61,7 @@ impl Serialize for TaskStatus {
 
 impl<'de> Deserialize<'de> for TaskStatus {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        let s = String::deserialize(d)?;
-        Ok(Self::from_str(&s).unwrap())
+        String::deserialize(d).map(|s| Self::from_value(&s))
     }
 }
 
