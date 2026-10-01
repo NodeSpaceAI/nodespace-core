@@ -21,7 +21,7 @@ mod playbook_tests {
             version: 1,
             created_at: Utc::now(),
             modified_at: Utc::now(),
-            properties: json!({ "rules": rules }),
+            properties: json!({ "play": { "rules": rules } }),
             mentions: vec![],
             mentioned_in: vec![],
             title: None,
@@ -376,21 +376,24 @@ mod playbook_tests {
 
     #[test]
     fn test_parse_rules_from_properties() {
+        // Stored shape: a play's declared fields sit in its type bucket.
         let properties = json!({
-            "rules": [
-                {
-                    "name": "rule1",
-                    "trigger": {"type": "graph_event", "on": "node_created", "node_type": "task"},
-                    "conditions": [],
-                    "actions": []
-                },
-                {
-                    "name": "rule2",
-                    "trigger": {"type": "scheduled", "cron": "0 9 * * *", "node_type": "invoice"},
-                    "conditions": ["node.status == 'overdue'"],
-                    "actions": [{"action_type": "update_node", "params": {}}]
-                }
-            ]
+            "play": {
+                "rules": [
+                    {
+                        "name": "rule1",
+                        "trigger": {"type": "graph_event", "on": "node_created", "node_type": "task"},
+                        "conditions": [],
+                        "actions": []
+                    },
+                    {
+                        "name": "rule2",
+                        "trigger": {"type": "scheduled", "cron": "0 9 * * *", "node_type": "invoice"},
+                        "conditions": ["node.status == 'overdue'"],
+                        "actions": [{"action_type": "update_node", "params": {}}]
+                    }
+                ]
+            }
         });
 
         let rules = parse_rules_from_properties(&properties).unwrap();
@@ -400,25 +403,22 @@ mod playbook_tests {
     }
 
     #[test]
-    fn test_parse_rules_from_namespace_nested_properties() {
-        // DB-stored format: properties are wrapped under {"play": {"rules": [...]}}
-        // after create_node's namespace normalization
+    fn test_parse_rules_ignores_rules_outside_the_play_bucket() {
         let properties = json!({
-            "play": {
-                "rules": [
-                    {
-                        "name": "db-rule",
-                        "trigger": {"type": "graph_event", "on": "node_created", "node_type": "task"},
-                        "conditions": ["node.status == 'open'"],
-                        "actions": []
-                    }
-                ]
-            }
+            "rules": [
+                {
+                    "name": "unbucketed",
+                    "trigger": {"type": "graph_event", "on": "node_created", "node_type": "task"},
+                    "conditions": [],
+                    "actions": []
+                }
+            ]
         });
 
-        let rules = parse_rules_from_properties(&properties).unwrap();
-        assert_eq!(rules.len(), 1);
-        assert_eq!(rules[0].name, "db-rule");
+        assert!(matches!(
+            parse_rules_from_properties(&properties),
+            Err(PlayParseError::MissingField(field)) if field == "rules"
+        ));
     }
 
     // -----------------------------------------------------------------------

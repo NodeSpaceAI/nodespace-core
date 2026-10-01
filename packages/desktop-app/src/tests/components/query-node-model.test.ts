@@ -247,6 +247,37 @@ describe('matchesFilter', () => {
     ).toBe(false);
   });
 
+  it('reads a snake_case custom field by its stored name only', () => {
+    const filter = {
+      type: 'property',
+      operator: 'equals',
+      property: 'billing_contact',
+      value: 'Avery',
+    } as const;
+    expect(matchesFilter(node('n2', { properties: { billing_contact: 'Avery' } }), filter)).toBe(
+      true
+    );
+    // Neither a camelCase key in properties nor a top-level key is the field.
+    expect(
+      matchesFilter(
+        node('n3', { properties: { billingContact: 'Avery' }, billingContact: 'Avery' }),
+        filter
+      )
+    ).toBe(false);
+  });
+
+  it("reads a core type's declared field from its typed key", () => {
+    const task = node('t1', { nodeType: 'task', dueDate: '2026-03-01' });
+    expect(
+      matchesFilter(task, {
+        type: 'property',
+        operator: 'equals',
+        property: 'due_date',
+        value: '2026-03-01',
+      })
+    ).toBe(true);
+  });
+
   it('evaluates node-local relationship filters and declines graph ones', () => {
     const withRels = node('n2', { mentions: ['m1'], mentionedIn: [{ id: 'src', title: null, nodeType: 'text' }] });
     expect(
@@ -359,13 +390,13 @@ describe('shouldShowCreatedNode', () => {
     };
     expect(
       shouldShowCreatedNode(
-        node('t1', { nodeType: 'task', properties: { status: 'open' } }),
+        node('t1', { nodeType: 'task', status: 'open' }),
         gate({ definition: withFilter })
       )
     ).toBe(true);
     expect(
       shouldShowCreatedNode(
-        node('t2', { nodeType: 'task', properties: { status: 'done' } }),
+        node('t2', { nodeType: 'task', status: 'done' }),
         gate({ definition: withFilter })
       )
     ).toBe(false);

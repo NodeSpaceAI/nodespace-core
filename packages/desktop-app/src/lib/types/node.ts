@@ -159,9 +159,6 @@ export interface Node {
   /** All entity-specific fields (Pure JSON schema) */
   properties: Record<string, unknown>;
 
-  /** Optional vector embedding for semantic search (F32 blob) */
-  embeddingVector?: number[] | null;
-
   /**
    * Indexed title for efficient @mention autocomplete search
    *
@@ -184,46 +181,6 @@ export interface Node {
    * NOT stored in database
    */
   mentions?: string[];
-
-  /**
-   * Collection memberships - IDs of collections this node belongs to
-   *
-   * Populated from member_of edges in the database (member_of.in = this.id).
-   * This field is read-only and computed on query - to modify memberships,
-   * use `collectionService`.
-   *
-   * ## Collection System Overview
-   *
-   * Collections are a flexible organizational structure (like tags but hierarchical):
-   * - Any node can belong to multiple collections (many-to-many)
-   * - Collections can be nested (DAG structure, not tree)
-   * - Unlike parent/child hierarchy, this is a "membership" relationship
-   *
-   * ## Path Syntax
-   *
-   * Collections are organized using colon-separated paths:
-   * - "hr" → Top-level collection
-   * - "hr:policy" → "policy" collection under "hr"
-   * - "hr:policy:vacation" → "vacation" under "hr:policy"
-   *
-   * ## Usage
-   *
-   * ```typescript
-   * // Check if node belongs to any collections
-   * if (node.memberOf && node.memberOf.length > 0) {
-   *   console.log('Node belongs to:', node.memberOf);
-   * }
-   *
-   * // Add node to collections by PATH (missing segments are created)
-   * await collectionService.addNodeToCollectionPath(node.id, 'hr:policy');
-   *
-   * // Remove from collections by ID (removal detaches an edge, so it takes ids, not paths)
-   * await collectionService.removeNodeFromCollection(node.id, 'collection-id');
-   * ```
-   *
-   * @see CollectionNode for the collection node type itself
-   */
-  memberOf?: string[];
 
   /**
    * Nodes that mention this node (backlinks) with preview data
@@ -295,7 +252,6 @@ export interface Node {
  * | Use case | Document structure | Cross-cutting organization |
  * | Path syntax | N/A | colon-separated (hr:policy) |
  *
- * @see Node.memberOf for collection membership on regular nodes
  */
 export interface CollectionNode extends Node {
   /** Always 'collection' for collection nodes */
@@ -305,12 +261,6 @@ export interface CollectionNode extends Node {
   properties: {
     /** Optional description of the collection's purpose */
     description?: string;
-
-    /** Optional icon identifier for UI display */
-    icon?: string;
-
-    /** Optional color for UI display (hex or color name) */
-    color?: string;
 
     /** Allow additional plugin/custom properties */
     [key: string]: unknown;
@@ -327,8 +277,7 @@ export function isCollectionNode(node: Node): node is CollectionNode {
 /**
  * Collection membership info - extended data about a node's collection memberships
  *
- * Used when you need more than just the collection IDs (which are in node.memberOf).
- * This provides full collection details for UI display.
+ * Provides full collection details for UI display.
  */
 export interface CollectionMembership {
   /** The collection node this membership refers to */
@@ -396,34 +345,12 @@ export function formatCollectionPath(segments: CollectionPathSegment[]): string 
 /**
  * NodeUpdate - Partial node update interface
  *
- * This interface maps to Rust's `NodeUpdate` struct which uses Option<Option<T>>
- * for nullable fields. Understanding this mapping is critical for correct updates.
- *
- * ## Type System Mapping (TypeScript → Rust)
- *
- * For nullable fields (embeddingVector):
- *
- * | TypeScript Value | Meaning | Rust Type | Behavior |
- * |-----------------|---------|-----------|----------|
- * | `undefined` (field omitted) | Don't update this field | `None` | Field unchanged in database |
- * | `null` | Clear this field | `Some(None)` | Field set to NULL in database |
- * | `"value"` | Set to this value | `Some(Some("value"))` | Field set to value in database |
- *
- * ## Example Usage
+ * Maps to Rust's `NodeUpdate` struct. An omitted field is left unchanged.
  *
  * ```typescript
  * // Update content only
  * updateNode('node-1', { content: 'New content' });
- *
- * // Clear embedding vector
- * updateNode('node-1', { embeddingVector: null });
  * ```
- *
- * ## Implementation Details
- *
- * The Rust backend uses a custom deserializer (see nodespace-core/src/models/node.rs)
- * to handle this three-way mapping. This allows TypeScript to use natural optional
- * types while Rust maintains explicit control over "don't update" vs "set to null".
  */
 export interface NodeUpdate {
   /** Update node type */
@@ -434,15 +361,6 @@ export interface NodeUpdate {
 
   /** Update or merge properties */
   properties?: Record<string, unknown>;
-
-  /**
-   * Update embedding vector
-   *
-   * - `undefined`: Don't update (keep current vector)
-   * - `null`: Clear vector (set to NULL)
-   * - `number[]`: Set to new vector
-   */
-  embeddingVector?: number[] | null;
 }
 
 /**

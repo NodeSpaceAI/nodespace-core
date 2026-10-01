@@ -348,7 +348,7 @@ pub type CronRegistry = Vec<CronEntry>;
 // JSON deserialization types (from play node properties)
 // ---------------------------------------------------------------------------
 
-/// Raw rule definition as stored in the play node's `properties.rules` JSON array.
+/// Raw rule definition as stored in the play node's `properties.play.rules` JSON array.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RuleDefinition {
     pub name: String,
@@ -509,19 +509,16 @@ pub fn parse_action(def: &ActionDefinition) -> Result<ParsedAction, PlayParseErr
     })
 }
 
-/// Parse the `rules` array from a play node's properties JSON.
+/// Parse the `rules` array from a play node's stored properties.
 ///
-/// Checks both top-level `properties["rules"]` and namespace-nested
-/// `properties["play"]["rules"]` to support both in-memory and
-/// DB-stored (namespace-normalized) formats.
+/// A play's declared fields are stored in its type bucket, so the rules are
+/// at `properties["play"]["rules"]`.
 pub fn parse_rules_from_properties(
     properties: &serde_json::Value,
 ) -> Result<Vec<RuleDefinition>, PlayParseError> {
-    // Try top-level first: {"rules": [...]}
     let rules_value = properties
-        .get("rules")
-        // Then try inside the "play" namespace: {"play": {"rules": [...]}}
-        .or_else(|| properties.get("play").and_then(|pb| pb.get("rules")))
+        .get("play")
+        .and_then(|play| play.get("rules"))
         .ok_or_else(|| PlayParseError::MissingField("rules".to_string()))?;
 
     serde_json::from_value(rules_value.clone())

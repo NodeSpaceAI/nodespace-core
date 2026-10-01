@@ -67,7 +67,7 @@ fn activate_rules(service: &Arc<NodeService>, rules: serde_json::Value) -> Playb
     let play = Node::new(
         "play".to_string(),
         "bulk-invariant-play".to_string(),
-        json!({ "rules": rules }),
+        json!({ "play": { "rules": rules } }),
     );
     {
         let lifecycle = engine.lifecycle();

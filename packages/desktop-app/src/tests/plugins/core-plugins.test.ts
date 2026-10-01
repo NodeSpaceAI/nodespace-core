@@ -14,8 +14,6 @@ import {
   headerNodePlugin,
   taskNodePlugin,
   dateNodePlugin,
-  userNodePlugin,
-  documentNodePlugin,
   aiChatNodePlugin,
   corePlugins,
   registerCorePlugins,
@@ -107,22 +105,6 @@ describe('Core Plugins Integration', () => {
       expect(aiChatNodePlugin.viewer?.lazyLoad).toBeDefined();
       expect(aiChatNodePlugin.reference).toBeDefined();
     });
-
-    it('should have valid reference-only plugins', () => {
-      // User plugin - reference only
-      expect(userNodePlugin.id).toBe('user');
-      expect(userNodePlugin.name).toBe('User Reference');
-      expect(userNodePlugin.config.slashCommands).toHaveLength(0);
-      expect(userNodePlugin.viewer).toBeUndefined();
-      expect(userNodePlugin.reference).toBeDefined();
-
-      // Document plugin - reference only
-      expect(documentNodePlugin.id).toBe('document');
-      expect(documentNodePlugin.name).toBe('Document Reference');
-      expect(documentNodePlugin.config.slashCommands).toHaveLength(0);
-      expect(documentNodePlugin.viewer).toBeUndefined();
-      expect(documentNodePlugin.reference).toBeDefined();
-    });
   });
 
   describe('Core Plugins Collection', () => {
@@ -133,8 +115,6 @@ describe('Core Plugins Integration', () => {
       expect(corePlugins).toContain(taskNodePlugin);
       expect(corePlugins).toContain(dateNodePlugin);
       expect(corePlugins).toContain(aiChatNodePlugin);
-      // Note: userNodePlugin and documentNodePlugin are defined but not yet registered
-      // They will be added when the user/document reference system is implemented
     });
 
     it('should have unique plugin IDs', () => {
@@ -240,18 +220,6 @@ describe('Core Plugins Integration', () => {
       // These plugins intentionally have no custom viewer - they use BaseNodeViewer
       const noViewerPlugins = ['text'];
       for (const pluginId of noViewerPlugins) {
-        expect(registry.hasViewer(pluginId)).toBe(false);
-
-        const viewer = await registry.getViewer(pluginId);
-        expect(viewer).toBeNull();
-      }
-    });
-
-    it('should not resolve viewers for reference-only plugins', async () => {
-      // Test plugins without viewers
-      const referenceOnlyPlugins = ['user', 'document'];
-
-      for (const pluginId of referenceOnlyPlugins) {
         expect(registry.hasViewer(pluginId)).toBe(false);
 
         const viewer = await registry.getViewer(pluginId);
@@ -576,7 +544,6 @@ describe('Core Plugins Integration', () => {
       registerCorePlugins(registry);
 
       // Verify currently implemented reference types have references
-      // Note: 'user' and 'document' are not yet implemented - will be added when reference system is built
       const expectedReferenceTypes = [
         'text',
         'task',

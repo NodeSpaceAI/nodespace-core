@@ -34,7 +34,6 @@ describe('isNode type guard', () => {
         version: 5,
         properties: { priority: 'high' },
         parentId: 'parent-1',
-        embeddingVector: [0.1, 0.2, 0.3],
         mentions: ['@user1', '@user2'],
         status: 'todo',
         priority: 1,

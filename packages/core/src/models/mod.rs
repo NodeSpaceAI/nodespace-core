@@ -4,7 +4,7 @@
 //!
 //! - `Node` - Universal node model for all content types
 //! - `Embedding` - Vector embeddings for semantic search (root-aggregate model)
-//! - Type-safe wrappers (TaskNode, SkillNode, TextNode, DateNode, CodeBlockNode, QuoteBlockNode, OrderedListNode, CollectionNode) for ergonomic access
+//! - Type-safe wrappers (TaskNode, SkillNode, AiChatNode, SchemaNode) for ergonomic access
 //! - Core schema definitions for built-in node types
 //!
 //! All entities use the Pure JSON schema approach with data stored in the
@@ -20,11 +20,8 @@ pub mod time;
 
 // Type-safe node wrappers
 mod ai_chat_node;
-mod collection_node;
-mod date_node;
 mod schema_node;
 mod task_node;
-mod text_node;
 
 #[cfg(test)]
 #[path = "ai_chat_node_test.rs"]
@@ -34,54 +31,24 @@ mod ai_chat_node_test;
 #[path = "task_node_test.rs"]
 mod task_node_test;
 
-#[cfg(test)]
-#[path = "text_node_test.rs"]
-mod text_node_test;
-
-#[cfg(test)]
-#[path = "date_node_test.rs"]
-mod date_node_test;
-
-// Type-safe wrappers for core node types
-pub mod code_block_node;
-#[cfg(test)]
-#[path = "code_block_node_test.rs"]
-mod code_block_node_test;
-
-pub mod quote_block_node;
-#[cfg(test)]
-#[path = "quote_block_node_test.rs"]
-mod quote_block_node_test;
-
-pub mod ordered_list_node;
-#[cfg(test)]
-#[path = "ordered_list_node_test.rs"]
-mod ordered_list_node_test;
-
 pub use ai_chat_node::{
     AiChatCompletedWrite, AiChatMessage, AiChatNode, AiChatPendingDeletion, AiChatResolvedEntity,
     AiChatTurnOutcome, AI_CHAT_NODE_TYPE, AI_CHAT_PROVIDERS,
 };
-pub use code_block_node::{CodeBlockNode, CodeBlockValidationError};
 pub use conflict::{ConflictKind, ConflictRecord, ConflictStatus, Resolution};
 pub use node::{
     DeleteResult, FilterOperator, Node, NodeFilter, NodeQuery, NodeReference, NodeRelationship,
     NodeUpdate, OrderBy, PropertyFilter, TraversalDirection, ValidationError,
 };
-pub use ordered_list_node::{OrderedListNode, OrderedListValidationError};
-pub use quote_block_node::{QuoteBlockNode, QuoteBlockValidationError};
 pub use schema::{RelationshipDirection, SchemaField, SchemaProtectionLevel};
 pub use time::{SystemTimeProvider, TimeProvider};
 
 // Export type-safe wrappers
-pub use collection_node::CollectionNode;
-pub use date_node::DateNode;
 pub use embedding::{ChunkInfo, Embedding, EmbeddingConfig, EmbeddingSearchResult, NewEmbedding};
 pub use nodespace_types::{SkillNode, DEFAULT_SKILL_MAX_ITERATIONS, SKILL_NODE_TYPE};
 pub use priority::Priority;
 pub use schema_node::SchemaNode;
 pub use task_node::{TaskNode, TaskNodeUpdate, TaskStatus};
-pub use text_node::TextNode;
 
 // node_to_typed_value and nodes_to_typed_values are the single canonical
 // implementations in nodespace-types, re-exported here for all entry points.

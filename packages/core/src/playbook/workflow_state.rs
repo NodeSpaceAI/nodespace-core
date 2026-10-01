@@ -789,7 +789,7 @@ mod tests {
             version: 1,
             created_at: Utc::now(),
             modified_at: Utc::now(),
-            properties: json!({ "rules": rules_json }),
+            properties: json!({ "play": { "rules": rules_json } }),
             mentions: vec![],
             mentioned_in: vec![],
             title: Some(format!("Play {}", id)),

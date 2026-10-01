@@ -22,6 +22,7 @@
 
 import type { Node } from '$lib/types';
 import type { QueryDefinition, QueryFilter, QueryNode } from '$lib/types/query';
+import { resolveFieldValue } from '$lib/components/schema/schema-field-resolution';
 
 /** Header title shown for the (unpersisted) default type view. */
 export const DEFAULT_QUERY_TITLE = 'Default';
@@ -141,25 +142,6 @@ export function buildMaterializedProperties(input: {
 // — see `matchesFilter`.
 // ============================================================================
 
-/** snake_case → camelCase, mirroring `kanban-grouping.ts` / `table-row.svelte`. */
-function toCamelCase(name: string): string {
-  return name.replace(/_([a-z])/g, (_, c: string) => c.toUpperCase());
-}
-
-/**
- * Resolve a field's value on a node, mirroring the read order used elsewhere:
- * camelCase top-level (typed core fields) → snake_case top-level →
- * `properties[field]` (user-defined schema fields).
- */
-function readFieldValue(node: Node, field: string): unknown {
-  const rec = node as unknown as Record<string, unknown>;
-  const props = node.properties as Record<string, unknown> | undefined;
-  const camel = toCamelCase(field);
-  if (rec[camel] !== undefined) return rec[camel];
-  if (rec[field] !== undefined) return rec[field];
-  return props?.[field];
-}
-
 function isEmpty(value: unknown): boolean {
   return value === null || value === undefined || value === '';
 }
@@ -221,7 +203,7 @@ export function matchesFilter(node: Node, filter: QueryFilter): boolean {
     filter.type === 'content'
       ? node.content
       : filter.property
-        ? readFieldValue(node, filter.property)
+        ? resolveFieldValue(node, filter.property)
         : undefined;
 
   switch (filter.operator) {

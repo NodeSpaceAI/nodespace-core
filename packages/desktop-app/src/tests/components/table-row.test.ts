@@ -83,3 +83,86 @@ describe('TableRow — stale title regression', () => {
     expect(cell?.textContent?.trim()).toBe('Jane Doe');
   });
 });
+
+describe('TableRow — field columns are read by their stored name', () => {
+  beforeEach(() => {
+    sharedNodeStore.clearAll();
+  });
+
+  afterEach(() => {
+    cleanup();
+    sharedNodeStore.clearAll();
+  });
+
+  function cellTexts(container: HTMLElement): string[] {
+    return Array.from(container.querySelectorAll('td')).map((td) => td.textContent?.trim() ?? '');
+  }
+
+  it('renders a snake_case custom field from properties', () => {
+    const node = baseNode({
+      nodeType: 'invoice',
+      content: 'Invoice 7',
+      properties: { billing_contact: 'Avery', unit_price: 12 }
+    });
+    sharedNodeStore.setNode(node, { type: 'database', reason: 'seed' });
+
+    const { container } = render(TableRow, {
+      props: {
+        id: node.id,
+        columns: [
+          { field: 'content', label: 'Content' },
+          { field: 'billing_contact', label: 'Billing contact' },
+          { field: 'unit_price', label: 'Unit price' }
+        ],
+        fieldSchemaMap: emptyFieldSchemaMap,
+        onRowClick: () => {}
+      }
+    });
+
+    expect(cellTexts(container)).toEqual(['Invoice 7', 'Avery', '12']);
+  });
+
+  it('does not read a camelCase spelling of a custom field', () => {
+    const node = baseNode({
+      nodeType: 'invoice',
+      properties: { billingContact: 'camelCase key' },
+      // A top-level key under the camelCase spelling is not the field either.
+      ...({ billingContact: 'top-level key' } as Partial<Node>)
+    });
+    sharedNodeStore.setNode(node, { type: 'database', reason: 'seed' });
+
+    const { container } = render(TableRow, {
+      props: {
+        id: node.id,
+        columns: [{ field: 'billing_contact', label: 'Billing contact' }],
+        fieldSchemaMap: emptyFieldSchemaMap,
+        onRowClick: () => {}
+      }
+    });
+
+    expect(cellTexts(container)).toEqual(['']);
+  });
+
+  it("renders a core type's declared field from its typed key", () => {
+    const node = baseNode({
+      nodeType: 'person',
+      content: '',
+      ...({ firstName: 'Jane', lastName: 'Doe' } as Partial<Node>)
+    });
+    sharedNodeStore.setNode(node, { type: 'database', reason: 'seed' });
+
+    const { container } = render(TableRow, {
+      props: {
+        id: node.id,
+        columns: [
+          { field: 'first_name', label: 'First name' },
+          { field: 'last_name', label: 'Last name' }
+        ],
+        fieldSchemaMap: emptyFieldSchemaMap,
+        onRowClick: () => {}
+      }
+    });
+
+    expect(cellTexts(container)).toEqual(['Jane', 'Doe']);
+  });
+});

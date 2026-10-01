@@ -2076,16 +2076,9 @@ pub async fn check_schema_change_impact(
                                     .push(format!("{}.relationship_type={}", action_loc, rt));
                             }
                         }
-                        // Also check target_type if it references the schema
-                        if let Some(tt) = action.params.get("target_type").and_then(|v| v.as_str())
-                        {
-                            if tt == schema_node_type {
-                                broken_paths.push(format!("{}.target_type={}", action_loc, tt));
-                            }
-                        }
                     }
                     // `reject`'s only param is an author-supplied message —
-                    // no node_type/relationship_type/target_type to
+                    // no node_type/relationship_type to
                     // reference a schema through.
                     ActionType::Reject => {}
                 }

@@ -3243,12 +3243,14 @@ mod tests {
                 "play".to_string(),
                 "test play".to_string(),
                 serde_json::json!({
-                    "rules": [{
-                        "name": "r1",
-                        "trigger": { "type": "graph_event", "on": "node_created", "node_type": "text" },
-                        "conditions": ["node.content == 'hello'"],
-                        "actions": []
-                    }]
+                    "play": {
+                        "rules": [{
+                            "name": "r1",
+                            "trigger": { "type": "graph_event", "on": "node_created", "node_type": "text" },
+                            "conditions": ["node.content == 'hello'"],
+                            "actions": []
+                        }]
+                    }
                 }),
             );
             lm.activate_play(&play).unwrap();
