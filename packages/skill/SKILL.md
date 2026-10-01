@@ -65,6 +65,7 @@ Run this preflight once per session or task, not before every individual command
 | `command not found: nodespace` | CLI not installed or not on `$PATH` | Tell the user NodeSpace CLI is not installed and propose installing it — never run the installer without their explicit confirmation. If they confirm, run `sh -c "$(curl -fsSL https://nodespace.ai/install.sh)" -- --no-gui` (installs the CLI only, non-interactively — the same script the one-line install and `brew install --cask nodespaceai/nodespace/nodespace` both use). Then retry the original command. If it still fails because this shell session hasn't picked up the updated `$PATH`, tell the user to open a new terminal and try again. If they decline the install, stop. |
 | `Could not connect to nodespaced` | Daemon not running | Surface the CLI's own message to the user: start the daemon with `nodespaced`. Do not retry automatically — wait for confirmation. |
 | `diagnostics` shows entries in `errors` | Database issues | Report the specific error messages to the user before continuing. |
+| `This database needs …` and a `Download …` line | The database requires an extension this build doesn't support; the daemon refuses it and leaves the file untouched | Relay the message to the user verbatim, download line included. Don't retry, and never move or edit the file. Offer another database instead (`references/cli.md`, *Manage local databases*). |
 
 ### Branch 2: No shell, `nodespace` MCP tool available
 
@@ -86,6 +87,7 @@ The tool's result text carries the underlying CLI's own output, so read it the w
 | `Failed to run the nodespace CLI at ...` | The CLI binary backing this passthrough is missing or broken | Tell the user NodeSpace needs to be reinstalled — point at the desktop app or `brew install --cask nodespaceai/nodespace/nodespace`. You cannot install it yourself from here; do not propose a command to run. |
 | `Could not connect to nodespaced` | Daemon not running | Tell the user to start it with `nodespaced` on the machine hosting this connector — same fix as Branch 1, but you cannot run it yourself. Do not retry automatically. |
 | `diagnostics` call (`args: "diagnostics"`) shows entries in `errors` | Database issues | Report the specific error messages to the user before continuing — same as Branch 1. |
+| `This database needs …` and a `Download …` line | Same as Branch 1 | Same as Branch 1: relay it verbatim, don't retry, never touch the file. |
 | `did not complete within 120s` | The dispatched command streams or blocks (e.g. `session launch`/`session attach`) — this passthrough kills and reports it as a timeout rather than staying open | Do not retry it through this tool. Tell the user this NodeSpace command needs an interactive session and isn't supported through this connector; point them at a shell-capable surface (Branch 1: Claude Code, or Claude Desktop's Code tab) for it. |
 
 ### Branch 3: Neither shell nor MCP tool available

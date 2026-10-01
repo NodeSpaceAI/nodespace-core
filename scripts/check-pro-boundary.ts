@@ -209,9 +209,12 @@ export function isProNamedFile(path: string): boolean {
   return PRO_NAMED_FILE.test(path.slice(path.lastIndexOf("/") + 1));
 }
 
-// See the file-level comment. Empty until the display-name module for the
-// Pro-database refusal exists; that change adds its one entry.
-export const ALLOWLIST: readonly { file: string; exempt: string }[] = [];
+// See the file-level comment. The one entry ADR-081 section 8 allows: the
+// display-name module for the Pro-database refusal may name the product, and
+// nothing else in it is exempt.
+export const ALLOWLIST: readonly { file: string; exempt: string }[] = [
+  { file: "packages/proto/src/extension_names.rs", exempt: "NodeSpace Pro" },
+];
 
 export type AllowlistEntry = (typeof ALLOWLIST)[number];
 export type MarkerHits = Record<MarkerName, string[]>;

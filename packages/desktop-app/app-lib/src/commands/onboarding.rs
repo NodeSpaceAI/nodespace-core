@@ -4,6 +4,7 @@
 //! installation. Completion state is persisted to `~/.nodespace/config.json`.
 //! Skill installation state is tracked separately in `~/.nodespace/setup.json`.
 
+use super::nodes::status_message;
 use crate::atomic_file;
 use crate::services::GrpcClient;
 use crate::skill_setup::{self, SkillSetupResult};
@@ -417,7 +418,7 @@ pub async fn get_local_identity(
     let resp = c
         .get_local_person(Request::new(Empty {}))
         .await
-        .map_err(|e| e.to_string())?
+        .map_err(status_message)?
         .into_inner();
     Ok(resp
         .node
@@ -444,7 +445,7 @@ pub async fn set_local_identity(
             email,
         }))
         .await
-        .map_err(|e| e.to_string())?
+        .map_err(status_message)?
         .into_inner();
     let data = resp
         .node_data
@@ -530,7 +531,7 @@ pub async fn should_prompt_identity_backfill(
     let resp = c
         .get_local_person(Request::new(Empty {}))
         .await
-        .map_err(|e| e.to_string())?
+        .map_err(status_message)?
         .into_inner();
     Ok(resp
         .node

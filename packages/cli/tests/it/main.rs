@@ -12,4 +12,5 @@
 mod cli_integration;
 mod import_dir_multi;
 mod mcp_integration;
+mod requires_extension;
 mod skill_md_generation;

@@ -70,6 +70,7 @@ fn listing_to_info(listing: &DatabaseListing) -> DatabaseInfo {
             .iter()
             .map(|(key, value)| (key.clone(), value.clone()))
             .collect(),
+        unsupported_extensions: listing.unsupported_extensions.clone(),
     }
 }
 
@@ -79,6 +80,7 @@ fn proto_status(status: DatabaseStatus) -> ProtoDatabaseStatus {
         DatabaseStatus::Open => ProtoDatabaseStatus::Open,
         DatabaseStatus::Closed => ProtoDatabaseStatus::Closed,
         DatabaseStatus::Missing => ProtoDatabaseStatus::Missing,
+        DatabaseStatus::RequiresExtension => ProtoDatabaseStatus::RequiresExtension,
     }
 }
 
@@ -192,6 +194,7 @@ mod tests {
                     .expect("nodespace dir")
                     .join("daemon.toml"),
             ),
+            supported_extensions: Vec::new(),
         }
     }
 
@@ -224,6 +227,7 @@ mod tests {
             entry,
             status: DatabaseStatus::Closed,
             is_default: false,
+            unsupported_extensions: Vec::new(),
         });
 
         assert_eq!(
@@ -233,6 +237,30 @@ mod tests {
                 ("plugin_label".to_string(), "blue".to_string()),
             ])
         );
+    }
+
+    /// A refused database reaches the wire as REQUIRES_EXTENSION with the ids
+    /// it requires; any other status carries no ids.
+    #[test]
+    fn listing_to_info_carries_the_refusal() {
+        let entry = DatabaseEntry {
+            id: DatabaseId::from("01J00000000000000000000000".to_string()),
+            name: "Marked".into(),
+            path: PathBuf::from("/tmp/marked.db"),
+            created_at: chrono::Utc::now(),
+            last_opened_at: None,
+            extensions: BTreeMap::new(),
+        };
+
+        let info = listing_to_info(&DatabaseListing {
+            entry,
+            status: DatabaseStatus::RequiresExtension,
+            is_default: true,
+            unsupported_extensions: vec!["fixture".to_string()],
+        });
+
+        assert_eq!(info.status, ProtoDatabaseStatus::RequiresExtension as i32);
+        assert_eq!(info.unsupported_extensions, vec!["fixture".to_string()]);
     }
 
     #[tokio::test]

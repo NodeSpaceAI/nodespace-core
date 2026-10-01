@@ -48,6 +48,7 @@ mod relationship_editing_test;
 mod relationship_extends_chain_test;
 mod relationship_in_name_normalization_test;
 mod relationship_reverse_name_traversal_test;
+mod required_extensions_field_test;
 mod reverse_relationship_name_test;
 mod scalar_field_type_validation_test;
 mod schema_chain_blindness_guard_test;

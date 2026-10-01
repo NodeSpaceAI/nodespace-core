@@ -239,33 +239,42 @@ pub(crate) struct DatabaseMenuEntry {
 
 /// Render a registry snapshot into tray entries, in registry order.
 ///
-/// The label carries the persisted default flag, the live open state and a
-/// missing-file state. The open marker is live, so the submenu is rebuilt on
-/// every registry or open-set change rather than rendered once. Keys a
-/// registry entry stores for extensions add nothing to the label: core reads
-/// none of them.
+/// The label carries the persisted default flag, the live open state, a
+/// missing-file state, and what a database needs when it requires an
+/// extension this daemon does not support (ADR-083 §2). The open marker is
+/// live, so the submenu is rebuilt on every registry or open-set change rather
+/// than rendered once. Keys a registry entry stores for extensions add nothing
+/// to the label: core reads none of them.
 ///
 /// A missing file replaces the default and open markers, since neither is
-/// meaningful once the file is gone.
+/// meaningful once the file is gone. A database that requires an extension
+/// stays selectable: the app it opens shows the refusal and its download link.
 pub(crate) fn database_menu_entries(snapshot: &RegistrySnapshot) -> Vec<DatabaseMenuEntry> {
     snapshot
         .databases
         .iter()
         .map(|listing| {
-            let mut markers: Vec<&str> = Vec::new();
+            let mut markers: Vec<String> = Vec::new();
             let missing = listing.status == DatabaseStatus::Missing;
             if missing {
-                markers.push("missing");
+                markers.push("missing".to_string());
             } else {
                 if listing.is_default {
-                    markers.push("default");
+                    markers.push("default".to_string());
                 }
                 // Safe to show only because the submenu is now rebuilt on every
                 // registry/open-set change. Pushed once at boot it would be
                 // confidently wrong within minutes: the idle reaper closes
                 // databases and in-app switching opens others.
                 if listing.status == DatabaseStatus::Open {
-                    markers.push("open");
+                    markers.push("open".to_string());
+                }
+                // Rendered by the shared display-name module, so the tray says
+                // what the CLI and the app say.
+                if listing.status == DatabaseStatus::RequiresExtension {
+                    markers.push(nodespace_proto::extension_names::requirement(
+                        &listing.unsupported_extensions,
+                    ));
                 }
             }
 
@@ -807,6 +816,7 @@ mod tests {
             },
             status,
             is_default,
+            unsupported_extensions: Vec::new(),
         }
     }
 
@@ -832,6 +842,30 @@ mod tests {
 
         let labels: Vec<&str> = entries.iter().map(|e| e.label.as_str()).collect();
         assert_eq!(labels, vec!["DefaultOne — default", "Plain"]);
+        assert!(entries.iter().all(|e| e.enabled));
+    }
+
+    /// A database that requires an unsupported extension is marked with what
+    /// it needs, in the shared module's words, beside its default marker. It
+    /// stays selectable: the app it opens explains the refusal.
+    #[test]
+    fn a_database_requiring_an_extension_is_marked() {
+        let mut marked = listing_with_default("Marked", DatabaseStatus::RequiresExtension, true);
+        marked.unsupported_extensions = vec!["pro".to_string()];
+        let mut other = listing("Other", DatabaseStatus::RequiresExtension);
+        other.unsupported_extensions = vec!["fixture".to_string()];
+
+        let entries = database_menu_entries(&snapshot(vec![marked, other]));
+
+        let requirement = nodespace_proto::extension_names::requirement;
+        assert_eq!(
+            entries[0].label,
+            format!("Marked — default · {}", requirement(&["pro"]))
+        );
+        assert_eq!(
+            entries[1].label,
+            format!("Other — {}", requirement(&["fixture"]))
+        );
         assert!(entries.iter().all(|e| e.enabled));
     }
 

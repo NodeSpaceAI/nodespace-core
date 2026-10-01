@@ -3,7 +3,7 @@
 //! Thin gRPC proxy: all operations are forwarded to the `EmbeddingsService`
 //! running in the in-process `nodespaced` server.
 
-use crate::commands::nodes::CommandError;
+use crate::commands::nodes::{refusal_or, CommandError};
 use crate::services::GrpcClient;
 use crate::types::Node;
 use serde::{Deserialize, Serialize};
@@ -21,6 +21,7 @@ fn grpc_err(msg: impl std::fmt::Display) -> CommandError {
         code: "GRPC_ERROR".to_string(),
         details: None,
         conflict_data: None,
+        requires_extension: None,
     }
 }
 
@@ -76,7 +77,7 @@ pub async fn generate_root_embedding(
     client
         .queue_embedding(QueueEmbeddingRequest { node_id: root_id })
         .await
-        .map_err(|e| grpc_err(e.message()))?;
+        .map_err(|e| refusal_or(e, |e| grpc_err(e.message())))?;
 
     Ok(())
 }
@@ -117,6 +118,7 @@ pub async fn search_roots(
             code: "INVALID_PARAMETER".to_string(),
             details: None,
             conflict_data: None,
+            requires_extension: None,
         });
     }
 
@@ -127,6 +129,7 @@ pub async fn search_roots(
                 code: "INVALID_PARAMETER".to_string(),
                 details: None,
                 conflict_data: None,
+                requires_extension: None,
             });
         }
     }
@@ -145,7 +148,7 @@ pub async fn search_roots(
             scope: Some("everything".to_string()),
         })
         .await
-        .map_err(|e| grpc_err(e.message()))?;
+        .map_err(|e| refusal_or(e, |e| grpc_err(e.message())))?;
 
     let nodes = response
         .into_inner()
@@ -168,7 +171,7 @@ pub async fn update_root_embedding(
     client
         .regenerate_embedding(RegenerateEmbeddingRequest { node_id: root_id })
         .await
-        .map_err(|e| grpc_err(e.message()))?;
+        .map_err(|e| refusal_or(e, |e| grpc_err(e.message())))?;
 
     Ok(())
 }
@@ -184,7 +187,7 @@ pub async fn on_root_closed(
     client
         .queue_embedding(QueueEmbeddingRequest { node_id: root_id })
         .await
-        .map_err(|e| grpc_err(e.message()))?;
+        .map_err(|e| refusal_or(e, |e| grpc_err(e.message())))?;
 
     Ok(())
 }
@@ -200,7 +203,7 @@ pub async fn on_root_idle(
     client
         .queue_embedding(QueueEmbeddingRequest { node_id: root_id })
         .await
-        .map_err(|e| grpc_err(e.message()))?;
+        .map_err(|e| refusal_or(e, |e| grpc_err(e.message())))?;
 
     // Returns `true` for compatibility with the frontend idle-trigger contract,
     // which expects a boolean "was queued" signal. The gRPC call already returns
@@ -216,7 +219,7 @@ pub async fn sync_embeddings(grpc: State<'_, GrpcClient>) -> Result<(), CommandE
     client
         .trigger_batch_embed(TriggerBatchEmbedRequest {})
         .await
-        .map_err(|e| grpc_err(e.message()))?;
+        .map_err(|e| refusal_or(e, |e| grpc_err(e.message())))?;
 
     Ok(())
 }
@@ -245,7 +248,7 @@ fn stale_count_from_result(
     match result {
         Ok(response) => Ok(response.into_inner().count as usize),
         Err(status) if status.code() == tonic::Code::Unimplemented => Ok(0),
-        Err(status) => Err(grpc_err(status.message())),
+        Err(status) => Err(refusal_or(status, |s| grpc_err(s.message()))),
     }
 }
 
@@ -288,7 +291,7 @@ pub async fn batch_generate_embeddings(
     let response = client
         .batch_queue_embeddings(BatchQueueEmbeddingsRequest { node_ids: root_ids })
         .await
-        .map_err(|e| grpc_err(e.message()))?;
+        .map_err(|e| refusal_or(e, |e| grpc_err(e.message())))?;
 
     let inner = response.into_inner();
     let failed_embeddings = inner

@@ -42,6 +42,7 @@ fn proto_to_conflict_record(
         code: "PARSE_ERROR".to_string(),
         details: None,
         conflict_data: None,
+        requires_extension: None,
     })?;
     let resolution = r
         .resolution
@@ -52,6 +53,7 @@ fn proto_to_conflict_record(
             code: "PARSE_ERROR".to_string(),
             details: None,
             conflict_data: None,
+            requires_extension: None,
         })?;
 
     Ok(ConflictRecord {
@@ -136,6 +138,7 @@ pub async fn resolve_conflict(
         code: "SERIALIZE_ERROR".to_string(),
         details: None,
         conflict_data: None,
+        requires_extension: None,
     })?;
 
     let resp = c
@@ -152,6 +155,7 @@ pub async fn resolve_conflict(
         code: "INTERNAL_ERROR".to_string(),
         details: None,
         conflict_data: None,
+        requires_extension: None,
     })?;
     proto_to_conflict_record(record)
 }

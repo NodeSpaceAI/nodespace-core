@@ -8789,11 +8789,12 @@ mod tests {
         );
         let node = &settings[0];
         assert_eq!(node.id, DATABASE_SETTINGS_NODE_ID);
-        // Stored under its ADR-078 bucket, which seeding leaves empty.
+        // Stored under its ADR-078 bucket, where seeding writes only the
+        // schema default: a database requires no extension (ADR-083 §2).
         assert_eq!(
             node.properties,
-            serde_json::json!({ "database-settings": {} }),
-            "seeding writes no settings onto the singleton"
+            serde_json::json!({ "database-settings": { "required_extensions": [] } }),
+            "seeding writes only the required_extensions default onto the singleton"
         );
 
         // Exactly one local person, and exactly one has_role owner edge to the singleton.

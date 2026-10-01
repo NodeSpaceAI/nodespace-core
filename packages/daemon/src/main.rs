@@ -45,25 +45,15 @@ use nodespace_agent::local_agent::otlp_tracer;
 use nodespace_daemon::tray::layer::TrayMetricsLayer;
 use nodespace_daemon::{
     build_base_router, build_shared_services, create_dir_owner_only, incompatible_database,
-    resolve_db_path, shared_model_load_in_flight, tray, BaseServices, DatabaseManager,
-    DatabaseServiceImpl, DatabaseServices, DbManagerLayer, SharedContext,
+    resolve_db_path, shared_model_load_in_flight, tray, unrouted_services_if_default_refused,
+    BaseServices, DatabaseManager, DatabaseServiceImpl, DatabaseServices, DbManagerLayer,
+    SharedContext,
 };
 use nodespace_nlp_engine::EmbeddingService;
 use nodespace_proto::socket::TRAY_FLAG;
 use tokio::sync::watch;
 use tonic::transport::Server;
 
-/// ADR-053: construct the [`DatabaseManager`], register + lazily open the
-/// default database, and return the manager together with the default's shared
-/// service set. The serve loops clone the per-database impls out of the returned
-/// set into [`BaseServices`] and install [`DbManagerLayer`] so requests carrying
-/// an `x-ns-database-id` header can reach other registered databases while
-/// header-less requests keep hitting the default.
-///
-/// Opening the default through the manager (rather than building it directly)
-/// means the *same* cached service set backs both header-less requests and
-/// requests that name the default id explicitly — the file is never opened
-/// twice.
 /// Keep the tray's Databases submenu in step with the registry for the life of
 /// the daemon.
 ///
@@ -85,12 +75,33 @@ fn spawn_tray_database_sync(controller: tray::TrayController, manager: Arc<Datab
     });
 }
 
+/// ADR-053: construct the [`DatabaseManager`], register + lazily open the
+/// default database, and return the manager together with the default's shared
+/// service set. The serve loops clone the per-database impls out of the returned
+/// set into [`BaseServices`] and install [`DbManagerLayer`] so requests carrying
+/// an `x-ns-database-id` header can reach other registered databases while
+/// header-less requests keep hitting the default.
+///
+/// Opening the default through the manager (rather than building it directly)
+/// means the *same* cached service set backs both header-less requests and
+/// requests that name the default id explicitly — the file is never opened
+/// twice.
+///
+/// A default the required-extensions guard refuses, because it requires an
+/// extension this daemon does not support or because what it requires cannot
+/// be read, stays closed, and the returned set is an unrouted one instead
+/// (ADR-083 §2): the daemon logs the refusal and keeps serving the other
+/// databases, while requests for the default receive the refusal.
+///
+/// `registry_path` and `marker` are the registry file and the
+/// incompatible-database marker; the serve loops pass the standard ones.
 async fn open_default_database(
+    registry_path: std::path::PathBuf,
+    marker: &std::path::Path,
     db_path: &std::path::Path,
     context: SharedContext,
 ) -> Result<(Arc<DatabaseManager>, Arc<DatabaseServices>)> {
-    let manager =
-        Arc::new(DatabaseManager::load(DatabaseManager::default_registry_path()?, context).await?);
+    let manager = Arc::new(DatabaseManager::load(registry_path, context.clone()).await?);
     // Guard against a registry whose default was seeded with a throwaway temp
     // path (e.g. a test/dev run that redirected the database but not the home
     // dir): the OS purges temp dirs, so serving one silently loses user data.
@@ -99,19 +110,24 @@ async fn open_default_database(
     let default_id = manager
         .ensure_default_registered("Default".to_string(), db_path.to_path_buf())
         .await?;
-    let marker = incompatible_database::marker_path()?;
-    let bundle = incompatible_database::open_default_or_record_refusal(
+    let bundle = match incompatible_database::open_default_or_record_refusal(
         &manager,
         &default_id,
         db_path,
-        &marker,
+        marker,
     )
-    .await?;
-    // Log the path the registry actually resolved the default to — not the
-    // boot-time `db_path`, which the registry can and does override.
-    if let Some(served) = manager.default_database_path().await {
-        tracing::info!(served_db_path = %served.display(), "serving default database");
-    }
+    .await
+    {
+        Ok(bundle) => {
+            // Log the path the registry actually resolved the default to — not
+            // the boot-time `db_path`, which the registry can and does override.
+            if let Some(served) = manager.default_database_path().await {
+                tracing::info!(served_db_path = %served.display(), "serving default database");
+            }
+            bundle
+        }
+        Err(e) => unrouted_services_if_default_refused(e, &context).await?,
+    };
     Ok((manager, bundle))
 }
 
@@ -1223,6 +1239,66 @@ fn tray_mode(args: &[String]) -> bool {
 }
 
 #[cfg(test)]
+mod open_default_database_tests {
+    use super::*;
+    use nodespace_core::{NodeService, NodeUpdate, SqliteStore};
+
+    /// A default database that requires an extension this daemon does not
+    /// support does not fail startup: the daemon gets an unrouted service set
+    /// and keeps serving, while the default stays closed (ADR-083 §2).
+    #[tokio::test]
+    async fn a_default_requiring_an_unsupported_extension_does_not_stop_startup() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("default.sqlite");
+        {
+            let mut store = Arc::new(SqliteStore::new(db_path.clone()).await.unwrap());
+            let node_service = NodeService::new(&mut store).await.unwrap();
+            let settings = node_service
+                .get_node("database-settings-singleton")
+                .await
+                .unwrap()
+                .unwrap();
+            node_service
+                .update_node(
+                    &settings.id,
+                    settings.version,
+                    NodeUpdate::new()
+                        .with_properties(serde_json::json!({ "required_extensions": ["pro"] })),
+                )
+                .await
+                .unwrap();
+        }
+        let (_tx, model) = watch::channel::<Option<Arc<EmbeddingService>>>(None);
+        let context = SharedContext {
+            pty_manager: Arc::new(nodespace_agent::pty::PtySessionManager::new()),
+            model,
+            has_model: false,
+            model_load_failed: Arc::new(AtomicBool::new(false)),
+            scheduler: Arc::new(nodespace_core::services::EmbeddingScheduler::new()),
+            subtree_gate_factory: Arc::new(std::sync::OnceLock::new()),
+            local_agent: nodespace_daemon::SharedLocalAgent::new(dir.path().join("daemon.toml")),
+        };
+        let marker = dir.path().join("incompatible-database.json");
+
+        let (manager, _bundle) = open_default_database(
+            dir.path().join("databases.toml"),
+            &marker,
+            &db_path,
+            context,
+        )
+        .await
+        .expect("startup continues");
+
+        let snapshot = manager.list().await;
+        assert_eq!(
+            snapshot.databases[0].status,
+            nodespace_daemon::services::DatabaseStatus::RequiresExtension
+        );
+        assert!(!marker.exists());
+    }
+}
+
+#[cfg(test)]
 mod tray_mode_tests {
     use super::*;
 
@@ -1343,7 +1419,13 @@ async fn serve_headless() -> Result<()> {
     let shutdown = install_shutdown_handler().context("Failed to install signal handlers")?;
     // _model_task: dropping a JoinHandle does not cancel the task in tokio — it detaches.
     let (shared, _model_task) = build_shared_services().await?;
-    let (manager, bundle) = open_default_database(&db_path, shared.context.clone()).await?;
+    let (manager, bundle) = open_default_database(
+        DatabaseManager::default_registry_path()?,
+        &incompatible_database::marker_path()?,
+        &db_path,
+        shared.context.clone(),
+    )
+    .await?;
     // Reap idle non-default databases so a switched-away database stops consuming
     // compute (ADR-053: per-database compute scoping).
     manager.spawn_idle_reaper();
@@ -1417,7 +1499,13 @@ async fn serve_grpc(controller: tray::TrayController) -> Result<()> {
         install_shutdown_handler().context("Failed to install signal handlers")?;
     // _model_task: dropping a JoinHandle does not cancel the task in tokio — it detaches.
     let (shared, _model_task) = build_shared_services().await?;
-    let (manager, bundle) = open_default_database(&db_path, shared.context.clone()).await?;
+    let (manager, bundle) = open_default_database(
+        DatabaseManager::default_registry_path()?,
+        &incompatible_database::marker_path()?,
+        &db_path,
+        shared.context.clone(),
+    )
+    .await?;
     // Reap idle non-default databases so a switched-away database stops consuming
     // compute (ADR-053: per-database compute scoping).
     manager.spawn_idle_reaper();
@@ -1549,7 +1637,13 @@ async fn serve_headless() -> Result<()> {
     let shutdown = install_shutdown_handler().context("Failed to install signal handlers")?;
     // _model_task: dropping a JoinHandle does not cancel the task in tokio — it detaches.
     let (shared, _model_task) = build_shared_services().await?;
-    let (manager, bundle) = open_default_database(&db_path, shared.context.clone()).await?;
+    let (manager, bundle) = open_default_database(
+        DatabaseManager::default_registry_path()?,
+        &incompatible_database::marker_path()?,
+        &db_path,
+        shared.context.clone(),
+    )
+    .await?;
     // Reap idle non-default databases so a switched-away database stops consuming
     // compute (ADR-053: per-database compute scoping).
     manager.spawn_idle_reaper();
@@ -1655,7 +1749,13 @@ async fn serve_grpc(controller: tray::TrayController) -> Result<()> {
         install_shutdown_handler().context("Failed to install signal handlers")?;
     // _model_task: dropping a JoinHandle does not cancel the task in tokio — it detaches.
     let (shared, _model_task) = build_shared_services().await?;
-    let (manager, bundle) = open_default_database(&db_path, shared.context.clone()).await?;
+    let (manager, bundle) = open_default_database(
+        DatabaseManager::default_registry_path()?,
+        &incompatible_database::marker_path()?,
+        &db_path,
+        shared.context.clone(),
+    )
+    .await?;
     // Reap idle non-default databases so a switched-away database stops consuming
     // compute (ADR-053: per-database compute scoping).
     manager.spawn_idle_reaper();

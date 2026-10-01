@@ -31,6 +31,10 @@ use crate::models::schema::{
 use crate::models::{SchemaNode, AI_CHAT_PROVIDERS};
 use chrono::Utc;
 
+/// The `database-settings` field that lists the extensions a reader needs in
+/// order to read a database correctly (ADR-083 §2).
+pub const REQUIRED_EXTENSIONS_FIELD: &str = "required_extensions";
+
 /// Get all core schema definitions as SchemaNode instances
 ///
 /// Returns all core schemas ready to be converted to Node via `schema.into_node()`
@@ -1532,7 +1536,10 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
         },
         // Database Settings schema — the singleton anchor for database-level
         // configuration and for the owner `has_role` edge (person → this node).
-        // Core declares no fields on it.
+        // Its one field, `required_extensions`, names the extensions a reader
+        // needs; the daemon refuses to open a database that lists one it does
+        // not support (ADR-083 §2). It lives in this base bucket, so it stays
+        // in place when the singleton is retyped to a subtype (ADR-078).
         SchemaNode {
             id: "database-settings".to_string(),
             content: "Database Settings".to_string(),
@@ -1541,7 +1548,30 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             modified_at: now,
             is_core: true,
             schema_version: 1,
-            fields: vec![],
+            fields: vec![SchemaField {
+                name: REQUIRED_EXTENSIONS_FIELD.to_string(),
+                friendly_name: "Required extensions".to_string(),
+                field_type: "array".to_string(),
+                local_only: false,
+                protection: SchemaProtectionLevel::Core,
+                core_values: None,
+                user_values: None,
+                indexed: false,
+                required: Some(false),
+                extensible: None,
+                default: Some(serde_json::json!([])),
+                description: Some(
+                    "Ids of the extensions a reader needs in order to read this database \
+                     correctly. Empty by default. Core assigns no meaning to any entry; it \
+                     refuses to open a database that lists an extension it does not support."
+                        .to_string(),
+                ),
+                item_type: Some("string".to_string()),
+                fields: None,
+                item_fields: None,
+                unique: None,
+                unique_case_insensitive: None,
+            }],
             relationships: vec![],
             title_template: None,
             properties_header_summary_template: None,
@@ -1856,9 +1886,10 @@ mod tests {
     }
 
     #[test]
-    fn test_database_settings_schema_declares_no_fields() {
-        // database-settings is a Core singleton anchor. Core declares no fields
-        // on it.
+    fn test_database_settings_schema_declares_only_required_extensions() {
+        // database-settings is a Core singleton anchor. Its only field is the
+        // neutral list of extensions a database requires (ADR-083 §2): a list
+        // of strings, empty by default.
         let schemas = get_core_schemas();
         let settings = schemas
             .iter()
@@ -1866,15 +1897,19 @@ mod tests {
             .expect("database-settings core schema exists");
 
         assert!(settings.is_core);
-        assert!(
-            settings.fields.is_empty(),
-            "core declares no fields on database-settings, found {:?}",
+        assert_eq!(
             settings
                 .fields
                 .iter()
                 .map(|f| f.name.as_str())
-                .collect::<Vec<_>>()
+                .collect::<Vec<_>>(),
+            vec!["required_extensions"]
         );
+        let field = &settings.fields[0];
+        assert_eq!(field.field_type, "array");
+        assert_eq!(field.item_type.as_deref(), Some("string"));
+        assert_eq!(field.default, Some(serde_json::json!([])));
+        assert_eq!(field.required, Some(false));
     }
 
     #[test]

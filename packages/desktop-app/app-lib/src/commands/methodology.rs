@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 use tonic::Request;
 
-use super::nodes::CommandError;
+use super::nodes::{refusal_or, CommandError};
 use crate::services::GrpcClient;
 use nodespace_proto::nodespace::{InstallMethodologyRequest, ListMethodologiesRequest};
 
@@ -74,11 +74,14 @@ pub async fn list_methodologies(
     let resp = c
         .list_methodologies(Request::new(ListMethodologiesRequest {}))
         .await
-        .map_err(|s| CommandError {
-            message: format!("Failed to list methodologies: {}", s.message()),
-            code: "METHODOLOGY_SERVICE_ERROR".to_string(),
-            details: Some(format!("{:?}", s.code())),
-            conflict_data: None,
+        .map_err(|s| {
+            refusal_or(s, |s| CommandError {
+                message: format!("Failed to list methodologies: {}", s.message()),
+                code: "METHODOLOGY_SERVICE_ERROR".to_string(),
+                details: Some(format!("{:?}", s.code())),
+                conflict_data: None,
+                requires_extension: None,
+            })
         })?;
 
     Ok(resp
@@ -109,11 +112,14 @@ pub async fn install_methodology(
             methodology_id: methodology_id.clone(),
         }))
         .await
-        .map_err(|s| CommandError {
-            message: format!("Failed to install methodology: {}", s.message()),
-            code: "METHODOLOGY_INSTALL_ERROR".to_string(),
-            details: Some(format!("{:?}", s.code())),
-            conflict_data: None,
+        .map_err(|s| {
+            refusal_or(s, |s| CommandError {
+                message: format!("Failed to install methodology: {}", s.message()),
+                code: "METHODOLOGY_INSTALL_ERROR".to_string(),
+                details: Some(format!("{:?}", s.code())),
+                conflict_data: None,
+                requires_extension: None,
+            })
         })?;
 
     serde_json::from_str(&resp.into_inner().report_json).map_err(|e| CommandError {
@@ -121,6 +127,7 @@ pub async fn install_methodology(
         code: "METHODOLOGY_REPORT_DECODE_ERROR".to_string(),
         details: None,
         conflict_data: None,
+        requires_extension: None,
     })
 }
 

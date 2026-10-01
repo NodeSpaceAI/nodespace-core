@@ -4685,6 +4685,7 @@ mod tests {
                 None,
                 MODEL_SPEC_SNAPSHOT_TIMEOUT,
             ),
+            supported_extensions: Vec::new(),
         };
         let manager = Arc::new(
             crate::DatabaseManager::load(dir.path().join("databases.toml"), context)
