@@ -40,7 +40,7 @@ import {
   stagedSources,
   stageSkillResources,
   syncFilesByContent,
-  syncTreeByContent,
+  treeSources,
   type SkillExtensions,
 } from "./build-skill";
 
@@ -192,12 +192,17 @@ describe("isNotACompileInput", () => {
   });
 });
 
-describe("syncTreeByContent", () => {
+/** Mirrors every file under `srcRoot` onto `destRoot`: how an entry with no additions is staged. */
+function syncTree(srcRoot: string, destRoot: string): number {
+  return syncFilesByContent(treeSources(srcRoot), destRoot);
+}
+
+describe("syncFilesByContent mirroring a source tree", () => {
   test("copies a tree that has never been staged", () => {
     write("src/a.txt", "a");
     write("src/nested/b.txt", "b");
 
-    const changed = syncTreeByContent(join(root, "src"), join(root, "dest"));
+    const changed = syncTree(join(root, "src"), join(root, "dest"));
 
     expect(changed).toBe(2);
     expect(readFileSync(join(root, "dest", "a.txt"), "utf8")).toBe("a");
@@ -210,7 +215,7 @@ describe("syncTreeByContent", () => {
     // preserved dest mtime is what keeps nodespace-app's build script valid.
     write("src/a.txt", "a");
     write("src/nested/b.txt", "b");
-    syncTreeByContent(join(root, "src"), join(root, "dest"));
+    syncTree(join(root, "src"), join(root, "dest"));
 
     const before = listFilesRecursive(join(root, "dest")).map((rel) =>
       statSync(join(root, "dest", rel)).mtimeMs,
@@ -219,7 +224,7 @@ describe("syncTreeByContent", () => {
     setMtime(join(root, "src", "a.txt"), 9_000);
     setMtime(join(root, "src", "nested", "b.txt"), 9_000);
 
-    const changed = syncTreeByContent(join(root, "src"), join(root, "dest"));
+    const changed = syncTree(join(root, "src"), join(root, "dest"));
 
     expect(changed).toBe(0);
     const after = listFilesRecursive(join(root, "dest")).map((rel) =>
@@ -231,11 +236,11 @@ describe("syncTreeByContent", () => {
   test("rewrites only the file whose content actually changed", () => {
     write("src/a.txt", "a");
     write("src/b.txt", "b");
-    syncTreeByContent(join(root, "src"), join(root, "dest"));
+    syncTree(join(root, "src"), join(root, "dest"));
     const untouchedBefore = statSync(join(root, "dest", "b.txt")).mtimeMs;
 
     write("src/a.txt", "a-edited");
-    const changed = syncTreeByContent(join(root, "src"), join(root, "dest"));
+    const changed = syncTree(join(root, "src"), join(root, "dest"));
 
     expect(changed).toBe(1);
     expect(readFileSync(join(root, "dest", "a.txt"), "utf8")).toBe("a-edited");
@@ -245,10 +250,10 @@ describe("syncTreeByContent", () => {
   test("deletes a staged file that no longer exists in the source", () => {
     write("src/keep.txt", "keep");
     write("src/gone.txt", "gone");
-    syncTreeByContent(join(root, "src"), join(root, "dest"));
+    syncTree(join(root, "src"), join(root, "dest"));
 
     rmSync(join(root, "src", "gone.txt"));
-    const changed = syncTreeByContent(join(root, "src"), join(root, "dest"));
+    const changed = syncTree(join(root, "src"), join(root, "dest"));
 
     expect(changed).toBe(1);
     expect(existsSync(join(root, "dest", "gone.txt"))).toBe(false);
@@ -263,7 +268,7 @@ describe("syncTreeByContent", () => {
     writeFileSync(join(root, "dest", "SKILL.md", "stray.txt"), "stale");
     write("SKILL.md", "# skill");
 
-    const changed = syncTreeByContent(join(root, "SKILL.md"), join(root, "dest", "SKILL.md"));
+    const changed = syncTree(join(root, "SKILL.md"), join(root, "dest", "SKILL.md"));
 
     expect(changed).toBe(1);
     expect(statSync(join(root, "dest", "SKILL.md")).isFile()).toBe(true);
@@ -274,7 +279,7 @@ describe("syncTreeByContent", () => {
     write("dest/refs", "was a file");
     write("refs/cli.md", "# cli");
 
-    const changed = syncTreeByContent(join(root, "refs"), join(root, "dest", "refs"));
+    const changed = syncTree(join(root, "refs"), join(root, "dest", "refs"));
 
     expect(changed).toBe(1);
     expect(readFileSync(join(root, "dest", "refs", "cli.md"), "utf8")).toBe("# cli");
@@ -282,11 +287,11 @@ describe("syncTreeByContent", () => {
 
   test("self-heals a nested path that flipped from directory to file", () => {
     write("src/nested/a.txt", "a");
-    syncTreeByContent(join(root, "src"), join(root, "dest"));
+    syncTree(join(root, "src"), join(root, "dest"));
     rmSync(join(root, "src", "nested"), { recursive: true });
     write("src/nested", "now a file");
 
-    const changed = syncTreeByContent(join(root, "src"), join(root, "dest"));
+    const changed = syncTree(join(root, "src"), join(root, "dest"));
 
     expect(changed).toBeGreaterThan(0);
     expect(readFileSync(join(root, "dest", "nested"), "utf8")).toBe("now a file");
@@ -295,11 +300,11 @@ describe("syncTreeByContent", () => {
   test("stages a plain file as a plain file", () => {
     write("SKILL.md", "# skill");
 
-    const changed = syncTreeByContent(join(root, "SKILL.md"), join(root, "dest", "SKILL.md"));
+    const changed = syncTree(join(root, "SKILL.md"), join(root, "dest", "SKILL.md"));
 
     expect(changed).toBe(1);
     expect(readFileSync(join(root, "dest", "SKILL.md"), "utf8")).toBe("# skill");
-    expect(syncTreeByContent(join(root, "SKILL.md"), join(root, "dest", "SKILL.md"))).toBe(0);
+    expect(syncTree(join(root, "SKILL.md"), join(root, "dest", "SKILL.md"))).toBe(0);
   });
 });
 
@@ -557,6 +562,13 @@ describe("syncFilesByContent", () => {
     expect(readFileSync(join(root, "dest", "a.txt"), "utf8")).toBe("b");
   });
 
+  test("removes a staged plain file when the map is empty", () => {
+    write("dest", "was a file");
+
+    expect(syncFilesByContent(new Map(), join(root, "dest"))).toBe(1);
+    expect(existsSync(join(root, "dest"))).toBe(false);
+  });
+
   test("removes a file the map no longer holds", () => {
     write("dest/old.txt", "old");
     const files = new Map([["new.txt", { bytes: Buffer.from("new") }]]);
@@ -616,6 +628,20 @@ describe("readSkillExtensions", () => {
     expect(readExtension(join(root, "empty"))).toEqual({ dir: join(root, "empty"), references: new Map() });
   });
 
+  test("skips dot-entries at the root and under references/", () => {
+    write("ext/.DS_Store", "x");
+    write("ext/.git/HEAD", "ref: refs/heads/main\n");
+    write("ext/references/.DS_Store", "x");
+    write("ext/references/.gitkeep", "");
+    write("ext/references/.notes.md", "# hidden");
+    write("ext/references/a.md", "# a");
+
+    const extensions = readExtension(join(root, "ext"));
+
+    expect([...extensions.references.keys()]).toEqual(["a.md"]);
+    expect(extensions.fragment).toBeUndefined();
+  });
+
   test("lists references in name order, whatever order the directory lists them in", () => {
     for (const name of ["b.md", "c.md", "a.md"]) write(`ext/references/${name}`, `# ${name}`);
 
@@ -657,6 +683,15 @@ describe("readSkillExtensions", () => {
         "references/link.md is not a regular file",
       ],
       ["a references that is a file", () => write(`ext/references`, "x"), "references is not a directory"],
+      [
+        "a references that is a symlink",
+        (ext) => {
+          mkdirSync(join(root, "real-references"), { recursive: true });
+          mkdirSync(ext, { recursive: true });
+          symlinkSync(join(root, "real-references"), join(ext, "references"));
+        },
+        "references is a symlink; symlinks are not accepted",
+      ],
       [
         "a SKILL.md that is a directory",
         (ext) => mkdirSync(join(ext, "SKILL.md"), { recursive: true }),
@@ -821,6 +856,18 @@ describe("staging with a skill extension", () => {
     stageSkillResources(skill, join(root, "resources"));
 
     expect(stageSkillResources(skill, join(root, "resources"))).toBe(0);
+  });
+
+  test("never stages a dot-entry of the extension", () => {
+    const skill = writeSkill();
+    write("ext/.DS_Store", "x");
+    write("ext/references/.DS_Store", "x");
+    write("ext/references/extra.md", "# extra\n");
+
+    stageSkillResources(skill, join(root, "resources"), readExtension(join(root, "ext")));
+
+    expect(Object.keys(staged(join(root, "resources"))).filter((rel) => rel.includes(".DS_Store"))).toEqual([]);
+    expect(staged(join(root, "resources"))["references/extra.md"]).toBe("# extra\n");
   });
 
   test("an extension without a fragment leaves SKILL.md as core's", () => {

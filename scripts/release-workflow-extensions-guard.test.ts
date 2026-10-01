@@ -19,7 +19,11 @@ const REPO = join(dirname(new URL(import.meta.url).pathname), "..");
 const RELEASE_WORKFLOW = join(REPO, ".github", "workflows", "release.yml");
 const VARIABLES = ["NODESPACE_EXTENSIONS", "NODESPACE_SKILL_EXTENSIONS"];
 const TAURI_ACTION = "tauri-apps/tauri-action";
-const SKILL_BUILD = /\bbun run build:skill\b/;
+// A step that stages the skill: `build:skill` itself, a root script that runs
+// it first (`build`, `build:windows`, `build:windows:quick`), or the script it
+// runs. Not `bun build`, Bun's bundler.
+const SKILL_BUILD =
+  /\bbun run (?:build:skill|build|build:windows|build:windows:quick)(?=\s|$)|\bbun (?:run )?scripts\/build-skill\.ts(?=\s|$)/m;
 
 interface Step {
   name?: string;
@@ -117,6 +121,29 @@ describe("release workflow extensions guard", () => {
       }
     });
   }
+
+  test("recognizes every command that stages the skill, and no other", () => {
+    for (const command of [
+      "bun run build:skill",
+      "bun run build",
+      "bun run build && echo done",
+      "bun run build:windows",
+      "bun run build:windows:quick",
+      "bun run scripts/build-skill.ts --target x86_64-pc-windows-msvc",
+      "bun scripts/build-skill.ts",
+    ]) {
+      expect(SKILL_BUILD.test(command), command).toBe(true);
+    }
+    for (const command of [
+      "bun run build:sidecars",
+      "bun build --compile src/install.ts --outfile x",
+      "bun run --cwd packages/desktop-app build",
+      "bun run build:skill-repo",
+      "bun run build:macos",
+    ]) {
+      expect(SKILL_BUILD.test(command), command).toBe(false);
+    }
+  });
 
   test("release.yml has the two jobs that stage the skill this guard covers", () => {
     expect(skillBuildJobs().map(([name]) => name)).toEqual(["build-tauri-macos-arm", "build-tauri"]);

@@ -66,9 +66,11 @@
  * Set, the directory may hold a `SKILL.md` fragment, appended to the staged
  * `SKILL.md`, and `references/*.md`, staged beside core's references; anything
  * else in it, a reference named like one of core's, or a directory that does
- * not exist fails the build (`readSkillExtensions`). The installer installs
- * and uninstalls an added reference like any of core's, because it takes its
- * list from what is staged.
+ * not exist fails the build (`readSkillExtensions`). Dot-entries such as
+ * `.DS_Store` are ignored. A relative path resolves against the directory the
+ * build runs from, the repository root under `bun run build:skill`. The
+ * installer installs and uninstalls an added reference like any of core's,
+ * because it takes its list from what is staged.
  *
  * The additions are merged into what each entry stages, not copied after it.
  * Both halves of the staging above compare bytes and delete what the source no
@@ -266,16 +268,8 @@ export function syncFilesByContent(files: Map<string, StagedSource>, destRoot: s
 }
 
 /**
- * `syncFilesByContent` for every file under `srcRoot`: the staging of an entry
- * that nothing adds to.
- */
-export function syncTreeByContent(srcRoot: string, destRoot: string): number {
-  return syncFilesByContent(treeSources(srcRoot), destRoot);
-}
-
-/**
  * Removes directories under `keepRoot` that no longer hold any file, deepest
- * first, leaving `keepRoot` itself in place. `syncTreeByContent` deletes
+ * first, leaving `keepRoot` itself in place. `syncFilesByContent` deletes
  * files but leaves their parents behind; an emptied directory is harmless to
  * the bundle but confusing to find on disk.
  */
@@ -461,6 +455,11 @@ export interface SkillExtensions {
 
 const CORE_REFERENCES_DIR = join(SKILL_DIR, 'references');
 
+/** Whether an entry is a dot-entry (`.DS_Store`, `.gitkeep`), which a skill extension skips. */
+function isDotEntry(entry: Dirent): boolean {
+  return entry.name.startsWith('.');
+}
+
 /** A directory's entries, in name order, so a build's log and first error do not depend on the filesystem. */
 function sortedEntries(dir: string): Dirent[] {
   return readdirSync(dir, { withFileTypes: true }).sort((a, b) =>
@@ -471,7 +470,8 @@ function sortedEntries(dir: string): Dirent[] {
 /**
  * Reads the skill extension named by `NODESPACE_SKILL_EXTENSIONS` in `env`:
  * `undefined` when it is unset or empty, otherwise what the directory adds.
- * A relative path resolves against the directory the build runs from.
+ * A relative path resolves against the directory the build runs from, which is
+ * the repository root under `bun run build:skill`.
  *
  * The directory may hold only a `SKILL.md` (non-empty) and a flat `references/`
  * of `*.md` files, the same files the installer installs from a package root.
@@ -480,6 +480,11 @@ function sortedEntries(dir: string): Dirent[] {
  * one on a case-insensitive filesystem), or a directory that does not exist
  * throws an error that names the problem; a build that quietly ignored a
  * misplaced file would ship less guidance than its author meant.
+ *
+ * Entries whose names start with a dot, at the root and under `references/`,
+ * are skipped and never staged: they are filesystem noise (`.DS_Store`, which
+ * Finder recreates, or a `.gitkeep`), and rejecting them would fail every dev
+ * build of a checkout someone opened in Finder.
  */
 export function readSkillExtensions(
   env: Record<string, string | undefined> = process.env,
@@ -500,15 +505,18 @@ export function readSkillExtensions(
   const coreNames = new Set(listFilesRecursive(coreReferencesDir).map((name) => name.toLowerCase()));
 
   for (const entry of sortedEntries(dir)) {
+    if (isDotEntry(entry)) continue;
     if (entry.name === 'SKILL.md') {
       if (!entry.isFile()) return fail('SKILL.md is not a regular file');
       const fragment = readFileSync(join(dir, entry.name), 'utf8');
       if (fragment.trim() === '') return fail('SKILL.md is empty');
       extensions.fragment = fragment;
     } else if (entry.name === 'references') {
+      if (entry.isSymbolicLink()) return fail('references is a symlink; symlinks are not accepted');
       if (!entry.isDirectory()) return fail('references is not a directory');
       const referencesDir = join(dir, entry.name);
       for (const reference of sortedEntries(referencesDir)) {
+        if (isDotEntry(reference)) continue;
         const where = `references/${reference.name}`;
         if (reference.isDirectory()) return fail(`${where} is a directory; references must be flat`);
         if (!reference.isFile()) return fail(`${where} is not a regular file`);
@@ -594,8 +602,8 @@ export function stageSkillResources(
 }
 
 async function main(): Promise<void> {
-  // Read first: a bad extension directory should fail the build before any
-  // work, not after tsc has run.
+  // Read first: a bad extension directory should fail the build before tsc
+  // and staging run.
   const extensions = readSkillExtensions();
   if (extensions) console.log(describeSkillExtensions(extensions));
 
