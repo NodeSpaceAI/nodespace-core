@@ -13,7 +13,10 @@ use nodespace_proto::nodespace::{
     SubscribeTokenStreamRequest,
 };
 use serde::Serialize;
+use std::future::Future;
+use std::time::Duration;
 use tauri::{AppHandle, Emitter, State};
+use tokio::sync::watch;
 use tokio_stream::StreamExt;
 
 fn grpc_err(msg: impl std::fmt::Display) -> CommandError {
@@ -37,32 +40,83 @@ fn grpc_err(msg: impl std::fmt::Display) -> CommandError {
 /// The `node_id` field on each chunk tells the frontend which node is streaming.
 pub fn start_token_stream_subscription(app: AppHandle, grpc: GrpcClient) {
     tokio::spawn(async move {
-        loop {
-            match try_subscribe(&app, &grpc).await {
-                Ok(()) => {
-                    tracing::info!("Token stream subscription ended; reconnecting in 2s");
-                    tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, "Token stream subscription failed; reconnecting in 2s");
-                    tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
-                }
-            }
-        }
+        resubscribe_forever(
+            || grpc.subscribe_active_database(),
+            |db_changed| try_subscribe(&app, &grpc, db_changed),
+        )
+        .await;
     });
 }
 
-async fn try_subscribe(app: &AppHandle, grpc: &GrpcClient) -> Result<(), String> {
+/// Run `attempt` forever, waiting between attempts as `wait_to_resubscribe`
+/// decides.
+///
+/// `active_database` returns a receiver of the active-database generation
+/// (`GrpcClient::subscribe_active_database`), which bumps when the active
+/// database switches or the shared channel is rebuilt after a recovery. One is
+/// taken before each attempt, so a change during the attempt is not missed.
+/// The attempt gets a clone, to interrupt a wedged stream with.
+async fn resubscribe_forever<S, A, F>(mut active_database: S, mut attempt: A)
+where
+    S: FnMut() -> watch::Receiver<u64>,
+    A: FnMut(watch::Receiver<u64>) -> F,
+    F: Future<Output = Result<(), tonic::Status>>,
+{
+    loop {
+        let mut db_changed = active_database();
+        let outcome = attempt(db_changed.clone()).await;
+        match &outcome {
+            Ok(()) => tracing::info!("Token stream subscription ended; reconnecting in 2s"),
+            Err(e) if is_database_refusal(e) => tracing::info!(
+                "Token stream refused: the active database requires an extension this build \
+                 does not support; resubscribing when the active database changes"
+            ),
+            Err(e) => {
+                tracing::warn!(error = %e, "Token stream subscription failed; reconnecting in 2s")
+            }
+        }
+        wait_to_resubscribe(&outcome, &mut db_changed, RESUBSCRIBE_DELAY).await;
+    }
+}
+
+/// The pause before the token stream subscribes again after it ends or fails.
+const RESUBSCRIBE_DELAY: Duration = Duration::from_secs(2);
+
+/// Whether `status` is the daemon's refusal of the active database because it
+/// requires an extension this build does not support (ADR-083 §2).
+fn is_database_refusal(status: &tonic::Status) -> bool {
+    nodespace_proto::requires_extension::unsupported_extensions(status).is_some()
+}
+
+/// Wait until the token stream should subscribe again after `outcome`.
+///
+/// Asking a refused database again cannot change the answer, so after a
+/// refusal this waits for `db_changed` (`GrpcClient::subscribe_active_database`,
+/// taken before the attempt): a switch to another database, or a rebuilt
+/// channel, and then resubscribes at once. Every other outcome waits `delay`.
+/// If the client is gone, the refusal falls back to `delay` rather than spin.
+async fn wait_to_resubscribe(
+    outcome: &Result<(), tonic::Status>,
+    db_changed: &mut watch::Receiver<u64>,
+    delay: Duration,
+) {
+    if let Err(status) = outcome {
+        if is_database_refusal(status) && db_changed.changed().await.is_ok() {
+            return;
+        }
+    }
+    tokio::time::sleep(delay).await;
+}
+
+async fn try_subscribe(
+    app: &AppHandle,
+    grpc: &GrpcClient,
+    mut db_changed: watch::Receiver<u64>,
+) -> Result<(), tonic::Status> {
     let mut client = grpc.local_agent_client().await;
-    // Interrupt a wedged stream when the shared channel is rebuilt after a
-    // recovery (GrpcClient::reconnect bumps this) or the active database
-    // switches — mirrors the node watcher so the outer loop re-subscribes on the
-    // fresh channel instead of hanging forever on the dead one.
-    let mut db_changed = grpc.subscribe_active_database();
     let mut stream = client
         .subscribe_token_stream(SubscribeTokenStreamRequest {})
-        .await
-        .map_err(|e| e.message().to_string())?
+        .await?
         .into_inner();
 
     loop {
@@ -74,7 +128,7 @@ async fn try_subscribe(app: &AppHandle, grpc: &GrpcClient) -> Result<(), String>
                 None => return Ok(()),
             },
         };
-        let chunk = chunk_result.map_err(|e| e.message().to_string())?;
+        let chunk = chunk_result?;
 
         match chunk.chunk_type.as_str() {
             "token" => {
@@ -379,4 +433,153 @@ pub async fn list_local_models(
         .collect();
 
     Ok(models)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use tokio::time::{timeout, Instant};
+
+    /// The status the daemon returns for a request routed to a database that
+    /// requires an extension this build does not support.
+    fn refusal() -> tonic::Status {
+        nodespace_proto::requires_extension::status(&["fixture-ext".to_string()])
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn after_a_refusal_it_resubscribes_when_the_active_database_changes_and_not_before() {
+        let (switch, mut db_changed) = watch::channel(0u64);
+        let outcome = Err(refusal());
+        let wait = wait_to_resubscribe(&outcome, &mut db_changed, RESUBSCRIBE_DELAY);
+        tokio::pin!(wait);
+
+        // Long past the retry delay, it is still waiting.
+        assert!(
+            timeout(RESUBSCRIBE_DELAY * 10, &mut wait).await.is_err(),
+            "a refused database is not asked again on a timer"
+        );
+
+        switch.send(1).unwrap();
+        let resumed = Instant::now();
+        timeout(RESUBSCRIBE_DELAY * 10, &mut wait)
+            .await
+            .expect("resubscribes once the active database changes");
+        assert_eq!(resumed.elapsed(), Duration::ZERO, "and does so at once");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn any_other_outcome_retries_after_the_delay_as_before() {
+        let (_switch, mut db_changed) = watch::channel(0u64);
+        let outcomes = [
+            Ok(()),
+            Err(tonic::Status::unavailable("daemon restarting")),
+            Err(tonic::Status::failed_precondition("model not ready")),
+        ];
+        for outcome in outcomes {
+            let start = Instant::now();
+            timeout(
+                RESUBSCRIBE_DELAY * 10,
+                wait_to_resubscribe(&outcome, &mut db_changed, RESUBSCRIBE_DELAY),
+            )
+            .await
+            .expect("retries without waiting for a database change");
+            assert_eq!(start.elapsed(), RESUBSCRIBE_DELAY, "{outcome:?}");
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_refusal_falls_back_to_the_delay_once_the_client_is_gone() {
+        let (switch, mut db_changed) = watch::channel(0u64);
+        drop(switch);
+
+        let start = Instant::now();
+        timeout(
+            RESUBSCRIBE_DELAY * 10,
+            wait_to_resubscribe(&Err(refusal()), &mut db_changed, RESUBSCRIBE_DELAY),
+        )
+        .await
+        .expect("does not wait forever");
+        assert_eq!(start.elapsed(), RESUBSCRIBE_DELAY);
+    }
+
+    #[test]
+    fn only_the_refusal_is_a_database_refusal() {
+        assert!(is_database_refusal(&refusal()));
+        assert!(!is_database_refusal(&tonic::Status::failed_precondition(
+            "model not ready"
+        )));
+        assert!(!is_database_refusal(&tonic::Status::unavailable("down")));
+    }
+
+    /// Runs `resubscribe_forever` over a fake attempt that fails with
+    /// `error` and counts its calls, and an active-database generation the
+    /// test bumps, like `GrpcClient::subscribe_active_database`. `on_first`
+    /// runs inside the first attempt.
+    fn run_loop(
+        error: fn() -> tonic::Status,
+        on_first: impl Fn(&watch::Sender<u64>) + Send + 'static,
+    ) -> (
+        Arc<watch::Sender<u64>>,
+        Arc<AtomicUsize>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        let generation = Arc::new(watch::channel(0u64).0);
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let (subscribe, in_attempt, counted) =
+            (generation.clone(), generation.clone(), attempts.clone());
+        let task = tokio::spawn(resubscribe_forever(
+            move || subscribe.subscribe(),
+            move |_db_changed| {
+                if counted.fetch_add(1, Ordering::SeqCst) == 0 {
+                    on_first(&in_attempt);
+                }
+                std::future::ready(Err(error()))
+            },
+        ));
+        (generation, attempts, task)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_loop_waits_out_a_refusal_and_resubscribes_once_the_active_database_changes() {
+        let (generation, attempts, task) = run_loop(refusal, |_| {});
+
+        tokio::time::sleep(RESUBSCRIBE_DELAY * 10).await;
+        assert_eq!(
+            attempts.load(Ordering::SeqCst),
+            1,
+            "a refused database is not asked again on a timer"
+        );
+
+        generation.send_modify(|g| *g += 1);
+        tokio::time::sleep(Duration::from_millis(1)).await;
+        assert_eq!(
+            attempts.load(Ordering::SeqCst),
+            2,
+            "resubscribes once the active database changes"
+        );
+        task.abort();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_loop_does_not_miss_a_change_during_the_refused_attempt() {
+        let (_generation, attempts, task) =
+            run_loop(refusal, |generation| generation.send_modify(|g| *g += 1));
+
+        tokio::time::sleep(Duration::from_millis(1)).await;
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        task.abort();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_loop_retries_any_other_failure_every_delay_as_before() {
+        let (_generation, attempts, task) =
+            run_loop(|| tonic::Status::unavailable("daemon restarting"), |_| {});
+
+        // Attempts at 0, 2, 4, ..., 20 seconds.
+        tokio::time::sleep(RESUBSCRIBE_DELAY * 10 + Duration::from_millis(1)).await;
+        assert_eq!(attempts.load(Ordering::SeqCst), 11);
+        task.abort();
+    }
 }
