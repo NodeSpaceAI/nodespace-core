@@ -15,6 +15,7 @@
 import type { Node, CollectionNode } from '$lib/types';
 import { createLogger } from '$lib/utils/logger';
 import { invoke } from '@tauri-apps/api/core';
+import { handleResponse } from './http-response';
 
 const log = createLogger('CollectionService');
 
@@ -224,40 +225,17 @@ class MockCollectionService implements CollectionServiceInterface {
 
 const DEV_PROXY_URL = 'http://localhost:3001';
 
-/**
- * Why a dev-proxy request failed: the `message` of the proxy's error body
- * (the daemon's own message), or the status text when the body has none.
- */
-async function failureReason(response: Response): Promise<string> {
-  try {
-    const body: unknown = await response.json();
-    if (typeof body === 'object' && body !== null && 'message' in body) {
-      const { message } = body;
-      if (typeof message === 'string' && message !== '') return message;
-    }
-  } catch {
-    // No JSON body; the status text is all there is.
-  }
-  return response.statusText;
-}
-
 class HttpCollectionService implements CollectionServiceInterface {
   async getAllCollections(): Promise<CollectionInfo[]> {
     log.debug('Fetching all collections via HTTP');
     const response = await fetch(`${DEV_PROXY_URL}/api/collections`);
-    if (!response.ok) {
-      throw new Error(`Failed to fetch collections: ${await failureReason(response)}`);
-    }
-    return response.json();
+    return handleResponse<CollectionInfo[]>(response);
   }
 
   async getCollectionMembers(collectionId: string): Promise<Node[]> {
     log.debug('Fetching collection members via HTTP', { collectionId });
     const response = await fetch(`${DEV_PROXY_URL}/api/collections/${encodeURIComponent(collectionId)}/members`);
-    if (!response.ok) {
-      throw new Error(`Failed to fetch collection members: ${await failureReason(response)}`);
-    }
-    return response.json();
+    return handleResponse<Node[]>(response);
   }
 
   async getCollectionMembersRecursive(collectionId: string): Promise<Node[]> {
@@ -282,7 +260,7 @@ class HttpCollectionService implements CollectionServiceInterface {
 
   async addNodeToCollection(nodeId: string, collectionId: string): Promise<void> {
     log.debug('Adding node to collection via HTTP', { nodeId, collectionId });
-    await this.patchMembership(nodeId, { addToCollectionIds: [collectionId] }, 'add node to collection');
+    await this.patchMembership(nodeId, { addToCollectionIds: [collectionId] });
   }
 
   async addNodeToCollectionPath(nodeId: string, path: string): Promise<string> {
@@ -295,35 +273,26 @@ class HttpCollectionService implements CollectionServiceInterface {
         body: JSON.stringify({ collectionPath: path })
       }
     );
-    if (!response.ok) {
-      throw new Error(`Failed to add node to collection path: ${await failureReason(response)}`);
-    }
-    return response.json();
+    return handleResponse<string>(response);
   }
 
   async removeNodeFromCollection(nodeId: string, collectionId: string): Promise<void> {
     log.debug('Removing node from collection via HTTP', { nodeId, collectionId });
-    await this.patchMembership(
-      nodeId,
-      { removeFromCollectionIds: [collectionId] },
-      'remove node from collection'
-    );
+    await this.patchMembership(nodeId, { removeFromCollectionIds: [collectionId] });
   }
 
   /** Change a node's memberships through the dev-proxy's node update. */
   private async patchMembership(
     nodeId: string,
-    change: { addToCollectionIds?: string[]; removeFromCollectionIds?: string[] },
-    action: string
+    change: { addToCollectionIds?: string[]; removeFromCollectionIds?: string[] }
   ): Promise<void> {
     const response = await fetch(`${DEV_PROXY_URL}/api/nodes/${encodeURIComponent(nodeId)}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(change)
     });
-    if (!response.ok) {
-      throw new Error(`Failed to ${action}: ${await failureReason(response)}`);
-    }
+    // The proxy answers with the updated node, which no caller needs.
+    await handleResponse<unknown>(response);
   }
 
   async createCollection(_name: string, _description?: string): Promise<string> {

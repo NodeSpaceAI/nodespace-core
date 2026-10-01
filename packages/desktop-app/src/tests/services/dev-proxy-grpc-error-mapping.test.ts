@@ -11,7 +11,7 @@
  * shape the Tauri command layer's status_to_command_error
  * (packages/desktop-app/app-lib/src/commands/nodes.rs) derives from tonic
  * trailer metadata — the shape backend-adapter.test.ts already proves
- * HttpAdapter.handleResponse preserves once the JSON body carries it.
+ * handleResponse preserves once the JSON body carries it.
  */
 
 import { describe, it, expect } from 'vitest';
