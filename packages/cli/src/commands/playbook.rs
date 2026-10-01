@@ -3,10 +3,10 @@
 //! Per ADR-035's capability-parity clause, three of these four operations are
 //! thin reductions to an existing generic verb rather than bespoke RPC/CLI
 //! surface:
-//! - `list` -> `ExecuteQuery` filtered to `node_type: "play"`
-//! - `enable`/`disable` -> `UpdateNode` setting `lifecycle_status` to
-//!   `"active"`/`"archived"` (the engine's `handle_play_updated` already
-//!   treats any non-`"active"` status as disabled)
+//! - `list` -> `QueryNodesSimple` filtered to `node_type: "play"`
+//! - `enable`/`disable` -> `UpdateNode` unarchiving / archiving the Play. An
+//!   archived node participates in nothing (ADR-087), the play engine
+//!   included, so an archived Play doesn't run and is in no list
 //!
 //! `get-workflow-state` is the one operation that needs purpose-built
 //! evaluation — it runs the engine's condition logic out of band from a live
@@ -18,7 +18,7 @@
 use anyhow::{Context, Result};
 use clap::{Args, Subcommand};
 use nodespace_daemon::nodespace::{
-    ExecuteQueryRequest, GetWorkflowStateRequest, UpdateNodeRequest,
+    GetWorkflowStateRequest, NodeSortOrder, QueryNodesSimpleRequest, UpdateNodeRequest,
 };
 
 use crate::output;
@@ -26,11 +26,12 @@ use crate::NodeClient;
 
 #[derive(Subcommand, Debug)]
 pub enum PlaybookAction {
-    /// List all installed Plays and their lifecycle status.
+    /// List the installed Plays that can run. An archived (disabled) Play
+    /// is listed only with `--include-archived`.
     List(PlaybookListArgs),
-    /// Re-enable a disabled Play after fixing the underlying issue.
+    /// Unarchive a Play so it runs again, after fixing the underlying issue.
     Enable(PlaybookIdArgs),
-    /// Manually disable a Play.
+    /// Archive a Play: it stops running and leaves every list.
     Disable(PlaybookIdArgs),
     /// Evaluate a node against every active Play rule that could apply to
     /// its type, and report which conditions are satisfied, not yet met, or
@@ -40,7 +41,11 @@ pub enum PlaybookAction {
 }
 
 #[derive(Args, Debug)]
-pub struct PlaybookListArgs {}
+pub struct PlaybookListArgs {
+    /// Also list archived Plays, to find the id of one to `enable`.
+    #[arg(long)]
+    pub include_archived: bool,
+}
 
 #[derive(Args, Debug)]
 pub struct PlaybookIdArgs {
@@ -63,26 +68,30 @@ pub async fn run(client: &mut NodeClient, action: PlaybookAction, json: bool) ->
     }
 }
 
-async fn list(client: &mut NodeClient, _args: PlaybookListArgs, json: bool) -> Result<()> {
+async fn list(client: &mut NodeClient, args: PlaybookListArgs, json: bool) -> Result<()> {
     let response = client
-        .execute_query(ExecuteQueryRequest {
-            target_type: "play".to_string(),
-            filters_json: None,
-            sorting_json: None,
+        .query_nodes_simple(QueryNodesSimpleRequest {
+            include_archived: args.include_archived,
+            id: None,
+            mentioned_by: None,
+            content_contains: None,
+            title_contains: None,
+            node_type: Some("play".to_string()),
             limit: 0,
+            offset: 0,
+            order_by: NodeSortOrder::Unspecified as i32,
         })
         .await
-        .context("ExecuteQuery RPC failed")?
+        .context("QueryNodesSimple RPC failed")?
         .into_inner();
 
     output::print_node_list(&response, json)
 }
 
 /// Shared implementation for `enable`/`disable`: both are exactly a
-/// `lifecycle_status` update on the Play node — the engine's own
-/// `handle_play_updated` (packages/core/src/playbook/engine.rs) already
-/// treats any non-`"active"` status as disabled, so no Play-specific verb or
-/// validation is needed beyond the generic update path.
+/// lifecycle update on the Play node, through the generic update. The engine
+/// asks the participation check whether a Play runs, so no Play-specific verb
+/// or validation is needed.
 async fn set_lifecycle_status(
     client: &mut NodeClient,
     args: PlaybookIdArgs,

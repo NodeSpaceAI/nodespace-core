@@ -502,11 +502,17 @@ impl GraphResolver {
             } => (forward_name.clone(), "in", source_type.clone()),
         };
 
-        let nodes = self
+        // An archived node is no target of a play (ADR-087 §2): it is in no
+        // collection a condition counts or a `for_each` iterates, so an
+        // archived, unfinished subtask doesn't hold its parent open.
+        let nodes: Vec<Node> = self
             .node_service
             .get_related_nodes(&node.id, &name, direction)
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .filter(crate::governance::participates)
+            .collect();
 
         // The store keys an "in" query on relationship_type alone, so every
         // schema declaring this forward name toward this type answers. A reverse
@@ -815,7 +821,6 @@ fn core_field_value(node: &Node, name: &str) -> Option<serde_json::Value> {
         "node_type" => Some(serde_json::Value::String(node.node_type.clone())),
         "content" => Some(serde_json::Value::String(node.content.clone())),
         "version" => Some(serde_json::Value::from(node.version)),
-        "lifecycle_status" => Some(serde_json::Value::String(node.lifecycle_status.clone())),
         _ => None,
     }
 }

@@ -362,6 +362,10 @@ const MAX_AGGREGATION_DEPTH: usize = 20;
 /// embedded as its own root instead. If the boundaries cannot be read, nothing
 /// is aggregated rather than risking a leak.
 ///
+/// An archived descendant is left out, with its subtree: archiving takes a
+/// node out of the vector index (ADR-087 §2), and for a child that index is
+/// its root's vector.
+///
 /// Used by text and header behaviors for `get_aggregated_content()`.
 async fn aggregate_children_content(
     node: &Node,
@@ -405,6 +409,9 @@ async fn aggregate_children_content(
                 "ADR-059 §7 defect: descendant is filed into a collection of its own; \
                  excluded from the root's embedding and embedded as its own root"
             );
+            continue;
+        }
+        if !crate::governance::participates(&child) {
             continue;
         }
         // Use behavior to get the contribution this child makes to its parent's

@@ -273,6 +273,7 @@ async fn enumerate_nodes(
     node_service: &Arc<NodeService>,
     limit: usize,
     filters: Option<&SearchNodeFilters>,
+    include_archived: bool,
 ) -> Result<Vec<(Node, f64)>, OpsError> {
     let per_query_limit = ENUMERATE_FETCH_CAP.min(limit.max(1) * 3);
     let node_types = filters.and_then(|f| f.node_types.as_ref());
@@ -283,6 +284,7 @@ async fn enumerate_nodes(
             for node_type in types {
                 let node_filter = NodeFilter::new()
                     .with_node_type(node_type.clone())
+                    .with_include_archived(include_archived)
                     .with_limit(per_query_limit);
                 let mut matched = node_service
                     .query_nodes(node_filter)
@@ -293,7 +295,9 @@ async fn enumerate_nodes(
             merged
         }
         _ => {
-            let node_filter = NodeFilter::new().with_limit(per_query_limit);
+            let node_filter = NodeFilter::new()
+                .with_include_archived(include_archived)
+                .with_limit(per_query_limit);
             node_service
                 .query_nodes(node_filter)
                 .await
@@ -414,6 +418,7 @@ async fn title_match_nodes(
     query: &str,
     limit: usize,
     filters: Option<&SearchNodeFilters>,
+    include_archived: bool,
 ) -> Result<Vec<(Node, f64)>, OpsError> {
     let query_lower = query.trim().to_lowercase();
     if query_lower.is_empty() {
@@ -437,6 +442,7 @@ async fn title_match_nodes(
                 q.content_contains = Some(query.trim().to_string());
             }
             q.limit = Some(per_query_limit);
+            q.include_archived = include_archived;
             q
         };
 
@@ -558,7 +564,7 @@ pub async fn search_semantic(
                 Ok(resolved) => {
                     let coll_id = resolved.leaf_id().to_string();
                     let members = collection_service
-                        .get_collection_members(&coll_id)
+                        .get_collection_members(&coll_id, include_archived)
                         .await
                         .map_err(|e| {
                             OpsError::Internal(format!("Failed to get collection members: {}", e))
@@ -592,7 +598,7 @@ pub async fn search_semantic(
             let collection_service =
                 CollectionService::new(embedding_service.store(), node_service);
             let members = collection_service
-                .get_collection_members(coll_id)
+                .get_collection_members(coll_id, include_archived)
                 .await
                 .map_err(|e| {
                     OpsError::Internal(format!("Failed to get collection members: {}", e))
@@ -614,7 +620,11 @@ pub async fn search_semantic(
             match collection_service.resolve_path(path).await {
                 Ok(resolved) => {
                     let coll_id = resolved.leaf_id().to_string();
-                    if let Ok(members) = collection_service.get_collection_members(&coll_id).await {
+                    // Everything in an excluded collection is excluded, archived or not.
+                    if let Ok(members) = collection_service
+                        .get_collection_members(&coll_id, true)
+                        .await
+                    {
                         excluded.extend(members.into_iter().map(|n| n.id));
                     }
                 }
@@ -650,16 +660,20 @@ pub async fn search_semantic(
 
     // Over-fetch when post-filtering is needed
     let scope_filters = !matches!(scope, SearchScope::Everything);
-    let has_post_filters = collection_member_ids.is_some()
-        || !excluded_node_ids.is_empty()
-        || !include_archived
-        || scope_filters;
+    let has_post_filters =
+        collection_member_ids.is_some() || !excluded_node_ids.is_empty() || scope_filters;
     let effective_limit = if has_post_filters { limit * 3 } else { limit };
 
     let include_title_matches = input.include_title_matches.unwrap_or(false);
 
     let results = if is_enumerate {
-        enumerate_nodes(node_service, effective_limit, search_filters.as_ref()).await?
+        enumerate_nodes(
+            node_service,
+            effective_limit,
+            search_filters.as_ref(),
+            include_archived,
+        )
+        .await?
     } else {
         let semantic = embedding_service
             .semantic_search_nodes(
@@ -667,6 +681,7 @@ pub async fn search_semantic(
                 effective_limit,
                 threshold,
                 search_filters.as_ref(),
+                include_archived,
             )
             .await
             .map_err(|e| {
@@ -707,6 +722,7 @@ pub async fn search_semantic(
                 &input.query,
                 effective_limit,
                 search_filters.as_ref(),
+                include_archived,
             )
             .await?;
             merge_keyword_and_semantic(keyword, semantic)
@@ -747,7 +763,10 @@ pub async fn search_semantic(
             {
                 return false;
             }
-            if node.lifecycle_status == "archived" && !include_archived {
+            // Every leg above already asked the database for participating
+            // nodes only, and an archived node has no vectors. This is the
+            // same rule once more, for a node archived mid-search.
+            if !crate::governance::is_visible(node, include_archived) {
                 return false;
             }
             if let Some(ref member_ids) = collection_member_ids {
@@ -768,10 +787,15 @@ pub async fn search_semantic(
     let mut outgoing_edges_cache: HashMap<String, Vec<Node>> = HashMap::new();
     if graph_boost || include_edges {
         for (node, _) in &filtered_results {
-            let related = node_service
+            // A result's edges are a list of its neighbours: an archived one
+            // is not in it, and doesn't count toward the boost below.
+            let related: Vec<Node> = node_service
                 .get_related_nodes(&node.id, "mentions", "out")
                 .await
-                .unwrap_or_default();
+                .unwrap_or_default()
+                .into_iter()
+                .filter(crate::governance::participates)
+                .collect();
             outgoing_edges_cache.insert(node.id.clone(), related);
         }
     }
@@ -793,7 +817,11 @@ pub async fn search_semantic(
             let in_count = node_service
                 .get_related_nodes(&node.id, "mentions", "in")
                 .await
-                .map(|v| v.len())
+                .map(|v| {
+                    v.iter()
+                        .filter(|n| crate::governance::participates(n))
+                        .count()
+                })
                 .unwrap_or(0);
             degrees.insert(node.id.clone(), out_count + in_count);
         }

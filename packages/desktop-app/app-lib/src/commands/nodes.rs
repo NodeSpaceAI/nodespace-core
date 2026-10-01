@@ -933,6 +933,7 @@ pub async fn query_nodes_simple(
     let mut c = client.client().await;
     let resp = c
         .query_nodes_simple(Request::new(QueryNodesSimpleRequest {
+            include_archived: false,
             id: query.id,
             mentioned_by: query.mentioned_by,
             content_contains: query.content_contains,

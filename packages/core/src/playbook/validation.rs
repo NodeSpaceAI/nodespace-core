@@ -223,6 +223,11 @@ pub enum PlayValidationError {
         message: String,
         location: String,
     },
+    /// A condition reads the node's lifecycle, or an action takes it as a
+    /// parameter. Plays neither read nor write it (ADR-087 §5): whether a
+    /// node takes part is governance, decided by the participation check
+    /// before any rule runs.
+    LifecycleReference { location: String },
 }
 
 impl std::fmt::Display for PlayValidationError {
@@ -389,6 +394,12 @@ impl std::fmt::Display for PlayValidationError {
                 "invalid .where() filter '{}' at {}: {}",
                 filter, location, message
             ),
+            Self::LifecycleReference { location } => write!(
+                f,
+                "a play can't read or set a node's lifecycle (at {}): archived nodes \
+                 are skipped before any rule runs, and archiving is not a play action",
+                location
+            ),
         }
     }
 }
@@ -422,7 +433,8 @@ impl PlayValidationError {
             | Self::DuplicateActionList { location, .. }
             | Self::UnnamespacedPropertyChangedKey { location, .. }
             | Self::SchemaResolutionFailed { location, .. }
-            | Self::InvalidWhereFilter { location, .. } => location,
+            | Self::InvalidWhereFilter { location, .. }
+            | Self::LifecycleReference { location } => location,
         }
     }
 
@@ -452,6 +464,7 @@ impl PlayValidationError {
             Self::UnnamespacedPropertyChangedKey { .. } => "unnamespaced_property_changed_key",
             Self::SchemaResolutionFailed { .. } => "schema_resolution_failed",
             Self::InvalidWhereFilter { .. } => "invalid_where_filter",
+            Self::LifecycleReference { .. } => "lifecycle_reference",
         }
     }
 
@@ -571,6 +584,12 @@ pub async fn validate_play(
         for (cond_idx, condition) in rule.conditions.iter().enumerate() {
             let location = format!("rule[{}].condition[{}]", rule_idx, cond_idx);
 
+            if condition_reads_lifecycle(&condition.source) {
+                errors.push(PlayValidationError::LifecycleReference {
+                    location: location.clone(),
+                });
+            }
+
             // Schema-aware path validation: extract dot-paths and
             // verify each segment resolves to a field or relationship on the schema graph
             if let Some(nt) = &trigger_node_type {
@@ -608,6 +627,16 @@ pub async fn validate_play(
         // -- Validate actions --
         for (action_idx, action) in rule.actions.iter().enumerate() {
             let location = format!("rule[{}].action[{}]", rule_idx, action_idx);
+            // A binding reads a node's wire JSON, where the field is spelled
+            // differently; both spellings are refused, in the `for_each` path
+            // and in every `{binding}` of the params.
+            for (binding, site) in where_chain_sources(action) {
+                if crate::governance::names_lifecycle_field(&binding) {
+                    errors.push(PlayValidationError::LifecycleReference {
+                        location: format!("{}.{}", location, site),
+                    });
+                }
+            }
             validate_action(
                 action,
                 &location,
@@ -669,6 +698,28 @@ pub async fn validate_play(
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
+
+/// Whether a condition names the node's lifecycle anywhere in a dot-path:
+/// on the trigger node, on a related node, or on a comprehension's item.
+///
+/// A condition that fails to parse here names nothing; `parse_rule` has
+/// already compiled it, so that only happens for a shape the path extractor
+/// doesn't walk.
+fn condition_reads_lifecycle(source: &str) -> bool {
+    let Ok(extraction) = path_extractor::extract_paths(source) else {
+        return false;
+    };
+    let names_it = |path: &path_extractor::ExtractedPath| {
+        path.segments
+            .iter()
+            .any(|segment| crate::governance::is_lifecycle_field(segment))
+    };
+    extraction.paths.iter().any(names_it)
+        || extraction
+            .collections
+            .iter()
+            .any(|coll| names_it(&coll.collection) || coll.item_paths.iter().any(names_it))
+}
 
 /// Detect two rules within `rules` (always a single play's rules -- see the
 /// call site in [`validate_play`]) whose action lists are byte-identical, in
@@ -1360,6 +1411,15 @@ async fn validate_action(
             .await;
         }
         ActionType::UpdateNode => {
+            if action.params.as_object().is_some_and(|params| {
+                params
+                    .keys()
+                    .any(|k| crate::governance::is_lifecycle_field(k))
+            }) {
+                errors.push(PlayValidationError::LifecycleReference {
+                    location: location.to_string(),
+                });
+            }
             // update_node may optionally reference a node_type for type conversion
             if let Some(nt) = action.params.get("node_type").and_then(|v| v.as_str()) {
                 ensure_schema_cached(nt, node_service, schema_cache).await;
@@ -2004,7 +2064,7 @@ pub async fn check_schema_change_impact(
     use crate::playbook::types::{parse_rule, parse_rules_from_properties};
 
     let play_nodes = node_service
-        .query_nodes_by_type("play", Some("active"))
+        .query_nodes_by_type(crate::models::CoreNodeType::Play.as_str(), false)
         .await
         .map_err(|e| format!("Failed to query play nodes: {}", e))?;
 

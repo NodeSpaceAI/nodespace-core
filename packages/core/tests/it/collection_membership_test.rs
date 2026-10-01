@@ -146,7 +146,7 @@ mod collection_membership_tests {
             .add_to_collection("doc_b", "coll_team", &json!({}))
             .await?;
 
-        let members = store.get_collection_members("coll_team").await?;
+        let members = store.get_collection_members("coll_team", false).await?;
         assert_eq!(members.len(), 2, "Collection should have 2 members");
 
         Ok(())
@@ -262,7 +262,7 @@ mod collection_membership_tests {
             .add_to_collection(uuid, "coll_mixed", &json!({}))
             .await?;
 
-        let members = store.get_collection_members("coll_mixed").await?;
+        let members = store.get_collection_members("coll_mixed", false).await?;
         assert_eq!(
             members.len(),
             2,
@@ -591,7 +591,7 @@ mod collection_service_tests {
 
         // Get collection members
         let members = collection_service
-            .get_collection_members(&collection_id)
+            .get_collection_members(&collection_id, false)
             .await?;
         assert_eq!(members.len(), 2, "Collection should have 2 members");
         let member_ids: Vec<_> = members.iter().map(|n| n.id.as_str()).collect();
@@ -897,7 +897,7 @@ mod collection_service_tests {
 
         // Verify the node is in berlin (reachable via either path conceptually)
         let members = collection_service
-            .get_collection_members(&berlin_id)
+            .get_collection_members(&berlin_id, false)
             .await?;
         let member_ids: Vec<_> = members.iter().map(|n| n.id.as_str()).collect();
         assert!(

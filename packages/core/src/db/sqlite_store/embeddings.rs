@@ -39,6 +39,31 @@ impl SqliteStore {
         .await
         .context("Failed to delete existing embeddings")?;
 
+        // An archived node has no vectors (ADR-087 §2). Checked here, in the
+        // transaction that writes them: the vectors were computed from a read
+        // taken before inference ran, and the node may have been archived
+        // since. Its old rows are gone above; nothing is written in their
+        // place.
+        let participates = {
+            let mut rows = tx
+                .query(
+                    &format!(
+                        "SELECT 1 FROM node n WHERE n.id = ?1 AND {} LIMIT 1",
+                        crate::governance::participates_sql("n")
+                    ),
+                    libsql::params![node_id.to_string()],
+                )
+                .await
+                .context("Failed to read node participation")?;
+            rows.next().await?.is_some()
+        };
+        if !participates {
+            tx.commit()
+                .await
+                .context("Failed to commit upsert_embeddings transaction")?;
+            return Ok(());
+        }
+
         let now = Utc::now().to_rfc3339();
         let rows: Vec<(String, Vec<u8>, Vec<libsql::Value>)> = embeddings
             .into_iter()
@@ -318,6 +343,38 @@ impl SqliteStore {
         }
     }
 
+    /// Take `node_id` out of the vector index on `conn`, when the write
+    /// running on it archives the node.
+    ///
+    /// Archiving removes a node's vectors (ADR-087 §2): an archived node is
+    /// not filtered out of semantic results, it has none. Every statement
+    /// that writes the lifecycle column calls this on its own connection, so
+    /// the vectors go in the same transaction as the write, whichever path
+    /// archived the node. `status` is the value being written, `None` when
+    /// the write leaves the column alone.
+    pub(crate) async fn leave_vector_index_if_archiving(
+        conn: &libsql::Connection,
+        node_id: &str,
+        status: Option<&str>,
+    ) -> Result<()> {
+        if !status.is_some_and(crate::governance::archives) {
+            return Ok(());
+        }
+        conn.execute(
+            "DELETE FROM vec_embeddings WHERE embedding_id IN (SELECT id FROM embedding WHERE node_id = ?1)",
+            libsql::params![node_id.to_string()],
+        )
+        .await
+        .context("Failed to clear vec_embeddings for an archived node")?;
+        conn.execute(
+            "DELETE FROM embedding WHERE node_id = ?1",
+            libsql::params![node_id.to_string()],
+        )
+        .await
+        .context("Failed to delete an archived node's embeddings")?;
+        Ok(())
+    }
+
     pub async fn delete_embeddings(&self, node_id: &str) -> Result<()> {
         let db = self.write().await;
         let tx = db
@@ -494,11 +551,15 @@ impl SqliteStore {
                 .read()
                 .await?
                 .query(
-                    "SELECT e.node_id, e.total_chunks, v.distance \
+                    &format!(
+                        "SELECT e.node_id, e.total_chunks, v.distance \
              FROM vec_embeddings v \
              JOIN embedding e ON e.id = v.embedding_id \
              JOIN node n ON n.id = e.node_id \
-             WHERE v.vector MATCH ?1 AND k = ?2 AND e.stale = 0 AND n.node_type = ?3",
+             WHERE v.vector MATCH ?1 AND k = ?2 AND e.stale = 0 AND n.node_type = ?3 \
+             AND {}",
+                        crate::governance::participates_sql("n")
+                    ),
                     libsql::params![query_blob, k, node_type.to_string()],
                 )
                 .await
@@ -576,6 +637,7 @@ impl SqliteStore {
         &self,
         query: &str,
         candidate_limit: i64,
+        include_archived: bool,
     ) -> Result<Vec<(String, f64)>> {
         let tokens: Vec<String> = query
             .split_whitespace()
@@ -601,9 +663,10 @@ impl SqliteStore {
         let sql = format!(
             "SELECT f.id, bm25(node_title_fts) FROM node_title_fts f \
              JOIN node n ON n.id = f.id \
-             WHERE node_title_fts MATCH ?1 AND NOT ({}) \
+             WHERE node_title_fts MATCH ?1 AND NOT ({}){} \
              ORDER BY rank LIMIT {}",
             crate::db::schema::is_exactly_sql("n.node_type", crate::models::CoreNodeType::Schema),
+            Self::and_default_query_conditions("n", include_archived),
             candidate_limit
         );
 
@@ -630,10 +693,22 @@ impl SqliteStore {
         let mut vector_bytes = vec![0u8; 768 * 4];
         vector_bytes[0..4].copy_from_slice(&1.0f32.to_le_bytes());
 
-        self.write().await.execute(
-            "INSERT OR IGNORE INTO embedding (id, node_id, vector, dimension, model_name, chunk_index, chunk_start, chunk_end, total_chunks, content_hash, token_count, stale, error_count, last_error, created_at, modified_at) VALUES (?1, ?2, ?3, 768, 'nomic-embed-text-v1.5', 0, 0, NULL, 1, NULL, NULL, 1, 0, NULL, ?4, ?5)",
-            libsql::params![id, node_id.to_string(), vector_bytes, now.clone(), now],
-        ).await.context("Failed to create stale embedding marker")?;
+        // Only a participating node is queued: an archived node has no place
+        // in the vector index (ADR-087 §2), so it gets no marker either.
+        let sql = format!(
+            "INSERT OR IGNORE INTO embedding (id, node_id, vector, dimension, model_name, chunk_index, chunk_start, chunk_end, total_chunks, content_hash, token_count, stale, error_count, last_error, created_at, modified_at) \
+             SELECT ?1, ?2, ?3, 768, 'nomic-embed-text-v1.5', 0, 0, NULL, 1, NULL, NULL, 1, 0, NULL, ?4, ?5 \
+             WHERE EXISTS (SELECT 1 FROM node n WHERE n.id = ?2 AND {})",
+            crate::governance::participates_sql("n")
+        );
+        self.write()
+            .await
+            .execute(
+                &sql,
+                libsql::params![id, node_id.to_string(), vector_bytes, now.clone(), now],
+            )
+            .await
+            .context("Failed to create stale embedding marker")?;
         Ok(())
     }
 

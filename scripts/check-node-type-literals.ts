@@ -143,7 +143,7 @@ function git(repoRoot: string, args: string[]): string {
   return result.stdout;
 }
 
-function extensionOf(path: string): string {
+export function extensionOf(path: string): string {
   const name = path.slice(path.lastIndexOf("/") + 1);
   const dot = name.lastIndexOf(".");
   return dot <= 0 ? "" : name.slice(dot);
@@ -158,20 +158,26 @@ export function isScanned(path: string): boolean {
 }
 
 /**
- * Repo-relative paths in scope: what git tracks plus untracked files that are
- * not ignored. Throws outside a git checkout rather than returning an empty
- * list, which would read as "no literal comparisons anywhere".
+ * Every repo-relative path git tracks, plus untracked files that are not
+ * ignored. Throws outside a git checkout rather than returning an empty list,
+ * which a caller would read as "nothing to find anywhere". `check` names the
+ * calling check in that error.
  */
-export function listScannedFiles(repoRoot: string = REPO): string[] {
+export function listRepoFiles(repoRoot: string, check: string): string[] {
   let output: string;
   try {
     output = git(repoRoot, ["ls-files", "-z", "--cached", "--others", "--exclude-standard"]);
   } catch (err) {
     throw new Error(
-      `check-node-type-literals needs a git checkout: it lists files with git so that build output stays out of the scan (${err instanceof Error ? err.message : String(err)})`,
+      `${check} needs a git checkout: it lists files with git so that build output stays out of the scan (${err instanceof Error ? err.message : String(err)})`,
     );
   }
-  return [...new Set(output.split("\0").filter((path) => path !== "" && isScanned(path)))].sort();
+  return [...new Set(output.split("\0").filter((path) => path !== ""))].sort();
+}
+
+/** Repo-relative paths in scope for the literal node-type comparison check. */
+export function listScannedFiles(repoRoot: string = REPO): string[] {
+  return listRepoFiles(repoRoot, "check-node-type-literals").filter(isScanned);
 }
 
 /** Every hit over the given files. A file that can't be read is skipped. */

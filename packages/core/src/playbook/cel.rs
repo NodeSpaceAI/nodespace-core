@@ -283,11 +283,12 @@ fn node_own_chain(scope: &CelScope) -> Vec<&str> {
 /// `pub(crate)`: save-time validation of a `.where(...)` predicate accepts
 /// these alongside the item type's schema fields, because the item's CEL map
 /// carries them.
+///
+/// The node's lifecycle is not one of them: a play neither reads nor writes
+/// it (ADR-087 §5). The engine's only use of lifecycle is the participation
+/// check, which decides whether a rule runs at all.
 pub(crate) fn is_core_key(key: &str) -> bool {
-    matches!(
-        key,
-        "id" | "node_type" | "content" | "version" | "lifecycle_status"
-    )
+    matches!(key, "id" | "node_type" | "content" | "version")
 }
 
 /// A node's CEL value, projected and value-resolved at `scope`.
@@ -359,7 +360,7 @@ pub(crate) fn scoped_node_value(node: &Node, scope: Option<&CelScope>) -> Value 
                 // `resolve_value_at_scope` returns None for EVERY string that
                 // is not a declared enum value at the reading scope — which
                 // includes every plain `string` field and the core keys
-                // (`id`, `node_type`, `content`, `lifecycle_status`) this map
+                // (`id`, `node_type`, `content`) this map
                 // carries. So `None` alone does not mean "unresolvable enum".
                 //
                 // The `field_is_enum` guard below IS the mechanism that tells
@@ -395,7 +396,6 @@ fn field_is_enum(fields: &[crate::models::SchemaField], name: &str) -> bool {
 /// - `node_type`: String
 /// - `content`: String
 /// - `version`: Int
-/// - `lifecycle_status`: String
 /// - All flattened properties as additional keys
 ///
 /// Namespace prefixes on properties are stripped: `custom:status` → `status`.
@@ -439,10 +439,6 @@ pub fn node_to_cel_value_at_scope(node: &Node, scope_chain: &[&str]) -> Value {
         Value::String(Arc::new(node.content.clone())),
     );
     map.insert(key("version"), Value::Int(node.version));
-    map.insert(
-        key("lifecycle_status"),
-        Value::String(Arc::new(node.lifecycle_status.clone())),
-    );
 
     // Flatten properties into the map, stripping namespace prefixes.
     //

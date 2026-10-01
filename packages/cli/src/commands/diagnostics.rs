@@ -196,6 +196,7 @@ pub async fn collect(
     // records purely to call `.len()` on the result.
     let total_node_count = match node_client
         .count_nodes(QueryNodesSimpleRequest {
+            include_archived: false,
             id: None,
             mentioned_by: None,
             content_contains: None,
@@ -230,6 +231,7 @@ pub async fn collect(
     // than the batch size, which a server-side ORDER BY + LIMIT cannot.
     let recent_node_ids = match node_client
         .query_nodes_simple(QueryNodesSimpleRequest {
+            include_archived: false,
             id: None,
             mentioned_by: None,
             content_contains: None,

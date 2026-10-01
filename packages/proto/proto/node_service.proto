@@ -689,6 +689,10 @@ message QueryNodesSimpleRequest {
   // CountNodes, which shares this request shape but returns no rows to
   // order).
   NodeSortOrder order_by = 8;
+  // Also return (or count) archived nodes. The default leaves them out: an
+  // archived node participates in nothing. For a surface that must list
+  // archived nodes, such as one that unarchives them.
+  bool include_archived = 9;
 }
 
 message CountNodesResponse {

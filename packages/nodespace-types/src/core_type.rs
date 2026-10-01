@@ -463,6 +463,15 @@ impl CoreNodeType {
             .collect()
     }
 
+    /// The core types left out of default queries, counts and lists even
+    /// when active.
+    pub fn excluded_from_default_queries() -> Vec<Self> {
+        Self::ALL
+            .into_iter()
+            .filter(|t| t.participation().excluded_from_default_queries)
+            .collect()
+    }
+
     /// The core types titled by their content at any depth.
     pub fn always_titled_types() -> Vec<Self> {
         Self::ALL

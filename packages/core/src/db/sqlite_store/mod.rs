@@ -1373,7 +1373,9 @@ mod tests {
             .add_to_collection(&nested_id, &sub_id, &json!({}))
             .await?; // member of the SUB only
 
-        let members = store.get_collection_members_recursive(&parent_id).await?;
+        let members = store
+            .get_collection_members_recursive(&parent_id, false)
+            .await?;
         assert!(
             members.contains(&nested_id),
             "a member of a sub-collection must be returned for the parent (was silently dropped); got {members:?}"

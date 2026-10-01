@@ -478,7 +478,9 @@ pub async fn query_nodes(
     // Get collection members if filtering
     let collection_member_ids: Option<HashSet<String>> = if let Some(coll_id) = &collection_id {
         let collection_service = CollectionService::new(node_service.store(), node_service);
-        let members = collection_service.get_collection_members(coll_id).await?;
+        let members = collection_service
+            .get_collection_members(coll_id, false)
+            .await?;
         Some(members.into_iter().map(|n| n.id).collect())
     } else {
         None

@@ -625,13 +625,15 @@ impl<'a> CollectionService<'a> {
     /// Get all members of a collection
     ///
     /// Returns full Node structs for all members of the collection.
-    /// Single query that traverses the member_of relationship.
+    /// Single query that traverses the member_of relationship. An archived
+    /// member is left out unless `include_archived` (ADR-087 §2).
     pub async fn get_collection_members(
         &self,
         collection_id: &str,
+        include_archived: bool,
     ) -> Result<Vec<Node>, NodeServiceError> {
         self.store
-            .get_collection_members(collection_id)
+            .get_collection_members(collection_id, include_archived)
             .await
             .map_err(|e| db_error(e, "Failed to get collection members"))
     }
@@ -639,13 +641,16 @@ impl<'a> CollectionService<'a> {
     /// Get all members of a collection recursively
     ///
     /// Returns the IDs of all nodes that are members of the collection
-    /// or any of its descendant collections.
+    /// or any of its descendant collections. Archived members, and the
+    /// members of archived sub-collections, are left out unless
+    /// `include_archived` (ADR-087 §2).
     pub async fn get_collection_members_recursive(
         &self,
         collection_id: &str,
+        include_archived: bool,
     ) -> Result<Vec<String>, NodeServiceError> {
         self.store
-            .get_collection_members_recursive(collection_id)
+            .get_collection_members_recursive(collection_id, include_archived)
             .await
             .map_err(|e| db_error(e, "Failed to get recursive collection members"))
     }

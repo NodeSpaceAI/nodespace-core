@@ -19,12 +19,10 @@ impl SqliteStore {
         // (ADR-061 §8). Date pages stay: a date link is a real mention. An
         // archived node participates in nothing (ADR-087 §2), so only active
         // nodes are offered.
-        let mentionable = crate::db::schema::is_not_a_sql(
-            "node_type",
-            &crate::models::CoreNodeType::not_mentionable(),
-        );
+        let mentionable = crate::governance::mentionable_sql("node_type");
+        let participates = crate::governance::participates_sql("");
         let sql = format!(
-            "SELECT * FROM node WHERE title IS NOT NULL AND lifecycle_status = 'active' AND {mentionable} AND LOWER(title) LIKE ?1 ESCAPE '\\' LIMIT {}",
+            "SELECT * FROM node WHERE title IS NOT NULL AND {participates} AND {mentionable} AND LOWER(title) LIKE ?1 ESCAPE '\\' LIMIT {}",
             effective_limit
         );
         self.query_nodes_from_sql(&sql, libsql::params![search_lower])

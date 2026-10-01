@@ -172,7 +172,7 @@ pub async fn get_collection_members(
 ) -> Result<GetCollectionMembersOutput, OpsError> {
     let collection_service = CollectionService::new(node_service.store(), node_service);
     let members = collection_service
-        .get_collection_members(&input.collection_id)
+        .get_collection_members(&input.collection_id, false)
         .await
         .map_err(OpsError::from)?;
 
@@ -189,7 +189,7 @@ pub async fn get_collection_members_recursive(
     let store = node_service.store();
     let collection_service = CollectionService::new(store, node_service);
     let member_ids = collection_service
-        .get_collection_members_recursive(&input.collection_id)
+        .get_collection_members_recursive(&input.collection_id, false)
         .await
         .map_err(OpsError::from)?;
 

@@ -1249,7 +1249,7 @@ async fn test_title_keyword_boost_applied() -> Result<()> {
 /// Ids from the keyword half, in rank order.
 async fn title_hits(store: &SqliteStore, query: &str) -> Result<Vec<String>> {
     Ok(store
-        .bm25_search_titles(query, 50)
+        .bm25_search_titles(query, 50, false)
         .await?
         .into_iter()
         .map(|(id, _)| id)
@@ -1544,7 +1544,7 @@ async fn test_bm25_search_titles_ordered_by_rank() -> Result<()> {
     let strong = create_root_node(&node_service, "text", "Quarterly revenue forecast").await?;
 
     let hits = store
-        .bm25_search_titles("quarterly revenue forecast", 50)
+        .bm25_search_titles("quarterly revenue forecast", 50, false)
         .await?;
     let ids: Vec<&str> = hits.iter().map(|(id, _)| id.as_str()).collect();
     assert_eq!(ids, vec![strong.id.as_str(), weak.id.as_str()]);

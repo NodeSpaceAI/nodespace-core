@@ -339,7 +339,7 @@ async fn a_query_for_an_abstract_type_returns_its_subtypes() {
     seed_vehicle(&svc).await;
     let car = create(&svc, "car", "A car", json!({})).await.unwrap();
 
-    let found = svc.query_nodes_by_type("vehicle", None).await.unwrap();
+    let found = svc.query_nodes_by_type("vehicle", true).await.unwrap();
     assert_eq!(
         found.iter().map(|n| n.id.as_str()).collect::<Vec<_>>(),
         vec![car.as_str()]

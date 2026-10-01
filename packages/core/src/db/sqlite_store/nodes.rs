@@ -1001,6 +1001,7 @@ impl SqliteStore {
         }
 
         if let Some(status) = update.lifecycle_status {
+            Self::leave_vector_index_if_archiving(&tx, id, Some(&status)).await?;
             tx.execute(
                 "UPDATE node SET lifecycle_status = ?1 WHERE id = ?2",
                 libsql::params![status, id.to_string()],
@@ -1134,6 +1135,7 @@ impl SqliteStore {
         }
 
         if let Some(status) = update.lifecycle_status {
+            Self::leave_vector_index_if_archiving(tx.conn(), id, Some(&status)).await?;
             tx.conn()
                 .execute(
                     "UPDATE node SET lifecycle_status = ?1 WHERE id = ?2",
@@ -1269,10 +1271,26 @@ impl SqliteStore {
             .unwrap_or(current.lifecycle_status.clone());
         let now = Utc::now().to_rfc3339();
 
-        let rows_affected = self.write().await.execute(
-            "UPDATE node SET content = ?1, node_type = ?2, properties = ?3, title = ?4, lifecycle_status = ?5, version = ?6, modified_at = ?7 WHERE id = ?8 AND version = ?9",
-            libsql::params![updated_content, updated_node_type, updated_props, updated_title, updated_status, new_version, now, id.to_string(), expected_version],
-        ).await.context("Failed to update node with version check")?;
+        // One transaction, so an archiving write and the removal of the
+        // node's vectors land together or not at all.
+        let rows_affected = {
+            let db = self.write().await;
+            let tx = db
+                .transaction()
+                .await
+                .context("Failed to begin update_node_with_version_check transaction")?;
+            let rows_affected = tx.execute(
+                "UPDATE node SET content = ?1, node_type = ?2, properties = ?3, title = ?4, lifecycle_status = ?5, version = ?6, modified_at = ?7 WHERE id = ?8 AND version = ?9",
+                libsql::params![updated_content, updated_node_type, updated_props, updated_title, updated_status.clone(), new_version, now, id.to_string(), expected_version],
+            ).await.context("Failed to update node with version check")?;
+            if rows_affected > 0 {
+                Self::leave_vector_index_if_archiving(&tx, id, Some(&updated_status)).await?;
+            }
+            tx.commit()
+                .await
+                .context("Failed to commit update_node_with_version_check transaction")?;
+            rows_affected
+        };
 
         if rows_affected == 0 {
             return Ok(None);
@@ -1366,8 +1384,11 @@ impl SqliteStore {
 
         let rows_affected = tx.conn().execute(
             "UPDATE node SET content = ?1, node_type = ?2, properties = ?3, title = ?4, lifecycle_status = ?5, version = ?6, modified_at = ?7 WHERE id = ?8 AND version = ?9",
-            libsql::params![updated_content, updated_node_type, updated_props, updated_title, updated_status, new_version, now, id.to_string(), expected_version],
+            libsql::params![updated_content, updated_node_type, updated_props, updated_title, updated_status.clone(), new_version, now, id.to_string(), expected_version],
         ).await.context("Failed to update node with version check")?;
+        if rows_affected > 0 {
+            Self::leave_vector_index_if_archiving(tx.conn(), id, Some(&updated_status)).await?;
+        }
 
         if rows_affected == 0 {
             // Lost a race between the read above and this UPDATE, inside the
@@ -1392,19 +1413,6 @@ impl SqliteStore {
         };
 
         Ok(Ok(node))
-    }
-
-    pub async fn update_lifecycle_status(&self, id: &str, status: &str) -> Result<()> {
-        Self::validate_lifecycle_status(status)?;
-        self.write()
-            .await
-            .execute(
-                "UPDATE node SET lifecycle_status = ?1 WHERE id = ?2",
-                libsql::params![status.to_string(), id.to_string()],
-            )
-            .await
-            .context("Failed to update lifecycle_status")?;
-        Ok(())
     }
 
     pub async fn delete_node(&self, id: &str, source: Option<String>) -> Result<DeleteResult> {
@@ -1868,10 +1876,16 @@ impl SqliteStore {
 
     pub async fn query_nodes(&self, query: NodeQuery) -> Result<Vec<Node>> {
         if let Some(ref mentioned_node_id) = query.mentioned_by {
-            let mut rows = self.read().await?.query(
-                "SELECT n.* FROM node n JOIN relationship r ON r.in_node = n.id WHERE r.out_node = ?1 AND r.relationship_type = 'mentions'",
-                libsql::params![mentioned_node_id.clone()],
-            ).await.context("Failed to query mentioned_by nodes")?;
+            let sql = format!(
+                "SELECT n.* FROM node n JOIN relationship r ON r.in_node = n.id WHERE r.out_node = ?1 AND r.relationship_type = 'mentions'{}",
+                Self::and_default_query_conditions("n", query.include_archived)
+            );
+            let mut rows = self
+                .read()
+                .await?
+                .query(&sql, libsql::params![mentioned_node_id.clone()])
+                .await
+                .context("Failed to query mentioned_by nodes")?;
             let mut nodes = Vec::new();
             while let Some(row) = rows.next().await? {
                 nodes.push(Self::row_to_node(&row)?);
@@ -1989,6 +2003,7 @@ impl SqliteStore {
                         .query_nodes_title_stem_fallback(
                             search_q,
                             query.node_type.as_deref(),
+                            query.include_archived,
                             query.limit,
                             query.offset,
                         )
@@ -2101,7 +2116,25 @@ impl SqliteStore {
             }
         }
 
+        // An archived node participates in no query, count or list, and a
+        // type the registry leaves out of default queries is left out here
+        // (ADR-087 §2). Both rules are the governance module's.
+        conditions.extend(crate::governance::default_query_conditions(
+            "",
+            query.include_archived,
+        ));
+
         (conditions, bind_values)
+    }
+
+    /// The governance conditions for a default query over the `node` table
+    /// aliased `alias`, as an ` AND ...` suffix for a statement that already
+    /// has a WHERE clause. Empty when there is nothing to add.
+    pub(super) fn and_default_query_conditions(alias: &str, include_archived: bool) -> String {
+        crate::governance::default_query_conditions(alias, include_archived)
+            .into_iter()
+            .map(|condition| format!(" AND {condition}"))
+            .collect()
     }
 
     /// Build a lowercased `%term%` LIKE pattern in which every character of
@@ -2150,11 +2183,12 @@ impl SqliteStore {
     /// one starts to, this is the place to add the same fallback.
     pub async fn count_nodes(&self, query: &NodeQuery) -> Result<i64> {
         if let Some(ref mentioned_node_id) = query.mentioned_by {
+            let sql = format!(
+                "SELECT COUNT(*) FROM node n JOIN relationship r ON r.in_node = n.id WHERE r.out_node = ?1 AND r.relationship_type = 'mentions'{}",
+                Self::and_default_query_conditions("n", query.include_archived)
+            );
             return self
-                .count_from_sql(
-                    "SELECT COUNT(*) FROM node n JOIN relationship r ON r.in_node = n.id WHERE r.out_node = ?1 AND r.relationship_type = 'mentions'",
-                    libsql::params![mentioned_node_id.clone()],
-                )
+                .count_from_sql(&sql, libsql::params![mentioned_node_id.clone()])
                 .await
                 .context("Failed to count mentioned_by nodes");
         }
@@ -2213,13 +2247,14 @@ impl SqliteStore {
     /// the counting counterpart to `get_roots`. Mirrors `get_roots`'s
     /// `WHERE` clause exactly, so the two never disagree on which rows
     /// qualify.
-    pub async fn count_roots(&self) -> Result<i64> {
-        self.count_from_sql(
-            "SELECT COUNT(*) FROM node WHERE id NOT IN (SELECT out_node FROM relationship WHERE relationship_type = 'has_child')",
-            (),
-        )
-        .await
-        .context("Failed to count roots")
+    pub async fn count_roots(&self, include_archived: bool) -> Result<i64> {
+        let sql = format!(
+            "SELECT COUNT(*) FROM node WHERE id NOT IN (SELECT out_node FROM relationship WHERE relationship_type = 'has_child'){}",
+            Self::and_default_query_conditions("", include_archived)
+        );
+        self.count_from_sql(&sql, ())
+            .await
+            .context("Failed to count roots")
     }
 
     /// Map an `OrderBy` value to a SQL `ORDER BY` fragment (column list only,
@@ -2324,6 +2359,7 @@ impl SqliteStore {
         &self,
         search_q: &str,
         node_type: Option<&str>,
+        include_archived: bool,
         limit: Option<usize>,
         offset: Option<usize>,
     ) -> Result<Vec<Node>> {
@@ -2347,6 +2383,7 @@ impl SqliteStore {
         // `query_nodes` but silently narrow to exact matches the moment it
         // fell back to stem matching.
         let subtypes = self.resolve_query_subtypes(node_type).await?;
+        let governed = Self::and_default_query_conditions("", include_archived);
 
         let (sql, params) = match (node_type, subtypes.as_deref()) {
             (Some(_), Some(types)) if types.len() > 1 => {
@@ -2354,7 +2391,7 @@ impl SqliteStore {
                     (1..=types.len()).map(|i| format!("?{i}")).collect();
                 (
                     format!(
-                        "SELECT * FROM node WHERE title IS NOT NULL AND node_type IN ({}) \
+                        "SELECT * FROM node WHERE title IS NOT NULL AND node_type IN ({}){governed} \
                          ORDER BY modified_at DESC, id ASC LIMIT {TITLE_STEM_FALLBACK_CANDIDATE_CAP}",
                         placeholders.join(", ")
                     ),
@@ -2366,14 +2403,14 @@ impl SqliteStore {
             }
             (Some(nt), _) => (
                 format!(
-                    "SELECT * FROM node WHERE title IS NOT NULL AND node_type = ?1 \
+                    "SELECT * FROM node WHERE title IS NOT NULL AND node_type = ?1{governed} \
                      ORDER BY modified_at DESC, id ASC LIMIT {TITLE_STEM_FALLBACK_CANDIDATE_CAP}"
                 ),
                 vec![libsql::Value::Text(nt.to_string())],
             ),
             (None, _) => (
                 format!(
-                    "SELECT * FROM node WHERE title IS NOT NULL \
+                    "SELECT * FROM node WHERE title IS NOT NULL{governed} \
                      ORDER BY modified_at DESC, id ASC LIMIT {TITLE_STEM_FALLBACK_CANDIDATE_CAP}"
                 ),
                 vec![],
@@ -2462,6 +2499,7 @@ impl SqliteStore {
         &self,
         limit: Option<usize>,
         offset: Option<usize>,
+        include_archived: bool,
     ) -> Result<Vec<Node>> {
         let limit_offset = match (limit, offset) {
             (None, None) => String::new(),
@@ -2471,7 +2509,8 @@ impl SqliteStore {
         };
 
         let sql = format!(
-            "SELECT * FROM node WHERE id NOT IN (SELECT out_node FROM relationship WHERE relationship_type = 'has_child') ORDER BY id ASC{}",
+            "SELECT * FROM node WHERE id NOT IN (SELECT out_node FROM relationship WHERE relationship_type = 'has_child'){} ORDER BY id ASC{}",
+            Self::and_default_query_conditions("", include_archived),
             limit_offset
         );
 
@@ -2533,6 +2572,22 @@ impl SqliteStore {
         } else {
             Ok(None)
         }
+    }
+
+    /// Whether `node_id` names a node that takes part (ADR-087 §2). False
+    /// for an archived node and for one that doesn't exist.
+    pub async fn node_participates(&self, node_id: &str) -> Result<bool> {
+        let sql = format!(
+            "SELECT 1 FROM node WHERE id = ?1 AND {} LIMIT 1",
+            crate::governance::participates_sql("")
+        );
+        let mut rows = self
+            .read()
+            .await?
+            .query(&sql, libsql::params![node_id.to_string()])
+            .await
+            .context("Failed to read node participation")?;
+        Ok(rows.next().await?.is_some())
     }
 
     pub async fn get_node_type(&self, node_id: &str) -> Result<Option<String>> {
@@ -3578,6 +3633,8 @@ impl SqliteStore {
             if affected == 0 {
                 return Err(anyhow::anyhow!("Node not found: {}", id));
             }
+            Self::leave_vector_index_if_archiving(tx, id, update.lifecycle_status.as_deref())
+                .await?;
 
             // `title` uses Option<Option<String>>: Some(Some(t)) sets, Some(None) clears
             // to NULL, None skips. COALESCE can't express "write NULL intentionally", so
@@ -3866,7 +3923,10 @@ impl SqliteStore {
             .read()
             .await?
             .query(
-                "SELECT COUNT(*) FROM node WHERE node_type = ?1",
+                &format!(
+                    "SELECT COUNT(*) FROM node WHERE node_type = ?1{}",
+                    Self::and_default_query_conditions("", false)
+                ),
                 libsql::params![node_type.to_string()],
             )
             .await
@@ -3940,8 +4000,7 @@ impl SqliteStore {
     /// value, so email and similar fields are treated as claims, not identity keys.
     ///
     /// The query is bound to `node_type` so it rides the `idx_node_type` index and
-    /// filters to `lifecycle_status = 'active'`, so an archived or deleted duplicate
-    /// is not reported. `bucket` is separate from `node_type`: it names which
+    /// filters to participating nodes, so an archived duplicate is not reported. `bucket` is separate from `node_type`: it names which
     /// namespace `properties` stores `field`'s value under —
     /// `properties.$.<bucket>.<field>`. The two coincide for a field directly
     /// declared on `node_type`'s own schema, but for a field inherited from an
@@ -4026,8 +4085,9 @@ impl SqliteStore {
 
         let sql = format!(
             "SELECT id FROM node WHERE node_type = ?1 AND {} = ?2 AND id != ?3 \
-             AND lifecycle_status = 'active' LIMIT 1",
-            lhs
+             AND {} LIMIT 1",
+            lhs,
+            crate::governance::participates_sql("")
         );
 
         let mut rows = self
@@ -4097,9 +4157,10 @@ impl SqliteStore {
             "SELECT n.id, n.title, n.node_type, bm25(node_title_fts) AS score \
              FROM node_title_fts f \
              JOIN node n ON n.id = f.id \
-             WHERE node_title_fts MATCH ?1 AND n.lifecycle_status != 'archived' \
+             WHERE node_title_fts MATCH ?1 AND {} \
              AND {} \
              ORDER BY rank LIMIT {}",
+            crate::governance::participates_sql("n"),
             crate::db::schema::is_not_a_sql(
                 "n.node_type",
                 &[
@@ -5331,7 +5392,11 @@ mod query_nodes_order_and_scoping_tests {
     async fn count_roots_agrees_with_get_roots_len() -> Result<()> {
         let (store, _t) = bare_store().await?;
 
-        assert_eq!(store.count_roots().await?, 0, "a fresh store has no nodes");
+        assert_eq!(
+            store.count_roots(false).await?,
+            0,
+            "a fresh store has no nodes"
+        );
 
         let root_a = store
             .create_node(
@@ -5366,9 +5431,9 @@ mod query_nodes_order_and_scoping_tests {
             )
             .await?;
 
-        let roots = store.get_roots(None, None).await?;
+        let roots = store.get_roots(None, None, false).await?;
         assert_eq!(roots.len(), 2, "child should not count as a root");
-        assert_eq!(store.count_roots().await?, roots.len() as i64);
+        assert_eq!(store.count_roots(false).await?, roots.len() as i64);
         Ok(())
     }
 }

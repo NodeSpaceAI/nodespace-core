@@ -92,6 +92,25 @@ impl NodeService {
             }
         };
 
+        // An archived root is not queued: it has no place in the vector
+        // index (ADR-087 §2). The marker write below refuses it as well; this
+        // keeps an existing row from being marked stale for nothing.
+        match self.store.node_participates(&root_id).await {
+            Ok(true) => {}
+            Ok(false) => {
+                tracing::debug!("Root {} is archived, skipping embedding queue", root_id);
+                return;
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to read participation of root {} (embedding not queued): {}",
+                    root_id,
+                    e
+                );
+                return;
+            }
+        }
+
         // Only queue if root is an embeddable type
         if !self.is_embeddable_type(&root_type).await {
             tracing::debug!(

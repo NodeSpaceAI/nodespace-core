@@ -127,10 +127,7 @@ struct Lineage {
 #[tokio::test]
 async fn the_four_skills_are_seeded_with_the_tools_they_direct() -> Result<()> {
     let h = Harness::start().await?;
-    let skills = h
-        .service
-        .query_nodes_by_type("skill", Some("active"))
-        .await?;
+    let skills = h.service.query_nodes_by_type("skill", false).await?;
 
     for (title, tool) in [
         ("Writing a Spec", "create_node"),

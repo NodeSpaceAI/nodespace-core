@@ -21,7 +21,7 @@ mod person_seed_tests {
         let mut store = Arc::new(SqliteStore::new(db_path).await?);
         let service = NodeService::new(&mut store).await?;
 
-        let people = service.query_nodes_by_type("person", None).await?;
+        let people = service.query_nodes_by_type("person", true).await?;
         assert_eq!(
             people.len(),
             1,
@@ -50,14 +50,14 @@ mod person_seed_tests {
         {
             let mut store = Arc::new(SqliteStore::new(db_path.clone()).await?);
             let service = NodeService::new(&mut store).await?;
-            assert_eq!(service.query_nodes_by_type("person", None).await?.len(), 1);
+            assert_eq!(service.query_nodes_by_type("person", true).await?.len(), 1);
         }
 
         // Second open of the same database must be idempotent — still one person.
         let mut store = Arc::new(SqliteStore::new(db_path).await?);
         let service = NodeService::new(&mut store).await?;
         assert_eq!(
-            service.query_nodes_by_type("person", None).await?.len(),
+            service.query_nodes_by_type("person", true).await?.len(),
             1,
             "re-opening an existing database must not seed a second PersonNode"
         );

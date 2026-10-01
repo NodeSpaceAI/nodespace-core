@@ -962,7 +962,13 @@ async fn measure_node_search(env: &Env) {
     for (seed_idx, (topic, note)) in NOTES.iter().enumerate() {
         let results = env
             .embedding
-            .semantic_search_nodes(note, NEIGHBORS_PER_SEED + 1, SEMANTIC_THRESHOLD, None)
+            .semantic_search_nodes(
+                note,
+                NEIGHBORS_PER_SEED + 1,
+                SEMANTIC_THRESHOLD,
+                None,
+                false,
+            )
             .await
             .expect("neighbour search succeeds");
         let neighbours: Vec<usize> = results
@@ -1001,7 +1007,7 @@ async fn report_node_search(
     for (query, want) in queries {
         let ranked = env
             .embedding
-            .semantic_search_nodes(query, ids.len(), 0.0, None)
+            .semantic_search_nodes(query, ids.len(), 0.0, None, false)
             .await
             .expect("node search succeeds");
         let ranked: Vec<(usize, f64)> = ranked

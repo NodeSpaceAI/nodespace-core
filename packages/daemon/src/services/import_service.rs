@@ -840,17 +840,13 @@ impl Phase2Writer {
                 }
                 refreshed_roots.push((file.root_id.clone(), file.root_content));
             } else if !exists {
-                let mut root_props = serde_json::json!({});
-                if file.is_archived {
-                    root_props["lifecycle_status"] = serde_json::json!("archived");
-                }
                 rows.push((
                     file.root_id.clone(),
                     "header".to_string(),
                     file.root_content,
                     None,
                     1.0,
-                    root_props,
+                    serde_json::json!({}),
                 ));
             }
 
@@ -996,16 +992,24 @@ impl Phase2Writer {
             }
         }
 
+        // Lifecycle is the node's envelope field and nothing else: it is
+        // written through the generic update, never as a property (ADR-087 §4).
         for root_id in &archived {
             if let Err(e) = self
                 .store
-                .update_lifecycle_status(root_id, "archived")
+                .update_node(root_id, archive_update(), Some("import".to_string()))
                 .await
             {
-                tracing::warn!("Failed to set lifecycle_status for {}: {}", root_id, e);
+                tracing::warn!("Failed to archive imported root {}: {}", root_id, e);
             }
         }
     }
+}
+
+/// The generic update that archives a node.
+fn archive_update() -> nodespace_core::NodeUpdate {
+    nodespace_core::NodeUpdate::new()
+        .with_lifecycle_status(nodespace_core::governance::ARCHIVED.to_string())
 }
 
 /// The rejection for a batch import larger than [`MAX_IMPORT_FILES`], checked
@@ -1461,7 +1465,10 @@ async fn import_markdown_content(
         // Refresh in place: keep + update the root (non-destructive) so inbound
         // links/mentions survive, and capture its current children to prune only
         // after the fresh subtree is inserted below.
-        let update = nodespace_core::NodeUpdate::new().with_content(clean_title);
+        let mut update = nodespace_core::NodeUpdate::new().with_content(clean_title);
+        if is_archived {
+            update = update.with_lifecycle_status(nodespace_core::governance::ARCHIVED.to_string());
+        }
         node_service
             .store()
             .update_node(root_id, update, Some("import".to_string()))
@@ -1473,10 +1480,8 @@ async fn import_markdown_content(
             .map_err(|e| format!("Failed to read existing subtree: {}", e))?;
         prune_after_insert.extend(descendants.into_iter().map(|n| n.id));
     } else {
-        let mut properties = serde_json::json!({});
-        if is_archived {
-            properties["lifecycle_status"] = serde_json::json!("archived");
-        }
+        // Lifecycle is the node's envelope field and nothing else: an archived
+        // document is created archived, never given a property (ADR-087 §4).
         node_service
             .create_node_with_parent(CreateNodeParams {
                 id: Some(root_id.to_string()),
@@ -1484,26 +1489,13 @@ async fn import_markdown_content(
                 content: clean_title,
                 parent_id: None,
                 position: nodespace_core::services::InsertPositionOwned::End,
-                properties,
-                lifecycle_status: None,
+                properties: serde_json::json!({}),
+                lifecycle_status: is_archived
+                    .then(|| nodespace_core::governance::ARCHIVED.to_string()),
             })
             .await
             .map_err(|e| format!("Failed to create root node: {}", e))?;
         nodes_created += 1;
-    }
-
-    if is_archived {
-        if let Err(e) = node_service
-            .store()
-            .update_lifecycle_status(root_id, "archived")
-            .await
-        {
-            tracing::warn!(
-                "Failed to set lifecycle_status to archived for {}: {}",
-                root_id,
-                e
-            );
-        }
     }
 
     if !prepared_nodes.is_empty() {
@@ -2097,6 +2089,74 @@ mod tests {
             ns.store().count_nodes_by_type("header").await.unwrap() <= headers_after_first,
             "replace refreshes in place — it must never grow the document set",
         );
+    }
+
+    /// A document under an `archived/` directory is imported archived, on
+    /// both import paths. Lifecycle is the node's envelope field and nothing
+    /// else (ADR-087 §4): the importer writes no `lifecycle_status` property.
+    #[tokio::test]
+    async fn an_archived_document_is_archived_on_the_envelope_only() {
+        fn assert_archived_on_the_envelope(node: &nodespace_core::Node) {
+            assert_eq!(node.lifecycle_status, "archived");
+            let properties = node.properties.to_string();
+            assert!(
+                !properties.contains("lifecycle_status"),
+                "lifecycle must not be stored as a property: {properties}"
+            );
+        }
+
+        let (ns, dir) = new_service_and_dir().await;
+        let ns = Arc::new(ns);
+        let src = dir.path().join("src");
+        std::fs::create_dir_all(src.join("archived")).unwrap();
+        let single = src.join("archived").join("old-plan.md");
+        std::fs::write(&single, "# Old plan\n\nSuperseded.\n").unwrap();
+        let batched = src.join("archived").join("old-notes.md");
+        std::fs::write(&batched, "# Old notes\n\nKept for the record.\n").unwrap();
+        let opts = ImportOptions {
+            base_directory: src.to_str().unwrap().to_string(),
+            auto_collection_routing: true,
+            ..Default::default()
+        };
+
+        // Single-file path, and again with --replace (the refresh-in-place
+        // branch archives through the same update).
+        for replace in [false, true] {
+            let opts = ImportOptions {
+                replace,
+                ..opts.clone()
+            };
+            let result = import_single_file(&ns, &single, &opts).await;
+            assert!(result.success, "import failed: {:?}", result.error);
+            assert!(result.archived);
+            let root = ns
+                .get_node(result.root_id.as_deref().expect("root id"))
+                .await
+                .unwrap()
+                .expect("the root was imported");
+            assert_archived_on_the_envelope(&root);
+        }
+
+        // Batch path.
+        let done = run_batch_and_wait(
+            ns.clone(),
+            vec![batched.to_str().unwrap().to_string()],
+            opts,
+        )
+        .await;
+        let result = &done.results[0];
+        assert!(result.success, "batch import failed: {}", result.error);
+        assert!(result.archived);
+        let root = ns
+            .get_node(&result.root_id)
+            .await
+            .unwrap()
+            .expect("the root was imported");
+        assert_archived_on_the_envelope(&root);
+
+        // An archived document is in no list.
+        let roots = ns.get_roots(None, None, false).await.unwrap();
+        assert!(!roots.iter().any(|n| n.id == root.id));
     }
 
     /// Batch path (the `import dir` pipeline used for the docs corpus): a plain

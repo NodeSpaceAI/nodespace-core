@@ -4496,7 +4496,7 @@ impl AgentToolExecutor for GraphToolExecutor {
         let Some(ns) = self.node_service.as_ref() else {
             return Vec::new();
         };
-        match ns.query_nodes_by_type("skill", None).await {
+        match ns.query_nodes_by_type("skill", false).await {
             // Decoded like `find_skills` decodes them: a malformed skill it
             // would skip is not named either.
             Ok(nodes) => super::agent_loop::stage1_skill_names(
@@ -7849,7 +7849,7 @@ mod tests {
 
             // The premise of every test here: stored tool fields live in the
             // `tool` bucket, not at the top level of `properties`.
-            let stored = ns.query_nodes_by_type("tool", None).await.unwrap();
+            let stored = ns.query_nodes_by_type("tool", true).await.unwrap();
             assert_eq!(stored.len(), templates.len());
             for node in stored {
                 assert!(node.properties["tool"]["handler"].is_string());

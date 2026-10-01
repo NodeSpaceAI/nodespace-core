@@ -247,7 +247,7 @@ impl NodeService {
             if let Some(existing) = stored.or_else(|| batch_collections.get(&name).cloned()) {
                 collisions.push((node.id.clone(), existing));
             }
-            if let (true, Some(title)) = (node.lifecycle_status == "active", &node.title) {
+            if let (true, Some(title)) = (crate::governance::participates(node), &node.title) {
                 batch_collections
                     .entry(title.to_lowercase())
                     .or_insert_with(|| node.id.clone());
@@ -853,6 +853,10 @@ impl NodeService {
             Vec::with_capacity(updates.len());
         let mut pending_events: Vec<(String, Node, Vec<crate::db::events::PropertyChange>)> =
             Vec::with_capacity(updates.len());
+        // Nodes this batch archives or unarchives: their embedding roots are
+        // re-queued once the batch commits (ADR-087 §2).
+        #[cfg(feature = "nlp")]
+        let mut participation_changed: Vec<String> = Vec::new();
 
         let mut schemas: std::collections::HashMap<String, Option<crate::models::SchemaNode>> =
             std::collections::HashMap::new();
@@ -1002,6 +1006,10 @@ impl NodeService {
             if let Some(status) = &update.lifecycle_status {
                 updated.lifecycle_status = status.clone();
             }
+            #[cfg(feature = "nlp")]
+            if crate::governance::participation_changed(existing, &updated) {
+                participation_changed.push(id.clone());
+            }
             pending_events.push((id.clone(), updated, changed_properties));
         }
 
@@ -1041,7 +1049,17 @@ impl NodeService {
                 Ok(())
             })
         })
-        .await
+        .await?;
+
+        // An unarchived node is embedded again, and an archived child leaves
+        // its root's aggregate. An archived root's own vectors went with the
+        // write. Best-effort and after the commit, like every queueing path.
+        #[cfg(feature = "nlp")]
+        for id in &participation_changed {
+            self.queue_root_for_embedding(id).await;
+        }
+
+        Ok(())
     }
 
     /// Bulk delete multiple nodes in a transaction

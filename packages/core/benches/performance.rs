@@ -524,7 +524,7 @@ fn bench_bm25_search_titles(c: &mut Criterion) {
                 rt.block_on(async {
                     black_box(
                         store_arc
-                            .bm25_search_titles("persistence", 100)
+                            .bm25_search_titles("persistence", 100, false)
                             .await
                             .unwrap(),
                     )

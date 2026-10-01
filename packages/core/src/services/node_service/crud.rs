@@ -293,7 +293,7 @@ impl NodeService {
             .await?
         {
             if let Some(existing) = self
-                .query_nodes_by_type(crate::models::CoreNodeType::DatabaseSettings.as_str(), None)
+                .query_nodes_by_type(crate::models::CoreNodeType::DatabaseSettings.as_str(), true)
                 .await?
                 .into_iter()
                 .next()
@@ -1547,10 +1547,17 @@ impl NodeService {
                 .await;
         }
 
-        // Queue root for embedding regeneration if content changed (root-aggregate model)
+        // Queue root for embedding regeneration if content changed (root-aggregate model),
+        // or if the node was archived or unarchived: an unarchived node is
+        // embedded again, and an archived child leaves its root's aggregate
+        // (ADR-087 §2). An archived root's own vectors went with the write.
         // Fire-and-forget: don't block the update response on embedding queue operations
         #[cfg(feature = "nlp")]
-        if content_changed {
+        let participation_changed = previous.as_ref().is_some_and(|previous| {
+            crate::governance::participation_changed(previous, &updated_node)
+        });
+        #[cfg(feature = "nlp")]
+        if content_changed || participation_changed {
             let store = self.store.clone();
             let behaviors = self.behaviors.clone();
             let node_id = id.to_string();
