@@ -45,7 +45,9 @@ mod atomic_file;
 // Extension points for an app crate built on this library.
 pub mod extensions;
 use extensions::register_core_plugins;
-pub use extensions::{assemble, AppExtensions, EXTENSION_API_VERSION};
+pub use extensions::{
+    assemble, AppExtensions, LatestVersionSource, UpdateSource, EXTENSION_API_VERSION,
+};
 
 // Window <-> database routing: window label/pin tracking and the
 // emit-routing helper that replaces every hardcoded "main" window emit.
@@ -524,15 +526,15 @@ fn run_app(extensions: AppExtensions, context: tauri::Context<tauri::Wry>) {
             #[cfg(any(unix, windows))]
             app.manage(crate::services::GrpcClient::connect_lazy());
 
-            // Best-effort update check: on a background task so it never delays
-            // startup, and it only emits when a strictly-newer release exists — no
-            // event on "up to date" or any failure, so the frontend banner appears
-            // solely on a real update. Independent of the daemon path below.
+            // Best-effort update check against the app's update source: on a
+            // background task so it never delays startup, and it only emits when a
+            // strictly-newer release exists — no event on "up to date" or any
+            // failure, so the frontend banner appears solely on a real update.
+            // Independent of the daemon path below.
             {
                 let update_app_handle = app.handle().clone();
-                let current_version = app.package_info().version.to_string();
                 tauri::async_runtime::spawn(async move {
-                    let status = update_check::check_for_update(&current_version).await;
+                    let status = update_check::check_for_update_for_app(&update_app_handle).await;
                     if status.update_available {
                         window_routing::emit_routed(
                             &update_app_handle,
@@ -1658,6 +1660,29 @@ mod run_wiring_tests {
         assert!(
             run.contains("&extension_shutdown,"),
             "daemon-ready tasks must be handed that child token"
+        );
+    }
+
+    #[test]
+    fn both_update_checks_read_the_app_update_source() {
+        let run = run_source();
+        assert!(
+            run.contains("update_check::check_for_update_for_app(&update_app_handle)"),
+            "the startup update check must read the app's managed update source"
+        );
+
+        let update_check = include_str!("update_check.rs");
+        let start = update_check
+            .find("pub async fn check_for_update_command(")
+            .expect("check_for_update_command not found in update_check.rs");
+        let command = &update_check[start..];
+        let body = &command[..command
+            .find("\n}\n")
+            .expect("check_for_update_command's body ends")];
+        assert!(
+            body.contains("check_for_update_for_app(&app)"),
+            "the on-demand update check must read the same update source as the startup \
+             check: {body}"
         );
     }
 

@@ -19,13 +19,18 @@ use tauri::test::{
 use tauri::utils::acl::ExecutionContext;
 use tauri::webview::InvokeRequest;
 use tauri::{App, AppHandle, Manager, Runtime};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::{mpsc, oneshot};
 
 use super::{
     assemble, core_plugin_names, run_channel_rebuilt_hooks, spawn_daemon_ready_tasks,
-    AppExtensions, CancellationToken, Channel, CHANNEL_REBUILT_HOOK_TIMEOUT, EXTENSION_API_VERSION,
+    AppExtensions, CancellationToken, Channel, LatestVersionSource, UpdateSource,
+    CHANNEL_REBUILT_HOOK_TIMEOUT, EXTENSION_API_VERSION,
 };
 use crate::services::GrpcClient;
+use crate::update_check::{
+    builtin_update_source, check_for_update_for_app, update_source_for_app, UpdateSourceState,
+};
 
 /// Name of the fixture plugin, which is also its command namespace.
 const FIXTURE: &str = "fixture";
@@ -578,4 +583,122 @@ async fn hooks_are_a_no_op_without_extension_state() {
 
     run_channel_rebuilt_hooks(app.handle(), idle_channel().await).await;
     spawn_tasks(&app, GrpcClient::connect_lazy(), &CancellationToken::new()).await;
+}
+
+/// An update source that reads a version endpoint at `url` and downloads from
+/// `download_url`.
+fn endpoint_source(url: &'static str, download_url: Option<&'static str>) -> UpdateSource {
+    UpdateSource {
+        latest: LatestVersionSource::VersionEndpoint { url },
+        download_url,
+    }
+}
+
+#[test]
+fn none_manages_the_builtin_update_source() {
+    let app = build_app(AppExtensions::none());
+
+    let managed = app
+        .try_state::<UpdateSourceState>()
+        .expect("assemble manages an update source even when the extension sets none");
+    assert_eq!(managed.0, builtin_update_source());
+    assert_eq!(update_source_for_app(app.handle()), builtin_update_source());
+}
+
+#[test]
+fn an_extension_update_source_replaces_the_builtin() {
+    let source = endpoint_source(
+        "https://updates.example.test/latest",
+        Some("https://example.test/download"),
+    );
+    assert_ne!(
+        source,
+        builtin_update_source(),
+        "the fixture source must differ from the built-in one to show it replaced it"
+    );
+
+    let app = build_app(AppExtensions::none().update_source(source.clone()));
+
+    assert_eq!(update_source_for_app(app.handle()), source);
+}
+
+#[test]
+fn the_last_update_source_wins() {
+    let first = endpoint_source("https://first.example.test/latest", None);
+    let last = endpoint_source(
+        "https://last.example.test/latest",
+        Some("https://last.example.test/download"),
+    );
+
+    let app = build_app(
+        AppExtensions::none()
+            .update_source(first)
+            .update_source(last.clone()),
+    );
+
+    assert_eq!(update_source_for_app(app.handle()), last);
+}
+
+#[test]
+fn update_source_falls_back_to_the_builtin_without_extension_state() {
+    // `mock_app` is not built through `assemble`, so it manages no source.
+    let app = mock_app();
+
+    assert_eq!(update_source_for_app(app.handle()), builtin_update_source());
+}
+
+/// Answers one HTTP request on a local port with `body` as JSON, and returns
+/// the URL it serves, leaked because an update source holds `&'static str`.
+async fn serve_json_once(body: &'static str) -> &'static str {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("a local port is free");
+    let url = format!(
+        "http://{}/latest",
+        listener.local_addr().expect("a bound address")
+    );
+    tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.expect("the check connects");
+        // Read the whole request head first: closing with unread bytes would
+        // reset the connection before the client reads the answer.
+        let mut request = Vec::new();
+        let mut chunk = [0u8; 1024];
+        while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+            let read = socket.read(&mut chunk).await.expect("the request arrives");
+            assert!(read > 0, "the client closed before finishing its request");
+            request.extend_from_slice(&chunk[..read]);
+        }
+        let answer = format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\
+             connection: close\r\n\r\n{body}",
+            body.len()
+        );
+        socket
+            .write_all(answer.as_bytes())
+            .await
+            .expect("the answer is sent");
+    });
+    Box::leak(url.into_boxed_str())
+}
+
+#[tokio::test]
+async fn an_extension_update_source_decides_the_version_and_the_download() {
+    let url = serve_json_once(r#"{"version":"v99.0.0"}"#).await;
+    let app = build_app(
+        AppExtensions::none()
+            .update_source(endpoint_source(url, Some("https://example.test/download"))),
+    );
+
+    let status = tokio::time::timeout(PROMPTLY, check_for_update_for_app(app.handle()))
+        .await
+        .expect("the check finishes");
+
+    // The mock context's bundle version.
+    assert_eq!(status.current, "0.1.0");
+    assert_eq!(status.latest.as_deref(), Some("v99.0.0"));
+    assert!(status.update_available);
+    assert_eq!(
+        status.download_url.as_deref(),
+        Some("https://example.test/download")
+    );
 }
