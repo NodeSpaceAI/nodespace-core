@@ -3,12 +3,11 @@
 //! Which daemon binary to run, which image name to kill on Windows, and what
 //! extra environment the service registration carries all go through the
 //! process's active [`DaemonProfile`]. The build's default profile is chosen in
-//! one place, `daemon_setup`'s `profile_for_this_build`, so no other code
-//! branches on the build's edition to pick a binary or an environment.
+//! one place, `daemon_setup`'s `profile_for_this_build`.
 //!
 //! The launchd label, socket, UI pid file and incompatible-database marker are
-//! not part of a profile: they follow the product's identity and are selected in
-//! `daemon_setup` and its neighbours.
+//! not part of a profile: they are core's shared service identity, separated
+//! only by build flavour, and are selected in `daemon_setup` and its neighbours.
 
 use std::sync::OnceLock;
 
@@ -24,8 +23,6 @@ pub struct DaemonProfile {
     /// launchd plist only, as today; the systemd unit and the Windows spawn
     /// do not carry it. A key must not repeat one of core's own.
     pub service_env: Vec<(String, String)>,
-    /// The product the app expects the running daemon to belong to.
-    pub product: &'static str,
 }
 
 impl DaemonProfile {
@@ -34,7 +31,6 @@ impl DaemonProfile {
         Self {
             binary_name: DAEMON_BINARY_NAME,
             service_env: Vec::new(),
-            product: "community",
         }
     }
 
@@ -75,12 +71,17 @@ pub(crate) fn active() -> &'static DaemonProfile {
 mod tests {
     use super::*;
 
+    /// The whole struct, not field by field: a field added to the profile
+    /// fails to compile here until this test states core's value for it.
     #[test]
-    fn community_profile_carries_the_community_daemon_and_no_service_env() {
-        let profile = DaemonProfile::community();
-        assert_eq!(profile.binary_name, "nodespaced");
-        assert!(profile.service_env.is_empty());
-        assert_eq!(profile.product, "community");
+    fn community_profile_is_the_core_daemon_with_no_service_env() {
+        assert_eq!(
+            DaemonProfile::community(),
+            DaemonProfile {
+                binary_name: "nodespaced",
+                service_env: Vec::new(),
+            }
+        );
     }
 
     #[test]

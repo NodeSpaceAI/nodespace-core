@@ -43,19 +43,16 @@ const TRAY_ICON_BYTES: &[u8] = include_bytes!("../icons/tray-icon.png");
 /// `tauri-plugin-single-instance` relaunch handler reads instead.
 pub const INITIAL_DATABASE_ENV: &str = "NODESPACE_INITIAL_DATABASE";
 
-/// This build variant's UI pid-file path, mirroring `nodespace-app-lib`'s
+/// This build flavour's UI pid-file path, mirroring `nodespace-app-lib`'s
 /// `daemon_setup::write_own_ui_pid_file` -- both sides derive the identical
-/// path from their own build flags rather than one copying the other's
-/// answer, exactly like the daemon socket path each side already derives
-/// independently. This side's only flag is the build flavour, debug or
-/// release. `None` when the home directory can't be resolved, same as every
-/// other home-relative path in this crate.
+/// path from their own build flavour, debug or release, rather than one
+/// copying the other's answer, exactly like the daemon socket path each side
+/// already derives independently. `None` when the home directory can't be
+/// resolved, same as every other home-relative path in this crate.
 fn ui_pid_path() -> Option<PathBuf> {
     let home = dirs::home_dir()?;
-    Some(home.join(nodespace_proto::socket::ui_pid_relative(
-        cfg!(debug_assertions),
-        false,
-    )))
+    let relative = nodespace_proto::socket::ui_pid_relative(cfg!(debug_assertions));
+    Some(home.join(relative))
 }
 
 /// The pid in `pid_file`, if it both parses and belongs to a live process

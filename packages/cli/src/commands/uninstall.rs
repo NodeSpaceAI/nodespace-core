@@ -124,9 +124,9 @@ fn remove_bin_dir(home: &Path) {
     let _ = fs::remove_dir_all(&bin_dir);
 }
 
-/// Remove every build variant's socket, not just the community one. A single
-/// `nodespace` binary uninstalls whichever app is installed, and it cannot tell
-/// from its own build which variant left a socket behind — a stale Pro or dev
+/// Remove both build flavours' sockets, not just the release one. A single
+/// `nodespace` binary uninstalls whichever build is installed, and it cannot
+/// tell from its own build which flavour left a socket behind — a stale dev
 /// socket file would otherwise survive an uninstall.
 ///
 /// Each socket's single-instance lock file goes with it. Windows has no lock
@@ -145,7 +145,7 @@ fn remove_sock(home: &Path) {
 mod tests {
     use super::*;
 
-    /// Every variant's socket and lock file must go, and nothing beside them.
+    /// Every flavour's socket and lock file must go, and nothing beside them.
     /// The daemon leaves its lock file behind on every exit, so a lock that
     /// survived an uninstall would sit in `~/.nodespace` forever.
     #[cfg(unix)]

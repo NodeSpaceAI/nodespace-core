@@ -10,12 +10,6 @@ name = "nodespace_app_lib"
 # rlib only: there is no mobile target, so no staticlib/cdylib.
 crate-type = ["rlib"]
 
-[build-dependencies]
-# Pro-tier proto compilation (nodespace.pro.v1 — vendored from
-# nodespace-sync via scripts/refresh-pro-proto.ts).
-tonic-build = "0.12"
-protoc-bin-vendored = "3"
-
 [dependencies]
 nodespace-types = { workspace = true }
 tauri = { version = "2", features = [] }
@@ -31,7 +25,6 @@ uuid = { workspace = true }
 tauri-plugin-decorum = "1.1.1"
 nodespace-proto = { workspace = true }
 tonic = "0.12"
-prost = { workspace = true }
 tower = { version = "0.5", features = ["util"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 dirs = "5.0"
