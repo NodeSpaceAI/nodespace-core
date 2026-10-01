@@ -566,7 +566,7 @@ fn generate_plays(count: usize, node_type: &str) -> Vec<Node> {
                     "trigger": {
                         "type": "graph_event",
                         "on": "node_created",
-                        "node_type": node_type
+                        "select": { "target_type": node_type }
                     },
                     "conditions": [],
                     "actions": []

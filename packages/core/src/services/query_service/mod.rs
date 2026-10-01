@@ -50,8 +50,8 @@ use std::sync::Arc;
 // (`nodespace_types::QueryFields`), so a saved query's filters decode straight
 // into the types executed here.
 pub use nodespace_types::{
-    FilterOperator, FilterType, QueryFilter, RelationshipType, ResolvedRelationship, SortConfig,
-    SortDirection,
+    FilterOperator, FilterType, QueryFilter, RelationshipHop, RelationshipPath, ResolvedPath,
+    SortConfig, SortDirection,
 };
 
 /// Structured query definition: what a query selects, for execution
@@ -123,11 +123,10 @@ impl QueryDefinition {
 const MAX_RELATED_DEPTH: usize = 0;
 
 /// Check a filter's own identifiers, and recurse into a nested
-/// [`FilterType::Related`] filter — both its `relationship_name` (which
-/// becomes a bound value, not formatted into SQL text, but is still worth
-/// rejecting early as a caller error) and its own `filter`, which is
-/// walked the same way [`QueryDefinition::validate_identifiers`] walks a
-/// top-level filter list.
+/// [`FilterType::Related`] filter: its path's relationship names (bound
+/// values, not formatted into SQL text, but still worth rejecting early as a
+/// caller error) and its own `filter`, which is walked the same way
+/// [`QueryDefinition::validate_identifiers`] walks a top-level filter list.
 ///
 /// `depth` counts `Related` nesting already consumed by the time this
 /// filter is reached: 0 for a top-level filter, 1 for the nested `filter`
@@ -139,25 +138,42 @@ fn validate_filter_identifiers(filter: &QueryFilter, depth: usize) -> Result<()>
     if let Some(property) = &filter.property {
         validate_identifier(property, "filter property")?;
     }
-    if filter.filter_type == FilterType::Related {
-        if depth > MAX_RELATED_DEPTH {
-            anyhow::bail!(
-                "Related filter nesting depth {} exceeds the maximum of {} — \
-                 a Related filter's own nested filter must not itself be Related",
-                depth + 1,
-                MAX_RELATED_DEPTH + 1
-            );
+    if let Some(path) = &filter.path {
+        if path.is_empty() {
+            anyhow::bail!("filter path must name at least one relationship");
         }
-        let relationship_name = filter
-            .relationship_name
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("Related filter missing 'relationshipName'"))?;
-        validate_identifier(relationship_name, "filter relationshipName")?;
-        let nested = filter
-            .filter
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("Related filter missing 'filter'"))?;
-        validate_filter_identifiers(nested, depth + 1)?;
+        for hop in path.hops() {
+            validate_identifier(&hop.name, "filter path relationship")?;
+        }
+    }
+    match filter.filter_type {
+        FilterType::Relationship => {
+            if filter.path.is_none() {
+                anyhow::bail!("Relationship filter missing 'path'");
+            }
+            if filter.node_id.is_none() {
+                anyhow::bail!("Relationship filter missing 'nodeId'");
+            }
+        }
+        FilterType::Related => {
+            if depth > MAX_RELATED_DEPTH {
+                anyhow::bail!(
+                    "Related filter nesting depth {} exceeds the maximum of {} — \
+                     a Related filter's own nested filter must not itself be Related",
+                    depth + 1,
+                    MAX_RELATED_DEPTH + 1
+                );
+            }
+            if filter.path.is_none() {
+                anyhow::bail!("Related filter missing 'path'");
+            }
+            let nested = filter
+                .filter
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("Related filter missing 'filter'"))?;
+            validate_filter_identifiers(nested, depth + 1)?;
+        }
+        FilterType::Property | FilterType::Content | FilterType::Metadata => {}
     }
     Ok(())
 }
@@ -215,57 +231,6 @@ impl BoundSql {
     }
 }
 
-/// Rewrite every `?N` placeholder in `condition` to `?(N + offset)`
-///
-/// A [`FilterType::Related`] filter's nested condition is compiled against
-/// its own fresh [`BoundSql`] (see [`QueryService::build_related_filter`]),
-/// so its placeholders start again from `?1` — correct in isolation, but
-/// wrong once its parameters are appended to the outer statement's own list,
-/// where they no longer sit at the front. This renumbers the SQL text to
-/// match where they actually landed, after the caller has already appended
-/// the nested params to the outer list and recorded its length beforehand as
-/// `offset`.
-///
-/// A single left-to-right pass over the text, copying every non-placeholder
-/// byte verbatim and emitting `?(N + offset)` in place of each `?N` found —
-/// not a series of whole-string `str::replace` calls keyed by original
-/// number. That repeated-replace shape looks sound (descending order so
-/// `?10` isn't matched as `?1` followed by a stray `0`) but is not: replacing
-/// `?2` with, say, `?12` before `?1` has been replaced writes the literal
-/// text `"?12"` into the string, and the later, unrelated replacement of
-/// `?1` -> `?11` then matches the `"?1"` *inside* that already-written
-/// `"?12"` too, corrupting it to `"?112"`. A single forward pass has no such
-/// hazard: each placeholder is consumed exactly once, character by character,
-/// and the cursor never revisits text already emitted.
-fn renumber_placeholders(condition: &str, offset: usize) -> String {
-    if offset == 0 {
-        return condition.to_string();
-    }
-
-    let chars: Vec<char> = condition.chars().collect();
-    let mut result = String::with_capacity(condition.len());
-    let mut i = 0;
-    while i < chars.len() {
-        if chars[i] == '?' {
-            let start = i + 1;
-            let mut end = start;
-            while end < chars.len() && chars[end].is_ascii_digit() {
-                end += 1;
-            }
-            if end > start {
-                let digits: String = chars[start..end].iter().collect();
-                let n: usize = digits.parse().unwrap();
-                result.push_str(&format!("?{}", n + offset));
-                i = end;
-                continue;
-            }
-        }
-        result.push(chars[i]);
-        i += 1;
-    }
-    result
-}
-
 /// Service for executing queries against the database
 pub struct QueryService {
     store: Arc<SqliteStore>,
@@ -290,10 +255,6 @@ impl QueryService {
     pub async fn execute(&self, query: &QueryDefinition) -> Result<Vec<Node>> {
         let built = self.build_query(query)?;
 
-        // Execute query to get basic node data (without FETCH to avoid Thing deserialization)
-        // Use SqliteStore's internal query_nodes for proper handling
-        // For now we'll use a simple direct query and manually fetch properties
-
         // Get node IDs that match the query
         let node_ids = self.execute_query_for_ids(&built).await?;
 
@@ -302,13 +263,10 @@ impl QueryService {
             return Ok(Vec::new());
         }
 
-        // Fetch full nodes using the store's get_node method
-        let mut nodes = Vec::new();
-        for id in node_ids {
-            if let Some(node) = self.store.get_node(&id).await? {
-                nodes.push(node);
-            }
-        }
+        // Fetch the matched nodes in one batched read, kept in the order the
+        // query returned their ids.
+        let mut by_id = self.store.get_nodes_by_ids(&node_ids).await?;
+        let mut nodes: Vec<Node> = node_ids.iter().filter_map(|id| by_id.remove(id)).collect();
 
         // Re-apply sorting in Rust to guarantee sort order
         // This ensures consistent sorting even if database ordering behaves unexpectedly
@@ -345,10 +303,10 @@ impl QueryService {
     }
 
     /// Compare two nodes by a specific field (Namespaced property access)
-    fn compare_nodes_by_field(
+    fn compare_nodes_by_field<'a>(
         &self,
-        a: &Node,
-        b: &Node,
+        a: &'a Node,
+        b: &'a Node,
         field: &str,
         target_type: &str,
     ) -> std::cmp::Ordering {
@@ -359,11 +317,24 @@ impl QueryService {
             "content" => a.content.cmp(&b.content),
             "node_type" => a.node_type.cmp(&b.node_type),
             "title" => a.title.cmp(&b.title),
-            // Type-specific properties (accessed via namespaced properties JSON)
-            // Access properties[node_type][field] for proper namespaced access
+            // Type-specific properties, read from the same bucket the SQL
+            // ordering reads (`resolve_field`): the target type's. A query
+            // for `task` also returns `issue` rows (ADR-078), whose inherited
+            // `status` and `priority` stay in the `task` bucket, so reading
+            // each row's own-type bucket would sort every subtype row as
+            // having no value. A wildcard query has no one bucket, so each
+            // row is read at its own type, as the SQL does.
             _ => {
-                let val_a = a.properties.get(&a.node_type).and_then(|ns| ns.get(field));
-                let val_b = b.properties.get(&b.node_type).and_then(|ns| ns.get(field));
+                let bucket = |node: &'a Node| {
+                    let scope = if target_type == "*" {
+                        node.node_type.as_str()
+                    } else {
+                        target_type
+                    };
+                    node.properties.get(scope).and_then(|ns| ns.get(field))
+                };
+                let val_a = bucket(a);
+                let val_b = bucket(b);
 
                 // A task's or project's priority is an enum whose alphabetical
                 // order is meaningless, so rank it. This pass runs after the SQL
@@ -498,12 +469,14 @@ impl QueryService {
         let mut built = BoundSql::default();
         let mut conditions = Vec::new();
 
-        // Add type filter if not wildcard. `node_type` here is compared as a
-        // value, so it binds — unlike the same string used as a JSON path
-        // segment below, which cannot.
+        // Add type filter if not wildcard. A type matches its subtypes
+        // (ADR-078): the ancestry table holds every type that is, or extends,
+        // the target. The type here is compared as a value, so it binds —
+        // unlike the same string used as a JSON path segment below, which
+        // cannot.
         if query.target_type != "*" {
             let placeholder = built.bind(libsql::Value::Text(query.target_type.clone()));
-            conditions.push(format!("node_type = {}", placeholder));
+            conditions.push(crate::db::schema::is_a_bound_sql("node_type", &placeholder));
         }
 
         // Build filter conditions (pass target_type for namespaced property access)
@@ -536,8 +509,8 @@ impl QueryService {
     /// The counting counterpart to [`Self::execute`]: same rows, same WHERE
     /// clause, but a scalar instead of hydrated [`Node`]s. A caller that only
     /// needs a total (the query editor's preview) should use this rather than
-    /// `execute` + `.len()`, which pays to select ids, `get_node` each one, and
-    /// transfer every column of every match purely to discard them.
+    /// `execute` + `.len()`, which pays to select ids, load every matching
+    /// node, and transfer every column of each purely to discard them.
     ///
     /// `sorting` and `limit` on the definition are ignored: ordering cannot
     /// change a count, and a limit would cap the answer at the very ceiling this
@@ -553,6 +526,35 @@ impl QueryService {
             .count_nodes_raw(&built.sql, built.params)
             .await
             .context("Failed to execute count query")
+    }
+
+    /// Whether the node `node_id` is one of the rows a query matches.
+    ///
+    /// The same WHERE clause [`Self::execute`] and [`Self::count`] share,
+    /// narrowed to one id: a membership test that cannot disagree with what
+    /// running the query would return. `sorting` and `limit` are ignored, as
+    /// for a count.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if query building or database execution fails.
+    pub async fn matches(&self, query: &QueryDefinition, node_id: &str) -> Result<bool> {
+        let mut built = self.build_where_clause(query)?;
+        let id = built.bind(libsql::Value::Text(node_id.to_string()));
+        let narrowed = if built.sql.is_empty() {
+            format!(" WHERE id = {id}")
+        } else {
+            format!("{} AND id = {id}", built.sql)
+        };
+        let count = self
+            .store
+            .count_nodes_raw(
+                &format!("SELECT COUNT(*) FROM node{narrowed};"),
+                built.params,
+            )
+            .await
+            .context("Failed to execute membership query")?;
+        Ok(count > 0)
     }
 
     /// Translate QueryDefinition to a `SELECT COUNT(*)` over the same rows
@@ -879,178 +881,103 @@ impl QueryService {
         }
     }
 
-    /// Build relationship filter condition (shared logic)
+    /// The filter's path, resolved against the schemas ahead of SQL
+    /// compilation (see [`QueryFilter::resolved_path`]).
+    fn resolved_path(filter: &QueryFilter) -> Result<&ResolvedPath> {
+        let resolved = filter.resolved_path.as_ref().ok_or_else(|| {
+            anyhow::anyhow!(
+                "the filter's path was not resolved before SQL compilation \
+                 (expected `query_ops` to populate `resolved_path`)"
+            )
+        })?;
+        if resolved.is_empty() {
+            anyhow::bail!("filter path must name at least one relationship");
+        }
+        Ok(resolved)
+    }
+
+    /// Build a relationship filter condition (`FilterType::Relationship`):
+    /// the nodes from which the filter's path reaches the node `node_id`
+    /// names.
     ///
-    /// The relationship type is a fixed literal chosen by the match arm, not
-    /// caller input, so only the node id needs binding.
+    /// The path compiles through
+    /// [`crate::db::path_reaches_condition`], the one compiler of relationship
+    /// walks: it starts from the anchor and walks the path backward, so the
+    /// subquery is evaluated once for the statement rather than once per
+    /// candidate row.
     fn build_relationship_condition(
         &self,
         id_field: &str,
         filter: &QueryFilter,
         built: &mut BoundSql,
     ) -> Result<String> {
-        let rel_type = filter
-            .relationship_type
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("Missing relationshipType"))?;
+        let path = Self::resolved_path(filter)?;
         let node_id = filter
             .node_id
             .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("Missing nodeId"))?;
+            .ok_or_else(|| anyhow::anyhow!("Relationship filter missing 'nodeId'"))?;
 
-        // Which column the id is matched against, and which is selected, is the
-        // only thing the relationship type varies.
-        let (selected, matched, relationship_type) = match rel_type {
-            RelationshipType::Children => ("out_node", "in_node", "has_child"),
-            RelationshipType::Parent => ("in_node", "out_node", "has_child"),
-            RelationshipType::Mentions => ("out_node", "in_node", "mentions"),
-            RelationshipType::MentionedBy => ("in_node", "out_node", "mentions"),
-        };
-
-        let placeholder = built.bind(libsql::Value::Text(node_id.clone()));
-        Ok(format!(
-            "{} IN (SELECT {} FROM relationship WHERE {} = {} AND relationship_type = '{}')",
-            id_field, selected, matched, placeholder, relationship_type
+        let anchor = built.bind(libsql::Value::Text(node_id.clone()));
+        Ok(crate::db::path_reaches_condition(
+            id_field,
+            path,
+            &format!("SELECT {anchor}"),
+            &mut |value| built.bind(value),
         ))
     }
 
-    /// Build a related-node filter condition (`FilterType::Related`)
+    /// Build a related-node filter condition (`FilterType::Related`): the
+    /// nodes from which the filter's path reaches a node satisfying the
+    /// nested filter.
     ///
-    /// Extends [`Self::build_relationship_condition`]'s bare-membership shape
-    /// with a nested condition evaluated against the related node(s): resolve
-    /// the relationship's stored type and direction (already done ahead of
-    /// SQL compilation — see [`QueryFilter::resolved_relationship`]), then
-    /// compile to `id_field IN (SELECT <out|in>_node FROM relationship JOIN
-    /// node ON node.id = relationship.<in|out>_node WHERE relationship_type =
-    /// ? AND <nested condition>)`. The nested condition is a recursive call
-    /// into the same filter-building logic used for a top-level filter, using
-    /// `related_type` (or, absent one, the same per-row `node_type` fallback
-    /// [`Self::resolve_field`] uses under a wildcard query) to resolve the
-    /// nested filter's own property paths against the JOINed row.
+    /// The nested condition selects the related nodes
+    /// (`SELECT id FROM node WHERE <condition>`), and the path is walked
+    /// backward from them. Compiling the nested condition as its own
+    /// `SELECT` gives it a `node` with no other `node` in its scope, so its
+    /// bare column references (`properties`, `content`, …) cannot be confused
+    /// with the outer query's.
     ///
-    /// A many-cardinality relationship needs no special casing: `IN (SELECT
-    /// ...)` is already an existence test over however many rows the subquery
-    /// returns, whether that is zero, one, or many — "connected to at least
-    /// one project matching..." falls out of the shape for free.
+    /// The nested filter's property paths resolve against the declared type
+    /// the path reaches. When the far end has no single declared type (a
+    /// built-in relationship, or an untyped declaration) they fall back to
+    /// the per-row `'$.' || node_type || '.<field>'` path a wildcard query
+    /// uses, since the related rows may span more than one type.
+    ///
+    /// A many-cardinality relationship needs no special casing: the walk
+    /// yields every node that reaches at least one matching related node.
     fn build_related_filter(
         &self,
         id_field: &str,
         filter: &QueryFilter,
         built: &mut BoundSql,
     ) -> Result<String> {
-        let resolved = filter.resolved_relationship.as_ref().ok_or_else(|| {
-            anyhow::anyhow!(
-                "Related filter's relationshipName was not resolved before SQL compilation \
-                 (expected `to_query_definition` to populate `resolved_relationship`)"
-            )
-        })?;
+        let path = Self::resolved_path(filter)?;
         let nested = filter
             .filter
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("Related filter missing 'filter'"))?;
 
-        validate_identifier(&resolved.stored_type, "resolved relationship type")?;
-        if let Some(related_type) = &resolved.related_type {
-            validate_identifier(related_type, "resolved relationship related type")?;
+        let related_type = path.far_type().unwrap_or("*");
+        if related_type != "*" {
+            validate_identifier(related_type, "related node type")?;
         }
-        if let Some(source_type) = &resolved.source_type {
-            validate_identifier(source_type, "resolved relationship source type")?;
-        }
-
-        // The outer node's column vs. the related node's column are opposite
-        // ends of the same row — exactly the (selected, matched) split
-        // `build_relationship_condition` uses, just decided by direction
-        // rather than by a fixed match arm.
-        let (outer_column, related_column) = if resolved.outer_is_in_node {
-            ("in_node", "out_node")
-        } else {
-            ("out_node", "in_node")
-        };
-
-        // The nested condition is compiled as its own independent statement
-        // — `SELECT id FROM node WHERE <condition>` — rather than spliced
-        // into the same FROM clause as the relationship join. This is
-        // deliberate, not incidental: the outer query this whole condition
-        // is built for is itself `SELECT * FROM node WHERE ...`, so an
-        // unqualified `node` introduced by a join here would sit in the same
-        // lexical scope as the outer query's own `node` and every bare
-        // column reference the nested condition builds (`properties`,
-        // `content`, `created_at`, ...) would be ambiguous between the two.
-        // Nesting the property condition in its own subquery instead gives
-        // it a `node` with no other `node` anywhere in its scope chain, at
-        // the cost of one extra (indexed, id-keyed) subquery level rather
-        // than a single join.
-        let mut nested_built = BoundSql::default();
         let nested_condition = match nested.filter_type {
-            FilterType::Property => {
-                let related_type = resolved.related_type.as_deref().unwrap_or("*");
-                self.build_property_filter(nested, related_type, &mut nested_built)?
-            }
-            FilterType::Content => self.build_content_filter(nested, &mut nested_built)?,
-            FilterType::Relationship => {
-                self.build_relationship_filter(nested, &mut nested_built)?
-            }
-            FilterType::Metadata => self.build_metadata_filter(nested, &mut nested_built)?,
-            // Rejected at validation time (`QueryFilter::validate_identifiers`'s
+            FilterType::Property => self.build_property_filter(nested, related_type, built)?,
+            FilterType::Content => self.build_content_filter(nested, built)?,
+            FilterType::Relationship => self.build_relationship_filter(nested, built)?,
+            FilterType::Metadata => self.build_metadata_filter(nested, built)?,
+            // Rejected at validation time (`validate_filter_identifiers`'s
             // depth cap) before this method is ever reached.
             FilterType::Related => {
                 anyhow::bail!("Related filter nesting depth exceeds the maximum of 1")
             }
         };
-        // The nested subquery's own placeholders are renumbered onto the end
-        // of the outer `built`'s parameter list — `BoundSql::bind` numbers
-        // sequentially from the whole statement's start, so a subquery built
-        // in isolation cannot know its final placeholder numbers up front.
-        let offset = built.params.len();
-        built.params.extend(nested_built.params);
-        let nested_condition = renumber_placeholders(&nested_condition, offset);
 
-        let relationship_type_placeholder =
-            built.bind(libsql::Value::Text(resolved.stored_type.clone()));
-
-        // A reverse match is already exact without a per-type filter: the
-        // resolver's precedence means a reverse name is declared by exactly
-        // one schema, so `relationship_type` alone (bound above) identifies
-        // the edge kind precisely — no further narrowing by `related_type`
-        // is needed here the way `rel_ops::get_related_nodes` narrows its
-        // *returned nodes*, because this compiles a set-membership condition
-        // rather than materializing rows to filter in Rust.
-        //
-        // `EXISTS`, not `id_field IN (SELECT ...)`: the two look
-        // interchangeable but are not once the subquery is correlated back
-        // to the SAME column the outer clause tests. `id IN (SELECT out_node
-        // FROM relationship WHERE in_node = node.id)` asks "is this row's own
-        // id a member of the set of related ids" — for row `task-a` related
-        // to `proj-active`, that tests `'task-a' IN ('proj-active')`, which
-        // is false for every row whose id differs from its own related
-        // node's id (i.e. always, barring a self-referential edge). `id_field`
-        // is not a stand-in for "this row" the way it is in
-        // `build_relationship_condition`'s sibling method, where the
-        // outer-side check is bound to a caller-supplied literal `node_id`
-        // instead of correlated to the row under test — `EXISTS` is the
-        // correct shape once the correlation and the tested column are the
-        // same column.
-        //
-        // The correlation is written as `node.{id_field}`, explicitly
-        // qualified, never a bare `{id_field}`: `relationship` has its OWN
-        // `id` primary-key column (a random edge-row id, unrelated to any
-        // node), so inside `EXISTS (SELECT ... FROM relationship WHERE ...)`
-        // an unqualified `id` resolves to `relationship.id` — the innermost
-        // table that has a same-named column — not to the outer `node.id`
-        // this is meant to correlate against. That silently compared every
-        // edge's own random row id to itself, matching nothing, rather than
-        // raising a "no such column" error that would have caught it
-        // immediately. `id_field` is always `"id"` at every call site
-        // ([`Self::build_related_filter`] is invoked only from
-        // [`Self::build_where_clause`] with the literal `"id"`), so it is
-        // qualified against the literal `node` table here rather than
-        // threading a caller-supplied qualifier through for a case that does
-        // not arise.
-        Ok(format!(
-            "EXISTS (SELECT 1 FROM relationship \
-             WHERE relationship.{outer_column} = node.{id_field} \
-             AND relationship.relationship_type = {relationship_type_placeholder} \
-             AND relationship.{related_column} IN (SELECT id FROM node WHERE {nested_condition}))"
+        Ok(crate::db::path_reaches_condition(
+            id_field,
+            path,
+            &format!("SELECT id FROM node WHERE {nested_condition}"),
+            &mut |value| built.bind(value),
         ))
     }
 

@@ -3,15 +3,21 @@
 //! Core data structures for the play engine: parsed play representation,
 //! trigger keys for O(1) rule matching, and execution work items.
 //!
-//! These types are the in-memory representation used by the engine at runtime.
-//! They are parsed from the JSON properties stored on play nodes.
+//! These types are the engine's compiled form of a play (ADR-086 §1): built
+//! from the typed wire rules ([`RuleDefinition`], defined once in
+//! `nodespace-types`) by [`parse_rule`], and never serialized. They hold the
+//! wire type's enums rather than re-declaring them.
 
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::playbook::cel::CompiledCondition;
+
+pub use nodespace_types::{
+    Action, ActionType, GraphEventType, InlineSelector, PlayFields, RuleClass, RuleDefinition,
+    SavedQuerySelector, Selector, Trigger,
+};
 
 /// Maximum depth for play execution chains (ADR-060 §5).
 ///
@@ -151,27 +157,6 @@ pub enum PlayStatus {
     Disabled,
 }
 
-/// Execution class of a play rule (ADR-060).
-///
-/// - `Reactive` is today's behavior: the rule runs asynchronously, post-commit,
-///   on every device that observes the triggering event.
-/// - `Invariant` rules run synchronously inside the creating transaction,
-///   fail-closed, on the originating device only. They are subject to the
-///   save-time eligibility checks in [`crate::playbook::validation`] (ADR-060 §2).
-///
-/// The class is a property of the rule, declared in the play and validated at
-/// save time. It defaults to `Reactive` so every rule authored before this class
-/// existed keeps its current semantics unchanged.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum RuleClass {
-    /// Synchronous, in-transaction, origin-device-only, fail-closed.
-    Invariant,
-    /// Asynchronous, post-commit, every device. The default.
-    #[default]
-    Reactive,
-}
-
 /// A single parsed rule from a play's `rules` array.
 #[derive(Debug, Clone)]
 pub struct ParsedRule {
@@ -183,31 +168,52 @@ pub struct ParsedRule {
     pub actions: Vec<ParsedAction>,
 }
 
-/// Parsed trigger definition — either a graph event or a scheduled cron.
+/// A rule's trigger, compiled.
 #[derive(Debug, Clone)]
 pub enum ParsedTrigger {
     GraphEvent {
         on: GraphEventType,
+        /// The type the trigger's selector names. A graph event is matched
+        /// against the type of the node the event is about, so its selector
+        /// is always a bare type.
         node_type: String,
         /// Only present for `PropertyChanged`
         property_key: Option<String>,
     },
     Scheduled {
         cron: String,
-        node_type: String,
+        /// Which nodes the rule is evaluated against when the schedule comes
+        /// due: an inline type and filters, or a saved query.
+        select: Selector,
     },
 }
 
-/// Graph event types as stored in the play JSON.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum GraphEventType {
-    NodeCreated,
-    PropertyChanged,
-    RelationshipAdded,
-    RelationshipRemoved,
+impl ParsedTrigger {
+    /// The type this trigger is registered on, when the rule itself names it:
+    /// the type of a graph event's selector or of a scheduled trigger's inline
+    /// selector.
+    ///
+    /// `None` for a scheduled trigger that selects through a saved query: the
+    /// type is the query node's `target_type`, read when the play is validated
+    /// and again each time the schedule fires (see
+    /// [`crate::playbook::selectors::selector_query`]).
+    pub fn registered_type(&self) -> Option<&str> {
+        match self {
+            Self::GraphEvent { node_type, .. } => Some(node_type),
+            Self::Scheduled {
+                select: Selector::Inline(inline),
+                ..
+            } => Some(&inline.target_type),
+            Self::Scheduled {
+                select: Selector::Query(_),
+                ..
+            } => None,
+        }
+    }
 }
 
-/// A parsed action from a rule's `actions` array.
+/// An action, compiled: its params as the JSON whose `{binding}` templates
+/// are resolved each time the action runs.
 #[derive(Debug, Clone)]
 pub struct ParsedAction {
     pub action_type: ActionType,
@@ -216,63 +222,29 @@ pub struct ParsedAction {
     pub for_each: Option<String>,
 }
 
-/// Action types supported by the engine (v1 — graph operations only, plus
-/// `Reject` (ADR-060 §2) — the one non-graph-mutating action, whose entire
-/// effect is vetoing the triggering write rather than augmenting it).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ActionType {
-    CreateNode,
-    UpdateNode,
-    AddRelationship,
-    RemoveRelationship,
-    /// Deterministically fails the enclosing transaction with an
-    /// author-supplied message (`params.message`), instead of writing
-    /// anything. Meaningful only on a `RuleClass::Invariant` rule — there is
-    /// no transaction left to fail once a rule's actions run asynchronously,
-    /// post-commit (`Reactive`, ADR-060's default class), so save-time
-    /// validation (`playbook::validation::validate_reject_action_class`)
-    /// rejects a `Reject` action declared on a `Reactive` rule. See
-    /// `playbook::actions::execute_reject` for the execution-time contract.
-    Reject,
-}
-
-impl ActionType {
-    /// The canonical JSON name for this action type (the value parsed from a
-    /// rule's `action_type` field).
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::CreateNode => "create_node",
-            Self::UpdateNode => "update_node",
-            Self::AddRelationship => "add_relationship",
-            Self::RemoveRelationship => "remove_relationship",
-            Self::Reject => "reject",
-        }
-    }
-
-    /// Whether this action performs only a local graph write.
-    ///
-    /// ADR-060 §2 requires an invariant rule's actions to be **local writes
-    /// only**: a transaction cannot await an LLM call, a network request, a PTY,
-    /// or any external service, and holding a write transaction across an
-    /// unbounded wait is a correctness and liveness hazard.
-    ///
-    /// Every v1 graph-mutation action type is a pure local graph mutation, so
-    /// this returns `true` for all of them. `Reject` also returns `true`: it
-    /// performs no I/O of any kind — deterministically returning an error is
-    /// pure computation — so it can never violate the local-writes-only
-    /// guarantee this check exists to enforce. It is written as an exhaustive
-    /// `match` rather than a blanket `true` deliberately: adding a non-local
-    /// action type later (LLM/network/PTY/external) will fail to compile
-    /// until it is classified here, so such an action can never silently
-    /// become eligible for an invariant rule.
-    pub fn is_local_write(&self) -> bool {
-        match self {
-            Self::CreateNode
-            | Self::UpdateNode
-            | Self::AddRelationship
-            | Self::RemoveRelationship
-            | Self::Reject => true,
-        }
+/// Whether an action performs only a local graph write.
+///
+/// ADR-060 §2 requires an invariant rule's actions to be **local writes
+/// only**: a transaction cannot await an LLM call, a network request, a PTY,
+/// or any external service, and holding a write transaction across an
+/// unbounded wait is a correctness and liveness hazard.
+///
+/// Every graph-mutation action is a pure local graph mutation, so this
+/// returns `true` for all of them. `Reject` also returns `true`: it performs
+/// no I/O of any kind — deterministically returning an error is pure
+/// computation — so it can never violate the local-writes-only guarantee this
+/// check exists to enforce. It is written as an exhaustive `match` rather
+/// than a blanket `true` deliberately: adding a non-local action type later
+/// (LLM/network/PTY/external) will fail to compile until it is classified
+/// here, so such an action can never silently become eligible for an
+/// invariant rule.
+pub fn is_local_write(action_type: ActionType) -> bool {
+    match action_type {
+        ActionType::CreateNode
+        | ActionType::UpdateNode
+        | ActionType::AddRelationship
+        | ActionType::RemoveRelationship
+        | ActionType::Reject => true,
     }
 }
 
@@ -317,6 +289,22 @@ pub struct ExecutionWorkItem {
     pub trigger_event: crate::db::events::EventEnvelope,
     /// Pre-fetched node that fired the trigger (wire-format)
     pub trigger_node: crate::models::Node,
+    /// What a scheduled scan worked out for every node it selected. `None`
+    /// for an event-triggered work item.
+    pub scan: Option<Arc<ScanContext>>,
+}
+
+/// What a scheduled scan resolves once, for every node it selected, before
+/// enqueuing a work item per node.
+#[derive(Debug, Default)]
+pub struct ScanContext {
+    /// The type the scan's selector selects: the scope its rules read each
+    /// node at (ADR-078). For a saved-query selector this is the query's
+    /// `target_type` as it stood when the schedule fired.
+    pub target_type: String,
+    /// The rules' condition paths, resolved for all the scanned nodes at
+    /// once and keyed by the node each was resolved from.
+    pub paths: crate::playbook::graph_resolver::PathCache,
 }
 
 // ---------------------------------------------------------------------------
@@ -337,7 +325,9 @@ pub type TriggerIndex = HashMap<TriggerKey, Vec<OrderedRuleRef>>;
 #[derive(Debug, Clone)]
 pub struct CronEntry {
     pub cron_expression: String,
-    pub node_type: String,
+    /// Which nodes the entry's rules are evaluated against. Rules sharing a
+    /// cron expression and a selector share one entry, and so one query.
+    pub select: Selector,
     pub rules: Vec<OrderedRuleRef>,
 }
 
@@ -345,92 +335,38 @@ pub struct CronEntry {
 pub type CronRegistry = Vec<CronEntry>;
 
 // ---------------------------------------------------------------------------
-// JSON deserialization types (from play node properties)
-// ---------------------------------------------------------------------------
-
-/// Raw rule definition as stored in the play node's `properties.play.rules` JSON array.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RuleDefinition {
-    pub name: String,
-    /// Execution class (ADR-060). Omitted in JSON → `Reactive`, so every
-    /// existing rule definition keeps today's async, post-commit semantics.
-    #[serde(default)]
-    pub class: RuleClass,
-    pub trigger: TriggerDefinition,
-    #[serde(default)]
-    pub conditions: Vec<String>,
-    #[serde(default)]
-    pub actions: Vec<ActionDefinition>,
-}
-
-/// Raw trigger definition from JSON.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TriggerDefinition {
-    #[serde(rename = "type")]
-    pub trigger_type: String,
-    /// Event name for graph_event triggers
-    #[serde(default)]
-    pub on: Option<String>,
-    /// Node type to match
-    #[serde(default)]
-    pub node_type: Option<String>,
-    /// Property key for property_changed triggers
-    #[serde(default)]
-    pub property_key: Option<String>,
-    /// Cron expression for scheduled triggers
-    #[serde(default)]
-    pub cron: Option<String>,
-}
-
-/// Raw action definition from JSON.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ActionDefinition {
-    pub action_type: String,
-    #[serde(default)]
-    pub params: serde_json::Value,
-    #[serde(default)]
-    pub for_each: Option<String>,
-}
-
-// ---------------------------------------------------------------------------
 // Parsing
 // ---------------------------------------------------------------------------
 
-/// Errors that can occur when parsing a play's rule definitions.
+/// Errors that can occur when compiling a play's rules.
 #[derive(Debug, Clone, PartialEq)]
 pub enum PlayParseError {
-    InvalidTriggerType(String),
-    InvalidEventType(String),
-    InvalidActionType(String),
-    MissingField(String),
-    InvalidJson(String),
+    /// The stored `rules` do not decode as typed rules: an unknown trigger
+    /// type, event or action, a missing param, or a param the action does not
+    /// take. The message names the rule and the field.
+    InvalidRules(String),
+    /// A trigger's selector is one its trigger type cannot use.
+    UnsupportedSelector(String),
     InvalidCondition(crate::playbook::cel::CelCompileError),
 }
 
 impl std::fmt::Display for PlayParseError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::InvalidTriggerType(t) => write!(f, "invalid trigger type: {}", t),
-            Self::InvalidEventType(t) => write!(f, "invalid event type: {}", t),
-            Self::InvalidActionType(t) => write!(f, "invalid action type: {}", t),
-            Self::MissingField(t) => write!(f, "missing required field: {}", t),
-            Self::InvalidJson(t) => write!(f, "invalid JSON: {}", t),
+            Self::InvalidRules(t) => write!(f, "{}", t),
+            Self::UnsupportedSelector(t) => write!(f, "unsupported selector: {}", t),
             Self::InvalidCondition(e) => write!(f, "{}", e),
         }
     }
 }
 
-/// Parse a `RuleDefinition` (from JSON) into a `ParsedRule`.
+/// Compile a typed [`RuleDefinition`] into a `ParsedRule`.
 ///
 /// CEL conditions are compiled here, once, and the resulting `Program`s are
 /// cached on the rule for reuse across every future evaluation.
 pub fn parse_rule(def: &RuleDefinition) -> Result<ParsedRule, PlayParseError> {
     let trigger = parse_trigger(&def.trigger)?;
-    let actions = def
-        .actions
-        .iter()
-        .map(parse_action)
-        .collect::<Result<Vec<_>, _>>()?;
+    let actions = def.actions.iter().map(parse_action).collect();
     let conditions = def
         .conditions
         .iter()
@@ -446,83 +382,69 @@ pub fn parse_rule(def: &RuleDefinition) -> Result<ParsedRule, PlayParseError> {
     })
 }
 
-fn parse_trigger(def: &TriggerDefinition) -> Result<ParsedTrigger, PlayParseError> {
-    match def.trigger_type.as_str() {
-        "graph_event" => {
-            let on_str = def
-                .on
-                .as_deref()
-                .ok_or_else(|| PlayParseError::MissingField("on".to_string()))?;
-            let node_type = def
-                .node_type
-                .clone()
-                .ok_or_else(|| PlayParseError::MissingField("node_type".to_string()))?;
-
-            let on = match on_str {
-                "node_created" => GraphEventType::NodeCreated,
-                "property_changed" => GraphEventType::PropertyChanged,
-                "relationship_added" => GraphEventType::RelationshipAdded,
-                "relationship_removed" => GraphEventType::RelationshipRemoved,
-                other => {
-                    return Err(PlayParseError::InvalidEventType(other.to_string()));
+fn parse_trigger(trigger: &Trigger) -> Result<ParsedTrigger, PlayParseError> {
+    match trigger {
+        Trigger::GraphEvent {
+            on,
+            select,
+            property_key,
+        } => {
+            // An event is matched in memory against the type of the node it
+            // is about, before any query could run, and an invariant rule is
+            // matched inside the triggering transaction. Filters and saved
+            // queries select by running a query, which is what a scheduled
+            // scan does; here the conditions are where a rule narrows.
+            let node_type = match select {
+                Selector::Inline(inline) if inline.filters.is_empty() => inline.target_type.clone(),
+                Selector::Inline(_) => {
+                    return Err(PlayParseError::UnsupportedSelector(
+                        "a graph_event trigger selects by type only; move the selector's \
+                         filters into the rule's conditions, or use a scheduled trigger"
+                            .to_string(),
+                    ));
+                }
+                Selector::Query(_) => {
+                    return Err(PlayParseError::UnsupportedSelector(
+                        "a graph_event trigger selects by type only; a saved query can \
+                         select for a scheduled trigger"
+                            .to_string(),
+                    ));
                 }
             };
-
             Ok(ParsedTrigger::GraphEvent {
-                on,
+                on: *on,
                 node_type,
-                property_key: def.property_key.clone(),
+                property_key: property_key.clone(),
             })
         }
-        "scheduled" => {
-            let cron = def
-                .cron
-                .clone()
-                .ok_or_else(|| PlayParseError::MissingField("cron".to_string()))?;
-            let node_type = def
-                .node_type
-                .clone()
-                .ok_or_else(|| PlayParseError::MissingField("node_type".to_string()))?;
-
-            Ok(ParsedTrigger::Scheduled { cron, node_type })
-        }
-        other => Err(PlayParseError::InvalidTriggerType(other.to_string())),
+        Trigger::Scheduled { cron, select } => Ok(ParsedTrigger::Scheduled {
+            cron: cron.clone(),
+            select: select.clone(),
+        }),
     }
 }
 
-pub fn parse_action(def: &ActionDefinition) -> Result<ParsedAction, PlayParseError> {
-    let action_type = match def.action_type.as_str() {
-        "create_node" => ActionType::CreateNode,
-        "update_node" => ActionType::UpdateNode,
-        "add_relationship" => ActionType::AddRelationship,
-        "remove_relationship" => ActionType::RemoveRelationship,
-        "reject" => ActionType::Reject,
-        other => {
-            return Err(PlayParseError::InvalidActionType(other.to_string()));
-        }
-    };
-
-    Ok(ParsedAction {
-        action_type,
-        params: def.params.clone(),
-        for_each: def.for_each.clone(),
-    })
+/// Compile a typed [`Action`]. Its params become the JSON the executor
+/// resolves `{binding}` templates in.
+pub fn parse_action(action: &Action) -> ParsedAction {
+    ParsedAction {
+        action_type: action.action_type(),
+        params: action.params_value(),
+        for_each: action.for_each().map(str::to_string),
+    }
 }
 
-/// Parse the `rules` array from a play node's stored properties.
+/// Decode the typed rules from a play node's stored properties.
 ///
 /// A play's declared fields are stored in its type bucket, so the rules are
-/// at `properties["play"]["rules"]`.
+/// at `properties["play"]["rules"]`. [`PlayFields`] is the one reader of
+/// them; a play with no `rules` has none.
 pub fn parse_rules_from_properties(
     properties: &serde_json::Value,
 ) -> Result<Vec<RuleDefinition>, PlayParseError> {
-    let rules_value = properties
-        .get("play")
-        .and_then(|play| play.get("rules"))
-        .ok_or_else(|| PlayParseError::MissingField("rules".to_string()))?;
-
-    serde_json::from_value(rules_value.clone())
-        .map_err(|e| PlayParseError::InvalidJson(e.to_string()))
+    PlayFields::from_properties(properties)
+        .map(|fields| fields.rules)
+        .map_err(|e| PlayParseError::InvalidRules(e.to_string()))
 }
 
 // ---------------------------------------------------------------------------
@@ -539,12 +461,12 @@ mod tests {
 
     #[test]
     fn reject_parses_from_json_action_type() {
-        let def = ActionDefinition {
-            action_type: "reject".to_string(),
-            params: serde_json::json!({ "message": "no" }),
-            for_each: None,
-        };
-        assert_eq!(parse_action(&def).unwrap().action_type, ActionType::Reject);
+        let action: Action = serde_json::from_value(serde_json::json!({
+            "action_type": "reject",
+            "params": { "message": "no" }
+        }))
+        .unwrap();
+        assert_eq!(parse_action(&action).action_type, ActionType::Reject);
     }
 
     #[test]
@@ -557,7 +479,7 @@ mod tests {
         // No I/O of any kind — deterministically failing is pure
         // computation — so it must never be excluded from an invariant
         // rule's action list on locality grounds.
-        assert!(ActionType::Reject.is_local_write());
+        assert!(is_local_write(ActionType::Reject));
     }
 
     /// Helper: a minimal `OrderedRuleRef` for a given play id / rule index.
@@ -638,7 +560,7 @@ mod tests {
                 class: RuleClass::Invariant,
                 trigger: ParsedTrigger::Scheduled {
                     cron: "0 * * * * * *".to_string(),
-                    node_type: "task".to_string(),
+                    select: Selector::of_type("task"),
                 },
                 conditions: vec![],
                 actions: vec![],

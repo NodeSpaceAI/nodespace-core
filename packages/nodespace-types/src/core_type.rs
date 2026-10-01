@@ -361,7 +361,7 @@ impl CoreNodeType {
                 EMBEDDED.not_mentionable(),
                 WireShape::Typed { update: false },
             )),
-            Self::Play => entry("play", Structured, Name, NOT_EMBEDDED, WireShape::Generic),
+            Self::Play => entry("play", Structured, Name, NOT_EMBEDDED, TYPED),
             // The chat family (ADR-088). The base is never instantiated; its
             // rules are the floor both subtypes inherit.
             Self::AiChat => CoreTypeInfo {

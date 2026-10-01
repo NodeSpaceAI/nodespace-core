@@ -115,7 +115,7 @@ describe('buildExecuteQueryWire', () => {
       {
         type: 'relationship',
         operator: 'exists',
-        relationshipType: 'mentioned_by',
+        path: ['mentioned_by'],
         nodeId: 'n1'
       }
     ];
@@ -132,9 +132,53 @@ describe('buildExecuteQueryWire', () => {
       {
         type: 'relationship',
         operator: 'exists',
-        relationship_type: 'mentioned_by',
+        path: ['mentioned_by'],
         node_id: 'n1'
       }
+    ]);
+  });
+
+  it('sends a path as written and encodes a nested filter the same way', () => {
+    const filters: QueryFilter[] = [
+      {
+        type: 'related',
+        operator: 'exists',
+        path: [{ name: 'child_of', open_ended: true }, 'project'],
+        filter: {
+          type: 'property',
+          operator: 'equals',
+          property: 'status',
+          value: 'active',
+          caseSensitive: false
+        }
+      }
+    ];
+    const wire = buildExecuteQueryWire({ targetType: 'task', filters });
+
+    expect(JSON.parse(wire.filtersJson)).toEqual([
+      {
+        type: 'related',
+        operator: 'exists',
+        path: [{ name: 'child_of', open_ended: true }, 'project'],
+        filter: {
+          type: 'property',
+          operator: 'equals',
+          property: 'status',
+          value: 'active',
+          case_sensitive: false
+        }
+      }
+    ]);
+  });
+
+  it('omits a null path or nested filter', () => {
+    const wire = buildExecuteQueryWire({
+      targetType: 'task',
+      filters: [{ type: 'content', operator: 'contains', value: 'acme', path: null, filter: null }]
+    });
+
+    expect(JSON.parse(wire.filtersJson)).toEqual([
+      { type: 'content', operator: 'contains', value: 'acme' }
     ]);
   });
 

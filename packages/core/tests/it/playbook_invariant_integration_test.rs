@@ -179,7 +179,7 @@ fn stamp_approved_invariant_rule(node_type: &str) -> serde_json::Value {
     json!([{
         "name": "stamp-approved",
         "class": "invariant",
-        "trigger": { "type": "graph_event", "on": "node_created", "node_type": node_type },
+        "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": node_type } },
         "conditions": ["node.status == 'pending'"],
         "actions": [{
             "action_type": "update_node",
@@ -282,7 +282,7 @@ async fn invariant_action_failure_rolls_back_the_whole_node_creation() -> Result
         json!({ "play": { "rules": [{
             "name": "self-member-of-non-collection",
             "class": "invariant",
-            "trigger": { "type": "graph_event", "on": "node_created", "node_type": "iv_gated" },
+            "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "iv_gated" } },
             "conditions": [],
             "actions": [{
                 "action_type": "add_relationship",
@@ -363,7 +363,7 @@ async fn one_failing_invariant_rule_rolls_back_another_rule_s_successful_effect_
             {
                 "name": "stamp-first",
                 "class": "invariant",
-                "trigger": { "type": "graph_event", "on": "node_created", "node_type": "iv_multi" },
+                "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "iv_multi" } },
                 "conditions": [],
                 "actions": [{
                     "action_type": "update_node",
@@ -373,7 +373,7 @@ async fn one_failing_invariant_rule_rolls_back_another_rule_s_successful_effect_
             {
                 "name": "fail-second",
                 "class": "invariant",
-                "trigger": { "type": "graph_event", "on": "node_created", "node_type": "iv_multi" },
+                "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "iv_multi" } },
                 "conditions": [],
                 "actions": [{
                     "action_type": "add_relationship",
@@ -619,7 +619,7 @@ async fn reactive_rule_still_fires_normally_alongside_an_invariant_rule() -> Res
             {
                 "name": "invariant-stamp",
                 "class": "invariant",
-                "trigger": { "type": "graph_event", "on": "node_created", "node_type": "iv_mixed_a" },
+                "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "iv_mixed_a" } },
                 "conditions": ["node.status == 'pending'"],
                 "actions": [{
                     "action_type": "update_node",
@@ -628,7 +628,7 @@ async fn reactive_rule_still_fires_normally_alongside_an_invariant_rule() -> Res
             },
             {
                 "name": "reactive-close",
-                "trigger": { "type": "graph_event", "on": "node_created", "node_type": "iv_mixed_b" },
+                "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "iv_mixed_b" } },
                 "conditions": ["node.status == 'open'"],
                 "actions": [{
                     "action_type": "update_node",
@@ -703,7 +703,7 @@ async fn disabling_a_seeded_invariant_play_logs_a_warning() -> Result<()> {
     let default_rules = json!([{
         "name": "seeded-invariant-rule",
         "class": "invariant",
-        "trigger": { "type": "graph_event", "on": "node_created", "node_type": "iv_seeded_task" },
+        "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "iv_seeded_task" } },
         "conditions": [],
         "actions": []
     }]);
@@ -795,7 +795,7 @@ async fn an_invariant_action_creating_a_node_does_not_trigger_another_invariant_
         json!({ "play": { "rules": [{
             "name": "create-target",
             "class": "invariant",
-            "trigger": { "type": "graph_event", "on": "node_created", "node_type": "iv_chain_source" },
+            "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "iv_chain_source" } },
             "conditions": [],
             "actions": [{
                 "action_type": "create_node",
@@ -816,7 +816,7 @@ async fn an_invariant_action_creating_a_node_does_not_trigger_another_invariant_
         json!({ "play": { "rules": [{
             "name": "stamp-target",
             "class": "invariant",
-            "trigger": { "type": "graph_event", "on": "node_created", "node_type": "iv_chain_target" },
+            "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "iv_chain_target" } },
             "conditions": [],
             "actions": [{
                 "action_type": "update_node",
@@ -972,7 +972,7 @@ fn reject_invariant_rule(node_type: &str, condition: &str, message: &str) -> ser
     json!([{
         "name": "reject-rule",
         "class": "invariant",
-        "trigger": { "type": "graph_event", "on": "node_created", "node_type": node_type },
+        "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": node_type } },
         "conditions": [condition],
         "actions": [{
             "action_type": "reject",
@@ -1279,7 +1279,7 @@ async fn relationship_reject_rule_on_a_subtype_reads_an_inherited_field() -> Res
             "trigger": {
                 "type": "graph_event",
                 "on": "relationship_added",
-                "node_type": "iv_rel_bug",
+                "select": { "target_type": "iv_rel_bug" },
             },
             "conditions": ["node.status == 'done'"],
             "actions": [{
@@ -1463,7 +1463,7 @@ async fn reject_before_augmenting_action_in_the_same_rule_prevents_the_augment()
         json!({ "play": { "rules": [{
             "name": "reject-then-augment",
             "class": "invariant",
-            "trigger": { "type": "graph_event", "on": "node_created", "node_type": "iv_reject_order_a" },
+            "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "iv_reject_order_a" } },
             "conditions": [],
             "actions": [
                 {
@@ -1547,7 +1547,7 @@ async fn reject_on_reactive_rule_bypassing_save_time_validation_is_not_activated
         json!({ "rules": [{
             "name": "reject-on-reactive",
             "class": "reactive",
-            "trigger": { "type": "graph_event", "on": "node_created", "node_type": "iv_reject_bypass" },
+            "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "iv_reject_bypass" } },
             "conditions": [],
             "actions": [{
                 "action_type": "reject",
@@ -1610,7 +1610,7 @@ async fn augmenting_action_before_reject_in_the_same_rule_is_rolled_back_too() -
         json!({ "play": { "rules": [{
             "name": "augment-then-reject",
             "class": "invariant",
-            "trigger": { "type": "graph_event", "on": "node_created", "node_type": "iv_reject_order_b" },
+            "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "iv_reject_order_b" } },
             "conditions": [],
             "actions": [
                 {
@@ -1690,7 +1690,7 @@ fn stamp_verified_on_update_invariant_rule(node_type: &str, field: &str) -> serd
     json!([{
         "name": "stamp-verified-on-update",
         "class": "invariant",
-        "trigger": { "type": "graph_event", "on": "property_changed", "node_type": node_type, "property_key": property_key },
+        "trigger": { "type": "graph_event", "on": "property_changed", "select": { "target_type": node_type }, "property_key": property_key },
         "conditions": [],
         "actions": [{
             "action_type": "update_node",
@@ -1793,7 +1793,7 @@ async fn invariant_update_rule_reject_prevents_partial_write() -> Result<()> {
         json!({ "play": { "rules": [{
             "name": "reject-blocked-transition",
             "class": "invariant",
-            "trigger": { "type": "graph_event", "on": "property_changed", "node_type": "iv_update_reject", "property_key": "iv_update_reject.status" },
+            "trigger": { "type": "graph_event", "on": "property_changed", "select": { "target_type": "iv_update_reject" }, "property_key": "iv_update_reject.status" },
             "conditions": ["node.status == 'blocked'"],
             "actions": [{
                 "action_type": "reject",
@@ -1866,7 +1866,7 @@ async fn invariant_update_rule_reject_emits_no_domain_event() -> Result<()> {
         json!({ "play": { "rules": [{
             "name": "reject-always",
             "class": "invariant",
-            "trigger": { "type": "graph_event", "on": "property_changed", "node_type": "iv_update_no_broadcast", "property_key": "iv_update_no_broadcast.status" },
+            "trigger": { "type": "graph_event", "on": "property_changed", "select": { "target_type": "iv_update_no_broadcast" }, "property_key": "iv_update_no_broadcast.status" },
             "conditions": [],
             "actions": [{
                 "action_type": "reject",
@@ -2077,7 +2077,7 @@ async fn reactive_update_rule_still_fires_asynchronously_post_commit() -> Result
         json!([{
             "name": "notify-on-status-change",
             // No "class" -> defaults to reactive.
-            "trigger": { "type": "graph_event", "on": "property_changed", "node_type": "iv_update_reactive", "property_key": "iv_update_reactive.status" },
+            "trigger": { "type": "graph_event", "on": "property_changed", "select": { "target_type": "iv_update_reactive" }, "property_key": "iv_update_reactive.status" },
             "conditions": [],
             "actions": [{
                 "action_type": "update_node",
@@ -2157,7 +2157,7 @@ fn stamp_priority_on_task_status_update_invariant_rule() -> serde_json::Value {
     json!([{
         "name": "stamp-priority-on-status-update",
         "class": "invariant",
-        "trigger": { "type": "graph_event", "on": "property_changed", "node_type": "task", "property_key": "task.status" },
+        "trigger": { "type": "graph_event", "on": "property_changed", "select": { "target_type": "task" }, "property_key": "task.status" },
         "conditions": [],
         "actions": [{
             "action_type": "update_node",
@@ -2250,7 +2250,7 @@ async fn invariant_task_update_rule_reject_prevents_partial_write() -> Result<()
         json!({ "play": { "rules": [{
             "name": "reject-done-transition",
             "class": "invariant",
-            "trigger": { "type": "graph_event", "on": "property_changed", "node_type": "task", "property_key": "task.status" },
+            "trigger": { "type": "graph_event", "on": "property_changed", "select": { "target_type": "task" }, "property_key": "task.status" },
             "conditions": ["node.status == 'done'"],
             "actions": [{
                 "action_type": "reject",
@@ -2317,7 +2317,7 @@ async fn invariant_task_update_rule_reject_emits_no_domain_event() -> Result<()>
         json!({ "play": { "rules": [{
             "name": "reject-always",
             "class": "invariant",
-            "trigger": { "type": "graph_event", "on": "property_changed", "node_type": "task", "property_key": "task.status" },
+            "trigger": { "type": "graph_event", "on": "property_changed", "select": { "target_type": "task" }, "property_key": "task.status" },
             "conditions": [],
             "actions": [{
                 "action_type": "reject",
@@ -2501,7 +2501,7 @@ async fn reactive_task_update_rule_still_fires_asynchronously_post_commit() -> R
         json!([{
             "name": "notify-on-task-status-change",
             // No "class" -> defaults to reactive.
-            "trigger": { "type": "graph_event", "on": "property_changed", "node_type": "task", "property_key": "task.status" },
+            "trigger": { "type": "graph_event", "on": "property_changed", "select": { "target_type": "task" }, "property_key": "task.status" },
             "conditions": [],
             "actions": [{
                 "action_type": "update_node",
@@ -2577,7 +2577,7 @@ async fn user_edit_to_a_node_stamped_at_max_depth_still_fires_the_reactive_rule(
         "reactive-on-stamped-task-play",
         json!([{
             "name": "prioritize-on-status-change",
-            "trigger": { "type": "graph_event", "on": "property_changed", "node_type": "task", "property_key": "task.status" },
+            "trigger": { "type": "graph_event", "on": "property_changed", "select": { "target_type": "task" }, "property_key": "task.status" },
             "conditions": [],
             "actions": [{
                 "action_type": "update_node",
@@ -2750,7 +2750,7 @@ fn verified_when_done_invariant_rule(node_type: &str) -> serde_json::Value {
         "trigger": {
             "type": "graph_event",
             "on": "property_changed",
-            "node_type": node_type,
+            "select": { "target_type": node_type },
             "property_key": format!("{node_type}.status")
         },
         "conditions": ["node.status == 'done' && !has(node.verified)"],
@@ -3188,7 +3188,7 @@ async fn sync_applied_update_is_repaired_by_a_saved_non_self_chaining_invariant(
             "trigger": {
                 "type": "graph_event",
                 "on": "property_changed",
-                "node_type": "iv_su_legal",
+                "select": { "target_type": "iv_su_legal" },
                 "property_key": "iv_su_legal.status"
             },
             "conditions": ["node.status == 'done'"],
@@ -3307,7 +3307,7 @@ async fn contradictory_invariants_ping_pong(initial_properties: serde_json::Valu
             "trigger": {
                 "type": "graph_event",
                 "on": "property_changed",
-                "node_type": NODE_TYPE,
+                "select": { "target_type": NODE_TYPE },
                 "property_key": format!("{NODE_TYPE}.mode")
             },
             "conditions": [format!("node.mode != '{required}'")],
@@ -3452,7 +3452,7 @@ fn relay_f_rules(from: &str, target_id: &str, invert: bool) -> serde_json::Value
             "trigger": {
                 "type": "graph_event",
                 "on": "property_changed",
-                "node_type": from,
+                "select": { "target_type": from },
                 "property_key": format!("{from}.f")
             },
             "conditions": [format!("node.f == '{when}'")],

@@ -31,6 +31,7 @@ import type { Node } from '$lib/types';
 import type { NodeReference } from '$lib/types/node';
 import type {
   PersonNodeUpdate,
+  PlayNodeUpdate,
   ProjectNodeUpdate,
   QueryNodeUpdate,
   TaskNodeUpdate
@@ -805,7 +806,7 @@ interface Subscription {
 }
 
 /** Core node types with typed fields and a typed backend update. */
-export type TypedNodeType = 'task' | 'person' | 'project' | 'query';
+export type TypedNodeType = 'task' | 'person' | 'project' | 'query' | 'play';
 
 /**
  * Typed fields staged for a node but not yet sent (see `updateTypedNode()`),
@@ -841,7 +842,9 @@ const TYPED_UPDATERS: Record<
   project: (nodeId, version, payload) =>
     backendAdapter.updateProjectNode(nodeId, version, payload as ProjectNodeUpdate),
   query: (nodeId, version, payload) =>
-    backendAdapter.updateQueryNode(nodeId, version, payload as QueryNodeUpdate)
+    backendAdapter.updateQueryNode(nodeId, version, payload as QueryNodeUpdate),
+  play: (nodeId, version, payload) =>
+    backendAdapter.updatePlayNode(nodeId, version, payload as PlayNodeUpdate)
 };
 
 /**
@@ -3612,7 +3615,7 @@ export class SharedNodeStore {
   /**
    * Write a core type's typed fields (`TYPED_CORE_FIELDS`) through its typed
    * backend update (`updateTaskNode`/`updatePersonNode`/`updateProjectNode`/
-   * `updateQueryNode`).
+   * `updateQueryNode`/`updatePlayNode`).
    *
    * Core fields have exactly one home on a typed node — the top level — so
    * this is the only write path for them; `properties` carries extension

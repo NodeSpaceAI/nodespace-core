@@ -8,8 +8,8 @@
 //! - Query execution with real database
 
 use nodespace_core::services::query_service::{
-    FilterOperator, FilterType, QueryDefinition, QueryFilter, RelationshipType, SortConfig,
-    SortDirection,
+    FilterOperator, FilterType, QueryDefinition, QueryFilter, RelationshipHop, RelationshipPath,
+    SortConfig, SortDirection,
 };
 use serde_json::json;
 
@@ -107,14 +107,20 @@ fn test_filter_type_relationship() {
     let json = json!({
         "type": "relationship",
         "operator": "equals",
-        "relationshipType": "children",
+        "path": ["child_of"],
         "nodeId": "parent-123"
     });
 
     let filter: QueryFilter = serde_json::from_value(json).unwrap();
     assert_eq!(filter.filter_type, FilterType::Relationship);
-    assert_eq!(filter.relationship_type, Some(RelationshipType::Children));
+    assert_eq!(
+        filter.path,
+        Some(RelationshipPath::from_names(["child_of"]))
+    );
     assert_eq!(filter.node_id, Some("parent-123".to_string()));
+    // What the names mean is worked out against the schemas when the query
+    // runs; it is never part of the stored filter.
+    assert_eq!(filter.resolved_path, None);
 }
 
 #[test]
@@ -192,58 +198,71 @@ fn test_operator_exists() {
 }
 
 // =========================================================================
-// Relationship Type Tests
+// Relationship Path Tests
 // =========================================================================
 
+/// A filter's path is the shared `RelationshipPath`: any relationship name,
+/// built-in, schema-declared or reverse, over any number of hops.
 #[test]
-fn test_relationship_type_parent() {
-    let json = json!({
-        "type": "relationship",
-        "operator": "equals",
-        "relationshipType": "parent",
-        "nodeId": "node-123"
-    });
-    let filter: QueryFilter = serde_json::from_value(json).unwrap();
-    assert_eq!(filter.relationship_type, Some(RelationshipType::Parent));
+fn test_relationship_filter_path_takes_any_relationship_name() {
+    for names in [
+        vec!["has_child"],
+        vec!["child_of"],
+        vec!["mentions"],
+        vec!["mentioned_by"],
+        vec!["project"],
+        vec!["child_of", "project"],
+    ] {
+        let json = json!({
+            "type": "relationship",
+            "operator": "equals",
+            "path": names,
+            "nodeId": "node-123"
+        });
+        let filter: QueryFilter = serde_json::from_value(json).unwrap();
+        assert_eq!(
+            filter.path,
+            Some(RelationshipPath::from_names(names.clone()))
+        );
+    }
 }
 
 #[test]
-fn test_relationship_type_children() {
+fn test_relationship_filter_path_hop_may_be_open_ended() {
     let json = json!({
         "type": "relationship",
         "operator": "equals",
-        "relationshipType": "children",
+        "path": [{ "name": "child_of", "open_ended": true }],
         "nodeId": "node-123"
     });
-    let filter: QueryFilter = serde_json::from_value(json).unwrap();
-    assert_eq!(filter.relationship_type, Some(RelationshipType::Children));
-}
-
-#[test]
-fn test_relationship_type_mentions() {
-    let json = json!({
-        "type": "relationship",
-        "operator": "equals",
-        "relationshipType": "mentions",
-        "nodeId": "node-123"
-    });
-    let filter: QueryFilter = serde_json::from_value(json).unwrap();
-    assert_eq!(filter.relationship_type, Some(RelationshipType::Mentions));
-}
-
-#[test]
-fn test_relationship_type_mentioned_by() {
-    let json = json!({
-        "type": "relationship",
-        "operator": "equals",
-        "relationshipType": "mentioned_by",
-        "nodeId": "node-123"
-    });
-    let filter: QueryFilter = serde_json::from_value(json).unwrap();
+    let filter: QueryFilter = serde_json::from_value(json.clone()).unwrap();
     assert_eq!(
-        filter.relationship_type,
-        Some(RelationshipType::MentionedBy)
+        filter.path,
+        Some(RelationshipPath(vec![RelationshipHop::open_ended(
+            "child_of"
+        )]))
     );
+    // The path round-trips as written.
+    assert_eq!(serde_json::to_value(&filter).unwrap()["path"], json["path"]);
+}
+
+#[test]
+fn test_related_filter_carries_a_path_and_a_nested_filter() {
+    let json = json!({
+        "type": "related",
+        "operator": "equals",
+        "path": ["project"],
+        "filter": {
+            "type": "property",
+            "operator": "equals",
+            "property": "status",
+            "value": "active"
+        }
+    });
+    let filter: QueryFilter = serde_json::from_value(json).unwrap();
+    assert_eq!(filter.filter_type, FilterType::Related);
+    assert_eq!(filter.path, Some(RelationshipPath::from_names(["project"])));
+    assert_eq!(filter.filter.unwrap().property, Some("status".to_string()));
 }
 
 // =========================================================================
@@ -406,7 +425,7 @@ fn test_query_with_all_filter_types() {
             {"type": "property", "operator": "equals", "property": "status", "value": "open"},
             {"type": "content", "operator": "contains", "value": "urgent"},
             {"type": "metadata", "operator": "gte", "property": "created_at", "value": "2025-01-01"},
-            {"type": "relationship", "operator": "equals", "relationshipType": "parent", "nodeId": "project-1"}
+            {"type": "relationship", "operator": "equals", "path": ["has_child"], "nodeId": "project-1"}
         ],
         "sorting": [{"field": "priority", "direction": "desc"}],
         "limit": 100
@@ -490,7 +509,6 @@ fn test_query_serialization_round_trip() {
             property: Some("status".to_string()),
             value: Some(json!("open")),
             case_sensitive: None,
-            relationship_type: None,
             node_id: None,
             ..Default::default()
         }],
@@ -533,7 +551,6 @@ fn test_filter_serialization() {
         property: None,
         value: Some(json!("search term")),
         case_sensitive: Some(false),
-        relationship_type: None,
         node_id: None,
         ..Default::default()
     };

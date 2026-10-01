@@ -228,17 +228,27 @@ impl PlaybookEngine {
         node_service: &Arc<NodeService>,
         rule: &ParsedRule,
         node: &crate::models::Node,
+        scanned_type: Option<&str>,
     ) -> Result<Option<crate::playbook::cel::CelScope>, NodeServiceError> {
-        let scope_type = match &rule.trigger {
-            ParsedTrigger::GraphEvent { node_type, .. } => node_type,
-            ParsedTrigger::Scheduled { node_type, .. } => node_type,
-        };
-        let scope_type = if scope_type == "*" {
-            &node.node_type
-        } else {
-            scope_type
+        let scope_type = match Self::registered_type(rule, scanned_type) {
+            Some(registered) => registered,
+            None => &node.node_type,
         };
         crate::playbook::cel::CelScope::resolve(node_service, scope_type, node).await
+    }
+
+    /// The type a rule is registered on, or `None` for a rule with no
+    /// vocabulary of its own (a wildcard `*` trigger).
+    ///
+    /// A rule names its type in its trigger's selector. A scheduled rule that
+    /// selects through a saved query does not: its type is the query's
+    /// `target_type`, which the scan that selected the node read and passes
+    /// as `scanned_type`.
+    fn registered_type<'a>(rule: &'a ParsedRule, scanned_type: Option<&'a str>) -> Option<&'a str> {
+        rule.trigger
+            .registered_type()
+            .or(scanned_type)
+            .filter(|registered| *registered != "*")
     }
 
     /// The type a rule's graph resolver reads traversed nodes at — see
@@ -247,12 +257,8 @@ impl PlaybookEngine {
     /// The rule's registered type, except for a wildcard (`*`) trigger: that
     /// rule has no vocabulary of its own, so a related node reads at its own
     /// type rather than at whatever type happened to fire it.
-    pub(crate) fn reading_type(rule: &ParsedRule) -> Option<String> {
-        let registered = match &rule.trigger {
-            ParsedTrigger::GraphEvent { node_type, .. } => node_type,
-            ParsedTrigger::Scheduled { node_type, .. } => node_type,
-        };
-        (registered != "*").then(|| registered.clone())
+    pub(crate) fn reading_type(rule: &ParsedRule, scanned_type: Option<&str>) -> Option<String> {
+        Self::registered_type(rule, scanned_type).map(str::to_string)
     }
 
     /// Rebuild the `extends` ancestry cache from the store (ADR-078).
@@ -622,6 +628,7 @@ impl PlaybookEngine {
             rules: matched_rules,
             trigger_event: envelope,
             trigger_node,
+            scan: None,
         };
 
         if let Err(e) = queue_tx.try_send(work_item) {
@@ -768,6 +775,7 @@ impl PlaybookEngine {
                 &self.node_service,
                 &rule_ref.rule,
                 &node,
+                None,
             )
             .await
             {
@@ -795,7 +803,7 @@ impl PlaybookEngine {
             // traversed node is projected exactly as the trigger node is.
             let mut resolver =
                 crate::playbook::graph_resolver::GraphResolver::new(Arc::clone(&self.node_service))
-                    .with_reading_type(PlaybookEngine::reading_type(&rule_ref.rule));
+                    .with_reading_type(PlaybookEngine::reading_type(&rule_ref.rule, None));
             let condition_result = crate::playbook::cel::evaluate_conditions_at_scope(
                 &rule_ref.rule.conditions,
                 &node,
@@ -1355,6 +1363,16 @@ pub(crate) async fn rule_processor_loop(
         // node, and a fresh resolver.
         let mut resolver =
             crate::playbook::graph_resolver::GraphResolver::new(Arc::clone(&node_service));
+        // A scheduled scan already resolved its rules' condition paths for
+        // every node it selected, in one statement per path. This node's
+        // share of that is where its conditions start.
+        let scanned_type = work_item
+            .scan
+            .as_ref()
+            .map(|scan| scan.target_type.as_str());
+        if let Some(scan) = &work_item.scan {
+            resolver.seed(&work_item.trigger_node.id, &scan.paths);
+        }
 
         // Process each matched rule in order
         for rule_ref in &work_item.rules {
@@ -1370,6 +1388,7 @@ pub(crate) async fn rule_processor_loop(
                 &node_service,
                 &rule_ref.rule,
                 &work_item.trigger_node,
+                scanned_type,
             )
             .await
             {
@@ -1401,7 +1420,7 @@ pub(crate) async fn rule_processor_loop(
             };
             // Each rule in this work item carries its own registered scope, so
             // the shared resolver is re-pointed per rule rather than per item.
-            resolver.set_reading_type(PlaybookEngine::reading_type(&rule_ref.rule));
+            resolver.set_reading_type(PlaybookEngine::reading_type(&rule_ref.rule, scanned_type));
             let condition_result = crate::playbook::cel::evaluate_conditions_at_scope(
                 &rule_ref.rule.conditions,
                 &work_item.trigger_node,
@@ -1740,7 +1759,7 @@ mod scope_tests {
     fn rule_on(node_type: &str, condition: &str) -> ParsedRule {
         let def = serde_json::from_value(json!({
             "name": "r",
-            "trigger": { "type": "graph_event", "on": "node_created", "node_type": node_type },
+            "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": node_type } },
             "conditions": [condition],
             "actions": []
         }))
@@ -1749,7 +1768,7 @@ mod scope_tests {
     }
 
     async fn eval(svc: &Arc<NodeService>, rule: &ParsedRule, node: &crate::models::Node) -> bool {
-        let scope = PlaybookEngine::cel_scope_for(svc, rule, node)
+        let scope = PlaybookEngine::cel_scope_for(svc, rule, node, None)
             .await
             .expect("scope resolution should not fail against a healthy store");
         let event = DomainEvent::NodeCreated {
@@ -1948,7 +1967,7 @@ mod scope_tests {
         // is its whole view.
         let rule = rule_on("ticket", "node.state == 'open'");
         assert!(
-            PlaybookEngine::cel_scope_for(&svc, &rule, &node)
+            PlaybookEngine::cel_scope_for(&svc, &rule, &node, None)
                 .await
                 .expect("the node's-own-type short-circuit must not error")
                 .is_none(),
@@ -1967,7 +1986,7 @@ mod scope_tests {
 
         let rule = rule_on("*", "node.state == 'open'");
         assert!(
-            PlaybookEngine::cel_scope_for(&svc, &rule, &node)
+            PlaybookEngine::cel_scope_for(&svc, &rule, &node, None)
                 .await
                 .expect("the wildcard-trigger short-circuit must not error")
                 .is_none(),
@@ -2001,7 +2020,7 @@ mod scope_tests {
             .await
             .expect("dropping the relationship table should succeed");
 
-        let result = PlaybookEngine::cel_scope_for(&svc, &rule, &node).await;
+        let result = PlaybookEngine::cel_scope_for(&svc, &rule, &node, None).await;
 
         assert!(
             result.is_err(),
@@ -2114,11 +2133,11 @@ mod scope_tests {
 
         // Read the child THROUGH the relationship, at `ticket` scope.
         let rule = rule_on("ticket", "node.has_child.all(c, c.state == 'done')");
-        let scope = PlaybookEngine::cel_scope_for(&svc, &rule, &parent)
+        let scope = PlaybookEngine::cel_scope_for(&svc, &rule, &parent, None)
             .await
             .expect("scope resolution should not fail against a healthy store");
         let mut resolver = crate::playbook::graph_resolver::GraphResolver::new(Arc::clone(&svc))
-            .with_reading_type(PlaybookEngine::reading_type(&rule));
+            .with_reading_type(PlaybookEngine::reading_type(&rule, None));
         let event = DomainEvent::NodeCreated {
             node_id: parent.id.clone(),
             node_type: parent.node_type.clone(),
@@ -2149,11 +2168,11 @@ mod scope_tests {
         rule: &ParsedRule,
         node: &crate::models::Node,
     ) -> bool {
-        let scope = PlaybookEngine::cel_scope_for(svc, rule, node)
+        let scope = PlaybookEngine::cel_scope_for(svc, rule, node, None)
             .await
             .expect("scope resolution should not fail against a healthy store");
         let mut resolver = crate::playbook::graph_resolver::GraphResolver::new(Arc::clone(svc))
-            .with_reading_type(PlaybookEngine::reading_type(rule));
+            .with_reading_type(PlaybookEngine::reading_type(rule, None));
         let event = DomainEvent::NodeCreated {
             node_id: node.id.clone(),
             node_type: node.node_type.clone(),
@@ -2310,7 +2329,7 @@ mod scope_tests {
 
         let rule = rule_on("ticket", "node.has_child.all(c, c.state == 'open')");
         assert!(
-            PlaybookEngine::cel_scope_for(&svc, &rule, &parent)
+            PlaybookEngine::cel_scope_for(&svc, &rule, &parent, None)
                 .await
                 .expect("scope resolution should not fail")
                 .is_none(),
@@ -2339,9 +2358,9 @@ mod scope_tests {
             "*",
             "node.has_child.all(c, c.state == 'backlog' && c.severity == 'high')",
         );
-        assert_eq!(PlaybookEngine::reading_type(&rule), None);
+        assert_eq!(PlaybookEngine::reading_type(&rule, None), None);
         assert_eq!(
-            PlaybookEngine::reading_type(&rule_on("ticket", "true")),
+            PlaybookEngine::reading_type(&rule_on("ticket", "true"), None),
             Some("ticket".to_string())
         );
         assert!(
@@ -2368,11 +2387,11 @@ mod scope_tests {
             .expect("relationship creation failed");
 
         let rule = rule_on("ticket", "node.has_child.all(c, c.state == 'open')");
-        let scope = PlaybookEngine::cel_scope_for(&svc, &rule, &parent)
+        let scope = PlaybookEngine::cel_scope_for(&svc, &rule, &parent, None)
             .await
             .expect("scope resolution should not fail against a healthy store");
         let mut resolver = crate::playbook::graph_resolver::GraphResolver::new(Arc::clone(&svc))
-            .with_reading_type(PlaybookEngine::reading_type(&rule));
+            .with_reading_type(PlaybookEngine::reading_type(&rule, None));
         let event = DomainEvent::NodeCreated {
             node_id: parent.id.clone(),
             node_type: parent.node_type.clone(),

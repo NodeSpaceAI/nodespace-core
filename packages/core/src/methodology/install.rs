@@ -21,8 +21,9 @@ use crate::markdown::{prepare_nodes_from_template, MarkdownError, NodeTemplate};
 use crate::methodology::skills::{playbook_overview_skill, InstalledIds};
 use crate::methodology::{InstallReport, MethodologyPlaybook, StepOutcome, StepReport, ViewStep};
 use crate::models::Node;
+use crate::playbook::types::{Action, RuleDefinition, Selector, Trigger};
 use crate::schema::{handle_create_schema, handle_update_schema};
-use crate::services::{FilterType, NodeService, QueryDefinition};
+use crate::services::{FilterType, NodeService, QueryDefinition, QueryFilter};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -487,14 +488,14 @@ fn rewrite_update_schema_step_ids(
 }
 
 /// Follow a re-key through a play node's properties — every rule's trigger
-/// `node_type`, and each action's `node_type` / `target_type` params.
+/// selector, and each action's `node_type` param.
 ///
 /// A blanket walk over these happens to be safe for the shipped playbook, but
 /// only by luck: a rule `name` is free-form vocabulary, a CEL condition is a
-/// string, and either could spell a schema id. Twice in this PR a payload was
-/// judged safe by inspecting the playbook rather than the shape, and twice that
-/// was wrong — so all three payload kinds are key-targeted, and none depends
-/// on what the current content happens to contain.
+/// string, and either could spell a schema id. So the rules are decoded as the
+/// typed [`RuleDefinition`]s they are and rewritten field by field: which
+/// fields hold a schema id is read off the types, not off what the current
+/// content happens to contain.
 fn rewrite_play_step_ids(
     properties: &serde_json::Value,
     renames: &HashMap<String, String>,
@@ -506,99 +507,102 @@ fn rewrite_play_step_ids(
 
     // `rules` is mirrored under `_seed.default_rules`, and both must follow the
     // rename or a reset would restore rules pointing at the stranger's schema.
-    if let Some(rules) = out.get_mut("rules").and_then(|v| v.as_array_mut()) {
-        for rule in rules {
-            rewrite_rule_ids(rule, renames);
-        }
+    if let Some(rules) = out.get_mut("rules") {
+        rewrite_rules(rules, renames);
     }
     if let Some(defaults) = out
         .get_mut("_seed")
         .and_then(|seed| seed.get_mut("default_rules"))
-        .and_then(|v| v.as_array_mut())
     {
-        for rule in defaults {
-            rewrite_rule_ids(rule, renames);
-        }
+        rewrite_rules(defaults, renames);
     }
 
     out
 }
 
-/// Rewrite the id-bearing keys of one rule in place.
-///
-/// `TriggerDefinition`'s five fields: `node_type` and `property_key` are
-/// id-bearing (the latter through its namespace, see below); `type`, `on` and
-/// `cron` are not. `ActionDefinition`'s three: `params.node_type` and
-/// `params.target_type` are ids, while `action_type` and `for_each` are not —
-/// and `params.relationship_type` is a relationship NAME, matched against
-/// `schema.relationships[].name` by the validator, never a schema id.
-fn rewrite_rule_ids(rule: &mut serde_json::Value, renames: &HashMap<String, String>) {
-    // Read before mutating: `property_key`'s namespace is compared against the
-    // node type the rule was AUTHORED with, so rewriting `node_type` first
-    // would leave nothing to match against.
-    let authored_node_type = rule
-        .get("trigger")
-        .and_then(|t| t.get("node_type"))
-        .and_then(|v| v.as_str())
-        .map(str::to_string);
-
-    // A trigger carrying a `property_key` but no `node_type` never reaches the
-    // rewrite below. That is unreachable by construction rather than handled:
-    // the namespace guard compares against the authored `node_type`, so with
-    // none there is nothing to match, and a `property_changed` trigger without
-    // a `node_type` has no type to namespace its key to in the first place.
-    if let Some(node_type) = authored_node_type.as_deref() {
-        let Some(renamed) = renames.get(node_type) else {
-            return rewrite_action_ids(rule, renames);
-        };
-        rule["trigger"]["node_type"] = serde_json::json!(renamed);
-
-        // `property_key` is `<node_type>.<field>`, so its leading segment is
-        // the same schema id and must move with it. Leaving it behind makes
-        // the pair jointly incoherent: the trigger indexes under
-        // `{issue_2, "issue.status"}` while a real event carries
-        // `"issue_2.status"`, and the lookup is an exact match.
-        //
-        // Guarded on the namespace equalling the authored type, mirroring
-        // `lifecycle::renamespace_property_key` — a key namespaced to some
-        // OTHER type is not this rename's business.
-        if let Some(key) = rule["trigger"]
-            .get("property_key")
-            .and_then(|v| v.as_str())
-            .map(str::to_string)
-        {
-            if let Some((namespace, field)) = key.split_once('.') {
-                if namespace == node_type {
-                    rule["trigger"]["property_key"] =
-                        serde_json::json!(format!("{renamed}.{field}"));
-                }
-            }
-        }
-    }
-
-    rewrite_action_ids(rule, renames);
-}
-
-/// Rewrite the id-bearing params of one rule's actions in place.
-fn rewrite_action_ids(rule: &mut serde_json::Value, renames: &HashMap<String, String>) {
-    let Some(actions) = rule.get_mut("actions").and_then(|v| v.as_array_mut()) else {
+/// Rewrite the schema ids in a stored `rules` array in place. Rules that do
+/// not decode are left as they are: the play's own validation reports them
+/// when the step is installed.
+fn rewrite_rules(rules: &mut serde_json::Value, renames: &HashMap<String, String>) {
+    let Ok(mut decoded) = serde_json::from_value::<Vec<RuleDefinition>>(rules.clone()) else {
         return;
     };
-    for action in actions {
-        let Some(params) = action.get_mut("params") else {
-            continue;
-        };
-        // `node_type` names a type to create; `target_type` names one to
-        // relate to. `relationship_type` is deliberately absent: it is a
-        // relationship name, not a schema id.
-        for key in ["node_type", "target_type"] {
-            if let Some(id) = params.get(key).and_then(|v| v.as_str()) {
-                if let Some(renamed) = renames.get(id) {
-                    params[key] = serde_json::json!(renamed);
+    for rule in &mut decoded {
+        rewrite_rule_ids(rule, renames);
+    }
+    if let Ok(rewritten) = serde_json::to_value(decoded) {
+        *rules = rewritten;
+    }
+}
+
+/// Rewrite the id-bearing fields of one rule in place.
+///
+/// A trigger's ids are its selector's type (and, for a selector with
+/// filters, the type ids those filters compare against) and the namespace of
+/// a `property_changed` trigger's `property_key`. `on` and `cron` are not
+/// ids, and a saved-query selector names a node, not a type. Of the actions,
+/// only a `node_type` param is an id: `relationship_type` is a relationship
+/// NAME, matched against `schema.relationships[].name` by the validator, and
+/// the other params are node ids, content and field values.
+fn rewrite_rule_ids(rule: &mut RuleDefinition, renames: &HashMap<String, String>) {
+    match &mut rule.trigger {
+        Trigger::GraphEvent {
+            select,
+            property_key,
+            ..
+        } => {
+            // `property_key` is `<node_type>.<field>`, so its leading segment
+            // is the same schema id and must move with the selector's type.
+            // Leaving it behind makes the pair jointly incoherent: the
+            // trigger indexes under `{issue_2, "issue.status"}` while a real
+            // event carries `"issue_2.status"`, and the lookup is an exact
+            // match.
+            //
+            // Guarded on the namespace equalling the AUTHORED type, mirroring
+            // `lifecycle::renamespace_property_key` — a key namespaced to
+            // some OTHER type is not this rename's business. Read before the
+            // selector is rewritten, so there is still a type to match.
+            if let (Selector::Inline(inline), Some(key)) = (&*select, property_key.as_mut()) {
+                if let (Some(renamed), Some((namespace, field))) =
+                    (renames.get(&inline.target_type), key.split_once('.'))
+                {
+                    if namespace == inline.target_type {
+                        *key = format!("{renamed}.{field}");
+                    }
                 }
+            }
+            rewrite_selector_ids(select, renames);
+        }
+        Trigger::Scheduled { select, .. } => rewrite_selector_ids(select, renames),
+    }
+
+    for action in &mut rule.actions {
+        let node_type = match action {
+            Action::CreateNode { params, .. } => Some(&mut params.node_type),
+            Action::UpdateNode { params, .. } => params.node_type.as_mut(),
+            Action::AddRelationship { .. }
+            | Action::RemoveRelationship { .. }
+            | Action::Reject { .. } => None,
+        };
+        if let Some(node_type) = node_type {
+            if let Some(renamed) = renames.get(node_type.as_str()) {
+                *node_type = renamed.clone();
             }
         }
     }
+}
+
+/// Follow a re-key through a selector: its target type, and the value of any
+/// filter on `node_type`. A saved-query selector names a query node, which a
+/// schema re-key does not touch.
+fn rewrite_selector_ids(select: &mut Selector, renames: &HashMap<String, String>) {
+    let Selector::Inline(inline) = select else {
+        return;
+    };
+    if let Some(renamed) = renames.get(&inline.target_type) {
+        inline.target_type = renamed.clone();
+    }
+    rewrite_node_type_filters(&mut inline.filters, renames);
 }
 
 /// Follow a re-key through a saved view's **id-bearing fields only** —
@@ -624,13 +628,26 @@ fn rewrite_view_step_ids(
         out.target_type = renamed.clone();
     }
 
-    for filter in &mut out.filters {
+    rewrite_node_type_filters(&mut out.filters, renames);
+
+    out
+}
+
+/// Follow a re-key through the filters that compare against a type id: a
+/// `metadata` filter on `node_type`, whose value *is* a type id (a single id
+/// for `equals`, a list of ids for `in`). Every other filter's value is
+/// vocabulary or text and is left alone.
+fn rewrite_node_type_filters(filters: &mut [QueryFilter], renames: &HashMap<String, String>) {
+    for filter in filters {
+        // A related-node filter's nested filter may compare a type id too.
+        if let Some(nested) = filter.filter.as_deref_mut() {
+            rewrite_node_type_filters(std::slice::from_mut(nested), renames);
+        }
         let is_node_type_filter = filter.filter_type == FilterType::Metadata
             && filter.property.as_deref() == Some("node_type");
         if !is_node_type_filter {
             continue;
         }
-        // A single id for `equals`, a list of ids for `in`.
         match filter.value.as_mut() {
             Some(serde_json::Value::String(id)) => {
                 if let Some(renamed) = renames.get(id.as_str()) {
@@ -647,8 +664,6 @@ fn rewrite_view_step_ids(
             _ => {}
         }
     }
-
-    out
 }
 
 /// Follow a re-key through a `create_schema` payload's **id-bearing keys
@@ -727,11 +742,31 @@ mod tests {
 
         let rules = serde_json::json!([{
             "name": "a cycle of work",
-            "trigger": { "type": "scheduled", "node_type": "cycle" },
-            "actions": [{
-                "action_type": "create_node",
-                "params": { "node_type": "cycle", "relationship_type": "tasks" },
-            }],
+            "trigger": {
+                "type": "scheduled",
+                "cron": "0 5 0 * * * *",
+                "select": {
+                    "target_type": "cycle",
+                    "filters": [{
+                        "type": "metadata", "operator": "equals",
+                        "property": "node_type", "value": "cycle",
+                    }],
+                },
+            },
+            "actions": [
+                {
+                    "action_type": "create_node",
+                    "params": { "node_type": "cycle", "content": "cycle" },
+                },
+                {
+                    "action_type": "add_relationship",
+                    "params": {
+                        "source_id": "{actions[0].result.id}",
+                        "relationship_type": "tasks",
+                        "target_id": "{trigger.node.id}",
+                    },
+                },
+            ],
         }]);
         let properties = serde_json::json!({
             "rules": rules,
@@ -746,17 +781,28 @@ mod tests {
             } else {
                 &out["_seed"]["default_rules"][0]
             };
-            assert_eq!(rule["trigger"]["node_type"], "cycle_2", "in {path}");
+            assert_eq!(
+                rule["trigger"]["select"]["target_type"], "cycle_2",
+                "in {path}"
+            );
+            assert_eq!(
+                rule["trigger"]["select"]["filters"][0]["value"], "cycle_2",
+                "a selector's node_type filter compares against a type id ({path})"
+            );
             assert_eq!(
                 rule["actions"][0]["params"]["node_type"], "cycle_2",
                 "in {path}"
+            );
+            assert_eq!(
+                rule["actions"][0]["params"]["content"], "cycle",
+                "content is text, not a reference ({path})"
             );
             assert_eq!(
                 rule["name"], "a cycle of work",
                 "a rule name is vocabulary, not a reference ({path})"
             );
             assert_eq!(
-                rule["actions"][0]["params"]["relationship_type"], "tasks",
+                rule["actions"][1]["params"]["relationship_type"], "tasks",
                 "a relationship_type is a name, not a schema id ({path})"
             );
         }
@@ -809,6 +855,34 @@ mod tests {
         assert_eq!(
             out["add_relationships"][0]["reverseName"], "cycle",
             "a reverse name is vocabulary"
+        );
+    }
+
+    /// A `node_type` filter nested inside a related-node filter follows the
+    /// rename too.
+    #[test]
+    fn a_nested_node_type_filter_follows_a_rename() {
+        let mut renames = HashMap::new();
+        renames.insert("issue".to_string(), "issue_2".to_string());
+
+        let mut filters: Vec<QueryFilter> = serde_json::from_value(serde_json::json!([{
+            "type": "related", "operator": "equals", "path": ["blocks"],
+            "filter": {
+                "type": "metadata", "operator": "equals",
+                "property": "node_type", "value": "issue"
+            }
+        }]))
+        .unwrap();
+        rewrite_node_type_filters(&mut filters, &renames);
+
+        assert_eq!(
+            filters[0].filter.as_ref().unwrap().value,
+            Some(serde_json::json!("issue_2"))
+        );
+        // A path names relationships, never a schema id.
+        assert_eq!(
+            serde_json::to_value(&filters[0].path).unwrap(),
+            serde_json::json!(["blocks"])
         );
     }
 

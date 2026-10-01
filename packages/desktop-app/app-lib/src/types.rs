@@ -10,9 +10,9 @@
 pub use nodespace_types::{
     node_to_typed_value, nodes_to_typed_values, AiChatMessage, AiChatNativeNode, AiChatPtyNode,
     DeleteResult, EdgeField, EnumValue, Node, NodeQuery, NodeReference, NodeUpdate, OrderBy,
-    PersonNodeUpdate, Priority, ProjectNodeUpdate, QueryNodeUpdate, RelationshipCardinality,
-    RelationshipDirection, SchemaField, SchemaNode, SchemaProtectionLevel, SchemaRelationship,
-    TaskNode, TaskNodeUpdate, TaskStatus, ValidationError,
+    PersonNodeUpdate, PlayNodeUpdate, Priority, ProjectNodeUpdate, QueryNodeUpdate,
+    RelationshipCardinality, RelationshipDirection, SchemaField, SchemaNode, SchemaProtectionLevel,
+    SchemaRelationship, TaskNode, TaskNodeUpdate, TaskStatus, ValidationError,
 };
 
 use serde::{Deserialize, Serialize};

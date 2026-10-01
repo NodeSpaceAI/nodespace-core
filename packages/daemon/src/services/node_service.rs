@@ -17,8 +17,8 @@ use nodespace_agent::local_agent::deletion_confirmation::{self, DeletionStop};
 use nodespace_core::db::events::DomainEvent;
 use nodespace_core::db::ChildPlacement;
 use nodespace_core::models::{
-    AiChatPendingDeletion, Node, NodeQuery, NodeUpdate, OrderBy, PersonNodeUpdate, Priority,
-    ProjectNodeUpdate, ProjectStatus, QueryNodeUpdate, TaskNodeUpdate, TaskStatus,
+    AiChatPendingDeletion, Node, NodeQuery, NodeUpdate, OrderBy, PersonNodeUpdate, PlayNodeUpdate,
+    Priority, ProjectNodeUpdate, ProjectStatus, QueryNodeUpdate, TaskNodeUpdate, TaskStatus,
 };
 use nodespace_core::ops::{
     collection_ops::{
@@ -69,8 +69,8 @@ use crate::nodespace::{
     RenameCollectionRequest, ReorderNodeRequest, ReorderNodeResponse, ResetSeedNodeRequest,
     ResetSeedNodeResponse, ResolveConflictRequest, SchemaParamsRequest, SchemaResultResponse,
     SearchRequest, SetLocalPersonIdentityRequest, UpdateNodeRequest, UpdateNodesBatchRequest,
-    UpdateNodesBatchResponse, UpdatePersonNodeRequest, UpdateProjectNodeRequest,
-    UpdateQueryNodeRequest, UpdateRelationshipPropertiesRequest,
+    UpdateNodesBatchResponse, UpdatePersonNodeRequest, UpdatePlayNodeRequest,
+    UpdateProjectNodeRequest, UpdateQueryNodeRequest, UpdateRelationshipPropertiesRequest,
     UpdateRelationshipPropertiesResponse, UpdateTaskNodeRequest, WatchRequest,
 };
 
@@ -1644,6 +1644,26 @@ impl GrpcNodeService for NodeServiceImpl {
         }
     }
 
+    async fn update_play_node(
+        &self,
+        request: Request<UpdatePlayNodeRequest>,
+    ) -> Result<Response<NodeResponse>, Status> {
+        let this = self.route(&request).await?;
+        let req = request.into_inner();
+
+        let update: PlayNodeUpdate = serde_json::from_str(&req.update_json)
+            .map_err(|e| Status::invalid_argument(format!("Invalid play update: {e}")))?;
+
+        match this
+            .node_service
+            .update_play_node(&req.node_id, req.version, update)
+            .await
+        {
+            Ok(node) => Ok(Response::new(node_response(node))),
+            Err(e) => Err(typed_update_error_to_status(&this.node_service, e).await),
+        }
+    }
+
     // -- Local identity (ADR-037) ---------------------------------
 
     async fn get_local_person(
@@ -3202,7 +3222,7 @@ mod tests {
                     "play": {
                         "rules": [{
                             "name": "r1",
-                            "trigger": { "type": "graph_event", "on": "node_created", "node_type": "text" },
+                            "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "text" } },
                             "conditions": ["node.content == 'hello'"],
                             "actions": []
                         }]
@@ -4794,6 +4814,101 @@ mod tests {
             .expect_err("an unknown key must be rejected");
 
         assert_eq!(err.code(), tonic::Code::InvalidArgument);
+    }
+
+    /// UpdatePlayNode writes the typed fields and returns the stored node:
+    /// `rules` is replaced whole, `description` is set and then cleared.
+    #[tokio::test]
+    async fn update_play_node_writes_typed_fields() {
+        let (svc, _tmp) = make_service().await;
+        let id = "d1b2c3d4-e5f6-7890-abcd-ef1234567890";
+        svc.create_node(Request::new(crate::nodespace::CreateNodeRequest {
+            id: Some(id.to_string()),
+            node_type: "play".to_string(),
+            content: "Greet new tasks".to_string(),
+            parent_id: None,
+            collections: Vec::new(),
+            collection_ids: Vec::new(),
+            lifecycle_status: None,
+            properties: r#"{"rules":[]}"#.to_string(),
+            position: None,
+        }))
+        .await
+        .unwrap();
+
+        let update = serde_json::json!({
+            "rules": [{
+                "name": "greet",
+                "trigger": {
+                    "type": "graph_event",
+                    "on": "node_created",
+                    "select": { "target_type": "task" }
+                },
+                "conditions": ["node.content == 'hello'"],
+                "actions": []
+            }],
+            "description": "Greets new tasks",
+        });
+        let resp = svc
+            .update_play_node(Request::new(crate::nodespace::UpdatePlayNodeRequest {
+                node_id: id.to_string(),
+                version: 1,
+                update_json: update.to_string(),
+            }))
+            .await
+            .expect("typed play update succeeds")
+            .into_inner();
+        assert_eq!(resp.node_id, id);
+
+        let node = svc.node_service.get_node(id).await.unwrap().unwrap();
+        assert_eq!(node.version, 2);
+        let typed = nodespace_core::models::node_to_typed_value(node).unwrap();
+        assert_eq!(typed["rules"][0]["name"], "greet");
+        assert_eq!(
+            typed["rules"][0]["trigger"]["select"]["target_type"],
+            "task"
+        );
+        assert_eq!(typed["description"], "Greets new tasks");
+
+        svc.update_play_node(Request::new(crate::nodespace::UpdatePlayNodeRequest {
+            node_id: id.to_string(),
+            version: 2,
+            update_json: r#"{"description": null}"#.to_string(),
+        }))
+        .await
+        .expect("clearing the description succeeds");
+
+        let node = svc.node_service.get_node(id).await.unwrap().unwrap();
+        let typed = nodespace_core::models::node_to_typed_value(node).unwrap();
+        assert!(
+            typed.get("description").is_none(),
+            "cleared description must be absent"
+        );
+        assert_eq!(typed["rules"][0]["name"], "greet");
+    }
+
+    /// UpdatePlayNode rejects an update that is not a `PlayNodeUpdate` before
+    /// it reaches the service: a key the play schema does not declare, and a
+    /// rule naming a trigger parameter the engine never reads.
+    #[tokio::test]
+    async fn update_play_node_rejects_an_unknown_key_in_the_update() {
+        let (svc, _tmp) = make_service().await;
+
+        for update_json in [
+            r#"{"enabled": true}"#,
+            r#"{"rules": [{"name": "r", "trigger": {"type": "graph_event", "on": "node_created", "select": {"target_type": "task"}, "debounce_ms": 500}}]}"#,
+        ] {
+            let err = svc
+                .update_play_node(Request::new(crate::nodespace::UpdatePlayNodeRequest {
+                    node_id: "anything".to_string(),
+                    version: 1,
+                    update_json: update_json.to_string(),
+                }))
+                .await
+                .expect_err("an unknown key must be rejected");
+
+            assert_eq!(err.code(), tonic::Code::InvalidArgument, "{update_json}");
+        }
     }
 
     /// A generic-path (non-task) VersionConflict must embed `current_node` in the

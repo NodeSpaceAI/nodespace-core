@@ -226,10 +226,9 @@ pub async fn resolve_relationship_name(
     // chain-aware and would happily attach the edge — leaving a subtype
     // instance with a real edge that this resolver couldn't recognize as
     // declared in either direction, falling through to the `InvalidParams`
-    // error below and silently returning an empty result at the call site
-    // (`GraphResolver::fetch_related_nodes` treats that error as "undeclared,
-    // not a failure"). Same fix pattern as `workflow_state.rs`,
-    // `validation.rs`, and `graph_resolver.rs`'s `is_declared_many_relationship`.
+    // error below. Same fix pattern as `workflow_state.rs`, `validation.rs`,
+    // and `path_ops.rs`'s `resolve_hop`, which resolves a play's and a
+    // query's path names in this same order.
     let (own_relationships, _owners) = node_service
         .resolve_relationships(node_type)
         .await
@@ -332,130 +331,6 @@ pub async fn resolve_relationship_name(
         // does not replace the forward one. Listing only the reverse name would
         // omit a spelling that demonstrably works, which is the same
         // under-reporting this error exists to prevent.
-        direct.push(rel.reverse_name.clone());
-        needs_direction_in.push(rel.name.clone());
-    }
-    for list in [&mut direct, &mut needs_direction_in] {
-        list.sort();
-        list.dedup();
-    }
-
-    let mut parts: Vec<String> = Vec::new();
-    if !direct.is_empty() {
-        parts.push(format!("available: {}", direct.join(", ")));
-    }
-    if !needs_direction_in.is_empty() {
-        parts.push(format!(
-            "available with --direction in: {}",
-            needs_direction_in.join(", ")
-        ));
-    }
-    let available = if parts.is_empty() {
-        "no typed relationships are declared for this type".to_string()
-    } else {
-        parts.join("; ")
-    };
-
-    Err(OpsError::InvalidParams(format!(
-        "Relationship '{}' is not declared for node type '{}' in either direction ({}). \
-         Built-in relationships (member_of, has_child, mentions, has_role) are universal.",
-        relationship_name, node_type, available
-    )))
-}
-
-/// Resolve a caller-supplied relationship name against `node_type`'s schema
-/// neighbourhood alone, with no concrete node in hand.
-///
-/// This is [`resolve_relationship_name`] minus the parts that need a real
-/// instance: that resolver probes an untyped declaration (`target_type:
-/// None`) against a specific node via `get_related_nodes`, to avoid resolving
-/// a caller-supplied name to a traversal that is guaranteed empty for THAT
-/// node. A query filter has no such node — it compiles a condition against
-/// every instance of a type at once — so there is nothing to probe. Mirroring
-/// [`crate::playbook::validation::resolve_reverse_segment`]'s doc comment
-/// (the same tension, already resolved there for Play path validation): an
-/// untyped declaration is accepted on the strength of its name alone, exactly
-/// as a *typed* declaration already is. Rejecting it instead would be more
-/// conservative than the precedent this mirrors, and silently probing a
-/// sentinel/empty node id would misclassify every real untyped relationship
-/// as unreached — neither is what the existing type-level resolver does.
-///
-/// Same precedence as [`resolve_relationship_name`]: built-in forward,
-/// built-in reverse, forward (own or inherited via `extends`), reverse
-/// (another schema's declared `reverse_name` targeting this type or an
-/// ancestor of it), then the forward name of an inbound relationship walked
-/// backwards. A name matching none of these is an error, not an empty
-/// traversal — same rationale as the instance-level resolver: an empty result
-/// is indistinguishable from "declared, no matches yet", so a misspelled or
-/// undeclared name should say so rather than silently compiling to a
-/// condition that matches nothing.
-pub async fn resolve_relationship_name_for_type(
-    node_service: &Arc<NodeService>,
-    node_type: &str,
-    relationship_name: &str,
-) -> Result<ResolvedRelName, OpsError> {
-    if BUILTIN_RELATIONSHIP_NAMES.contains(&relationship_name) {
-        return Ok(ResolvedRelName::Builtin);
-    }
-
-    if let Some(forward_name) = builtin_forward_name(relationship_name) {
-        return Ok(ResolvedRelName::Reverse {
-            forward_name: forward_name.to_string(),
-            source_type: None,
-        });
-    }
-
-    let (own_relationships, _owners) = node_service
-        .resolve_relationships(node_type)
-        .await
-        .map_err(|e| OpsError::Internal(format!("Failed to resolve relationships: {}", e)))?;
-    if let Some(own) = own_relationships
-        .iter()
-        .find(|r| r.name == relationship_name)
-    {
-        if own.direction == RelationshipDirection::In {
-            return Ok(ResolvedRelName::Reverse {
-                forward_name: own.reverse_name.clone(),
-                source_type: own.target_type.clone(),
-            });
-        }
-        return Ok(ResolvedRelName::Forward);
-    }
-
-    let all_inbound = node_service
-        .get_inbound_relationships(node_type)
-        .await
-        .map_err(|e| {
-            OpsError::Internal(format!("Failed to resolve inbound relationships: {}", e))
-        })?;
-
-    for (source_type, rel) in &all_inbound {
-        if rel.reverse_name == relationship_name {
-            return Ok(ResolvedRelName::Reverse {
-                forward_name: rel.name.clone(),
-                source_type: Some(source_type.clone()),
-            });
-        }
-    }
-
-    if all_inbound
-        .iter()
-        .any(|(_, rel)| rel.name == relationship_name)
-    {
-        return Ok(ResolvedRelName::InboundForward);
-    }
-
-    let mut direct: Vec<String> = Vec::new();
-    let mut needs_direction_in: Vec<String> = Vec::new();
-    for rel in &own_relationships {
-        if !BUILTIN_RELATIONSHIP_NAMES.contains(&rel.name.as_str()) {
-            direct.push(rel.name.clone());
-        }
-    }
-    for (_, rel) in &all_inbound {
-        if BUILTIN_RELATIONSHIP_NAMES.contains(&rel.name.as_str()) {
-            continue;
-        }
         direct.push(rel.reverse_name.clone());
         needs_direction_in.push(rel.name.clone());
     }

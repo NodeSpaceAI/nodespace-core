@@ -221,7 +221,7 @@ async fn play_fires_end_to_end_for_local_mutation() -> Result<()> {
         "close-open-tasks",
         json!([{
             "name": "auto-close",
-            "trigger": { "type": "graph_event", "on": "node_created", "node_type": "pb_task" },
+            "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "pb_task" } },
             "conditions": ["node.status == 'open'"],
             "actions": [{
                 "action_type": "update_node",
@@ -319,7 +319,7 @@ async fn sync_originated_event_does_not_reach_trigger_evaluation() -> Result<()>
         "close-open-sync-tasks",
         json!([{
             "name": "auto-close-sync",
-            "trigger": { "type": "graph_event", "on": "node_created", "node_type": "pb_sync_task" },
+            "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "pb_sync_task" } },
             "conditions": ["node.status == 'open'"],
             "actions": [{
                 "action_type": "update_node",
@@ -424,7 +424,7 @@ async fn sync_originated_bulk_create_does_not_reach_trigger_evaluation() -> Resu
         "close-open-bulk-sync-tasks",
         json!([{
             "name": "auto-close-bulk-sync",
-            "trigger": { "type": "graph_event", "on": "node_created", "node_type": "pb_bulk_sync_task" },
+            "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "pb_bulk_sync_task" } },
             "conditions": ["node.status == 'open'"],
             "actions": [{
                 "action_type": "update_node",
@@ -558,7 +558,7 @@ async fn cron_runner_ticks_and_fires_a_scheduled_play() -> Result<()> {
         "touch-on-schedule",
         json!([{
             "name": "touch-scheduled",
-            "trigger": { "type": "scheduled", "cron": "0 * * * * * *", "node_type": "pb_cron_task" },
+            "trigger": { "type": "scheduled", "cron": "0 * * * * * *", "select": { "target_type": "pb_cron_task" } },
             "conditions": [],
             "actions": [{
                 "action_type": "update_node",
@@ -609,6 +609,120 @@ async fn cron_runner_ticks_and_fires_a_scheduled_play() -> Result<()> {
         ticked,
         "CronRunner's poll loop must have ticked after 60 (virtual) seconds and fired \
          the scheduled play's action — the target node's 'touched' property must be true"
+    );
+
+    shutdown_engine(shutdown_tx, task).await;
+    Ok(())
+}
+
+/// A scheduled play selects through a saved query, and its condition walks a
+/// relationship, end to end through a real running engine.
+///
+/// The scan runs the query's filters in SQL, so the node the filter excludes
+/// is never enqueued; it resolves the condition's path for every selected
+/// node at once and hands each work item its own node's answer, so the two
+/// selected nodes are told apart by their own parents.
+#[tokio::test(start_paused = true)]
+async fn scheduled_play_selects_through_a_saved_query_and_walks_a_path() -> Result<()> {
+    let (service, _tmp) = create_test_service().await?;
+
+    create_schema(
+        &service,
+        "pb_sel_item",
+        json!([
+            { "name": "state", "type": "text" },
+            { "name": "touched", "type": "boolean" }
+        ]),
+    )
+    .await?;
+
+    // Three items, each under its own parent. Only `ready_under_go` is both
+    // selected by the query (state = ready) and passes the condition (its
+    // parent says go).
+    let mut ids = std::collections::HashMap::new();
+    for (name, state, parent_says) in [
+        ("ready_under_go", "ready", "go"),
+        ("ready_under_stop", "ready", "stop"),
+        ("waiting_under_go", "waiting", "go"),
+    ] {
+        let parent = Node::new("text".to_string(), parent_says.to_string(), json!({}));
+        let item = Node::new(
+            "pb_sel_item".to_string(),
+            name.to_string(),
+            json!({ "state": state, "touched": false }),
+        );
+        service.create_node(parent.clone()).await?;
+        service.create_node(item.clone()).await?;
+        service
+            .create_relationship(&parent.id, "has_child", &item.id, json!({}))
+            .await?;
+        ids.insert(name, item.id);
+    }
+
+    let query = Node::new(
+        "query".to_string(),
+        "Ready items".to_string(),
+        json!({
+            "target_type": "pb_sel_item",
+            "filters": [{ "type": "property", "operator": "equals", "property": "state", "value": "ready" }]
+        }),
+    );
+    let query_id = query.id.clone();
+    service.create_node(query).await?;
+
+    create_play(
+        &service,
+        "touch-ready-items-under-go",
+        json!([{
+            "name": "touch-selected",
+            "trigger": { "type": "scheduled", "cron": "0 * * * * * *", "select": { "query_id": query_id } },
+            "conditions": ["node.child_of.content == 'go'"],
+            "actions": [{
+                "action_type": "update_node",
+                "params": {
+                    "node_id": "{trigger.node.id}",
+                    "properties": { "touched": true }
+                }
+            }]
+        }]),
+    )
+    .await?;
+
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let engine = Arc::new(PlaybookEngine::new(Arc::clone(&service)));
+    let task = {
+        let engine = Arc::clone(&engine);
+        tokio::spawn(async move { engine.start(shutdown_rx).await })
+    };
+    for _ in 0..50 {
+        tokio::task::yield_now().await;
+    }
+    tokio::time::advance(Duration::from_secs(61)).await;
+
+    let touched = |name: &'static str| {
+        let service = Arc::clone(&service);
+        let id = ids[name].clone();
+        async move {
+            matches!(
+                service.get_node(&id).await,
+                Ok(Some(n)) if user_field(&n, "pb_sel_item", "touched").and_then(|v| v.as_bool()) == Some(true)
+            )
+        }
+    };
+
+    assert!(
+        wait_until(|| touched("ready_under_go")).await,
+        "the selected node whose parent says go must be touched"
+    );
+    // The play has run by now; the other two must have been left alone.
+    assert!(
+        !touched("ready_under_stop").await,
+        "a selected node whose own parent says stop must not be touched: each node is \
+         evaluated against its own parent, not another node's"
+    );
+    assert!(
+        !touched("waiting_under_go").await,
+        "a node the saved query's filter excludes is never scanned"
     );
 
     shutdown_engine(shutdown_tx, task).await;
@@ -667,7 +781,7 @@ async fn scheduled_play_computes_end_date_via_add_days_and_writes_it_to_a_new_no
         "compute-cycle-end-date",
         json!([{
             "name": "compute-end-date-scheduled",
-            "trigger": { "type": "scheduled", "cron": "0 * * * * * *", "node_type": "pb_cycle_source" },
+            "trigger": { "type": "scheduled", "cron": "0 * * * * * *", "select": { "target_type": "pb_cycle_source" } },
             "conditions": [],
             "actions": [{
                 "action_type": "create_node",
@@ -807,7 +921,7 @@ async fn setup_cycle_total_estimate_play(
             "trigger": {
                 "type": "graph_event",
                 "on": "property_changed",
-                "node_type": cycle_type,
+                "select": { "target_type": cycle_type },
                 // Type-namespaced field -> dotted `<node_type>.<field>` key,
                 // matching the stored shape (`{cycle_type: {"touch": ...}}`)
                 // rather than the bare field name (see
@@ -979,7 +1093,7 @@ async fn recompute_over_a_relationship_with_zero_current_matches_does_not_fail_t
             "trigger": {
                 "type": "graph_event",
                 "on": "property_changed",
-                "node_type": cycle_type,
+                "select": { "target_type": cycle_type },
                 "property_key": format!("{cycle_type}.touch")
             },
             "conditions": [],
@@ -1198,7 +1312,7 @@ async fn relationship_added_rule_fires_on_matching_relationship_create() -> Resu
             "trigger": {
                 "type": "graph_event",
                 "on": "relationship_added",
-                "node_type": "pbrel_add_task"
+                "select": { "target_type": "pbrel_add_task" }
             },
             "conditions": [],
             "actions": [{
@@ -1306,7 +1420,7 @@ async fn relationship_removed_rule_fires_on_matching_relationship_delete() -> Re
             "trigger": {
                 "type": "graph_event",
                 "on": "relationship_removed",
-                "node_type": "pbrel_remove_task"
+                "select": { "target_type": "pbrel_remove_task" }
             },
             "conditions": [],
             "actions": [{
@@ -1377,7 +1491,7 @@ async fn relationship_added_rule_on_base_type_fires_for_subtype_source_node() ->
                 "type": "graph_event",
                 "on": "relationship_added",
                 // Registered on the BASE type -- never redeclared on the subtype.
-                "node_type": "pbrel_sub_base"
+                "select": { "target_type": "pbrel_sub_base" }
             },
             "conditions": [],
             "actions": [{
@@ -1461,7 +1575,7 @@ async fn relationship_added_rule_does_not_fire_for_non_matching_source_type() ->
             "trigger": {
                 "type": "graph_event",
                 "on": "relationship_added",
-                "node_type": "pbrel_registered_task"
+                "select": { "target_type": "pbrel_registered_task" }
             },
             "conditions": [],
             "actions": [{

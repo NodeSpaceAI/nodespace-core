@@ -336,8 +336,8 @@ pub use node_service::{
     NodeService, StoredEdge, SubtreeData, WriteVerificationFault, DEFAULT_QUERY_LIMIT,
 };
 pub use query_service::{
-    FilterOperator, FilterType, QueryDefinition, QueryFilter, QueryService, RelationshipType,
-    SortConfig, SortDirection,
+    FilterOperator, FilterType, QueryDefinition, QueryFilter, QueryService, RelationshipHop,
+    RelationshipPath, SortConfig, SortDirection,
 };
 
 #[cfg(test)]

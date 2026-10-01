@@ -789,7 +789,7 @@ mod search_and_context {
             "retitle-new-tasks",
             json!({ "rules": [{
                 "name": "retitle",
-                "trigger": { "type": "graph_event", "on": "node_created", "node_type": "task" },
+                "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "task" } },
                 "conditions": [],
                 "actions": [{
                     "action_type": "update_node",
@@ -917,7 +917,7 @@ async fn status_becomes(svc: &Arc<NodeService>, id: &str, status: &str) -> bool 
 fn close_on_create() -> serde_json::Value {
     json!({ "rules": [{
         "name": "close-on-create",
-        "trigger": { "type": "graph_event", "on": "node_created", "node_type": "pp_job" },
+        "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "pp_job" } },
         "conditions": [],
         "actions": [{
             "action_type": "update_node",
@@ -951,7 +951,7 @@ async fn seed_probe(svc: &Arc<NodeService>) {
         "mark-probes",
         json!({ "rules": [{
             "name": "mark-probes",
-            "trigger": { "type": "graph_event", "on": "node_created", "node_type": "pp_probe" },
+            "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "pp_probe" } },
             "conditions": [],
             "actions": [{
                 "action_type": "update_node",
@@ -1048,7 +1048,7 @@ async fn no_rule_fires_on_an_archived_node() {
             "trigger": {
                 "type": "graph_event",
                 "on": "property_changed",
-                "node_type": "pp_job",
+                "select": { "target_type": "pp_job" },
                 "property_key": "pp_job.note"
             },
             "conditions": [],
@@ -1112,7 +1112,7 @@ async fn no_action_touches_an_archived_node() {
         "touch-the-archived",
         json!({ "rules": [{
             "name": "touch-the-archived",
-            "trigger": { "type": "graph_event", "on": "node_created", "node_type": "pp_job" },
+            "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "pp_job" } },
             "conditions": [],
             "actions": [
                 {
@@ -1219,7 +1219,7 @@ async fn a_condition_sees_no_archived_related_node() {
             "trigger": {
                 "type": "graph_event",
                 "on": "property_changed",
-                "node_type": "pp_batch",
+                "select": { "target_type": "pp_batch" },
                 "property_key": "pp_batch.note"
             },
             "conditions": ["node.jobs.all(j, j.status == 'done')"],
@@ -1322,7 +1322,7 @@ async fn no_invariant_rule_fires_on_an_archived_node() {
         json!([{
             "name": "no-forbidden-jobs",
             "class": "invariant",
-            "trigger": { "type": "graph_event", "on": "node_created", "node_type": "pp_job" },
+            "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "pp_job" } },
             "conditions": ["node.status == 'forbidden'"],
             "actions": [{ "action_type": "reject", "params": { "message": "forbidden" } }]
         }]),
@@ -1361,7 +1361,7 @@ async fn no_invariant_action_touches_an_archived_node() {
         json!([{
             "name": "touch-the-archived",
             "class": "invariant",
-            "trigger": { "type": "graph_event", "on": "node_created", "node_type": "pp_job" },
+            "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "pp_job" } },
             "conditions": [],
             "actions": [
                 {
@@ -1439,7 +1439,7 @@ async fn a_condition_naming_the_lifecycle_fails_validation() {
             &svc,
             json!({
                 "name": "reads-lifecycle",
-                "trigger": { "type": "graph_event", "on": "node_created", "node_type": "pp_job" },
+                "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "pp_job" } },
                 "conditions": [condition],
                 "actions": [{
                     "action_type": "update_node",
@@ -1466,7 +1466,7 @@ async fn an_update_node_action_carrying_the_lifecycle_is_rejected() {
         &svc,
         json!({
             "name": "archives",
-            "trigger": { "type": "graph_event", "on": "node_created", "node_type": "pp_job" },
+            "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "pp_job" } },
             "conditions": [],
             "actions": [{
                 "action_type": "update_node",
@@ -1476,8 +1476,13 @@ async fn an_update_node_action_carrying_the_lifecycle_is_rejected() {
     )
     .await
     .expect_err("no play action takes the lifecycle as a parameter");
-    assert!(error.contains("lifecycle"), "{error}");
-    assert!(error.contains("rule[0].action[0]"), "{error}");
+    // The typed `update_node` params have no such field, so the rule does not
+    // decode: the error names the rule and the param.
+    assert!(
+        error.contains("unknown field `lifecycle_status`"),
+        "{error}"
+    );
+    assert!(error.contains("rule[0] ('archives')"), "{error}");
 }
 
 /// A binding reads a node's wire JSON, where the field is spelled
@@ -1496,7 +1501,7 @@ async fn a_binding_naming_the_lifecycle_fails_validation() {
             &svc,
             json!({
                 "name": "copies-lifecycle",
-                "trigger": { "type": "graph_event", "on": "node_created", "node_type": "pp_job" },
+                "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "pp_job" } },
                 "conditions": [],
                 "actions": [{
                     "action_type": "update_node",
@@ -1517,7 +1522,7 @@ async fn a_binding_naming_the_lifecycle_fails_validation() {
         &svc,
         json!({
             "name": "iterates-lifecycle",
-            "trigger": { "type": "graph_event", "on": "node_created", "node_type": "pp_job" },
+            "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "pp_job" } },
             "conditions": [],
             "actions": [{
                 "action_type": "update_node",
@@ -1544,7 +1549,7 @@ async fn a_binding_cannot_reach_the_lifecycle_at_run_time() {
         json!([{
             "name": "copies-lifecycle",
             "class": "invariant",
-            "trigger": { "type": "graph_event", "on": "node_created", "node_type": "pp_job" },
+            "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "pp_job" } },
             "conditions": [],
             "actions": [{
                 "action_type": "update_node",

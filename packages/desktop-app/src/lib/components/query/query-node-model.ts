@@ -199,11 +199,13 @@ function filterSubject(node: Node, filter: QueryFilter): unknown {
  * Evaluate a single QueryFilter against a node.
  *
  * Supports `property`, `content`, and `metadata` filters fully, and the
- * node-local `relationship` filters (`mentions` via `node.mentions`,
- * `mentioned_by` via `node.mentionedIn`).
+ * node-local `relationship` filters: a path of the single hop `mentions` (via
+ * `node.mentions`) or `mentioned_by` (via `node.mentionedIn`).
  *
- * `parent` / `children` need graph traversal the node doesn't carry, so they
- * return false: unverifiable is not the same as matching. The caller is
+ * Any other path (`child_of`, `has_child`, a schema-declared relationship,
+ * several hops, an open-ended hop) needs graph traversal the node doesn't
+ * carry, so it returns false: unverifiable is not the same as matching. The
+ * caller is
  * deciding whether to *add* a node to a settled result set, and the cost of
  * being wrong is asymmetric — declining leaves the node out until the next
  * query load includes it (the backend evaluates these filters in SQL), while
@@ -213,14 +215,20 @@ function filterSubject(node: Node, filter: QueryFilter): unknown {
 export function matchesFilter(node: Node, filter: QueryFilter): boolean {
   const caseSensitive = filter.caseSensitive ?? false;
 
+  // A related-node filter is a condition on other nodes, which this node
+  // alone cannot answer.
+  if (filter.type === 'related') return false;
+
   if (filter.type === 'relationship') {
-    switch (filter.relationshipType) {
+    // A fixed hop travels as its bare name; an open-ended one is an object.
+    const [hop, ...more] = filter.path ?? [];
+    if (more.length > 0 || typeof hop !== 'string') return false;
+    switch (hop) {
       case 'mentions':
         return (node.mentions ?? []).some((id) => id === filter.nodeId);
       case 'mentioned_by':
         return (node.mentionedIn ?? []).some((ref) => ref.id === filter.nodeId);
       default:
-        // parent / children — not evaluable from a single node.
         return false;
     }
   }
@@ -302,8 +310,11 @@ export interface CreatedNodeGate {
  * depends on that ordering.
  *
  * Corollary of `matchesFilter` declining graph filters: a definition whose
- * filters are *only* `parent`/`children` never live-appends, since every node
- * fails the gate. Such a view refreshes on its next load rather than
+ * filters walk a path it cannot evaluate from one node (anything but a single
+ * `mentions` / `mentioned_by` hop) never live-appends, since every node fails
+ * the gate, and neither does one with a `related` filter. The same goes for a
+ * node of a subtype of the target type: the backend's query returns it, but
+ * this gate compares the type exactly, so it appears on the next load. Such a view refreshes on its next load rather than
  * incrementally — acceptable because the filter editor emits property filters
  * only, so those definitions arrive from AI or programmatic creation.
  */

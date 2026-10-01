@@ -29,9 +29,10 @@ use crate::playbook::cel::{self, ConditionResult};
 use crate::playbook::graph_resolver::GraphResolver;
 use crate::playbook::lifecycle::PlaybookLifecycleManager;
 use crate::playbook::path_extractor;
-use crate::playbook::types::{namespaced_property_key, NodeEventType, TriggerKey};
+use crate::playbook::types::{namespaced_property_key, CronRegistry, NodeEventType, TriggerKey};
 use crate::services::NodeService;
 use serde::Serialize;
+use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
 
@@ -162,31 +163,29 @@ fn record_degradation(
 /// `lookup_rules` (synthesized `NodeCreated` + wildcard `PropertyChanged` keys
 /// for the node's type) — not a linear scan of every active play. Rules whose
 /// trigger is `scheduled` rather than `graph_event` are included too: a
-/// scheduled trigger's `node_type` scopes which nodes the engine scans, so
-/// membership in this node's type is the same eligibility test.
+/// scheduled rule is a candidate when its selector selects this node, which
+/// is asked as the scan's own query narrowed to the node
+/// ([`crate::playbook::selectors::selects_node`]).
 ///
-/// The scheduled/cron eligibility test resolves `node.node_type`'s `extends`
-/// ancestry live (`NodeService::resolve_type_chain`, via the same
-/// `resolve_field_owners` call the candidate field enumeration below already
-/// makes — its returned chain is reused rather than re-resolved), rather
-/// than consulting `PlaybookLifecycleManager::ancestor_cache` directly. That
-/// cache is refreshed asynchronously by `PlaybookEngine` and can be stale after a
-/// failed refresh — acceptable for the zero-I/O hot trigger-dispatch path it
-/// exists to serve, but as a read-only out-of-band diagnostic this function
-/// has no hot-path budget to protect, so it pays for a live read instead. See
-/// the scheduled-candidate loop below for the full reasoning.
+/// That query resolves "is this node's type the selected type, or a subtype
+/// of it" from the store's ancestry table, live, rather than consulting
+/// `PlaybookLifecycleManager::ancestor_cache`. That cache is refreshed
+/// asynchronously by `PlaybookEngine` and can be stale after a failed refresh
+/// — acceptable for the zero-I/O hot trigger-dispatch path it exists to
+/// serve, but as a read-only out-of-band diagnostic this function has no
+/// hot-path budget to protect, so it pays for a live read instead.
 ///
 /// The graph-event candidate path (`lm.lookup_rules` below) is NOT resolved
 /// live the same way — it's the exact code path the live trigger-dispatch
 /// hot path (`engine.rs`/`cel.rs`) also runs through, via
 /// `PlaybookLifecycleManager::ancestor_keys`, which cannot afford a DB read
 /// per live event. It therefore still reads `ancestor_cache` directly and
-/// can be stale in the same way the scheduled/cron path used to be. Unlike
-/// that path, though, this function does have a way to detect the one
-/// unbounded-duration class of that staleness: `PlaybookEngine::ancestry_dirty`
-/// is injected onto `NodeService` (`NodeService::set_playbook_ancestry_dirty`,
-/// wired in `assembly.rs` the same way `playbook_lifecycle` is) and read back
-/// via `NodeService::playbook_ancestry_dirty` — see the check right after
+/// can be stale. Unlike the scheduled path, though, this function does have a
+/// way to detect the one unbounded-duration class of that staleness:
+/// `PlaybookEngine::ancestry_dirty` is injected onto `NodeService`
+/// (`NodeService::set_playbook_ancestry_dirty`, wired in `assembly.rs` the
+/// same way `playbook_lifecycle` is) and read back via
+/// `NodeService::playbook_ancestry_dirty` — see the check right after
 /// `candidate_refs` is built below, which records a `degraded_reasons` entry
 /// when it's set rather than silently trusting a cache of unknown staleness.
 pub async fn get_workflow_state(
@@ -244,47 +243,31 @@ pub async fn get_workflow_state(
     // key built for it, or a genuinely active, satisfied rule silently never
     // shows up here. `resolve_field_owners` already walks that chain and
     // merges it; reuse it rather than re-deriving the merge from `schema`.
-    //
-    // Its third return value is the same live-resolved chain
-    // `NodeService::resolve_type_chain` computes (`resolve_field_owners`
-    // calls it internally and returns the result verbatim) — reused below as
-    // `ancestry` for the scheduled/cron candidate fan-out rather than issuing
-    // a second, independent call that would re-walk the same `extends` edges
-    // and could observe a different, concurrently-written snapshot of them.
-    let (effective_fields, ancestry) =
-        match node_service.resolve_field_owners(&node.node_type).await {
-            Ok((fields, _owners, chain)) => (fields, chain),
-            Err(e) => {
-                // One resolution failure degrades both consumers together: the
-                // property_changed candidate fields (see below) and, via
-                // `ancestry`'s fallback, the scheduled/cron candidate fan-out —
-                // both ultimately depend on the same underlying extends-chain
-                // walk, so reporting them as two unrelated failures would be
-                // misleading, not more informative.
-                let msg = format!(
-                    "effective-field/extends-chain resolution for '{}' failed ({e}); \
+    let effective_fields = match node_service.resolve_field_owners(&node.node_type).await {
+        Ok((fields, _owners, _chain)) => fields,
+        Err(e) => {
+            let msg = format!(
+                "effective-field/extends-chain resolution for '{}' failed ({e}); \
                  property_changed candidates degraded to this node's own directly-declared \
-                 schema fields, and the scheduled/cron candidate fan-out degraded to this \
-                 node's own type only — a scheduled Play registered on an ancestor type may \
-                 be missing from this response",
-                    node.node_type
-                );
-                record_degradation(
-                    &mut degraded,
-                    &node.node_type,
-                    &e,
-                    "get_workflow_state",
-                    msg,
-                );
-                let fields = schema
-                    .as_ref()
-                    .map(|s| s.fields.clone())
-                    .unwrap_or_default();
-                (fields, vec![node.node_type.clone()])
-            }
-        };
+                 schema fields",
+                node.node_type
+            );
+            record_degradation(
+                &mut degraded,
+                &node.node_type,
+                &e,
+                "get_workflow_state",
+                msg,
+            );
+            schema
+                .as_ref()
+                .map(|s| s.fields.clone())
+                .unwrap_or_default()
+        }
+    };
 
-    let candidate_refs = {
+    let cron_entries: CronRegistry;
+    let mut candidate_refs = {
         let lm = lifecycle.read().expect("lifecycle lock poisoned");
         let mut keys = vec![
             TriggerKey::NodeEvent {
@@ -324,36 +307,54 @@ pub async fn get_workflow_state(
             });
         }
 
-        let mut refs = lm.lookup_rules(&keys);
+        let refs = lm.lookup_rules(&keys);
 
         // Scheduled rules aren't in the graph-event TriggerIndex at all —
-        // they live in the CronRegistry, keyed by node_type. Include them
-        // here too: "what would fire for this node" should cover a
-        // scheduled rule the same way it covers a graph-event one, since
-        // both are just "conditions evaluated against this node's state."
-        //
-        // `lookup_rules` above fans a graph-event candidate out across
-        // `node.node_type`'s full ADR-078 ancestry for free (via
-        // `PlaybookLifecycleManager::ancestor_keys`) — an exact-string
-        // `node_type` match here would be inconsistent with that and would
-        // silently drop a scheduled Play registered on a base type from
-        // this response for every subtype node. `ancestry` (resolved live,
-        // above, via `NodeService::resolve_type_chain` — deliberately NOT
-        // `lm.ancestors_of`, see this function's doc comment) is the same
-        // shape `ancestors_of` would have returned had its cache been fresh
-        // (nearest first, including the type itself), so membership in it is
-        // the matching eligibility test for a scheduled trigger too.
-        for entry in lm.cron_registry() {
-            if ancestry.iter().any(|t| t == &entry.node_type) {
+        // they live in the CronRegistry, keyed by selector. They are added
+        // below, once the lock is released: "what would fire for this node"
+        // should cover a scheduled rule the same way it covers a graph-event
+        // one, and whether a selector picks this node up is a query.
+        cron_entries = lm.cron_registry().clone();
+        refs
+    };
+
+    // A scheduled rule is a candidate when its selector selects this node:
+    // the same query the scan runs, narrowed to this node, so a selector's
+    // filters and a saved query count here exactly as they do when the
+    // schedule fires. A type selector matches the type's subtypes too, which
+    // the query resolves live from the ancestry table rather than from the
+    // lifecycle manager's cache (see this function's doc comment).
+    //
+    // The type each selecting scan reads its rules at is kept alongside: a
+    // rule selecting through a saved query names no type of its own.
+    let mut scanned_types: HashMap<(String, usize), String> = HashMap::new();
+    for entry in &cron_entries {
+        match crate::playbook::selectors::selects_node(node_service, &entry.select, node).await {
+            Ok(Some(target_type)) => {
                 for r in &entry.rules {
-                    if !refs.iter().any(|existing| existing == r) {
-                        refs.push(r.clone());
+                    scanned_types.insert((r.play_id.clone(), r.rule_index), target_type.clone());
+                    if !candidate_refs.iter().any(|existing| existing == r) {
+                        candidate_refs.push(r.clone());
                     }
                 }
             }
+            Ok(None) => {}
+            Err(e) => {
+                let msg = format!(
+                    "running the selector '{}' of a scheduled Play failed ({e}); its rules \
+                     may be missing from this response",
+                    entry.select
+                );
+                record_degradation(
+                    &mut degraded,
+                    &node.node_type,
+                    &e,
+                    "get_workflow_state",
+                    msg,
+                );
+            }
         }
-        refs
-    };
+    }
 
     // The graph-event half of `candidate_refs` just built above (via
     // `lm.lookup_rules`) fanned out across `ancestor_cache` directly, unlike
@@ -417,10 +418,14 @@ pub async fn get_workflow_state(
         // Evaluate at the rule's registered scope (ADR-078), exactly as a live
         // trigger does — otherwise a base-scoped rule reads the subtype's raw
         // vocabulary and a subtype-scoped one misses its inherited fields.
+        let scanned_type = scanned_types
+            .get(&(rule_ref.play_id.clone(), rule_ref.rule_index))
+            .map(String::as_str);
         let cel_scope = match crate::playbook::engine::PlaybookEngine::cel_scope_for(
             node_service,
             &rule_ref.rule,
             node,
+            scanned_type,
         )
         .await
         {
@@ -443,6 +448,7 @@ pub async fn get_workflow_state(
         };
         resolver.set_reading_type(crate::playbook::engine::PlaybookEngine::reading_type(
             &rule_ref.rule,
+            scanned_type,
         ));
 
         for condition in &rule_ref.rule.conditions {
@@ -832,7 +838,7 @@ mod tests {
                 "pb-1",
                 json!([{
                     "name": "r1",
-                    "trigger": { "type": "graph_event", "on": "node_created", "node_type": "task" },
+                    "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "task" } },
                     "conditions": ["node.status == 'open'"],
                     "actions": []
                 }]),
@@ -903,7 +909,7 @@ mod tests {
                 "pb-2",
                 json!([{
                     "name": "r1",
-                    "trigger": { "type": "graph_event", "on": "node_created", "node_type": "wf_task" },
+                    "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "wf_task" } },
                     "conditions": ["node.story.status == 'active'"],
                     "actions": []
                 }]),
@@ -954,7 +960,7 @@ mod tests {
                 "pb-inherited",
                 json!([{
                     "name": "r1",
-                    "trigger": { "type": "graph_event", "on": "node_created", "node_type": "wf_bug" },
+                    "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "wf_bug" } },
                     "conditions": ["node.state == 'done'"],
                     "actions": []
                 }]),
@@ -1037,7 +1043,7 @@ mod tests {
                 "pb-mh",
                 json!([{
                     "name": "r1",
-                    "trigger": { "type": "graph_event", "on": "node_created", "node_type": "wf_task_mh" },
+                    "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "wf_task_mh" } },
                     "conditions": ["node.story.epic == 'active'"],
                     "actions": []
                 }]),
@@ -1082,7 +1088,7 @@ mod tests {
                 "pb-3",
                 json!([{
                     "name": "r1",
-                    "trigger": { "type": "graph_event", "on": "node_created", "node_type": "wf_task2" },
+                    "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "wf_task2" } },
                     "conditions": ["node.staatus == 'open'"],
                     "actions": []
                 }]),
@@ -1127,7 +1133,7 @@ mod tests {
                 "pb-4",
                 json!([{
                     "name": "r1",
-                    "trigger": { "type": "graph_event", "on": "property_changed", "node_type": "wf_task3", "property_key": "wf_task3.status" },
+                    "trigger": { "type": "graph_event", "on": "property_changed", "select": { "target_type": "wf_task3" }, "property_key": "wf_task3.status" },
                     "conditions": ["trigger.property.old_value == 'open'"],
                     "actions": []
                 }]),
@@ -1165,7 +1171,7 @@ mod tests {
                 "pb-5",
                 json!([{
                     "name": "r1",
-                    "trigger": { "type": "scheduled", "cron": "0 9 * * *", "node_type": "invoice" },
+                    "trigger": { "type": "scheduled", "cron": "0 9 * * *", "select": { "target_type": "invoice" } },
                     "conditions": ["node.status == 'overdue'"],
                     "actions": []
                 }]),
@@ -1210,7 +1216,7 @@ mod tests {
                 "pb-6",
                 json!([{
                     "name": "r1",
-                    "trigger": { "type": "graph_event", "on": "property_changed", "node_type": "wf_task4", "property_key": "wf_task4.status" },
+                    "trigger": { "type": "graph_event", "on": "property_changed", "select": { "target_type": "wf_task4" }, "property_key": "wf_task4.status" },
                     "conditions": ["node.status == 'done'"],
                     "actions": []
                 }]),
@@ -1289,7 +1295,7 @@ mod tests {
                 "pb-inherit-pc",
                 json!([{
                     "name": "r1",
-                    "trigger": { "type": "graph_event", "on": "property_changed", "node_type": "wf_sub_pc", "property_key": "wf_sub_pc.status" },
+                    "trigger": { "type": "graph_event", "on": "property_changed", "select": { "target_type": "wf_sub_pc" }, "property_key": "wf_sub_pc.status" },
                     "conditions": ["node.id != ''"],
                     "actions": []
                 }]),
@@ -1361,7 +1367,7 @@ mod tests {
                 "pb-inherit-cf",
                 json!([{
                     "name": "r1",
-                    "trigger": { "type": "graph_event", "on": "node_created", "node_type": "wf_sub_cf" },
+                    "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "wf_sub_cf" } },
                     "conditions": ["node.status == 'active'"],
                     "actions": []
                 }]),
@@ -1444,7 +1450,7 @@ mod tests {
                 "pb-inherit-rel",
                 json!([{
                     "name": "r1",
-                    "trigger": { "type": "graph_event", "on": "node_created", "node_type": "wf_rel_sub" },
+                    "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "wf_rel_sub" } },
                     "conditions": ["node.story.status == 'active'"],
                     "actions": []
                 }]),
@@ -1511,7 +1517,7 @@ mod tests {
                 "pb-extends-not-rel",
                 json!([{
                     "name": "r1",
-                    "trigger": { "type": "graph_event", "on": "node_created", "node_type": "wf_ext_sub" },
+                    "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "wf_ext_sub" } },
                     "conditions": ["node.extends.status == 'active'"],
                     "actions": []
                 }]),
@@ -1574,7 +1580,7 @@ mod tests {
                 "pb-cron-ancestor",
                 json!([{
                     "name": "r1",
-                    "trigger": { "type": "scheduled", "cron": "0 9 * * *", "node_type": "wf_base_cron" },
+                    "trigger": { "type": "scheduled", "cron": "0 9 * * *", "select": { "target_type": "wf_base_cron" } },
                     "conditions": ["node.id != ''"],
                     "actions": []
                 }]),
@@ -1657,7 +1663,7 @@ mod tests {
                 "pb-cron-stale-cache",
                 json!([{
                     "name": "r1",
-                    "trigger": { "type": "scheduled", "cron": "0 9 * * *", "node_type": "wf_base_cron_stale" },
+                    "trigger": { "type": "scheduled", "cron": "0 9 * * *", "select": { "target_type": "wf_base_cron_stale" } },
                     "conditions": ["node.id != ''"],
                     "actions": []
                 }]),
@@ -1769,7 +1775,7 @@ mod tests {
                 "pb-degraded",
                 json!([{
                     "name": "r1",
-                    "trigger": { "type": "graph_event", "on": "node_created", "node_type": "wf_degraded" },
+                    "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "wf_degraded" } },
                     "conditions": [condition],
                     "actions": []
                 }]),

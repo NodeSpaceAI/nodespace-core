@@ -65,7 +65,7 @@ service NodeService {
   rpc GetIncomingMentions(MentionTargetRequest) returns (MentionIdsResponse);
   rpc GetMentioningRoots(MentionTargetRequest) returns (NodeReferenceListResponse);
 
-  // Typed core-field updates for task, person, project and query: an unset
+  // Typed core-field updates for task, person, project, query and play: an unset
   // field is unchanged, a clearable field can be cleared. The daemon writes
   // them through the generic update pipeline; the response carries the stored
   // node.
@@ -73,6 +73,7 @@ service NodeService {
   rpc UpdatePersonNode(UpdatePersonNodeRequest) returns (NodeResponse);
   rpc UpdateProjectNode(UpdateProjectNodeRequest) returns (NodeResponse);
   rpc UpdateQueryNode(UpdateQueryNodeRequest) returns (NodeResponse);
+  rpc UpdatePlayNode(UpdatePlayNodeRequest) returns (NodeResponse);
 
   // Local identity (ADR-037): the seeded local-user PersonNode.
   // GetLocalPerson resolves it via the has_role owner edge to the
@@ -975,7 +976,7 @@ message UpdateTaskNodeRequest {
 }
 
 // ---------------------------------------------------------------------------
-// UpdatePersonNode / UpdateProjectNode / UpdateQueryNode
+// UpdatePersonNode / UpdateProjectNode / UpdateQueryNode / UpdatePlayNode
 // ---------------------------------------------------------------------------
 
 // Unset = no change; OptionalStringClear.clear = clear the field.
@@ -1003,6 +1004,16 @@ message UpdateProjectNodeRequest {
 // change, `null` clears, a value sets. The daemon decodes it with serde, the
 // same decoder the Tauri command and the service use.
 message UpdateQueryNodeRequest {
+  string node_id = 1;
+  int64 version = 2;
+  string update_json = 3;
+}
+
+// A play's rules are structured JSON, so the update travels as the
+// JSON-encoded PlayNodeUpdate (camelCase keys; a rule's own keys are
+// snake_case), like UpdateQueryNodeRequest: an absent key is no change,
+// `description: null` clears it, a value sets. `rules` is replaced whole.
+message UpdatePlayNodeRequest {
   string node_id = 1;
   int64 version = 2;
   string update_json = 3;

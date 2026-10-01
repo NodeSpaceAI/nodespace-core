@@ -194,6 +194,19 @@ describe('matchesFilter', () => {
     properties: { status: 'open', amount: 500 },
   });
 
+  it('declines a related-node filter, which is a condition on other nodes', () => {
+    const anyNode = { id: 'n', nodeType: 'task', content: '', properties: {} } as unknown as Node;
+    // No `value`, the shape an `equals` on an absent subject would otherwise pass.
+    expect(
+      matchesFilter(anyNode, {
+        type: 'related',
+        operator: 'equals',
+        path: ['project'],
+        filter: { type: 'property', operator: 'equals', property: 'status', value: 'active' }
+      })
+    ).toBe(false);
+  });
+
   it('matches property equals (case-insensitive by default)', () => {
     expect(
       matchesFilter(invoice, { type: 'property', operator: 'equals', property: 'status', value: 'OPEN' })
@@ -383,20 +396,35 @@ describe('matchesFilter', () => {
   it('evaluates node-local relationship filters and declines graph ones', () => {
     const withRels = node('n2', { mentions: ['m1'], mentionedIn: [{ id: 'src', title: null, nodeType: 'text' }] });
     expect(
-      matchesFilter(withRels, { type: 'relationship', operator: 'exists', relationshipType: 'mentions', nodeId: 'm1' })
+      matchesFilter(withRels, { type: 'relationship', operator: 'exists', path: ['mentions'], nodeId: 'm1' })
     ).toBe(true);
     expect(
-      matchesFilter(withRels, { type: 'relationship', operator: 'exists', relationshipType: 'mentioned_by', nodeId: 'src' })
+      matchesFilter(withRels, { type: 'relationship', operator: 'exists', path: ['mentioned_by'], nodeId: 'src' })
     ).toBe(true);
-    // parent/children need graph traversal the node doesn't carry. Unverifiable
+    // Parent/children need graph traversal the node doesn't carry. Unverifiable
     // is not matching: declining keeps a node the query may exclude out of the
     // view until the next load, where the backend evaluates it in SQL.
     expect(
-      matchesFilter(withRels, { type: 'relationship', operator: 'exists', relationshipType: 'parent', nodeId: 'x' })
+      matchesFilter(withRels, { type: 'relationship', operator: 'exists', path: ['child_of'], nodeId: 'x' })
     ).toBe(false);
     expect(
-      matchesFilter(withRels, { type: 'relationship', operator: 'exists', relationshipType: 'children', nodeId: 'x' })
+      matchesFilter(withRels, { type: 'relationship', operator: 'exists', path: ['has_child'], nodeId: 'x' })
     ).toBe(false);
+  });
+
+  it('declines a relationship path it cannot walk from one node', () => {
+    const withRels = node('n2', { mentions: ['m1'] });
+    // Two hops, an open-ended hop and a missing path all reach past the node.
+    for (const path of [
+      ['mentions', 'mentions'],
+      [{ name: 'mentions', open_ended: true }],
+      [],
+      undefined
+    ]) {
+      expect(
+        matchesFilter(withRels, { type: 'relationship', operator: 'exists', path, nodeId: 'm1' })
+      ).toBe(false);
+    }
   });
 });
 

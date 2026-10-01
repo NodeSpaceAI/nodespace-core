@@ -211,7 +211,7 @@ mod tests {
             let default_rules = json!([{
                 "name": "default-private",
                 "class": "invariant",
-                "trigger": { "type": "graph_event", "on": "node_created", "node_type": "task" },
+                "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "task" } },
                 "conditions": [],
                 "actions": []
             }]);
@@ -225,7 +225,7 @@ mod tests {
             let edited = crate::models::NodeUpdate::default().with_properties(json!({
                 "rules": [{
                     "name": "user-edited",
-                    "trigger": { "type": "graph_event", "on": "node_created", "node_type": "task" },
+                    "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "task" } },
                     "conditions": [],
                     "actions": []
                 }]

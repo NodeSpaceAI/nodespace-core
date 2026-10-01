@@ -937,6 +937,27 @@ fn cel_add_days(date_str: Arc<String>, n: i64) -> Result<Value, ExecutionError> 
 // Condition Evaluation
 // ---------------------------------------------------------------------------
 
+/// Every dot-path and collection path a rule's conditions read: what a
+/// resolver has to resolve before they can be evaluated. Shared by evaluation
+/// and by a scheduled scan resolving the paths for all of its nodes at once,
+/// so the two can never disagree about which paths a rule needs.
+pub(crate) fn condition_paths(
+    conditions: &[CompiledCondition],
+) -> (
+    Vec<path_extractor::ExtractedPath>,
+    Vec<path_extractor::CollectionPath>,
+) {
+    let mut paths = Vec::new();
+    let mut collections = Vec::new();
+    for condition in conditions {
+        if let Ok(extraction) = path_extractor::extract_paths(&condition.source) {
+            paths.extend(extraction.paths);
+            collections.extend(extraction.collections);
+        }
+    }
+    (paths, collections)
+}
+
 /// Evaluate all conditions for a rule against the trigger node and event.
 ///
 /// Each condition's `Program` was compiled once, at parse/save time (see
@@ -991,15 +1012,7 @@ pub async fn evaluate_conditions_at_scope(
 
     // Pre-resolve graph paths if a resolver is available
     let resolved_values = if let Some(resolver) = resolver {
-        // Extract all paths from all conditions
-        let mut all_paths = Vec::new();
-        let mut all_collections = Vec::new();
-        for condition in conditions {
-            if let Ok(extraction) = path_extractor::extract_paths(&condition.source) {
-                all_paths.extend(extraction.paths);
-                all_collections.extend(extraction.collections);
-            }
-        }
+        let (all_paths, all_collections) = condition_paths(conditions);
 
         // Resolve paths that need graph traversal (multi-hop)
         if !all_paths.is_empty() || !all_collections.is_empty() {

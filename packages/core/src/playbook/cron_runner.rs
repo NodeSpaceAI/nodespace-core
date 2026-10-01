@@ -9,8 +9,12 @@
 //! - **Simple polling, not a scheduler.** The `cron` crate is used only for
 //!   expression-to-time matching, not as a scheduler.
 //! - **Deduplication built-in.** Each `CronEntry` groups all rules sharing the
-//!   same `(cron_expression, node_type)` pair, so only one DB query is issued
-//!   per unique pair.
+//!   same `(cron_expression, selector)` pair, so only one query is issued per
+//!   unique pair.
+//! - **Selected and resolved in SQL.** An entry's selector runs as one query
+//!   (its type and filters, or a saved query's), and the rules' condition
+//!   paths are resolved for every selected node in one statement per path
+//!   before any node is enqueued.
 //! - **Missed runs are skipped.** If NodeSpace was not running when a cron
 //!   expression was due, execution is not retried.
 //! - **Contiguous windows.** Each check covers `(last_checked, now]`, where
@@ -27,8 +31,11 @@
 //!   minute at second 0.
 
 use crate::db::events::{DomainEvent, EventEnvelope, EventMetadata};
+use crate::playbook::cel::condition_paths;
+use crate::playbook::graph_resolver::GraphResolver;
 use crate::playbook::lifecycle::PlaybookLifecycleManager;
-use crate::playbook::types::{CronEntry, ExecutionWorkItem};
+use crate::playbook::selectors::select_nodes;
+use crate::playbook::types::{CronEntry, ExecutionWorkItem, ScanContext};
 use crate::services::NodeService;
 use cron::Schedule;
 use std::str::FromStr;
@@ -43,8 +50,8 @@ const POLL_INTERVAL: Duration = Duration::from_secs(60);
 /// Run the cron polling loop.
 ///
 /// Wakes every 60 seconds, reads the `CronRegistry`, and for each entry whose
-/// cron expression matches the current minute window, queries all active nodes
-/// of that type and enqueues work items.
+/// cron expression matches the current minute window, runs the entry's
+/// selector and enqueues a work item per node it matches.
 ///
 /// Exits when `shutdown_rx` receives `true` or the watch sender is dropped.
 pub async fn cron_runner_loop(
@@ -148,8 +155,8 @@ pub(crate) async fn check_and_enqueue(
             Ok(s) => s,
             Err(e) => {
                 warn!(
-                    "Invalid cron expression '{}' for node_type '{}': {}",
-                    entry.cron_expression, entry.node_type, e
+                    "Invalid cron expression '{}' for selector '{}': {}",
+                    entry.cron_expression, entry.select, e
                 );
                 continue;
             }
@@ -160,32 +167,43 @@ pub(crate) async fn check_and_enqueue(
         }
 
         debug!(
-            "Cron expression '{}' matched for node_type '{}'",
-            entry.cron_expression, entry.node_type
+            "Cron expression '{}' matched for selector '{}'",
+            entry.cron_expression, entry.select
         );
 
-        // Scan the participating nodes of this type (single DB scan per
-        // cron+node_type pair). An archived node is no scan target.
-        let nodes = match node_service
-            .query_nodes_by_type(&entry.node_type, false)
-            .await
-        {
-            Ok(nodes) => nodes,
+        // The selector runs as one query, in SQL, per (cron, selector) pair.
+        // Archived nodes never match it.
+        let (target_type, nodes) = match select_nodes(node_service, &entry.select).await {
+            Ok(selected) => selected,
             Err(e) => {
                 error!(
-                    "Failed to query nodes of type '{}' for cron trigger: {}",
-                    entry.node_type, e
+                    "Failed to run selector '{}' for cron trigger: {}",
+                    entry.select, e
                 );
                 continue;
             }
         };
 
+        // Resolve the rules' condition paths for every selected node at once:
+        // one statement per path for the whole scan, rather than a walk per
+        // node when each is evaluated.
+        let mut resolver = GraphResolver::new(Arc::clone(node_service));
+        for rule_ref in &entry.rules {
+            let (paths, collections) = condition_paths(&rule_ref.rule.conditions);
+            resolver.resolve_ahead(&nodes, &paths, &collections).await;
+        }
         debug!(
-            "Cron trigger: found {} active '{}' nodes, enqueueing with {} rules",
+            "Cron trigger: selector '{}' matched {} nodes, enqueueing with {} rules \
+             ({} path statements)",
+            entry.select,
             nodes.len(),
-            entry.node_type,
-            entry.rules.len()
+            entry.rules.len(),
+            resolver.statements_run(),
         );
+        let scan = Arc::new(ScanContext {
+            target_type,
+            paths: resolver.into_cache(),
+        });
 
         // Enqueue each node with all matching rules
         for node in nodes {
@@ -193,14 +211,15 @@ pub(crate) async fn check_and_enqueue(
                 rules: entry.rules.clone(),
                 trigger_event: synthetic_cron_envelope(&node.id),
                 trigger_node: node,
+                scan: Some(Arc::clone(&scan)),
             };
 
             if let Err(e) = queue_tx.try_send(work_item) {
                 match e {
                     mpsc::error::TrySendError::Full(_) => {
                         warn!(
-                            "ExecutionQueue full, dropping cron work item for node_type '{}'",
-                            entry.node_type
+                            "ExecutionQueue full, dropping cron work item for selector '{}'",
+                            entry.select
                         );
                     }
                     mpsc::error::TrySendError::Closed(_) => {
@@ -240,6 +259,7 @@ mod tests {
     use super::*;
     use crate::playbook::types::{
         ActionType, CronEntry, OrderedRuleRef, ParsedAction, ParsedRule, ParsedTrigger, RuleClass,
+        Selector,
     };
     use std::sync::Arc;
 
@@ -250,19 +270,19 @@ mod tests {
             class: RuleClass::Reactive,
             trigger: ParsedTrigger::Scheduled {
                 cron: cron_expr.to_string(),
-                node_type: node_type.to_string(),
+                select: Selector::of_type(node_type),
             },
             conditions: vec![],
             actions: vec![ParsedAction {
                 action_type: ActionType::UpdateNode,
-                params: serde_json::json!({"target": "trigger.node"}),
+                params: serde_json::json!({"node_id": "{trigger.node.id}"}),
                 for_each: None,
             }],
         });
 
         CronEntry {
             cron_expression: cron_expr.to_string(),
-            node_type: node_type.to_string(),
+            select: Selector::of_type(node_type),
             rules: vec![OrderedRuleRef {
                 play_id: "play-1".to_string(),
                 rule_index: 0,
@@ -390,7 +410,7 @@ mod tests {
             class: RuleClass::Reactive,
             trigger: ParsedTrigger::Scheduled {
                 cron: "0 * * * * * *".to_string(),
-                node_type: "task".to_string(),
+                select: Selector::of_type("task"),
             },
             conditions: vec![],
             actions: vec![],
@@ -401,7 +421,7 @@ mod tests {
             class: RuleClass::Reactive,
             trigger: ParsedTrigger::Scheduled {
                 cron: "0 * * * * * *".to_string(),
-                node_type: "task".to_string(),
+                select: Selector::of_type("task"),
             },
             conditions: vec![],
             actions: vec![],
@@ -409,7 +429,7 @@ mod tests {
 
         let entry = CronEntry {
             cron_expression: "0 * * * * * *".to_string(),
-            node_type: "task".to_string(),
+            select: Selector::of_type("task"),
             rules: vec![
                 OrderedRuleRef {
                     play_id: "pb-1".to_string(),
@@ -427,14 +447,14 @@ mod tests {
         // One CronEntry → one DB query, but two rules applied per node
         assert_eq!(entry.rules.len(), 2);
         assert_eq!(entry.cron_expression, "0 * * * * * *");
-        assert_eq!(entry.node_type, "task");
+        assert_eq!(entry.select, Selector::of_type("task"));
     }
 
     #[test]
     fn test_make_cron_entry_helper() {
         let entry = make_cron_entry("0 30 9 * * * *", "invoice");
         assert_eq!(entry.cron_expression, "0 30 9 * * * *");
-        assert_eq!(entry.node_type, "invoice");
+        assert_eq!(entry.select, Selector::of_type("invoice"));
         assert_eq!(entry.rules.len(), 1);
         assert_eq!(entry.rules[0].play_id, "play-1");
     }
@@ -483,12 +503,12 @@ mod tests {
                             "trigger": {
                                 "type": "scheduled",
                                 "cron": cron_expr,
-                                "node_type": node_type
+                                "select": { "target_type": node_type }
                             },
                             "conditions": [],
                             "actions": [{
                                 "action_type": "update_node",
-                                "params": {"target": "trigger.node"}
+                                "params": {"node_id": "{trigger.node.id}"}
                             }]
                         }]
                     }
@@ -777,6 +797,250 @@ mod tests {
                 1,
                 "should still enqueue work items after recovering from a poisoned lock"
             );
+        }
+
+        // -- Selectors: a scheduled scan selects the way a query does --
+
+        const EVERY_MINUTE: &str = "0 * * * * * *";
+
+        /// A lifecycle manager holding one play with the given rules.
+        fn lifecycle_with_rules(rules: serde_json::Value) -> Arc<RwLock<PlaybookLifecycleManager>> {
+            let mut lm = PlaybookLifecycleManager::new();
+            let mut play = Node::new_with_id(
+                "0a1f6c1e-2c56-4c0e-9a4e-6f1d2b3c4d5e".to_string(),
+                "play".to_string(),
+                "selector play".to_string(),
+                json!({ "play": { "rules": rules } }),
+            );
+            play.lifecycle_status = "active".to_string();
+            lm.activate_play(&play).unwrap();
+            Arc::new(RwLock::new(lm))
+        }
+
+        fn scheduled_rule(
+            select: serde_json::Value,
+            conditions: serde_json::Value,
+        ) -> serde_json::Value {
+            json!([{
+                "name": "scan",
+                "trigger": { "type": "scheduled", "cron": EVERY_MINUTE, "select": select },
+                "conditions": conditions,
+                "actions": [{
+                    "action_type": "update_node",
+                    "params": { "node_id": "{trigger.node.id}", "properties": { "seen": true } }
+                }]
+            }])
+        }
+
+        /// A `sel_ticket` type with a `state` field and a `sel_bug` subtype,
+        /// and four tickets: two open (one of them a bug), one closed, and
+        /// one open but archived.
+        async fn seed_tickets(svc: &Arc<NodeService>) {
+            crate::schema::handle_create_schema(
+                svc,
+                json!({ "name": "sel_ticket", "fields": [{ "name": "state", "type": "text" }] }),
+            )
+            .await
+            .unwrap();
+            crate::schema::handle_create_schema(
+                svc,
+                json!({ "name": "sel_bug", "extends": "sel_ticket", "fields": [] }),
+            )
+            .await
+            .unwrap();
+
+            for (id, node_type, state) in [
+                (OPEN_TICKET, "sel_ticket", "open"),
+                (OPEN_BUG, "sel_bug", "open"),
+                (CLOSED_TICKET, "sel_ticket", "closed"),
+                (ARCHIVED_TICKET, "sel_ticket", "open"),
+            ] {
+                svc.create_node(Node::new_with_id(
+                    id.to_string(),
+                    node_type.to_string(),
+                    id.to_string(),
+                    json!({ "state": state }),
+                ))
+                .await
+                .unwrap();
+            }
+            let archived = svc.get_node(ARCHIVED_TICKET).await.unwrap().unwrap();
+            svc.update_node(
+                ARCHIVED_TICKET,
+                archived.version,
+                crate::models::NodeUpdate::default().with_lifecycle_status("archived".to_string()),
+            )
+            .await
+            .unwrap();
+        }
+
+        const OPEN_TICKET: &str = "c1000000-0000-4000-8000-000000000001";
+        const OPEN_BUG: &str = "c1000000-0000-4000-8000-000000000002";
+        const CLOSED_TICKET: &str = "c1000000-0000-4000-8000-000000000003";
+        const ARCHIVED_TICKET: &str = "c1000000-0000-4000-8000-000000000004";
+
+        /// Run one scan and return what it enqueued, sorted by node id.
+        async fn scan(
+            svc: &Arc<NodeService>,
+            lifecycle: &Arc<RwLock<PlaybookLifecycleManager>>,
+        ) -> Vec<ExecutionWorkItem> {
+            let (tx, mut rx) = mpsc::channel::<ExecutionWorkItem>(100);
+            check_and_enqueue(lifecycle, svc, &tx, chrono::Local::now()).await;
+            let mut items = Vec::new();
+            while let Ok(item) = rx.try_recv() {
+                items.push(item);
+            }
+            items.sort_by(|a, b| a.trigger_node.id.cmp(&b.trigger_node.id));
+            items
+        }
+
+        fn scanned_ids(items: &[ExecutionWorkItem]) -> Vec<&str> {
+            items.iter().map(|w| w.trigger_node.id.as_str()).collect()
+        }
+
+        fn open_filter() -> serde_json::Value {
+            json!([{ "type": "property", "operator": "equals", "property": "state", "value": "open" }])
+        }
+
+        /// A bare type selects every participating node of the type and its
+        /// subtypes; archived nodes never match.
+        #[tokio::test]
+        async fn a_type_selector_selects_the_type_its_subtypes_and_no_archived_node() {
+            let (svc, _tmp) = create_test_service().await;
+            seed_tickets(&svc).await;
+            let lifecycle = lifecycle_with_rules(scheduled_rule(
+                json!({ "target_type": "sel_ticket" }),
+                json!([]),
+            ));
+
+            let items = scan(&svc, &lifecycle).await;
+            assert_eq!(scanned_ids(&items), [OPEN_TICKET, OPEN_BUG, CLOSED_TICKET]);
+        }
+
+        /// An inline selector's filters run in SQL: the scan enqueues only
+        /// the nodes they match, instead of every node of the type for CEL
+        /// to discard one at a time.
+        #[tokio::test]
+        async fn an_inline_selector_filters_in_the_query() {
+            let (svc, _tmp) = create_test_service().await;
+            seed_tickets(&svc).await;
+            let lifecycle = lifecycle_with_rules(scheduled_rule(
+                json!({ "target_type": "sel_ticket", "filters": open_filter() }),
+                json!([]),
+            ));
+
+            let items = scan(&svc, &lifecycle).await;
+            assert_eq!(scanned_ids(&items), [OPEN_TICKET, OPEN_BUG]);
+            for item in &items {
+                let scan = item
+                    .scan
+                    .as_ref()
+                    .expect("a scheduled work item carries its scan");
+                assert_eq!(scan.target_type, "sel_ticket");
+            }
+        }
+
+        /// A selector may name a saved query node: the scan selects what that
+        /// query's type and filters select when the schedule fires, so an
+        /// edit to the query takes effect at the next scan. The query's
+        /// `limit` belongs to its viewer and does not cap the scan.
+        #[tokio::test]
+        async fn a_selector_can_reference_a_saved_query() {
+            let (svc, _tmp) = create_test_service().await;
+            seed_tickets(&svc).await;
+            let query_id = "c2000000-0000-4000-8000-000000000001";
+            svc.create_node(Node::new_with_id(
+                query_id.to_string(),
+                "query".to_string(),
+                "Open tickets".to_string(),
+                json!({ "target_type": "sel_ticket", "filters": open_filter(), "limit": 1 }),
+            ))
+            .await
+            .unwrap();
+            let lifecycle =
+                lifecycle_with_rules(scheduled_rule(json!({ "query_id": query_id }), json!([])));
+
+            let items = scan(&svc, &lifecycle).await;
+            assert_eq!(scanned_ids(&items), [OPEN_TICKET, OPEN_BUG]);
+            // The rule names no type of its own; the scan read it off the query.
+            assert_eq!(items[0].scan.as_ref().unwrap().target_type, "sel_ticket");
+            assert_eq!(items[0].rules[0].rule.trigger.registered_type(), None);
+
+            // Repoint the saved query; the same play now scans the other set.
+            let query = svc.get_node(query_id).await.unwrap().unwrap();
+            let update: crate::models::QueryNodeUpdate = serde_json::from_value(json!({
+                "filters": [{ "type": "property", "operator": "equals", "property": "state", "value": "closed" }]
+            }))
+            .unwrap();
+            svc.update_query_node(query_id, query.version, update)
+                .await
+                .unwrap();
+
+            let items = scan(&svc, &lifecycle).await;
+            assert_eq!(scanned_ids(&items), [CLOSED_TICKET]);
+        }
+
+        /// A selector that cannot run selects nothing and enqueues nothing;
+        /// the scan carries on with the other entries.
+        #[tokio::test]
+        async fn a_selector_naming_a_missing_query_enqueues_nothing() {
+            let (svc, _tmp) = create_test_service().await;
+            seed_tickets(&svc).await;
+            let lifecycle = lifecycle_with_rules(scheduled_rule(
+                json!({ "query_id": "c2000000-0000-4000-8000-00000000dead" }),
+                json!([]),
+            ));
+
+            assert!(scan(&svc, &lifecycle).await.is_empty());
+        }
+
+        /// The scan resolves its rules' condition paths for every selected
+        /// node before enqueuing, and each work item carries its own node's
+        /// answers.
+        #[tokio::test]
+        async fn a_scan_resolves_condition_paths_for_every_selected_node() {
+            use crate::playbook::graph_resolver::ResolvedValue;
+
+            let (svc, _tmp) = create_test_service().await;
+            seed_tickets(&svc).await;
+            // Each open ticket gets a parent whose content names the ticket.
+            for (parent, child) in [
+                ("c3000000-0000-4000-8000-000000000001", OPEN_TICKET),
+                ("c3000000-0000-4000-8000-000000000002", OPEN_BUG),
+            ] {
+                svc.create_node(Node::new_with_id(
+                    parent.to_string(),
+                    "text".to_string(),
+                    format!("parent of {child}"),
+                    json!({}),
+                ))
+                .await
+                .unwrap();
+                svc.create_relationship(parent, "has_child", child, json!({}))
+                    .await
+                    .unwrap();
+            }
+            let lifecycle = lifecycle_with_rules(scheduled_rule(
+                json!({ "target_type": "sel_ticket", "filters": open_filter() }),
+                json!(["node.child_of.content != ''"]),
+            ));
+
+            let items = scan(&svc, &lifecycle).await;
+            assert_eq!(scanned_ids(&items), [OPEN_TICKET, OPEN_BUG]);
+            let path = vec!["child_of".to_string(), "content".to_string()];
+            for item in &items {
+                let scan = item.scan.as_ref().unwrap();
+                let own = scan
+                    .paths
+                    .get(&item.trigger_node.id)
+                    .and_then(|paths| paths.get(&path));
+                assert!(
+                    matches!(own, Some(ResolvedValue::Scalar(v))
+                        if v == &json!(format!("parent of {}", item.trigger_node.id))),
+                    "{}: {own:?}",
+                    item.trigger_node.id
+                );
+            }
         }
     }
 }

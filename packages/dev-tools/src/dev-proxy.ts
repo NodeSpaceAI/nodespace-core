@@ -649,6 +649,27 @@ async function handleRequest(req: Request): Promise<Response> {
     }
   }
 
+  // PATCH /api/plays/:id
+  const playMatch = pathname.match(HTTP_ROUTE_PATTERNS.updatePlayNode);
+  if (method === 'PATCH' && playMatch) {
+    const nodeId = decodeURIComponent(playMatch[1]);
+    try {
+      const { version, ...update } = await req.json() as Record<string, unknown>;
+      // The daemon decodes the JSON-encoded PlayNodeUpdate itself, as for a
+      // query: `null` (clear) survives JSON.stringify, an absent key stays
+      // absent.
+      const request = { nodeId, version: version ?? 0, updateJson: JSON.stringify(update) };
+      const res = await call<typeof request, { nodeData?: ProtoNodeData }>(
+        (nodeClient as unknown as Record<string, Function>).updatePlayNode,
+        request
+      );
+      if (!res.nodeData) return error('NO_DATA', 'UpdatePlayNode returned no data');
+      return json(nodeDataToApiNode(res.nodeData));
+    } catch (err) {
+      return grpcError(err as grpc.ServiceError);
+    }
+  }
+
   // POST /api/nodes/:id/parent  (move node)
   const parentMatch = pathname.match(HTTP_ROUTE_PATTERNS.moveNode);
   if (method === 'POST' && parentMatch) {
