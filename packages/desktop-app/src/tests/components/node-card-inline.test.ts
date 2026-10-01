@@ -1,5 +1,5 @@
 /**
- * NodeCardInline — on-mount fetch (ADR-049).
+ * NodeCardInline — on-mount fetch (ADR-049) and the card's title.
  *
  * The card previously fetched a missing node from inside a $effect that watched the
  * derived `node` value. After the ADR-049 conversion it fetches once on mount (the card
@@ -91,5 +91,87 @@ describe('NodeCardInline on-mount fetch', () => {
 
     expect(fetchNode).toHaveBeenCalledTimes(1);
     expect(setNode).not.toHaveBeenCalled();
+  });
+});
+
+describe('NodeCardInline title', () => {
+  function cardTitle(container: HTMLElement): string | null | undefined {
+    return container.querySelector('.node-card-title')?.textContent;
+  }
+
+  it("shows the node's live title, not the agent's label", async () => {
+    getNode.mockReturnValue({
+      id: 'abc-123',
+      nodeType: 'text',
+      content: 'Data Layer',
+      properties: {}
+    });
+
+    const { container } = render(NodeCardInline, { nodeId: 'abc-123', displayText: 'Old Name' });
+    await tick();
+
+    expect(cardTitle(container)).toBe('Data Layer');
+  });
+
+  it('shows a header without its leading # markers', async () => {
+    getNode.mockReturnValue({
+      id: 'abc-123',
+      nodeType: 'header',
+      content: '## Data Layer',
+      properties: {}
+    });
+
+    const { container } = render(NodeCardInline, { nodeId: 'abc-123', displayText: 'label' });
+    await tick();
+
+    expect(cardTitle(container)).toBe('Data Layer');
+  });
+
+  it('shows the computed title of a title-template type', async () => {
+    getNode.mockReturnValue({
+      id: 'abc-123',
+      nodeType: 'person',
+      content: '',
+      title: 'Ada Lovelace',
+      properties: {}
+    });
+
+    const { container } = render(NodeCardInline, { nodeId: 'abc-123', displayText: 'Ada' });
+    await tick();
+
+    expect(cardTitle(container)).toBe('Ada Lovelace');
+  });
+
+  it("does not let the agent's label stand in for a resolved node with no title", async () => {
+    getNode.mockReturnValue({ id: 'abc-123', nodeType: 'text', content: '', properties: {} });
+
+    const { container } = render(NodeCardInline, { nodeId: 'abc-123', displayText: 'Made Up' });
+    await tick();
+
+    expect(cardTitle(container)).toBe('Untitled');
+  });
+
+  it("shows the agent's label while the node is loading", async () => {
+    getNode.mockReturnValue(undefined);
+    fetchNode.mockReturnValue(new Promise(() => {}));
+
+    const { container } = render(NodeCardInline, { nodeId: 'abc-123', displayText: 'Data Layer' });
+    await tick();
+
+    expect(cardTitle(container)).toBe('Data Layer');
+    expect(container.querySelector('.node-card-type--unknown')).toBeNull();
+  });
+
+  it("keeps the agent's label, marked unknown, when the node does not exist", async () => {
+    getNode.mockReturnValue(undefined);
+    fetchNode.mockResolvedValue(undefined);
+
+    const { container } = render(NodeCardInline, { nodeId: 'missing', displayText: 'Data Layer' });
+    await tick();
+    await tick();
+    await tick();
+
+    expect(cardTitle(container)).toBe('Data Layer');
+    expect(container.querySelector('.node-card-type--unknown')).not.toBeNull();
   });
 });

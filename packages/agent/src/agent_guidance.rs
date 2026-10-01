@@ -60,11 +60,13 @@ pub const TOOL_STRATEGY_RULES: &str = "TOOL STRATEGY:\n\
 
 /// Node reference formatting rule.
 ///
-/// Single-line directive that nodes must be referenced as bare `nodespace://`
-/// URIs in agent output — no markdown links, no backticks. Designed to be
-/// inlined into a larger response-formatting rules section.
+/// Single-line directive that every node named in agent output is a markdown
+/// link to its `nodespace://` URI. The chat renderer turns that link into a
+/// card showing the node's live title, so the label is only what shows while
+/// the node loads or when it cannot be found. Designed to be inlined into a
+/// larger response-formatting rules section.
 pub const NODE_REFERENCE_FORMAT: &str =
-    "Reference nodes with bare URI: nodespace://abc-123 (no markdown links, no backticks)";
+    "Link every node you name, as a markdown link: [Title](nodespace://abc-123) (no bare URI, no backticks)";
 
 #[cfg(test)]
 mod tests {
@@ -142,9 +144,10 @@ mod tests {
     }
 
     #[test]
-    fn node_reference_format_specifies_bare_uri() {
-        assert!(NODE_REFERENCE_FORMAT.contains("nodespace://"));
-        assert!(NODE_REFERENCE_FORMAT.contains("no markdown links"));
+    fn node_reference_format_specifies_markdown_link() {
+        assert!(NODE_REFERENCE_FORMAT.contains("[Title](nodespace://abc-123)"));
+        assert!(NODE_REFERENCE_FORMAT.contains("Link every node you name"));
+        assert!(NODE_REFERENCE_FORMAT.contains("no bare URI"));
         assert!(NODE_REFERENCE_FORMAT.contains("no backticks"));
     }
 

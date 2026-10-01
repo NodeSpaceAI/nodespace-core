@@ -104,8 +104,8 @@ pub fn normalize_response_traced(text: &str) -> (String, Vec<&'static str>) {
         &mut fired,
     );
     let result = apply(
-        "fix_markdown_link_uris",
-        fix_markdown_link_uris,
+        "collapse_uri_labelled_links",
+        collapse_uri_labelled_links,
         result,
         &mut fired,
     );
@@ -136,21 +136,23 @@ pub fn normalize_response_traced(text: &str) -> (String, Vec<&'static str>) {
     (result.trim().to_string(), fired)
 }
 
-/// Fix nodespace:// URIs wrapped in markdown links.
+/// Collapse a node link whose label is its own URI to the bare URI.
 ///
-/// - `[nodespace://abc-123](nodespace://abc-123)` -> `nodespace://abc-123`
-/// - `[Node Title](nodespace://abc-123)` -> `**Node Title** (nodespace://abc-123)`
-fn fix_markdown_link_uris(text: &str) -> String {
+/// `[nodespace://abc-123](nodespace://abc-123)` -> `nodespace://abc-123`
+///
+/// A titled link, `[Node Title](nodespace://abc-123)`, is the reference form
+/// the agent is told to write and passes through untouched: the chat renderer
+/// turns it into a card. A URI label carries no title, and the renderer wraps
+/// every bare URI in a link of its own, so one left inside a label would nest.
+fn collapse_uri_labelled_links(text: &str) -> String {
     let re = markdown_uri_re();
     re.replace_all(text, |caps: &regex::Captures| {
         let link_text = &caps[1];
         let uri = &caps[2];
         if link_text == uri {
-            // [nodespace://abc](nodespace://abc) -> nodespace://abc
             uri.to_string()
         } else {
-            // [Title](nodespace://abc) -> **Title** (nodespace://abc)
-            format!("**{link_text}** ({uri})")
+            caps[0].to_string()
         }
     })
     .into_owned()
@@ -420,13 +422,11 @@ mod tests {
     }
 
     #[test]
-    fn fixes_markdown_link_with_title() {
+    fn leaves_titled_markdown_link_unchanged() {
         let input = "See [My Task](nodespace://abc-123) for more info.";
-        let result = normalize_response(input);
-        assert_eq!(
-            result,
-            "See **My Task** (nodespace://abc-123) for more info."
-        );
+        let (result, fired) = normalize_response_traced(input);
+        assert_eq!(result, input);
+        assert!(fired.is_empty(), "no strippers should fire: {:?}", fired);
     }
 
     #[test]
@@ -450,7 +450,7 @@ mod tests {
         let result = normalize_response(input);
         assert_eq!(
             result,
-            "See nodespace://a and nodespace://b and **Title** (nodespace://c)."
+            "See nodespace://a and nodespace://b and [Title](nodespace://c)."
         );
     }
 
@@ -562,7 +562,7 @@ mod tests {
             "That's everything.  "
         );
         let result = normalize_response(input);
-        assert!(result.starts_with("Here is your task **My Task** (nodespace://task-001)."));
+        assert!(result.starts_with("Here is your task [My Task](nodespace://task-001)."));
         assert!(result.contains("Status: In Progress"));
         assert!(!result.contains("\"count\""));
         assert!(result.contains("nodespace://note-002"));

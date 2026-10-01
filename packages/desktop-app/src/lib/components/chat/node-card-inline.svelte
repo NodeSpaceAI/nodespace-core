@@ -4,6 +4,11 @@
   Renders a nodespace:// URI as a rich inline node card in AI chat messages.
   Shows type icon, node title, type badge, and task status when applicable.
   Wraps in an anchor tag so the global click handler still works.
+
+  The title is the node's live title, never the label the agent wrote for the
+  link: a rename shows everywhere, and a stale or wrong label can't pass as the
+  node's name. The label shows only while the node loads or when it can't be
+  found.
 -->
 
 <script lang="ts">
@@ -14,6 +19,8 @@
   import { backendAdapter } from '$lib/services/backend-adapter';
   import { pinReachableNodes } from '$lib/utils/pin-node-reachability';
   import { TaskNodeHelpers, isTaskNode } from '$lib/types/task-node';
+  import { pluginRegistry } from '$lib/plugins/plugin-registry';
+  import type { Node } from '$lib/types/node';
 
   const log = createLogger('NodeCardInline');
 
@@ -23,7 +30,7 @@
   // chat content) resolved below via a one-shot mount fetch, never through
   // structureTree. Pin it explicitly for as long as this card displays it,
   // so it isn't evicted out from under a still-open chat (which would
-  // otherwise silently revert `title` to the truncated-id fallback below,
+  // otherwise silently revert `title` to the agent's label or the truncated id,
   // indistinguishable from the node having been deleted).
   const pinOwnerId = uuidv4();
   $effect(() => pinReachableNodes(pinOwnerId, [nodeId]));
@@ -63,7 +70,19 @@
     });
   });
 
-  let title = $derived(node?.content?.split('\n')[0]?.slice(0, 120) || displayText || nodeId.slice(0, 8));
+  const MAX_TITLE_LENGTH = 120;
+
+  /**
+   * The resolved node's own title: the same value tabs and search show
+   * (a computed title for title-template types, a plugin's own title for
+   * dates), as one line without a header's leading `#` markers.
+   */
+  function liveTitle(resolved: Node): string {
+    const firstLine = (pluginRegistry.getNodeTitle(resolved) ?? '').split('\n')[0].trim();
+    return firstLine.replace(/^#{1,6}\s+/, '').slice(0, MAX_TITLE_LENGTH) || 'Untitled';
+  }
+
+  let title = $derived(node ? liveTitle(node) : displayText || nodeId.slice(0, 8));
   let nodeType = $derived(node?.nodeType || 'unknown');
   let icon = $derived(nodeTypeIcons[nodeType] || '📄');
   let taskStatus = $derived(
