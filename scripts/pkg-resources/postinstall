@@ -8,55 +8,13 @@
 #   Library/LaunchAgents/app.nodespace.daemon.plist
 #
 # This script:
-#   1. Detects an existing Pro binary and aborts with a dialog if Community
-#      would overwrite it (unless NODESPACE_FORCE_COMMUNITY=1 is set).
-#   2. Fixes ownership/permissions on the installed files.
-#   3. Loads the launchd service for the installing user.
+#   1. Fixes ownership/permissions on the installed files.
+#   2. Loads the launchd service for the installing user.
 
 set -euo pipefail
 
 INSTALL_PREFIX="/usr/local/bin"
 LAUNCHD_PLIST="/Library/LaunchAgents/app.nodespace.daemon.plist"
-NODESPACED="${INSTALL_PREFIX}/nodespaced"
-
-# ---------------------------------------------------------------------------
-# Pro-edition guard
-# The pkg installs Community binaries. If an existing Pro binary is already
-# at /usr/local/bin/nodespaced, warn the user before overwriting it.
-# ---------------------------------------------------------------------------
-if [[ -x "${NODESPACED}" ]]; then
-    # Verify the binary's code signature before executing it as root.
-    # An unsigned or tampered binary should not be run with elevated privileges.
-    if ! codesign --verify --quiet "${NODESPACED}" 2>/dev/null; then
-        echo "Warning: existing nodespaced binary failed signature verification — skipping Pro guard" >&2
-        EXISTING_EDITION="unknown"
-    else
-        EXISTING_EDITION="$("${NODESPACED}" --edition 2>/dev/null || echo "unknown")"
-    fi
-    if [[ "${EXISTING_EDITION}" == "pro" && "${NODESPACE_FORCE_COMMUNITY:-0}" != "1" ]]; then
-        # Display a dialog on macOS so the user sees a clear warning.
-        # Do NOT use || true here — osascript returns non-zero when the user
-        # clicks Abort (AppleScript error -128), which is exactly how we detect
-        # the abort. Suppressing the exit code would make the $? check below
-        # always see 0 and never abort.
-        /usr/bin/osascript - <<'APPLESCRIPT'
-display dialog "You are installing NodeSpace Community, which would replace your Pro installation.
-
-Continue anyway to install Community, or click Abort to keep your Pro installation." \
-    buttons {"Abort", "Continue"} default button "Abort" with icon caution \
-    giving up after 60
-if button returned of result is "Abort" then
-    error number -128
-end if
-APPLESCRIPT
-        # If osascript returned non-zero (user aborted or timed out), stop.
-        # shellcheck disable=SC2181
-        if [[ $? -ne 0 ]]; then
-            echo "Installation aborted — Pro installation preserved." >&2
-            exit 1
-        fi
-    fi
-fi
 
 # ---------------------------------------------------------------------------
 # Log directory: create the per-user log directory for the LaunchAgent.

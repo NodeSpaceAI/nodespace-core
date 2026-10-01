@@ -101,7 +101,7 @@ pub struct Cli {
 
     /// Override the socket path (macOS/Linux) or Named Pipe name (Windows).
     /// With no flag and no environment variable: on macOS/Linux the CLI dials
-    /// ~/.nodespace/daemon.sock, or auto-discovers a running dev/Pro daemon's
+    /// ~/.nodespace/daemon.sock, or auto-discovers a running dev daemon's
     /// socket if that one is absent; on Windows it dials the fixed
     /// `\\.\pipe\nodespace-daemon` pipe.
     /// Honors the `NODESPACED_SOCKET` environment variable when this flag is absent.
@@ -220,17 +220,17 @@ pub fn resolve_socket_path(override_: Option<&str>) -> std::path::PathBuf {
 }
 
 /// Pick the daemon socket to dial when none is set explicitly. The daemon socket
-/// filename is scoped by the app's build variant (release/dev × community/Pro),
-/// so a running dev or Pro app does not listen on the canonical `daemon.sock`.
-/// Prefer the canonical path, but if it is absent, auto-discover a running
-/// daemon of another variant so the CLI works against whichever app is open
-/// without needing `NODESPACED_SOCKET`. When none exist, return the canonical
-/// path so the caller reports a clean "is the daemon running?" error.
+/// filename is scoped by the app's build flavour (release or dev), so a running
+/// dev app does not listen on the canonical `daemon.sock`. Prefer the canonical
+/// path, but if it is absent, auto-discover a running dev daemon so the CLI
+/// works against whichever app is open without needing `NODESPACED_SOCKET`.
+/// When neither exists, return the canonical path so the caller reports a
+/// clean "is the daemon running?" error.
 #[cfg(unix)]
 fn discover_socket_in(dir: &std::path::Path) -> std::path::PathBuf {
-    // Order = preference: canonical first, then the other build variants. The
-    // names come from the shared transport contract so this probe list cannot
-    // drift from what the daemon actually binds.
+    // Order = preference: canonical first, then the dev flavour. The names come
+    // from the shared transport contract so this probe list cannot drift from
+    // what the daemon actually binds.
     use nodespace_proto::socket::DAEMON_SOCKET_NAMES;
     for name in DAEMON_SOCKET_NAMES {
         let candidate = dir.join(name);
@@ -244,9 +244,9 @@ fn discover_socket_in(dir: &std::path::Path) -> std::path::PathBuf {
 /// Resolve the Named Pipe name from an explicit override or env/default.
 /// Windows counterpart of [`resolve_socket_path`] — kept as a separate
 /// function (rather than folded into one cross-platform `resolve_socket_path`)
-/// because the two transports resolve differently: Unix probes several
-/// build-variant-scoped socket files on disk, while the pipe namespace is
-/// machine-global with no per-variant scoping and nothing to probe (see
+/// because the two transports resolve differently: Unix probes the
+/// build-flavour-scoped socket files on disk, while the pipe namespace is
+/// machine-global with no per-flavour scoping and nothing to probe (see
 /// `nodespace_proto::socket::DAEMON_PIPE_NAME`'s doc comment). Returns a
 /// `String` since that is what [`tokio::net::windows::named_pipe::ClientOptions::open`]
 /// takes; callers that need a `Path` (to stay call-site-compatible with the
@@ -660,22 +660,21 @@ mod tests {
     use super::discover_socket_in;
 
     /// With no socket set, the CLI dials the canonical `daemon.sock` when it
-    /// exists, otherwise auto-discovers whichever build-variant daemon is
-    /// actually running, and falls back to the canonical path (for a clean
-    /// error) when none exist.
+    /// exists, otherwise auto-discovers a running dev daemon, and falls back to
+    /// the canonical path (for a clean error) when neither exists.
     #[test]
-    fn discover_socket_prefers_canonical_then_falls_back_to_a_variant() {
+    fn discover_socket_prefers_canonical_then_falls_back_to_dev() {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path();
 
         // Nothing running → canonical default (so the connect error is clean).
         assert_eq!(discover_socket_in(dir), dir.join("daemon.sock"));
 
-        // Only a dev-Pro daemon is up → discover it without NODESPACED_SOCKET.
-        std::fs::write(dir.join("daemon-dev-pro.sock"), b"").unwrap();
-        assert_eq!(discover_socket_in(dir), dir.join("daemon-dev-pro.sock"));
+        // Only a dev daemon is up → discover it without NODESPACED_SOCKET.
+        std::fs::write(dir.join("daemon-dev.sock"), b"").unwrap();
+        assert_eq!(discover_socket_in(dir), dir.join("daemon-dev.sock"));
 
-        // Canonical present → always preferred over the variants.
+        // Canonical present → always preferred over the dev socket.
         std::fs::write(dir.join("daemon.sock"), b"").unwrap();
         assert_eq!(discover_socket_in(dir), dir.join("daemon.sock"));
     }

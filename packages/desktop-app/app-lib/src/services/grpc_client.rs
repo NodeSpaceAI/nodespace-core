@@ -3,7 +3,7 @@
 //!
 //! Socket path resolution order:
 //!   1. `NODESPACED_SOCKET` environment variable
-//!   2. Build-variant-scoped default (see daemon_setup::daemon_socket_relative)
+//!   2. Build-flavour-scoped default (see daemon_setup::daemon_socket_relative)
 //!
 //! The `GrpcClient` is registered as Tauri managed state once and cloned
 //! cheaply per command (tonic `Channel` is an `Arc` internally).
@@ -558,7 +558,7 @@ impl GrpcClient {
 
 /// Resolve the daemon socket path.
 ///
-/// Checks `NODESPACED_SOCKET` env var first, then falls back to the build-variant-
+/// Checks `NODESPACED_SOCKET` env var first, then falls back to the build-flavour-
 /// scoped default from `daemon_setup::daemon_socket_relative()`. `pub(crate)` so
 /// the daemon-reachability checks in `lib.rs` probe the SAME socket the client
 /// actually dials — otherwise a `NODESPACED_SOCKET` override (two-window demo,
@@ -576,27 +576,25 @@ pub(crate) fn resolve_socket_path() -> std::path::PathBuf {
 /// tests that set the variable.
 #[cfg(unix)]
 pub(crate) fn default_socket_path() -> std::path::PathBuf {
-    default_socket_path_for(cfg!(debug_assertions), crate::daemon_setup::is_pro_build())
+    default_socket_path_for(cfg!(debug_assertions))
 }
 
 /// The socket [`resolve_socket_path`] falls back to when `NODESPACED_SOCKET` is
-/// absent, for an arbitrary build variant rather than this binary's own.
+/// absent, for an arbitrary build flavour rather than this binary's own.
 ///
-/// Two things are deliberate here. It takes the variant as parameters because a
-/// compiled app is only ever one variant, so this is the only way an ordinary
-/// `#[test]` can check that the app dials, for every variant, the socket the
+/// Two things are deliberate here. It takes the flavour as a parameter because
+/// a compiled app is only ever one flavour, so this is the only way an ordinary
+/// `#[test]` can check that the app dials, for both flavours, the socket the
 /// daemon binds. And it reads no environment at all: `cargo test` runs the whole
 /// binary in one process on a thread pool, so a test of an env-reading resolver
 /// races every other test that touches the same variable. Keeping the override
 /// in the caller leaves this half deterministic and testable, and leaves the
 /// override itself covered by a single test that owns the variable.
 #[cfg(unix)]
-pub(crate) fn default_socket_path_for(is_debug: bool, is_pro: bool) -> std::path::PathBuf {
+pub(crate) fn default_socket_path_for(is_debug: bool) -> std::path::PathBuf {
     dirs::home_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
-        .join(nodespace_proto::socket::daemon_socket_relative(
-            is_debug, is_pro,
-        ))
+        .join(nodespace_proto::socket::daemon_socket_relative(is_debug))
 }
 
 /// Resolve the Named Pipe name used on Windows.
@@ -750,33 +748,31 @@ mod tests {
 
     /// The app half of the app/daemon agreement check.
     ///
-    /// These four strings are pinned literally here AND, identically, in the
-    /// daemon's `socket_fallback_variant_tests`. That duplication is the point:
+    /// These two strings are pinned literally here AND, identically, in the
+    /// daemon's `socket_fallback_flavour_tests`. That duplication is the point:
     /// both sides now derive their default from one shared table, so a test that
     /// re-derived the expectation from that same table would still pass if the
     /// table itself were wrong. Pinning the values on each side independently
     /// means the two can only agree by actually being right.
     ///
     /// The failure this guards against is asymmetric and near-invisible: only a
-    /// Pro or dev build is affected, since release-community is the one variant
-    /// whose scoped and unscoped names coincide.
+    /// dev build is affected, since release is the flavour whose scoped and
+    /// unscoped names coincide.
     ///
     /// Reads no environment, so it cannot race the sibling test above (which
     /// takes `ENV_LOCK` while it owns `NODESPACED_SOCKET`) — see
     /// `default_socket_path_for`'s doc comment.
     #[test]
-    fn each_variant_dials_the_socket_its_daemon_binds() {
+    fn each_flavour_dials_the_socket_its_daemon_binds() {
         let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
-        for (is_debug, is_pro, expected) in [
-            (false, false, ".nodespace/daemon.sock"),
-            (false, true, ".nodespace/daemon-pro.sock"),
-            (true, false, ".nodespace/daemon-dev.sock"),
-            (true, true, ".nodespace/daemon-dev-pro.sock"),
+        for (is_debug, expected) in [
+            (false, ".nodespace/daemon.sock"),
+            (true, ".nodespace/daemon-dev.sock"),
         ] {
             assert_eq!(
-                super::default_socket_path_for(is_debug, is_pro),
+                super::default_socket_path_for(is_debug),
                 home.join(expected),
-                "variant (debug={is_debug}, pro={is_pro}) must dial {expected}"
+                "flavour (debug={is_debug}) must dial {expected}"
             );
         }
     }

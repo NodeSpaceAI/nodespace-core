@@ -12,9 +12,8 @@
 //! The update source is managed state: [`assemble`](crate::assemble) stores the
 //! one an app crate supplies through
 //! [`AppExtensions::update_source`](crate::AppExtensions::update_source), or the
-//! built-in source when it supplies none. In a default build the built-in source
-//! reads the public core repository's GitHub releases and downloads from its
-//! releases page.
+//! built-in source when it supplies none. The built-in source reads the public
+//! core repository's GitHub releases and downloads from its releases page.
 //!
 //! The check is best-effort and must never affect startup: any failure — offline,
 //! timeout, rate limit, a malformed or missing tag — resolves to "no update
@@ -39,16 +38,6 @@ const CORE_REPO: &str = "NodeSpaceAI/nodespace-core";
 /// The page a user of the public source downloads a new release from.
 const RELEASES_PAGE_URL: &str = "https://github.com/NodeSpaceAI/nodespace-core/releases/latest";
 
-/// Pro update source: the cloud-worker proxy that returns the latest **private**
-/// nodespace-sync release version (the Pro app can't read that private repo
-/// directly). A Pro build checks this instead of the public core endpoint. Mirrors
-/// the auth-worker URL selection in `commands::pro_sync` — release hits the
-/// canonical domain, debug hits the local `wrangler dev` worker.
-#[cfg(debug_assertions)]
-const PRO_LATEST_URL: &str = "http://127.0.0.1:8787/pro/latest-version";
-#[cfg(not(debug_assertions))]
-const PRO_LATEST_URL: &str = "https://pro.nodespace.ai/pro/latest-version";
-
 /// How long to wait on the network before giving up. Deliberately short — a slow
 /// or unreachable network must not delay the "is there an update" answer, which is
 /// purely informational.
@@ -64,8 +53,7 @@ pub const UPDATE_AVAILABLE_EVENT: &str = "update://available";
 ///
 /// An app crate supplies one through
 /// [`AppExtensions::update_source`](crate::AppExtensions::update_source); an app
-/// that supplies none uses the built-in source, which in a default build is
-/// [`UpdateSource::community`].
+/// that supplies none uses the built-in source, [`UpdateSource::community`].
 /// The source is fixed when the app is built and stays the same for the life
 /// of the process. The running version it is compared with is always the one
 /// in the app's bundle config (`tauri.conf.json`), never one the source names.
@@ -118,25 +106,9 @@ impl UpdateSource {
 }
 
 /// The update source [`assemble`](crate::assemble) manages when an app crate
-/// supplies none.
+/// supplies none: [`UpdateSource::community`].
 pub(crate) fn builtin_update_source() -> UpdateSource {
-    builtin_update_source_for(crate::daemon_setup::is_pro_build())
-}
-
-/// The built-in update source for a build with or without the in-core edition
-/// flag. Without it this is [`UpdateSource::community`]; with it, the in-core
-/// version endpoint, which names no download page.
-pub(crate) fn builtin_update_source_for(is_pro: bool) -> UpdateSource {
-    if is_pro {
-        UpdateSource {
-            latest: LatestVersionSource::VersionEndpoint {
-                url: PRO_LATEST_URL,
-            },
-            download_url: None,
-        }
-    } else {
-        UpdateSource::community()
-    }
+    UpdateSource::community()
 }
 
 /// The app's update source, in managed state for every update check to read.
@@ -431,21 +403,15 @@ mod tests {
     }
 
     #[test]
-    fn builtin_source_without_the_edition_flag_is_community() {
-        assert_eq!(builtin_update_source_for(false), UpdateSource::community());
-    }
-
-    #[test]
-    fn builtin_source_with_the_edition_flag_is_the_in_core_endpoint_without_a_download() {
+    fn builtin_source_is_the_core_repositorys_latest_github_release() {
+        let source = builtin_update_source();
         assert_eq!(
-            builtin_update_source_for(true),
-            UpdateSource {
-                latest: LatestVersionSource::VersionEndpoint {
-                    url: PRO_LATEST_URL
-                },
-                download_url: None,
+            source.latest,
+            LatestVersionSource::GitHubLatestRelease {
+                repo: "NodeSpaceAI/nodespace-core"
             }
         );
+        assert_eq!(source, UpdateSource::community());
     }
 
     #[test]

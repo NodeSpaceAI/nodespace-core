@@ -28,14 +28,11 @@ use crate::window_routing;
 /// Status string [`daemon_down_status`] reports when the marker is present.
 pub const INCOMPATIBLE_DATABASE_STATUS: &str = "incompatible_database";
 
-/// This build variant's marker path, in the `.nodespace/` state directory
-/// under `home`. The daemon derives the same path from its own build flags.
+/// This build flavour's marker path, in the `.nodespace/` state directory
+/// under `home`. The daemon derives the same path from its own build flavour.
 fn marker_path_in(home: &Path) -> PathBuf {
     home.join(nodespace_proto::socket::STATE_DIR).join(
-        nodespace_proto::socket::incompatible_database_name(
-            cfg!(debug_assertions),
-            daemon_setup::is_pro_build(),
-        ),
+        nodespace_proto::socket::incompatible_database_name(cfg!(debug_assertions)),
     )
 }
 
@@ -420,10 +417,14 @@ mod tests {
     }
 
     #[test]
-    fn the_marker_lives_in_the_state_directory_under_this_variants_name() {
+    fn the_marker_lives_in_the_state_directory_under_this_flavours_name() {
         let marker = marker_path_in(Path::new("/home/u"));
         assert_eq!(marker.parent(), Some(Path::new("/home/u/.nodespace")));
-        assert!(nodespace_proto::socket::INCOMPATIBLE_DATABASE_NAMES
-            .contains(&marker.file_name().unwrap().to_str().unwrap()));
+        assert_eq!(
+            marker.file_name().and_then(|name| name.to_str()),
+            Some(nodespace_proto::socket::incompatible_database_name(cfg!(
+                debug_assertions
+            )))
+        );
     }
 }

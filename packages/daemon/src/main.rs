@@ -99,7 +99,7 @@ async fn open_default_database(
     let default_id = manager
         .ensure_default_registered("Default".to_string(), db_path.to_path_buf())
         .await?;
-    let marker = incompatible_database::marker_path(false)?;
+    let marker = incompatible_database::marker_path()?;
     let bundle = incompatible_database::open_default_or_record_refusal(
         &manager,
         &default_id,
@@ -118,33 +118,31 @@ async fn open_default_database(
 /// The socket this daemon binds.
 ///
 /// `NODESPACED_SOCKET` overrides it, but the fallback must resolve to the same
-/// build-variant-scoped path the desktop app dials — see
-/// `nodespace_proto::socket`. A daemon that fell back to the unscoped
-/// `daemon.sock` would serve an endpoint no Pro or dev app ever looks at, while
+/// build-flavour-scoped path the desktop app dials — see
+/// `nodespace_proto::socket`. A dev daemon that fell back to the release
+/// `daemon.sock` would serve an endpoint the dev app never looks at, while
 /// that app reports the daemon as not running.
 #[cfg(unix)]
 fn socket_path() -> std::path::PathBuf {
     if let Ok(p) = std::env::var(nodespace_proto::socket::SOCKET_ENV_VAR) {
         return std::path::PathBuf::from(p);
     }
-    default_socket_path_for(cfg!(debug_assertions), false)
+    default_socket_path_for(cfg!(debug_assertions))
 }
 
 /// The socket [`socket_path`] falls back to when `NODESPACED_SOCKET` is absent,
-/// for an arbitrary build variant rather than this binary's own.
+/// for an arbitrary build flavour rather than this binary's own.
 ///
-/// Takes the variant as parameters because a compiled daemon is only ever one
-/// variant, so this is the only way an ordinary `#[test]` can check all four —
+/// Takes the flavour as a parameter because a compiled daemon is only ever one
+/// flavour, so this is the only way an ordinary `#[test]` can check both —
 /// which is exactly what the app/daemon agreement test needs. It reads no
 /// `NODESPACED_SOCKET` for the same reason its app-side counterpart doesn't:
 /// `cargo test` shares one process, so an env-reading resolver cannot be
 /// asserted on without racing every other test that touches that variable.
 #[cfg(unix)]
-fn default_socket_path_for(is_debug: bool, is_pro: bool) -> std::path::PathBuf {
+fn default_socket_path_for(is_debug: bool) -> std::path::PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-    std::path::PathBuf::from(home).join(nodespace_proto::socket::daemon_socket_relative(
-        is_debug, is_pro,
-    ))
+    std::path::PathBuf::from(home).join(nodespace_proto::socket::daemon_socket_relative(is_debug))
 }
 
 /// Binds a Unix domain socket so no other local user can ever reach it,
@@ -2103,37 +2101,35 @@ mod pipe_permission_tests {
 /// The plist sets that variable, but `launchctl kickstart -k` restarts the job
 /// definition launchd already has loaded rather than re-reading the plist, so a
 /// daemon can outlive the variable that told it which socket to bind. When the
-/// daemon's fallback was the unscoped `daemon.sock`, a Pro or dev daemon that
-/// lost the variable bound a socket its own app never dialed: a healthy daemon
-/// serving nobody, and an app reporting "daemon not running". Only the release
-/// community build was unaffected, because that is the one variant where the
-/// scoped and unscoped names coincide — which is precisely why a test that
-/// checks a single variant would not have caught it.
+/// daemon's fallback was the unscoped `daemon.sock`, a dev daemon that lost the
+/// variable bound a socket its own app never dialed: a healthy daemon serving
+/// nobody, and an app reporting "daemon not running". Only the release build
+/// was unaffected, because that is the flavour where the scoped and unscoped
+/// names coincide — which is precisely why a test that checks a single flavour
+/// would not have caught it.
 #[cfg(all(test, unix))]
-mod socket_fallback_variant_tests {
+mod socket_fallback_flavour_tests {
     use super::default_socket_path_for;
 
-    /// Every variant, spelled out literally rather than re-derived from
-    /// `nodespace_proto::socket`. The app side pins the identical four strings
+    /// Both flavours, spelled out literally rather than re-derived from
+    /// `nodespace_proto::socket`. The app side pins the identical two strings
     /// against its own resolver, so the two agree on values a change to the
     /// shared table cannot quietly move in lockstep.
-    const EXPECTED: [(bool, bool, &str); 4] = [
-        (false, false, ".nodespace/daemon.sock"),
-        (false, true, ".nodespace/daemon-pro.sock"),
-        (true, false, ".nodespace/daemon-dev.sock"),
-        (true, true, ".nodespace/daemon-dev-pro.sock"),
+    const EXPECTED: [(bool, &str); 2] = [
+        (false, ".nodespace/daemon.sock"),
+        (true, ".nodespace/daemon-dev.sock"),
     ];
 
     /// `default_socket_path_for` still reads `HOME`, which `cargo test` shares
     /// across threads, so this asserts on the suffix under whatever `HOME` the
     /// runner has rather than pinning an absolute path.
     #[test]
-    fn every_variant_falls_back_to_its_own_scoped_socket() {
-        for (is_debug, is_pro, expected) in EXPECTED {
-            let resolved = default_socket_path_for(is_debug, is_pro);
+    fn every_flavour_falls_back_to_its_own_scoped_socket() {
+        for (is_debug, expected) in EXPECTED {
+            let resolved = default_socket_path_for(is_debug);
             assert!(
                 resolved.ends_with(expected),
-                "variant (debug={is_debug}, pro={is_pro}) fell back to {} — \
+                "flavour (debug={is_debug}) fell back to {} — \
                  expected it to end with {expected}. A daemon that binds a socket \
                  its own app does not dial is unreachable.",
                 resolved.display()
@@ -2141,26 +2137,20 @@ mod socket_fallback_variant_tests {
         }
     }
 
-    /// The regression itself: before the fix, all four variants resolved to the
-    /// community `daemon.sock`. Distinctness is what makes the fallback correct.
+    /// The regression itself: before the fix, both flavours resolved to the
+    /// release `daemon.sock`. Distinctness is what makes the fallback correct.
     #[test]
-    fn variants_do_not_collapse_onto_one_socket() {
-        let mut resolved: Vec<_> = EXPECTED
-            .iter()
-            .map(|&(d, p, _)| default_socket_path_for(d, p))
-            .collect();
-        resolved.sort();
-        resolved.dedup();
-        assert_eq!(
-            resolved.len(),
-            4,
-            "each build variant must fall back to a distinct socket"
+    fn flavours_do_not_collapse_onto_one_socket() {
+        assert_ne!(
+            default_socket_path_for(false),
+            default_socket_path_for(true),
+            "each build flavour must fall back to a distinct socket"
         );
     }
 
     /// `NODESPACED_SOCKET` stays an override, not a suggestion — the plist sets
     /// it, and the two-window dev setup depends on it winning over the default.
-    /// Making the fallback variant-scoped must not have demoted it.
+    /// Making the fallback flavour-scoped must not have demoted it.
     ///
     /// This is the one test in the binary that mutates `NODESPACED_SOCKET`, so
     /// it owns that variable outright: everything else here reads only `HOME`.
@@ -2178,7 +2168,7 @@ mod socket_fallback_variant_tests {
         std::env::remove_var("NODESPACED_SOCKET");
         assert_eq!(
             super::socket_path(),
-            super::default_socket_path_for(cfg!(debug_assertions), false),
+            super::default_socket_path_for(cfg!(debug_assertions)),
             "with no override, socket_path must be exactly this build's scoped default"
         );
 

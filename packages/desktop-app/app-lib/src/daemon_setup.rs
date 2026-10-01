@@ -7,8 +7,8 @@
 //!   2. Copy them to ~/.nodespace/bin/ (skipped if dest already matches bundled size).
 //!   3. Register the daemon as a user service:
 //!      - macOS: write ~/Library/LaunchAgents/<plist_filename()> and bootstrap it.
-//!        The filename and launchd label vary by build variant (debug/release × community/Pro)
-//!        so dev builds and the production app never collide on the same launchd job or socket.
+//!        The filename and launchd label vary by build flavour (debug or release) so dev
+//!        builds and the production app never collide on the same launchd job or socket.
 //!      - Linux: write ~/.config/systemd/user/nodespace.service and enable it.
 //!      - Windows: spawn the daemon process directly (stdout/stderr routed to
 //!        ~/.nodespace/logs/nodespaced.log and nodespaced-error.log, mirroring
@@ -73,67 +73,15 @@ const DAEMON_BIN_DIR: &str = ".nodespace/bin";
 const DAEMON_DB_DIR: &str = ".nodespace/database";
 const DAEMON_LOG_DIR: &str = ".nodespace/logs";
 pub(crate) const DAEMON_BINARY_NAME: &str = "nodespaced";
-const PRO_DAEMON_BINARY_NAME: &str = "nodespaced-pro";
 const CLI_BINARY_NAME: &str = "nodespace";
 
 #[cfg(target_os = "linux")]
 const SYSTEMD_SERVICE_NAME: &str = "nodespace.service";
 
-// ── Pro edition, baked at compile time ───────────────────────────────
-// A Pro build sets these env vars when running `tauri build` (see
-// nodespace-sync/scripts/build-pro-dmg.sh); a community build leaves them unset.
-// When set, the app installs + launches the `nodespaced-pro` sync daemon with the
-// Supabase cloud env instead of the community `nodespaced`. The anon key is the
-// project's PUBLISHABLE key (safe to bake into the binary).
-const PRO_SUPABASE_URL: Option<&str> = option_env!("NODESPACE_PRO_SUPABASE_URL");
-const PRO_ANON_KEY: Option<&str> = option_env!("NODESPACE_PRO_ANON_KEY");
-
-/// True when this binary was built as the Pro edition (cloud env baked in).
-/// `pub(crate)` so the update check can pick the Pro release source (see
-/// `update_check`) off the same discriminator the daemon setup uses.
-pub(crate) fn is_pro_build() -> bool {
-    PRO_SUPABASE_URL.is_some()
-}
-
-/// The daemon profile for the edition values baked in at compile time. A `None`
-/// URL is a community build; the URL alone decides, and the key defaults to
-/// empty.
-///
-/// Split from [`profile_for_this_build`], which passes the compile-time
-/// constants, so the values a build with the edition variables set produces can
-/// be pinned by an ordinary `#[test]`: a real build bakes in one edition, so the
-/// constants themselves cannot be flipped at test time.
-///
-/// The service environment injects the deployment-wide Supabase endpoint the
-/// sync daemon needs. Only the project URL and publishable anon key are baked in
-/// — both are deployment-wide, not tenant-specific. The tenant a database syncs
-/// to (schema + collection) is bound per database at runtime and is deliberately
-/// NOT injected here (ADR-053 per-database cloud sync).
-fn profile_for_build_env(
-    endpoint_url: Option<&'static str>,
-    anon_key: Option<&'static str>,
-) -> DaemonProfile {
-    match endpoint_url {
-        None => DaemonProfile::community(),
-        Some(url) => DaemonProfile {
-            binary_name: PRO_DAEMON_BINARY_NAME,
-            service_env: vec![
-                ("NODESPACED_PRO_SUPABASE_URL".to_string(), url.to_string()),
-                (
-                    "NODESPACED_PRO_ANON_KEY".to_string(),
-                    anon_key.unwrap_or_default().to_string(),
-                ),
-            ],
-            product: "pro",
-        },
-    }
-}
-
 /// The profile this build defaults to; what [`daemon_profile::active`] starts
-/// with. With [`profile_for_build_env`], the only code that picks the daemon
-/// binary, its service environment or its product by edition.
+/// with.
 pub(crate) fn profile_for_this_build() -> DaemonProfile {
-    profile_for_build_env(PRO_SUPABASE_URL, PRO_ANON_KEY)
+    DaemonProfile::community()
 }
 
 /// The daemon sidecar this app installs + launches.
@@ -141,12 +89,11 @@ fn daemon_binary_name() -> &'static str {
     daemon_profile::active().binary_name
 }
 
-/// Relative path from HOME to the daemon socket, scoped by build variant.
+/// Relative path from HOME to the daemon socket, scoped by build flavour.
 ///
-/// Scoping prevents dev builds from colliding with the production app and prevents
-/// community builds from colliding with Pro builds on the same machine. The
-/// variant table itself lives in `nodespace_proto::socket` so that the daemon
-/// derives the identical path from its own `debug_assertions` and `pro` feature —
+/// Scoping prevents dev builds from colliding with the production app on the
+/// same machine. The flavour table itself lives in `nodespace_proto::socket` so
+/// that the daemon derives the identical path from its own `debug_assertions` —
 /// the app and the daemon agree by construction rather than by two copies of the
 /// table staying in sync. This matters because `NODESPACED_SOCKET`, which the
 /// plist sets from this value, is not guaranteed to survive a daemon restart (see
@@ -155,17 +102,24 @@ fn daemon_binary_name() -> &'static str {
 /// grpc_client::resolve_socket_path() calls this function for its fallback, so
 /// the GUI app always dials the same socket the plist points the daemon to.
 pub(crate) fn daemon_socket_relative() -> &'static str {
-    nodespace_proto::socket::daemon_socket_relative(cfg!(debug_assertions), is_pro_build())
+    nodespace_proto::socket::daemon_socket_relative(cfg!(debug_assertions))
 }
 
-/// macOS launchd label, scoped by build variant (mirrors daemon_socket_relative).
+/// macOS launchd label, scoped by build flavour (mirrors daemon_socket_relative).
 #[cfg(target_os = "macos")]
 fn launch_agent_label() -> &'static str {
-    match (cfg!(debug_assertions), is_pro_build()) {
-        (false, false) => "app.nodespace.daemon",
-        (false, true) => "app.nodespace.daemon.pro",
-        (true, false) => "app.nodespace.daemon.dev",
-        (true, true) => "app.nodespace.daemon.dev.pro",
+    launch_agent_label_for(cfg!(debug_assertions))
+}
+
+/// The launchd label for an arbitrary build flavour. Takes the flavour as a
+/// parameter because a compiled app is only ever one flavour, so this is the
+/// only way an ordinary `#[test]` can pin both labels.
+#[cfg(any(target_os = "macos", test))]
+fn launch_agent_label_for(is_debug: bool) -> &'static str {
+    if is_debug {
+        "app.nodespace.daemon.dev"
+    } else {
+        "app.nodespace.daemon"
     }
 }
 
@@ -391,10 +345,10 @@ pub fn signal_daemon_to_stop() {
 }
 
 /// Filename [`ui_pid_relative`]'s callers write/read, scoped by this
-/// process's own build variant — mirrors [`daemon_socket_relative`] exactly.
+/// process's own build flavour — mirrors [`daemon_socket_relative`] exactly.
 #[cfg(unix)]
 fn ui_pid_relative() -> &'static str {
-    nodespace_proto::socket::ui_pid_relative(cfg!(debug_assertions), is_pro_build())
+    nodespace_proto::socket::ui_pid_relative(cfg!(debug_assertions))
 }
 
 /// Write `pid` to `path`, creating any missing parent directory first. Split
@@ -896,7 +850,7 @@ pub async fn ensure_daemon_running(app: &AppHandle) -> Result<DaemonStatus> {
         register_autorun_windows(&daemon_bin);
     }
 
-    // The daemon loads the embedding model before binding the socket (~9s on M2 Pro).
+    // The daemon loads the embedding model before binding the socket (~9s on an M2 Mac).
     // 30s covers cold-start model load on slower machines.
     let status = wait_for_daemon_or_refusal(
         &socket_path,
@@ -1609,11 +1563,11 @@ fn bootstrap_launchd_agent(plist_path: &Path) -> Result<()> {
     // stale-env daemon is recoverable instead of leaving a dead menu item.
     // The plist's other variable, `NODESPACED_SOCKET`, is likewise survivable
     // now, but only because the daemon no longer depends on it to know which
-    // socket to bind. Both sides derive the variant-scoped name from the shared
+    // socket to bind. Both sides derive the flavour-scoped name from the shared
     // table in `nodespace_proto::socket` -- `daemon_socket_relative()` here, the
     // daemon's `socket_path()` there -- so losing the variable leaves them
     // agreeing anyway. It was NOT survivable while the daemon's own default was
-    // an unscoped `~/.nodespace/daemon.sock`: a Pro or dev daemon that lost the
+    // an unscoped `~/.nodespace/daemon.sock`: a dev daemon that lost the
     // variable to a kickstart bound `daemon.sock` while the matching app dialed
     // the scoped name, and they never met.
     //
@@ -2925,7 +2879,7 @@ mod pkg_plist_matches_app_plist_tests {
         let contents = pkg_plist_contents();
         assert!(
             contents.contains("<key>Label</key>\n    <string>app.nodespace.daemon</string>"),
-            "the .pkg's plist must register under the exact label the community-build app \
+            "the .pkg's plist must register under the exact label the release-build app \
              self-registers under (app.nodespace.daemon) -- a mismatched label makes the pkg \
              and the app run two independent daemons instead of one: {contents}"
         );
@@ -3108,66 +3062,14 @@ mod windows_taskkill_image_name_tests {
     }
 }
 
-/// What the build's compile-time edition values select. A real build bakes in
-/// one edition, so `profile_for_build_env` takes them as parameters and both
-/// outcomes are pinned here.
+/// Which daemon a build of this app installs, registers and starts.
 #[cfg(test)]
 mod daemon_profile_selection_tests {
-    use super::{
-        daemon_profile, is_pro_build, profile_for_build_env, profile_for_this_build, DaemonProfile,
-    };
-
-    fn env(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
-        pairs
-            .iter()
-            .map(|(key, value)| (key.to_string(), value.to_string()))
-            .collect()
-    }
+    use super::{daemon_profile, profile_for_this_build, DaemonProfile};
 
     #[test]
-    fn no_edition_url_selects_the_community_profile() {
-        assert_eq!(
-            profile_for_build_env(None, None),
-            DaemonProfile::community()
-        );
-    }
-
-    /// The URL alone decides: a key without a URL is not an edition.
-    #[test]
-    fn a_key_without_a_url_still_selects_the_community_profile() {
-        assert_eq!(
-            profile_for_build_env(None, Some("test-key")),
-            DaemonProfile::community()
-        );
-    }
-
-    #[test]
-    fn edition_values_select_the_edition_daemon_environment_and_product() {
-        let profile = profile_for_build_env(Some("https://example.invalid"), Some("test-key"));
-
-        assert_eq!(profile.binary_name, "nodespaced-pro");
-        assert_eq!(
-            profile.service_env,
-            env(&[
-                ("NODESPACED_PRO_SUPABASE_URL", "https://example.invalid"),
-                ("NODESPACED_PRO_ANON_KEY", "test-key"),
-            ]),
-            "the URL comes first, then the key"
-        );
-        assert_eq!(profile.product, "pro");
-    }
-
-    #[test]
-    fn a_missing_anon_key_defaults_to_empty() {
-        let profile = profile_for_build_env(Some("https://example.invalid"), None);
-
-        assert_eq!(
-            profile.service_env,
-            env(&[
-                ("NODESPACED_PRO_SUPABASE_URL", "https://example.invalid"),
-                ("NODESPACED_PRO_ANON_KEY", ""),
-            ])
-        );
+    fn the_build_default_is_the_community_profile() {
+        assert_eq!(profile_for_this_build(), DaemonProfile::community());
     }
 
     /// Nothing installs a profile yet, so what every daemon-identity read
@@ -3176,16 +3078,19 @@ mod daemon_profile_selection_tests {
     fn the_active_profile_starts_as_the_build_default() {
         assert_eq!(daemon_profile::active(), &profile_for_this_build());
     }
+}
 
-    /// The daemon selection and the identity selection (label, socket, pid
-    /// file, marker) read the same compile-time value; they must not disagree
-    /// about which product this build is.
+/// The launchd label is part of the shared service identity: the `.pkg`'s
+/// static plist, the Homebrew cask and any daemon registered under core's
+/// identity use these exact strings, and only the build flavour separates them.
+#[cfg(test)]
+mod launch_agent_label_tests {
+    use super::launch_agent_label_for;
+
     #[test]
-    fn the_profile_and_the_identity_selection_agree_on_the_edition() {
-        assert_eq!(
-            profile_for_this_build() != DaemonProfile::community(),
-            is_pro_build()
-        );
+    fn the_label_is_exactly_the_release_or_the_dev_label() {
+        assert_eq!(launch_agent_label_for(false), "app.nodespace.daemon");
+        assert_eq!(launch_agent_label_for(true), "app.nodespace.daemon.dev");
     }
 }
 

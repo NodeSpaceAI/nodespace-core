@@ -17,8 +17,7 @@
 //! successful open removes it.
 //!
 //! Everything here lives in the library rather than the `nodespaced` binary so
-//! that every daemon built on this crate — the community `nodespaced` and the
-//! Pro `nodespaced-pro` alike — gets the same behavior: call
+//! that every daemon built on this crate gets the same behavior: call
 //! [`open_default_or_record_refusal`] instead of `DatabaseManager::get_or_open`
 //! for the default database, and pass the startup result through
 //! [`stop_cleanly_on_incompatible_database`] before returning from `main`.
@@ -33,21 +32,15 @@ use nodespace_types::IncompatibleDatabase;
 use crate::services::DatabaseId;
 use crate::{DatabaseManager, DatabaseServices};
 
-/// The marker path for one build variant, under the same state directory the
+/// The marker path for this build flavour, under the same state directory the
 /// database registry uses (so it follows `NODESPACE_HOME`).
 ///
-/// `is_pro` comes from the *calling binary*, not from a `cfg!` in this crate:
-/// `nodespaced-pro` links this library without its `pro` feature, so a
-/// feature check here would answer "community" for the Pro daemon and write a
-/// marker the Pro app never looks at. Same contract as
-/// `nodespace_proto::socket`.
-pub fn marker_path(is_pro: bool) -> Result<PathBuf> {
-    Ok(
-        crate::nodespace_dir()?.join(nodespace_proto::socket::incompatible_database_name(
-            cfg!(debug_assertions),
-            is_pro,
-        )),
-    )
+/// The name is the shared one from `nodespace_proto::socket`: every daemon
+/// registered under core's service identity writes the same marker, and only
+/// the build flavour separates a dev build's marker from a release build's.
+pub fn marker_path() -> Result<PathBuf> {
+    let name = nodespace_proto::socket::incompatible_database_name(cfg!(debug_assertions));
+    Ok(crate::nodespace_dir()?.join(name))
 }
 
 /// Open the default database `id` through `manager`, recording a refusal at
@@ -226,11 +219,13 @@ mod tests {
     }
 
     #[test]
-    fn the_marker_name_follows_the_callers_variant_not_this_crates_features() {
-        let community = marker_path(false).unwrap();
-        let pro = marker_path(true).unwrap();
-        assert_ne!(community.file_name(), pro.file_name());
-        assert!(pro.file_name().unwrap().to_str().unwrap().contains("pro"));
+    fn the_marker_is_the_shared_name_for_this_build_flavour() {
+        let expected = nodespace_proto::socket::incompatible_database_name(cfg!(debug_assertions));
+        let marker = marker_path().unwrap();
+        assert_eq!(
+            marker.file_name().and_then(|name| name.to_str()),
+            Some(expected)
+        );
     }
 
     #[test]

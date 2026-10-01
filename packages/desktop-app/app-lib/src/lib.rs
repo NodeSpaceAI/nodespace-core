@@ -561,7 +561,7 @@ fn run_app(extensions: AppExtensions, context: tauri::Context<tauri::Wry>) {
             }
 
             // Spawn async task to start the daemon (if needed) and wire up the
-            // watcher, token stream, and Pro probe on the (already-managed) client.
+            // watcher and token stream on the (already-managed) client.
             // setup() is synchronous so we can't block_on here — spawn a task instead.
             #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
             {
@@ -667,11 +667,10 @@ fn run_app(extensions: AppExtensions, context: tauri::Context<tauri::Wry>) {
                     }
 
                     // The gRPC client is already managed (lazy) above. Fetch it and
-                    // wire the watcher, token stream, and Pro probe; the underlying
-                    // channel connects on first use.
+                    // wire the watcher and token stream; the underlying channel
+                    // connects on first use.
                     use tauri::Manager;
                     let grpc_client = (*app_handle.state::<crate::services::GrpcClient>()).clone();
-                    let channel = grpc_client.channel().await;
                     // Cloned here because the token stream subscription below takes
                     // `grpc_client` by value.
                     let grpc_for_extensions = grpc_client.clone();
@@ -693,36 +692,6 @@ fn run_app(extensions: AppExtensions, context: tauri::Context<tauri::Wry>) {
                         grpc_for_extensions,
                         &extension_shutdown,
                     );
-
-                    // Pro capability probe: a single WatchSyncStatus call on the same
-                    // channel. Community `nodespaced` returns `Status::Unimplemented`
-                    // → tier=Community → sync pill stays hidden. Pro `nodespaced-pro`
-                    // answers → tier=Pro → pill renders and listens for `sync:status`.
-                    let pro = crate::services::ProClient::probe_on_channel(channel).await;
-                    let tier = pro.tier().await;
-                    let last_status = pro.last_status().await;
-                    // No `pro_activate_database` call has landed yet at probe time, so
-                    // this is always empty — the frontend's per-database sync store
-                    // attributes an empty database_id to whichever database it
-                    // currently considers active (see `isActiveDatabaseEvent`'s
-                    // convention, mirrored in `pro-sync.svelte.ts`).
-                    let database_id = pro.attributed_database_id().await;
-                    let payload = serde_json::json!({
-                        "tier": tier,
-                        "initial_status": last_status.as_ref().map(|s| {
-                            serde_json::json!({
-                                "state": s.state,
-                                "detail": s.detail,
-                                "user_email": s.user_email,
-                                "database_id": database_id,
-                            })
-                        }),
-                    });
-                    app_handle.manage(pro);
-                    if let Err(e) = app_handle.emit("pro:tier-detected", payload) {
-                        tracing::warn!(error = %e, "failed to emit pro:tier-detected");
-                    }
-                    tracing::info!(?tier, "Pro capability probe done");
 
                     // Re-establish the "daemon unreachable" signal lost when the
                     // eager lazy client replaced the connect()-or-emit path. The lazy
@@ -835,33 +804,6 @@ fn run_app(extensions: AppExtensions, context: tauri::Context<tauri::Wry>) {
             take_pending_tray_database_selection,
             window_routing::pin_window_database,
             update_check::check_for_update_command,
-            commands::pro_sync::pro_tier,
-            commands::pro_sync::pro_current_status,
-            commands::pro_sync::pro_subscribe_sync_status,
-            commands::pro_sync::pro_initiate_oauth,
-            commands::pro_sync::pro_signout,
-            commands::pro_sync::pro_enable_sync,
-            commands::pro_sync::pro_activate_database,
-            commands::pro_sync::pro_list_tenant_memberships,
-            commands::pro_sync::pro_bind_tenant,
-            commands::pro_sync::pro_set_member,
-            commands::pro_sync::pro_remove_member,
-            commands::pro_sync::pro_leave_collection,
-            commands::pro_sync::pro_list_members,
-            commands::pro_sync::pro_create_invite,
-            commands::pro_sync::pro_accept_invite,
-            commands::pro_sync::pro_request_join,
-            commands::pro_sync::pro_join_collection,
-            commands::pro_sync::pro_list_joinable_collections,
-            commands::pro_sync::pro_approve_request,
-            commands::pro_sync::pro_list_invites,
-            commands::pro_sync::pro_list_requests,
-            commands::pro_sync::pro_revoke_invite,
-            commands::pro_sync::pro_current_person,
-            commands::pro_sync::pro_list_tenant_members,
-            commands::pro_sync::pro_approve_admission,
-            commands::pro_sync::pro_initiate_admission,
-            commands::pro_sync::pro_remove_from_tenant,
             commands::conflicts::list_conflicts,
             commands::conflicts::conflicts_for_node,
             commands::conflicts::resolve_conflict,

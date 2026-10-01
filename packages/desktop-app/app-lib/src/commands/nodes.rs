@@ -22,7 +22,7 @@ use nodespace_proto::nodespace::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, State};
 use tonic::Request;
 
 use crate::services::GrpcClient;
@@ -570,10 +570,6 @@ pub async fn find_duplicate(
 /// the re-probe, so anything an extension cached on the old channel is replaced
 /// before this returns (see [`AppExtensions::on_channel_rebuilt`]).
 ///
-/// The Pro cloud-sync client caches its own clone of the shared channel, so
-/// after a rebuild it is rebound to the fresh channel too — otherwise every
-/// subsequent cloud-sync call would keep riding the dead connection.
-///
 /// [`AppExtensions::on_channel_rebuilt`]: crate::extensions::AppExtensions::on_channel_rebuilt
 #[tauri::command]
 pub async fn probe_and_recover_channel(
@@ -602,12 +598,6 @@ pub async fn probe_and_recover<R: tauri::Runtime>(
 
     tracing::warn!("gRPC channel probe timed out — rebuilding wedged channel");
     client.reconnect().await;
-    // The Pro client holds its own clone of the shared channel; point it at the
-    // freshly-rebuilt one so cloud-sync calls stop riding the dead connection.
-    // Absent in community mode — skip cleanly if it was never registered.
-    if let Some(pro) = app.try_state::<crate::services::ProClient>() {
-        pro.rebind(client.channel().await).await;
-    }
     crate::extensions::run_channel_rebuilt_hooks(app, client.channel().await).await;
     !matches!(
         client.data_plane_round_trip(DATA_PLANE_PROBE_TIMEOUT).await,
