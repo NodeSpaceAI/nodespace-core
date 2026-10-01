@@ -19,11 +19,17 @@ const REPO = join(dirname(new URL(import.meta.url).pathname), "..");
 const RELEASE_WORKFLOW = join(REPO, ".github", "workflows", "release.yml");
 const VARIABLES = ["NODESPACE_EXTENSIONS", "NODESPACE_SKILL_EXTENSIONS"];
 const TAURI_ACTION = "tauri-apps/tauri-action";
-// A step that stages the skill: `build:skill` itself, a root script that runs
-// it first (`build`, `build:windows`, `build:windows:quick`), or the script it
-// runs. Not `bun build`, Bun's bundler.
+// A step that stages the skill:
+// - `build:skill`, or `tauri:build`, which runs it in every package that has
+//   it, from any `--cwd`;
+// - a root script that runs one of them (`build`, `build:macos`,
+//   `build:windows`, `build:windows:quick`). With a `--cwd`, `build` is another
+//   package's build, which does not stage the skill;
+// - the script `build:skill` runs.
+// Not `bun build`, Bun's bundler, and not `bunx tauri build`, whose
+// beforeBuildCommand is the frontend's `build`.
 const SKILL_BUILD =
-  /\bbun run (?:build:skill|build|build:windows|build:windows:quick)(?=\s|$)|\bbun (?:run )?scripts\/build-skill\.ts(?=\s|$)/m;
+  /\bbun run (?:--cwd \S+ )?(?:build:skill|tauri:build)(?=\s|$)|\bbun run (?:build|build:macos|build:windows|build:windows:quick)(?=\s|$)|\bbun (?:run )?scripts\/build-skill\.ts(?=\s|$)/m;
 
 interface Step {
   name?: string;
@@ -129,6 +135,11 @@ describe("release workflow extensions guard", () => {
       "bun run build && echo done",
       "bun run build:windows",
       "bun run build:windows:quick",
+      "bun run build:macos",
+      "bun run tauri:build",
+      "cd packages/desktop-app && bun run tauri:build",
+      "bun run --cwd packages/desktop-app tauri:build",
+      "bun run --cwd ../.. build:skill",
       "bun run scripts/build-skill.ts --target x86_64-pc-windows-msvc",
       "bun scripts/build-skill.ts",
     ]) {
@@ -139,7 +150,8 @@ describe("release workflow extensions guard", () => {
       "bun build --compile src/install.ts --outfile x",
       "bun run --cwd packages/desktop-app build",
       "bun run build:skill-repo",
-      "bun run build:macos",
+      "bun run --cwd packages/skill build",
+      "bunx tauri build",
     ]) {
       expect(SKILL_BUILD.test(command), command).toBe(false);
     }
