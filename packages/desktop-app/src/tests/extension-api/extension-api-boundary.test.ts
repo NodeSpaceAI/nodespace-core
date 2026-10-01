@@ -10,9 +10,9 @@
  *   - the fixture extension imports core only through it, like an out-of-tree
  *     extension.
  *
- * Specifiers are read with comment lines skipped (see `importSpecifiers`). The
- * edition-specific needles are built from fragments so this file adds no
- * boundary-ratchet markers.
+ * Specifiers come from each file's syntax tree (see `importSpecifiers`), so
+ * comments and strings never count. The edition-specific needles are built from
+ * fragments so this file adds no boundary-ratchet markers.
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -57,13 +57,16 @@ interface Import {
   specifier: string;
 }
 
-function importsOf(files: string[]): Import[] {
-  return files.flatMap((file) =>
-    importSpecifiers(fs.readFileSync(file, 'utf8'), file.endsWith('.svelte')).map((specifier) => ({
-      file,
-      specifier
-    }))
-  );
+/**
+ * The imports of `files`. With `mentioning`, a file whose text does not contain
+ * it is skipped unparsed, which keeps a scan of all of `src/lib` fast.
+ */
+function importsOf(files: string[], mentioning?: string): Import[] {
+  return files.flatMap((file) => {
+    const source = fs.readFileSync(file, 'utf8');
+    if (mentioning !== undefined && !source.includes(mentioning)) return [];
+    return importSpecifiers(file, source).map((specifier) => ({ file, specifier }));
+  });
 }
 
 function describeImports(imports: Import[]): string[] {
@@ -78,7 +81,8 @@ describe('extension API boundary', () => {
       ...sourceFiles(LIB_ROOT).filter((file) => !file.startsWith(`${HOST_API_DIR}${path.sep}`)),
       ...sourceFiles(path.join(SRC_ROOT, 'routes'))
     ];
-    const offenders = importsOf(coreFiles).filter(({ file, specifier }) =>
+    // Every way to name the host API, by alias or by path, contains its directory name.
+    const offenders = importsOf(coreFiles, 'extension-api').filter(({ file, specifier }) =>
       isHostApi(specifier, file)
     );
     expect(
@@ -115,6 +119,30 @@ describe('extension API boundary', () => {
 
 describe('the boundary predicates', () => {
   const here = path.join(LIB_ROOT, 'stores/example.ts');
+
+  it('read imports from the syntax tree, not from comments or strings', () => {
+    const source = [
+      "import a from 'a';",
+      "// import b from 'b';",
+      'const s = "from \'c\'";',
+      "const re = /'/; import d from 'd';",
+      "export { e } from 'e';",
+      "const f = () => import('f');",
+      "type G = import('g').G;"
+    ].join('\n');
+    expect(importSpecifiers(here, source)).toEqual(['a', 'd', 'e', 'f', 'g']);
+  });
+
+  it('read only the script blocks of a .svelte file', () => {
+    const source = [
+      '<script lang="ts">',
+      "  import a from 'a';",
+      '</script>',
+      "<!-- import b from 'b' -->",
+      "<p>import c from 'c'</p>"
+    ].join('\n');
+    expect(importSpecifiers(path.join(LIB_ROOT, 'example.svelte'), source)).toEqual(['a']);
+  });
 
   it('recognize the host API by alias and by relative path', () => {
     for (const specifier of [

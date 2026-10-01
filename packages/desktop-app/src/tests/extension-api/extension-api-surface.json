@@ -30,6 +30,14 @@
       "schemas",
       "toError"
     ],
+    "testing": [
+      "cleanup",
+      "fireEvent",
+      "mockTauriCore",
+      "render",
+      "screen",
+      "waitFor"
+    ],
     "ui": [
       "Badge",
       "Button",
@@ -63,15 +71,7 @@
       "Dialog.Trigger",
       "Input",
       "focusTrap"
-    ],
-    "testing": [
-      "cleanup",
-      "fireEvent",
-      "mockTauriCore",
-      "render",
-      "screen",
-      "waitFor"
     ]
   },
-  "typesHash": "af744fd918e9e960b49ffb41aaf2804513e2201390aeed022fac1e3081af3de7"
+  "typesHash": "5462a7187f9129c168ea196bca118e8b59a9105a599bc0899928c36461892d16"
 }

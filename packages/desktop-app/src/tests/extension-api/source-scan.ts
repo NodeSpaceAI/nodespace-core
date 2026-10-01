@@ -1,65 +1,32 @@
 /**
  * Source scanning for the extension API's surface and boundary tests: export
- * lists, type declarations and import specifiers, read from source text with
- * targeted parsing rather than a TypeScript program.
+ * lists, type declarations and import specifiers, read from the TypeScript
+ * syntax tree of each file (no type checking).
  */
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import ts from 'typescript';
 
 export const APP_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 export const SRC_ROOT = path.join(APP_ROOT, 'src');
 export const LIB_ROOT = path.join(SRC_ROOT, 'lib');
 export const HOST_API_DIR = path.join(LIB_ROOT, 'extension-api');
 
-/**
- * Removes `//` and `/* *\/` comments, leaving string and template literals
- * intact. Regex literals are not recognized, so this is for files whose code
- * has none; a quote that would mislead it ends up unterminated, which throws
- * rather than silently dropping code.
- */
-export function stripComments(source: string): string {
-  let out = '';
-  let i = 0;
-  while (i < source.length) {
-    const ch = source[i];
-    const next = source[i + 1];
-    if (ch === '/' && next === '/') {
-      while (i < source.length && source[i] !== '\n') i++;
-      continue;
-    }
-    if (ch === '/' && next === '*') {
-      const end = source.indexOf('*/', i + 2);
-      if (end === -1) throw new Error('Unterminated block comment');
-      // Keep line breaks so a comment between two tokens still separates them.
-      out += source.slice(i, end + 2).includes('\n') ? '\n' : ' ';
-      i = end + 2;
-      continue;
-    }
-    if (ch === "'" || ch === '"' || ch === '`') {
-      const start = i;
-      i++;
-      while (i < source.length && source[i] !== ch) {
-        if (source[i] === '\\') i++;
-        else if (source[i] === '\n' && ch !== '`') {
-          throw new Error(`Unterminated string literal: ${source.slice(start, i)}`);
-        }
-        i++;
-      }
-      if (i >= source.length)
-        throw new Error(`Unterminated string literal: ${source.slice(start)}`);
-      out += source.slice(start, i + 1);
-      i++;
-      continue;
-    }
-    out += ch;
-    i++;
-  }
-  return out;
+/** Parses TypeScript source; for a `.svelte` file, the contents of its `<script>` blocks. */
+export function parseSource(file: string, source = fs.readFileSync(file, 'utf8')): ts.SourceFile {
+  const code = file.endsWith('.svelte')
+    ? [...source.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n')
+    : source;
+  return ts.createSourceFile(file, code, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
 }
 
-/** Resolves an import specifier against `fromFile` to a source file, or `null` for a package. */
+function hasModifier(node: ts.Node, kind: ts.SyntaxKind): boolean {
+  return ts.canHaveModifiers(node) && (ts.getModifiers(node) ?? []).some((m) => m.kind === kind);
+}
+
+/** Resolves an import specifier against `fromFile` to a source path, or `null` for a package. */
 export function resolveSpecifier(specifier: string, fromFile: string): string | null {
   let base: string;
   if (specifier.startsWith('$lib/')) base = path.join(LIB_ROOT, specifier.slice('$lib/'.length));
@@ -81,131 +48,107 @@ export interface ExportedName {
 }
 
 /**
- * The names a module exports, read from its source. A namespace re-export
+ * The names a module exports. A namespace re-export
  * (`import * as X from '...'; export { X }`) also contributes `X.<member>` for
- * each export of the namespace's module. Throws on `export *`, whose names
- * cannot be listed from the entry's own text.
+ * each export of the namespace's module. Throws on `export *` and
+ * `export * as`, whose names cannot be listed from the entry's own text.
  */
-export function exportedNames(file: string): ExportedName[] {
-  const code = stripComments(fs.readFileSync(file, 'utf8'));
-  if (/\bexport\s*\*/.test(code)) {
-    throw new Error(
-      `${path.relative(APP_ROOT, file)} uses \`export *\`; list its exports explicitly`
-    );
-  }
+export function exportedNames(file: string, source?: string): ExportedName[] {
+  const sf = parseSource(file, source);
+  const where = path.relative(APP_ROOT, file);
 
   const namespaces = new Map<string, string>();
-  for (const m of code.matchAll(/\bimport\s+\*\s+as\s+([\w$]+)\s+from\s+['"]([^'"]+)['"]/g)) {
-    namespaces.set(m[1], m[2]);
+  for (const st of sf.statements) {
+    if (!ts.isImportDeclaration(st) || !ts.isStringLiteral(st.moduleSpecifier)) continue;
+    const bindings = st.importClause?.namedBindings;
+    if (bindings && ts.isNamespaceImport(bindings)) {
+      namespaces.set(bindings.name.text, st.moduleSpecifier.text);
+    }
   }
 
   const names: ExportedName[] = [];
-  for (const m of code.matchAll(
-    /\bexport\s+(type\s+)?\{([^}]*)\}(?:\s*from\s*['"]([^'"]+)['"])?/g
-  )) {
-    const listIsType = m[1] !== undefined;
-    const fromSpecifier = m[3];
-    for (const raw of m[2].split(',')) {
-      const item = raw.trim();
-      if (item === '') continue;
-      const parts = /^(type\s+)?([\w$]+)(?:\s+as\s+([\w$]+))?$/.exec(item);
-      if (!parts) throw new Error(`Unrecognized export item \`${item}\` in ${file}`);
-      const local = parts[2];
-      const name = parts[3] ?? local;
-      names.push({ name, isType: listIsType || parts[1] !== undefined });
-      const namespace = fromSpecifier === undefined ? namespaces.get(local) : undefined;
-      if (namespace !== undefined) {
+  for (const st of sf.statements) {
+    if (ts.isExportDeclaration(st)) {
+      if (!st.exportClause || ts.isNamespaceExport(st.exportClause)) {
+        throw new Error(`${where} uses \`export *\`; list its exports explicitly`);
+      }
+      for (const element of st.exportClause.elements) {
+        const name = element.name.text;
+        names.push({ name, isType: st.isTypeOnly || element.isTypeOnly });
+        const local = (element.propertyName ?? element.name).text;
+        const namespace = st.moduleSpecifier === undefined ? namespaces.get(local) : undefined;
+        if (namespace === undefined) continue;
         const target = resolveSpecifier(namespace, file);
         if (target === null || !fs.existsSync(target)) {
-          throw new Error(`Cannot resolve namespace \`${local}\` (${namespace}) from ${file}`);
+          throw new Error(`${where}: cannot resolve namespace \`${local}\` (${namespace})`);
         }
         for (const member of exportedNames(target)) {
           names.push({ name: `${name}.${member.name}`, isType: member.isType });
         }
       }
+    } else if (ts.isExportAssignment(st)) {
+      names.push({ name: 'default', isType: false });
+    } else if (hasModifier(st, ts.SyntaxKind.ExportKeyword)) {
+      if (hasModifier(st, ts.SyntaxKind.DefaultKeyword)) {
+        names.push({ name: 'default', isType: false });
+      } else if (ts.isVariableStatement(st)) {
+        for (const declaration of st.declarationList.declarations) {
+          if (!ts.isIdentifier(declaration.name)) {
+            throw new Error(`${where}: export a destructured binding by name instead`);
+          }
+          names.push({ name: declaration.name.text, isType: false });
+        }
+      } else if (ts.isInterfaceDeclaration(st) || ts.isTypeAliasDeclaration(st)) {
+        names.push({ name: st.name.text, isType: true });
+      } else if (
+        (ts.isFunctionDeclaration(st) || ts.isClassDeclaration(st) || ts.isEnumDeclaration(st)) &&
+        st.name
+      ) {
+        names.push({ name: st.name.text, isType: false });
+      } else {
+        throw new Error(`${where}: unrecognized export \`${st.getText(sf).slice(0, 60)}\``);
+      }
     }
   }
-  for (const m of code.matchAll(
-    /\bexport\s+(?:declare\s+)?(?:async\s+)?(const|let|var|function\*?|class|interface|type|enum)\s+([\w$]+)/g
-  )) {
-    names.push({ name: m[2], isType: m[1] === 'interface' || m[1] === 'type' });
-  }
-  if (/\bexport\s+default\b/.test(code)) names.push({ name: 'default', isType: false });
   return names;
 }
 
-/** Collapses formatting that does not change a declaration's meaning. */
-export function normalizeDeclaration(text: string): string {
-  return text
-    .replace(/\s+/g, ' ')
-    .replace(/ ?([^\w$ '"`]) ?/g, '$1')
-    .replace(/([=(<:,[])[|&]/g, '$1')
-    .replace(/[;,]([}\])>])/g, '$1')
-    .trim();
+export interface TypeDeclaration {
+  /** The declaration as the TypeScript printer emits it, without comments, `export` or layout. */
+  text: string;
+  /** Every identifier the declaration mentions, for following its references. */
+  refs: Set<string>;
 }
 
-/**
- * The end (exclusive) of the `interface` or `type` declaration that starts at
- * `start`: the closing brace of an interface's body, or the `;` that ends a type
- * alias at bracket depth 0.
- */
-function declarationEnd(code: string, start: number, kind: 'interface' | 'type'): number {
-  let curly = 0;
-  let other = 0;
-  let angle = 0;
-  let bodyOpened = false;
-  for (let i = start; i < code.length; i++) {
-    const ch = code[i];
-    if (ch === "'" || ch === '"' || ch === '`') {
-      i++;
-      while (i < code.length && code[i] !== ch) {
-        if (code[i] === '\\') i++;
-        i++;
-      }
-      continue;
-    }
-    if (ch === '<') angle++;
-    else if (ch === '>' && code[i - 1] !== '=') angle--;
-    else if (ch === '(' || ch === '[') other++;
-    else if (ch === ')' || ch === ']') other--;
-    else if (ch === '{') {
-      if (kind === 'interface' && curly === 0 && angle === 0 && other === 0) bodyOpened = true;
-      curly++;
-    } else if (ch === '}') {
-      curly--;
-      if (kind === 'interface' && bodyOpened && curly === 0) return i + 1;
-    } else if (ch === ';' && kind === 'type' && curly === 0 && angle === 0 && other === 0) {
-      return i + 1;
-    }
-  }
-  throw new Error(`Unterminated ${kind} declaration at offset ${start}`);
-}
+const printer = ts.createPrinter({ removeComments: true });
 
-/**
- * Every `interface` and `type` declaration in `file`, as normalized text keyed by
- * name. `exportedOnly` skips the ones without `export`.
- */
-export function typeDeclarations(file: string, exportedOnly: boolean): Map<string, string> {
-  const code = stripComments(fs.readFileSync(file, 'utf8'));
-  const declarations = new Map<string, string>();
-  // The lookahead keeps an import item such as `  type Foo,` from counting.
-  for (const m of code.matchAll(
-    /^[ \t]*(export\s+)?(?:declare\s+)?(interface|type)\s+([\w$]+)\s*(?=[<={]|extends\b)/gm
-  )) {
-    if (exportedOnly && m[1] === undefined) continue;
-    const kind = m[2] as 'interface' | 'type';
-    const start = m.index ?? 0;
-    const text = code.slice(start, declarationEnd(code, start, kind));
-    declarations.set(m[3], normalizeDeclaration(text.replace(/^\s*export\s+/, '')));
+/** Every top-level `interface` and `type` declaration in a module, by name. */
+export function typeDeclarations(file: string, source?: string): Map<string, TypeDeclaration> {
+  const sf = parseSource(file, source);
+  const declarations = new Map<string, TypeDeclaration>();
+  for (const st of sf.statements) {
+    if (!ts.isInterfaceDeclaration(st) && !ts.isTypeAliasDeclaration(st)) continue;
+    const refs = new Set<string>();
+    const visit = (node: ts.Node): void => {
+      if (ts.isIdentifier(node)) refs.add(node.text);
+      ts.forEachChild(node, visit);
+    };
+    ts.forEachChild(st, visit);
+    const text = printer
+      .printNode(ts.EmitHint.Unspecified, st, sf)
+      .replace(/^export\s+/, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+    declarations.set(st.name.text, { text, refs });
   }
   return declarations;
 }
 
-/** SHA-256 over declarations, independent of their order. */
-export function hashDeclarations(declarations: Map<string, string>): string {
+/** SHA-256 over declarations' text, independent of their order. */
+export function hashDeclarations(declarations: Map<string, TypeDeclaration>): string {
   const lines = [...declarations].sort(([a], [b]) => a.localeCompare(b));
   return createHash('sha256')
-    .update(lines.map(([name, text]) => `${name}\t${text}`).join('\n'))
+    .update(lines.map(([name, { text }]) => `${name}\t${text}`).join('\n'))
     .digest('hex');
 }
 
@@ -219,24 +162,35 @@ export function sourceFiles(dir: string): string[] {
 }
 
 /**
- * The module specifiers `source` imports or re-exports: static, side-effect,
- * dynamic and `import('...')` type references. In a `.svelte` file only the
- * `<script>` blocks count. Lines that are comments (`//`, `/*`, or a `*` doc
- * continuation) are skipped, as `shared-node-store-pin-guard.test.ts` does; a
- * full comment parser is not needed for import statements.
+ * The module specifiers a file imports or re-exports: static, side-effect and
+ * dynamic imports, `export ... from`, and `import('...')` types. Comments and
+ * string contents never count, since they are read from the syntax tree.
  */
-export function importSpecifiers(source: string, isSvelte: boolean): string[] {
-  const code = isSvelte
-    ? [...source.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n')
-    : source;
-  const lines = code.split('\n').filter((line) => {
-    const trimmed = line.trim();
-    return !trimmed.startsWith('//') && !trimmed.startsWith('*') && !trimmed.startsWith('/*');
-  });
-  const text = lines.join('\n');
+export function importSpecifiers(file: string, source?: string): string[] {
   const specifiers: string[] = [];
-  for (const m of text.matchAll(/\bfrom\s*['"]([^'"\n]+)['"]/g)) specifiers.push(m[1]);
-  for (const m of text.matchAll(/^\s*import\s*['"]([^'"\n]+)['"]/gm)) specifiers.push(m[1]);
-  for (const m of text.matchAll(/\bimport\s*\(\s*['"]([^'"\n]+)['"]\s*\)/g)) specifiers.push(m[1]);
+  const visit = (node: ts.Node): void => {
+    if (
+      (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) &&
+      node.moduleSpecifier &&
+      ts.isStringLiteral(node.moduleSpecifier)
+    ) {
+      specifiers.push(node.moduleSpecifier.text);
+    } else if (
+      ts.isCallExpression(node) &&
+      node.expression.kind === ts.SyntaxKind.ImportKeyword &&
+      node.arguments.length > 0 &&
+      ts.isStringLiteralLike(node.arguments[0])
+    ) {
+      specifiers.push(node.arguments[0].text);
+    } else if (
+      ts.isImportTypeNode(node) &&
+      ts.isLiteralTypeNode(node.argument) &&
+      ts.isStringLiteral(node.argument.literal)
+    ) {
+      specifiers.push(node.argument.literal.text);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(parseSource(file, source));
   return specifiers;
 }

@@ -3,15 +3,18 @@
  *
  * The snapshot (`extension-api-surface.json`) records `EXTENSION_API_VERSION`,
  * each entry's export names, and a hash of the API's type declarations. A
- * surface change without a version change fails; so does a removal with only a
- * minor bump, and a bump that was not re-recorded. To re-record after bumping:
+ * surface change without a version change fails; so does a removed or renamed
+ * export with only a minor bump, and a bump that was not re-recorded. To
+ * re-record after bumping:
  *
  *   UPDATE_EXTENSION_API_SURFACE=1 bun run --cwd packages/desktop-app test src/tests/extension-api
  *
- * Re-recording refuses a missing or too-small bump. The hash covers types
- * declared in the registry and in the host API's files; signatures that reach the
- * API through other core modules (`DatabaseInfo`, a component's props) are left
- * to review against the policy in `src/lib/extension-api/index.ts`.
+ * Re-recording refuses a missing bump, and a minor bump for a removal or rename.
+ * Whether a changed type needs a major or a minor bump is left to review: the
+ * hash records only that a declaration changed. It covers the types declared in
+ * the host API's files and the registry types the API reaches; signatures that
+ * reach the API through other core modules (`DatabaseInfo`, a component's props)
+ * are left to review against the policy in `src/lib/extension-api/index.ts`.
  */
 import fs from 'node:fs';
 import os from 'node:os';
@@ -22,9 +25,9 @@ import * as indexEntry from '@nodespace/extension-api';
 import * as uiEntry from '@nodespace/extension-api/ui';
 import * as testingEntry from '@nodespace/extension-api/testing';
 import {
-  ENTRY_FILES,
-  ENTRY_NAMES,
+  apiTypeDeclarations,
   currentSurface,
+  hostApiEntries,
   readSnapshot,
   surfaceProblems,
   writeSnapshot,
@@ -38,6 +41,13 @@ import { exportedNames, hashDeclarations, typeDeclarations } from './source-scan
 const version: ApiVersion = {
   major: EXTENSION_API_VERSION.major,
   minor: EXTENSION_API_VERSION.minor
+};
+
+// Imported statically: loading the UI components inside a test could outlast its timeout.
+const runtimeEntries: Record<string, object> = {
+  index: indexEntry,
+  ui: uiEntry,
+  testing: testingEntry
 };
 
 describe('extension API surface', () => {
@@ -54,32 +64,48 @@ describe('extension API surface', () => {
     expect(problems.map((p) => p.message)).toEqual([]);
   });
 
-  // Checks the source parsing against what each entry really exports. The entries are
-  // imported statically: loading the UI components inside a test could outlast its timeout.
-  it.each(ENTRY_NAMES)('reads the %s entry’s runtime exports correctly', (entry) => {
-    const modules = { index: indexEntry, ui: uiEntry, testing: testingEntry };
-    const runtime = Object.keys(modules[entry]).sort();
-    const parsed = exportedNames(ENTRY_FILES[entry])
-      .filter((e) => !e.isType && !e.name.includes('.'))
-      .map((e) => e.name)
-      .sort();
-    expect(runtime).toEqual(parsed);
+  it('checks the runtime exports of every entry', () => {
+    expect(Object.keys(runtimeEntries).sort()).toEqual(Object.keys(hostApiEntries()).sort());
   });
+
+  // Checks the source parsing against what each entry really exports.
+  it.each(Object.keys(runtimeEntries))(
+    'reads the %s entry’s runtime exports correctly',
+    (entry) => {
+      const runtime = Object.keys(runtimeEntries[entry]).sort();
+      const parsed = exportedNames(hostApiEntries()[entry])
+        .filter((e) => !e.isType && !e.name.includes('.'))
+        .map((e) => e.name)
+        .sort();
+      expect(runtime).toEqual(parsed);
+    }
+  );
 
   it('records each Dialog part under the namespace', () => {
     expect(currentSurface().entries.ui).toEqual(
       expect.arrayContaining(['Dialog', 'Dialog.Root', 'Dialog.Content', 'Dialog.Title'])
     );
   });
+
+  it('hashes the registry types the API reaches, and no others', () => {
+    const covered = apiTypeDeclarations();
+    // Exported by the index entry.
+    expect(covered.has('NodespaceExtension')).toBe(true);
+    // A facade shape that is not exported.
+    expect(covered.has('ExtensionNodes')).toBe(true);
+    // A registry type only the hosts use.
+    expect(covered.has('Keyed')).toBe(false);
+  });
 });
 
+// Synthetic surfaces at fixed versions, so a real bump never changes these cases.
 describe('surfaceProblems', () => {
   const base: SurfaceSnapshot = {
     version: { major: 1, minor: 0 },
     entries: { index: ['a', 'b'], ui: ['Button'], testing: ['render'] },
     typesHash: 'h1'
   };
-  const withEntries = (entries: Partial<Surface['entries']>, typesHash = 'h1'): Surface => ({
+  const withEntries = (entries: Surface['entries'], typesHash = 'h1'): Surface => ({
     entries: { ...base.entries, ...entries },
     typesHash
   });
@@ -97,6 +123,12 @@ describe('surfaceProblems', () => {
     expect(kinds(base, withEntries({ index: ['a', 'b', 'c'] }), { major: 1, minor: 0 })).toEqual([
       'unversioned-change'
     ]);
+  });
+
+  it('fails a new entry without a bump, naming it', () => {
+    const problems = surfaceProblems(base, withEntries({ extra: ['foo'] }), base.version);
+    expect(problems.map((p) => p.kind)).toEqual(['unversioned-change']);
+    expect(problems[0].message).toContain('added extra: foo');
   });
 
   it('fails a removed export without a bump', () => {
@@ -141,13 +173,13 @@ describe('surfaceProblems', () => {
   });
 
   it('fails a version that went backwards', () => {
-    expect(kinds({ ...base, version: { major: 1, minor: 2 } }, withEntries({}), version)).toEqual([
-      'version-regressed'
-    ]);
+    expect(
+      kinds({ ...base, version: { major: 1, minor: 2 } }, withEntries({}), base.version)
+    ).toEqual(['version-regressed']);
   });
 
   it('asks for a first recording when there is no snapshot', () => {
-    expect(kinds(null, withEntries({}), version)).toEqual(['not-recorded']);
+    expect(kinds(null, withEntries({}), base.version)).toEqual(['not-recorded']);
   });
 });
 
@@ -207,8 +239,7 @@ describe('source parsing', () => {
   });
 
   describe('the types hash', () => {
-    const hashOf = (source: string): string =>
-      hashDeclarations(typeDeclarations(file(source), true));
+    const hashOf = (source: string): string => hashDeclarations(typeDeclarations(file(source)));
     const original = [
       '/** Doc. */',
       "export type Slot = 'a' | 'b';",
@@ -216,8 +247,7 @@ describe('source parsing', () => {
       '  // Its id.',
       '  id: string;',
       '  load: () => Promise<{ default: number }>;',
-      '}',
-      'interface Internal { x: number }'
+      '}'
     ].join('\n');
 
     it('ignores comments, whitespace, line breaks and trailing separators', () => {
@@ -226,15 +256,11 @@ describe('source parsing', () => {
         "  | 'a'",
         "  | 'b';",
         '/* a block comment */',
-        'export interface Thing { id: string; load: () => Promise<{',
+        'export interface Thing { id: string, load: () => Promise<{',
         '  default: number;',
         '}> }'
       ].join('\n');
       expect(hashOf(reformatted)).toBe(hashOf(original));
-    });
-
-    it('ignores declarations that are not exported, when asked to', () => {
-      expect(hashOf(original.replace('x: number', 'y: string'))).toBe(hashOf(original));
     });
 
     it('changes when a member is added, retyped or removed', () => {
@@ -244,6 +270,13 @@ describe('source parsing', () => {
       );
       expect(hashOf(original.replace('id: string;', 'id: number;'))).not.toBe(before);
       expect(hashOf(original.replace("'a' | 'b'", "'a'"))).not.toBe(before);
+    });
+
+    it('sees a declaration that follows a regex literal containing a comment opener', () => {
+      const declarations = typeDeclarations(
+        file("const trimmed = 'x'.replace(/\\/*$/, '');\nexport interface Hidden { x: number }")
+      );
+      expect([...declarations.keys()]).toEqual(['Hidden']);
     });
 
     it('ignores an import item that looks like a declaration', () => {

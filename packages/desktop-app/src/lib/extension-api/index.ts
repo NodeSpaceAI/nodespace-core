@@ -35,9 +35,11 @@
  *   - The PR description says so, and so do core's release notes, under an
  *     "Extension API" heading.
  *   - Every entry lists its exports explicitly; `export *` is refused, so
- *     nothing reaches the API by accident. `extension-api-surface.test.ts`
- *     compares the export lists and the API's type declarations with the
- *     snapshot and fails on a change the version does not account for.
+ *     nothing reaches the API by accident. Every file in this directory is an
+ *     entry. `extension-api-surface.test.ts` compares the export lists and the
+ *     API's type declarations with the snapshot. It fails on a change without a
+ *     bump and on a removal without a major one; whether a changed type is major
+ *     or minor is the reviewer's call, by the rules above.
  *   - Core modules never import the host API.
  */
 
