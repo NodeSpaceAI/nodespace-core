@@ -99,6 +99,7 @@ fn declarations(cfg: &Config) -> Vec<Declared> {
         PersonNodeUpdate,
         ProjectNode,
         ProjectNodeUpdate,
+        ProjectStatus,
         // query
         FilterType,
         FilterOperator,
@@ -312,10 +313,10 @@ fn index_file(declared: &[Declared]) -> File {
     }
 }
 
-/// `TaskStatus`, `Priority` and `SchemaFieldType` serialize by hand, while
-/// their TypeScript unions are derived from the variant names. This holds the
-/// two together: every value serde writes for a named variant must be a
-/// literal of the generated union.
+/// `TaskStatus`, `ProjectStatus`, `Priority` and `SchemaFieldType` serialize by
+/// hand, while their TypeScript unions are derived from the variant names.
+/// This holds the two together: every value serde writes for a named variant
+/// must be a literal of the generated union.
 fn check_hand_serialized_enums(cfg: &Config) -> Result<(), String> {
     fn check<T: TS + Serialize>(cfg: &Config, values: &[T]) -> Vec<String> {
         let decl = T::decl(cfg);
@@ -332,15 +333,8 @@ fn check_hand_serialized_enums(cfg: &Config) -> Result<(), String> {
             .collect()
     }
 
-    let mut problems = check(
-        cfg,
-        &[
-            TaskStatus::Open,
-            TaskStatus::InProgress,
-            TaskStatus::Done,
-            TaskStatus::Cancelled,
-        ],
-    );
+    let mut problems = check(cfg, &TaskStatus::CORE);
+    problems.extend(check(cfg, &ProjectStatus::CORE));
     problems.extend(check(
         cfg,
         &[

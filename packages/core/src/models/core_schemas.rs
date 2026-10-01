@@ -2406,13 +2406,7 @@ mod tests {
 
         // Every named TaskStatus variant (everything but the User(_) catch-all)
         // must have a corresponding core_values entry.
-        let named_variants = [
-            TaskStatus::Open,
-            TaskStatus::InProgress,
-            TaskStatus::Done,
-            TaskStatus::Cancelled,
-        ];
-        for variant in &named_variants {
+        for variant in &TaskStatus::CORE {
             assert!(
                 core_value_strings.contains(&variant.as_str()),
                 "TaskStatus::{:?} (\"{}\") has no matching entry in task.status's core_values \
@@ -2438,6 +2432,53 @@ mod tests {
                 value
             );
         }
+
+        assert_eq!(
+            status_field.default,
+            Some(serde_json::json!(TaskStatus::default())),
+            "the schema default and TaskStatus::default() must agree"
+        );
+    }
+
+    /// The `ProjectStatus` sibling of the task status check above:
+    /// `project.status`'s `core_values` are exactly the named variants, in
+    /// order, and its default is the enum's default.
+    #[test]
+    fn test_project_status_variants_match_core_values_bidirectionally() {
+        use crate::models::ProjectStatus;
+
+        let schemas = get_core_schemas();
+        let project = schemas.iter().find(|s| s.id == "project").unwrap();
+        let status_field = project
+            .get_field("status")
+            .expect("project schema has status");
+        let core_values: Vec<&str> = status_field
+            .core_values
+            .as_ref()
+            .expect("status field has core_values")
+            .iter()
+            .map(|ev| ev.value.as_str())
+            .collect();
+
+        assert_eq!(
+            core_values,
+            ProjectStatus::CORE
+                .iter()
+                .map(ProjectStatus::as_str)
+                .collect::<Vec<_>>(),
+            "project.status's core_values and ProjectStatus's named variants must list the same values"
+        );
+        for value in &core_values {
+            assert!(
+                ProjectStatus::from_value(value).is_core(),
+                "project.status's core_values entry '{value}' parses to ProjectStatus::User(_)"
+            );
+        }
+        assert_eq!(
+            status_field.default,
+            Some(serde_json::json!(ProjectStatus::default())),
+            "the schema default and ProjectStatus::default() must agree"
+        );
     }
 
     /// The `Priority` sibling of the ADR-076 status drift check above, run

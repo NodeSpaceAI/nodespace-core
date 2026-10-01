@@ -1202,7 +1202,7 @@ pub async fn update_project_node(
     let req = UpdateProjectNodeRequest {
         node_id: id,
         version,
-        status: update.status,
+        status: update.status.map(|status| status.as_str().to_string()),
         priority: priority_clear(update.priority),
         start_date: timestamp_clear(update.start_date),
         end_date: timestamp_clear(update.end_date),

@@ -1385,7 +1385,8 @@ mod typed_update_tests {
     use super::*;
     use crate::db::SqliteStore;
     use crate::models::{
-        PersonNodeUpdate, Priority, ProjectNodeUpdate, QueryNodeUpdate, TaskNodeUpdate, TaskStatus,
+        PersonNodeUpdate, Priority, ProjectNodeUpdate, ProjectStatus, QueryNodeUpdate,
+        TaskNodeUpdate, TaskStatus,
     };
     use crate::services::{CreateNodeParams, InsertPositionOwned};
     use serde_json::json;
@@ -1721,7 +1722,7 @@ mod typed_update_tests {
                 &project.id,
                 project.version,
                 ProjectNodeUpdate {
-                    status: Some("active".to_string()),
+                    status: Some(ProjectStatus::Active),
                     start_date: set("2026-03-01"),
                     ..Default::default()
                 },
@@ -1745,7 +1746,7 @@ mod typed_update_tests {
                 &project.id,
                 project.version,
                 ProjectNodeUpdate {
-                    status: Some("someday".to_string()),
+                    status: Some(ProjectStatus::from_value("someday")),
                     ..Default::default()
                 },
             )
@@ -1753,6 +1754,43 @@ mod typed_update_tests {
             .unwrap_err();
 
         assert!(err.to_string().contains("Invalid value 'someday'"), "{err}");
+    }
+
+    /// A status a user added to the schema is written and read back as
+    /// itself: the typed path accepts it, and the wire conversion carries it
+    /// through the enum's user variant.
+    #[tokio::test]
+    async fn project_update_accepts_a_status_added_to_the_schema() {
+        let (service, _t) = create_test_service().await;
+        let service = std::sync::Arc::new(service);
+        crate::schema::handle_update_schema(
+            &service,
+            json!({
+                "schema_id": "project",
+                "add_field_values": [{
+                    "field": "status",
+                    "values": [{"value": "on_hold", "label": "On hold"}]
+                }]
+            }),
+        )
+        .await
+        .expect("add_field_values should succeed");
+        let project = create(&service, "project", json!({})).await;
+
+        let updated = service
+            .update_project_node(
+                &project.id,
+                project.version,
+                ProjectNodeUpdate {
+                    status: Some(ProjectStatus::User("on_hold".to_string())),
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("a status added via add_field_values must be accepted");
+
+        let typed = crate::models::node_to_typed_value(updated).unwrap();
+        assert_eq!(typed["status"], "on_hold");
     }
 
     /// `archived` is governance vocabulary, not a project status (ADR-087):
@@ -1767,7 +1805,7 @@ mod typed_update_tests {
                 &project.id,
                 project.version,
                 ProjectNodeUpdate {
-                    status: Some("archived".to_string()),
+                    status: Some(ProjectStatus::from_value("archived")),
                     ..Default::default()
                 },
             )

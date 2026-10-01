@@ -19,6 +19,9 @@ pub enum TaskStatus {
 }
 
 impl TaskStatus {
+    /// The core statuses: every variant but the user-defined one.
+    pub const CORE: [Self; 4] = [Self::Open, Self::InProgress, Self::Done, Self::Cancelled];
+
     /// The status a stored or wire string names. Every string is one: a
     /// value outside the core statuses is a user-defined status.
     pub fn from_value(s: &str) -> Self {

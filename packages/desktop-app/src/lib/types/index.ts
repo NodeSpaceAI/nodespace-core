@@ -64,7 +64,7 @@ export {
 export type { PersonNode, PersonNodeUpdate } from './person-node';
 export { isPersonNode, nodeToPersonNode } from './person-node';
 
-export type { ProjectNode, ProjectNodeUpdate } from './project-node';
+export type { ProjectNode, ProjectNodeUpdate, ProjectStatus } from './project-node';
 export { isProjectNode, nodeToProjectNode } from './project-node';
 
 export type { QueryNode, QueryNodeUpdate, QueryGeneratedBy } from './query';

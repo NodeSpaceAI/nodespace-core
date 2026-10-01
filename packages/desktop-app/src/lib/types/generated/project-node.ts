@@ -1,6 +1,7 @@
 // Generated from `packages/nodespace-types` by `bun run gen:types`. Do not edit.
 import type { NodeReference } from './node-reference';
 import type { Priority } from './priority';
+import type { ProjectStatus } from './project-status';
 
 /**
  * Wire shape for project nodes sent to the frontend.
@@ -10,12 +11,12 @@ import type { Priority } from './priority';
  * promoted to the top level; they map directly to the TypeScript
  * `ProjectNode` interface.
  *
- * `status` stays a string: it is user-extensible (`user_values`), and the
- * schema, not this struct, owns the vocabulary — the service layer validates
- * writes against it. `priority` is the scale `task` shares.
+ * `status` is the project's own vocabulary; `priority` is the scale `task`
+ * shares. Both are user-extensible, and the service layer validates a write
+ * against the schema's declared values.
  */
 export type ProjectNode = {
-  status: string;
+  status: ProjectStatus;
   priority?: Priority;
   startDate?: string;
   endDate?: string;

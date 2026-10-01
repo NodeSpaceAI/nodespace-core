@@ -63,7 +63,7 @@ pub use node::{
 };
 pub use person::{PersonNode, PersonNodeUpdate};
 pub use priority::Priority;
-pub use project::{ProjectNode, ProjectNodeUpdate, DEFAULT_PROJECT_STATUS};
+pub use project::{ProjectNode, ProjectNodeUpdate, ProjectStatus};
 pub use query::{
     FilterOperator, FilterType, QueryFields, QueryFilter, QueryGeneratedBy, QueryNode,
     QueryNodeUpdate, RelationshipType, ResolvedRelationship, SortConfig, SortDirection,
