@@ -411,7 +411,7 @@ async function handleRequest(req: Request): Promise<Response> {
       const body = await req.json() as Record<string, unknown>;
       // Optional proto string fields (parentId, lifecycleStatus) must be
       // omitted entirely for the "unset" case — sending '' is treated as Some("") by
-      // the Rust side and triggers validation errors (empty parent lookup, empty path).
+      // the Rust side and triggers validation errors (empty parent lookup).
       const request: Record<string, unknown> = {
         nodeType: body.nodeType ?? '',
         content: body.content ?? '',
