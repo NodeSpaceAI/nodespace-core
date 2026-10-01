@@ -18,20 +18,27 @@ vi.mock('$lib/utils/logger', () => ({
   }),
 }));
 
+function escapeAttribute(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
 // Replicate the renderer logic from chat-markdown.svelte for unit testing
 function createChatRenderer(): Renderer {
   const renderer = new Renderer();
   renderer.link = function (token: Tokens.Link): string {
     const href = token.href ?? '';
-    const text = this.parser.parseInline(token.tokens);
 
     const nsMatch = href.match(/^nodespace:\/\/(.+)$/);
     if (nsMatch) {
-      const nodeId = nsMatch[1];
-      const safeText = text.replace(/"/g, '&quot;');
-      return `<span class="ns-node-card-placeholder" data-node-id="${nodeId}" data-display-text="${safeText}"></span>`;
+      const label = this.parser.parseInline(token.tokens, this.parser.textRenderer);
+      return `<span class="ns-node-card-placeholder" data-node-id="${escapeAttribute(nsMatch[1])}" data-display-text="${escapeAttribute(label)}"></span>`;
     }
 
+    const text = this.parser.parseInline(token.tokens);
     return `<a href="${href}" target="_blank" rel="noopener noreferrer">${text}</a>`;
   };
   return renderer;

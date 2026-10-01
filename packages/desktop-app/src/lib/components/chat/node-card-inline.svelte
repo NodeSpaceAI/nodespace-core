@@ -1,9 +1,17 @@
 <!--
   NodeCardInline Component
 
-  Renders a nodespace:// URI as a rich inline node card in AI chat messages.
-  Shows type icon, node title, type badge, and task status when applicable.
-  Wraps in an anchor tag so the global click handler still works.
+  Renders a nodespace:// reference in an AI chat message as a plain hyperlink
+  whose text is the node's title. It is an anchor tag, so the global click
+  handler navigates to the node.
+
+  The title is the node's live title, never the label the agent wrote for the
+  link: a rename shows everywhere, and a stale or wrong label can't pass as the
+  node's name. The label shows only while the node loads or when it can't be
+  found.
+
+  Colour and underline come from the chat message's link style in
+  chat-markdown.svelte, which also styles the missing state.
 -->
 
 <script lang="ts">
@@ -13,7 +21,8 @@
   import { sharedNodeStore } from '$lib/services/shared-node-store.svelte';
   import { backendAdapter } from '$lib/services/backend-adapter';
   import { pinReachableNodes } from '$lib/utils/pin-node-reachability';
-  import { TaskNodeHelpers, isTaskNode } from '$lib/types/task-node';
+  import { pluginRegistry } from '$lib/plugins/plugin-registry';
+  import type { Node } from '$lib/types/node';
 
   const log = createLogger('NodeCardInline');
 
@@ -21,31 +30,20 @@
 
   // The referenced node is an arbitrary cross-reference (nodespace:// URI in
   // chat content) resolved below via a one-shot mount fetch, never through
-  // structureTree. Pin it explicitly for as long as this card displays it,
+  // structureTree. Pin it explicitly for as long as this link displays it,
   // so it isn't evicted out from under a still-open chat (which would
-  // otherwise silently revert `title` to the truncated-id fallback below,
+  // otherwise silently revert `title` to the agent's label or the truncated id,
   // indistinguishable from the node having been deleted).
   const pinOwnerId = uuidv4();
   $effect(() => pinReachableNodes(pinOwnerId, [nodeId]));
 
-  const nodeTypeIcons: Record<string, string> = {
-    text: '📝',
-    task: '☑️',
-    date: '📅',
-    document: '📄',
-    'ai-chat': '🤖',
-    user: '👤',
-    entity: '🏷️',
-    query: '🔍'
-  };
-
   let node = $derived(sharedNodeStore.getNode(nodeId));
-  // True once the on-mount fetch has settled; drives the "unknown" fallback below when
+  // True once the on-mount fetch has settled; marks the link as missing below when
   // the node still isn't present. Written from the fetch callback, never from an effect.
   let fetchAttempted = $state(false);
 
-  // Fetch from the backend on mount if the node isn't already in the store. Each card is
-  // mounted imperatively with a fixed nodeId, so this is a one-shot per-card load - not a
+  // Fetch from the backend on mount if the node isn't already in the store. Each link is
+  // mounted imperatively with a fixed nodeId, so this is a one-shot per-link load - not a
   // reactive watch (ADR-049). Once fetched, `node` updates via the store read above.
   onMount(() => {
     if (sharedNodeStore.getNode(nodeId)) return;
@@ -63,102 +61,28 @@
     });
   });
 
-  let title = $derived(node?.content?.split('\n')[0]?.slice(0, 120) || displayText || nodeId.slice(0, 8));
-  let nodeType = $derived(node?.nodeType || 'unknown');
-  let icon = $derived(nodeTypeIcons[nodeType] || '📄');
-  let taskStatus = $derived(
-    node && isTaskNode(node)
-      ? TaskNodeHelpers.getStatusDisplayName(node.status)
-      : null
-  );
+  const MAX_TITLE_LENGTH = 120;
+
+  /**
+   * The resolved node's own title: the same value tabs and search show
+   * (a computed title for title-template types, a plugin's own title for
+   * dates), as one line without a header's leading `#` markers.
+   *
+   * Not `formatTabTitle`: that cuts a title to the width of a tab, and this
+   * text sits inline in a message, where it wraps.
+   */
+  function liveTitle(resolved: Node): string {
+    const firstLine = (pluginRegistry.getNodeTitle(resolved) ?? '').split('\n')[0].trim();
+    return firstLine.replace(/^#{1,6}\s+/, '').slice(0, MAX_TITLE_LENGTH) || 'Untitled';
+  }
+
+  let title = $derived(node ? liveTitle(node) : displayText || nodeId.slice(0, 8));
+  let missing = $derived(!node && fetchAttempted);
 </script>
 
 <a
   href="nodespace://{nodeId}"
-  class="ns-node-card-inline ns-node-card-inline--{nodeType}"
-  data-node-id={nodeId}
+  class="ns-node-card-inline"
+  class:ns-node-card-inline--missing={missing}
+  data-node-id={nodeId}>{title}</a
 >
-  <span class="node-card-icon">{icon}</span>
-  <span class="node-card-title">{title}</span>
-  {#if node}
-    <span class="node-card-type">{nodeType}</span>
-  {/if}
-  {#if taskStatus}
-    <span class="node-card-status">{taskStatus}</span>
-  {/if}
-  {#if !node && fetchAttempted}
-    <span class="node-card-type node-card-type--unknown">unknown</span>
-  {/if}
-</a>
-
-<style>
-  .ns-node-card-inline {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.25rem;
-    padding: 0.125rem 0.5rem;
-    border-radius: 0.375rem;
-    border: 1px solid hsl(var(--border));
-    background: hsl(var(--muted) / 0.3);
-    text-decoration: none;
-    color: hsl(var(--foreground));
-    font-size: 0.85em;
-    line-height: 1.4;
-    cursor: pointer;
-    max-width: 100%;
-    vertical-align: middle;
-  }
-
-  .ns-node-card-inline:hover {
-    background: hsl(var(--muted) / 0.5);
-    border-color: hsl(var(--primary) / 0.4);
-  }
-
-  .node-card-icon {
-    flex-shrink: 0;
-    font-size: 0.9em;
-  }
-
-  .node-card-title {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    font-weight: 500;
-  }
-
-  .node-card-type {
-    flex-shrink: 0;
-    padding: 0 0.25rem;
-    border-radius: 0.25rem;
-    background: hsl(var(--primary) / 0.1);
-    color: hsl(var(--primary));
-    font-size: 0.75em;
-    font-weight: 500;
-  }
-
-  .node-card-type--unknown {
-    background: hsl(var(--muted));
-    color: hsl(var(--muted-foreground));
-  }
-
-  .node-card-status {
-    flex-shrink: 0;
-    padding: 0 0.25rem;
-    border-radius: 0.25rem;
-    background: hsl(var(--chart-2) / 0.15);
-    color: hsl(var(--chart-2));
-    font-size: 0.75em;
-    font-weight: 500;
-  }
-
-  /* Type-specific border colors */
-  .ns-node-card-inline--task {
-    border-color: hsl(var(--chart-2) / 0.3);
-  }
-  .ns-node-card-inline--date {
-    border-color: hsl(var(--chart-3) / 0.3);
-  }
-  .ns-node-card-inline--ai-chat {
-    border-color: hsl(var(--chart-5) / 0.3);
-  }
-</style>

@@ -120,3 +120,30 @@ describe('ChatMarkdown incremental reconciliation', () => {
     expect(container.querySelector('[data-node-id="def-456"]')).not.toBeNull();
   });
 });
+
+describe('ChatMarkdown node link label', () => {
+  // The store mock resolves no node, so each link shows its label.
+  function linkText(container: HTMLElement, nodeId: string): string | null | undefined {
+    return container.querySelector(
+      `.ns-node-card-placeholder[data-node-id="${nodeId}"] .ns-node-card-inline`
+    )?.textContent;
+  }
+
+  it("shows a titled link's label as plain text, without its inline markup", async () => {
+    const { container } = render(ChatMarkdown, {
+      content: 'See [**Data** Layer](nodespace://abc-123).',
+    });
+    await tick();
+
+    expect(linkText(container, 'abc-123')).toBe('Data Layer');
+  });
+
+  it('keeps quotes, ampersands and angle brackets in a label as written', async () => {
+    const { container } = render(ChatMarkdown, {
+      content: 'See [R&D "Plan" a < b](nodespace://abc-123).',
+    });
+    await tick();
+
+    expect(linkText(container, 'abc-123')).toBe('R&D "Plan" a < b');
+  });
+});
