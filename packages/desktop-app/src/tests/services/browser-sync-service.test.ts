@@ -230,9 +230,9 @@ describe('BrowserSyncService - SSE Event Ordering', () => {
       // Scenario: Two has_child edges naming DIFFERENT parents for the same child
       // arrive before node:created. ReactiveStructureTree enforces a single-parent
       // tree, so the second edge is treated as a MOVE: the child is pruned from the
-      // first parent and re-attached under the second. A move
-      // applied on another window/cloud delivers the new-parent edge with no old-parent
-      // delete, so reparenting (not rejecting) is what keeps windows consistent.
+      // first parent and re-attached under the second. A move applied by another
+      // writer delivers the new-parent edge with no old-parent delete, so
+      // reparenting (not rejecting) is what keeps windows consistent.
 
       const nodeData = createTestNode('child');
       registerMockNode(nodeData);
@@ -921,11 +921,11 @@ describe('BrowserSyncService - SSE Event Ordering', () => {
   });
 
   describe('Relationship Deduplication', () => {
-    it('should preserve existing order when cloud echo arrives with no order field (optimistic creation)', () => {
+    it('should preserve existing order when an echo from another writer arrives with no order field (optimistic creation)', () => {
       // When frontend creates a node optimistically, it adds the relationship.
-      // A cloud LIVE-SELECT echo re-emits the edge without an order field
-      // (cloud_writer.rs does not push order to cloud). The helper must preserve
-      // the existing optimistic order rather than appending at the tail.
+      // An echo of the edge from another writer can arrive without an order
+      // field. The helper must preserve the existing optimistic order rather
+      // than appending at the tail.
       const nodeData = createTestNode('child1', 'Optimistic node');
       sharedNodeStore.setNode(nodeData, { type: 'database', reason: 'sse-sync' });
 
@@ -938,14 +938,14 @@ describe('BrowserSyncService - SSE Event Ordering', () => {
       expect(children[0].nodeId).toBe('child1');
       expect(children[0].order).toBe(100);
 
-      // Cloud echo arrives WITHOUT an order field (simulating cloud_writer.rs behavior)
+      // The echo arrives WITHOUT an order field
       testableService.handleEvent({
         type: 'relationshipCreated',
         id: 'relationship:parent1:child1',
         fromId: 'parent1',
         toId: 'child1',
         relationshipType: 'has_child',
-        properties: {} // no order field — cloud echo
+        properties: {} // no order field
       });
 
       // Relationship should still exist with ORIGINAL order (preserved via applyHasChildCreated fallback)

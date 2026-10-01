@@ -25,10 +25,6 @@ import {
   testExtensionFlags
 } from '../fixtures/test-extension';
 
-// The id of the old shared workspace root. Core gives it no special meaning, so
-// the tests use it to check that a collection with this id is an ordinary one.
-const LEGACY_WORKSPACE_ROOT_ID = 'c0000000-0000-0000-0000-000000000001';
-
 // Convert mock data to CollectionInfo format for testing
 function createTestCollectionInfo(item: CollectionItem, parentId?: string): CollectionInfo {
   return {
@@ -645,14 +641,13 @@ describe('Collections Store', () => {
     });
 
     it('hides no container collection when no extension is registered', () => {
-      // No extension contributes roots, so a container collection, even one with
-      // the legacy workspace-root id, is an ordinary top-level row holding its
-      // member collections.
+      // No extension contributes roots, so a container collection is an ordinary
+      // top-level row holding its member collections.
       expect(uiExtensionRegistry.collectionTreeRoots().size).toBe(0);
       const collections: CollectionInfo[] = [
         {
           ...createTestCollectionInfo({
-            id: LEGACY_WORKSPACE_ROOT_ID,
+            id: 'container',
             name: 'Default',
             memberCount: 2
           }),
@@ -660,17 +655,17 @@ describe('Collections Store', () => {
         },
         {
           ...createTestCollectionInfo({ id: 'engineering', name: 'Engineering', memberCount: 3 }),
-          parentCollectionIds: [LEGACY_WORKSPACE_ROOT_ID]
+          parentCollectionIds: ['container']
         },
         {
           ...createTestCollectionInfo({ id: 'design', name: 'Design', memberCount: 2 }),
-          parentCollectionIds: [LEGACY_WORKSPACE_ROOT_ID]
+          parentCollectionIds: ['container']
         }
       ];
       collectionsData._setTestData(collections, new Map());
 
       const tree = collectionsData.collectionsTree;
-      expect(tree.map((c) => c.id)).toEqual([LEGACY_WORKSPACE_ROOT_ID]);
+      expect(tree.map((c) => c.id)).toEqual(['container']);
       expect(tree[0].children?.map((c) => c.id)).toEqual(['design', 'engineering']);
     });
   });
@@ -725,37 +720,6 @@ describe('Collections Store', () => {
 
       expect(tree.map((c) => c.id)).toEqual([ROOT]);
       expect(tree[0].children?.map((c) => c.id)).toEqual(['design', 'engineering']);
-    });
-
-    it('does not special-case the legacy workspace-root id', () => {
-      const underLegacyRoot: CollectionInfo[] = [
-        {
-          ...createTestCollectionInfo({
-            id: LEGACY_WORKSPACE_ROOT_ID,
-            name: 'Default',
-            memberCount: 2
-          }),
-          parentCollectionIds: []
-        },
-        {
-          ...createTestCollectionInfo({ id: 'hr', name: 'HR', memberCount: 1 }),
-          parentCollectionIds: [LEGACY_WORKSPACE_ROOT_ID]
-        },
-        {
-          ...createTestCollectionInfo({ id: 'finance', name: 'Finance', memberCount: 1 }),
-          parentCollectionIds: [LEGACY_WORKSPACE_ROOT_ID]
-        }
-      ];
-
-      // With no roots, it is an ordinary top-level collection holding its members.
-      const tree = buildCollectionsTree(underLegacyRoot);
-      expect(tree.map((c) => c.id)).toEqual([LEGACY_WORKSPACE_ROOT_ID]);
-      expect(tree[0].children?.map((c) => c.id)).toEqual(['finance', 'hr']); // sorted by name
-
-      // A set of roots that does not name it leaves it the same.
-      expect(buildCollectionsTree(underLegacyRoot, new Set(), new Set(), new Set([ROOT]))).toEqual(
-        tree
-      );
     });
 
     it('still nests genuine sub-collections under their real (non-root) parent', () => {

@@ -20,7 +20,6 @@
     "sync": "bunx svelte-kit sync",
     "build": "bun run sync && bunx vite build",
     "test": "bunx vitest run",
-    "test:free-users": "bunx vitest run src/tests/free-user-guardrail.test.ts",
     "test:watch": "bunx vitest",
     "test:browser": "bunx vitest run --config vitest.browser.config.ts",
     "test:browser:watch": "bunx vitest --config vitest.browser.config.ts",

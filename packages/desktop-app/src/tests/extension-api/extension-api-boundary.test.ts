@@ -1,5 +1,5 @@
 /**
- * The host API is a one-way boundary (ADR-082 §2.6):
+ * The host API is a one-way boundary (ADR-082 §3.6):
  *   - core modules never import it, so it stays something core offers rather than
  *     something core depends on;
  *   - it never imports the edition-specific modules that are leaving core (the

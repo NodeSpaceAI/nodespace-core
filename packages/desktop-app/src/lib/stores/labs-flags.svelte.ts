@@ -12,15 +12,12 @@ const LOCAL_STORAGE_KEY = 'nodespace-labs-flags';
  */
 export interface LabsFlags {
   aiChatEnabled: boolean;
-  /** Owned/consumed by the companion "Team synchronization" Labs toggle. */
-  syncEnabled: boolean;
   /** Gates the Playbooks settings category only; installed playbooks keep running. */
   playbooksEnabled: boolean;
 }
 
 const DEFAULT_LABS_FLAGS: LabsFlags = {
   aiChatEnabled: false,
-  syncEnabled: false,
   playbooksEnabled: false,
 };
 
@@ -55,15 +52,6 @@ class LabsFlagsStore {
   set aiChatEnabled(value: boolean) {
     this.flags.aiChatEnabled = value;
     writeLocalFlags({ aiChatEnabled: value });
-  }
-
-  get syncEnabled(): boolean {
-    return this.flags.syncEnabled;
-  }
-
-  set syncEnabled(value: boolean) {
-    this.flags.syncEnabled = value;
-    writeLocalFlags({ syncEnabled: value });
   }
 
   get playbooksEnabled(): boolean {

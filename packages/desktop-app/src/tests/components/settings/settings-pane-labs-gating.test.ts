@@ -28,7 +28,6 @@ function resetFlags() {
   localStorage.clear();
   labsFlags.aiChatEnabled = false;
   labsFlags.playbooksEnabled = false;
-  labsFlags.syncEnabled = false;
   settingsStore.initialCategory = null;
 }
 

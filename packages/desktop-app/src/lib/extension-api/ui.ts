@@ -1,5 +1,5 @@
 /**
- * UI building blocks for extension components (ADR-082 §2.6), imported as
+ * UI building blocks for extension components (ADR-082 §3.6), imported as
  * `@nodespace/extension-api/ui`: core's buttons, cards, dialogs, inputs and
  * badges, and the `focusTrap` action for hand-rolled modals. Part of the
  * versioned host API; see the compatibility policy in `./index.ts`.

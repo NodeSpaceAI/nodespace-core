@@ -84,7 +84,7 @@ const DEFAULT_LEVEL: LogLevel = isProd
 // ── Frontend-console capture (diagnostic) ──────────────────────────────────────
 // When `NS_FRONTEND_LOG` is set (a file path), every console-level log is also
 // emitted as a `console` DebugEvent on the structured NDJSON debug channel (see
-// debug-channel.ts). A long-term aid for diagnosing cross-window / cloud-sync
+// debug-channel.ts). A long-term aid for diagnosing cross-window / event-stream
 // behaviour in the real GUI (where the Svelte console isn't otherwise
 // capturable headlessly), and for AI agents inspecting the packaged WKWebView.
 function forwardToFile(level: LogLevel, message: string, data?: unknown): void {

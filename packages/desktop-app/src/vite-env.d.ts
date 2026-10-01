@@ -8,7 +8,7 @@ declare const __APP_VERSION__: string;
 /**
  * The extensions a build injects, from the module `NODESPACE_EXTENSIONS` names
  * (see `vite-plugins/nodespace-extensions.js`). The build provides them, and
- * the list is empty in core (ADR-082 §2.1).
+ * the list is empty in core (ADR-082 §3.1).
  */
 declare module 'virtual:nodespace-extensions' {
   const extensions: readonly import('@nodespace/extension-api').NodespaceExtension[];

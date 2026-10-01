@@ -521,7 +521,7 @@ describe('TauriSyncListener', () => {
     });
   });
 
-  // When sync is active, a reconnect-replay burst of node events is
+  // A burst of node events (a reconnect replay, an import) is
   // coalesced — collected over a short window, then applied in one synchronous
   // pass so the caught-up set renders once instead of once per node.
   describe('Node burst render coalescing', () => {
@@ -596,11 +596,11 @@ describe('TauriSyncListener', () => {
     });
   });
 
-  // A cloud-sync pull floods relationship events (tens of thousands for a
-  // populated tenant). Applied one-by-one each event costs a full reactive
-  // invalidation of the structure tree on the main thread. When sync is
-  // active the has_child ops are buffered over the coalescing window and the
-  // whole burst is applied inside one structureTree batch.
+  // A large import or bulk write floods relationship events (tens of
+  // thousands). Applied one-by-one each event costs a full reactive
+  // invalidation of the structure tree on the main thread. The has_child ops
+  // are buffered over the coalescing window and the whole burst is applied
+  // inside one structureTree batch.
   describe('Relationship-event coalescing', () => {
     beforeEach(async () => {
       await initializeTauriSyncListeners();

@@ -22,6 +22,16 @@ export const testExtensionFlags = $state({
   databaseRow: false,
   /** Shows a row contribution whose component throws while rendering. */
   databaseRowThrowing: false,
+  /** Shows the `collaboration.entry` contribution. */
+  collaborationEntry: false,
+  /** Shows the second `collaboration.entry` contribution (higher priority than the first). */
+  collaborationEntrySecondary: false,
+  /** Makes a `collaboration.entry` contribution's `when()` throw. */
+  collaborationEntryThrowingWhen: false,
+  /** Shows a `collaboration.entry` contribution whose `load()` rejects. */
+  collaborationEntryFailingLoad: false,
+  /** Shows a `collaboration.entry` contribution whose component throws while rendering. */
+  collaborationEntryThrowing: false,
   /** The collection ids the fixture's `collectionTreeRoots` returns. */
   collectionTreeRoots: [] as string[]
 });
@@ -46,6 +56,11 @@ export function resetTestExtension(): void {
   testExtensionFlags.databaseActions = false;
   testExtensionFlags.databaseRow = false;
   testExtensionFlags.databaseRowThrowing = false;
+  testExtensionFlags.collaborationEntry = false;
+  testExtensionFlags.collaborationEntrySecondary = false;
+  testExtensionFlags.collaborationEntryThrowingWhen = false;
+  testExtensionFlags.collaborationEntryFailingLoad = false;
+  testExtensionFlags.collaborationEntryThrowing = false;
   testExtensionFlags.collectionTreeRoots = [];
   for (const name of Object.keys(testExtensionMounts)) delete testExtensionMounts[name];
 }

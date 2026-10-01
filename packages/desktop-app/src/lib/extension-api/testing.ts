@@ -1,5 +1,5 @@
 /**
- * Test helpers for extension code (ADR-082 §2.6), imported as
+ * Test helpers for extension code (ADR-082 §3.6), imported as
  * `@nodespace/extension-api/testing`. Part of the versioned host API; see the
  * compatibility policy in `./index.ts`.
  *

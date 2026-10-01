@@ -1,5 +1,5 @@
 /**
- * Host API for build-time extensions (ADR-082 §2.6)
+ * Host API for build-time extensions (ADR-082 §3.6)
  * ==================================================
  *
  * An extension imports core's frontend only through `@nodespace/extension-api`
@@ -11,7 +11,7 @@
  * extensions, not something core consumes. `extension-api-boundary.test.ts`
  * holds that boundary.
  *
- * Compatibility policy (ADR-082 §7)
+ * Compatibility policy (ADR-082 §8)
  * ---------------------------------
  * `EXTENSION_API_VERSION` (`{ major, minor }`, in `plugins/ui-extensions.ts`)
  * versions:
@@ -19,7 +19,7 @@
  *   - the `virtual:nodespace-extensions` contract and the `NODESPACE_EXTENSIONS`
  *     variable;
  *   - slot ids, their host props and mount semantics;
- *   - contribution failure behaviour (ADR-082 §2.4);
+ *   - contribution failure behaviour (ADR-082 §3.4);
  *   - hook timing, as `plugins/extension-lifecycle.ts` documents it.
  *
  * Which bump a change needs:
@@ -61,6 +61,8 @@ export type {
   Contribution,
   ExtensionLifecycle,
   NodespaceExtension,
+  ReplaceableSlot,
+  ReplaceableSlotContribution,
   SettingsSectionContribution,
   SettingsSlot,
   SettingsSlotContribution,
@@ -97,14 +99,6 @@ export interface ExtensionDatabases {
    * switch through `lifecycle.onDatabaseActivated`.
    */
   switchTo(id: string): Promise<void>;
-  /**
-   * Re-reads the active database's settings node (`DATABASE_SETTINGS_NODE_ID`)
-   * into the shared node store, pinned, where `nodes.getNode` reads it. Core
-   * already runs this whenever a database loads or becomes active; call it after
-   * the node changes by another path. Returns at once; the read completes in the
-   * background.
-   */
-  refreshDatabaseSettings(): void;
 }
 
 export const databases: ExtensionDatabases = {
@@ -121,13 +115,8 @@ export const databases: ExtensionDatabases = {
     return databaseStore.error;
   },
   create: (name, path) => databaseStore.create(name, path),
-  switchTo: (id) => databaseStore.switchTo(id),
-  refreshDatabaseSettings: () => databaseStore.refreshDatabaseSettings()
+  switchTo: (id) => databaseStore.switchTo(id)
 };
-
-// The id of the active database's settings node. Provisional: ADR-083 decides
-// how extensions read database settings.
-export { DATABASE_SETTINGS_NODE_ID } from '$lib/constants/database-settings';
 
 // --- Nodes ----------------------------------------------------------------------
 
@@ -136,8 +125,7 @@ interface ExtensionNodes {
    * The node as the shared node store holds it, or `undefined` when it is not
    * cached. A reactive read: inside a derivation it re-runs when the node is
    * set, updated or evicted. It neither fetches nor pins, so a node outside
-   * every open document can be evicted while it is shown. The active database's
-   * settings node is the exception: core keeps it cached and pinned.
+   * every open document can be evicted while it is shown.
    */
   getNode(id: string): Node | undefined;
   /** Reads the node from the daemon; `null` when it does not exist. Leaves the node store alone. */

@@ -131,8 +131,8 @@ function toExtensionDumpEntry(dump: unknown): unknown {
  * event. On-demand only — dynamic imports keep this from pulling every store
  * into the eagerly-loaded module graph.
  *
- * May include user content and PII (e.g. `proSync.userEmail`, and anything an
- * extension's `debugDump` reports under `extensions`) verbatim — same
+ * May include user content and PII (node content in the node store, and
+ * anything an extension's `debugDump` reports under `extensions`) verbatim — same
  * dev-only/opt-in/local-file-only tradeoff as `captureDomSnapshot` above. Never
  * enable this channel in shipped builds.
  */
@@ -171,12 +171,6 @@ export async function collectStoreDump(): Promise<Record<string, unknown>> {
   try {
     const { agentStore } = await import('$lib/stores/agent-store.svelte');
     stores.agentStore = JSON.parse(JSON.stringify(agentStore, (_k, v) => toDumpable(v)));
-  } catch {
-    /* store unavailable in this context */
-  }
-  try {
-    const { proSync } = await import('$lib/stores/pro-sync.svelte');
-    stores.proSync = JSON.parse(JSON.stringify(proSync, (_k, v) => toDumpable(v)));
   } catch {
     /* store unavailable in this context */
   }

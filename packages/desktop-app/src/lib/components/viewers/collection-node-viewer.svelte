@@ -68,10 +68,9 @@
       // Get collection members (this also validates the collection exists)
       const memberNodes = await collectionService.getCollectionMembers(collectionId);
       // The Contents tab lists user-authored content only. `getCollectionMembers`
-      // also returns non-content members — chiefly the creator's `person` node
-      // (stamped as an admin member on collection creation) and system nodes —
-      // which belong in the Collaboration tab, not here. Filter them out (mirrors
-      // the sidebar sub-panel's `selectedCollectionMembers`).
+      // also returns non-content members — chiefly `person` nodes and system
+      // nodes. Filter them out (mirrors the sidebar sub-panel's
+      // `selectedCollectionMembers`).
       members = memberNodes.filter((n) => !NON_CONTENT_NODE_TYPES.has(n.nodeType));
 
       // Try to get collection details from cached store data first (by ID)

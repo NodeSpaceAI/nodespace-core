@@ -33,7 +33,7 @@ import { createTestLifecycleParts } from '../fixtures/test-extension/lifecycle';
 const srcRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 
 function ext(id: string, rest: Partial<NodespaceExtension> = {}): NodespaceExtension {
-  return { id, apiVersion: 1, ...rest };
+  return { id, apiVersion: 2, ...rest };
 }
 
 function register(...extensions: NodespaceExtension[]): void {

@@ -1,8 +1,9 @@
 /**
  * External Links Utility
  *
- * Handles opening external URLs (http/https) in the system default browser.
- * Uses Tauri's opener plugin when running in Tauri, falls back to window.open in browser mode.
+ * Handles opening external URLs (http/https, and mailto: through `openUrl`) with
+ * the system default handler. Uses Tauri's opener plugin when running in Tauri,
+ * falls back to window.open in browser mode.
  */
 
 import { createLogger } from './logger';
@@ -20,15 +21,16 @@ function isTauri(): boolean {
 }
 
 /**
- * Open a URL in the system default browser
+ * Open a URL with the system's default handler: a web page in the browser, a
+ * `mailto:` link in the mail client.
  *
- * @param url - The URL to open (must be http:// or https://)
+ * @param url - The URL to open (must be http://, https:// or mailto:)
  * @returns Promise that resolves when the URL is opened, or rejects with an error
  */
 export async function openUrl(url: string): Promise<void> {
   // Validate URL protocol
-  if (!url.startsWith('http://') && !url.startsWith('https://')) {
-    throw new Error(`Invalid URL protocol. Expected http:// or https://, got: ${url}`);
+  if (!url.startsWith('http://') && !url.startsWith('https://') && !url.startsWith('mailto:')) {
+    throw new Error(`Invalid URL protocol. Expected http://, https:// or mailto:, got: ${url}`);
   }
 
   if (isTauri()) {

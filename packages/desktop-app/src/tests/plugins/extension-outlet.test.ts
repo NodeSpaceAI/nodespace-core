@@ -1,6 +1,6 @@
 /**
  * ExtensionOutlet: mounts one lazily-loaded contribution and isolates its
- * failures (ADR-082 §2.4). A rejected `load()` renders nothing and is logged; a
+ * failures (ADR-082 §3.4). A rejected `load()` renders nothing and is logged; a
  * component that throws removes only its own outlet.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';

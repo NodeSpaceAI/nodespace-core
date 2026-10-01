@@ -1,6 +1,6 @@
 /**
  * The extension API's recorded surface and the version rule that guards it
- * (ADR-082 §7). `extension-api-surface.test.ts` runs the check;
+ * (ADR-082 §8). `extension-api-surface.test.ts` runs the check;
  * `extension-api-surface.json` holds the snapshot.
  */
 import fs from 'node:fs';

@@ -109,14 +109,13 @@ describe('schemasStore.builtInSchemas — sidenav core types', () => {
 });
 
 // Unlike every other cross-switch read in the codebase
-// (loadChildrenForParent, doLoadChildrenTree, refreshDatabaseSettings,
-// createChat, createCollection), loadSchemas committed its fetched array into
-// state without re-checking the store generation after the await — a
-// response issued against the previous database could land after a switch and
-// get committed as if it belonged to the new one. schemasStore now carries
-// its own private `#generation` counter (mirroring
-// collectionsData/aiChatsData) rather than the cross-store `sharedNodeStore`
-// epoch, so this store stays free of the heavy shared-node-store/
+// (loadChildrenForParent, doLoadChildrenTree, createChat, createCollection),
+// loadSchemas committed its fetched array into state without re-checking the
+// store generation after the await — a response issued against the previous
+// database could land after a switch and get committed as if it belonged to
+// the new one. schemasStore now carries its own private `#generation` counter
+// (mirroring collectionsData/aiChatsData) rather than the cross-store
+// `sharedNodeStore` epoch, so this store stays free of the heavy shared-node-store/
 // reactive-structure-tree import chain — it is loaded in lightweight,
 // non-Tauri test contexts (e.g. the daemon-readiness e2e harness) that never
 // construct that machinery.

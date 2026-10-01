@@ -14,7 +14,6 @@ function resetFlags() {
   localStorage.clear();
   labsFlags.aiChatEnabled = false;
   labsFlags.playbooksEnabled = false;
-  labsFlags.syncEnabled = false;
 }
 
 describe('SettingsSidebar — AI Models and Playbooks Labs gating', () => {

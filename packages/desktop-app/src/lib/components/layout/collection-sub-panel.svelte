@@ -22,7 +22,7 @@
     members: CollectionMember[];
     onClose: () => void;
     onNodeClick: (_nodeId: string, _nodeType: string) => void;
-    /** Open the collection's own page (Contents / Collaboration tabs). */
+    /** Open the collection's own page. */
     onOpenCollection: () => void;
     /** Called after a node is created in / added to this collection so the parent
         can reload the member list. */
@@ -184,7 +184,7 @@
     <button
       class="sub-panel-title"
       onclick={onOpenCollection}
-      title="Open collection (manage members & collaboration)"
+      title="Open collection"
     >
       <span class="sub-panel-title-text">{collectionName}</span>
       <Icon name="chevronRight" size={14} />

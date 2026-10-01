@@ -4,11 +4,8 @@
   import * as Dialog from '$lib/components/ui/dialog';
   import { Button } from '$lib/components/ui/button';
   import DatabaseNameDialog from '$lib/components/layout/database-name-dialog.svelte';
-  import AddSyncedDatabaseDialog from './add-synced-database-dialog.svelte';
   import IdentityCard from './identity-card.svelte';
   import { databaseStore, type DatabaseInfo } from '$lib/stores/database.svelte';
-  import { proSync } from '$lib/stores/pro-sync.svelte';
-  import { labsFlags } from '$lib/stores/labs-flags.svelte';
   import ExtensionOutlet from '$lib/plugins/extension-outlet.svelte';
   import { getActiveSettingsSlot } from '$lib/plugins/ui-extensions.svelte';
   import { createLogger } from '$lib/utils/logger';
@@ -21,7 +18,6 @@
   const rowContributions = $derived(getActiveSettingsSlot('database.row'));
 
   let newDialogOpen = $state(false);
-  let addSyncedDialogOpen = $state(false);
   let renameDialogOpen = $state(false);
   let renameTarget = $state<DatabaseInfo | null>(null);
   let removeDialogOpen = $state(false);
@@ -42,12 +38,6 @@
       default:
         return 'Unknown';
     }
-  }
-
-  /** Friendly display name for a tenant schema, e.g. "tenant_demo" → "Demo". */
-  function tenantLabel(schema: string): string {
-    const bare = schema.replace(/^tenant_/, '').replace(/_/g, ' ').trim();
-    return bare.length ? bare.charAt(0).toUpperCase() + bare.slice(1) : schema;
   }
 
   async function createDatabase(name: string) {
@@ -111,11 +101,6 @@
     <div class="flex gap-2">
       <Button variant="outline" size="sm" onclick={() => (newDialogOpen = true)}>New</Button>
       <Button variant="outline" size="sm" onclick={openExisting}>Open existing…</Button>
-      {#if proSync.isPro && labsFlags.syncEnabled}
-        <Button variant="outline" size="sm" onclick={() => (addSyncedDialogOpen = true)}>
-          Add synced database…
-        </Button>
-      {/if}
       {#each actionContributions as action (action.key)}
         <ExtensionOutlet load={action.load} />
       {/each}
@@ -162,14 +147,6 @@
           </div>
           <div class="text-muted-foreground mt-1 break-all font-mono text-xs">{db.path}</div>
           <div class="text-muted-foreground mt-1 text-xs">{statusLabel(db.status)}</div>
-          {#if db.boundTenantSchema}
-            <div class="mt-1.5 text-xs">
-              <span class="text-primary bg-primary/10 rounded px-1.5 py-0.5 font-medium">
-                Syncs to tenant · {tenantLabel(db.boundTenantSchema)}
-              </span>
-              <span class="text-muted-foreground/60 ml-1 font-mono">{db.boundTenantSchema}</span>
-            </div>
-          {/if}
           {#each rowContributions as row (row.key)}
             <ExtensionOutlet load={row.load} props={{ databaseId: db.id }} />
           {/each}
@@ -205,8 +182,6 @@
   placeholder="e.g. Work"
   onConfirm={createDatabase}
 />
-
-<AddSyncedDatabaseDialog bind:open={addSyncedDialogOpen} />
 
 <DatabaseNameDialog
   bind:open={renameDialogOpen}

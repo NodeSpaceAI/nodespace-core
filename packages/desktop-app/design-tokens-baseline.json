@@ -7,31 +7,6 @@
       "text": "Raw color literal \"hsl(222 47% 8%)\" in \"background\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
     },
     {
-      "file": "src/lib/components/collaboration/collaboration-locked.svelte",
-      "rule": "declaration-property-value-disallowed-list",
-      "text": "Raw color literal \"#1d4ed8\" in \"background-color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
-    },
-    {
-      "file": "src/lib/components/collaboration/collaboration-locked.svelte",
-      "rule": "declaration-property-value-disallowed-list",
-      "text": "Raw color literal \"#2563eb\" in \"background-color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
-    },
-    {
-      "file": "src/lib/components/collaboration/collaboration-locked.svelte",
-      "rule": "declaration-property-value-disallowed-list",
-      "text": "Raw color literal \"#ffffff\" in \"color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
-    },
-    {
-      "file": "src/lib/components/collaboration/collaboration-view.svelte",
-      "rule": "declaration-property-value-disallowed-list",
-      "text": "Raw color literal \"#fff\" in \"color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
-    },
-    {
-      "file": "src/lib/components/collaboration/invitations-inbox.svelte",
-      "rule": "declaration-property-value-disallowed-list",
-      "text": "Raw color literal \"rgba(0, 0, 0, 0.5)\" in \"background\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
-    },
-    {
       "file": "src/lib/components/delete-confirmation-modal.svelte",
       "rule": "declaration-property-value-disallowed-list",
       "text": "Raw color literal \"rgba(0, 0, 0, 0.5)\" in \"background\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
@@ -45,11 +20,6 @@
       "file": "src/lib/components/dev/version-badge.svelte",
       "rule": "declaration-property-value-disallowed-list",
       "text": "Raw color literal \"rgba(127, 127, 127, 0.55)\" in \"color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
-    },
-    {
-      "file": "src/lib/components/first-pro-consent-modal.svelte",
-      "rule": "declaration-property-value-disallowed-list",
-      "text": "Raw color literal \"rgba(0, 0, 0, 0.5)\" in \"background-color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
     },
     {
       "file": "src/lib/components/layout/collection-sub-panel.svelte",
@@ -85,11 +55,6 @@
       "file": "src/lib/components/onboarding/onboarding-wizard.svelte",
       "rule": "declaration-property-value-disallowed-list",
       "text": "Raw color literal \"hsl(142 76% 36%)\" in \"color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
-    },
-    {
-      "file": "src/lib/components/pro-relogin-modal.svelte",
-      "rule": "declaration-property-value-disallowed-list",
-      "text": "Raw color literal \"rgba(0, 0, 0, 0.5)\" in \"background-color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
     },
     {
       "file": "src/lib/components/settings/model-manager.svelte",

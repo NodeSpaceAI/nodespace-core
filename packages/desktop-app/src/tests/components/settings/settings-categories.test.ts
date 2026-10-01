@@ -50,7 +50,7 @@ const registered: string[] = [];
 function register(extensionId: string, sections: SettingsSectionContribution[]): void {
   const extension: NodespaceExtension = {
     id: extensionId,
-    apiVersion: 1,
+    apiVersion: 2,
     settingsSections: sections
   };
   uiExtensionRegistry.register(extension);
@@ -61,7 +61,6 @@ const ids = () => settingsCategories().map((c) => c.id);
 
 const CORE_ALL = [
   'database',
-  'account',
   'display',
   'ai-models',
   'import',
@@ -91,7 +90,6 @@ describe('core categories', () => {
     expect(ids()).toEqual(CORE_ALL);
     expect(settingsCategories().map((c) => c.label)).toEqual([
       'Database',
-      'Account',
       'Display',
       'AI Models',
       'Import Sources',
@@ -102,7 +100,7 @@ describe('core categories', () => {
     ]);
   });
 
-  it('hides the three Labs-gated categories when all flags are off', () => {
+  it('hides the two Labs-gated categories when all flags are off', () => {
     expect(ids()).toEqual(CORE_OFF);
   });
 
@@ -358,12 +356,10 @@ describe('isSettingsCategoryVisible', () => {
   });
 
   it('is false for a Labs-gated category while its flag is off, true once on', () => {
-    expect(isSettingsCategoryVisible('account')).toBe(false);
     expect(isSettingsCategoryVisible('ai-models')).toBe(false);
     expect(isSettingsCategoryVisible('playbooks')).toBe(false);
 
     setAllLabsFlags(true);
-    expect(isSettingsCategoryVisible('account')).toBe(true);
     expect(isSettingsCategoryVisible('ai-models')).toBe(true);
     expect(isSettingsCategoryVisible('playbooks')).toBe(true);
   });

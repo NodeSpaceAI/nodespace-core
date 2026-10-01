@@ -1,5 +1,5 @@
 /**
- * Every change to the extension host API is deliberate and versioned (ADR-082 §7).
+ * Every change to the extension host API is deliberate and versioned (ADR-082 §8).
  *
  * The snapshot (`extension-api-surface.json`) records `EXTENSION_API_VERSION`,
  * each entry's export names, and a hash of the API's type declarations. A

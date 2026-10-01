@@ -10,14 +10,9 @@
  * changes.
  *
  * A throwing `when()` counts as false and is logged once per contribution key
- * (ADR-082 §2.4); it is logged again only after it has returned normally in
+ * (ADR-082 §3.4); it is logged again only after it has returned normally in
  * between.
  */
-
-// Transitional: the built-in extension registers itself as a side effect of this
-// import. Removed once builds inject extensions through
-// `virtual:nodespace-extensions` (ADR-082 §2.1).
-import './pro-plugin';
 
 import {
   uiExtensionRegistry,
@@ -25,6 +20,8 @@ import {
   type ChromeContribution,
   type Contribution,
   type Keyed,
+  type ReplaceableSlot,
+  type ReplaceableSlotContribution,
   type SettingsSectionContribution,
   type SettingsSlot,
   type SettingsSlotContributionFor,
@@ -73,4 +70,33 @@ export function getActiveSettingsSlot<S extends SettingsSlot>(
   slot: S
 ): Keyed<SettingsSlotContributionFor<S>>[] {
   return uiExtensionRegistry.settingsSlotFor(slot).filter(isContributionActive);
+}
+
+/** What a replaceable-slot host renders; see {@link getReplaceableSlot}. */
+export interface ReplaceableSlotState {
+  /**
+   * Whether any contribution is registered for the slot, visible or not. While
+   * one is, the host never renders core's default.
+   */
+  registered: boolean;
+  /**
+   * The contribution to render: the one with the highest priority, ties in
+   * registration order, among those whose `when()` currently holds. `null` when
+   * none does.
+   */
+  active: Keyed<ReplaceableSlotContribution> | null;
+}
+
+/**
+ * The state of the replaceable `slot`. Call it inside a `$derived` or a
+ * template: `active` re-evaluates when the state the `when()` predicates read
+ * changes. `registered` reflects registration, which is static, so it never
+ * depends on a predicate.
+ */
+export function getReplaceableSlot(slot: ReplaceableSlot): ReplaceableSlotState {
+  const registered = uiExtensionRegistry.replaceableSlotFor(slot);
+  return {
+    registered: registered.length > 0,
+    active: registered.find(isContributionActive) ?? null
+  };
 }
