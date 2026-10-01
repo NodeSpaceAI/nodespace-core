@@ -477,6 +477,16 @@ fn sanitize_for_terminal(s: &str) -> String {
     out
 }
 
+/// A guidance node's skill description, empty when it has none or its
+/// properties don't decode as a skill.
+fn skill_description(node: &nodespace_daemon::NodeData) -> String {
+    serde_json::from_str(&node.properties)
+        .ok()
+        .and_then(|properties| SkillNode::from_properties(&node.content, &properties).ok())
+        .map(|skill| skill.description)
+        .unwrap_or_default()
+}
+
 /// The provenance banner/envelope logic, factored behind a generic writer
 /// (rather than calling `println!` directly) so tests can capture and parse
 /// exactly what a caller sees in both modes instead of re-deriving the
@@ -492,16 +502,6 @@ fn sanitize_for_terminal(s: &str) -> String {
 /// top names the tag to check against. Not applied to `--json` mode: a JSON
 /// string value can't be mistaken for a structural delimiter by any correct
 /// JSON parser, so there's nothing there for a tag to defend.
-/// A guidance node's skill description, empty when it has none or its
-/// properties don't decode as a skill.
-fn skill_description(node: &nodespace_daemon::NodeData) -> String {
-    serde_json::from_str(&node.properties)
-        .ok()
-        .and_then(|properties| SkillNode::from_properties(&node.content, &properties).ok())
-        .map(|skill| skill.description)
-        .unwrap_or_default()
-}
-
 fn print_guidance(
     w: &mut impl std::io::Write,
     nodes: &[nodespace_daemon::NodeData],

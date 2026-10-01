@@ -228,6 +228,7 @@ const PATTERN_CASES: Record<LineMarkerName, { match: string[]; noMatch: string[]
       '"daemon-dev.sock"',
       "app.nodespace.daemon.dev",
       "is_production",
+      "incompatible-database-protocol",
       "NODESPACE_FORCE_COMMUNITY=1",
     ],
   },
@@ -320,6 +321,7 @@ const PATTERN_CASES: Record<LineMarkerName, { match: string[]; noMatch: string[]
       j("signed in to a ", TEN),
       j("operator-only ", TEN, " provisioning"),
       j("the ", TEN, " URL"),
+      j("Copy ", TEN, " URL"),
       j("the ", TEN, " pays rent"),
       // The word inside an identifier.
       j(TEN, "_slug"),

@@ -101,6 +101,7 @@ const PRO_COMMANDS: readonly string[] = [
 // regular-expression sources. The lower-case field names are anchored so
 // that a word ending in the same letters (`async_enabled`, `oauth_status`) is
 // not a hit, while a camelCase use (`isSyncEnabled`, `dataSyncEnabled`) is.
+// `OAuthStatus` is excluded the same way, through the `Auth` lookbehind.
 const REMOVED_IDENTIFIERS: readonly string[] = [
   "[bB]ound_?[Tt]enant",
   "(?<![A-Za-z])sync_?[eE]nabled",
@@ -158,7 +159,7 @@ export const MARKERS = {
   },
   editionBranching: {
     pattern:
-      /\bis_pro(?:_build)?\b|NODESPACED?_PRO_|feature\s*=\s*"pro"|nodespaced-pro|(?:daemon|ui)(?:-dev)?-pro\.(?:sock|pid)|incompatible-database(?:-dev)?-pro|\.daemon(?:\.dev)?\.pro\b|PRO_DAEMON_BINARY_NAME|tauri\.pro\.conf|--edition\b(?!\s*=?\s*20\d\d)/,
+      /\bis_pro(?:_build)?\b|NODESPACED?_PRO_|feature\s*=\s*"pro"|nodespaced-pro|(?:daemon|ui)(?:-dev)?-pro\.(?:sock|pid)|incompatible-database(?:-dev)?-pro\b|\.daemon(?:\.dev)?\.pro\b|PRO_DAEMON_BINARY_NAME|tauri\.pro\.conf|--edition\b(?!\s*=?\s*20\d\d)/,
     summary: "Pro edition switches: is_pro, NODESPACE_PRO_*, the pro feature, Pro binary, socket, pid, marker and launchd names, the Pro Tauri overlay, --edition",
   },
   proDataModel: {

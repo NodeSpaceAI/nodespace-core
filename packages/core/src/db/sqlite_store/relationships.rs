@@ -502,16 +502,15 @@ impl SqliteStore {
     }
 
     /// ADR-059 §2 — a content node may hold a `member_of` edge only when it is a
-    /// **root** node (no `has_child` parent). Person nodes are exempt: a
-    /// person's membership says who belongs to a collection, not where content
-    /// is filed. A collection needs no exemption: it is always a root (the
-    /// `collection_is_root_*` triggers). Enforced at the store's
-    /// three `member_of` INSERT sites (`add_to_collection`,
-    /// `bulk_add_to_collections`, and the generic `create_generic_relationship`
-    /// when its `rel_type` is `member_of`), so every write path is covered without
-    /// a per-path check: CLI, graph import, play `add_relationship`, and any
-    /// batched caller of `bulk_add_to_collections`. A batched, chunked query keeps
-    /// the bulk path a single round trip.
+    /// **root** node (no `has_child` parent). Person nodes are exempt: a person's
+    /// membership says who belongs to a collection, not where content is filed. A
+    /// collection needs no exemption: it is always a root (the `collection_is_root_*`
+    /// triggers). Enforced at the store's three `member_of` INSERT sites
+    /// (`add_to_collection`, `bulk_add_to_collections`, and the generic
+    /// `create_generic_relationship` when its `rel_type` is `member_of`), so every
+    /// write path is covered without a per-path check: CLI, graph import, play
+    /// `add_relationship`, and any batched caller of `bulk_add_to_collections`. A
+    /// batched, chunked query keeps the bulk path a single round trip.
     /// Members that don't exist yet are left to the INSERT's foreign-key check.
     async fn assert_root_only_membership(&self, member_ids: &[&str]) -> Result<()> {
         if member_ids.is_empty() {
