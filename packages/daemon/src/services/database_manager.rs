@@ -1055,8 +1055,8 @@ impl DatabaseManager {
     /// not the default, not the active database, idle beyond the configured
     /// window, and not mid-drain on embeddings. Evicted databases reopen
     /// transparently on their next request via [`DatabaseManager::get_or_open`].
-    /// The default and active databases are never evicted, so the single-database
-    /// community path is unaffected.
+    /// The default and active databases are never evicted, so a single-database
+    /// install is unaffected.
     pub fn spawn_idle_reaper(self: &Arc<Self>) {
         let this = Arc::clone(self);
         let window = idle_window();

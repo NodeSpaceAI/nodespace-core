@@ -1994,10 +1994,9 @@ impl NodeService {
     /// the actor, the delete is refused in full — no node is removed — and a
     /// [`NodeServiceError::SubtreeAccessDenied`] error is returned (distinct from a hierarchy
     /// violation, so the daemon can map it to its own wire status and the UI can show a
-    /// dedicated refusal modal). Community installs never see a refusal here:
-    /// `AlwaysAllowGate` is the default and only a synced Pro daemon injects a gate that can
-    /// deny. This check runs before the transaction opens, not inside it — a rollback-based
-    /// check would do wasted work every time.
+    /// dedicated refusal modal). With core's default gate (`AlwaysAllowGate`) there is never a
+    /// refusal here; only an injected gate can deny. This check runs before the transaction
+    /// opens, not inside it — a rollback-based check would do wasted work every time.
     ///
     /// Returns `DeleteResult` with `existed=true` and `deleted_count` (target + all descendants)
     /// on success, or `existed=false` when the target node was already gone.

@@ -117,8 +117,9 @@ pub struct NodeServiceImpl {
     /// Shared with EmbeddingsServiceImpl; populated by the background load task.
     embedding_state: Arc<RwLock<Option<EmbeddingReady>>>,
     /// Registry id of the database this impl serves (ADR-053), stamped onto
-    /// `WatchNodes` events. Empty when the daemon serves a single unregistered
-    /// database (Pro daemon) or when the impl is constructed directly in tests.
+    /// `WatchNodes` events. Empty when the impl was not opened through the
+    /// registry: a host serving one database without `DbManagerLayer`, or a test
+    /// constructing the impl directly.
     database_id: String,
     /// Process-global embedding scheduler (ADR-053). A live `WatchNodes` stream
     /// marks this database active so its embedding batches take priority.
@@ -174,7 +175,8 @@ impl NodeServiceImpl {
 
     /// Tag this database's `WatchNodes` events with its registry id (ADR-053).
     /// Set by [`crate::build_database_services`] when a database is opened
-    /// through the registry; left empty for the single-database Pro daemon.
+    /// through the registry; left empty when the impl is not opened through the
+    /// registry.
     pub fn with_database_id(mut self, database_id: String) -> Self {
         self.database_id = database_id;
         self
@@ -189,11 +191,10 @@ impl NodeServiceImpl {
         self
     }
 
-    /// The underlying `NodeService` this impl serves. Lets a caller that opens a
-    /// database through the registry (e.g. the Pro daemon binding cloud-sync to
-    /// the manager's default database) reuse the *same* `NodeService` the gRPC
-    /// handlers serve, rather than constructing a second one on the same file
-    /// (which would contend on the single-writer lock).
+    /// The underlying `NodeService` this impl serves. Lets a host that composes
+    /// extra services over a registry-opened database reuse the *same*
+    /// `NodeService` the gRPC handlers serve, rather than constructing a second
+    /// one on the same file (which would contend on the single-writer lock).
     pub fn node_service(&self) -> Arc<CoreNodeService> {
         self.node_service.clone()
     }
@@ -1354,7 +1355,7 @@ impl GrpcNodeService for NodeServiceImpl {
         &self,
         _request: Request<GetDaemonVersionRequest>,
     ) -> Result<Response<GetDaemonVersionResponse>, Status> {
-        // The daemon's own compiled version — not tenant-scoped, so no routing.
+        // The daemon's own compiled version — not database-scoped, so no routing.
         Ok(Response::new(GetDaemonVersionResponse {
             version: env!("CARGO_PKG_VERSION").to_string(),
         }))
@@ -1364,7 +1365,7 @@ impl GrpcNodeService for NodeServiceImpl {
         &self,
         _request: Request<GetDaemonMemoryRequest>,
     ) -> Result<Response<GetDaemonMemoryResponse>, Status> {
-        // The daemon's own process footprint — not tenant-scoped, so no routing.
+        // The daemon's own process footprint — not database-scoped, so no routing.
         //
         // Refresh only this PID rather than the whole process table: the figure
         // we want is one process's, and a full refresh walks every process on
@@ -3183,8 +3184,8 @@ mod tests {
             Arc::new(EmbeddingScheduler::new()),
         );
         // The accessor must hand back the exact same NodeService (same allocation)
-        // the impl serves, so a caller like the Pro daemon can bind cloud-sync to
-        // it without opening a second store on the same file.
+        // the impl serves, so a host can compose over it without opening a second
+        // store on the same file.
         assert!(Arc::ptr_eq(&svc.node_service(), &core_svc));
     }
 

@@ -1380,10 +1380,10 @@ pub struct NodeService {
     pub(crate) embedding_waker:
         std::sync::Arc<std::sync::OnceLock<crate::services::EmbeddingWaker>>,
 
-    /// Pre-delete subtree access gate (ADR-041). Defaults to [`access_gate::AlwaysAllowGate`]
-    /// so community installs keep today's unconditional-cascade behavior. A Pro daemon
-    /// (`nodespaced-pro`) injects a real gate via `set_subtree_access_gate` after construction —
-    /// held behind `OnceLock` so it can be set once the Pro tenant connection is established.
+    /// Pre-delete subtree access gate (ADR-041). Defaults to [`access_gate::AlwaysAllowGate`],
+    /// which keeps the unconditional cascade. A host injects its own gate via
+    /// `set_subtree_access_gate` after construction (ADR-082). It is held behind a `OnceLock`
+    /// so it can be set once it is ready.
     pub(crate) subtree_access_gate:
         Arc<std::sync::OnceLock<Arc<dyn access_gate::SubtreeAccessGate>>>,
 
@@ -7657,15 +7657,13 @@ mod tests {
 
     // ---------------------------------------------------------------------------
     // Access-gated cascade delete (ADR-041 "CASCADE requires read access across
-    // the whole subtree"). Community installs always see AlwaysAllowGate (the
-    // default) — these tests inject a stub gate to simulate a synced Pro tenant
-    // denying access to part of a subtree, since nodespace-core itself has no
-    // access-control concept to exercise otherwise.
+    // the whole subtree"). Core's default is AlwaysAllowGate; these tests inject
+    // a stub gate that denies part of a subtree, since core has no access model
+    // of its own to exercise.
     // ---------------------------------------------------------------------------
 
     /// Denies whenever the checked set contains a designated "restricted" node id —
-    /// stands in for a Pro tenant gate reporting a restricted descendant the actor
-    /// isn't a member of.
+    /// stands in for an injected gate reporting a descendant the actor may not read.
     struct DenyIfPresentGate {
         restricted_id: String,
     }
