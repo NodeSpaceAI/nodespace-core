@@ -15,6 +15,7 @@ mod commits_per_edit_test;
 mod cross_window_hierarchy_sync_test;
 mod daemon_binary_freshness_test;
 mod daemon_custom_socket_test;
+mod daemon_executable_check_test;
 mod daemon_readiness_test;
 mod extension_hooks_test;
 mod indent_outdent_rapid_ordering_test;

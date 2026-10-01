@@ -1354,9 +1354,14 @@ impl GrpcNodeService for NodeServiceImpl {
         &self,
         _request: Request<GetDaemonVersionRequest>,
     ) -> Result<Response<GetDaemonVersionResponse>, Status> {
-        // The daemon's own compiled version — not database-scoped, so no routing.
+        // The daemon's own compiled version and executable — not database-scoped,
+        // so no routing. The path is read at run time from the serving process
+        // itself, so whichever binary answers reports its own location.
         Ok(Response::new(GetDaemonVersionResponse {
             version: env!("CARGO_PKG_VERSION").to_string(),
+            executable_path: std::env::current_exe()
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_default(),
         }))
     }
 
@@ -4298,6 +4303,25 @@ mod tests {
             .into_inner();
         assert_eq!(resp.version, env!("CARGO_PKG_VERSION"));
         assert!(!resp.version.is_empty(), "daemon must report a version");
+    }
+
+    #[tokio::test]
+    async fn get_daemon_version_reports_its_own_executable_path() {
+        let (svc, _tmp) = make_service().await;
+        let resp = svc
+            .get_daemon_version(Request::new(crate::nodespace::GetDaemonVersionRequest {}))
+            .await
+            .unwrap()
+            .into_inner();
+        let own_exe = std::env::current_exe()
+            .expect("the test process has an executable path")
+            .to_string_lossy()
+            .into_owned();
+        assert!(!own_exe.is_empty());
+        assert_eq!(
+            resp.executable_path, own_exe,
+            "the daemon must report the path of the process serving the call"
+        );
     }
 
     #[tokio::test]
