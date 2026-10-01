@@ -372,10 +372,11 @@ const MAX_AGGREGATION_DEPTH: usize = 20;
 /// by the full contents of its subtree, before its next sibling is visited.
 /// Limits depth to prevent runaway traversal on deeply nested trees.
 ///
-/// Never spans an access boundary (ADR-059 §7). A descendant whose access
-/// differs from `node`'s is a defect: it is logged, and it and its subtree are
-/// left out. It is embedded as its own root instead. If the boundaries cannot
-/// be read, nothing is aggregated rather than risking a leak.
+/// Never spans an access boundary (ADR-059 §7). A non-person descendant filed
+/// into a collection of its own (holding a `member_of` edge) breaks ADR-059
+/// §2 and is a defect: it is logged, and it and its subtree are left out. It is
+/// embedded as its own root instead. If the boundaries cannot be read, nothing
+/// is aggregated rather than risking a leak.
 ///
 /// Used by text and header behaviors for `get_aggregated_content()`.
 async fn aggregate_children_content(
@@ -417,7 +418,7 @@ async fn aggregate_children_content(
             tracing::error!(
                 root_id = %node.id,
                 descendant_id = %child.id,
-                "ADR-059 §7 defect: descendant's access differs from its embedding root's; \
+                "ADR-059 §7 defect: descendant is filed into a collection of its own; \
                  excluded from the root's embedding and embedded as its own root"
             );
             continue;
@@ -2319,9 +2320,8 @@ impl NodeBehavior for PersonNodeBehavior {
 ///
 /// DatabaseSettingsNode is the singleton anchor for database-level configuration
 /// and for the owner `has_role` edge (ADR-037): the edge runs PersonNode →
-/// DatabaseSettingsNode and carries the tenant role. Core declares no fields on
-/// it; extensions store their own keys through
-/// `NodeService::merge_database_settings`.
+/// DatabaseSettingsNode and marks that person as the local user. Core declares
+/// no fields on it.
 pub struct DatabaseSettingsNodeBehavior;
 
 impl NodeBehavior for DatabaseSettingsNodeBehavior {
@@ -5628,13 +5628,6 @@ mod tests {
         let node = database_settings_node(json!({}));
         assert!(behavior.get_embeddable_content(&node).is_none());
         assert!(behavior.get_parent_contribution(&node).is_none());
-    }
-
-    #[test]
-    fn database_settings_accepts_namespaced_extension_keys() {
-        let behavior = DatabaseSettingsNodeBehavior;
-        let node = database_settings_node(json!({ "plugin:example": 1 }));
-        assert!(behavior.validate(&node).is_ok());
     }
 
     // --- aggregate_children_content: traversal order regression ---

@@ -5,10 +5,8 @@
   popover. Renders nothing unless this node is named by an open conflict
   record.
 
-  This replaces both `possible-duplicate-badge.svelte` (deleted in S1 — a
-  boolean marker that could never be cleared) and `recovered-items-badge.svelte`
-  (deleted here — its `SupersededEdit` data now lives in this same journal):
-  one indicator, one surface, one dismiss mechanism.
+  This replaces `possible-duplicate-badge.svelte`, a boolean marker that could
+  never be cleared: one indicator, one surface, one dismiss mechanism.
 -->
 <script lang="ts">
   import { onMount } from 'svelte';

@@ -6,11 +6,7 @@ import { scheduleCollectionRefresh } from '$lib/utils/collection-refresh';
 
 const log = createLogger('Conflicts');
 
-export type ConflictKind =
-  | 'unique_field_collision'
-  | 'collection_name_collision'
-  | 'superseded_edit'
-  | 'duplicate_reactive_create';
+export type ConflictKind = 'unique_field_collision' | 'collection_name_collision';
 
 export type ConflictStatus = 'open' | 'resolved' | 'dismissed';
 
@@ -50,9 +46,9 @@ export type Resolution =
  * The Conflicts store (ADR-068, conflict-journal-and-resolution.md §6.4):
  * `records` + a `hasOpenFor` derived lookup for the inline per-node
  * indicator, plus the resolution actions. Follows the canonical rune
- * pattern (ADR-049) the deleted `recovered-items.svelte.ts` store
- * established: `$state` fields directly on a plain class, a `$derived` used
- * only to memoize a lookup, methods that read state directly — no `$effect`.
+ * pattern (ADR-049): `$state` fields directly on a plain class, a `$derived`
+ * used only to memoize a lookup, methods that read state directly — no
+ * `$effect`.
  */
 class ConflictsStore {
   records = $state<ConflictRecord[]>([]);

@@ -417,8 +417,8 @@ async fn one_failing_invariant_rule_rolls_back_another_rule_s_successful_effect_
 
 /// ADR-060 §1: an invariant rule must NOT re-execute on a device that
 /// received the node via sync — the effect arrives WITH the node as ordinary
-/// synced data. Uses the exact `with_client(REPLICATED_APPLY_CLIENT_ID)` tagging
-/// convention `nodespace-sync`'s real apply path uses.
+/// synced data. Uses the `with_client(REPLICATED_APPLY_CLIENT_ID)` tagging
+/// convention that marks a replicated apply.
 #[tokio::test]
 async fn invariant_rule_does_not_re_execute_on_sync_applied_node() -> Result<()> {
     let (service, _tmp) = create_test_service().await?;

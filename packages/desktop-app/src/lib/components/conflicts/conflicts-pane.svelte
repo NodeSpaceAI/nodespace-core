@@ -1,8 +1,8 @@
 <!--
   Conflicts view (ADR-068, conflict-journal-and-resolution.md §6.2): a flat
-  list of conflict records, grouped by kind, replacing the three half-places
-  that existed before this ADR (the possible-duplicate badge, the
-  conflict-notifications toast cap, and the Recovered Items badge/store).
+  list of conflict records, grouped by kind, replacing the half-places that
+  existed before this ADR (the possible-duplicate badge and the
+  conflict-notifications toast cap).
 
   Open records are shown by default; resolved/dismissed are reachable behind
   a filter toggle, never deleted — the record of what a user decided is the
@@ -34,9 +34,7 @@
 
   const KIND_LABELS: Record<ConflictKind, string> = {
     unique_field_collision: 'Duplicate field value',
-    collection_name_collision: 'Duplicate collection name',
-    superseded_edit: 'Superseded edit',
-    duplicate_reactive_create: 'Duplicate automated creation'
+    collection_name_collision: 'Duplicate collection name'
   };
 
   onMount(() => {
@@ -301,7 +299,7 @@
                     </div>
                   {:else}
                     <div class="conflict-actions">
-                      {#if (record.kind === 'unique_field_collision' || record.kind === 'collection_name_collision') && record.nodeIds.length === 2}
+                      {#if record.nodeIds.length === 2}
                         <!-- Merge (ADR-068 §5.2): user-initiated only, one
                              button per participant to pick which one survives. -->
                         {#each record.nodeIds as nodeId (nodeId)}

@@ -393,18 +393,17 @@ async fn sync_originated_event_does_not_reach_trigger_evaluation() -> Result<()>
     Ok(())
 }
 
-/// Regression test: the real sync-apply shape uses `NodeService::bulk_create`
-/// (`nodespaced-pro`'s catch-up/reconnect path batches pulled pages through
-/// `bulk_create`, not one `create_node` per row), not the single-row
-/// `create_node` the test above exercises. `bulk_create`'s batch insert
+/// Regression test: a replicated apply may write a whole batch of rows through
+/// `NodeService::bulk_create` rather than one `create_node` per row, the
+/// single-row path the test above exercises. `bulk_create`'s batch insert
 /// once hardcoded `source: None` for every node in the batch,
 /// discarding whatever client_id the calling `NodeService` was tagged with —
 /// so a sync-tagged `bulk_create` call emitted events with
 /// `source_client_id: None`, which `is_replicated_apply` (correctly) does NOT
 /// treat as sync-originated, and the ADR-073 gate let it straight through.
-/// This is exactly the "catch-up replay re-firing history" failure mode
-/// ADR-073 exists to prevent, for every device reconnecting with a backlog
-/// of a teammate's new nodes. Covers the same shape as
+/// This is exactly the "replay re-firing history" failure mode ADR-073
+/// exists to prevent, for any batch of replicated nodes applied at once.
+/// Covers the same shape as
 /// `sync_originated_event_does_not_reach_trigger_evaluation` above, but
 /// through `bulk_create` instead of `create_node`.
 #[tokio::test]
@@ -439,10 +438,8 @@ async fn sync_originated_bulk_create_does_not_reach_trigger_evaluation() -> Resu
     .await?;
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    // Simulate the real sync-apply shape: a sync-tagged NodeService batching
-    // pulled rows through `bulk_create` (as `nodespaced-pro`'s catch-up path
-    // does via `apply_node_upserts_batched`), not one `create_node` call per
-    // row.
+    // A replicated-apply-tagged NodeService writing a batch of rows through
+    // `bulk_create`, not one `create_node` call per row.
     let sync_service = service.with_client(REPLICATED_APPLY_CLIENT_ID);
     let synced_node = Node::new(
         "pb_bulk_sync_task".to_string(),

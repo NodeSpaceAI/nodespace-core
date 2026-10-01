@@ -44,15 +44,13 @@ impl NodeService {
 
     /// Refuse retyping an existing node into an `ai-chat`.
     ///
-    /// Two invariants hold for a chat only because they are enforced when the
-    /// chat is *created*: nothing references it (edges onto an ai-chat are
-    /// refused at creation, see `refuse_ai_chat_target`), and it joins the
-    /// personal collection that makes it private (the `node_created` privacy
-    /// Play). A retype would carry the node's existing inbound mentions and
-    /// relationships into the chat and skip the privacy membership entirely,
-    /// so a chat can only come into being by being created as one. Retyping
-    /// *out of* ai-chat is deliberately allowed: the node keeps its private
-    /// membership and gains no inbound references, so neither invariant breaks.
+    /// No node may reference an ai-chat node (ADR-061 §8), and that holds only
+    /// because it is enforced when an edge is *created*: edges onto an ai-chat
+    /// are refused there (see `refuse_ai_chat_target`). A retype would carry
+    /// the node's existing inbound mentions and relationships into the chat, so
+    /// a chat can only come into being by being created as one. Retyping *out
+    /// of* ai-chat is deliberately allowed: the node gains no inbound
+    /// references, so the invariant still holds.
     pub(crate) fn ensure_not_retyped_to_ai_chat(
         existing: &Node,
         updated: &Node,

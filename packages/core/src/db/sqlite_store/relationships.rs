@@ -1880,9 +1880,9 @@ impl SqliteStore {
     /// n.*`) and drops the edge data on the `relationship` row. The relationship
     /// viewer needs the edge attributes — a Task→Person
     /// `assigned_to` edge might carry `role`/`assigned_at` — so this also selects
-    /// `r.properties`. `n.*` expands to the ten `node` columns (indices 0-9,
+    /// `r.properties`. `n.*` expands to the nine `node` columns (indices 0-8,
     /// matching [`row_to_node`](Self::row_to_node)); the trailing `r.properties`
-    /// is column 10. Returns `(node, edge_properties)` pairs.
+    /// is column 9. Returns `(node, edge_properties)` pairs.
     pub async fn get_related_nodes_with_edges(
         &self,
         node_id: &str,
@@ -1906,7 +1906,7 @@ impl SqliteStore {
         let mut out = Vec::new();
         while let Some(row) = rows.next().await? {
             let node = Self::row_to_node(&row)?;
-            let props_str: String = row.get(10)?;
+            let props_str: String = row.get(9)?;
             let properties: serde_json::Value =
                 serde_json::from_str(&props_str).unwrap_or_else(|_| serde_json::json!({}));
             out.push((node, properties));

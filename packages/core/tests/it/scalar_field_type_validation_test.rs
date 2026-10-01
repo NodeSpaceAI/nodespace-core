@@ -363,7 +363,7 @@ async fn scalar_fields_are_validated_on_update() -> Result<()> {
 }
 
 /// Core schemas are enforced too, not only user-defined ones:
-/// `collection.restrictedToMembers` is declared `boolean`.
+/// `task.due_date` is declared `date`.
 #[tokio::test]
 async fn core_schema_scalar_fields_are_enforced() -> Result<()> {
     let (svc, _tmp) = create_test_service().await?;
@@ -372,20 +372,20 @@ async fn core_schema_scalar_fields_are_enforced() -> Result<()> {
         &svc,
         node_ops::CreateNodeInput {
             id: None,
-            node_type: "collection".to_string(),
-            content: "Private".to_string(),
+            node_type: "task".to_string(),
+            content: "Ship it".to_string(),
             parent_id: None,
             position: InsertPositionOwned::End,
-            properties: json!({ "restrictedToMembers": "true" }),
+            properties: json!({ "due_date": "next week" }),
             collections: vec![],
             collection_ids: vec![],
             lifecycle_status: None,
         },
     )
     .await
-    .expect_err("a string must not satisfy collection.restrictedToMembers (boolean)");
+    .expect_err("free text must not satisfy task.due_date (date)");
     assert!(
-        err.to_string().contains("Field 'restrictedToMembers'"),
+        err.to_string().contains("Field 'due_date'"),
         "error must name the field, got: {err}"
     );
     Ok(())

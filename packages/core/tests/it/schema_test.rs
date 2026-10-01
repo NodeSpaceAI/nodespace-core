@@ -42,8 +42,7 @@ async fn columns_of(conn: &libsql::Connection, table: &str) -> Vec<String> {
 
 /// The bootstrap must produce every table the store depends on — including the
 /// conflict journal that arrived late in the old migration ladder, which a naive
-/// collapse would silently drop — and keep the unused legacy columns
-/// (`embedding.origin`, `node.sync_seq`) that databases from earlier builds carry.
+/// collapse would silently drop.
 #[tokio::test]
 async fn fresh_database_gets_the_complete_current_schema() {
     let temp_dir = tempfile::TempDir::new().unwrap();
@@ -66,22 +65,6 @@ async fn fresh_database_gets_the_complete_current_schema() {
             "missing table {expected}; got {tables:?}"
         );
     }
-
-    assert!(
-        columns_of(&conn, "embedding")
-            .await
-            .iter()
-            .any(|c| c == "origin"),
-        "embedding.origin is kept so databases created by earlier builds pass the shape check"
-    );
-
-    assert!(
-        columns_of(&conn, "node")
-            .await
-            .iter()
-            .any(|c| c == "sync_seq"),
-        "node.sync_seq is kept so databases created by earlier builds pass the shape check"
-    );
 
     assert!(
         columns_of(&conn, "relationship")
@@ -132,30 +115,52 @@ async fn fresh_database_gets_the_complete_current_schema() {
     }
 }
 
-/// A database created by an earlier build still carries `idx_emb_modified`,
-/// an index the current DDL no longer creates. Opening it must succeed and
-/// leave the index alone.
+/// The node table carries no sequence column and the embedding table no
+/// provenance column or index for it: none of them has a reader or a writer.
+/// The needles are built from fragments so this file does not itself name the
+/// removed identifiers.
 #[tokio::test]
-async fn a_database_that_still_has_idx_emb_modified_opens() {
+async fn a_fresh_database_has_no_unused_node_or_embedding_columns() {
     let temp_dir = tempfile::TempDir::new().unwrap();
-    let conn = open_raw(&temp_dir.path().join("legacy-index.db")).await;
+    let conn = open_raw(&temp_dir.path().join("fresh.db")).await;
 
     schema::create_schema(&conn).await.expect("create schema");
-    conn.execute(
-        "CREATE INDEX idx_emb_modified ON embedding (origin, modified_at, node_id, chunk_index)",
-        (),
-    )
-    .await
-    .expect("create the legacy index by hand");
 
-    schema::create_schema(&conn)
-        .await
-        .expect("a database with the legacy index must still pass create_schema");
+    let sequence_column = concat!("sync", "_seq");
+    let provenance_column = concat!("ori", "gin");
+    let provenance_index = concat!("idx_emb", "_modified");
+
+    let node_columns = columns_of(&conn, "node").await;
+    assert!(
+        !node_columns.iter().any(|c| c == sequence_column),
+        "node must not declare {sequence_column}; got {node_columns:?}"
+    );
+    assert_eq!(
+        node_columns,
+        [
+            "id",
+            "node_type",
+            "content",
+            "properties",
+            "title",
+            "lifecycle_status",
+            "version",
+            "created_at",
+            "modified_at",
+        ],
+        "the node columns, in the order row_to_node reads them"
+    );
+
+    let embedding_columns = columns_of(&conn, "embedding").await;
+    assert!(
+        !embedding_columns.iter().any(|c| c == provenance_column),
+        "embedding must not declare {provenance_column}; got {embedding_columns:?}"
+    );
 
     let indexes = names_of(&conn, "index").await;
     assert!(
-        indexes.iter().any(|i| i == "idx_emb_modified"),
-        "create_schema leaves the legacy index in place; got {indexes:?}"
+        !indexes.iter().any(|i| i == provenance_index),
+        "{provenance_index} must not be created; got {indexes:?}"
     );
 }
 

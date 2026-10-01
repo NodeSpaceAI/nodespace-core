@@ -46,9 +46,6 @@ CREATE TABLE IF NOT EXISTS node (
     title            TEXT,
     lifecycle_status TEXT    NOT NULL DEFAULT 'active',
     version          INTEGER NOT NULL DEFAULT 1,
-    -- Legacy column: never written and its value never read. Kept so the shape
-    -- check accepts databases an earlier build created.
-    sync_seq         INTEGER,
     created_at       TEXT    NOT NULL,
     modified_at      TEXT    NOT NULL
 ) STRICT;
@@ -124,10 +121,6 @@ CREATE TABLE IF NOT EXISTS embedding (
     stale        INTEGER NOT NULL DEFAULT 1,
     error_count  INTEGER NOT NULL DEFAULT 0,
     last_error   TEXT,
-    -- Legacy provenance column: every write stores the default and nothing reads
-    -- it. Kept because create_schema's shape check compares column names, so
-    -- dropping it would refuse every database an earlier build created.
-    origin       TEXT    NOT NULL DEFAULT 'local',
     created_at   TEXT    NOT NULL,
     modified_at  TEXT    NOT NULL
 ) STRICT;

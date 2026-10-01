@@ -10,8 +10,8 @@ fn default_schema_version() -> u32 {
 
 /// Derive a display label for a field whose `friendlyName` was omitted at
 /// `create_schema`/`update_schema` time, e.g. `due_date` -> `Due date`,
-/// `custom:capacity` -> `Capacity`, `restrictedToMembers` -> `Restricted to
-/// members`, `employeeIDNumber` -> `Employee id number`.
+/// `custom:capacity` -> `Capacity`, `estimatedHours` -> `Estimated hours`,
+/// `employeeIDNumber` -> `Employee id number`.
 ///
 /// Namespace prefixes (`custom:`, `org:`, `plugin:`, ...) are stripped before
 /// humanizing — a display-only operation with no effect on the stored name.
@@ -567,10 +567,7 @@ mod tests {
 
     #[test]
     fn test_derive_friendly_name_splits_camel_case() {
-        assert_eq!(
-            derive_friendly_name("restrictedToMembers"),
-            "Restricted to members"
-        );
+        assert_eq!(derive_friendly_name("estimatedHours"), "Estimated hours");
     }
 
     #[test]
