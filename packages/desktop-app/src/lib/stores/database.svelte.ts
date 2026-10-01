@@ -42,10 +42,7 @@ export interface DatabaseInfo {
    * database is local-only (not bound to any tenant). */
   boundTenantSchema: string | null;
   /** The bound tenant's default (landing) collection id (ADR-053), a
-   * per-install root. Used as the tree root to hide from the sidebar so
-   * top-level collections render as peers rather than nested under the root.
-   * null on the public/legacy tenant, where the collections store falls back to
-   * the well-known root id. */
+   * per-install root. */
   boundTenantCollection: string | null;
   /** Opaque per-database keys the registry stores for extensions. Core never
    * reads them; an extension that owns a key reads it from here. */

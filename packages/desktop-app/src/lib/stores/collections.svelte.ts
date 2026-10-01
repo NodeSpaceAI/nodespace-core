@@ -564,8 +564,8 @@ function pruneEmptyCollections(
  * A root's own row is never shown, and it is never a display parent, so a
  * collection whose only parents are roots shows at the top level. A collection
  * with a parent that is not a root still nests under that parent. The set
- * defaults to empty, and with no roots nothing is hidden. Exported for unit
- * testing of the pure tree logic.
+ * defaults to empty, and with no roots no collection is hidden as a root.
+ * Exported for unit testing of the pure tree logic.
  */
 export function buildCollectionsTree(
   collections: CollectionInfo[],
@@ -618,8 +618,8 @@ export function buildCollectionsTree(
   // Return only top-level collections (those not nested above), and never a
   // root collection itself. Filtering a root as a parent (above) un-nests its
   // members; dropping it here hides its own row, which would otherwise show at
-  // the top level whenever it has direct content members. With no roots,
-  // nothing is dropped.
+  // the top level whenever it has direct content members. With no roots, no
+  // collection is dropped as a root.
   const topLevel = collections
     .filter((c) => !rootCollectionIds.has(c.id) && !childIds.has(c.id))
     .map((c) => itemMap.get(c.id)!)
