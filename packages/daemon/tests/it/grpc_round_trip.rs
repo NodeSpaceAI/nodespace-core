@@ -1685,6 +1685,7 @@ async fn fetch_marked_page(
 
     client
         .query_nodes_simple(QueryNodesSimpleRequest {
+            include_archived: false,
             id: None,
             mentioned_by: None,
             content_contains: Some(marker.to_string()),
@@ -1867,6 +1868,7 @@ async fn count_nodes_and_count_roots_report_totals_without_transferring_records(
 
     let count = client
         .count_nodes(QueryNodesSimpleRequest {
+            include_archived: false,
             id: None,
             mentioned_by: None,
             content_contains: Some(MARKER.to_string()),

@@ -351,10 +351,24 @@ impl NodeService {
     /// # }
     /// ```
     pub async fn get_mentions(&self, node_id: &str) -> Result<Vec<String>, NodeServiceError> {
-        self.store
+        let ids = self
+            .store
             .get_outgoing_mentions(node_id)
             .await
-            .map_err(NodeServiceError::from_store)
+            .map_err(NodeServiceError::from_store)?;
+
+        // A node's mentions are a list, like its backlinks: an archived
+        // target is not in it (ADR-087 §2). Filtered here and not in the
+        // store, because mention sync diffs against every stored edge.
+        let targets = self
+            .store
+            .get_nodes_by_ids(&ids)
+            .await
+            .map_err(NodeServiceError::from_store)?;
+        Ok(ids
+            .into_iter()
+            .filter(|id| targets.get(id).is_some_and(crate::governance::participates))
+            .collect())
     }
 
     /// Get all nodes that mention a specific node (incoming references/backlinks)

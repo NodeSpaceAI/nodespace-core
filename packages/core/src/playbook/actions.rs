@@ -120,7 +120,7 @@ use crate::playbook::types::{ActionType, IterationPath, ParsedAction};
 use crate::services::{NodeService, NodeServiceError};
 use serde_json::{json, Value};
 use std::sync::Arc;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 // ---------------------------------------------------------------------------
 // ActionError
@@ -295,7 +295,7 @@ impl BindingContext {
         event: &DomainEvent,
         graph_resolver: Option<GraphResolver>,
     ) -> Self {
-        let trigger_node_value = serde_json::to_value(trigger_node).unwrap_or(json!({}));
+        let trigger_node_value = binding_value(trigger_node).unwrap_or(json!({}));
 
         let trigger_property = if let DomainEvent::NodeUpdated {
             changed_properties, ..
@@ -718,11 +718,11 @@ impl BindingContext {
                                 .await
                             {
                                 crate::playbook::graph_resolver::ResolvedValue::Node(n) => {
-                                    serde_json::to_value(&n).map_err(|e| e.to_string())
+                                    binding_value(&n).map_err(|e| e.to_string())
                                 }
                                 crate::playbook::graph_resolver::ResolvedValue::Collection(
                                     nodes,
-                                ) => serde_json::to_value(&nodes).map_err(|e| e.to_string()),
+                                ) => binding_value(&nodes).map_err(|e| e.to_string()),
                                 crate::playbook::graph_resolver::ResolvedValue::Scalar(v) => Ok(v),
                                 crate::playbook::graph_resolver::ResolvedValue::Missing => {
                                     Err(format!(
@@ -1310,6 +1310,16 @@ pub(crate) fn collect_binding_templates_in_value(value: &Value, out: &mut Vec<St
 // JSON navigation
 // ---------------------------------------------------------------------------
 
+/// A node, or a list of nodes, as a play's bindings see it: the wire JSON
+/// without the lifecycle. Every value a binding path can navigate into is
+/// built here (the trigger node, a `for_each` item, an action's result), so
+/// no path reaches the field (ADR-087 §5).
+fn binding_value<T: serde::Serialize + ?Sized>(nodes: &T) -> Result<Value, serde_json::Error> {
+    let mut value = serde_json::to_value(nodes)?;
+    crate::governance::remove_lifecycle(&mut value);
+    Ok(value)
+}
+
 /// Navigate into a JSON value by path segments.
 ///
 /// Each segment is used as an object key. Returns the value at the terminal
@@ -1664,7 +1674,7 @@ fn execute_reject(action_index: usize, params: &Value) -> Result<Value, ActionEr
 ///
 /// Every node a play action creates or updates gets this stamp, regardless
 /// of whether the rule's own `properties` param set anything else — an
-/// `update_node` action that only changes `lifecycle_status`, for example,
+/// `update_node` action that only changes `content`, for example,
 /// still needs its depth recorded, since the classic runaway-chain shape is
 /// a node repeatedly re-triggering itself through a non-`properties` field
 /// just as easily as through one. Stored under
@@ -1740,7 +1750,7 @@ async fn execute_create_node(
             "action[{}] create_node converged onto existing node '{}'",
             action_index, node_id
         );
-        return serde_json::to_value(&existing).map_err(|e| ActionError::ServiceError {
+        return binding_value(&existing).map_err(|e| ActionError::ServiceError {
             message: e.to_string(),
             action_index,
         });
@@ -1774,7 +1784,7 @@ async fn execute_create_node(
             action_index,
         })?;
 
-    serde_json::to_value(&created).map_err(|e| ActionError::ServiceError {
+    binding_value(&created).map_err(|e| ActionError::ServiceError {
         message: e.to_string(),
         action_index,
     })
@@ -1808,15 +1818,25 @@ async fn execute_update_node(
             action_index,
         })?;
 
+    // No action touches an archived node (ADR-087 §2). The action succeeds
+    // without writing, and reports the node as it stands.
+    if !crate::governance::participates(&current) {
+        info!(
+            "action[{}] update_node skipped: target '{}' is archived",
+            action_index, node_id
+        );
+        return binding_value(&current).map_err(|e| ActionError::ServiceError {
+            message: e.to_string(),
+            action_index,
+        });
+    }
+
     let mut update = NodeUpdate::default();
     if let Some(content) = params.get("content").and_then(|v| v.as_str()) {
         update.content = Some(content.to_string());
     }
     if let Some(properties) = params.get("properties") {
         update.properties = Some(properties.clone());
-    }
-    if let Some(status) = params.get("lifecycle_status").and_then(|v| v.as_str()) {
-        update.lifecycle_status = Some(status.to_string());
     }
     if let Some(node_type) = params.get("node_type").and_then(|v| v.as_str()) {
         update.node_type = Some(node_type.to_string());
@@ -1846,7 +1866,7 @@ async fn execute_update_node(
             },
         })?;
 
-    serde_json::to_value(&updated).map_err(|e| ActionError::ServiceError {
+    binding_value(&updated).map_err(|e| ActionError::ServiceError {
         message: e.to_string(),
         action_index,
     })
@@ -1881,6 +1901,18 @@ async fn execute_add_relationship(
                 action_index,
             })?;
     let edge_data = params.get("edge_data").cloned().unwrap_or(json!({}));
+
+    if has_archived_endpoint(node_service, source_id, target_id, action_index).await? {
+        info!(
+            "action[{}] add_relationship skipped: '{}' or '{}' is archived",
+            action_index, source_id, target_id
+        );
+        return Ok(relationship_action_output(
+            source_id,
+            target_id,
+            relationship_type,
+        ));
+    }
 
     node_service
         .create_relationship(source_id, relationship_type, target_id, edge_data)
@@ -1926,6 +1958,18 @@ async fn execute_remove_relationship(
                 action_index,
             })?;
 
+    if has_archived_endpoint(node_service, source_id, target_id, action_index).await? {
+        info!(
+            "action[{}] remove_relationship skipped: '{}' or '{}' is archived",
+            action_index, source_id, target_id
+        );
+        return Ok(relationship_action_output(
+            source_id,
+            target_id,
+            relationship_type,
+        ));
+    }
+
     node_service
         .delete_relationship(source_id, relationship_type, target_id)
         .await
@@ -1939,6 +1983,78 @@ async fn execute_remove_relationship(
         "target_id": target_id,
         "relationship_type": relationship_type,
     }))
+}
+
+// ---------------------------------------------------------------------------
+// Participation (ADR-087 §2): no action touches an archived node
+// ---------------------------------------------------------------------------
+
+/// What a relationship action reports, whether it wrote the edge or skipped
+/// it because an endpoint is archived.
+fn relationship_action_output(source_id: &str, target_id: &str, relationship_type: &str) -> Value {
+    json!({
+        "source_id": source_id,
+        "target_id": target_id,
+        "relationship_type": relationship_type,
+    })
+}
+
+/// Whether either end of an edge a relationship action would write is
+/// archived. A node that doesn't exist is not archived; the write itself
+/// reports it.
+async fn has_archived_endpoint(
+    node_service: &Arc<NodeService>,
+    source_id: &str,
+    target_id: &str,
+    action_index: usize,
+) -> Result<bool, ActionError> {
+    for id in [source_id, target_id] {
+        let node = node_service
+            .get_node(id)
+            .await
+            .map_err(|e| ActionError::ServiceError {
+                message: e.to_string(),
+                action_index,
+            })?;
+        if node.is_some_and(|n| !crate::governance::participates(&n)) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// The node `node_id` names, read inside the transaction, when it is
+/// archived. `None` for a participating node and for one that doesn't exist.
+async fn archived_target_in_tx(
+    txc: &TxCtx<'_>,
+    node_id: &str,
+    action_index: usize,
+) -> Result<Option<Node>, ActionError> {
+    let node = crate::db::SqliteStore::get_node_in_tx(txc.tx.store_tx(), node_id)
+        .await
+        .map_err(|e| ActionError::ServiceError {
+            message: e.to_string(),
+            action_index,
+        })?;
+    Ok(node.filter(|n| !crate::governance::participates(n)))
+}
+
+/// [`has_archived_endpoint`], reading inside the transaction.
+async fn has_archived_endpoint_in_tx(
+    txc: &TxCtx<'_>,
+    source_id: &str,
+    target_id: &str,
+    action_index: usize,
+) -> Result<bool, ActionError> {
+    for id in [source_id, target_id] {
+        if archived_target_in_tx(txc, id, action_index)
+            .await?
+            .is_some()
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 // ---------------------------------------------------------------------------
@@ -2170,7 +2286,7 @@ async fn execute_create_node_in_tx(
             "action[{}] create_node (in_tx) converged onto existing node '{}'",
             action_index, node_id
         );
-        return serde_json::to_value(&existing).map_err(|e| ActionError::ServiceError {
+        return binding_value(&existing).map_err(|e| ActionError::ServiceError {
             message: e.to_string(),
             action_index,
         });
@@ -2199,7 +2315,7 @@ async fn execute_create_node_in_tx(
             action_index,
         })?;
 
-    serde_json::to_value(&created).map_err(|e| ActionError::ServiceError {
+    binding_value(&created).map_err(|e| ActionError::ServiceError {
         message: e.to_string(),
         action_index,
     })
@@ -2220,15 +2336,23 @@ async fn execute_update_node_in_tx(
                 action_index,
             })?;
 
+    if let Some(archived) = archived_target_in_tx(txc, node_id, action_index).await? {
+        info!(
+            "action[{}] update_node (in_tx) skipped: target '{}' is archived",
+            action_index, node_id
+        );
+        return binding_value(&archived).map_err(|e| ActionError::ServiceError {
+            message: e.to_string(),
+            action_index,
+        });
+    }
+
     let mut update = NodeUpdate::default();
     if let Some(content) = params.get("content").and_then(|v| v.as_str()) {
         update.content = Some(content.to_string());
     }
     if let Some(properties) = params.get("properties") {
         update.properties = Some(properties.clone());
-    }
-    if let Some(status) = params.get("lifecycle_status").and_then(|v| v.as_str()) {
-        update.lifecycle_status = Some(status.to_string());
     }
     if let Some(node_type) = params.get("node_type").and_then(|v| v.as_str()) {
         update.node_type = Some(node_type.to_string());
@@ -2254,7 +2378,7 @@ async fn execute_update_node_in_tx(
             },
         })?;
 
-    serde_json::to_value(&updated).map_err(|e| ActionError::ServiceError {
+    binding_value(&updated).map_err(|e| ActionError::ServiceError {
         message: e.to_string(),
         action_index,
     })
@@ -2289,6 +2413,18 @@ async fn execute_add_relationship_in_tx(
                 action_index,
             })?;
     let edge_data = params.get("edge_data").cloned().unwrap_or(json!({}));
+
+    if has_archived_endpoint_in_tx(txc, source_id, target_id, action_index).await? {
+        info!(
+            "action[{}] add_relationship (in_tx) skipped: '{}' or '{}' is archived",
+            action_index, source_id, target_id
+        );
+        return Ok(relationship_action_output(
+            source_id,
+            target_id,
+            relationship_type,
+        ));
+    }
 
     txc.node_service
         .create_relationship_in_tx_no_invariant_dispatch(
@@ -2339,6 +2475,18 @@ async fn execute_remove_relationship_in_tx(
                 param: "target_id".to_string(),
                 action_index,
             })?;
+
+    if has_archived_endpoint_in_tx(txc, source_id, target_id, action_index).await? {
+        info!(
+            "action[{}] remove_relationship (in_tx) skipped: '{}' or '{}' is archived",
+            action_index, source_id, target_id
+        );
+        return Ok(relationship_action_output(
+            source_id,
+            target_id,
+            relationship_type,
+        ));
+    }
 
     txc.node_service
         .remove_relationship_in_tx_no_invariant_dispatch(
@@ -4413,7 +4561,7 @@ mod tests {
             );
 
             let all_text_nodes = svc
-                .query_nodes_by_type("text", None)
+                .query_nodes_by_type("text", true)
                 .await
                 .unwrap()
                 .into_iter()
@@ -4486,7 +4634,7 @@ mod tests {
             }
 
             let all_text_nodes = svc
-                .query_nodes_by_type("text", None)
+                .query_nodes_by_type("text", true)
                 .await
                 .unwrap()
                 .into_iter()
@@ -4557,7 +4705,7 @@ mod tests {
             assert!(svc.get_node(&id_under_b).await.unwrap().is_some());
 
             let all_text_nodes = svc
-                .query_nodes_by_type("text", None)
+                .query_nodes_by_type("text", true)
                 .await
                 .unwrap()
                 .into_iter()
@@ -4619,14 +4767,14 @@ mod tests {
             assert!(matches!(rb, ActionResult::Success), "{rb:?}");
 
             let mut ids_a: Vec<String> = svc_device_a
-                .query_nodes_by_type("text", None)
+                .query_nodes_by_type("text", true)
                 .await
                 .unwrap()
                 .into_iter()
                 .map(|n| n.id)
                 .collect();
             let mut ids_b: Vec<String> = svc_device_b
-                .query_nodes_by_type("text", None)
+                .query_nodes_by_type("text", true)
                 .await
                 .unwrap()
                 .into_iter()
@@ -4728,7 +4876,7 @@ mod tests {
             .await;
             assert!(matches!(result_a, ActionResult::Success), "{result_a:?}");
 
-            let all_after_a = svc.query_nodes_by_type("text", None).await.unwrap();
+            let all_after_a = svc.query_nodes_by_type("text", true).await.unwrap();
             assert_eq!(all_after_a.len(), 1, "rule A creates exactly one node");
             let rule_a_node_id = all_after_a[0].id.clone();
 
@@ -4759,7 +4907,7 @@ mod tests {
                 "rule B's execution reports success, masking that it wrote nothing of its own: {result_b:?}"
             );
 
-            let all_after_b = svc.query_nodes_by_type("text", None).await.unwrap();
+            let all_after_b = svc.query_nodes_by_type("text", true).await.unwrap();
             assert_eq!(
                 all_after_b.len(),
                 1,

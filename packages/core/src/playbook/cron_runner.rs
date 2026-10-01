@@ -164,9 +164,10 @@ pub(crate) async fn check_and_enqueue(
             entry.cron_expression, entry.node_type
         );
 
-        // Query all active nodes of this type (single DB scan per cron+node_type pair)
+        // Scan the participating nodes of this type (single DB scan per
+        // cron+node_type pair). An archived node is no scan target.
         let nodes = match node_service
-            .query_nodes_by_type(&entry.node_type, Some("active"))
+            .query_nodes_by_type(&entry.node_type, false)
             .await
         {
             Ok(nodes) => nodes,
@@ -567,6 +568,59 @@ mod tests {
                 .collect();
             assert!(ids.contains(&"c3a9129b-ee73-5379-b845-e13aef9e81a6"));
             assert!(ids.contains(&"2806fa65-22e1-5e87-a087-874666c63f01"));
+        }
+
+        /// A scan selects no archived node (ADR-087 §2): the scheduled rule
+        /// is enqueued for the participating node only.
+        #[tokio::test]
+        async fn check_and_enqueue_skips_an_archived_node() {
+            let (svc, _tmp) = create_test_service().await;
+
+            let schema = Node::new_with_id(
+                "cr_task_archived".to_string(),
+                "schema".to_string(),
+                "cr_task_archived".to_string(),
+                json!({
+                    "isCore": false,
+                    "schemaVersion": 1,
+                    "description": "cr_task_archived schema",
+                    "fields": [{"name": "status", "type": "text"}],
+                    "relationships": []
+                }),
+            );
+            svc.create_node(schema).await.unwrap();
+
+            let live = Node::new(
+                "cr_task_archived".to_string(),
+                "live task".to_string(),
+                json!({"status": "open"}),
+            );
+            let live_id = svc.create_node(live).await.unwrap();
+            let retired = Node::new(
+                "cr_task_archived".to_string(),
+                "retired task".to_string(),
+                json!({"status": "open"}),
+            );
+            let retired_id = svc.create_node(retired).await.unwrap();
+            let version = svc.get_node(&retired_id).await.unwrap().unwrap().version;
+            svc.update_node(
+                &retired_id,
+                version,
+                crate::models::NodeUpdate::new()
+                    .with_lifecycle_status(crate::governance::ARCHIVED.to_string()),
+            )
+            .await
+            .unwrap();
+
+            let lifecycle = make_lifecycle_with_cron("0 * * * * * *", "cr_task_archived");
+            let (tx, mut rx) = mpsc::channel::<ExecutionWorkItem>(100);
+            check_and_enqueue(&lifecycle, &svc, &tx, chrono::Local::now()).await;
+
+            let mut scanned = vec![];
+            while let Ok(item) = rx.try_recv() {
+                scanned.push(item.trigger_node.id);
+            }
+            assert_eq!(scanned, vec![live_id], "an archived node is no scan target");
         }
 
         #[tokio::test]

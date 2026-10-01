@@ -213,6 +213,16 @@ await run({
   timeoutMs: 5 * MINUTE,
   nice: !merge,
 });
+// lifecycle_status reads (ADR-087 section 2): the field is read through the
+// governance module's participation check and nowhere else, so a comparison in
+// a diff is a surface applying its own variant of the rule. Run on the push for
+// the same reason as the two checks above.
+await run({
+  label: "check-lifecycle-reads (ADR-087 one participation check)",
+  command: "bun run scripts/check-lifecycle-reads.ts",
+  timeoutMs: 5 * MINUTE,
+  nice: !merge,
+});
 
 if (!merge) {
   console.log("\n✓ Push check passed — pushing.\n");

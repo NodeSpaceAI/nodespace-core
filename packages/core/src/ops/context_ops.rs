@@ -733,9 +733,9 @@ pub async fn build_workspace_context(
         })
         .collect();
 
-    // Fetch active playbooks
+    // Fetch the plays that take part: an archived play is in no context
     let playbook_nodes = node_service
-        .query_nodes_by_type("play", Some("active"))
+        .query_nodes_by_type(crate::models::CoreNodeType::Play.as_str(), false)
         .await
         .unwrap_or_default();
 

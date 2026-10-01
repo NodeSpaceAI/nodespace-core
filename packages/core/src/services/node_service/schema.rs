@@ -4,39 +4,26 @@ use super::*;
 use crate::models::schema::RelationshipDirection;
 
 impl NodeService {
-    /// Query nodes by type with optional lifecycle_status filter.
+    /// Every node of `node_type`, and of each type extending it.
     ///
-    /// Used by the playbook engine to load all active plays at startup.
-    /// If `lifecycle_status` is `None`, returns all lifecycle statuses.
+    /// An archived node is left out unless `include_archived`: it participates
+    /// in nothing (ADR-087 §2). That is how an archived play doesn't run, an
+    /// archived skill isn't routed to and an archived tool isn't offered.
     pub async fn query_nodes_by_type(
         &self,
         node_type: &str,
-        lifecycle_status: Option<&str>,
+        include_archived: bool,
     ) -> Result<Vec<Node>, NodeServiceError> {
         let query = crate::models::NodeQuery {
             node_type: Some(node_type.to_string()),
+            include_archived,
             ..Default::default()
         };
 
-        let nodes = self
-            .store
+        self.store
             .query_nodes(query)
             .await
-            .map_err(NodeServiceError::from_store)?;
-
-        // In-memory filter: NodeQuery doesn't support lifecycle_status yet.
-        // Acceptable for desktop (low play counts). If scaling becomes
-        // a concern, add lifecycle_status to NodeQuery/SqliteStore query.
-        let filtered: Vec<Node> = if let Some(status) = lifecycle_status {
-            nodes
-                .into_iter()
-                .filter(|n| n.lifecycle_status == status)
-                .collect()
-        } else {
-            nodes
-        };
-
-        Ok(filtered)
+            .map_err(NodeServiceError::from_store)
     }
 
     /// Find an existing node whose value on a uniqueness-flagged field matches

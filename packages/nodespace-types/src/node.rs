@@ -177,6 +177,11 @@ pub struct NodeQuery {
     pub limit: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub offset: Option<usize>,
+    /// Also return archived nodes. The default leaves them out: an archived
+    /// node participates in nothing (ADR-087 §2). Omittable on the wire.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(as = "Option<bool>"))]
+    pub include_archived: bool,
 }
 
 impl NodeQuery {

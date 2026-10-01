@@ -564,10 +564,15 @@ pub async fn get_related_nodes(
         } => (forward_name.clone(), "in".to_string(), source_type.clone()),
     };
 
-    let nodes = node_service
+    // An archived node is in no list of related nodes (ADR-087 §2). It is
+    // still reached by id, and its edges are untouched.
+    let nodes: Vec<_> = node_service
         .get_related_nodes(&input.node_id, &relationship_name, &direction)
         .await
-        .map_err(|e| OpsError::Internal(format!("Failed to get related nodes: {}", e)))?;
+        .map_err(|e| OpsError::Internal(format!("Failed to get related nodes: {}", e)))?
+        .into_iter()
+        .filter(crate::governance::participates)
+        .collect();
 
     // The store keys the "in" query on relationship_type alone, so two schemas
     // declaring the same forward name toward this type would both answer here.
@@ -738,6 +743,7 @@ async fn collect_related(
 
     Ok(pairs
         .into_iter()
+        .filter(|(node, _)| crate::governance::participates(node))
         .map(|(node, edge_properties)| RelatedNodeView {
             content_preview: content_preview(&node.content),
             title: node.title.clone(),

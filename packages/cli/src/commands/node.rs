@@ -380,6 +380,7 @@ async fn children(client: &mut NodeClient, args: ChildrenArgs, json: bool) -> Re
 async fn query(client: &mut NodeClient, args: QueryArgs, json: bool) -> Result<()> {
     let response = client
         .query_nodes_simple(QueryNodesSimpleRequest {
+            include_archived: false,
             id: args.id,
             mentioned_by: args.mentioned_by,
             content_contains: args.content_contains,

@@ -116,6 +116,7 @@ impl NodeService {
             order_by: filter.order_by.clone(),
             limit: db_limit,
             offset: db_offset,
+            include_archived: filter.include_archived,
         };
 
         let nodes = self

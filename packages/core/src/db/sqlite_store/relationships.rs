@@ -321,11 +321,19 @@ impl SqliteStore {
         Ok(ids)
     }
 
+    /// The ids of the nodes that mention `node_id`. Backlinks are a list: an
+    /// archived node is not in it (ADR-087 §2).
     pub async fn get_incoming_mentions(&self, node_id: &str) -> Result<Vec<String>> {
-        let mut rows = self.read().await?.query(
-            "SELECT in_node FROM relationship WHERE out_node = ?1 AND relationship_type = 'mentions'",
-            libsql::params![node_id.to_string()],
-        ).await.context("Failed to get incoming mentions")?;
+        let sql = format!(
+            "SELECT r.in_node FROM relationship r JOIN node n ON n.id = r.in_node WHERE r.out_node = ?1 AND r.relationship_type = 'mentions'{}",
+            Self::and_default_query_conditions("n", false)
+        );
+        let mut rows = self
+            .read()
+            .await?
+            .query(&sql, libsql::params![node_id.to_string()])
+            .await
+            .context("Failed to get incoming mentions")?;
 
         let mut ids = Vec::new();
         while let Some(row) = rows.next().await? {
@@ -372,9 +380,12 @@ impl SqliteStore {
         let mut result = Vec::new();
         for chunk in container_id_list.chunks(ID_CHUNK) {
             let placeholders: Vec<String> = (1..=chunk.len()).map(|i| format!("?{}", i)).collect();
+            // Backlinks are a list: an archived container is not in it
+            // (ADR-087 §2).
             let sql = format!(
-                "SELECT id, title, node_type FROM node WHERE id IN ({})",
-                placeholders.join(", ")
+                "SELECT id, title, node_type FROM node WHERE id IN ({}){}",
+                placeholders.join(", "),
+                Self::and_default_query_conditions("", false)
             );
             let params: Vec<libsql::Value> = chunk
                 .iter()
@@ -980,13 +991,25 @@ impl SqliteStore {
         Ok(edges)
     }
 
-    pub async fn get_collection_members(&self, collection_id: &str) -> Result<Vec<Node>> {
+    /// A collection's direct members, in member order. An archived member
+    /// is left out unless `include_archived` (ADR-087 §2).
+    pub async fn get_collection_members(
+        &self,
+        collection_id: &str,
+        include_archived: bool,
+    ) -> Result<Vec<Node>> {
         let start = std::time::Instant::now();
 
-        let mut rows = self.read().await?.query(
-            "SELECT n.* FROM node n JOIN relationship r ON r.in_node = n.id WHERE r.out_node = ?1 AND r.relationship_type = 'member_of' ORDER BY json_extract(r.properties, '$.order') ASC",
-            libsql::params![collection_id.to_string()],
-        ).await.context("Failed to get collection members")?;
+        let sql = format!(
+            "SELECT n.* FROM node n JOIN relationship r ON r.in_node = n.id WHERE r.out_node = ?1 AND r.relationship_type = 'member_of'{} ORDER BY json_extract(r.properties, '$.order') ASC",
+            Self::and_default_query_conditions("n", include_archived)
+        );
+        let mut rows = self
+            .read()
+            .await?
+            .query(&sql, libsql::params![collection_id.to_string()])
+            .await
+            .context("Failed to get collection members")?;
 
         let mut nodes = Vec::new();
         while let Some(row) = rows.next().await? {
@@ -1002,13 +1025,12 @@ impl SqliteStore {
         Ok(nodes)
     }
 
-    /// Restricted to `lifecycle_status = 'active'`, matching the pattern
+    /// Restricted to participating collections, matching the pattern
     /// `find_conflicting_unique` established for the schema-declared `unique`
     /// mechanism (ADR-065): an archived collection no longer holds its name,
     /// so archiving one and creating a new collection with the same name is a
-    /// legitimate way to free up that name rather than a collision. Callers
-    /// that specifically need to look up an archived/deleted collection must
-    /// query the `node` table directly rather than use this method.
+    /// legitimate way to free up that name rather than a collision. An
+    /// archived collection is reached by id.
     pub async fn get_collection_by_name(&self, name: &str) -> Result<Option<Node>> {
         let normalized = name.to_lowercase();
 
@@ -1021,11 +1043,12 @@ impl SqliteStore {
                 .query(
                     &format!(
                         "SELECT id FROM node WHERE {} AND LOWER(title) = ?1 \
-                         AND lifecycle_status = 'active' LIMIT 1",
+                         AND {} LIMIT 1",
                         crate::db::schema::is_a_sql(
                             "node_type",
                             &[crate::models::CoreNodeType::Collection]
-                        )
+                        ),
+                        crate::governance::participates_sql("")
                     ),
                     libsql::params![normalized],
                 )
@@ -1054,8 +1077,9 @@ impl SqliteStore {
         let normalized: Vec<String> = names.iter().map(|n| n.to_lowercase()).collect();
         let placeholders: Vec<String> = (1..=normalized.len()).map(|i| format!("?{}", i)).collect();
         let sql = format!(
-            "SELECT id, title FROM node WHERE {} AND LOWER(title) IN ({})",
+            "SELECT id, title FROM node WHERE {} AND {} AND LOWER(title) IN ({})",
             crate::db::schema::is_a_sql("node_type", &[crate::models::CoreNodeType::Collection]),
+            crate::governance::participates_sql(""),
             placeholders.join(", ")
         );
 
@@ -1094,6 +1118,7 @@ impl SqliteStore {
     pub async fn get_collection_members_recursive(
         &self,
         collection_id: &str,
+        include_archived: bool,
     ) -> Result<Vec<String>> {
         // Get all collections in the subtree using WITH RECURSIVE.
         //
@@ -1106,6 +1131,12 @@ impl SqliteStore {
         // `r.out_node = cs.node_id` and taking `r.in_node`, restricted to
         // collection children (a content member isn't a sub-collection). A depth
         // cap bounds traversal in case a cycle slips in.
+        //
+        // An archived node participates in no list (ADR-087 §2): an archived
+        // member is left out, and an archived sub-collection is not descended
+        // into, unless the caller opted in.
+        let governed_sub = Self::and_default_query_conditions("n", include_archived);
+        let governed_member = Self::and_default_query_conditions("m", include_archived);
         let mut rows = self
             .read()
             .await?
@@ -1116,12 +1147,13 @@ impl SqliteStore {
                 UNION ALL
                 SELECT r.in_node, cs.depth + 1 FROM relationship r
                 JOIN coll_subtree cs ON r.out_node = cs.node_id
-                JOIN node n ON n.id = r.in_node AND {}
+                JOIN node n ON n.id = r.in_node AND {}{governed_sub}
                 WHERE r.relationship_type = 'member_of' AND cs.depth < 100
             )
             SELECT DISTINCT r.in_node FROM relationship r
             JOIN coll_subtree cs ON r.out_node = cs.node_id
-            WHERE r.relationship_type = 'member_of'"#,
+            JOIN node m ON m.id = r.in_node
+            WHERE r.relationship_type = 'member_of'{governed_member}"#,
                     crate::db::schema::is_a_sql(
                         "n.node_type",
                         &[crate::models::CoreNodeType::Collection]
@@ -1157,11 +1189,12 @@ impl SqliteStore {
                     "SELECT content, \
                      CASE WHEN json_type(properties, '$.collection.description') = 'text' \
                           THEN json_extract(properties, '$.collection.description') END \
-                     FROM node WHERE {} ORDER BY content ASC",
+                     FROM node WHERE {} AND {} ORDER BY content ASC",
                     crate::db::schema::is_a_sql(
                         "node_type",
                         &[crate::models::CoreNodeType::Collection]
-                    )
+                    ),
+                    crate::governance::participates_sql("")
                 ),
                 (),
             )
@@ -1195,7 +1228,9 @@ impl SqliteStore {
         // system/definition nodes, `collection` members are shown in the tree
         // itself, and `horizontal-line` is a decorative divider. Keep the two lists
         // in sync. Each covers its subtypes: a member of a type extending
-        // `person` is no more content than a person is.
+        // `person` is no more content than a person is. An archived member is
+        // in no list, so it isn't counted either (ADR-087 §2).
+        let participates = crate::governance::participates_sql("n");
         let is_content = crate::db::schema::is_not_a_sql(
             "n.node_type",
             &[
@@ -1216,6 +1251,7 @@ impl SqliteStore {
              JOIN node n ON n.id = r.in_node \
              WHERE r.relationship_type = 'member_of' \
                AND {is_content} \
+               AND {participates} \
              GROUP BY r.out_node"
                 ),
                 (),
@@ -1273,11 +1309,12 @@ impl SqliteStore {
     async fn get_all_collections(&self) -> Result<Vec<Node>> {
         self.query_nodes_from_sql(
             &format!(
-                "SELECT * FROM node WHERE {} ORDER BY content ASC",
+                "SELECT * FROM node WHERE {} AND {} ORDER BY content ASC",
                 crate::db::schema::is_a_sql(
                     "node_type",
                     &[crate::models::CoreNodeType::Collection]
-                )
+                ),
+                crate::governance::participates_sql("")
             ),
             (),
         )

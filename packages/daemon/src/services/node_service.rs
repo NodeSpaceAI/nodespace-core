@@ -643,6 +643,7 @@ impl GrpcNodeService for NodeServiceImpl {
             .node_service
             .query_nodes(nodespace_core::models::NodeFilter {
                 node_type: Some(req.node_type.clone()),
+                include_archived: true,
                 ..Default::default()
             })
             .await
@@ -789,7 +790,7 @@ impl GrpcNodeService for NodeServiceImpl {
 
         let roots = this
             .node_service
-            .get_roots(limit, offset)
+            .get_roots(limit, offset, false)
             .await
             .map_err(service_error_to_status)?;
 
@@ -815,7 +816,7 @@ impl GrpcNodeService for NodeServiceImpl {
 
         let count = this
             .node_service
-            .count_roots()
+            .count_roots(false)
             .await
             .map_err(service_error_to_status)?;
 
@@ -975,6 +976,7 @@ impl GrpcNodeService for NodeServiceImpl {
             } else {
                 Some(req.offset as usize)
             },
+            include_archived: req.include_archived,
         };
 
         let queried_type = query.node_type.clone();
@@ -1030,6 +1032,7 @@ impl GrpcNodeService for NodeServiceImpl {
             order_by: None,
             limit: None,
             offset: None,
+            include_archived: req.include_archived,
         };
 
         let count = this
@@ -3469,7 +3472,7 @@ mod tests {
 
         let seeded = svc
             .node_service
-            .query_nodes_by_type("person", None)
+            .query_nodes_by_type("person", true)
             .await
             .unwrap();
         assert_eq!(seeded.len(), 1);
@@ -3496,7 +3499,7 @@ mod tests {
 
         let seeded = svc
             .node_service
-            .query_nodes_by_type("person", None)
+            .query_nodes_by_type("person", true)
             .await
             .unwrap();
         let seeded_id = seeded[0].id.clone();
@@ -3524,7 +3527,7 @@ mod tests {
         // Still exactly one person afterward — no duplicate node was created.
         let people_after = svc
             .node_service
-            .query_nodes_by_type("person", None)
+            .query_nodes_by_type("person", true)
             .await
             .unwrap();
         assert_eq!(people_after.len(), 1);
@@ -3594,7 +3597,7 @@ mod tests {
 
         let seeded = svc
             .node_service
-            .query_nodes_by_type("person", None)
+            .query_nodes_by_type("person", true)
             .await
             .unwrap();
         let seeded_id = seeded[0].id.clone();

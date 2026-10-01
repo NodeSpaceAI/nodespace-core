@@ -264,6 +264,13 @@ impl NodeService {
         event: &DomainEvent,
         matched: Vec<crate::playbook::types::OrderedRuleRef>,
     ) -> Result<(), NodeServiceError> {
+        // No rule fires on an archived node (ADR-087 §2), an invariant
+        // included: the write that archives a node, and any later edit of
+        // it, is not a play's to veto or repair.
+        if !crate::governance::participates(node) {
+            return Ok(());
+        }
+
         for rule_ref in matched {
             if rule_ref.rule.class != RuleClass::Invariant {
                 continue;

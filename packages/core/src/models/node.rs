@@ -283,6 +283,11 @@ pub struct NodeFilter {
     /// Offset for pagination
     #[serde(skip_serializing_if = "Option::is_none")]
     pub offset: Option<usize>,
+
+    /// Also return archived nodes. The default leaves them out: an archived
+    /// node participates in nothing (ADR-087 §2).
+    #[serde(default)]
+    pub include_archived: bool,
 }
 
 impl NodeFilter {
@@ -340,6 +345,12 @@ impl NodeFilter {
     /// Set result limit
     pub fn with_limit(mut self, limit: usize) -> Self {
         self.limit = Some(limit);
+        self
+    }
+
+    /// Also return archived nodes
+    pub fn with_include_archived(mut self, include_archived: bool) -> Self {
+        self.include_archived = include_archived;
         self
     }
 

@@ -444,7 +444,7 @@ async function handleRequest(req: Request): Promise<Response> {
       // rejects a request carrying both, so both are forwarded as sent.
       const invalid = forwardStringLists(body, request, ['collections', 'collectionIds']);
       if (invalid) return invalid;
-      if (body.lifecycleStatus && body.lifecycleStatus !== '') request.lifecycleStatus = body.lifecycleStatus;
+      if (body.lifecycleStatus) request.lifecycleStatus = body.lifecycleStatus;
       const res = await call<typeof request, { nodeId: string; placement: ChildPlacement | null }>(
         (nodeClient as unknown as Record<string, Function>).createNode,
         request
@@ -498,7 +498,7 @@ async function handleRequest(req: Request): Promise<Response> {
         'removeFromCollectionIds'
       ]);
       if (invalid) return invalid;
-      if (body.lifecycleStatus && body.lifecycleStatus !== '') request.lifecycleStatus = body.lifecycleStatus;
+      if (body.lifecycleStatus) request.lifecycleStatus = body.lifecycleStatus;
       const res = await call<typeof request, { nodeData?: ProtoNodeData }>(
         (nodeClient as unknown as Record<string, Function>).updateNode,
         request

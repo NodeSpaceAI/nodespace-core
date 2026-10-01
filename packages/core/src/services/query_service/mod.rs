@@ -520,6 +520,11 @@ impl QueryService {
             conditions.push(condition);
         }
 
+        // A saved query is a default query: an archived node is in none of
+        // them, and neither is a type the registry leaves out (ADR-087 §2).
+        // The definition has no opt-in; an archived node is reached by id.
+        conditions.extend(crate::governance::default_query_conditions("", false));
+
         if !conditions.is_empty() {
             built.sql = format!(" WHERE {}", conditions.join(" AND "));
         }

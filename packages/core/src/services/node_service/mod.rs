@@ -1630,7 +1630,7 @@ impl NodeService {
     /// Idempotent: skips when a person already exists. Name/email stay absent
     /// until the user fills them in (PersonNodeBehavior allows it).
     async fn seed_local_person_if_needed(&self) -> Result<(), NodeServiceError> {
-        if !self.query_nodes_by_type("person", None).await?.is_empty() {
+        if !self.query_nodes_by_type("person", true).await?.is_empty() {
             return Ok(());
         }
         let person = Node::new("person".to_string(), String::new(), serde_json::json!({}));
@@ -1658,14 +1658,14 @@ impl NodeService {
         // short-circuit (`node.node_type == "database-settings"`), so only
         // the missing edge gets (re)created.
         let existing_settings = self
-            .query_nodes_by_type("database-settings", None)
+            .query_nodes_by_type("database-settings", true)
             .await?
             .into_iter()
             .next();
 
         if let Some(ref settings) = existing_settings {
             let local_person_id = self
-                .query_nodes_by_type("person", None)
+                .query_nodes_by_type("person", true)
                 .await?
                 .into_iter()
                 .next()
@@ -1705,7 +1705,7 @@ impl NodeService {
         // Attach the owner edge from the local PersonNode. Seeding order
         // guarantees exactly one local person exists at this point.
         let local_person_id = self
-            .query_nodes_by_type("person", None)
+            .query_nodes_by_type("person", true)
             .await?
             .into_iter()
             .next()
@@ -1770,7 +1770,7 @@ impl NodeService {
              falling back to the first person node"
         );
         Ok(self
-            .query_nodes_by_type("person", None)
+            .query_nodes_by_type("person", true)
             .await?
             .into_iter()
             .next())
@@ -1984,8 +1984,11 @@ impl NodeService {
 
         let mut existing_by_key: HashMap<String, HashMap<String, Node>> = HashMap::new();
         for node_type in &root_types {
+            // An archived seed still exists: archiving is how a user turns a
+            // seeded node off (ADR-087 §6), and it must not be seeded again.
             let filter = crate::models::NodeFilter {
                 node_type: Some(node_type.clone()),
+                include_archived: true,
                 ..Default::default()
             };
             let mut by_key = HashMap::new();
@@ -2302,8 +2305,10 @@ impl NodeService {
         };
         let children = &template_group[1..];
 
+        // An archived seed can be reset like any other; it stays archived.
         let filter = crate::models::NodeFilter {
             node_type: Some(node_type.to_string()),
+            include_archived: true,
             ..Default::default()
         };
         let existing = self.query_nodes(filter).await?.into_iter().find(|n| {
@@ -5416,17 +5421,6 @@ mod tests {
         let id = service.create_node(node).await.unwrap();
         let store = service.store();
 
-        // Direct single-column write path.
-        assert!(
-            store.update_lifecycle_status(&id, "deleted").await.is_err(),
-            "update_lifecycle_status must reject 'deleted'"
-        );
-        // A supported value on the same path still succeeds.
-        store
-            .update_lifecycle_status(&id, "archived")
-            .await
-            .expect("update_lifecycle_status must accept 'archived'");
-
         // Batch write path.
         assert!(
             store
@@ -6731,7 +6725,7 @@ mod tests {
             "node row must not exist after the transaction rolled back"
         );
 
-        let roots = service.get_roots(None, None).await.unwrap();
+        let roots = service.get_roots(None, None, false).await.unwrap();
         assert!(
             !roots.iter().any(|n| n.id == node_id),
             "a rolled-back create must never appear as a spurious root"
@@ -8940,7 +8934,7 @@ mod tests {
 
         // Exactly one database-settings node, with the reserved id.
         let settings = service
-            .query_nodes_by_type("database-settings", None)
+            .query_nodes_by_type("database-settings", true)
             .await
             .unwrap();
         assert_eq!(
@@ -8959,7 +8953,7 @@ mod tests {
         );
 
         // Exactly one local person, and exactly one has_role owner edge to the singleton.
-        let people = service.query_nodes_by_type("person", None).await.unwrap();
+        let people = service.query_nodes_by_type("person", true).await.unwrap();
         assert_eq!(people.len(), 1);
         let person_id = people[0].id.clone();
 
@@ -9004,7 +8998,7 @@ mod tests {
     async fn test_seed_database_settings_repairs_missing_owner_edge() {
         let (service, _temp) = create_test_service().await;
 
-        let people = service.query_nodes_by_type("person", None).await.unwrap();
+        let people = service.query_nodes_by_type("person", true).await.unwrap();
         let person_id = people[0].id.clone();
 
         // Simulate the F13 partial-failure state: settings node exists, but
@@ -9042,7 +9036,7 @@ mod tests {
         // Still exactly one settings node — the repair must not have
         // duplicated it via a second create.
         let settings = service
-            .query_nodes_by_type("database-settings", None)
+            .query_nodes_by_type("database-settings", true)
             .await
             .unwrap();
         assert_eq!(settings.len(), 1);
@@ -9057,7 +9051,7 @@ mod tests {
     async fn activate_seeded_plays(service: &NodeService) {
         let engine = crate::playbook::PlaybookEngine::new(Arc::new(service.clone()));
         service.set_playbook_lifecycle(engine.lifecycle().clone());
-        let plays = service.query_nodes_by_type("play", None).await.unwrap();
+        let plays = service.query_nodes_by_type("play", true).await.unwrap();
         assert!(!plays.is_empty(), "core Plays are seeded on open");
         let lifecycle = engine.lifecycle();
         let mut lm = lifecycle.write().unwrap();
@@ -9120,7 +9114,7 @@ mod tests {
     async fn test_get_local_person_resolves_the_seeded_owner() {
         let (service, _temp) = create_test_service().await;
 
-        let people = service.query_nodes_by_type("person", None).await.unwrap();
+        let people = service.query_nodes_by_type("person", true).await.unwrap();
         assert_eq!(people.len(), 1);
         let originally_seeded_id = people[0].id.clone();
 
@@ -9170,7 +9164,7 @@ mod tests {
     async fn test_get_local_person_falls_back_to_first_person_when_owner_edge_missing() {
         let (service, _temp) = create_test_service().await;
 
-        let people = service.query_nodes_by_type("person", None).await.unwrap();
+        let people = service.query_nodes_by_type("person", true).await.unwrap();
         let seeded_id = people[0].id.clone();
 
         // Simulate a database whose owner edge was dropped: remove the
@@ -9239,7 +9233,7 @@ mod tests {
     async fn test_get_local_person_warns_when_more_than_one_has_role_edge_exists() {
         let (service, _temp) = create_test_service().await;
 
-        let people = service.query_nodes_by_type("person", None).await.unwrap();
+        let people = service.query_nodes_by_type("person", true).await.unwrap();
         let seeded_id = people[0].id.clone();
 
         // A second has_role edge onto the singleton, from another person. A
@@ -9278,7 +9272,7 @@ mod tests {
     async fn test_get_local_person_does_not_warn_for_the_seeded_owner_edge() {
         let (service, _temp) = create_test_service().await;
 
-        let people = service.query_nodes_by_type("person", None).await.unwrap();
+        let people = service.query_nodes_by_type("person", true).await.unwrap();
         let seeded_id = people[0].id.clone();
 
         let (local, warned) = warn_fired_during(|| service.get_local_person()).await;
@@ -9294,7 +9288,7 @@ mod tests {
     async fn test_get_local_person_warns_when_no_has_role_edge_exists() {
         let (service, _temp) = create_test_service().await;
 
-        let people = service.query_nodes_by_type("person", None).await.unwrap();
+        let people = service.query_nodes_by_type("person", true).await.unwrap();
         let seeded_id = people[0].id.clone();
 
         // No has_role edge at all: seeding guarantees one, so its absence is
@@ -9319,7 +9313,7 @@ mod tests {
     async fn test_get_local_person_returns_none_with_no_person_node_at_all() {
         let (service, _temp) = create_test_service().await;
 
-        let people = service.query_nodes_by_type("person", None).await.unwrap();
+        let people = service.query_nodes_by_type("person", true).await.unwrap();
         let seeded = people[0].clone();
         service
             .delete_node(&seeded.id, seeded.version)
@@ -9337,7 +9331,7 @@ mod tests {
     async fn test_set_local_person_identity_writes_to_the_seeded_node_not_a_new_one() {
         let (service, _temp) = create_test_service().await;
 
-        let people = service.query_nodes_by_type("person", None).await.unwrap();
+        let people = service.query_nodes_by_type("person", true).await.unwrap();
         let seeded_id = people[0].id.clone();
 
         let updated = service
@@ -9354,7 +9348,7 @@ mod tests {
         assert_eq!(updated.properties["person"]["email"], "alice@example.com");
 
         // Still exactly one person — no duplicate was created.
-        let people_after = service.query_nodes_by_type("person", None).await.unwrap();
+        let people_after = service.query_nodes_by_type("person", true).await.unwrap();
         assert_eq!(people_after.len(), 1);
     }
 
@@ -9763,7 +9757,7 @@ mod tests {
         let (service, _temp) = create_test_service().await;
 
         let before = service
-            .query_nodes_by_type("database-settings", None)
+            .query_nodes_by_type("database-settings", true)
             .await
             .unwrap()[0]
             .properties
@@ -9780,7 +9774,7 @@ mod tests {
         assert_eq!(returned_id, DATABASE_SETTINGS_NODE_ID);
 
         let settings = service
-            .query_nodes_by_type("database-settings", None)
+            .query_nodes_by_type("database-settings", true)
             .await
             .unwrap();
         assert_eq!(
@@ -9803,7 +9797,7 @@ mod tests {
             let service = NodeService::new(&mut store).await.unwrap();
             assert_eq!(
                 service
-                    .query_nodes_by_type("database-settings", None)
+                    .query_nodes_by_type("database-settings", true)
                     .await
                     .unwrap()
                     .len(),
@@ -9816,7 +9810,7 @@ mod tests {
         let service = NodeService::new(&mut store).await.unwrap();
         assert_eq!(
             service
-                .query_nodes_by_type("database-settings", None)
+                .query_nodes_by_type("database-settings", true)
                 .await
                 .unwrap()
                 .len(),
@@ -9824,7 +9818,7 @@ mod tests {
             "re-opening an existing database must not seed a second DatabaseSettingsNode"
         );
 
-        let people = service.query_nodes_by_type("person", None).await.unwrap();
+        let people = service.query_nodes_by_type("person", true).await.unwrap();
         let edges = service
             .get_related_nodes(&people[0].id, "has_role", "out")
             .await
@@ -9866,7 +9860,7 @@ mod tests {
             .unwrap();
 
         let nodes = service
-            .query_nodes_by_type("agent-guidance", None)
+            .query_nodes_by_type("agent-guidance", true)
             .await
             .unwrap();
         assert_eq!(nodes.len(), 1);
@@ -9880,7 +9874,7 @@ mod tests {
             .unwrap();
 
         let nodes = service
-            .query_nodes_by_type("agent-guidance", None)
+            .query_nodes_by_type("agent-guidance", true)
             .await
             .unwrap();
         assert_eq!(
@@ -9891,6 +9885,59 @@ mod tests {
         let children = service.get_children(&nodes[0].id).await.unwrap();
         assert_eq!(children.len(), 1);
         assert_eq!(children[0].content, "You are v2, rewritten.");
+    }
+
+    /// Archiving is how a user turns a seeded node off (ADR-087 §6). The
+    /// next seeding pass finds the archived seed, leaves it archived, and
+    /// creates no second one: neither when the shipped template is unchanged
+    /// nor when it has new content to reconcile.
+    #[tokio::test]
+    async fn reseed_leaves_an_archived_seed_archived() {
+        use crate::markdown::{prepare_nodes_from_template, SeedTier};
+
+        let (service, _temp) = create_test_service().await;
+
+        let v1 = seed_template("Core Identity", "You are v1.", SeedTier::System);
+        service
+            .seed_nodes_from_templates(vec![prepare_nodes_from_template(&v1).unwrap()])
+            .await
+            .unwrap();
+        let seeded = service
+            .query_nodes_by_type("agent-guidance", false)
+            .await
+            .unwrap();
+        assert_eq!(seeded.len(), 1);
+        service
+            .update_node(
+                &seeded[0].id,
+                seeded[0].version,
+                NodeUpdate::new().with_lifecycle_status(crate::governance::ARCHIVED.to_string()),
+            )
+            .await
+            .unwrap();
+
+        let v2 = seed_template("Core Identity", "You are v2, rewritten.", SeedTier::System);
+        for template in [&v1, &v2] {
+            service
+                .seed_nodes_from_templates(vec![prepare_nodes_from_template(template).unwrap()])
+                .await
+                .expect("seeding over an archived seed succeeds");
+
+            assert!(
+                service
+                    .query_nodes_by_type("agent-guidance", false)
+                    .await
+                    .unwrap()
+                    .is_empty(),
+                "the archived seed stays off"
+            );
+            let all = service
+                .query_nodes_by_type("agent-guidance", true)
+                .await
+                .unwrap();
+            assert_eq!(all.len(), 1, "no second seed is created");
+            assert!(!crate::governance::participates(&all[0]));
+        }
     }
 
     /// Regression: a guidance replace must stamp `_seed.guidance_version` to
@@ -9916,7 +9963,7 @@ mod tests {
             .unwrap();
 
         let nodes_after_replace = service
-            .query_nodes_by_type("agent-guidance", None)
+            .query_nodes_by_type("agent-guidance", true)
             .await
             .unwrap();
         let children_after_replace = service
@@ -9935,7 +9982,7 @@ mod tests {
             .unwrap();
 
         let nodes_after_noop = service
-            .query_nodes_by_type("agent-guidance", None)
+            .query_nodes_by_type("agent-guidance", true)
             .await
             .unwrap();
         assert_eq!(nodes_after_noop.len(), 1);
@@ -9981,7 +10028,7 @@ mod tests {
             .await
             .unwrap();
 
-        let nodes = service.query_nodes_by_type("skill", None).await.unwrap();
+        let nodes = service.query_nodes_by_type("skill", true).await.unwrap();
         let root = &nodes[0];
         let children = service.get_children(&root.id).await.unwrap();
 
@@ -10054,7 +10101,7 @@ mod tests {
             .unwrap();
 
         let nodes = service
-            .query_nodes_by_type("agent-guidance", None)
+            .query_nodes_by_type("agent-guidance", true)
             .await
             .unwrap();
         assert_eq!(nodes.len(), 1);
@@ -10078,7 +10125,7 @@ mod tests {
             .unwrap();
 
         let nodes = service
-            .query_nodes_by_type("agent-guidance", None)
+            .query_nodes_by_type("agent-guidance", true)
             .await
             .unwrap();
         let root = &nodes[0];
@@ -10101,7 +10148,7 @@ mod tests {
             .unwrap();
 
         let nodes = service
-            .query_nodes_by_type("agent-guidance", None)
+            .query_nodes_by_type("agent-guidance", true)
             .await
             .unwrap();
         assert_eq!(
@@ -10128,7 +10175,7 @@ mod tests {
             .unwrap();
 
         let nodes = service
-            .query_nodes_by_type("agent-guidance", None)
+            .query_nodes_by_type("agent-guidance", true)
             .await
             .unwrap();
         let version_before = nodes[0].version;
@@ -10141,7 +10188,7 @@ mod tests {
             .unwrap();
 
         let nodes = service
-            .query_nodes_by_type("agent-guidance", None)
+            .query_nodes_by_type("agent-guidance", true)
             .await
             .unwrap();
         assert_eq!(nodes.len(), 1);
@@ -10186,7 +10233,7 @@ mod tests {
             .await
             .unwrap();
 
-        let nodes = service.query_nodes_by_type("skill", None).await.unwrap();
+        let nodes = service.query_nodes_by_type("skill", true).await.unwrap();
         assert_eq!(nodes.len(), 1);
         // Real schema fields land namespaced under properties.skill.* — confirms
         // this node actually went through the hoisting path this test targets.
@@ -10210,7 +10257,7 @@ mod tests {
             .await
             .unwrap();
 
-        let nodes = service.query_nodes_by_type("skill", None).await.unwrap();
+        let nodes = service.query_nodes_by_type("skill", true).await.unwrap();
         assert_eq!(
             nodes.len(),
             1,
@@ -10255,7 +10302,7 @@ mod tests {
             .await
             .unwrap();
 
-        let nodes = service.query_nodes_by_type("skill", None).await.unwrap();
+        let nodes = service.query_nodes_by_type("skill", true).await.unwrap();
         let root = &nodes[0];
         let children = service.get_children(&root.id).await.unwrap();
 
@@ -10292,7 +10339,7 @@ mod tests {
             .await
             .unwrap();
 
-        let nodes = service.query_nodes_by_type("skill", None).await.unwrap();
+        let nodes = service.query_nodes_by_type("skill", true).await.unwrap();
         assert_eq!(nodes.len(), 1, "reconciliation must not duplicate the node");
         assert_eq!(
             SkillNode::from_node(&nodes[0]).unwrap().description,
@@ -10337,7 +10384,7 @@ mod tests {
             .await
             .unwrap();
 
-        let nodes = service.query_nodes_by_type("skill", None).await.unwrap();
+        let nodes = service.query_nodes_by_type("skill", true).await.unwrap();
         let root = &nodes[0];
 
         // User edits only the root's own properties (config).
@@ -10373,7 +10420,7 @@ mod tests {
             .await
             .unwrap();
 
-        let nodes = service.query_nodes_by_type("skill", None).await.unwrap();
+        let nodes = service.query_nodes_by_type("skill", true).await.unwrap();
         assert_eq!(nodes.len(), 1, "reconciliation must not duplicate the node");
         assert_eq!(
             SkillNode::from_node(&nodes[0]).unwrap().description,
@@ -10414,7 +10461,7 @@ mod tests {
             .await
             .unwrap();
 
-        let nodes = service.query_nodes_by_type("skill", None).await.unwrap();
+        let nodes = service.query_nodes_by_type("skill", true).await.unwrap();
         let root = &nodes[0];
         let children = service.get_children(&root.id).await.unwrap();
 
@@ -10437,7 +10484,7 @@ mod tests {
             "guidance reset was requested and node exists"
         );
 
-        let nodes = service.query_nodes_by_type("skill", None).await.unwrap();
+        let nodes = service.query_nodes_by_type("skill", true).await.unwrap();
         assert_eq!(nodes.len(), 1, "reset must not duplicate the node");
         let children = service.get_children(&nodes[0].id).await.unwrap();
         assert_eq!(
@@ -10478,7 +10525,7 @@ mod tests {
             .await
             .unwrap();
 
-        let nodes = service.query_nodes_by_type("skill", None).await.unwrap();
+        let nodes = service.query_nodes_by_type("skill", true).await.unwrap();
         let root = &nodes[0];
         let children = service.get_children(&root.id).await.unwrap();
 
@@ -10506,7 +10553,7 @@ mod tests {
         assert!(config_reset);
         assert!(guidance_reset);
 
-        let nodes = service.query_nodes_by_type("skill", None).await.unwrap();
+        let nodes = service.query_nodes_by_type("skill", true).await.unwrap();
         assert_eq!(
             SkillNode::from_node(&nodes[0]).unwrap().description,
             "Search v1",
@@ -10555,7 +10602,7 @@ mod tests {
             .await
             .unwrap();
 
-        let nodes = service.query_nodes_by_type("tool", None).await.unwrap();
+        let nodes = service.query_nodes_by_type("tool", true).await.unwrap();
         assert_eq!(nodes.len(), 1);
         assert_eq!(nodes[0].properties["tool"]["description"], "Search v1");
         assert_eq!(
@@ -10579,7 +10626,7 @@ mod tests {
             .await
             .unwrap();
 
-        let nodes = service.query_nodes_by_type("tool", None).await.unwrap();
+        let nodes = service.query_nodes_by_type("tool", true).await.unwrap();
         assert_eq!(
             nodes.len(),
             1,
@@ -10625,7 +10672,7 @@ mod tests {
 
         assert_eq!(
             service
-                .query_nodes_by_type("agent-guidance", None)
+                .query_nodes_by_type("agent-guidance", true)
                 .await
                 .unwrap()
                 .len(),
@@ -10634,7 +10681,7 @@ mod tests {
         );
         assert_eq!(
             service
-                .query_nodes_by_type("skill", None)
+                .query_nodes_by_type("skill", true)
                 .await
                 .unwrap()
                 .len(),
@@ -10651,7 +10698,7 @@ mod tests {
             .await
             .unwrap();
 
-        let skills = service.query_nodes_by_type("skill", None).await.unwrap();
+        let skills = service.query_nodes_by_type("skill", true).await.unwrap();
         assert_eq!(
             skills.len(),
             1,

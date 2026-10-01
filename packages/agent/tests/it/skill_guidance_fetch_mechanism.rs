@@ -73,7 +73,7 @@ async fn a_users_graph_edit_to_seeded_guidance_is_immediately_visible_to_a_fetch
     let (node_service, _temp) = seeded_service().await;
 
     let skills = node_service
-        .query_nodes_by_type("skill", None)
+        .query_nodes_by_type("skill", true)
         .await
         .expect("query skills");
     let root = skills
@@ -131,7 +131,7 @@ async fn a_skill_rules_content_change_reaches_an_already_seeded_database() {
     let (node_service, _temp) = seeded_service().await;
 
     let skills_before = node_service
-        .query_nodes_by_type("skill", None)
+        .query_nodes_by_type("skill", true)
         .await
         .expect("query skills");
     assert!(
@@ -163,7 +163,7 @@ async fn a_skill_rules_content_change_reaches_an_already_seeded_database() {
         .expect("reseed against an already-seeded database must succeed");
 
     let skills_after = node_service
-        .query_nodes_by_type("skill", None)
+        .query_nodes_by_type("skill", true)
         .await
         .expect("query skills after reseed");
     assert_eq!(
@@ -201,7 +201,7 @@ async fn reset_seed_node_restores_a_users_edited_guidance_to_the_current_templat
     let (node_service, _temp) = seeded_service().await;
 
     let skills = node_service
-        .query_nodes_by_type("skill", None)
+        .query_nodes_by_type("skill", true)
         .await
         .expect("query skills");
     let root = skills

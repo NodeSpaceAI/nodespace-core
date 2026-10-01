@@ -39,14 +39,16 @@ impl NodeService {
             .map_err(NodeServiceError::from_store)
     }
 
-    /// Returns all root nodes — nodes with no parent edge in the graph.
+    /// Returns all root nodes — nodes with no parent edge in the graph. An
+    /// archived root is left out unless `include_archived` (ADR-087 §2).
     pub async fn get_roots(
         &self,
         limit: Option<usize>,
         offset: Option<usize>,
+        include_archived: bool,
     ) -> Result<Vec<Node>, NodeServiceError> {
         self.store
-            .get_roots(limit, offset)
+            .get_roots(limit, offset, include_archived)
             .await
             .map_err(NodeServiceError::from_store)
     }
@@ -54,9 +56,9 @@ impl NodeService {
     /// Count root nodes without listing them — the O(1)-response-size
     /// counterpart to `get_roots`, for callers (e.g. `nodespace diagnostics`)
     /// that only need a total.
-    pub async fn count_roots(&self) -> Result<i64, NodeServiceError> {
+    pub async fn count_roots(&self, include_archived: bool) -> Result<i64, NodeServiceError> {
         self.store
-            .count_roots()
+            .count_roots(include_archived)
             .await
             .map_err(NodeServiceError::from_store)
     }

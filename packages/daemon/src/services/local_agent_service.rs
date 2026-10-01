@@ -1157,7 +1157,11 @@ impl LocalAgentServiceImpl {
     /// Scan for ai-chat nodes stuck in `status: 'processing'` at daemon startup
     /// and retry their turns (handles daemon restart mid-turn).
     async fn recover_stuck_turns(&self) {
-        let filter = NodeFilter::new().with_node_type("ai-chat".to_string());
+        // Recovery is about a turn left running, not about a list: a chat
+        // archived mid-turn is recovered like any other.
+        let filter = NodeFilter::new()
+            .with_node_type("ai-chat".to_string())
+            .with_include_archived(true);
 
         let nodes = match self.inner.node_service.query_nodes(filter).await {
             Ok(n) => n,

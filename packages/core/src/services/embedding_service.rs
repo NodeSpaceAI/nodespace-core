@@ -215,11 +215,16 @@ impl NodeEmbeddingService {
     ///
     /// Also prepends the node title if present (title boost).
     ///
-    /// Returns `None` if the behavior says this node is not embeddable.
+    /// Returns `None` if the behavior says this node is not embeddable, or if
+    /// the node is archived: an archived node has no vectors (ADR-087 §2).
     async fn extract_content_for_embedding(
         &self,
         node: &Node,
     ) -> Result<Option<String>, NodeServiceError> {
+        if !crate::governance::participates(node) {
+            return Ok(None);
+        }
+
         let behavior = self.behavior_for(&node.node_type).await;
 
         // Phase 1: node's own content (sync, no I/O)
@@ -599,6 +604,12 @@ impl NodeEmbeddingService {
             }
         };
 
+        // An archived root is not queued: it has no place in the vector index.
+        if !crate::governance::participates(&root) {
+            tracing::debug!("Root {} is archived, skipping embedding queue", root_id);
+            return Ok(());
+        }
+
         // Check if root type is embeddable via behavior (replaces is_embeddable_type)
         let behavior = self.behavior_for(&root.node_type).await;
         if behavior.get_embeddable_content(&root).is_none() {
@@ -693,6 +704,7 @@ impl NodeEmbeddingService {
         query: &str,
         limit: usize,
         threshold: f32,
+        include_archived: bool,
     ) -> Result<Vec<EmbeddingSearchResult>, NodeServiceError> {
         let total_start = std::time::Instant::now();
 
@@ -722,7 +734,10 @@ impl NodeEmbeddingService {
             },
             async {
                 let start = std::time::Instant::now();
-                let r = self.store.bm25_search_titles(query, bm25_limit).await;
+                let r = self
+                    .store
+                    .bm25_search_titles(query, bm25_limit, include_archived)
+                    .await;
                 (r, start.elapsed())
             }
         );
@@ -923,6 +938,7 @@ impl NodeEmbeddingService {
         limit: usize,
         threshold: f32,
         filters: Option<&SearchNodeFilters>,
+        include_archived: bool,
     ) -> Result<Vec<(Node, f64)>, NodeServiceError> {
         let total_start = std::time::Instant::now();
 
@@ -943,7 +959,9 @@ impl NodeEmbeddingService {
             .unwrap_or(false);
         let fetch_limit = if has_filters { limit * 3 } else { limit };
 
-        let results = self.semantic_search(query, fetch_limit, threshold).await?;
+        let results = self
+            .semantic_search(query, fetch_limit, threshold, include_archived)
+            .await?;
 
         // Pre-resolve each distinct result node type's `extends` chain once
         // (ADR-078), not per row: `property_filters` needs the chain to find

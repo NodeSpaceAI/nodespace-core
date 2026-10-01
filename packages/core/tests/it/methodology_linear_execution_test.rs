@@ -301,7 +301,7 @@ async fn rollover_moves_a_task_rather_than_leaving_it_in_both_cycles() -> Result
 
     run_rollover(&service, &ending).await?;
 
-    let cycles = service.query_nodes_by_type("cycle", Some("active")).await?;
+    let cycles = service.query_nodes_by_type("cycle", false).await?;
     let successor = cycles
         .iter()
         .find(|c| c.id != ending)
@@ -385,7 +385,7 @@ async fn rollover_leaves_finished_work_in_the_ending_cycle() -> Result<()> {
     run_rollover(&service, &ending).await?;
 
     let successor = service
-        .query_nodes_by_type("cycle", Some("active"))
+        .query_nodes_by_type("cycle", false)
         .await?
         .into_iter()
         .find(|c| c.id != ending)
@@ -581,10 +581,7 @@ async fn rollover_leaves_a_cycle_that_is_not_ending_today_alone() -> Result<()> 
         .create_relationship(&ongoing, "tasks", &work, serde_json::json!({}))
         .await?;
 
-    let before = service
-        .query_nodes_by_type("cycle", Some("active"))
-        .await?
-        .len();
+    let before = service.query_nodes_by_type("cycle", false).await?.len();
 
     let outcome = run_rollover(&service, &ongoing).await;
     assert!(
@@ -594,10 +591,7 @@ async fn rollover_leaves_a_cycle_that_is_not_ending_today_alone() -> Result<()> 
     );
 
     assert_eq!(
-        service
-            .query_nodes_by_type("cycle", Some("active"))
-            .await?
-            .len(),
+        service.query_nodes_by_type("cycle", false).await?.len(),
         before,
         "no successor should have been created"
     );

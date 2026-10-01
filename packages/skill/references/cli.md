@@ -331,13 +331,16 @@ Both node IDs must already exist — look up missing IDs first (`nodespace node 
 
 ### Play automation rule-sets
 
-A Play (`trigger → conditions → actions`) is a `node_type: "play"` node, so its lifecycle is managed with generic verbs — no bespoke enable/disable/list commands exist:
+A Play (`trigger → conditions → actions`) is a `node_type: "play"` node:
 
 ```bash
-nodespace query --type play                                                  # list installed Plays
-nodespace node update <play-id> --lifecycle-status archived                  # disable a Play
-nodespace node update <play-id> --lifecycle-status active                    # re-enable a disabled Play
+nodespace playbook list                     # the Plays that can run
+nodespace playbook disable <play-id>        # archive a Play: it stops running and leaves every list
+nodespace playbook list --include-archived  # also the archived Plays, to find one's id
+nodespace playbook enable <play-id>         # unarchive it
 ```
+
+An archived node takes part in nothing, so no rule fires on one and no action touches one. A Play's conditions and actions can't read or set whether a node is archived.
 
 A Play's execution errors are **not** in the graph. Engine diagnostics (a failed
 action, a cycle-limit breach, a rule that would not compile) are operational
@@ -797,13 +800,15 @@ Inspect and manage node type schema definitions
 
 Inspect and control Play automation rule-sets (list, logs, enable, disable, get-workflow-state)
 
-**`nodespace playbook list`** — List all installed Plays and their lifecycle status
+**`nodespace playbook list`** — List the installed Plays that can run. An archived (disabled) Play is listed only with `--include-archived`
 
-**`nodespace playbook enable`** — Re-enable a disabled Play after fixing the underlying issue
+- `--include-archived` — Also list archived Plays, to find the id of one to `enable`
+
+**`nodespace playbook enable`** — Unarchive a Play so it runs again, after fixing the underlying issue
 
 - `<PLAY_ID>` — Play ID (node ID of the `play` node) (required)
 
-**`nodespace playbook disable`** — Manually disable a Play
+**`nodespace playbook disable`** — Archive a Play: it stops running and leaves every list
 
 - `<PLAY_ID>` — Play ID (node ID of the `play` node) (required)
 

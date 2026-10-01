@@ -579,7 +579,7 @@ async fn the_bundle_skill_names_a_re_keyed_schema_by_its_real_id() -> Result<()>
 /// The flattened markdown body of the seeded skill whose title contains
 /// `title_fragment`.
 async fn seeded_guidance(service: &Arc<NodeService>, title_fragment: &str) -> Result<String> {
-    let skills = service.query_nodes_by_type("skill", Some("active")).await?;
+    let skills = service.query_nodes_by_type("skill", false).await?;
     let skill = skills
         .iter()
         .find(|n| n.content.contains(title_fragment))

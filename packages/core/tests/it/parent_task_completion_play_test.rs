@@ -136,7 +136,7 @@ async fn reopening_a_database_does_not_duplicate_the_play() -> Result<()> {
     for _ in 0..2 {
         let mut store = Arc::new(SqliteStore::new(db_path.clone()).await?);
         let service = Arc::new(NodeService::new(&mut store).await?);
-        let plays = service.query_nodes_by_type("play", None).await?;
+        let plays = service.query_nodes_by_type("play", true).await?;
         let ids: Vec<&str> = plays.iter().map(|p| p.id.as_str()).collect();
         assert_eq!(
             ids,

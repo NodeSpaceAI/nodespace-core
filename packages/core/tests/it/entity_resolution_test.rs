@@ -152,7 +152,13 @@ mod entity_resolution_tests {
     async fn archived_nodes_are_not_resolved() -> Result<()> {
         let (store, service, _t) = create_test_store().await?;
         let id = seed_entity(&service, "text", "Northwind Trading").await?;
-        store.update_lifecycle_status(&id, "archived").await?;
+        store
+            .update_node(
+                &id,
+                nodespace_core::NodeUpdate::new().with_lifecycle_status("archived".to_string()),
+                None,
+            )
+            .await?;
 
         let hits = store
             .resolve_entities_by_title("Add Northwind Trading to the list", 12)

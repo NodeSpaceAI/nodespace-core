@@ -131,7 +131,7 @@ mod store_concurrency_tests {
         for i in 0..TASKS {
             assert_eq!(
                 store
-                    .get_collection_members(&collection_ids[i])
+                    .get_collection_members(&collection_ids[i], false)
                     .await?
                     .len(),
                 1,

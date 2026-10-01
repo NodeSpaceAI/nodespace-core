@@ -576,13 +576,14 @@ impl SqliteStore {
 
         // --- Step 3: archive the loser (see doc comment above for why
         // "archived" and not a literal "deleted" tombstone) ---
-        Self::validate_lifecycle_status("archived")?;
         conn.execute(
-            "UPDATE node SET lifecycle_status = 'archived', version = version + 1, modified_at = ?1 WHERE id = ?2",
-            libsql::params![now, loser_id.to_string()],
+            "UPDATE node SET lifecycle_status = ?1, version = version + 1, modified_at = ?2 WHERE id = ?3",
+            libsql::params![crate::governance::ARCHIVED, now, loser_id.to_string()],
         )
         .await
         .context("Failed to archive the merge loser")?;
+        Self::leave_vector_index_if_archiving(conn, loser_id, Some(crate::governance::ARCHIVED))
+            .await?;
 
         Ok((
             properties_merged,

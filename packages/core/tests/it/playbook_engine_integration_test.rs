@@ -702,7 +702,7 @@ async fn scheduled_play_computes_end_date_via_add_days_and_writes_it_to_a_new_no
         let service = Arc::clone(&service);
         async move {
             let results = service
-                .query_nodes_by_type("pb_cycle_result", Some("active"))
+                .query_nodes_by_type("pb_cycle_result", false)
                 .await
                 .unwrap_or_default();
             results.iter().any(|n| {

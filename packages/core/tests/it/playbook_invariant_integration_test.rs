@@ -845,7 +845,7 @@ async fn an_invariant_action_creating_a_node_does_not_trigger_another_invariant_
     // instead of computing the id, to keep this test's assertion independent
     // of the derivation formula's internals).
     let targets = service
-        .query_nodes_by_type("iv_chain_target", Some("active"))
+        .query_nodes_by_type("iv_chain_target", false)
         .await?;
     assert_eq!(
         targets.len(),
@@ -3219,7 +3219,7 @@ async fn sync_applied_update_is_repaired_by_a_saved_non_self_chaining_invariant(
         let service = Arc::clone(&service);
         async move {
             matches!(
-                service.query_nodes_by_type("iv_su_legal_log", None).await,
+                service.query_nodes_by_type("iv_su_legal_log", true).await,
                 Ok(nodes) if nodes.len() == 1
             )
         }

@@ -2532,6 +2532,7 @@ async fn database_routing_isolates_writes() {
     .expect("create in second");
 
     let query = QueryNodesSimpleRequest {
+        include_archived: false,
         id: None,
         mentioned_by: None,
         content_contains: Some("isolated-to-second".into()),
@@ -2592,6 +2593,7 @@ async fn query_nodes_simple_handles_response_over_the_default_grpc_limit() {
     // 90 × 60 KB ≈ 5.1 MB of content alone — past 4 MiB even before proto
     // framing and the rest of each record.
     let query = QueryNodesSimpleRequest {
+        include_archived: false,
         id: None,
         mentioned_by: None,
         content_contains: None,
@@ -2796,6 +2798,7 @@ async fn node_create_collection_paths_are_repeatable_and_auto_create() {
 
     let found = raw
         .query_nodes_simple(QueryNodesSimpleRequest {
+            include_archived: false,
             node_type: Some("text".into()),
             limit: 10,
             ..Default::default()
@@ -2829,6 +2832,7 @@ async fn node_create_collection_paths_are_repeatable_and_auto_create() {
     // `docs:rust` resolved as a hierarchy rather than as a flat label.
     let collections = raw
         .query_nodes_simple(QueryNodesSimpleRequest {
+            include_archived: false,
             node_type: Some("collection".into()),
             limit: 20,
             ..Default::default()
@@ -3151,6 +3155,7 @@ async fn node_create_required_field_without_default_needs_property_flag() {
         .expect("raw connect");
     let found = raw
         .query_nodes_simple(QueryNodesSimpleRequest {
+            include_archived: false,
             node_type: Some("customer".into()),
             limit: 10,
             ..Default::default()
@@ -3227,6 +3232,7 @@ async fn node_create_multiple_property_flags_set_multiple_fields() {
         .expect("raw connect");
     let found = raw
         .query_nodes_simple(QueryNodesSimpleRequest {
+            include_archived: false,
             node_type: Some("invoice".into()),
             limit: 10,
             ..Default::default()
@@ -3401,7 +3407,7 @@ async fn skill_reset_discards_modified_guidance_end_to_end() {
     let (sock, shutdown, _tempdir, node_service) = spawn_test_daemon_with_seeded_skills().await;
 
     let skills = node_service
-        .query_nodes_by_type("skill", None)
+        .query_nodes_by_type("skill", true)
         .await
         .expect("query skills");
     let root = skills
@@ -3549,7 +3555,7 @@ async fn spawn_test_daemon_with_playbook() -> (
     );
 }
 
-/// `nodespace playbook list` reduces to `ExecuteQuery` (per ADR-035
+/// `nodespace playbook list` reduces to `QueryNodesSimple` (per ADR-035
 /// capability parity) — this proves that reduction actually reaches the real
 /// daemon and returns the play nodes it should, not just that the CLI command
 /// builds a well-formed request.
@@ -3564,7 +3570,9 @@ async fn playbook_list_round_trip() {
     // No plays yet: list must return empty without error.
     commands::playbook::run(
         &mut client,
-        commands::playbook::PlaybookAction::List(commands::playbook::PlaybookListArgs {}),
+        commands::playbook::PlaybookAction::List(commands::playbook::PlaybookListArgs {
+            include_archived: false,
+        }),
         true,
     )
     .await
@@ -3575,18 +3583,64 @@ async fn playbook_list_round_trip() {
         "Test Play".to_string(),
         serde_json::json!({ "rules": [] }),
     );
-    node_service
+    let play_id = node_service
         .create_node(play)
         .await
         .expect("create play node");
 
     commands::playbook::run(
         &mut client,
-        commands::playbook::PlaybookAction::List(commands::playbook::PlaybookListArgs {}),
+        commands::playbook::PlaybookAction::List(commands::playbook::PlaybookListArgs {
+            include_archived: false,
+        }),
         true,
     )
     .await
     .expect("playbook list (one play)");
+
+    // A disabled Play is archived, so it leaves the list. `--include-archived`
+    // is the way back to its id for `playbook enable`.
+    commands::playbook::run(
+        &mut client,
+        commands::playbook::PlaybookAction::Disable(commands::playbook::PlaybookIdArgs {
+            play_id: play_id.clone(),
+        }),
+        true,
+    )
+    .await
+    .expect("playbook disable");
+
+    for include_archived in [false, true] {
+        let listed = client
+            .query_nodes_simple(QueryNodesSimpleRequest {
+                include_archived,
+                id: None,
+                mentioned_by: None,
+                content_contains: None,
+                title_contains: None,
+                node_type: Some("play".to_string()),
+                limit: 0,
+                offset: 0,
+                order_by: 0,
+            })
+            .await
+            .expect("QueryNodesSimple")
+            .into_inner();
+        assert_eq!(
+            listed.nodes.iter().any(|n| n.id == play_id),
+            include_archived,
+            "include_archived={include_archived}"
+        );
+    }
+    commands::playbook::run(
+        &mut client,
+        commands::playbook::PlaybookAction::List(commands::playbook::PlaybookListArgs {
+            include_archived: true,
+        }),
+        true,
+    )
+    .await
+    .expect("playbook list --include-archived");
 
     let _ = shutdown.send(());
 }

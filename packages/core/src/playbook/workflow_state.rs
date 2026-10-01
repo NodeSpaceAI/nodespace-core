@@ -537,7 +537,7 @@ async fn evaluate_one_condition(
 
 /// Core node fields resolvable with no schema lookup at all — a condition
 /// naming one of these is never a typo regardless of what the schema declares.
-const CORE_FIELDS: &[&str] = &["id", "node_type", "content", "version", "lifecycle_status"];
+const CORE_FIELDS: &[&str] = &["id", "node_type", "content", "version"];
 
 /// Distinguish a legitimately-unmet condition from one that can never resolve.
 ///

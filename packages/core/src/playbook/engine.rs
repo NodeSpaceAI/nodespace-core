@@ -308,7 +308,7 @@ impl PlaybookEngine {
 
         let nodes = self
             .node_service
-            .query_nodes_by_type(crate::models::CoreNodeType::Play.as_str(), Some("active"))
+            .query_nodes_by_type(crate::models::CoreNodeType::Play.as_str(), false)
             .await?;
 
         let mut loaded = 0;
@@ -608,6 +608,15 @@ impl PlaybookEngine {
             }
         };
 
+        // No rule fires on an archived node (ADR-087 §2).
+        if !crate::governance::participates(&trigger_node) {
+            debug!(
+                node_id = %trigger_node.id,
+                "Trigger node is archived; no rule fires on it"
+            );
+            return;
+        }
+
         // Enqueue the work item
         let work_item = ExecutionWorkItem {
             rules: matched_rules,
@@ -711,6 +720,12 @@ impl PlaybookEngine {
                 return;
             }
         };
+
+        // No rule fires on an archived node (ADR-087 §2), repair included.
+        if !crate::governance::participates(&node) {
+            debug!(node_id, "Repair-and-log: node is archived, skipping");
+            return;
+        }
 
         // Whether the received write continues a play chain is decided from
         // the event as received (its committed node and diff), before the
@@ -876,7 +891,9 @@ impl PlaybookEngine {
     /// the play is disabled and each error is logged.
     async fn handle_play_created(&self, node_id: &str) {
         match self.node_service.get_node(node_id).await {
-            Ok(Some(node)) if node.lifecycle_status == "active" => {
+            // An archived play takes part in nothing, so it never activates
+            // (ADR-087 §2).
+            Ok(Some(node)) if crate::governance::participates(&node) => {
                 // Parse rules first for validation
                 let parsed_rules = match parse_rules_for_validation(&node) {
                     Ok(rules) => rules,
@@ -955,9 +972,9 @@ impl PlaybookEngine {
         lifecycle.deactivate_play(play_id);
     }
 
-    /// Handle a play node being updated — detect status transitions.
+    /// Handle a play node being updated — detect participation changes.
     ///
-    /// If lifecycle_status changed from disabled→active, re-enable (with validation).
+    /// If the play was unarchived, re-enable it (with validation).
     /// If rules changed, re-parse (with validation).
     /// Phase 7: validates before (re-)activation.
     async fn handle_play_updated(&self, node_id: &str) {
@@ -972,6 +989,10 @@ impl PlaybookEngine {
                 return;
             }
         };
+
+        // The engine's only use of lifecycle: whether the play takes part
+        // (ADR-087 §2). An archived play doesn't run.
+        let participates = crate::governance::participates(&node);
 
         // Read current status AND the pre-edit rule set (short lock) — the
         // latter is what ADR-060 §8's warning needs to name (the invariant
@@ -1007,11 +1028,7 @@ impl PlaybookEngine {
                     .map(|pb| crate::playbook::seeded::invariant_rule_names(&pb.rules))
                     .unwrap_or_default()
             };
-            let action = if node.lifecycle_status == "active" {
-                "edited"
-            } else {
-                "disabled"
-            };
+            let action = if participates { "edited" } else { "disabled" };
             let message =
                 crate::playbook::seeded::edit_or_disable_warning(node_id, action, &old_rule_names);
             warn!(
@@ -1022,18 +1039,12 @@ impl PlaybookEngine {
             );
         }
 
-        let needs_activation = matches!(
-            (&current_status, node.lifecycle_status.as_str()),
-            (Some(PlayStatus::Disabled), "active")
-                | (Some(PlayStatus::Active), "active")
-                | (None, "active")
-        );
+        // A participating play is (re-)activated whatever its state in the
+        // manager: disabled, active (an edit), or not yet known.
+        let needs_activation = participates;
 
-        // Active → Non-active: just disable, no validation needed
-        if matches!(
-            (&current_status, node.lifecycle_status.as_str()),
-            (Some(PlayStatus::Active), status) if status != "active"
-        ) {
+        // Active → archived: just disable, no validation needed
+        if current_status == Some(PlayStatus::Active) && !participates {
             let mut lifecycle = self.lifecycle.write().expect("lifecycle lock poisoned");
             lifecycle.disable_play(node_id);
             return;
@@ -1072,7 +1083,7 @@ impl PlaybookEngine {
                     //   the user's re-enable.
                     // - `Active -> active` (edit while running): the OLD,
                     //   pre-edit rules would keep executing under the
-                    //   `lifecycle_status: active` node the user just
+                    //   participating node the user just
                     //   edited, silently discarding their change with
                     //   nothing but a log line to show for it.
                     // All three are worse than proceeding on an unconfirmed
