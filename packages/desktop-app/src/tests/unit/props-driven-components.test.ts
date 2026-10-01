@@ -10,10 +10,17 @@
  * All logic tests run in Happy-DOM mode (`bun run test`).
  */
 
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { describe, it, expect } from 'vitest';
 import type { NodeReference } from '$lib/types/node';
 import { deriveTaskState, stripTaskMarker } from '$lib/design/components/task-state-syntax';
 import { DATA_PLANE_READY_EVENT } from '$lib/services/daemon-status';
+
+/** Read a file by its path under packages/desktop-app, resolved from this file so any runner cwd works. */
+function readDesktopAppFile(path: string): string {
+  return readFileSync(resolve(__dirname, '../../..', path), 'utf8');
+}
 
 // ============================================================================
 // BacklinksPanel — Props Interface
@@ -246,10 +253,8 @@ describe('DateNode props contract', () => {
 // ============================================================================
 
 describe('NavigationSidebar Tauri independence', () => {
-  it('does not import the Tauri event API', async () => {
-    const { readFileSync } = await import('node:fs');
-    // Vitest runs with packages/desktop-app as cwd (see its vitest config root).
-    const sidebar = readFileSync('src/lib/components/layout/navigation-sidebar.svelte', 'utf8');
+  it('does not import the Tauri event API', () => {
+    const sidebar = readDesktopAppFile('src/lib/components/layout/navigation-sidebar.svelte');
 
     expect(sidebar).not.toContain('@tauri-apps/api/event');
   });
@@ -260,14 +265,8 @@ describe('NavigationSidebar Tauri independence', () => {
 // ============================================================================
 
 describe('AppShell data-plane-ready reload', () => {
-  async function readSource(path: string): Promise<string> {
-    const { readFileSync } = await import('node:fs');
-    // Vitest runs with packages/desktop-app as cwd (see its vitest config root).
-    return readFileSync(path, 'utf8');
-  }
-
-  it('reloads schemas and collections when the daemon data plane is ready', async () => {
-    const shell = await readSource('src/lib/components/layout/app-shell.svelte');
+  it('reloads schemas and collections when the daemon data plane is ready', () => {
+    const shell = readDesktopAppFile('src/lib/components/layout/app-shell.svelte');
     const listener = shell.indexOf('listen(DATA_PLANE_READY_EVENT');
 
     expect(listener, 'app-shell must listen for DATA_PLANE_READY_EVENT').toBeGreaterThan(-1);
@@ -276,16 +275,16 @@ describe('AppShell data-plane-ready reload', () => {
     expect(handler).toContain('collectionsData.loadCollections()');
   });
 
-  it('no longer listens for the legacy capability-probe event', async () => {
-    const shell = await readSource('src/lib/components/layout/app-shell.svelte');
+  it('no longer listens for the legacy capability-probe event', () => {
+    const shell = readDesktopAppFile('src/lib/components/layout/app-shell.svelte');
     // Built from fragments so this test is not itself a hit for the event name.
     const legacyEvent = ['pro', 'tier-detected'].join(':');
 
     expect(shell).not.toContain(legacyEvent);
   });
 
-  it('names the same event the Rust startup task emits', async () => {
-    const rust = await readSource('app-lib/src/lib.rs');
+  it('names the same event the Rust startup task emits', () => {
+    const rust = readDesktopAppFile('app-lib/src/lib.rs');
 
     expect(DATA_PLANE_READY_EVENT).toBe('daemon:data-plane-ready');
     expect(rust).toContain(`"${DATA_PLANE_READY_EVENT}"`);

@@ -1714,12 +1714,15 @@ mod run_wiring_tests {
         let round_trip = tail
             .find("data_plane_round_trip(")
             .expect("the daemon is asked for a data-plane round trip after the reachability check");
+        let answered_gate = tail
+            .find("if outcome == Some(DataPlaneRoundTrip::Answered)")
+            .expect("the emit is gated on the round trip being answered, not on any completion");
         let emit = tail
             .find("emit(DATA_PLANE_READY_EVENT")
             .expect("the data-plane-ready event is emitted after the reachability check");
 
         assert!(
-            round_trip < emit,
+            round_trip < answered_gate && answered_gate < emit,
             "the event is emitted only after the daemon answers the round trip"
         );
         assert_eq!(
