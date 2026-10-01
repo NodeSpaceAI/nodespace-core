@@ -72,7 +72,11 @@ where
                  does not support; resubscribing when the active database changes"
             ),
             Err(e) => {
-                tracing::warn!(error = %e, "Token stream subscription failed; reconnecting in 2s")
+                tracing::warn!(
+                    code = ?e.code(),
+                    error = %e.message(),
+                    "Token stream subscription failed; reconnecting in 2s"
+                )
             }
         }
         wait_to_resubscribe(&outcome, &mut db_changed, RESUBSCRIBE_DELAY).await;
