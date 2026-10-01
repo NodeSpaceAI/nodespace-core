@@ -446,7 +446,7 @@ fn keys_that_are_not_names(value: &serde_json::Value, found: &mut Vec<String>) {
 /// nothing else — but closes a string with the `"` it read in the history, so
 /// the string never ends. Measured before generation stopped at the close
 /// marker: the "argument" ran on through the marker and several sentences of
-/// answer to the 512-token cap, 26 seconds, in 4 of 4 trials. It now stops at
+/// answer to the 512-token cap in 4 of 4 trials. It now stops at
 /// the marker with nothing after it, and the unterminated arguments are what
 /// the agent loop reports back as a malformed call.
 #[tokio::test(flavor = "multi_thread")]

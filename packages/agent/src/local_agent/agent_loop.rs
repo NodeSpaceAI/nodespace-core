@@ -1781,6 +1781,10 @@ fn failure_reason(record: &ToolExecutionRecord) -> FailureReason {
         .strip_prefix(record.name.as_str())
         .and_then(|rest| rest.strip_prefix(" failed: "))
         .unwrap_or(text);
+    // The first sentence only. A tool's error is written for the model and
+    // goes on to tell it what to do next, or to quote a schema back at it.
+    let text = text.lines().next().unwrap_or(text);
+    let text = text.split_once(". ").map_or(text, |(first, _)| first);
     let (preview, truncated) = char_preview(text.trim_end_matches('.'), 200);
     FailureReason::Failed(Some(if truncated {
         format!("{preview}…")
@@ -5656,6 +5660,17 @@ mod tests {
         assert_eq!(
             describe_unsurfaced_failures(&[&failed]),
             "⚠️ I couldn't complete the node update: Node not found: abc."
+        );
+
+        // Only the tool's first sentence: the rest is addressed to the model.
+        let instructive = failed_record(
+            "create_schema",
+            json!({"error": "Schema 'event location' already exists — it was NOT modified, and the fields in this call were NOT applied. Its actual definition is: - event_location \"event location\" -> booking_date: date; capacity: number\nCall update_schema to change it."}),
+        );
+        assert_eq!(
+            describe_unsurfaced_failures(&[&instructive]),
+            "⚠️ I couldn't complete the schema creation: Schema 'event location' already exists \
+             — it was NOT modified, and the fields in this call were NOT applied."
         );
 
         let unexplained = failed_record("update_node", json!({"ok": false}));
