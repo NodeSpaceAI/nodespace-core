@@ -1078,16 +1078,64 @@ fn complete_type_listing(record: &ToolExecutionRecord) -> Option<Vec<(String, St
     (types.len() == nodes.len()).then_some(types)
 }
 
+/// The given types as the links a reply names them with.
+fn type_links<'a>(types: impl IntoIterator<Item = &'a (String, String)>) -> String {
+    types
+        .into_iter()
+        .map(|(uri, title)| format!("[{title}]({uri})"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// The reply that writes a complete type listing out.
+fn written_out_type_listing(types: &[(String, String)]) -> String {
+    format!(
+        "This workspace has {} types: {}.",
+        types.len(),
+        type_links(types)
+    )
+}
+
+/// The types a reply was listing when it was suppressed for an ungrounded id,
+/// or `None` when the reply was not a listing of types.
+///
+/// One slip among twenty-odd links — a space inside an id — reads as an
+/// invented node, and the reply is suppressed whole. When the turn ran a
+/// complete type listing ([`complete_type_listing`]), wrote nothing, and the
+/// suppressed text links at least [`TYPE_LISTING_MIN_LINKED`] of the types the
+/// search returned, the reply was that list with a slip in it, and the list
+/// can be written out from the result instead. Read off the suppressed text
+/// because that is the only evidence of what the reply was: a turn that ran
+/// the same search on its way to something else gets the usual replacement.
+fn suppressed_type_listing(
+    suppressed: &str,
+    executions: &[ToolExecutionRecord],
+) -> Option<Vec<(String, String)>> {
+    if executions
+        .iter()
+        .any(|r| super::tools::is_write_tool(&r.name))
+    {
+        return None;
+    }
+    let types = executions.iter().rev().find_map(complete_type_listing)?;
+    let linked: HashSet<&str> = extract_node_uris(suppressed).into_iter().collect();
+    let named = types
+        .iter()
+        .filter(|(uri, _)| linked.contains(uri.as_str()))
+        .count();
+    (named >= TYPE_LISTING_MIN_LINKED).then_some(types)
+}
+
 /// Complete a reply that lists some of the workspace's types and not the rest.
 ///
 /// Applied to every completed turn. Asked which types exist, the model runs
 /// the search, gets every type back, and then names the custom ones and waves
 /// at the rest: "…and several built-in types like task, text, date, etc." The
 /// reply rules ask for short answers and the list is twenty-odd rows, so the
-/// model shortens it. Measured on `gemma-4-e4b-q4km` over three workspaces: a
-/// clause in the tool description, a note on the result and a completeness
-/// flag each left the reply partial in at least two of the three; trimming the
-/// result rows got two of the three complete.
+/// model shortens it, and no instruction channel measured on
+/// `gemma-4-e4b-q4km` makes the reply complete on every workspace: a clause in
+/// the tool description, a note on the result and a completeness flag leave it
+/// partial on at least two of three, and trimming the result rows on one.
 ///
 /// So the list is completed here. When the turn ran a complete type listing
 /// ([`complete_type_listing`]) and the reply links at least
@@ -1097,9 +1145,10 @@ fn complete_type_listing(record: &ToolExecutionRecord) -> Option<Vec<(String, St
 /// A reply that links fewer is answering something else off the same search —
 /// whether one particular type exists, say — and is left alone.
 ///
-/// When the turn has no reply of the model's to complete — only the stand-in
-/// for an empty or suppressed one — the whole list is written out in its
-/// place, provided the turn wrote nothing.
+/// When the model wrote no reply at all and listing the types is everything the
+/// turn did, the list is written out in place of the summary bullet. A reply
+/// suppressed for an ungrounded id is handled where it is suppressed, while its
+/// text can still show it was a listing ([`suppressed_type_listing`]).
 fn type_listing_backstop(session: &mut AgentSession, result: &mut AgentTurnResult) {
     if result.clarify.is_some() {
         return;
@@ -1112,37 +1161,23 @@ fn type_listing_backstop(session: &mut AgentSession, result: &mut AgentTurnResul
     else {
         return;
     };
-    let links = |types: &[&(String, String)]| {
-        types
-            .iter()
-            .map(|(uri, title)| format!("[{title}]({uri})"))
-            .collect::<Vec<_>>()
-            .join(", ")
-    };
-
-    // The model's reply did not survive: it wrote nothing after the search, or
-    // one slip among twenty-odd links (a space inside an id) had the
-    // fabricated-id guard replace the lot with a request to confirm. Either
-    // way the user is looking at a stand-in while the answer sits in the tool
-    // result, so the list is written out from it. Only on a turn that wrote
-    // nothing: after a write, the stand-in reports the write, and that stays.
-    let read_only = !result
+    // The model wrote nothing after the search, so the user is looking at a
+    // bullet saying a search ran while the answer sits in its result. That the
+    // turn was a listing of types cannot be read off a reply that is not there,
+    // so it is read off the turn: listing the types is all it did. A second
+    // read, a failed call or a write means the turn was about something else,
+    // and its summary stays.
+    let only_listed_types = result
         .tool_calls_made
         .iter()
-        .any(|r| super::tools::is_write_tool(&r.name));
-    let stand_in = result.response == CONFIRMATION_REQUEST
-        || result.response == summarize_executions(&result.tool_calls_made);
-    if read_only && stand_in {
+        .all(|r| complete_type_listing(r).is_some());
+    if only_listed_types && result.response == summarize_executions(&result.tool_calls_made) {
         tracing::info!(
             session_id = %session.id,
             types = types.len(),
-            "Type listing ended without a usable reply — writing the list out"
+            "Type listing ended with no reply — writing the list out"
         );
-        let listed = format!(
-            "This workspace has {} types: {}.",
-            types.len(),
-            links(&types.iter().collect::<Vec<_>>())
-        );
+        let listed = written_out_type_listing(&types);
         replace_turn_reply(session, &listed);
         result.response = listed;
         return;
@@ -1155,7 +1190,7 @@ fn type_listing_backstop(session: &mut AgentSession, result: &mut AgentTurnResul
     if named.len() < TYPE_LISTING_MIN_LINKED || missing.is_empty() {
         return;
     }
-    let rest = links(&missing);
+    let rest = type_links(missing.iter().copied());
     tracing::info!(
         session_id = %session.id,
         linked = named.len(),
@@ -3308,7 +3343,10 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                             response_preview_truncated = preview_truncated,
                             "Fabricated id: model referenced a nodespace:// id no tool call this turn produced — replacing response"
                         );
-                        suppressed_response_replacement(&all_tool_executions)
+                        match suppressed_type_listing(&normalized, &all_tool_executions) {
+                            Some(types) => written_out_type_listing(&types),
+                            None => suppressed_response_replacement(&all_tool_executions),
+                        }
                     }
                 } else {
                     normalized
@@ -9911,30 +9949,52 @@ mod tests {
         assert_eq!(reply, "• node search completed");
     }
 
-    /// After a write, the stand-in is what tells the user the write happened.
-    #[test]
-    fn a_stand_in_reply_is_kept_on_a_turn_that_wrote() {
-        let record =
-            |name: &str, args: serde_json::Value, result: serde_json::Value| ToolExecutionRecord {
+    /// A reply suppressed for an ungrounded id is a slipped listing only when
+    /// its own text links the listed types. A turn that ran the same search on
+    /// its way to something else keeps the request to confirm: nothing in the
+    /// reply says the user asked for a list.
+    #[tokio::test]
+    async fn a_suppressed_reply_that_was_not_a_listing_keeps_the_request_to_confirm() {
+        for not_a_listing in [
+            // An invented record, no listed type linked.
+            "I set that up as [Sponsor](nodespace://4f2a-9c1e).",
+            // One listed type linked beside the invented id.
+            "It extends [Task](nodespace://task): see nodespace://4f2a-9c1e.",
+        ] {
+            let (reply, _) = run_type_listing_turn(UNFILTERED_TYPE_LISTING, not_a_listing).await;
+            assert_eq!(reply, CONFIRMATION_REQUEST, "for {not_a_listing:?}");
+        }
+    }
+
+    /// A tool call narrated as text is suppressed too, and its replacement must
+    /// stand: the user has to be told nothing was set up, not shown a list.
+    #[tokio::test]
+    async fn a_narrated_call_after_a_type_listing_keeps_the_request_to_confirm() {
+        let (reply, _) = run_type_listing_turn(
+            UNFILTERED_TYPE_LISTING,
+            "create_schema(name='sponsor', fields=[])",
+        )
+        .await;
+        assert_eq!(reply, CONFIRMATION_REQUEST);
+    }
+
+    /// Run the backstop over a turn that made `calls` and ended on the summary
+    /// that stands in for an empty reply. Returns the summary and what the
+    /// backstop left as the reply.
+    fn backstop_over_an_empty_reply(
+        calls: Vec<(&str, serde_json::Value, serde_json::Value, bool)>,
+    ) -> (String, String) {
+        let tool_calls_made: Vec<ToolExecutionRecord> = calls
+            .into_iter()
+            .map(|(name, args, result, is_error)| ToolExecutionRecord {
                 tool_call_id: "tc".into(),
                 name: name.into(),
                 args,
                 result,
-                is_error: false,
+                is_error,
                 duration_ms: 0,
-            };
-        let tool_calls_made = vec![
-            record(
-                "search_nodes",
-                json!({"node_type": "schema", "query": "*"}),
-                type_listing_result(),
-            ),
-            record(
-                "create_node",
-                json!({"node_type": "plan", "content": "Q4"}),
-                json!({"id": "nodespace://abc", "property_count": 1}),
-            ),
-        ];
+            })
+            .collect();
         let stand_in = summarize_executions(&tool_calls_made);
         let mut result = AgentTurnResult {
             response: stand_in.clone(),
@@ -9948,7 +10008,56 @@ mod tests {
         };
         let mut session = new_session();
         type_listing_backstop(&mut session, &mut result);
-        assert_eq!(result.response, stand_in);
+        (stand_in, result.response)
+    }
+
+    /// With no reply to read, the turn is a listing of types only when listing
+    /// them is all it did. Anything else in the turn — a write, a second read,
+    /// a failed call — means its summary is the honest stand-in.
+    #[test]
+    fn an_empty_reply_is_written_out_only_when_the_turn_did_nothing_but_list_types() {
+        let listing = || {
+            (
+                "search_nodes",
+                json!({"node_type": "schema", "query": "*"}),
+                type_listing_result(),
+                false,
+            )
+        };
+
+        let (_, reply) = backstop_over_an_empty_reply(vec![listing()]);
+        assert_eq!(reply, EVERY_TYPE_LISTED);
+
+        for other in [
+            // A write: the summary is what says it happened.
+            (
+                "create_node",
+                json!({"node_type": "plan", "content": "Q4"}),
+                json!({"id": "nodespace://abc", "property_count": 1}),
+                false,
+            ),
+            // A second read: the turn was about those tasks.
+            (
+                "search_nodes",
+                json!({"node_type": "task", "query": ""}),
+                json!({"count": 0, "nodes": []}),
+                false,
+            ),
+            // A failed call: the summary is what reports it.
+            (
+                "get_node",
+                json!({"id": "nope"}),
+                json!({"error": "Node not found"}),
+                true,
+            ),
+        ] {
+            let name = other.0;
+            let (stand_in, reply) = backstop_over_an_empty_reply(vec![listing(), other]);
+            assert_eq!(
+                reply, stand_in,
+                "a turn that also ran {name} keeps its summary"
+            );
+        }
     }
 
     #[tokio::test]

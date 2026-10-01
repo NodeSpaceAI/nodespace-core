@@ -652,6 +652,22 @@ fn search_result_summary(node: &Value) -> Value {
     summary
 }
 
+/// `resolve_query`'s answer for the one node a request resolved to, built from
+/// that node's [`search_result_summary`] row.
+///
+/// The row carries only what the node has, so this copies the keys that are
+/// there rather than indexing ones that may not be: a node with no properties
+/// set resolves with no `properties` key, not with `"properties": null`.
+fn resolved_payload(row: &Value) -> Value {
+    let mut payload = json!({ "resolved": true });
+    for key in ["id", "title", "type", "properties"] {
+        if let Some(value) = row.get(key) {
+            payload[key] = value.clone();
+        }
+    }
+    payload
+}
+
 // ---------------------------------------------------------------------------
 // Tool definitions (JSON schemas)
 // ---------------------------------------------------------------------------
@@ -2698,6 +2714,7 @@ impl GraphToolExecutor {
             .await?;
 
         let mut result = json!({ "count": summaries.len(), "nodes": summaries });
+
         // A zero-result type-scoped search is the one outcome the model cannot
         // read: "no node matches this filter" and "the field I filtered on
         // does not exist" look identical, and the observed failure is the model
@@ -2997,16 +3014,7 @@ impl GraphToolExecutor {
                 "reason": "no_match",
                 "node_type": params.node_type,
             }),
-            1 => {
-                let node = &matches[0];
-                json!({
-                    "resolved": true,
-                    "id": node["id"],
-                    "title": node["title"],
-                    "type": node["type"],
-                    "properties": node["properties"],
-                })
-            }
+            1 => resolved_payload(&matches[0]),
             _ => json!({
                 "resolved": false,
                 "reason": "multiple_matches",
@@ -8139,6 +8147,41 @@ mod tests {
                 .as_object()
                 .is_some_and(|p| !p.is_empty()),
             "a node's properties stay on its row: {task}"
+        );
+    }
+
+    /// `resolve_query` answers from the same row, so what the row leaves out
+    /// must be left out of the answer too, not turned into a null.
+    #[test]
+    fn a_resolved_node_carries_only_what_its_row_has() {
+        let with_properties = search_result_summary(&json!({
+            "id": "abc-123",
+            "nodeType": "invoice",
+            "title": "Invoice 12",
+            "content": "Invoice 12",
+            "properties": {"invoice": {"amount": 500}},
+        }));
+        let resolved = resolved_payload(&with_properties);
+        assert_eq!(resolved["resolved"], true);
+        assert_eq!(resolved["id"], "nodespace://abc-123");
+        assert_eq!(resolved["title"], "Invoice 12");
+        assert_eq!(resolved["type"], "invoice");
+        assert!(resolved["properties"].is_object());
+
+        let without = search_result_summary(&json!({
+            "id": "def-456",
+            "nodeType": "invoice",
+            "title": "Invoice 13",
+            "content": "Invoice 13",
+        }));
+        assert_eq!(
+            resolved_payload(&without),
+            json!({
+                "resolved": true,
+                "id": "nodespace://def-456",
+                "title": "Invoice 13",
+                "type": "invoice",
+            })
         );
     }
 

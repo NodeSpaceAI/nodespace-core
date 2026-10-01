@@ -294,9 +294,9 @@ function runNs(env: EvalEnv, args: string[]): unknown {
  * with no instance in it — looking exactly like a model result.
  *
  * Because it runs before the setup turns, it CREATES the company type rather
- * than discovering one. The setup turns still run and are still scored; a
- * `create_schema` against an existing type is idempotent at the store, so
- * `setup-company` asserting on that operation is unaffected either way.
+ * than discovering one. The setup turns still run; a `create_schema` against
+ * an existing type is refused and changes nothing, and `setup-company` asserts
+ * on the operation chosen, not on its result, so it is unaffected either way.
  *
  * The type id is fixed here rather than model-derived, which is the one place
  * this fixture may name one: everything downstream (the schema assertions)
@@ -902,9 +902,16 @@ const fixture: EvalFixture = {
   setupStatePresent(env: EvalEnv, scenario) {
     const kind = (scenario as DecisionScenario).establishes;
     if (kind === undefined) return undefined;
-    const schemas = runNs(env, ["schema", "list"]) as {
+    let schemas: {
       nodes?: Array<{ id?: string; properties?: { isCore?: boolean } }>;
     } | null;
+    try {
+      schemas = runNs(env, ["schema", "list"]) as typeof schemas;
+    } catch {
+      // The check could not be made, which is not the same as the state being
+      // there: unknown blocks the group.
+      return undefined;
+    }
     const customTypeIds = (schemas?.nodes ?? [])
       .filter((s) => s?.id && s.properties?.isCore !== true)
       .map((s) => s.id as string);

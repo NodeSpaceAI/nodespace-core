@@ -480,15 +480,28 @@ async function compareToBaseline(
  * that sees it and creates nothing has done the right thing while failing the
  * turn's assertion. The state the group needs is there either way.
  *
- * So a failed setup turn blocks its group only when the fixture cannot show
- * the state present. A fixture with no way to check keeps the turn's own
- * verdict: unknown is treated as missing.
+ * So a setup turn that failed its assertion leaves the group scoreable only
+ * when both hold:
+ *
+ * - The turn did nothing: no tool call, no clarifying question, no failed
+ *   send. Only that is the correct no-op. A turn that asked a question leaves
+ *   the next prompt to be read as its answer, and one that called some other
+ *   tool changed the workspace the scenarios assume; the state check cannot
+ *   see either.
+ * - The fixture shows the state present. A fixture with no way to check keeps
+ *   the turn's own verdict: unknown is treated as missing.
+ *
+ * Called for a setup turn that failed its own assertion.
  */
 export function setupLeftStateMissing(
-  turnPassed: boolean,
+  turn: Pick<TurnRecord, "toolsCalled" | "routingDecision" | "sendFailed">,
   statePresent: () => boolean | undefined,
 ): boolean {
-  if (turnPassed) return false;
+  const didNothing =
+    turn.toolsCalled.length === 0 &&
+    turn.sendFailed !== true &&
+    turn.routingDecision !== "clarify";
+  if (!didNothing) return true;
   return statePresent() !== true;
 }
 
@@ -1206,7 +1219,7 @@ function runRep(fixture: EvalFixture, env: EvalEnv): ScenarioResult[] {
       // after it unwinnable. It is not scored, but it must not pass silently.
       if (scenario.setup && !verdict.passed) {
         if (
-          setupLeftStateMissing(verdict.passed, () =>
+          setupLeftStateMissing(scored, () =>
             fixture.setupStatePresent?.(env, scenario),
           )
         ) {
@@ -1216,9 +1229,12 @@ function runRep(fixture: EvalFixture, env: EvalEnv): ScenarioResult[] {
           );
           setupFailed ??= scenario.id;
         } else {
+          // Recorded on the setup turn's own result, so the results file shows
+          // which groups were scored on state that was already there.
+          results[results.length - 1].setupStateAlreadyPresent = true;
           console.error(
-            `[${fixture.name}]     ↳ the state this setup establishes is already ` +
-              `present, so later scenarios in this group are scored`,
+            `[${fixture.name}]     ↳ the turn did nothing and the state this setup ` +
+              `establishes is already present, so later scenarios in this group are scored`,
           );
         }
       }

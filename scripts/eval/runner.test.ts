@@ -130,31 +130,43 @@ describe("partitionExcluded", () => {
 });
 
 describe("setupLeftStateMissing", () => {
-  test("a setup turn that passed never blocks its group", () => {
-    // The state check is not consulted: asking the daemon costs a round-trip,
-    // and the turn's own verdict already answers the question.
-    let asked = false;
-    const blocked = setupLeftStateMissing(true, () => {
-      asked = true;
-      return false;
-    });
-    expect(blocked).toBe(false);
-    expect(asked).toBe(false);
-  });
+  // A setup turn that failed its assertion by doing nothing at all.
+  const didNothing = { toolsCalled: [], routingDecision: "query" };
 
-  test("a failed setup turn whose state is present does not block its group", () => {
+  test("a turn that did nothing, with its state present, does not block its group", () => {
     // The second group of a rep: the type exists, the model created nothing.
-    expect(setupLeftStateMissing(false, () => true)).toBe(false);
+    expect(setupLeftStateMissing(didNothing, () => true)).toBe(false);
   });
 
-  test("a failed setup turn whose state is absent blocks its group", () => {
-    expect(setupLeftStateMissing(false, () => false)).toBe(true);
+  test("a turn that did nothing, with its state absent, blocks its group", () => {
+    expect(setupLeftStateMissing(didNothing, () => false)).toBe(true);
   });
 
-  test("a failed setup turn the fixture cannot check blocks its group", () => {
+  test("a turn the fixture cannot check blocks its group", () => {
     // Unknown is treated as missing: scoring a scenario against state nobody
     // confirmed is the failure the exclusion exists to prevent.
-    expect(setupLeftStateMissing(false, () => undefined)).toBe(true);
+    expect(setupLeftStateMissing(didNothing, () => undefined)).toBe(true);
+  });
+
+  test("a turn that did something else blocks its group whatever the state", () => {
+    // The state check sees the workspace, not the conversation. A clarifying
+    // question leaves the next prompt to be read as its answer; another tool
+    // changed the workspace the scenarios assume; a failed send did neither
+    // and proves nothing. None is the correct no-op, so the check is not asked.
+    let asked = false;
+    const present = () => {
+      asked = true;
+      return true;
+    };
+    for (const turn of [
+      { toolsCalled: [], routingDecision: "clarify" },
+      { toolsCalled: ["route_clarify"], routingDecision: "query" },
+      { toolsCalled: ["create_node"], routingDecision: "query" },
+      { toolsCalled: [], routingDecision: "query", sendFailed: true },
+    ]) {
+      expect(setupLeftStateMissing(turn, present)).toBe(true);
+    }
+    expect(asked).toBe(false);
   });
 });
 

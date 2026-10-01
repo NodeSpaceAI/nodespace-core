@@ -101,6 +101,14 @@ describe("setup state", () => {
     expect(setupTypePresent("venue", ["client_venue"])).toBe(true);
   });
 
+  test("the match is by word, so an unrelated type sharing one reads as present", () => {
+    // The limit of matching on a hint rather than an id: a later scenario's
+    // `event_log` would stand in for the venue type. The ids the setup turns
+    // produce are not predictable, so the match cannot be tighter.
+    expect(setupTypePresent("venue", ["event_log"])).toBe(true);
+    expect(setupTypePresent("company", ["customer_feedback"])).toBe(true);
+  });
+
   test("an empty workspace has neither", () => {
     expect(setupTypePresent("company", [])).toBe(false);
     expect(setupTypePresent("venue", [])).toBe(false);
