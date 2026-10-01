@@ -127,7 +127,7 @@ where
         .map(|(key, value)| match value {
             toml::Value::String(value) => Ok((key, value)),
             other => Err(serde::de::Error::custom(format!(
-                "extension key `{key}` holds a {}, but registry extension keys hold strings only",
+                "extension key `{key}` has a value of type {}, but registry extension keys hold strings only",
                 other.type_str()
             ))),
         })
@@ -749,7 +749,7 @@ impl DatabaseManager {
             .find(|(key, _)| DEFINED_ENTRY_KEYS.contains(&key.as_str()))
         {
             return Err(anyhow!(
-                "`{key}` is a key the database registry defines; it cannot be set as an extension key"
+                "`{key}` is a key the database registry defines; it cannot be used as an extension key"
             ));
         }
         let registry = self.registry.write().await;
@@ -1614,7 +1614,7 @@ plugin_label = "blue"
 
             let err = format!("{:#}", Registry::load(&path).await.unwrap_err());
             assert!(
-                err.contains(&format!("extension key `{key}` holds a {kind}"))
+                err.contains(&format!("extension key `{key}` has a value of type {kind}"))
                     && err.contains("strings only"),
                 "a {kind} value must fail the load naming `{key}`, got: {err}"
             );

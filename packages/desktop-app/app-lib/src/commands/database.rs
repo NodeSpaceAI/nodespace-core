@@ -255,9 +255,8 @@ mod tests {
     }
 
     /// The DTO serializes exactly the registry's own fields and the opaque
-    /// `extensions` map, in camelCase. It carries no binding fields of its
-    /// own; the needle is built from fragments because this is an absence
-    /// test.
+    /// `extensions` map, in camelCase, and nothing beyond them. The needle is
+    /// built from fragments because this is an absence test.
     #[test]
     fn the_dto_serializes_only_registry_fields_and_extensions() {
         let entry = to_entry(DatabaseInfo {
@@ -290,7 +289,7 @@ mod tests {
         let needle = ["ten", "ant"].concat();
         assert!(
             keys.iter().all(|k| !k.to_lowercase().contains(&needle)),
-            "the DTO must carry no binding keys: {keys:?}"
+            "the DTO must carry nothing beyond the registry's own fields and extensions: {keys:?}"
         );
     }
 }
