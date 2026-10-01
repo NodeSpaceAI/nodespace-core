@@ -3520,6 +3520,7 @@ dependencies = [
  "nodespace-nlp-engine",
  "nodespace-proto",
  "nodespace-types",
+ "plist",
  "regex",
  "serde_json",
  "shell-words",
