@@ -4306,7 +4306,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn get_daemon_version_reports_the_serving_processs_own_executable() {
+    async fn get_daemon_version_reports_its_own_executable_path() {
         let (svc, _tmp) = make_service().await;
         let resp = svc
             .get_daemon_version(Request::new(crate::nodespace::GetDaemonVersionRequest {}))

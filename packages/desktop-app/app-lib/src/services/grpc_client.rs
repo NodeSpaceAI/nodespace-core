@@ -523,6 +523,14 @@ pub(crate) fn resolve_socket_path() -> std::path::PathBuf {
     if let Ok(p) = std::env::var(nodespace_proto::socket::SOCKET_ENV_VAR) {
         return std::path::PathBuf::from(p);
     }
+    default_socket_path()
+}
+
+/// The socket this build dials when `NODESPACED_SOCKET` is absent. Reads no
+/// environment, so a test can compare it with another path without racing the
+/// tests that set the variable.
+#[cfg(unix)]
+pub(crate) fn default_socket_path() -> std::path::PathBuf {
     default_socket_path_for(cfg!(debug_assertions), crate::daemon_setup::is_pro_build())
 }
 

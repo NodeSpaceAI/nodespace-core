@@ -715,34 +715,35 @@ async fn evict_if_other_product(
 /// executable it runs and evicts it when that is not the active profile's
 /// daemon. Returns true when it did.
 ///
-/// The app's gRPC channel carried the question to the daemon just evicted, so
-/// it is rebuilt to dial whatever answers next.
+/// The question goes through the app's managed gRPC client, which dials the
+/// socket `NODESPACED_SOCKET` names when it is set. A daemon there is not the
+/// one this app registers on `socket_path`, so its answer says nothing about
+/// that registration and the check is skipped.
+///
+/// The client's channel may still hold a connection to an evicted daemon; it
+/// dials again on its next call, as it does after any other daemon restart.
 #[cfg(unix)]
 async fn evict_other_product_daemon(app: &AppHandle, socket_path: &Path) -> bool {
     use tauri::Manager;
 
+    if crate::services::grpc_client::resolve_socket_path() != socket_path {
+        return false;
+    }
     if check_daemon_socket(socket_path).await != DaemonStatus::Healthy {
         return false;
     }
-    let client = app.try_state::<GrpcClient>();
-    let reported = match &client {
-        Some(client) => running_daemon_executable(client).await,
+    let reported = match app.try_state::<GrpcClient>() {
+        Some(client) => running_daemon_executable(&client).await,
         None => None,
     };
-    let evicted = evict_if_other_product(
+    evict_if_other_product(
         socket_path,
         reported.as_deref(),
         daemon_profile::active(),
         EVICTION_EXIT_GRACE,
         boot_out_service_registration,
     )
-    .await;
-    if evicted {
-        if let Some(client) = &client {
-            client.reconnect().await;
-        }
-    }
-    evicted
+    .await
 }
 
 /// Ensure nodespaced is installed as a user service (launchd/systemd) and running.
@@ -4185,6 +4186,19 @@ mod product_eviction_tests {
         assert!(
             socket.exists(),
             "deleting the socket of a daemon that is still serving strands it"
+        );
+    }
+
+    /// The startup check is skipped when the managed client dials a socket
+    /// other than the one this app registers, so without an override the two
+    /// must be the same path, or the check would never run at all.
+    #[test]
+    fn without_an_override_the_client_dials_the_socket_this_app_registers() {
+        let home = super::home_dir().expect("home directory");
+
+        assert_eq!(
+            crate::services::grpc_client::default_socket_path(),
+            home.join(super::daemon_socket_relative())
         );
     }
 
