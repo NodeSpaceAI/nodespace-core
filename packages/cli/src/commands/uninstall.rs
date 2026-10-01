@@ -29,7 +29,7 @@ const COMMUNITY_PRODUCT: &str = "community";
 #[cfg(any(target_os = "macos", test))]
 const NOT_COMMUNITY_MESSAGE: &str = "The NodeSpace app on this Mac is a different NodeSpace \
     product, or an older NodeSpace that does not say which product it is. Use that product's own \
-    uninstall, or update NodeSpace first; this command removes only the free NodeSpace.";
+    uninstaller, or update NodeSpace first; this command removes only the free NodeSpace.";
 
 pub fn run(_args: UninstallArgs) -> Result<()> {
     // This command removes only the free NodeSpace. Over any other installed
