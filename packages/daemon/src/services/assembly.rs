@@ -84,6 +84,91 @@ pub struct SharedContext {
     /// What each database keeps is the graph-bound half: its own tool executor,
     /// prompt assembler, in-flight turns, and ai-chat event watcher.
     pub local_agent: Arc<SharedLocalAgent>,
+    /// Test-only: the extension ids this context supports, so a test inside
+    /// this crate can open a database that requires one. Absent outside this
+    /// crate's own unit tests; see [`SharedContext::supported_extensions`].
+    #[cfg(test)]
+    pub(crate) supported_extensions: Vec<String>,
+}
+
+impl SharedContext {
+    /// The extension ids this daemon supports. A database whose settings node
+    /// lists any other id in `required_extensions` is refused when opened
+    /// (ADR-083 §2).
+    ///
+    /// Empty: core supports no extension. It is fixed here rather than taken
+    /// from [`build_shared_services`]'s caller until a composing build gets a
+    /// versioned hook to declare its own (ADR-082 §5, §8). This crate's unit
+    /// tests set a fixture set through the test-only field.
+    pub(crate) fn supported_extensions(&self) -> &[String] {
+        #[cfg(test)]
+        {
+            &self.supported_extensions
+        }
+        #[cfg(not(test))]
+        {
+            &[]
+        }
+    }
+}
+
+/// The refusal of a database whose settings node lists, in
+/// `required_extensions`, extensions this daemon does not support (ADR-083
+/// §2). [`build_database_services`] returns it before it writes anything to
+/// the database.
+///
+/// This is a compatibility guard, not a security control: the database is a
+/// plain SQLite file that any process running as the user can read or edit.
+/// It keeps this build from misreading types or edge fields an extension
+/// wrote.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DatabaseRequiresExtensions {
+    /// The required extension ids this daemon does not support, in stored
+    /// order.
+    pub unsupported: Vec<String>,
+}
+
+impl DatabaseRequiresExtensions {
+    /// The refusal anywhere in `err`'s chain, so a caller can recognise it
+    /// through the context an open path adds.
+    pub fn find_in(err: &anyhow::Error) -> Option<&Self> {
+        err.chain().find_map(|cause| cause.downcast_ref::<Self>())
+    }
+
+    /// The gRPC status a request routed to the refused database receives:
+    /// `FAILED_PRECONDITION`, the refusal message, and the
+    /// `x-requires-extension-bin` payload (see
+    /// [`nodespace_proto::requires_extension`]).
+    pub fn to_status(&self) -> tonic::Status {
+        nodespace_proto::requires_extension::status(&self.unsupported)
+    }
+}
+
+impl std::fmt::Display for DatabaseRequiresExtensions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&nodespace_proto::extension_names::refusal_message(
+            &self.unsupported,
+        ))
+    }
+}
+
+impl std::error::Error for DatabaseRequiresExtensions {}
+
+/// The extensions the database at `db_path` requires that `shared` does not
+/// support. Reads the file through its own read-only connection and writes
+/// nothing (see [`nodespace_core::db::required_extensions`]), so it is safe to
+/// call for a database that is not open, or that another process is writing.
+pub(crate) async fn unsupported_required_extensions(
+    db_path: &std::path::Path,
+    shared: &SharedContext,
+) -> Result<Vec<String>> {
+    let required =
+        nodespace_core::db::required_extensions::read_required_extensions(db_path).await?;
+    let supported = shared.supported_extensions();
+    Ok(required
+        .into_iter()
+        .filter(|id| !supported.contains(id))
+        .collect())
 }
 
 /// Builds the subtree access gate guarding `database_id`. See
@@ -232,6 +317,8 @@ pub async fn build_shared_services() -> Result<(SharedServices, Option<tokio::ta
                 subtree_gate_factory: Arc::new(OnceLock::new()),
                 scheduler,
                 local_agent,
+                #[cfg(test)]
+                supported_extensions: Vec::new(),
             },
         },
         model_task,
@@ -246,11 +333,38 @@ pub async fn build_shared_services() -> Result<(SharedServices, Option<tokio::ta
 /// returned handle) wires this database's `NodeEmbeddingService` +
 /// `EmbeddingProcessor` and populates `embedding_state` once the shared model is
 /// ready.
+///
+/// Refuses, with [`DatabaseRequiresExtensions`], a database that requires an
+/// extension this daemon does not support, before anything is written.
 pub async fn build_database_services(
     db_path: &std::path::Path,
     shared: &SharedContext,
     database_id: &str,
 ) -> Result<(DatabaseServices, Option<tokio::task::JoinHandle<()>>)> {
+    // The required-extensions guard (ADR-083 §2). It runs first, before the
+    // directory below is created or re-restricted and before `SqliteStore::new`,
+    // because opening the store is already a write: it switches the journal to
+    // WAL, runs the schema DDL (so the guard also precedes the table-shape
+    // check) and seeds. A refused database is left exactly as it was: nothing
+    // is seeded, no marker is written and nothing is renamed. Every open goes
+    // through here — `DatabaseManager::get_or_open`, the boot default and any
+    // host calling this directly — so none can bypass it.
+    //
+    // Not a security control: the file is plain SQLite that any process running
+    // as the user can read or edit. The guard only keeps this build from
+    // misreading what an extension wrote.
+    let unsupported = unsupported_required_extensions(db_path, shared)
+        .await
+        .with_context(|| {
+            format!(
+                "Failed to read the required extensions of {}",
+                db_path.display()
+            )
+        })?;
+    if !unsupported.is_empty() {
+        return Err(DatabaseRequiresExtensions { unsupported }.into());
+    }
+
     if let Some(parent) = db_path.parent() {
         // Owner-only from birth (and re-restricted if it already existed at a
         // wider mode): this directory holds the raw SQLite file for every
@@ -440,6 +554,109 @@ pub async fn build_database_services(
         },
         embedding_task,
     ))
+}
+
+/// A service set bound to no registered database, for a router that routes
+/// every request through [`crate::DbManagerLayer`].
+///
+/// [`crate::build_base_router`] takes concrete service values, which a daemon
+/// normally takes from its default database's set. Behind the routing layer
+/// they never serve a database: every per-database handler resolves its target
+/// through the manager (ADR-053), and the handlers that do not route — the
+/// daemon's version and memory, PTY sessions, the shared model catalog — serve
+/// process-global state, which this set shares with every other. So when the
+/// default database is refused because it requires an extension this daemon
+/// does not support (ADR-083 §2), the daemon builds its router from this set
+/// and keeps serving the other databases. Requests for the default receive the
+/// refusal.
+///
+/// The set's own node service runs over a private in-memory database and no
+/// background work is started for it: no Play engine, conflict sweep,
+/// embedding wiring or ai-chat watcher. Nothing is written to disk.
+pub async fn build_unrouted_services(shared: &SharedContext) -> Result<DatabaseServices> {
+    // A shared-cache in-memory database, named uniquely so two sets in one
+    // process never share it: the store opens a writer and pooled readers, and
+    // a plain `:memory:` gives each connection its own empty database.
+    let uri = format!(
+        "file:nodespace-unrouted-{}?mode=memory&cache=shared",
+        ulid::Ulid::new()
+    );
+    let mut store = Arc::new(
+        SqliteStore::new(std::path::PathBuf::from(uri))
+            .await
+            .context("Failed to initialize the unrouted in-memory store")?,
+    );
+    let node_service = Arc::new(
+        CoreNodeService::new(&mut store)
+            .await
+            .context("Failed to initialize the unrouted NodeService")?,
+    );
+    let embedding_state: Arc<RwLock<Option<EmbeddingReady>>> = Arc::new(RwLock::new(None));
+    let embedding_svc_state: Arc<RwLock<Option<Arc<NodeEmbeddingService>>>> =
+        Arc::new(RwLock::new(None));
+
+    let node_service_grpc = NodeServiceImpl::new(
+        node_service.clone(),
+        embedding_state.clone(),
+        shared.scheduler.clone(),
+    );
+    let embeddings_service_grpc = shared.has_model.then(|| {
+        EmbeddingsServiceImpl::new(
+            node_service.clone(),
+            embedding_state.clone(),
+            shared.model_load_failed.clone(),
+        )
+    });
+    let assembler = Arc::new(GraphContextAssembler::new(
+        node_service.clone(),
+        embedding_svc_state.clone(),
+    ));
+    let agent_session = AgentSessionHandler::new(
+        shared.pty_manager.clone(),
+        assembler,
+        node_service.clone(),
+        crate::nodespace_dir()?.join("daemon.toml"),
+    );
+    let import = ImportServiceImpl::new(node_service.clone());
+    let local_agent = LocalAgentServiceImpl::new(
+        shared.local_agent.clone(),
+        node_service,
+        embedding_svc_state,
+    );
+
+    Ok(DatabaseServices {
+        node_service_grpc,
+        agent_session,
+        import,
+        local_agent,
+        embeddings_service_grpc,
+        embedding_state,
+        shutdown_token: tokio_util::sync::CancellationToken::new(),
+        conflict_sweep_shutdown: None,
+        playbook_shutdown: None,
+    })
+}
+
+/// The service set to build a daemon's router from when opening its default
+/// database failed with `err`.
+///
+/// A default refused because it requires an extension this daemon does not
+/// support (ADR-083 §2) concerns that one database, not the daemon: it is
+/// logged, and an unrouted set ([`build_unrouted_services`]) is returned so the
+/// daemon keeps serving the other databases. This differs from a table-shape
+/// refusal, which stops the daemon. Any other failure is returned unchanged.
+pub async fn unrouted_services_if_default_refused(
+    err: anyhow::Error,
+    shared: &SharedContext,
+) -> Result<Arc<DatabaseServices>> {
+    let Some(refusal) = DatabaseRequiresExtensions::find_in(&err) else {
+        return Err(err);
+    };
+    tracing::warn!(
+        unsupported_extensions = ?refusal.unsupported,
+        "{refusal}: the default database stays closed and the daemon serves the other databases"
+    );
+    Ok(Arc::new(build_unrouted_services(shared).await?))
 }
 
 /// Seed prompt, skill, and tool nodes on first launch. Idempotent — existing nodes are skipped.

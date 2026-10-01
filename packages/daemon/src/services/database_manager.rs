@@ -24,7 +24,9 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{watch, Mutex as AsyncMutex, RwLock, RwLockWriteGuard};
 use ulid::Ulid;
 
-use super::assembly::{build_database_services, DatabaseServices, SharedContext};
+use super::assembly::{
+    build_database_services, unsupported_required_extensions, DatabaseServices, SharedContext,
+};
 
 /// How often the idle reaper scans open databases for eviction (ADR-053:
 /// per-database compute scoping).
@@ -143,6 +145,10 @@ pub enum DatabaseStatus {
     Closed,
     /// The registry entry points at a path with no database file present.
     Missing,
+    /// The database lists, in its settings node's `required_extensions`, an
+    /// extension this daemon does not support, so opening it is refused
+    /// (ADR-083 §2). [`DatabaseListing::unsupported_extensions`] names them.
+    RequiresExtension,
 }
 
 /// A registry entry paired with its current runtime status. This is what the
@@ -152,6 +158,9 @@ pub struct DatabaseListing {
     pub entry: DatabaseEntry,
     pub status: DatabaseStatus,
     pub is_default: bool,
+    /// The required extensions this daemon does not support when `status` is
+    /// [`DatabaseStatus::RequiresExtension`]; empty otherwise.
+    pub unsupported_extensions: Vec<String>,
 }
 
 /// An immutable snapshot of the registry plus per-database status.
@@ -441,29 +450,56 @@ impl DatabaseManager {
     }
 
     /// Snapshot every registered database with its current status.
+    ///
+    /// A database that is not open is checked for extensions it requires that
+    /// this daemon does not support, by the same read-only probe the open
+    /// guard runs (ADR-083 §2), so a database that was never opened is still
+    /// reported as [`DatabaseStatus::RequiresExtension`]. The probe writes
+    /// nothing, neither to the database nor to the registry. A database it
+    /// cannot read is reported as closed: opening it reports the error.
     pub async fn list(&self) -> RegistrySnapshot {
-        let registry = self.registry.read().await;
-        let open = self.open.read().await;
-        let default_database = registry.default_database.clone();
-        let databases = registry
-            .databases
-            .iter()
-            .map(|entry| {
-                let status = if open.contains_key(&entry.id) {
-                    DatabaseStatus::Open
-                } else if entry.path.exists() {
-                    DatabaseStatus::Closed
-                } else {
-                    DatabaseStatus::Missing
-                };
-                let is_default = default_database.as_ref() == Some(&entry.id);
-                DatabaseListing {
-                    entry: entry.clone(),
-                    status,
-                    is_default,
+        // Copy the snapshot out under the locks, then probe without them: a
+        // probe reads a file, and the registry must not wait on disk.
+        let (entries, default_database) = {
+            let registry = self.registry.read().await;
+            let open = self.open.read().await;
+            let entries: Vec<(DatabaseEntry, bool)> = registry
+                .databases
+                .iter()
+                .map(|entry| (entry.clone(), open.contains_key(&entry.id)))
+                .collect();
+            (entries, registry.default_database.clone())
+        };
+        let mut databases = Vec::with_capacity(entries.len());
+        for (entry, is_open) in entries {
+            let (status, unsupported_extensions) = if is_open {
+                (DatabaseStatus::Open, Vec::new())
+            } else if !entry.path.exists() {
+                (DatabaseStatus::Missing, Vec::new())
+            } else {
+                match unsupported_required_extensions(&entry.path, &self.context).await {
+                    Ok(unsupported) if !unsupported.is_empty() => {
+                        (DatabaseStatus::RequiresExtension, unsupported)
+                    }
+                    Ok(_) => (DatabaseStatus::Closed, Vec::new()),
+                    Err(e) => {
+                        tracing::debug!(
+                            database_id = %entry.id,
+                            error = format!("{e:#}"),
+                            "could not read a closed database's required extensions"
+                        );
+                        (DatabaseStatus::Closed, Vec::new())
+                    }
                 }
-            })
-            .collect();
+            };
+            let is_default = default_database.as_ref() == Some(&entry.id);
+            databases.push(DatabaseListing {
+                entry,
+                status,
+                is_default,
+                unsupported_extensions,
+            });
+        }
         RegistrySnapshot {
             databases,
             default_database,
@@ -1303,6 +1339,7 @@ mod tests {
                     .expect("nodespace dir")
                     .join("daemon.toml"),
             ),
+            supported_extensions: Vec::new(),
         }
     }
 

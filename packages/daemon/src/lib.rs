@@ -173,8 +173,9 @@ pub use db_routing::{DbManagerLayer, DATABASE_ID_HEADER};
 pub use nodespace_proto::socket::LAUNCHER_ARGS;
 pub use router::{build_base_router, BaseServices};
 pub use services::{
-    build_database_services, build_shared_services, shared_model_load_in_flight,
-    AgentSessionHandler, DatabaseManager, DatabaseServiceImpl, DatabaseServices,
+    build_database_services, build_shared_services, build_unrouted_services,
+    shared_model_load_in_flight, unrouted_services_if_default_refused, AgentSessionHandler,
+    DatabaseManager, DatabaseRequiresExtensions, DatabaseServiceImpl, DatabaseServices,
     EmbeddingsServiceImpl, ImportServiceImpl, LocalAgentServiceImpl, McpConfig, NodeServiceImpl,
     SettingsServiceImpl, SharedContext, SharedLocalAgent, SharedServices, SubtreeGateFactory,
 };
