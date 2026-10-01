@@ -239,6 +239,27 @@ function error(code: string, message: string, status = 500, conflictData?: unkno
   return json(body, status);
 }
 
+/**
+ * Copy the body's values for the proto's repeated string `fields` onto
+ * `request`. An absent or empty list is left off the request; a value that is
+ * not an array of strings is refused with the returned 400 rather than dropped.
+ */
+function forwardStringLists(
+  body: Record<string, unknown>,
+  request: Record<string, unknown>,
+  fields: readonly string[]
+): Response | null {
+  for (const field of fields) {
+    const value = body[field];
+    if (value === undefined || value === null) continue;
+    if (!Array.isArray(value) || !value.every((item) => typeof item === 'string')) {
+      return error('INVALID_ARGUMENT', `${field} must be an array of strings`, 400);
+    }
+    if (value.length > 0) request[field] = value;
+  }
+  return null;
+}
+
 // Mirrors the Tauri command layer's status_to_command_error
 // (packages/desktop-app/app-lib/src/commands/nodes.rs): inspects the same
 // gRPC trailer metadata to build SUBTREE_ACCESS_DENIED/VERSION_CONFLICT codes
@@ -388,9 +409,9 @@ async function handleRequest(req: Request): Promise<Response> {
   if (method === 'POST' && pathname === '/api/nodes') {
     try {
       const body = await req.json() as Record<string, unknown>;
-      // Optional proto string fields (parentId, collection, lifecycleStatus) must be
+      // Optional proto string fields (parentId, lifecycleStatus) must be
       // omitted entirely for the "unset" case — sending '' is treated as Some("") by
-      // the Rust side and triggers validation errors (empty parent lookup, empty path).
+      // the Rust side and triggers validation errors (empty parent lookup).
       const request: Record<string, unknown> = {
         nodeType: body.nodeType ?? '',
         content: body.content ?? '',
@@ -403,7 +424,10 @@ async function handleRequest(req: Request): Promise<Response> {
         ...encodeInsertPosition(body.insertPosition as InsertPosition | null | undefined)
       };
       if (body.parentId && body.parentId !== '') request.parentId = body.parentId;
-      if (body.collection && body.collection !== '') request.collection = body.collection;
+      // Paths and ids are mutually exclusive on one request; the daemon
+      // rejects a request carrying both, so both are forwarded as sent.
+      const invalid = forwardStringLists(body, request, ['collections', 'collectionIds']);
+      if (invalid) return invalid;
       if (body.lifecycleStatus && body.lifecycleStatus !== '') request.lifecycleStatus = body.lifecycleStatus;
       const res = await call<typeof request, { nodeId: string; placement: ChildPlacement | null }>(
         (nodeClient as unknown as Record<string, Function>).createNode,
@@ -447,8 +471,14 @@ async function handleRequest(req: Request): Promise<Response> {
       if (body.nodeType && body.nodeType !== '') request.nodeType = body.nodeType;
       if (body.content !== undefined) request.content = String(body.content);
       if (body.properties !== undefined) request.properties = JSON.stringify(body.properties);
-      if (body.addToCollection && body.addToCollection !== '') request.addToCollection = body.addToCollection;
-      if (body.removeFromCollection && body.removeFromCollection !== '') request.removeFromCollection = body.removeFromCollection;
+      // Paths and ids are mutually exclusive on one request; the daemon
+      // rejects a request carrying both, so both are forwarded as sent.
+      const invalid = forwardStringLists(body, request, [
+        'addToCollections',
+        'addToCollectionIds',
+        'removeFromCollectionIds'
+      ]);
+      if (invalid) return invalid;
       if (body.lifecycleStatus && body.lifecycleStatus !== '') request.lifecycleStatus = body.lifecycleStatus;
       const res = await call<typeof request, { nodeData?: ProtoNodeData }>(
         (nodeClient as unknown as Record<string, Function>).updateNode,
