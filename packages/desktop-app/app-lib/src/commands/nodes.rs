@@ -558,10 +558,11 @@ pub async fn find_duplicate(
 /// `check_daemon_status` therefore keeps reporting "healthy" and
 /// `onDaemonReconnect` never fires, so the journal stays stuck on "Loading…".
 ///
-/// This runs one real, lightweight RPC bounded by a short timeout. A `NotFound`
-/// (the sentinel id never exists) — or any other completion — proves the
-/// channel is live and returns `false`. A timeout means the channel is wedged:
-/// rebuild it with [`GrpcClient::reconnect`] and re-probe once, returning `true`
+/// This runs one real, lightweight RPC bounded by a short timeout
+/// ([`GrpcClient::data_plane_round_trip`]). A `NotFound` (the sentinel id never
+/// exists) — or any other completion — proves the channel is live and returns
+/// `false`. A timeout means the channel is wedged: rebuild it with
+/// [`GrpcClient::reconnect`] and re-probe once, returning `true`
 /// only if the rebuilt channel answers (the frontend then re-fires its
 /// reconnect listeners so panes re-fetch on the fresh channel).
 ///
@@ -588,25 +589,14 @@ pub async fn probe_and_recover<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     client: &GrpcClient,
 ) -> bool {
-    use std::time::Duration;
-    const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
-    const PROBE_ID: &str = "__ns_channel_probe__";
+    use crate::services::{DataPlaneRoundTrip, DATA_PLANE_PROBE_TIMEOUT};
 
     // A completed RPC (any status, including NotFound) means the channel is
     // alive; only a timeout indicates a wedge.
-    async fn probe(client: &GrpcClient) -> Result<(), tokio::time::error::Elapsed> {
-        let mut c = client.client().await;
-        tokio::time::timeout(PROBE_TIMEOUT, async move {
-            let _ = c
-                .get_node(Request::new(GetNodeRequest {
-                    node_id: PROBE_ID.to_string(),
-                }))
-                .await;
-        })
-        .await
-    }
-
-    if probe(client).await.is_ok() {
+    if !matches!(
+        client.data_plane_round_trip(DATA_PLANE_PROBE_TIMEOUT).await,
+        DataPlaneRoundTrip::TimedOut
+    ) {
         return false;
     }
 
@@ -619,7 +609,10 @@ pub async fn probe_and_recover<R: tauri::Runtime>(
         pro.rebind(client.channel().await).await;
     }
     crate::extensions::run_channel_rebuilt_hooks(app, client.channel().await).await;
-    probe(client).await.is_ok()
+    !matches!(
+        client.data_plane_round_trip(DATA_PLANE_PROBE_TIMEOUT).await,
+        DataPlaneRoundTrip::TimedOut
+    )
 }
 
 /// Update an existing node
@@ -1564,7 +1557,7 @@ mod tests {
             .find("run_channel_rebuilt_hooks(")
             .expect("probe_and_recover must run the channel-rebuilt hooks");
         let reprobe = body
-            .rfind("probe(")
+            .rfind("data_plane_round_trip(")
             .expect("probe_and_recover must re-probe the rebuilt channel");
 
         assert!(

@@ -104,3 +104,31 @@ async fn a_command_fails_cleanly_before_readiness_and_succeeds_after_without_rec
         .await
         .expect("create_node must succeed once the daemon is healthy, using the same client");
 }
+
+/// The round trip the startup task gates the data-plane-ready event on must
+/// report `Answered` against a real, healthy daemon: it asks for a node that
+/// does not exist, and the daemon's `NotFound` is an answer, not a failure.
+#[tokio::test]
+async fn the_data_plane_round_trip_answers_once_the_daemon_is_healthy() {
+    use nodespace_app_lib::services::{DataPlaneRoundTrip, DATA_PLANE_PROBE_TIMEOUT};
+
+    let daemon = SpawnedDaemon::spawn();
+    let _socket_guard = hold_connect_mutex_and_socket_env(&daemon).await;
+    let client = nodespace_app_lib::services::GrpcClient::connect_lazy();
+
+    let status = nodespace_app_lib::daemon_setup::wait_for_daemon(
+        &daemon.socket_path,
+        DAEMON_CONNECT_TIMEOUT,
+    )
+    .await;
+    assert_eq!(
+        status,
+        nodespace_app_lib::daemon_setup::DaemonStatus::Healthy,
+        "daemon never became healthy"
+    );
+
+    assert_eq!(
+        client.data_plane_round_trip(DATA_PLANE_PROBE_TIMEOUT).await,
+        DataPlaneRoundTrip::Answered
+    );
+}

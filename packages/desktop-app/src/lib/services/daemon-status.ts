@@ -14,9 +14,10 @@
  *     (schemas, collections, children-tree) register to retry their load
  *     once the daemon transitions to healthy
  *
- * Generalizes the one-off `pro:tier-detected` reload pattern that used to
- * live only in app-shell.svelte into a single shared hook every
- * daemon-dependent store can use.
+ * The reconnect callbacks are the shared hook every daemon-dependent store
+ * can use. They complement the one-off `daemon:data-plane-ready` event
+ * (`DATA_PLANE_READY_EVENT`), which app-shell.svelte uses to reload once the
+ * daemon first answers a real gRPC round trip at startup.
  *
  * Readiness is pulled AND pushed, not push-only. A push-only design has its
  * own startup race: the backend emits `daemon-status` from its own setup
@@ -34,6 +35,15 @@ import { listen } from '@tauri-apps/api/event';
 import { createLogger } from '$lib/utils/logger';
 
 const log = createLogger('DaemonStatus');
+
+/**
+ * Emitted at most once per app start, with a `null` payload: after the
+ * backend's post-startup socket check, and only when the daemon then answers a
+ * real gRPC round trip. A reachable socket alone only proves something accepts
+ * connections. Mirrors the Rust `DATA_PLANE_READY_EVENT` constant in the
+ * desktop app library.
+ */
+export const DATA_PLANE_READY_EVENT = 'daemon:data-plane-ready';
 
 /** How long to show a "connecting" banner before any status is known. */
 const CONNECTING_GRACE_PERIOD_MS = 1500;

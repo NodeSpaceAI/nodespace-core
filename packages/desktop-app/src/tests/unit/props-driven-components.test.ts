@@ -5,6 +5,7 @@
  * - BacklinksPanel: accepts backlinks as a prop (no sharedNodeStore import)
  * - TextNode, TaskNode, DateNode: accept content/nodeType/children as props (no store reads)
  * - NavigationSidebar: no @tauri-apps/api/event import
+ * - AppShell: reloads schemas and collections on the data-plane-ready event
  *
  * All logic tests run in Happy-DOM mode (`bun run test`).
  */
@@ -12,6 +13,7 @@
 import { describe, it, expect } from 'vitest';
 import type { NodeReference } from '$lib/types/node';
 import { deriveTaskState, stripTaskMarker } from '$lib/design/components/task-state-syntax';
+import { DATA_PLANE_READY_EVENT } from '$lib/services/daemon-status';
 
 // ============================================================================
 // BacklinksPanel — Props Interface
@@ -244,27 +246,48 @@ describe('DateNode props contract', () => {
 // ============================================================================
 
 describe('NavigationSidebar Tauri independence', () => {
-  it('pro:tier-detected reload logic is extracted to app-shell', async () => {
-    // The sidebar no longer calls listen() from @tauri-apps/api/event.
-    // Instead app-shell.svelte handles the event and calls schemasData/collectionsData directly.
-    // We verify the expected data-loading pattern works with store singletons.
+  it('does not import the Tauri event API', async () => {
+    const { readFileSync } = await import('node:fs');
+    // Vitest runs with packages/desktop-app as cwd (see its vitest config root).
+    const sidebar = readFileSync('src/lib/components/layout/navigation-sidebar.svelte', 'utf8');
 
-    // Simulate what app-shell does when tier event fires:
-    let schemasReloaded = false;
-    let collectionsReloaded = false;
+    expect(sidebar).not.toContain('@tauri-apps/api/event');
+  });
+});
 
-    const mockSchemasData = { loadSchemas: () => { schemasReloaded = true; } };
-    const mockCollectionsData = { loadCollections: () => { collectionsReloaded = true; } };
+// ============================================================================
+// AppShell — data-plane-ready reload
+// ============================================================================
 
-    // Simulate pro:tier-detected handler
-    function onTierDetected() {
-      mockSchemasData.loadSchemas();
-      mockCollectionsData.loadCollections();
-    }
+describe('AppShell data-plane-ready reload', () => {
+  async function readSource(path: string): Promise<string> {
+    const { readFileSync } = await import('node:fs');
+    // Vitest runs with packages/desktop-app as cwd (see its vitest config root).
+    return readFileSync(path, 'utf8');
+  }
 
-    onTierDetected();
+  it('reloads schemas and collections when the daemon data plane is ready', async () => {
+    const shell = await readSource('src/lib/components/layout/app-shell.svelte');
+    const listener = shell.indexOf('listen(DATA_PLANE_READY_EVENT');
 
-    expect(schemasReloaded).toBe(true);
-    expect(collectionsReloaded).toBe(true);
+    expect(listener, 'app-shell must listen for DATA_PLANE_READY_EVENT').toBeGreaterThan(-1);
+    const handler = shell.slice(listener, listener + 300);
+    expect(handler).toContain('schemasData.loadSchemas()');
+    expect(handler).toContain('collectionsData.loadCollections()');
+  });
+
+  it('no longer listens for the legacy capability-probe event', async () => {
+    const shell = await readSource('src/lib/components/layout/app-shell.svelte');
+    // Built from fragments so this test is not itself a hit for the event name.
+    const legacyEvent = ['pro', 'tier-detected'].join(':');
+
+    expect(shell).not.toContain(legacyEvent);
+  });
+
+  it('names the same event the Rust startup task emits', async () => {
+    const rust = await readSource('app-lib/src/lib.rs');
+
+    expect(DATA_PLANE_READY_EVENT).toBe('daemon:data-plane-ready');
+    expect(rust).toContain(`"${DATA_PLANE_READY_EVENT}"`);
   });
 });

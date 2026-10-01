@@ -95,6 +95,15 @@ fn frontend_log(line: String) {
     }
 }
 
+/// The event the startup task emits once the daemon answers a real gRPC round
+/// trip, telling the frontend to load what needs the daemon's data plane.
+///
+/// Emitted at most once per app start, with a `null` payload, after the
+/// post-startup reachability check, and only when the socket is reachable and
+/// the daemon answered. A reachable socket alone only proves something accepts
+/// connections.
+pub const DATA_PLANE_READY_EVENT: &str = "daemon:data-plane-ready";
+
 /// Report the current daemon health to the frontend.
 ///
 /// Returns "healthy", "starting", "not_running", or "incompatible_database"
@@ -661,6 +670,7 @@ fn run_app(extensions: AppExtensions, context: tauri::Context<tauri::Wry>) {
                     // Cloned here because the token stream subscription below takes
                     // `grpc_client` by value.
                     let grpc_for_extensions = grpc_client.clone();
+                    let data_plane_client = grpc_client.clone();
                     // The watcher rides the shared client so its WatchNodes stream
                     // targets the active database and re-subscribes on switch (ADR-053).
                     watcher::spawn(app_handle.clone(), grpc_client.clone(), session_token);
@@ -712,12 +722,12 @@ fn run_app(extensions: AppExtensions, context: tauri::Context<tauri::Wry>) {
                     // Re-establish the "daemon unreachable" signal lost when the
                     // eager lazy client replaced the connect()-or-emit path. The lazy
                     // channel never fails at startup, so a genuinely-down daemon would
-                    // otherwise leave the UI silently empty. After the probe has
-                    // exercised the channel, confirm reachability with the same socket
-                    // check `check_daemon_status` uses and emit `not_running` so
-                    // app-shell shows its error banner + retry. `Starting`
-                    // is transient — only `NotRunning` trips the banner.
-                    {
+                    // otherwise leave the UI silently empty. Once the startup work
+                    // above is done, check the daemon socket the same way
+                    // `check_daemon_status` does and emit `not_running` so app-shell
+                    // shows its error banner + retry. `Starting` is transient — only
+                    // `NotRunning` trips the banner.
+                    let socket_reachable = {
                         use daemon_setup::{check_daemon_socket, DaemonStatus};
                         // Probe the SAME socket the gRPC client dials (honors
                         // NODESPACED_SOCKET), not the hardcoded default — else a
@@ -733,6 +743,44 @@ fn run_app(extensions: AppExtensions, context: tauri::Context<tauri::Wry>) {
                                 "daemon-status",
                                 incompatible_database::daemon_down_status(),
                                 None,
+                            );
+                            false
+                        } else {
+                            true
+                        }
+                    };
+
+                    // A reachable socket only proves something accepts connections.
+                    // Tell the frontend once the daemon answers a real gRPC round
+                    // trip, so it reloads whatever it could not load before then.
+                    {
+                        use crate::services::{DataPlaneRoundTrip, DATA_PLANE_PROBE_TIMEOUT};
+                        let outcome = if socket_reachable {
+                            Some(
+                                data_plane_client
+                                    .data_plane_round_trip(DATA_PLANE_PROBE_TIMEOUT)
+                                    .await,
+                            )
+                        } else {
+                            None
+                        };
+                        if outcome == Some(DataPlaneRoundTrip::Answered) {
+                            match app_handle.emit(DATA_PLANE_READY_EVENT, ()) {
+                                Ok(()) => tracing::info!(
+                                    event = DATA_PLANE_READY_EVENT,
+                                    "daemon data plane answered after startup"
+                                ),
+                                Err(e) => tracing::warn!(
+                                    error = %e,
+                                    event = DATA_PLANE_READY_EVENT,
+                                    "failed to emit the data-plane-ready event"
+                                ),
+                            }
+                        } else {
+                            tracing::warn!(
+                                ?outcome,
+                                event = DATA_PLANE_READY_EVENT,
+                                "daemon data plane not answering after startup; not emitting"
                             );
                         }
                     }
@@ -1645,6 +1693,34 @@ mod run_wiring_tests {
         assert!(
             !statement.contains(".await"),
             "daemon-ready tasks are spawned, never awaited: {statement}"
+        );
+    }
+
+    #[test]
+    fn run_emits_data_plane_ready_after_the_reachability_check_once_the_daemon_answers() {
+        let run = run_source();
+        let reachability = position(run, "nodespaced unreachable after startup");
+        let after = &run[reachability..];
+        let task_end = after
+            .find("StreamingTaskRegistry::default()")
+            .expect("the streaming task registry is managed after the startup task");
+        let tail = &after[..task_end];
+
+        let round_trip = tail
+            .find("data_plane_round_trip(")
+            .expect("the daemon is asked for a data-plane round trip after the reachability check");
+        let emit = tail
+            .find("emit(DATA_PLANE_READY_EVENT")
+            .expect("the data-plane-ready event is emitted after the reachability check");
+
+        assert!(
+            round_trip < emit,
+            "the event is emitted only after the daemon answers the round trip"
+        );
+        assert_eq!(
+            run.matches("emit(DATA_PLANE_READY_EVENT").count(),
+            1,
+            "each app start emits the data-plane-ready event at most once"
         );
     }
 
