@@ -109,6 +109,8 @@ const REACHABLE_WITHOUT_PIN: Record<string, string> = {
     "Reads ids from its `nodeIds` prop — the exact set QueryNodeViewer already pinned wholesale before passing it down.",
   'lib/components/query/kanban-view.svelte':
     'Reads ids from its `nodeIds` prop, same as list-view.svelte.',
+  'lib/extension-api/index.ts':
+    "The host API's `nodes.getNode`, a pass-through read for extensions. It does not pin, and its doc says so; the read it exists for, of the DATABASE_SETTINGS_NODE_ID singleton, is pinned centrally by database.svelte.ts's refreshDatabaseSettings() — see the second test below.",
   'lib/plugins/pro-sync-variant.svelte.ts':
     'Reads the fixed DATABASE_SETTINGS_NODE_ID singleton, pinned centrally (by design, in a different file) by database.svelte.ts\'s refreshDatabaseSettings() — see the second test below.',
 };
