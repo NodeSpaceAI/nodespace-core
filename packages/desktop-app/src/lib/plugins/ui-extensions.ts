@@ -35,6 +35,12 @@
  * no reactivity; the reactive filtering by `when` lives in the sibling
  * `ui-extensions.svelte.ts` wrapper (ADR-049).
  *
+ * Collection-tree roots: an extension may also carry `collectionTreeRoots`, a
+ * function naming collections the sidebar tree hides as containers.
+ * `collectionTreeRoots()` calls every one on each lookup and returns their union,
+ * so the collections store reads it straight from this registry inside its
+ * derivation.
+ *
  * Lifecycle: an extension may also carry `lifecycle` hooks and a `debugDump`.
  * They are invoked by `extension-lifecycle.ts`, not by this registry, so the
  * registry stays free of any host wiring.
@@ -136,6 +142,23 @@ export type SettingsSlotContributionFor<S extends SettingsSlot> = Extract<
 
 // --- End of settings extension points -----------------------------------------
 
+// --- Collection-tree roots (ADR-082 §2.2) --------------------------------------
+
+/**
+ * Names the collections the sidebar collection tree treats as invisible
+ * containers. A root is never shown: a collection whose only parent is a root
+ * is shown at the top level instead of nested under it, and the root's own row
+ * is dropped. The host takes the union of every extension's list with core's
+ * own root, and with no extension contributing the tree is unchanged.
+ *
+ * It is presentation only. The host evaluates it inside a derivation, so it
+ * must read only reactive sources and have no side effects (ADR-049). One that
+ * throws counts as an empty list and is logged once (ADR-082 §2.4).
+ */
+export type CollectionTreeRootsContribution = () => readonly string[];
+
+// --- End of collection-tree roots ----------------------------------------------
+
 export interface NodespaceExtension {
   id: string;
   apiVersion: typeof EXTENSION_API_VERSION.major;
@@ -151,6 +174,8 @@ export interface NodespaceExtension {
   viewerTabs?: ViewerTabContribution[];
   settingsSections?: SettingsSectionContribution[];
   settingsSlots?: SettingsSlotContribution[];
+  /** Collections the sidebar tree hides as containers; see {@link CollectionTreeRootsContribution}. */
+  collectionTreeRoots?: CollectionTreeRootsContribution;
 }
 
 /** A contribution as a host sees it; `key` is `${extensionId}/${id}`. */
@@ -233,11 +258,17 @@ function keyContributions<C extends { id: string; load: unknown }>(
 
 /**
  * Holds registered extensions. Pure data + lookups — no `$state`, no
- * reactivity (that is layered on in `ui-extensions.svelte.ts`). Mirrors the
- * structural shape of `PluginRegistry` (plain class, `Map`, register/unregister).
+ * reactivity (that is layered on in `ui-extensions.svelte.ts`). The one lookup
+ * that runs extension code is `collectionTreeRoots()`: it calls each
+ * extension's function, so a caller's derivation tracks the state that function
+ * reads. Mirrors the structural shape of `PluginRegistry` (plain class, `Map`,
+ * register/unregister).
  */
 export class UiExtensionRegistry {
   private extensions = new Map<string, RegisteredExtension>();
+
+  /** Extensions whose `collectionTreeRoots` failed and has not returned normally since. */
+  private failingTreeRoots = new WeakSet<NodespaceExtension>();
 
   /** Register an extension. Never throws; see the module doc for what is skipped. */
   register(ext: NodespaceExtension): void {
@@ -370,6 +401,43 @@ export class UiExtensionRegistry {
     // Every entry above has `slot === S`, which the union filter cannot express.
     return byPriority(out) as Keyed<SettingsSlotContributionFor<S>>[];
   }
+
+  // --- Collection-tree roots (ADR-082 §2.2) ----------------------------------
+
+  /**
+   * The union of every extension's {@link CollectionTreeRootsContribution}, in
+   * registration order. Calls each extension's function on every lookup, with no
+   * caching, so a caller inside a derivation re-runs when the reactive state that
+   * function reads changes. A contributor that throws or returns something other
+   * than an array counts as empty and is logged once, and again only after it
+   * has returned normally in between. Entries that are not strings are ignored.
+   */
+  collectionTreeRoots(): ReadonlySet<string> {
+    const roots = new Set<string>();
+    for (const { extension } of this.extensions.values()) {
+      try {
+        const contribute = extension.collectionTreeRoots;
+        if (contribute === undefined) continue;
+        const ids: unknown = contribute.call(extension);
+        if (!Array.isArray(ids)) throw new TypeError('collectionTreeRoots must return an array');
+        for (const id of ids) {
+          if (typeof id === 'string') roots.add(id);
+        }
+        this.failingTreeRoots.delete(extension);
+      } catch (error) {
+        if (!this.failingTreeRoots.has(extension)) {
+          this.failingTreeRoots.add(extension);
+          log.warn('Extension collectionTreeRoots failed; treating it as empty', {
+            extensionId: extension.id,
+            error
+          });
+        }
+      }
+    }
+    return roots;
+  }
+
+  // --- End of collection-tree roots ------------------------------------------
 }
 
 /** Process-wide singleton (mirrors `pluginRegistry`). */

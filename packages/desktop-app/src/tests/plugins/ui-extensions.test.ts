@@ -719,3 +719,236 @@ describe('active settings accessors over the fixture extension', () => {
     }
   });
 });
+
+describe('UiExtensionRegistry collection-tree roots', () => {
+  let registry: UiExtensionRegistry;
+
+  beforeEach(() => {
+    registry = new UiExtensionRegistry();
+  });
+
+  const roots = (ids: readonly string[]) =>
+    ext('roots-' + ids.join('-'), {
+      collectionTreeRoots: () => ids
+    });
+
+  it('is empty with no extension registered', () => {
+    expect([...registry.collectionTreeRoots()]).toEqual([]);
+  });
+
+  it('is empty when no extension contributes roots', () => {
+    registry.register(ext('plain'));
+    registry.register(ext('with-tabs', { viewerTabs: [tab('tab')] }));
+
+    expect([...registry.collectionTreeRoots()]).toEqual([]);
+    expect(log.warn).not.toHaveBeenCalled();
+  });
+
+  it("returns the union of every extension's roots in registration order", () => {
+    registry.register(roots(['b', 'a']));
+    registry.register(ext('plain'));
+    registry.register(ext('overlap', { collectionTreeRoots: () => ['c', 'a', 'd'] }));
+
+    expect([...registry.collectionTreeRoots()]).toEqual(['b', 'a', 'c', 'd']);
+  });
+
+  it('drops an extension’s roots once it is unregistered', () => {
+    registry.register(ext('first', { collectionTreeRoots: () => ['one'] }));
+    registry.register(ext('second', { collectionTreeRoots: () => ['two'] }));
+
+    registry.unregister('first');
+
+    expect([...registry.collectionTreeRoots()]).toEqual(['two']);
+  });
+
+  it('ignores entries that are not strings', () => {
+    const mixed = ['kept', 7, null, undefined, { id: 'object' }, ['nested'], 'also-kept'];
+    registry.register(
+      ext('mixed', { collectionTreeRoots: () => mixed as unknown as readonly string[] })
+    );
+
+    expect([...registry.collectionTreeRoots()]).toEqual(['kept', 'also-kept']);
+  });
+
+  it('calls the contributor on every lookup, so a derivation re-runs on the state it reads', () => {
+    let current: string[] = ['first'];
+    const contributor = vi.fn(() => current);
+    registry.register(ext('live', { collectionTreeRoots: contributor }));
+
+    expect([...registry.collectionTreeRoots()]).toEqual(['first']);
+    current = ['second'];
+    expect([...registry.collectionTreeRoots()]).toEqual(['second']);
+    expect(contributor).toHaveBeenCalledTimes(2);
+  });
+
+  it('calls the contributor as a method of its extension', () => {
+    const method = ext('method-style', {
+      collectionTreeRoots() {
+        return [`${this === method ? 'bound' : 'unbound'}-root`];
+      }
+    } as Partial<NodespaceExtension>);
+    registry.register(method);
+
+    expect([...registry.collectionTreeRoots()]).toEqual(['bound-root']);
+  });
+
+  it('counts a throwing contributor as empty and still returns the others', () => {
+    registry.register(roots(['before']));
+    registry.register(
+      ext('throws', {
+        collectionTreeRoots: () => {
+          throw new Error('roots failed');
+        }
+      })
+    );
+    registry.register(roots(['after']));
+
+    expect([...registry.collectionTreeRoots()]).toEqual(['before', 'after']);
+  });
+
+  it('logs a throwing contributor once, however often it is read', () => {
+    registry.register(
+      ext('throws-once', {
+        collectionTreeRoots: () => {
+          throw new Error('roots failed');
+        }
+      })
+    );
+
+    registry.collectionTreeRoots();
+    registry.collectionTreeRoots();
+    registry.collectionTreeRoots();
+
+    expect(log.warn).toHaveBeenCalledTimes(1);
+    expect(log.warn).toHaveBeenCalledWith(
+      expect.stringContaining('collectionTreeRoots'),
+      expect.objectContaining({ extensionId: 'throws-once' })
+    );
+  });
+
+  it('logs again only after the contributor has returned normally in between', () => {
+    let mode: 'throw' | 'ok' = 'throw';
+    registry.register(
+      ext('recovers', {
+        collectionTreeRoots: () => {
+          if (mode === 'throw') throw new Error('roots failed');
+          return ['back'];
+        }
+      })
+    );
+
+    registry.collectionTreeRoots();
+    registry.collectionTreeRoots();
+    expect(log.warn).toHaveBeenCalledTimes(1);
+
+    mode = 'ok';
+    expect([...registry.collectionTreeRoots()]).toEqual(['back']);
+
+    mode = 'throw';
+    registry.collectionTreeRoots();
+    registry.collectionTreeRoots();
+    expect(log.warn).toHaveBeenCalledTimes(2);
+  });
+
+  it('logs each failing extension separately', () => {
+    const failing = (id: string) =>
+      ext(id, {
+        collectionTreeRoots: () => {
+          throw new Error('roots failed');
+        }
+      });
+    registry.register(failing('fails-one'));
+    registry.register(failing('fails-two'));
+
+    registry.collectionTreeRoots();
+    registry.collectionTreeRoots();
+
+    expect(log.warn).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    ['undefined', undefined],
+    ['null', null],
+    ['a string', 'ab'],
+    ['a Set', new Set(['a'])],
+    ['an object', { 0: 'a', length: 1 }]
+  ])('counts a contributor returning %s as empty, and logs it once', (_label, value) => {
+    registry.register(
+      ext('malformed', { collectionTreeRoots: () => value as unknown as readonly string[] })
+    );
+
+    expect([...registry.collectionTreeRoots()]).toEqual([]);
+    registry.collectionTreeRoots();
+
+    expect(log.warn).toHaveBeenCalledTimes(1);
+  });
+
+  it('counts a collectionTreeRoots that is not a function as empty and logs it once', () => {
+    registry.register(
+      ext('not-callable', {
+        collectionTreeRoots: 'oops' as unknown as NodespaceExtension['collectionTreeRoots']
+      })
+    );
+
+    expect([...registry.collectionTreeRoots()]).toEqual([]);
+    registry.collectionTreeRoots();
+
+    expect(log.warn).toHaveBeenCalledTimes(1);
+  });
+
+  it('counts a throwing collectionTreeRoots getter as empty', () => {
+    const throwingGetter = ext('throwing-getter');
+    Object.defineProperty(throwingGetter, 'collectionTreeRoots', {
+      get() {
+        throw new Error('getter failed');
+      }
+    });
+    registry.register(throwingGetter);
+    registry.register(roots(['kept']));
+
+    expect([...registry.collectionTreeRoots()]).toEqual(['kept']);
+    expect(log.warn).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not evaluate when() or load() of any contribution', () => {
+    const when = vi.fn(() => true);
+    const load = vi.fn(noComponent);
+    registry.register(
+      ext('with-contributions', {
+        chrome: [{ id: 'overlay', slot: 'app-shell-overlay', when, load }],
+        collectionTreeRoots: () => ['root']
+      })
+    );
+
+    registry.collectionTreeRoots();
+
+    expect(when).not.toHaveBeenCalled();
+    expect(load).not.toHaveBeenCalled();
+  });
+
+  describe('over the fixture extension', () => {
+    afterEach(() => {
+      uiExtensionRegistry.unregister(TEST_EXTENSION_ID);
+      resetTestExtension();
+    });
+
+    it('contributes nothing until the fixture flag is set', () => {
+      uiExtensionRegistry.register(createTestExtension());
+
+      expect([...uiExtensionRegistry.collectionTreeRoots()]).toEqual([]);
+    });
+
+    it('contributes the ids the fixture flag holds', () => {
+      uiExtensionRegistry.register(createTestExtension());
+      testExtensionFlags.collectionTreeRoots = ['ext-root', 'second-root'];
+
+      expect([...uiExtensionRegistry.collectionTreeRoots()]).toEqual(['ext-root', 'second-root']);
+    });
+
+    it('takes a contributor of its own through the overrides', () => {
+      uiExtensionRegistry.register(createTestExtension({ collectionTreeRoots: () => ['custom'] }));
+
+      expect([...uiExtensionRegistry.collectionTreeRoots()]).toEqual(['custom']);
+    });
+  });
+});

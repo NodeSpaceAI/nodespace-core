@@ -5,6 +5,7 @@ import { onDaemonReconnect } from '$lib/services/daemon-status';
 import { stripMarkdown } from '$lib/services/markdown-utils';
 import { databaseStore } from '$lib/stores/database.svelte';
 import { pluginRegistry } from '$lib/plugins/plugin-registry';
+import { uiExtensionRegistry } from '$lib/plugins/ui-extensions';
 
 const log = createLogger('CollectionsStore');
 
@@ -160,12 +161,17 @@ class CollectionsDataStore {
     // window before the database listing loads (reading the `$state`-backed
     // `activeDatabase` makes this getter re-derive once it does).
     const boundRoot = databaseStore.activeDatabase?.boundTenantCollection;
-    const rootCollectionId = boundRoot || ROOT_COLLECTION_ID;
+    // Extension roots are unioned with core's current root. Core's own root
+    // leaves with ADR-083 §2, after which only the extension roots remain.
+    const rootCollectionIds = new Set([
+      boundRoot || ROOT_COLLECTION_ID,
+      ...uiExtensionRegistry.collectionTreeRoots()
+    ]);
     return buildCollectionsTree(
       this.state.collections,
       this.state.locallyCreatedIds,
       this.state.pendingIds,
-      rootCollectionId
+      rootCollectionIds
     );
   }
 
@@ -572,8 +578,9 @@ function pruneEmptyCollections(
  * This constant is only the FALLBACK root. A fresh install mints a
  * per-install root with a random uuid, exposed as the active database's
  * `bound_tenant_collection`; `collectionsTree` resolves that dynamically and
- * passes it to `buildCollectionsTree`, using this constant only when no bound
- * collection is set (the public/legacy tenant, which genuinely uses this id).
+ * passes it to `buildCollectionsTree` in its set of roots, using this constant
+ * only when no bound collection is set (the public/legacy tenant, which
+ * genuinely uses this id).
  */
 export const ROOT_COLLECTION_ID = 'c0000000-0000-0000-0000-000000000001';
 
@@ -585,18 +592,19 @@ export const ROOT_COLLECTION_ID = 'c0000000-0000-0000-0000-000000000001';
  * `pruneEmptyCollections`); `pendingIds` additionally mark entries whose
  * backend create is still in flight, so the sidebar can style them as pending.
  *
- * `rootCollectionId` is the workspace-root collection to treat as non-display
- * (every collection is `member_of` it for visibility, so it must not nest them):
- * a collection whose only parent is the root renders as a top-level peer. It
- * defaults to the legacy `ROOT_COLLECTION_ID`, but callers pass the active
- * database's per-install bound root so the dynamically-minted root is
- * hidden too. Exported for unit testing of the pure tree logic.
+ * `rootCollectionIds` are the collections to treat as non-display containers.
+ * Every collection is `member_of` the workspace root for visibility, so a root
+ * must not nest them: a collection whose only parents are roots renders as a
+ * top-level peer, and a root's own row is never shown. The set defaults to the
+ * legacy `ROOT_COLLECTION_ID`, but `collectionsTree` passes the active
+ * database's per-install bound root together with every extension's roots.
+ * An empty set hides nothing. Exported for unit testing of the pure tree logic.
  */
 export function buildCollectionsTree(
   collections: CollectionInfo[],
   locallyCreatedIds: ReadonlySet<string> = new Set(),
   pendingIds: ReadonlySet<string> = new Set(),
-  rootCollectionId: string = ROOT_COLLECTION_ID
+  rootCollectionIds: ReadonlySet<string> = new Set([ROOT_COLLECTION_ID])
 ): CollectionItem[] {
   // Build a map of id -> CollectionItem for quick lookup
   const itemMap = new Map<string, CollectionItem>();
@@ -617,10 +625,10 @@ export function buildCollectionsTree(
   // Note: A collection can have multiple parents, but for tree display
   // we only show it under the first parent to avoid duplication
   for (const c of collections) {
-    // Ignore the root/default collection as a parent — every collection is
-    // member_of it for visibility, so counting it would nest all collections
-    // under "Default Collection" instead of showing them as top-level peers.
-    const parentIds = (c.parentCollectionIds || []).filter((p) => p !== rootCollectionId);
+    // Ignore the root collections as parents — every collection is member_of
+    // one for visibility, so counting it would nest all collections under
+    // "Default Collection" instead of showing them as top-level peers.
+    const parentIds = (c.parentCollectionIds || []).filter((p) => !rootCollectionIds.has(p));
     if (parentIds.length > 0) {
       // Add to first parent only (to avoid showing same collection multiple times)
       const firstParentId = parentIds[0];
@@ -641,15 +649,15 @@ export function buildCollectionsTree(
     }
   }
 
-  // Return only top-level collections (those without parents), and NEVER the
-  // workspace root itself. The root is the container every collection is
+  // Return only top-level collections (those without parents), and NEVER a
+  // workspace root itself. A root is the container every collection is
   // member_of for visibility — filtering it as a parent (above) un-nests its
   // children, and dropping it here hides the root node, which otherwise renders
   // as a visible top-level collection whenever it has direct content members
   // (the symptom on the per-install minted "My Workspace" root; the legacy
   // default root was hidden the same way).
   const topLevel = collections
-    .filter((c) => c.id !== rootCollectionId && !childIds.has(c.id))
+    .filter((c) => !rootCollectionIds.has(c.id) && !childIds.has(c.id))
     .map((c) => itemMap.get(c.id)!)
     .sort((a, b) => a.name.localeCompare(b.name));
 

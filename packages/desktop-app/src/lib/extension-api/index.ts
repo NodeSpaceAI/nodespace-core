@@ -14,6 +14,7 @@ export { EXTENSION_API_VERSION } from '$lib/plugins/ui-extensions';
 export type {
   ChromeContribution,
   ChromeSlot,
+  CollectionTreeRootsContribution,
   Contribution,
   NodespaceExtension,
   SettingsSectionContribution,

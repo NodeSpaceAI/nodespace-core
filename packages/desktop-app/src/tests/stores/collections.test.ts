@@ -18,6 +18,14 @@ import type { CollectionInfo } from '$lib/services/collection-service';
 import type { Node } from '$lib/types';
 import { mockCollections, mockMembers } from '../fixtures/collections-fixtures';
 import { pluginRegistry } from '$lib/plugins/index';
+import { uiExtensionRegistry } from '$lib/plugins/ui-extensions';
+import { databaseStore, type DatabaseInfo } from '$lib/stores/database.svelte';
+import {
+  TEST_EXTENSION_ID,
+  createTestExtension,
+  resetTestExtension,
+  testExtensionFlags
+} from '../fixtures/test-extension';
 
 // Convert mock data to CollectionInfo format for testing
 function createTestCollectionInfo(item: CollectionItem, parentId?: string): CollectionInfo {
@@ -655,7 +663,12 @@ describe('Collections Store', () => {
     ];
 
     it('renders collections member_of the per-install root as top-level peers when that root is passed', () => {
-      const tree = buildCollectionsTree(underPerInstallRoot, new Set(), new Set(), PER_INSTALL_ROOT);
+      const tree = buildCollectionsTree(
+        underPerInstallRoot,
+        new Set(),
+        new Set(),
+        new Set([PER_INSTALL_ROOT])
+      );
 
       // Peers, not nested: neither has children, and both are top-level.
       expect(tree.map((c) => c.id)).toEqual(['design', 'engineering']); // sorted by name
@@ -674,7 +687,12 @@ describe('Collections Store', () => {
         ...underPerInstallRoot
       ];
 
-      const tree = buildCollectionsTree(withRootNode, new Set(), new Set(), PER_INSTALL_ROOT);
+      const tree = buildCollectionsTree(
+        withRootNode,
+        new Set(),
+        new Set(),
+        new Set([PER_INSTALL_ROOT])
+      );
 
       // The root node is gone; its children are the top-level peers.
       expect(tree.find((c) => c.id === PER_INSTALL_ROOT)).toBeUndefined();
@@ -697,7 +715,12 @@ describe('Collections Store', () => {
         ...underPerInstallRoot
       ];
 
-      const tree = buildCollectionsTree(withRootNode, new Set(), new Set(), ROOT_COLLECTION_ID);
+      const tree = buildCollectionsTree(
+        withRootNode,
+        new Set(),
+        new Set(),
+        new Set([ROOT_COLLECTION_ID])
+      );
 
       // Legacy constant does not match the per-install root → root nests everything.
       expect(tree.map((c) => c.id)).toEqual([PER_INSTALL_ROOT]);
@@ -737,11 +760,229 @@ describe('Collections Store', () => {
         }
       ];
 
-      const tree = buildCollectionsTree(nested, new Set(), new Set(), PER_INSTALL_ROOT);
+      const tree = buildCollectionsTree(nested, new Set(), new Set(), new Set([PER_INSTALL_ROOT]));
 
       // engineering is a top-level peer (its root edge is filtered); backend nests.
       expect(tree.map((c) => c.id)).toEqual(['engineering']);
       expect(tree[0].children?.map((c) => c.id)).toEqual(['backend']);
+    });
+
+    it('hides every id in a set of two roots, as parents and as rows', () => {
+      const SECOND_ROOT = 'b9b8b7b6-1111-2222-3333-444455556666';
+      const twoRoots: CollectionInfo[] = [
+        {
+          ...createTestCollectionInfo({ id: PER_INSTALL_ROOT, name: 'First root', memberCount: 4 }),
+          parentCollectionIds: []
+        },
+        {
+          ...createTestCollectionInfo({ id: SECOND_ROOT, name: 'Second root', memberCount: 4 }),
+          parentCollectionIds: []
+        },
+        {
+          ...createTestCollectionInfo({ id: 'engineering', name: 'Engineering', memberCount: 3 }),
+          parentCollectionIds: [PER_INSTALL_ROOT]
+        },
+        {
+          ...createTestCollectionInfo({ id: 'design', name: 'Design', memberCount: 2 }),
+          parentCollectionIds: [SECOND_ROOT]
+        }
+      ];
+
+      const tree = buildCollectionsTree(
+        twoRoots,
+        new Set(),
+        new Set(),
+        new Set([PER_INSTALL_ROOT, SECOND_ROOT])
+      );
+
+      // Neither root is a row, and the collections under each are top-level peers.
+      expect(tree.map((c) => c.id)).toEqual(['design', 'engineering']);
+      expect(tree.every((c) => (c.children?.length ?? 0) === 0)).toBe(true);
+    });
+
+    it('treats a collection as ordinary when the set is empty, nesting its member collections', () => {
+      const withContainer: CollectionInfo[] = [
+        {
+          ...createTestCollectionInfo({ id: 'container', name: 'Container', memberCount: 1 }),
+          parentCollectionIds: []
+        },
+        {
+          ...createTestCollectionInfo({ id: 'engineering', name: 'Engineering', memberCount: 3 }),
+          parentCollectionIds: ['container']
+        },
+        {
+          ...createTestCollectionInfo({ id: 'design', name: 'Design', memberCount: 2 }),
+          parentCollectionIds: ['container']
+        }
+      ];
+
+      const tree = buildCollectionsTree(withContainer, new Set(), new Set(), new Set());
+
+      // Nothing is hidden, so the container is a normal row holding both collections.
+      expect(tree.map((c) => c.id)).toEqual(['container']);
+      expect(tree[0].children?.map((c) => c.id)).toEqual(['design', 'engineering']);
+    });
+
+    it('does not hide the legacy root when it is absent from the set', () => {
+      const underLegacyRoot: CollectionInfo[] = [
+        {
+          ...createTestCollectionInfo({ id: ROOT_COLLECTION_ID, name: 'Default', memberCount: 2 }),
+          parentCollectionIds: []
+        },
+        {
+          ...createTestCollectionInfo({ id: 'hr', name: 'HR', memberCount: 1 }),
+          parentCollectionIds: [ROOT_COLLECTION_ID]
+        }
+      ];
+
+      const tree = buildCollectionsTree(
+        underLegacyRoot,
+        new Set(),
+        new Set(),
+        new Set([PER_INSTALL_ROOT])
+      );
+
+      expect(tree.map((c) => c.id)).toEqual([ROOT_COLLECTION_ID]);
+      expect(tree[0].children?.map((c) => c.id)).toEqual(['hr']);
+    });
+  });
+
+  describe('collectionsTree unions extension collection-tree roots', () => {
+    const EXTENSION_ROOT = 'ext-root';
+
+    // The extension root and its node, a collection under it, a collection under
+    // core's legacy root, and a collection nested in a regular parent.
+    const collections: CollectionInfo[] = [
+      {
+        ...createTestCollectionInfo({ id: EXTENSION_ROOT, name: 'Extension root', memberCount: 5 }),
+        parentCollectionIds: []
+      },
+      {
+        ...createTestCollectionInfo({ id: ROOT_COLLECTION_ID, name: 'Default', memberCount: 5 }),
+        parentCollectionIds: []
+      },
+      {
+        ...createTestCollectionInfo({ id: 'engineering', name: 'Engineering', memberCount: 3 }),
+        parentCollectionIds: [EXTENSION_ROOT]
+      },
+      {
+        ...createTestCollectionInfo({ id: 'hr', name: 'HR', memberCount: 1 }),
+        parentCollectionIds: [ROOT_COLLECTION_ID]
+      },
+      {
+        ...createTestCollectionInfo({ id: 'backend', name: 'Backend', memberCount: 1 }),
+        parentCollectionIds: ['engineering']
+      }
+    ];
+
+    const treeIds = () => collectionsData.collectionsTree.map((c) => c.id);
+
+    beforeEach(() => {
+      collectionsData._setTestData(collections, new Map());
+    });
+
+    afterEach(() => {
+      uiExtensionRegistry.unregister(TEST_EXTENSION_ID);
+      resetTestExtension();
+    });
+
+    it('matches the unextended tree when no extension is registered', () => {
+      // Only core's legacy root is hidden: the extension root is an ordinary row.
+      expect(collectionsData.collectionsTree).toEqual(buildCollectionsTree(collections));
+      expect(treeIds()).toEqual(['ext-root', 'hr']);
+      expect(collectionsData.collectionsTree[0].children?.map((c) => c.id)).toEqual([
+        'engineering'
+      ]);
+    });
+
+    it('hides the extension root and shows its members at the top level', () => {
+      testExtensionFlags.collectionTreeRoots = [EXTENSION_ROOT];
+      uiExtensionRegistry.register(createTestExtension());
+
+      expect(treeIds()).toEqual(['engineering', 'hr']);
+      const engineering = collectionsData.collectionsTree.find((c) => c.id === 'engineering');
+      expect(engineering?.children?.map((c) => c.id)).toEqual(['backend']);
+    });
+
+    it("keeps core's own root hidden alongside the extension root", () => {
+      testExtensionFlags.collectionTreeRoots = [EXTENSION_ROOT];
+      uiExtensionRegistry.register(createTestExtension());
+
+      // The legacy root is neither a row nor a parent of `hr`.
+      expect(treeIds()).not.toContain(ROOT_COLLECTION_ID);
+      expect(treeIds()).toContain('hr');
+    });
+
+    it("hides the active database's root together with the extension root", () => {
+      const BOUND_ROOT = 'bound-root';
+      // Only what the getter reads: the active database's id and its root.
+      const database = { id: 'bound-db', boundTenantCollection: BOUND_ROOT } as DatabaseInfo;
+      const previousDatabases = databaseStore.databases;
+      const previousActiveId = databaseStore.activeDatabaseId;
+      try {
+        databaseStore.databases = [database];
+        databaseStore.activeDatabaseId = database.id;
+        collectionsData._setTestData(
+          [
+            ...collections,
+            {
+              ...createTestCollectionInfo({ id: BOUND_ROOT, name: 'Bound root', memberCount: 2 }),
+              parentCollectionIds: []
+            },
+            {
+              ...createTestCollectionInfo({ id: 'design', name: 'Design', memberCount: 2 }),
+              parentCollectionIds: [BOUND_ROOT]
+            }
+          ],
+          new Map()
+        );
+        testExtensionFlags.collectionTreeRoots = [EXTENSION_ROOT];
+        uiExtensionRegistry.register(createTestExtension());
+
+        // The database's root replaces the legacy root as core's root, so the
+        // legacy root is an ordinary row again, holding `hr`. The database's root
+        // and the extension root are hidden, and their members are top-level.
+        expect(treeIds()).toEqual([ROOT_COLLECTION_ID, 'design', 'engineering']);
+        expect(collectionsData.collectionsTree[0].children?.map((c) => c.id)).toEqual(['hr']);
+      } finally {
+        databaseStore.databases = previousDatabases;
+        databaseStore.activeDatabaseId = previousActiveId;
+      }
+    });
+
+    it('follows the reactive state the extension reads on each read', () => {
+      uiExtensionRegistry.register(createTestExtension());
+      expect(treeIds()).toEqual(['ext-root', 'hr']);
+
+      testExtensionFlags.collectionTreeRoots = [EXTENSION_ROOT];
+      expect(treeIds()).toEqual(['engineering', 'hr']);
+
+      testExtensionFlags.collectionTreeRoots = [];
+      expect(treeIds()).toEqual(['ext-root', 'hr']);
+    });
+
+    it('leaves the tree intact when a contributor throws', () => {
+      uiExtensionRegistry.register(
+        createTestExtension({
+          collectionTreeRoots: () => {
+            throw new Error('collectionTreeRoots failed');
+          }
+        })
+      );
+
+      expect(collectionsData.collectionsTree).toEqual(buildCollectionsTree(collections));
+      expect(treeIds()).toEqual(['ext-root', 'hr']);
+    });
+
+    it('restores the previous tree when the extension is unregistered', () => {
+      const before = collectionsData.collectionsTree;
+      testExtensionFlags.collectionTreeRoots = [EXTENSION_ROOT];
+      uiExtensionRegistry.register(createTestExtension());
+      expect(collectionsData.collectionsTree).not.toEqual(before);
+
+      uiExtensionRegistry.unregister(TEST_EXTENSION_ID);
+
+      expect(collectionsData.collectionsTree).toEqual(before);
     });
   });
 
