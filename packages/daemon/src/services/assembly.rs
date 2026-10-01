@@ -154,6 +154,40 @@ impl std::fmt::Display for DatabaseRequiresExtensions {
 
 impl std::error::Error for DatabaseRequiresExtensions {}
 
+/// The guard could not read a database's `required_extensions`: the file is
+/// not a readable database, or the field holds something other than a list of
+/// strings. The open fails closed, since the guard cannot tell what the
+/// database needs, and like a refusal it concerns that database alone.
+#[derive(Debug)]
+pub struct RequiredExtensionsUnreadable {
+    /// The database the guard could not read.
+    pub path: std::path::PathBuf,
+    source: anyhow::Error,
+}
+
+impl RequiredExtensionsUnreadable {
+    /// The failure anywhere in `err`'s chain.
+    pub fn find_in(err: &anyhow::Error) -> Option<&Self> {
+        err.chain().find_map(|cause| cause.downcast_ref::<Self>())
+    }
+}
+
+impl std::fmt::Display for RequiredExtensionsUnreadable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "could not read the required extensions of {}",
+            self.path.display()
+        )
+    }
+}
+
+impl std::error::Error for RequiredExtensionsUnreadable {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.source.as_ref())
+    }
+}
+
 /// The extensions the database at `db_path` requires that `shared` does not
 /// support. Reads the file through its own read-only connection and writes
 /// nothing (see [`nodespace_core::db::required_extensions`]), so it is safe to
@@ -355,11 +389,9 @@ pub async fn build_database_services(
     // misreading what an extension wrote.
     let unsupported = unsupported_required_extensions(db_path, shared)
         .await
-        .with_context(|| {
-            format!(
-                "Failed to read the required extensions of {}",
-                db_path.display()
-            )
+        .map_err(|source| RequiredExtensionsUnreadable {
+            path: db_path.to_path_buf(),
+            source,
         })?;
     if !unsupported.is_empty() {
         return Err(DatabaseRequiresExtensions { unsupported }.into());
@@ -640,22 +672,30 @@ pub async fn build_unrouted_services(shared: &SharedContext) -> Result<DatabaseS
 /// The service set to build a daemon's router from when opening its default
 /// database failed with `err`.
 ///
-/// A default refused because it requires an extension this daemon does not
-/// support (ADR-083 §2) concerns that one database, not the daemon: it is
-/// logged, and an unrouted set ([`build_unrouted_services`]) is returned so the
-/// daemon keeps serving the other databases. This differs from a table-shape
-/// refusal, which stops the daemon. Any other failure is returned unchanged.
+/// A default refused by the required-extensions guard (ADR-083 §2), because it
+/// requires an extension this daemon does not support or because the guard
+/// could not read what it requires, concerns that one database, not the
+/// daemon: it is logged, and an unrouted set ([`build_unrouted_services`]) is
+/// returned so the daemon keeps serving the other databases. This differs from
+/// a table-shape refusal, which stops the daemon. Any other failure is
+/// returned unchanged.
 pub async fn unrouted_services_if_default_refused(
     err: anyhow::Error,
     shared: &SharedContext,
 ) -> Result<Arc<DatabaseServices>> {
-    let Some(refusal) = DatabaseRequiresExtensions::find_in(&err) else {
+    if let Some(refusal) = DatabaseRequiresExtensions::find_in(&err) {
+        tracing::warn!(
+            unsupported_extensions = ?refusal.unsupported,
+            "{refusal}: the default database stays closed and the daemon serves the other databases"
+        );
+    } else if RequiredExtensionsUnreadable::find_in(&err).is_some() {
+        tracing::warn!(
+            error = format!("{err:#}"),
+            "the default database stays closed and the daemon serves the other databases"
+        );
+    } else {
         return Err(err);
-    };
-    tracing::warn!(
-        unsupported_extensions = ?refusal.unsupported,
-        "{refusal}: the default database stays closed and the daemon serves the other databases"
-    );
+    }
     Ok(Arc::new(build_unrouted_services(shared).await?))
 }
 

@@ -2335,7 +2335,7 @@ impl NodeBehavior for DatabaseSettingsNodeBehavior {
     /// node's own bucket and at the top level, where a create passes its
     /// properties before they are bucketed.
     fn validate(&self, node: &Node) -> Result<(), NodeValidationError> {
-        let field = crate::db::required_extensions::REQUIRED_EXTENSIONS_FIELD;
+        let field = crate::models::core_schemas::REQUIRED_EXTENSIONS_FIELD;
         let values = [
             node.properties
                 .get(self.type_name())

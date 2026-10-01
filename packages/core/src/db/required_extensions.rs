@@ -7,7 +7,8 @@
 //! extension it does not support. The check has to come before the store opens
 //! the file, because opening it is already a write: [`crate::SqliteStore::new`]
 //! switches the journal to WAL, runs the schema DDL and seeds. So this module
-//! reads the file through its own read-only connection and writes nothing.
+//! reads the file through its own read-only connection, which never writes the
+//! database or its WAL.
 //!
 //! This is a compatibility guard, not a security control: the database is a
 //! plain SQLite file that any process running as the user can read or edit. It
@@ -17,8 +18,7 @@ use std::path::Path;
 
 use anyhow::{bail, Context, Result};
 
-/// The `database-settings` field that lists the extensions a database needs.
-pub const REQUIRED_EXTENSIONS_FIELD: &str = "required_extensions";
+use crate::models::core_schemas::REQUIRED_EXTENSIONS_FIELD;
 
 /// Read the `required_extensions` of the database at `db_path`, in stored
 /// order and without duplicates.
@@ -27,14 +27,17 @@ pub const REQUIRED_EXTENSIONS_FIELD: &str = "required_extensions";
 /// since an extension may retype it to a subtype of `database-settings`
 /// (ADR-078); the field stays in the `database-settings` bucket either way.
 ///
-/// Writes nothing. When no `-wal` file exists the file is opened `immutable`,
-/// which takes no lock and creates no side file. When one does, the file is
-/// opened `mode=ro` instead, which reads the committed pages the WAL still
-/// holds: an `immutable` read would miss a value that was never checkpointed.
+/// Never writes the database or its WAL. When no `-wal` file exists the file is
+/// opened `immutable`, which takes no lock and creates no side file. When one
+/// does, the file is opened `mode=ro` instead, which reads the committed pages
+/// the WAL still holds (an `immutable` read would miss a value that was never
+/// checkpointed); like any WAL reader it may create the `-shm` index.
 ///
 /// Returns an empty list when there is no file (opening it creates it), when
-/// the file has no `node` table yet, and when the database has no settings
-/// node or the node no such field. Errors when the file cannot be read as a
+/// the file has no `node` table with `id` and `properties` columns (an empty
+/// file, or tables of a shape this build does not know, which the store's own
+/// table-shape check then reports), and when the database has no settings node
+/// or the node no such field. Errors when the file cannot be read as a
 /// database, or when the field holds anything but a list of strings: a guard
 /// that cannot read the list must not open the database as if it were empty.
 pub async fn read_required_extensions(db_path: &Path) -> Result<Vec<String>> {
@@ -66,14 +69,21 @@ pub async fn read_required_extensions(db_path: &Path) -> Result<Vec<String>> {
         .await
         .context("Failed to set busy_timeout on the read-only connection")?;
 
-    let mut tables = conn
+    // Only a `node` table holding the two columns read below is queried. Any
+    // other shape is left to the store, whose table-shape check refuses it with
+    // its own error rather than this guard failing on a missing column.
+    let mut columns = conn
         .query(
-            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'node'",
+            "SELECT count(*) FROM pragma_table_info('node') WHERE name IN ('id', 'properties')",
             (),
         )
         .await
         .with_context(|| format!("Failed to read the schema of {}", db_path.display()))?;
-    if tables.next().await?.is_none() {
+    let known_columns: i64 = match columns.next().await? {
+        Some(row) => row.get(0)?,
+        None => 0,
+    };
+    if known_columns != 2 {
         return Ok(Vec::new());
     }
 
@@ -139,25 +149,35 @@ fn wal_path(db_path: &Path) -> std::path::PathBuf {
     std::path::PathBuf::from(wal)
 }
 
-/// A `file:` URI for `db_path` with the query `query`. Percent-encodes the
-/// three characters a URI path cannot hold literally (`%`, `?`, `#`); on
-/// Windows it also turns separators into `/` and puts a `/` before the drive
-/// letter, as SQLite's URI format requires.
+/// A `file:` URI with an empty authority for `db_path`, with the query `query`.
 fn read_only_uri(db_path: &Path, query: &str) -> Result<String> {
     let Some(path) = db_path.to_str() else {
         bail!("database path is not valid UTF-8: {}", db_path.display());
     };
-    #[cfg(windows)]
-    let path = {
-        let path = path
-            .strip_prefix(r"\\?\")
-            .unwrap_or(path)
-            .replace('\\', "/");
+    Ok(format!("file://{}?{query}", uri_path(path, cfg!(windows))))
+}
+
+/// The path part of a `file:` URI with an empty authority, so it always begins
+/// with `/`. Percent-encodes the three characters a URI path cannot hold
+/// literally (`%`, `?`, `#`). A Windows path drops a `\\?\` verbatim prefix and
+/// has its separators turned into `/`: a drive path gains a leading `/`
+/// (`/C:/…`), and a UNC path keeps its leading `//` (`//server/share/…`),
+/// which SQLite hands back to Windows as `\\server\share\…`. A parameter rather
+/// than a `cfg` so both forms are tested on every platform.
+fn uri_path(path: &str, windows: bool) -> String {
+    let path = if windows {
+        let path = match path.strip_prefix(r"\\?\UNC\") {
+            Some(share) => format!(r"\\{share}"),
+            None => path.strip_prefix(r"\\?\").unwrap_or(path).to_string(),
+        };
+        let path = path.replace('\\', "/");
         if path.starts_with('/') {
             path
         } else {
             format!("/{path}")
         }
+    } else {
+        path.to_string()
     };
     let mut encoded = String::with_capacity(path.len());
     for ch in path.chars() {
@@ -168,7 +188,7 @@ fn read_only_uri(db_path: &Path, query: &str) -> Result<String> {
             other => encoded.push(other),
         }
     }
-    Ok(format!("file:{encoded}?{query}"))
+    encoded
 }
 
 #[cfg(test)]
@@ -196,8 +216,26 @@ mod tests {
     fn uri_escapes_the_characters_a_uri_path_cannot_hold() {
         assert_eq!(
             read_only_uri(Path::new("/tmp/a b/50%?#.db"), "immutable=1").unwrap(),
-            "file:/tmp/a b/50%25%3F%23.db?immutable=1"
+            "file:///tmp/a b/50%25%3F%23.db?immutable=1"
         );
+    }
+
+    #[test]
+    fn windows_drive_and_share_paths_become_uri_paths() {
+        for (path, expected) in [
+            (r"C:\Users\a\db.sqlite", "/C:/Users/a/db.sqlite"),
+            (r"\\?\C:\Users\a\db.sqlite", "/C:/Users/a/db.sqlite"),
+            (r"\\server\share\db.sqlite", "//server/share/db.sqlite"),
+            (
+                r"\\?\UNC\server\share\db.sqlite",
+                "//server/share/db.sqlite",
+            ),
+            (r"C:\a#b\50%.db", "/C:/a%23b/50%25.db"),
+        ] {
+            assert_eq!(uri_path(path, true), expected, "{path}");
+        }
+        // A unix path is left as it is, backslashes included.
+        assert_eq!(uri_path(r"/tmp/a\b.db", false), r"/tmp/a\b.db");
     }
 
     #[test]
@@ -262,6 +300,21 @@ mod tests {
         let path = dir.path().join("absent.db");
         assert!(read_required_extensions(&path).await.unwrap().is_empty());
         assert!(!path.exists());
+    }
+
+    /// A `node` table of a shape this build does not know is left to the
+    /// store's table-shape check rather than failing the guard.
+    #[tokio::test]
+    async fn a_node_table_of_another_shape_requires_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("other-shape.db");
+        let db = libsql::Builder::new_local(&path).build().await.unwrap();
+        let conn = db.connect().unwrap();
+        conn.execute("CREATE TABLE node (id TEXT PRIMARY KEY, body TEXT)", ())
+            .await
+            .unwrap();
+        drop(conn);
+        assert!(read_required_extensions(&path).await.unwrap().is_empty());
     }
 
     #[tokio::test]

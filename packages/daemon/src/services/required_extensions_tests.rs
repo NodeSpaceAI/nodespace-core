@@ -14,7 +14,10 @@ use nodespace_nlp_engine::EmbeddingService;
 use serde_json::json;
 use tokio::sync::watch;
 
-use super::assembly::{DatabaseRequiresExtensions, SharedContext};
+use super::assembly::{
+    unrouted_services_if_default_refused, DatabaseRequiresExtensions, RequiredExtensionsUnreadable,
+    SharedContext,
+};
 use super::database_manager::{DatabaseManager, DatabaseStatus};
 
 const SETTINGS_ID: &str = "database-settings-singleton";
@@ -311,4 +314,40 @@ async fn a_closed_never_opened_database_is_marked_in_the_listing() {
         );
         assert_eq!(entries[1].label, "plain");
     }
+}
+
+/// A database whose required extensions cannot be read is refused without
+/// touching it, and as the boot default it does not stop the daemon: the boot
+/// fallback accepts it as it accepts a refusal, and passes any other failure
+/// through.
+#[tokio::test]
+async fn an_unreadable_database_is_refused_and_does_not_stop_the_daemon() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_dir = dir.path().join("unreadable");
+    std::fs::create_dir_all(&db_dir).unwrap();
+    let path = db_dir.join("unreadable.sqlite");
+    std::fs::write(&path, vec![0x42u8; 8192]).unwrap();
+    let mgr = manager(dir.path(), &[]).await;
+    let id = mgr.register(path.clone()).await.unwrap().id;
+    let before = contents(&db_dir);
+
+    let err = mgr
+        .get_or_open(&id)
+        .await
+        .err()
+        .expect("the open fails closed");
+
+    let unreadable = RequiredExtensionsUnreadable::find_in(&err).expect("the guard failed");
+    assert_eq!(unreadable.path, path);
+    assert!(DatabaseRequiresExtensions::find_in(&err).is_none());
+    assert_eq!(contents(&db_dir), before);
+    assert!(unrouted_services_if_default_refused(err, &context(&[]))
+        .await
+        .is_ok());
+    assert!(unrouted_services_if_default_refused(
+        anyhow::anyhow!("another failure"),
+        &context(&[])
+    )
+    .await
+    .is_err());
 }

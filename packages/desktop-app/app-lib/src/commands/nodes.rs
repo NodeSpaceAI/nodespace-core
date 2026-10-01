@@ -172,6 +172,17 @@ pub(crate) fn requires_extension_error(status: &tonic::Status) -> Option<Command
     })
 }
 
+/// The error text for a command that reports failures as a plain string: the
+/// shared refusal message when `status` is the daemon's required-extensions
+/// refusal, so the user reads the sentence every other surface shows, and the
+/// status's own text otherwise.
+pub(crate) fn status_message(status: tonic::Status) -> String {
+    match nodespace_proto::requires_extension::unsupported_extensions(&status) {
+        Some(unsupported) => nodespace_proto::extension_names::refusal_message(&unsupported),
+        None => status.to_string(),
+    }
+}
+
 /// `fallback(status)`, unless `status` is the daemon's required-extensions
 /// refusal, which maps to REQUIRES_EXTENSION for every command alike. For a
 /// command that maps its other statuses to codes of its own.
@@ -1482,6 +1493,19 @@ mod tests {
         assert!(err.requires_extension.is_none());
         let json = serde_json::to_value(&err).unwrap();
         assert!(json.get("requiresExtension").is_none(), "{json}");
+    }
+
+    /// A command that reports failures as plain strings shows the refusal as
+    /// the shared message, not the status's debug text, and any other status
+    /// as before.
+    #[test]
+    fn status_message_renders_the_refusal_as_the_shared_message() {
+        assert_eq!(
+            status_message(refusal(&["pro"])),
+            nodespace_proto::extension_names::refusal_message(&["pro"])
+        );
+        let other = tonic::Status::internal("boom");
+        assert_eq!(status_message(other.clone()), other.to_string());
     }
 
     /// A command that maps statuses to codes of its own still reports the

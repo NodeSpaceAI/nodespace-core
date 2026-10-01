@@ -177,7 +177,8 @@ pub use services::{
     shared_model_load_in_flight, unrouted_services_if_default_refused, AgentSessionHandler,
     DatabaseManager, DatabaseRequiresExtensions, DatabaseServiceImpl, DatabaseServices,
     EmbeddingsServiceImpl, ImportServiceImpl, LocalAgentServiceImpl, McpConfig, NodeServiceImpl,
-    SettingsServiceImpl, SharedContext, SharedLocalAgent, SharedServices, SubtreeGateFactory,
+    RequiredExtensionsUnreadable, SettingsServiceImpl, SharedContext, SharedLocalAgent,
+    SharedServices, SubtreeGateFactory,
 };
 // The `nodespace` CLI's `mcp` subcommand (a separate process from the
 // daemon) reads/writes these directly against `~/.nodespace/daemon.toml` --

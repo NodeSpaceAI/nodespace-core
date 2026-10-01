@@ -31,6 +31,10 @@ use crate::models::schema::{
 use crate::models::{SchemaNode, AI_CHAT_PROVIDERS};
 use chrono::Utc;
 
+/// The `database-settings` field that lists the extensions a reader needs in
+/// order to read a database correctly (ADR-083 §2).
+pub const REQUIRED_EXTENSIONS_FIELD: &str = "required_extensions";
+
 /// Get all core schema definitions as SchemaNode instances
 ///
 /// Returns all core schemas ready to be converted to Node via `schema.into_node()`
@@ -1545,7 +1549,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             is_core: true,
             schema_version: 1,
             fields: vec![SchemaField {
-                name: crate::db::required_extensions::REQUIRED_EXTENSIONS_FIELD.to_string(),
+                name: REQUIRED_EXTENSIONS_FIELD.to_string(),
                 friendly_name: "Required extensions".to_string(),
                 field_type: "array".to_string(),
                 local_only: false,

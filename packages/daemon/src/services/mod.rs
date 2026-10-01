@@ -22,7 +22,8 @@ pub use agent_session_service::AgentSessionHandler;
 pub use assembly::{
     build_database_services, build_shared_services, build_unrouted_services,
     shared_model_load_in_flight, unrouted_services_if_default_refused, DatabaseRequiresExtensions,
-    DatabaseServices, SharedContext, SharedServices, SubtreeGateFactory,
+    DatabaseServices, RequiredExtensionsUnreadable, SharedContext, SharedServices,
+    SubtreeGateFactory,
 };
 pub use database_manager::{
     DatabaseEntry, DatabaseId, DatabaseListing, DatabaseManager, DatabaseStatus, Registry,

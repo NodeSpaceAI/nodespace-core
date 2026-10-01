@@ -13,6 +13,7 @@ use tauri::{AppHandle, Runtime, State};
 use tokio_stream::StreamExt;
 use tonic::Request;
 
+use super::nodes::status_message;
 use crate::services::GrpcClient;
 use crate::window_routing::emit_routed;
 
@@ -186,13 +187,13 @@ pub async fn import_markdown_file(
     let mut stream = client
         .import_markdown(Request::new(req))
         .await
-        .map_err(|e| e.to_string())?
+        .map_err(status_message)?
         .into_inner();
 
     let mut last_result: Option<FileImportResult> = None;
 
     while let Some(event) = stream.next().await {
-        let event = event.map_err(|e| e.to_string())?;
+        let event = event.map_err(status_message)?;
 
         forward_progress(&app, &event, database_id.as_deref());
 
@@ -247,13 +248,13 @@ pub async fn import_markdown_files(
     let mut stream = client
         .import_markdown_files(Request::new(req))
         .await
-        .map_err(|e| e.to_string())?
+        .map_err(status_message)?
         .into_inner();
 
     let mut final_results: Vec<FileImportResult> = Vec::new();
 
     while let Some(event) = stream.next().await {
-        let event = event.map_err(|e| e.to_string())?;
+        let event = event.map_err(status_message)?;
 
         forward_progress(&app, &event, database_id.as_deref());
 
