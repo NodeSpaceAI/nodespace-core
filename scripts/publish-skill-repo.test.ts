@@ -4,7 +4,7 @@
 // `--push` runs against a local bare repository standing in for SKILL_REPO
 // (scripts/fake-external-repo.ts), never the network or a real
 // SKILL_REPO_TOKEN.
-import { describe, expect, test } from "bun:test";
+import { describe, expect, setDefaultTimeout, test } from "bun:test";
 import { $ } from "bun";
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -23,6 +23,11 @@ import {
 } from "./publish-skill-repo";
 
 const REPO_ROOT = join(dirname(new URL(import.meta.url).pathname), "..");
+
+// The `--push` test runs bun and git processes. Bun's 5s default per-test
+// timeout is tight on the loaded machines these tests run on (the merge gate
+// shares them with Rust builds), and a timeout here would eject an unrelated PR.
+setDefaultTimeout(30_000);
 
 // Every reference file under packages/skill/references/, spelled out. The three
 // playbooks were not published until the file list came from the directory
@@ -330,10 +335,11 @@ describe("--push", () => {
       [`${SKILL_PUBLISH_DIR}/SKILL.md`]: "previous release\n",
       [stale]: "guidance packages/skill no longer has\n",
     });
+    const restoreEnv = remote.use();
     try {
       const script = join(REPO_ROOT, "scripts", "publish-skill-repo.ts");
       const result = await $`${process.execPath} ${script} v0.2.2 --push`
-        .env({ ...process.env, ...remote.env, SKILL_REPO_TOKEN: "test-token" })
+        .env({ ...process.env, SKILL_REPO_TOKEN: "test-token" })
         .quiet()
         .nothrow();
       expect(result.exitCode, result.stderr.toString()).toBe(0);
@@ -347,6 +353,7 @@ describe("--push", () => {
         expect(await remote.show(file.relPath), file.relPath).toBe(file.content);
       }
     } finally {
+      restoreEnv();
       remote.cleanup();
     }
   });

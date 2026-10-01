@@ -13,11 +13,16 @@ import { devNull, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 
+// Git tells a hook where its repository is (GIT_DIR in a linked worktree's
+// pre-push). Neither the stand-in's git nor the code under test may see that,
+// or their `git add` and `git rm` would act on this repository instead.
+const HOOK_GIT_VARS = ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR", "GIT_PREFIX"];
+
 export interface FakeRemote {
-  /** Git environment that redirects `https://x-access-token:<token>@github.com/`
-   * to this remote. Set it on `process.env` for in-process calls, or pass it
-   * to a child process. */
-  env: Record<string, string>;
+  /** Points this process's git (and any child process started with
+   * `process.env`) at the stand-in: sets the redirect and clears a hook's git
+   * variables. Returns a function that restores `process.env`. */
+  use(): () => void;
   /** Every file path on main, sorted. */
   tree(): Promise<string[]>;
   /** A file's content on main. */
@@ -30,14 +35,16 @@ export interface FakeRemote {
 }
 
 /** Creates a bare repository for `repo` (e.g. "NodeSpaceAI/nodespace-skill")
- * whose main branch holds `seed` (path to content) in one commit. */
+ * whose main branch holds `seed` (path to content) in one commit. Git reaches
+ * it through `https://x-access-token:<token>@github.com/<repo>.git`, the URL
+ * pushFilesToRepo clones. */
 export async function createFakeRemote(
   repo: string,
   token: string,
   seed: Record<string, string>,
 ): Promise<FakeRemote> {
   const dir = mkdtempSync(join(tmpdir(), "fake-external-repo-"));
-  const env = {
+  const redirect: Record<string, string> = {
     GIT_CONFIG_COUNT: "1",
     GIT_CONFIG_KEY_0: `url.${pathToFileURL(dir).href}/.insteadOf`,
     GIT_CONFIG_VALUE_0: `https://x-access-token:${token}@github.com/`,
@@ -45,9 +52,12 @@ export async function createFakeRemote(
     GIT_CONFIG_GLOBAL: devNull,
     GIT_CONFIG_NOSYSTEM: "1",
   };
+  const env: Record<string, string | undefined> = { ...process.env, ...redirect };
+  for (const name of HOOK_GIT_VARS) delete env[name];
+
   const origin = join(dir, `${repo}.git`);
   const work = join(dir, "seed");
-  const git = (args: string[], cwd = origin) => $`git ${args}`.cwd(cwd).env({ ...process.env, ...env }).quiet();
+  const git = (args: string[], cwd = origin) => $`git ${args}`.cwd(cwd).env(env).quiet();
 
   try {
     mkdirSync(origin, { recursive: true });
@@ -67,12 +77,23 @@ export async function createFakeRemote(
   }
 
   return {
-    env,
+    use: () => {
+      const names = [...Object.keys(redirect), ...HOOK_GIT_VARS];
+      const saved = Object.fromEntries(names.map((name) => [name, process.env[name]]));
+      for (const name of HOOK_GIT_VARS) delete process.env[name];
+      Object.assign(process.env, redirect);
+      return () => {
+        for (const [name, value] of Object.entries(saved)) {
+          if (value === undefined) delete process.env[name];
+          else process.env[name] = value;
+        }
+      };
+    },
     tree: async () => (await git(["ls-tree", "-r", "--name-only", "main"]).text()).split("\n").filter(Boolean).sort(),
     show: async (path) => await git(["show", `main:${path}`]).text(),
     head: async () => (await git(["rev-parse", "main"]).text()).trim(),
     lastChange: async () =>
-      (await git(["diff", "--name-status", "main~1", "main"]).text())
+      (await git(["diff", "--no-renames", "--name-status", "main~1", "main"]).text())
         .split("\n")
         .filter(Boolean)
         .map((line) => line.replace("\t", " "))

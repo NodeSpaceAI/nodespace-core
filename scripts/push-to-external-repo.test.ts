@@ -6,32 +6,36 @@
 //
 // DOM-free on purpose: this file runs under `bun test scripts/`, which
 // bypasses the Happy-DOM vitest config (see CLAUDE.md).
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { $ } from "bun";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createFakeRemote, type FakeRemote } from "./fake-external-repo";
 import { pushFilesToRepo, type RepoFile } from "./push-to-external-repo";
+
+// Each test clones, commits and pushes. Bun's 5s default per-test timeout is
+// tight on the loaded machines these tests run on (the merge gate shares them
+// with Rust builds), and a timeout here would eject an unrelated PR.
+setDefaultTimeout(30_000);
 
 const REPO = "example/generated-only";
 const TOKEN = "test-token";
 const MANAGED = "skills/example";
 
 let remote: FakeRemote | undefined;
-let savedEnv: Record<string, string | undefined> = {};
+let restoreEnv: (() => void) | undefined;
 
 /** Creates the fake remote and points this process's git at it. */
 async function seed(files: Record<string, string>): Promise<FakeRemote> {
   remote = await createFakeRemote(REPO, TOKEN, files);
-  savedEnv = Object.fromEntries(Object.keys(remote.env).map((key) => [key, process.env[key]]));
-  Object.assign(process.env, remote.env);
+  restoreEnv = remote.use();
   return remote;
 }
 
 afterEach(() => {
-  for (const [key, value] of Object.entries(savedEnv)) {
-    if (value === undefined) delete process.env[key];
-    else process.env[key] = value;
-  }
-  savedEnv = {};
+  restoreEnv?.();
+  restoreEnv = undefined;
   remote?.cleanup();
   remote = undefined;
 });
@@ -140,10 +144,35 @@ describe("the stand-in remote", () => {
     await seed({ "README.md": "readme\n" });
 
     const result = await $`git ls-remote https://x-access-token:other-token@github.com/${REPO}.git`
+      .env({ ...process.env, LC_ALL: "C" })
       .quiet()
       .nothrow();
 
     expect(result.exitCode).not.toBe(0);
     expect(result.stderr.toString()).toContain("transport 'https' not allowed");
+  });
+});
+
+describe("under a git hook", () => {
+  // A hook exports GIT_DIR for its own repository. If the push inherited it,
+  // its `git rm` and `git add` would act on that repository, not the clone.
+  test("a GIT_DIR in the environment does not redirect the push's git", async () => {
+    // Outside this checkout, so a regression that let it through leaves nothing here.
+    const hookDir = mkdtempSync(join(tmpdir(), "push-test-hook-git-dir-"));
+    const saved = process.env.GIT_DIR;
+    process.env.GIT_DIR = join(hookDir, "not-a-repository");
+    try {
+      const r = await seed({ [`${MANAGED}/references/removed.md`]: "old guidance\n" });
+
+      expect(await push([{ relPath: `${MANAGED}/SKILL.md`, content: "body\n" }], MANAGED)).toBe(true);
+
+      expect(await r.tree()).toEqual([`${MANAGED}/SKILL.md`]);
+    } finally {
+      restoreEnv?.();
+      restoreEnv = undefined;
+      if (saved === undefined) delete process.env.GIT_DIR;
+      else process.env.GIT_DIR = saved;
+      rmSync(hookDir, { recursive: true, force: true });
+    }
   });
 });

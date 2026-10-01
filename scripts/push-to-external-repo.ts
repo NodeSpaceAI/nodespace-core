@@ -41,8 +41,9 @@ export interface RepoFile {
  * before `files` are written, so one that `files` no longer lists is deleted
  * from the repo instead of staying published. A file written back with the
  * same content drops out of the staged change, so only real edits and
- * removals are committed. Nothing outside `managedDir` is removed, and
- * without it nothing is removed at all. */
+ * removals are committed (an executable file would come back non-executable,
+ * a mode change). Nothing outside `managedDir` is removed, and without it
+ * nothing is removed at all. */
 export async function pushFilesToRepo(
   repo: string,
   files: RepoFile[],

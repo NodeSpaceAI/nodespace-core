@@ -305,7 +305,7 @@ async function main(): Promise<void> {
   if (push && !token) {
     console.error(
       "SKILL_REPO_TOKEN is not set -- required for --push (a PAT with contents:write on " +
-        `${SKILL_REPO}). Running without --push shows what would change.`,
+        `${SKILL_REPO}). Running without --push prints the files it would publish.`,
     );
     process.exit(1);
   }
@@ -317,7 +317,9 @@ async function main(): Promise<void> {
   }
 
   if (!push) {
-    console.log("(dry run -- pass --push with SKILL_REPO_TOKEN set to publish this)");
+    console.log(
+      `(dry run -- pass --push with SKILL_REPO_TOKEN set to publish this; --push also removes every other file under ${SKILL_PUBLISH_DIR}/)`,
+    );
     return;
   }
   await pushSkillUpdate(command, files, token as string);
