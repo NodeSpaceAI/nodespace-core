@@ -504,8 +504,8 @@ impl SqliteStore {
     /// ADR-059 §2 — a content node may hold a `member_of` edge only when it is a
     /// **root** node (no `has_child` parent). Person nodes are exempt: a
     /// person's membership says who belongs to a collection, not where content
-    /// is filed. A collection needs no exemption: it
-    /// is always a root (the `collection_is_root_*` triggers). Enforced at the store's
+    /// is filed. A collection needs no exemption: it is always a root (the
+    /// `collection_is_root_*` triggers). Enforced at the store's
     /// three `member_of` INSERT sites (`add_to_collection`,
     /// `bulk_add_to_collections`, and the generic `create_generic_relationship`
     /// when its `rel_type` is `member_of`), so every write path is covered without
@@ -1574,7 +1574,7 @@ impl SqliteStore {
         let skipped = candidate_len - valid_mentions.len();
         if skipped > 0 {
             tracing::warn!(
-                "bulk_create_mentions: skipped {} mention(s) with a missing or ai-chat target (dangling [[link]] or chat); keeping {} valid",
+                "bulk_create_mentions: skipped {} mention(s) with a missing (dangling [[link]]) or ai-chat target; keeping {} valid",
                 skipped,
                 valid_mentions.len()
             );

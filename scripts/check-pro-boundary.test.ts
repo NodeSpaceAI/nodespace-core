@@ -211,6 +211,8 @@ const PATTERN_CASES: Record<LineMarkerName, { match: string[]; noMatch: string[]
       j('"daemon-dev', '-pro.sock"'),
       j('"ui', '-pro.pid"'),
       j('"incompatible-database', '-pro.json"'),
+      j('"incompatible-database-dev', '-pro.json"'),
+      j('format!("{}.daemon', '.pro")'),
       j("app.nodespace.daemon", ".pro"),
       j("app.nodespace.daemon.dev", ".pro"),
       j("tauri.pro", ".conf.json"),
@@ -237,6 +239,7 @@ const PATTERN_CASES: Record<LineMarkerName, { match: string[]; noMatch: string[]
       j("sync", "_enabled"),
       j("labsFlags.sync", "Enabled"),
       j("isSync", "Enabled"),
+      j("dataSync", "Enabled"),
       j("auth", "_status"),
       j("auth", "Status"),
       j("restrictedTo", "Members"),
@@ -310,6 +313,14 @@ const PATTERN_CASES: Record<LineMarkerName, { match: string[]; noMatch: string[]
       j(TEN, " members"),
       j("TEN", "ANT_ADMIN_ROLES"),
       j("Syncs to ", TEN),
+      // The word after a determiner, and as a provisioning or URL noun.
+      j("the ", TEN),
+      j("each ", TEN, " gets its own schema"),
+      j("a ", TEN, "'s members"),
+      j("signed in to a ", TEN),
+      j("operator-only ", TEN, " provisioning"),
+      j("the ", TEN, " URL"),
+      j("the ", TEN, " pays rent"),
       // The word inside an identifier.
       j(TEN, "_slug"),
       j("Ten", "antRole"),
@@ -320,7 +331,7 @@ const PATTERN_CASES: Record<LineMarkerName, { match: string[]; noMatch: string[]
       j("TEN", "ANT_ID"),
     ],
     // The agent's lease-agreement fixture uses the word in its ordinary sense.
-    noMatch: [j("the landlord finds a replacement ", TEN, " sooner"), j("the ", TEN, " pays rent"), "maintenance"],
+    noMatch: [j("the landlord finds a replacement ", TEN, " sooner"), j("a replacement ", TEN), "maintenance"],
   },
   syncVocabulary: {
     match: [j("cloud", " sync"), j("cloud", "-sync"), j("cloud", "_sync"), j("Cloud", "Sync"), j("cloud", " push"), j("cloud", "-pull"), j("upload to", " cloud"), j("pro", "-gated")],

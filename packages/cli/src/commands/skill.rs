@@ -364,9 +364,9 @@ pub async fn run_guidance(client: &mut NodeClient, args: GuidanceArgs, json: boo
 /// A short random tag, unique to this invocation, embedded in every
 /// provenance banner this call prints. Built from a fresh UUIDv4 (the same
 /// OS-backed randomness `prepare_nodes_from_template` uses for node ids) so
-/// it cannot be predicted by content that was authored -- by a user, a
-/// teammate, or an attacker -- before this process ever ran. See
-/// [`print_guidance`]'s doc comment for what this defends against.
+/// it cannot be predicted by content that was authored -- by anyone with
+/// write access to the database, or an attacker -- before this process ever
+/// ran. See [`print_guidance`]'s doc comment for what this defends against.
 fn provenance_tag() -> String {
     uuid::Uuid::new_v4().simple().to_string()[..8].to_string()
 }
@@ -482,16 +482,16 @@ fn sanitize_for_terminal(s: &str) -> String {
 /// exactly what a caller sees in both modes instead of re-deriving the
 /// expected shape alongside the real implementation.
 ///
-/// `tag` is a per-invocation random string (see [`provenance_tag`]) embedded
-/// in every human-mode banner. Fetched content is graph data a user or
-/// teammate authored before this call ran; it cannot contain a banner-shaped
-/// line carrying *this* call's tag, because the tag didn't exist yet when
-/// that content was written. A banner-looking line inside fetched content
-/// that lacks the announced tag is therefore recognizable as content, not a
-/// real boundary -- the announcement line printed once at the top names the
-/// tag to check against. Not applied to `--json` mode: a JSON string value
-/// can't be mistaken for a structural delimiter by any correct JSON parser,
-/// so there's nothing there for a tag to defend.
+/// `tag` is a per-invocation random string (see [`provenance_tag`]) embedded in
+/// every human-mode banner. Fetched content is graph data that anyone with
+/// write access to the database authored before this call ran; it cannot
+/// contain a banner-shaped line carrying *this* call's tag, because the tag
+/// didn't exist yet when that content was written. A banner-looking line inside
+/// fetched content that lacks the announced tag is therefore recognizable as
+/// content, not a real boundary -- the announcement line printed once at the
+/// top names the tag to check against. Not applied to `--json` mode: a JSON
+/// string value can't be mistaken for a structural delimiter by any correct
+/// JSON parser, so there's nothing there for a tag to defend.
 /// A guidance node's skill description, empty when it has none or its
 /// properties don't decode as a skill.
 fn skill_description(node: &nodespace_daemon::NodeData) -> String {

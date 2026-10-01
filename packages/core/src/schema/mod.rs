@@ -397,8 +397,9 @@ async fn schema_is_core(
 ///
 /// A relationship may never target `ai-chat`: no node may reference a chat
 /// (ADR-061 §8), and a declared link to one is exactly the reference
-/// `NodeService` refuses at edge creation. Rejecting the declaration keeps a provenance-style field from
-/// being modelled at all, rather than failing on its first write.
+/// `NodeService` refuses at edge creation. Rejecting the declaration keeps a
+/// provenance-style field from being modelled at all, rather than failing on
+/// its first write.
 async fn validate_relationship_targets(
     node_service: &Arc<NodeService>,
     relationships: &[crate::models::schema::SchemaRelationship],

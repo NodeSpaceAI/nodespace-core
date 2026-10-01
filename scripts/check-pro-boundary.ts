@@ -98,13 +98,13 @@ const PRO_COMMANDS: readonly string[] = [
 
 // The data-model identifiers ADR-083 removes or renames, and the
 // cloud-embedding hooks of ADR-081 section 4 B2. Entries are
-// regular-expression sources. The field names are anchored so that a word
-// ending in the same letters (`async_enabled`, `oauth_status`) is not a hit,
-// while a camelCase use (`isSyncEnabled`) is.
+// regular-expression sources. The lower-case field names are anchored so
+// that a word ending in the same letters (`async_enabled`, `oauth_status`) is
+// not a hit, while a camelCase use (`isSyncEnabled`, `dataSyncEnabled`) is.
 const REMOVED_IDENTIFIERS: readonly string[] = [
   "[bB]ound_?[Tt]enant",
   "(?<![A-Za-z])sync_?[eE]nabled",
-  "(?<![Aa])Sync_?[eE]nabled",
+  "Sync_?[eE]nabled",
   "(?<![A-Za-z])auth_?[sS]tatus",
   "(?<![Oo])Auth_?[sS]tatus",
   "restrictedToMembers",
@@ -158,7 +158,7 @@ export const MARKERS = {
   },
   editionBranching: {
     pattern:
-      /\bis_pro(?:_build)?\b|NODESPACED?_PRO_|feature\s*=\s*"pro"|nodespaced-pro|(?:daemon|ui)(?:-dev)?-pro\.(?:sock|pid)|incompatible-database-pro|app\.nodespace\.daemon(?:\.dev)?\.pro\b|PRO_DAEMON_BINARY_NAME|tauri\.pro\.conf|--edition\b(?!\s*=?\s*20\d\d)/,
+      /\bis_pro(?:_build)?\b|NODESPACED?_PRO_|feature\s*=\s*"pro"|nodespaced-pro|(?:daemon|ui)(?:-dev)?-pro\.(?:sock|pid)|incompatible-database(?:-dev)?-pro|\.daemon(?:\.dev)?\.pro\b|PRO_DAEMON_BINARY_NAME|tauri\.pro\.conf|--edition\b(?!\s*=?\s*20\d\d)/,
     summary: "Pro edition switches: is_pro, NODESPACE_PRO_*, the pro feature, Pro binary, socket, pid, marker and launchd names, the Pro Tauri overlay, --edition",
   },
   proDataModel: {
@@ -172,9 +172,9 @@ export const MARKERS = {
   },
   cloudAccountWording: {
     pattern:
-      /(?:bound|cloud|sync|workspace)[-_ ]?[t]enant|\bper[- ][t]enant|[t]enants?[-_ ]?(?:schema|collection|id|root|binding|admission|member|admin)|syncs to [t]enant|\w[t]enant|[t]enants?(?=[\w-])|multi-[t]enant/i,
+      /\b(?:the|a|an|each|every|one|this|that|its|your|our|their|any) [t]enants?\b|(?:bound|cloud|sync|workspace)[-_ ]?[t]enant|\bper[- ][t]enant|[t]enants?[-_ ]?(?:schema|collection|id|root|binding|admission|member|admin|provision|url)|syncs to [t]enant|\w[t]enant|[t]enants?(?=[\w-])|multi-[t]enant/i,
     summary:
-      'Pro-sense [t]enant wording: bound / cloud / per- / sync / workspace [t]enant, [t]enant schema / collection / id / root / binding / admission / member / admin, "syncs to [t]enant", and the word inside an identifier',
+      'Pro-sense [t]enant wording: "the / a / each [t]enant", bound / cloud / per- / sync / workspace [t]enant, [t]enant schema / collection / id / root / binding / admission / member / admin / provisioning / URL, "syncs to [t]enant", and the word inside an identifier',
   },
   syncVocabulary: {
     pattern: /(?<!i)cloud[-_ ]?[s]ync|cloud[- ](?:push|pull)|\bto cloud\b|pro-gated/i,
