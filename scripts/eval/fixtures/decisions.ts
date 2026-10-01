@@ -85,7 +85,19 @@ type Expected =
    * pinning is that the user never gets the duplicate. The operation decision
    * is still recorded in the results file for every scenario.
    */
-  | { decision: "outcome"; noDuplicateOf: string };
+  | { decision: "outcome"; noDuplicateOf: string }
+  /**
+   * The reply must name every one of these types, off a `search_nodes` call
+   * that succeeded.
+   *
+   * An outcome assertion for the same reason as the one above: what is worth
+   * pinning is what the user is told. Asked which types exist, the right tool
+   * with the wrong scope still answers with a partial list, and so does no
+   * tool at all — the turn reads the custom types out of its context block and
+   * stops. Requiring the successful search keeps a reply that happens to name
+   * the right types from passing without having looked.
+   */
+  | { decision: "outcome"; listsTypes: RegExp[] };
 
 interface DecisionScenario extends Scenario {
   expected: Expected;
@@ -375,6 +387,21 @@ const FIXTURES: DecisionScenario[] = [
     },
     adr056: true,
   },
+  {
+    id: "outcome-list-types",
+    scenario: "Outcome: asked which types exist, the reply names built-in and custom ones",
+    // The context block lists only the custom types related to the message, so
+    // a turn that answers from it names those and none of the built-in ones.
+    // Measured on the locked model before `search_nodes` said where the full
+    // list comes from: 3 of 3 reps answered with the two custom types and
+    // called nothing. The custom type is matched loosely because its id is
+    // model-derived on a warm rep, and the model escapes underscores in a list.
+    prompt: "What schemas do we have here?",
+    expected: {
+      decision: "outcome",
+      listsTypes: [/\btask\b/i, /\bperson\b/i, /\bproject\b/i, /compan/i],
+    },
+  },
 
   // ── Skill routing (instance vs type) ───────────────────────────────────
   //
@@ -634,13 +661,50 @@ function assertNoDuplicate(title: string, turns: TurnRecord[]): Verdict {
   };
 }
 
+/**
+ * Score a turn that must list the workspace's types: a `search_nodes` call
+ * must have succeeded, and the reply must name every type in `types`.
+ */
+function assertListsTypes(types: RegExp[], turns: TurnRecord[]): Verdict {
+  // Same reasoning as `assertNoDuplicate`: without per-call outcomes a search
+  // that errored cannot be told from one that returned the list.
+  if (turns.some((t) => t.toolsCalled.length > 0 && t.toolCalls === undefined)) {
+    return {
+      passed: false,
+      failure:
+        "Tools were called but no per-call outcomes were recorded, so a failed " +
+        "search cannot be told from one that returned the types.",
+    };
+  }
+  const reply = turns.at(-1)?.reply ?? "";
+  const calls = turns.flatMap((t) => t.toolCalls ?? []);
+  if (!calls.some((c) => c.name === "search_nodes" && !c.isError)) {
+    return {
+      passed: false,
+      failure:
+        `No search_nodes call succeeded, so the reply was not read off the workspace's types. ` +
+        `Tools: ${turns.flatMap((t) => t.toolsCalled).join(", ") || "(none)"}. Reply: ${reply.slice(0, 300)}`,
+    };
+  }
+  const missing = types.filter((t) => !t.test(reply));
+  if (missing.length > 0) {
+    return {
+      passed: false,
+      failure: `The reply does not name ${missing.join(", ")}. Reply: ${reply.slice(0, 300)}`,
+    };
+  }
+  return { passed: true };
+}
+
 function assertFixture(
   fixture: DecisionScenario,
   turns: TurnRecord[],
 ): Verdict {
   const { expected } = fixture;
   if (expected.decision === "outcome") {
-    return assertNoDuplicate(expected.noDuplicateOf, turns);
+    return "listsTypes" in expected
+      ? assertListsTypes(expected.listsTypes, turns)
+      : assertNoDuplicate(expected.noDuplicateOf, turns);
   }
   const decision = firstDecision(turns, expected.decision);
 

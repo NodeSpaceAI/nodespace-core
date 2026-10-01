@@ -14,7 +14,10 @@ repository.workspace = true
 # v0.1.146 ships apply_chat_template_oaicompat with Jinja support required for Gemma 4,
 # and vendors llama.cpp commit e21cdc11 (2026-04-13) — 123 commits past build b8660
 # (2026-04-03), fixing tool-call failures in native tool-call parsing
-llama-cpp-2 = { version = ">=0.1.146", optional = true }
+# Pinned exactly: the chat engine rewrites one rule of the tool-call grammar
+# this version generates for Gemma 4 (`constrain_gemma4_argument_keys`). A bump
+# must re-run the live tests in `tests/it/toolcall_json_shape.rs`.
+llama-cpp-2 = { version = "=0.1.146", optional = true }
 
 # UTF-8 decoder for token_to_piece API (llama-cpp-2 >= 0.1.140)
 encoding_rs = { version = "0.8", optional = true }
@@ -66,4 +69,4 @@ vulkan = ["llama-cpp-2/vulkan"]
 
 # Platform-specific: Enable Metal acceleration on macOS by default
 [target.'cfg(target_os = "macos")'.dependencies]
-llama-cpp-2 = { version = ">=0.1.146", features = ["metal"], optional = true }
+llama-cpp-2 = { version = "=0.1.146", features = ["metal"], optional = true }

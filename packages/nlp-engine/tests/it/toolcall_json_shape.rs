@@ -6,14 +6,20 @@
 //! than against a remembered claim:
 //!
 //! - A first attempt encodes `create_schema`'s array-of-objects `fields`
-//!   cleanly (the tool-call grammar makes an over-quoted key unreachable).
-//! - A retry copies whatever shape the prior assistant turn holds — malformed
-//!   in, malformed out; clean in, clean out. That, not the model's encoding
-//!   ability, is what made the reported retry loop unrecoverable.
+//!   cleanly.
+//! - A retry reaches for whatever shape the prior assistant turn holds. With
+//!   llama.cpp's own grammar that meant malformed in, malformed out: a key is
+//!   any text up to the next `:`, so an over-quoted key or a whole
+//!   Python-style argument list is a legal key. The narrowed key rule
+//!   (`chat::constrain_gemma4_argument_keys`) makes those keys unreachable, so
+//!   the retry is clean whatever the history holds.
+//! - A string argument closed with a plain `"` instead of the model's `<|"|>`
+//!   token never ends. Generation stops at the call's close marker
+//!   (`chat::ends_gemma4_tool_call`), so the arguments arrive unterminated
+//!   rather than with the model's answer inside them.
 //!
-//! The repair itself lives in `agent_loop::repair_over_quoted_keys` and is
-//! covered by fast unit tests there; these tests exist to keep the premise
-//! honest, not to gate the fix.
+//! `agent_loop::repair_over_quoted_keys` still repairs an over-quoted key from
+//! an engine that applies no grammar; it is covered by fast unit tests there.
 //!
 //! Ignored by default — each requires the E4B GGUF on disk and ~20s of GPU
 //! time. Run explicitly with `--ignored --nocapture`.
@@ -68,6 +74,37 @@ fn flat_tool() -> ToolSpec {
             "type": "object",
             "properties": {"query": {"type": "string"}},
             "required": ["query"]
+        }),
+    }
+}
+
+/// `search_nodes` with the parameters the agent declares for it, including the
+/// array-of-objects `sorting` the kwargs-shaped call was reaching for.
+fn search_nodes_tool() -> ToolSpec {
+    ToolSpec {
+        name: "search_nodes".to_string(),
+        description: "Find, list, and filter nodes by title, type, or stored field value."
+            .to_string(),
+        parameters_schema: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Keyword to match against node titles. Pass an empty string to list every node of a type."},
+                "node_type": {"type": "string", "description": "Filter by node type."},
+                "sorting": {
+                    "type": "array",
+                    "description": "Optional sort configuration, applied in order.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "field": {"type": "string"},
+                            "direction": {"type": "string", "enum": ["asc", "desc"]}
+                        },
+                        "required": ["field"]
+                    }
+                },
+                "limit": {"type": "integer", "description": "Max results to return (default 50)"}
+            },
+            "required": []
         }),
     }
 }
@@ -220,16 +257,15 @@ async fn flat_arguments_control() {
 /// `chat_message_to_oai_value` — the one place a well-formed argument string is
 /// re-serialized into the template — which the single-turn test never exercises.
 ///
-/// Runs both arms in one pass. Holding everything but the prior turn's shape
-/// fixed is the whole experiment: it is what separates "the model cannot encode
-/// nested arguments" (refuted — the control arm retries cleanly) from "the model
-/// copies whatever shape it reads back out of its own history" (what the
-/// malformed arm shows, and what the repair exists to neutralise). Asserting
-/// both here means neither arm can rot unnoticed, and reading the control no
-/// longer requires making the test fail on purpose.
+/// Runs both arms in one pass, holding everything but the prior turn's shape
+/// fixed. Under llama.cpp's own grammar the malformed arm retried malformed in
+/// 8 of 8 trials and the clean arm in none: the model copies the shape it reads
+/// back out of its own history. With the key rule narrowed a quote is no longer
+/// legal in a key, so both arms retry cleanly. Asserting both here means
+/// neither can rot unnoticed.
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "requires the Gemma 4 E4B GGUF; run explicitly with --ignored --nocapture"]
-async fn retry_copies_the_shape_of_the_prior_call() {
+async fn a_retry_cannot_copy_over_quoted_keys_from_the_prior_call() {
     let path = model_path();
     if !path.exists() {
         eprintln!("SKIP: model not found at {}", path.display());
@@ -253,9 +289,9 @@ async fn retry_copies_the_shape_of_the_prior_call() {
     let clean_prior = r#"{"name":"Venue","fields":[{"name":"capacity","type":"number"}]}"#;
 
     let trials = 8;
-    for (arm, prior_args, expect_malformed_trials) in [
-        ("malformed-prior", malformed_prior, trials),
-        ("clean-prior", clean_prior, 0),
+    for (arm, prior_args) in [
+        ("malformed-prior", malformed_prior),
+        ("clean-prior", clean_prior),
     ] {
         // Counted per trial, not per malformed field. Fusing the two would tie the
         // assertion to how many fields the model happens to emit, so a run with the
@@ -263,6 +299,7 @@ async fn retry_copies_the_shape_of_the_prior_call() {
         // wrong conclusion — and could prompt removing a repair that is still needed.
         let mut malformed_trials = 0;
         let mut malformed_fields = 0;
+        let mut retried = 0;
         for i in 0..trials {
             let messages = vec![
             ChatMessage::text(
@@ -325,6 +362,7 @@ async fn retry_copies_the_shape_of_the_prior_call() {
                 println!("  -> NO TOOL CALL (turn produced text only)");
                 continue;
             }
+            retried += 1;
             let trial_malformed_fields = match serde_json::from_str::<serde_json::Value>(&joined) {
                 Ok(parsed) => {
                     let mut count = 0;
@@ -359,17 +397,174 @@ async fn retry_copies_the_shape_of_the_prior_call() {
             "[{arm}] malformed trials: {malformed_trials}/{trials} \
          ({malformed_fields} malformed fields total)"
         );
-        // Asserted as the *measured* behaviour, not as desirable behaviour. The
-        // malformed arm records that the model copies the bad shape out of its own
-        // history every time — the premise `repair_over_quoted_keys` neutralises —
-        // and the clean arm records that the very same prompt retries cleanly when
-        // only that shape differs. If either stops holding, the diagnosis behind the
-        // repair needs re-examining before the repair itself is touched.
+        assert!(
+            retried > 0,
+            "[{arm}] no trial retried the call, so nothing was measured"
+        );
         assert_eq!(
-            malformed_trials, expect_malformed_trials,
-            "[{arm}] retry shape must follow the prior call's shape; if this no longer \
-         holds, re-check whether agent_loop::repair_over_quoted_keys is still \
-         load-bearing"
+            malformed_trials, 0,
+            "[{arm}] a retry must not carry an over-quoted key; if the malformed arm \
+             fails, the narrowed key rule is no longer reaching the sampler"
         );
     }
+}
+
+/// Every key in `value`, at every depth, that is not a plain name.
+fn keys_that_are_not_names(value: &serde_json::Value, found: &mut Vec<String>) {
+    match value {
+        serde_json::Value::Object(obj) => {
+            for (key, child) in obj {
+                let is_name = !key.is_empty()
+                    && key
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
+                if !is_name {
+                    found.push(key.clone());
+                }
+                keys_that_are_not_names(child, found);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                keys_that_are_not_names(item, found);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// A call whose arguments were written as a Python-style argument list reached
+/// the tool as one key holding the whole list:
+/// `{"direction":false,"query=\"\",node_type=\"schema\",limit=50,sorting=[{\"field\"":null}`.
+/// llama.cpp's Gemma 4 grammar accepts that, because a key is any text up to
+/// the next `:`.
+///
+/// The model copies the shape of its own prior call, so replaying that call as
+/// the prior turn is what makes it reach for the shape again.
+///
+/// The retry writes its keys as names — the narrowed key rule leaves it
+/// nothing else — but closes a string with the `"` it read in the history, so
+/// the string never ends. Measured before generation stopped at the close
+/// marker: the "argument" ran on through the marker and several sentences of
+/// answer to the 512-token cap in 4 of 4 trials. It now stops at
+/// the marker with nothing after it, and the unterminated arguments are what
+/// the agent loop reports back as a malformed call.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the Gemma 4 E4B GGUF; run explicitly with --ignored --nocapture"]
+async fn a_retry_of_a_kwargs_shaped_call_stops_at_the_close_marker() {
+    let path = model_path();
+    if !path.exists() {
+        eprintln!("SKIP: model not found at {}", path.display());
+        return;
+    }
+
+    let service = ChatEngine::new(ChatConfig {
+        n_ctx: 16384,
+        n_gpu_layers: 99,
+        type_k: Some(nodespace_nlp_engine::KvCacheQuantType::Q8_0),
+        type_v: Some(nodespace_nlp_engine::KvCacheQuantType::Q8_0),
+        ..Default::default()
+    })
+    .expect("service construction");
+    service
+        .load_model(path.to_str().expect("model path is utf-8"), None)
+        .expect("model load");
+
+    let reported_args = r#"{"direction":false,"query=\"\",node_type=\"schema\",limit=50,sorting=[{\"field\"":null}"#;
+    serde_json::from_str::<serde_json::Value>(reported_args)
+        .expect("the reported arguments are valid JSON, which is why nothing rejected them");
+
+    const CLOSE_MARKER: &str = "<tool_call|>";
+    let trials = 4;
+    let mut calls = 0;
+    for i in 0..trials {
+        let messages = vec![
+            // The two resident rules that make a turn retry a failed call
+            // rather than answer in prose; without them there is no retry to
+            // measure.
+            ChatMessage::text(
+                Role::System,
+                "Call tools immediately when intent is clear. Tool call error: read the error \
+                 message, fix your arguments, and retry ONCE.",
+            ),
+            ChatMessage::text(Role::User, "What schemas do we have here?"),
+            ChatMessage {
+                role: Role::Assistant,
+                content: String::new(),
+                tool_calls: vec![nodespace_nlp_engine::ToolCallRaw {
+                    id: "call_1".to_string(),
+                    function_name: "search_nodes".to_string(),
+                    arguments_json: reported_args.to_string(),
+                    provider_extra: None,
+                }],
+                tool_call_id: None,
+                name: None,
+                reasoning: None,
+            },
+            // What the tool answered when the call was dispatched to it.
+            ChatMessage {
+                role: Role::Tool,
+                content: "{\"error\":\"invalid arguments for tool search_nodes: unknown field \
+                          `direction`, expected one of `query`, `node_type`, `sorting`, `limit`\"}"
+                    .to_string(),
+                tool_calls: Vec::new(),
+                tool_call_id: Some("call_1".to_string()),
+                name: Some("search_nodes".to_string()),
+                reasoning: None,
+            },
+        ];
+
+        let raw = Arc::new(Mutex::new(String::new()));
+        let args = Arc::new(Mutex::new(String::new()));
+        let (r, a) = (Arc::clone(&raw), Arc::clone(&args));
+        service
+            .generate_streaming(
+                messages,
+                Some(vec![search_nodes_tool()]),
+                0.0,
+                512,
+                move |chunk| match chunk {
+                    ChatChunk::Token(t) => r.lock().unwrap().push_str(&t),
+                    ChatChunk::ToolCallArgs { json, .. } => a.lock().unwrap().push_str(&json),
+                    _ => {}
+                },
+            )
+            .await
+            .expect("generation must succeed");
+
+        let joined = args.lock().unwrap().clone();
+        println!("--- kwargs retry trial {i} ---");
+        println!("args: {joined}");
+        println!("text: {:?}", raw.lock().unwrap());
+
+        if joined.is_empty() {
+            continue;
+        }
+        calls += 1;
+
+        if let Some((_, after_marker)) = joined.split_once(CLOSE_MARKER) {
+            assert!(
+                after_marker.is_empty(),
+                "generation must stop at the call's close marker; the arguments ran on with \
+                 {after_marker:?}"
+            );
+        }
+
+        // Unterminated arguments do not parse, and there is then no key to
+        // check: the agent loop reports those as malformed. Arguments that do
+        // parse must not hold an argument list or prose as a key.
+        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&joined) {
+            let mut not_names = Vec::new();
+            keys_that_are_not_names(&parsed, &mut not_names);
+            assert!(
+                not_names.is_empty(),
+                "a retry must not carry an argument list or prose as a key; got {not_names:?}"
+            );
+        }
+    }
+
+    assert!(
+        calls > 0,
+        "no trial retried the call, so nothing was measured"
+    );
 }

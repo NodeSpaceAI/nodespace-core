@@ -139,3 +139,56 @@ describe("duplicate-entity outcome scoring", () => {
     expect(scorer?.[1]).toBe(agent?.[1]);
   });
 });
+
+describe("type-listing outcome scoring", () => {
+  const scenario = fixture.groups.flat().find((s) => s.id === "outcome-list-types");
+  if (!scenario) throw new Error("outcome-list-types is missing");
+
+  const turn = (reply: string, calls: [string, boolean][]): TurnRecord =>
+    ({
+      toolsOffered: "",
+      toolsCalled: calls.map(([name]) => name),
+      toolCalls: calls.map(([name, isError]) => ({ name, isError })),
+      reply,
+      latencyMs: 0,
+    }) as TurnRecord;
+
+  const passes = (t: TurnRecord) => fixture.score(scenario, [t]).passed;
+
+  const everyType =
+    "The schemas available are: company\\_sold\\_to, venue, person, project, date, text, and task.";
+
+  test("a reply naming built-in and custom types off a successful search passes", () => {
+    expect(passes(turn(everyType, [["search_nodes", false]]))).toBe(true);
+  });
+
+  test("the reported reply, read from the context block, fails", () => {
+    // Custom types only, and no tool called.
+    expect(passes(turn("The schemas we currently have are 'company_sold_to' and 'venue'.", []))).toBe(false);
+  });
+
+  test("a complete reply with no successful search fails", () => {
+    // Naming the right types without having looked is a pass for the wrong
+    // reason: the next workspace has different ones.
+    expect(passes(turn(everyType, []))).toBe(false);
+    expect(passes(turn(everyType, [["search_nodes", true]]))).toBe(false);
+  });
+
+  test("a search whose reply leaves a built-in type out fails", () => {
+    const reply = "Found 21 node types, including built-in ones like 'text' and custom schemas such as 'company_sold_to'.";
+    expect(passes(turn(reply, [["search_nodes", false]]))).toBe(false);
+  });
+
+  test("a type is matched as a word, not inside another", () => {
+    // `task` must not be satisfied by a type named `subtask_list`.
+    const reply = "The schemas are: company_sold_to, person, project, subtask_list.";
+    expect(passes(turn(reply, [["search_nodes", false]]))).toBe(false);
+  });
+
+  test("tools called with no recorded outcomes fails loudly", () => {
+    const t = { ...turn(everyType, []) };
+    t.toolsCalled = ["search_nodes"];
+    delete t.toolCalls;
+    expect(passes(t)).toBe(false);
+  });
+});

@@ -730,6 +730,13 @@ impl ChatEngine {
                 }
             }
 
+            // Checked after the parser has seen the piece: it needs the marker
+            // to close the call.
+            if ends_gemma4_tool_call(tmpl_result.chat_format, &piece) {
+                tracing::debug!("Gemma 4 tool-call close marker — stopping generation");
+                break;
+            }
+
             // Prepare batch for next token
             batch.clear();
             if let Err(e) = batch.add(new_token, n_cur as i32, &[0], true) {
@@ -945,6 +952,30 @@ fn augment_gemma4_stops(chat_format: i32, stops: &mut Vec<String>) {
             stops
         );
     }
+}
+
+/// The marker Gemma 4 closes a tool call with.
+#[cfg(any(feature = "chat-service", test))]
+const GEMMA4_TOOL_CALL_CLOSE: &str = "<tool_call|>";
+
+/// Whether `piece` is Gemma 4 closing its tool call, which ends the turn's
+/// generation.
+///
+/// One call is all a turn may make (`parallel_tool_calls: false`), so nothing
+/// the model writes after the marker is usable. On a well-formed call this
+/// saves the one token the model would spend on end-of-turn.
+///
+/// It matters when the call is not well-formed. A string argument runs until
+/// the model's `<|"|>` token, and the model sometimes closes one with a plain
+/// `"` instead. The string then never ends: the grammar accepts the rest of
+/// the call, the close marker and the answer the model goes on to write, all
+/// as that one argument's text, up to the token cap. The marker is the model
+/// saying the call is over, so generation stops there, and the arguments reach
+/// the caller unterminated — reported as the malformed call they are, rather
+/// than dispatched with an answer inside them.
+#[cfg(any(feature = "chat-service", test))]
+fn ends_gemma4_tool_call(chat_format: i32, piece: &str) -> bool {
+    chat_format == CHAT_FORMAT_PEG_GEMMA4 && piece.contains(GEMMA4_TOOL_CALL_CLOSE)
 }
 
 /// Remove Gemma 4 special-token strings from a content string.
@@ -1237,6 +1268,18 @@ fn build_grammar_sampler(
         return Ok(None);
     };
 
+    let constrained = constrain_gemma4_argument_keys(grammar_str);
+    if constrained.is_none() && tmpl_result.chat_format == CHAT_FORMAT_PEG_GEMMA4 {
+        // The rule this rewrites is llama.cpp's own; a version that renames
+        // or reshapes it leaves argument keys unconstrained again, silently.
+        tracing::warn!(
+            "Gemma 4 tool-call grammar has no `{}` rule in the expected shape — \
+             argument keys are not constrained",
+            GEMMA4_KEY_NAME_RULE
+        );
+    }
+    let grammar_str = constrained.as_deref().unwrap_or(grammar_str);
+
     let sampler = if tmpl_result.grammar_lazy {
         let (trigger_patterns, trigger_tokens) =
             convert_grammar_triggers(&tmpl_result.grammar_triggers);
@@ -1253,6 +1296,70 @@ fn build_grammar_sampler(
     .map_err(|e| ChatError::InferenceError(format!("Grammar sampler init failed: {}", e)))?;
 
     Ok(Some(sampler))
+}
+
+/// The rule naming a tool-call argument key in llama.cpp's Gemma 4 grammar.
+#[cfg(any(feature = "chat-service", test))]
+const GEMMA4_KEY_NAME_RULE: &str = "gemma4-dict-key-name";
+
+/// What llama.cpp generates for [`GEMMA4_KEY_NAME_RULE`]: any run of
+/// characters up to the next `:` or `}`.
+#[cfg(any(feature = "chat-service", test))]
+const GEMMA4_KEY_NAME_PERMISSIVE: &str = "[^:}]+";
+
+/// What that rule is narrowed to: the same run, minus every character that can
+/// only be structure, quoting or prose.
+#[cfg(any(feature = "chat-service", test))]
+const GEMMA4_KEY_NAME_CONSTRAINED: &str = r#"[^:}={\[\]<>(),"' \t\r\n]+"#;
+
+/// Narrow the argument-key rule of llama.cpp's Gemma 4 tool-call grammar so a
+/// key can only be a name.
+///
+/// Gemma 4 writes a call as `call:tool{key:value,key:value}`, and llama.cpp's
+/// grammar for it is schema-blind: a key is "anything up to the next `:`".
+/// That admits a whole Python-style argument list as one key. A call emitted as
+///
+/// ```text
+/// call:search_nodes{query="",node_type="schema",limit=50,sorting=[{"field":null,direction:false}
+/// ```
+///
+/// satisfies the grammar and reaches the tool as the two keys
+/// `query="",node_type="schema",limit=50,sorting=[{"field"` and `direction` —
+/// valid JSON, so nothing downstream reads it as a syntax error. The same rule
+/// admits an answer written as prose where the arguments belong, and a key
+/// wrapped in quotes or in the model's `<|"|>` string token.
+///
+/// Excluding `=`, `,`, quotes, brackets, angle brackets and whitespace from a
+/// key makes each of those unreachable: at the first such character the only
+/// continuations the grammar leaves are more name characters or the `:` that
+/// ends the key. A key the user defined is still expressible unless it holds
+/// one of those characters; a type whose field name does (a space, say) can no
+/// longer be written to through a native tool call by that name.
+///
+/// Returns `None` when the grammar carries no such rule in the shape llama.cpp
+/// generates today — every other model family, and a llama.cpp that changed it.
+#[cfg(any(feature = "chat-service", test))]
+fn constrain_gemma4_argument_keys(grammar: &str) -> Option<String> {
+    let permissive = format!("{GEMMA4_KEY_NAME_RULE} ::= {GEMMA4_KEY_NAME_PERMISSIVE}");
+    let mut found = false;
+    let lines: Vec<String> = grammar
+        .lines()
+        .map(|line| {
+            if line.trim_end() == permissive {
+                found = true;
+                format!("{GEMMA4_KEY_NAME_RULE} ::= {GEMMA4_KEY_NAME_CONSTRAINED}")
+            } else {
+                line.to_string()
+            }
+        })
+        .collect();
+    found.then(|| {
+        let mut out = lines.join("\n");
+        if grammar.ends_with('\n') {
+            out.push('\n');
+        }
+        out
+    })
 }
 
 /// Convert llama.cpp's per-template `GrammarTrigger`s into the
@@ -2654,6 +2761,146 @@ mod tests {
                 "minimum must be 256-aligned"
             );
         }
+    }
+
+    // --- Gemma 4 argument-key constraint ---
+
+    /// The value rules of the tool-call grammar llama.cpp generates for
+    /// Gemma 4, as captured from a live turn offering `search_nodes`.
+    const GEMMA4_GRAMMAR: &str = r#"gemma4-array ::= "[" space ("]" | gemma4-value ("," space gemma4-value)* space "]")
+gemma4-bool ::= json-bool
+gemma4-dict ::= "{" space ("}" | gemma4-dict-kv ("," space gemma4-dict-kv)* space "}")
+gemma4-dict-key ::= gemma4-dict-key-name ":"
+gemma4-dict-key-name ::= [^:}]+
+gemma4-dict-kv ::= gemma4-dict-key space gemma4-value
+gemma4-null ::= json-null
+gemma4-number ::= json-number
+gemma4-string ::= "<|\"|>" gemma4-string-content "<|\"|>"
+gemma4-value ::= gemma4-string | gemma4-dict | gemma4-array | gemma4-number | gemma4-bool | gemma4-null
+root ::= tool-call
+tool-call ::= ("<|tool_call>call:" (tool-search-nodes) "<tool_call|>")?
+tool-search-nodes ::= ("search_nodes") gemma4-dict
+"#;
+
+    /// The characters a GBNF negated class (`[^…]+`) excludes.
+    fn excluded_by(class: &str) -> Vec<char> {
+        let body = class
+            .strip_prefix("[^")
+            .and_then(|rest| rest.strip_suffix("]+"))
+            .expect("a negated, one-or-more character class");
+        let mut excluded = Vec::new();
+        let mut chars = body.chars();
+        while let Some(c) = chars.next() {
+            if c != '\\' {
+                excluded.push(c);
+                continue;
+            }
+            excluded.push(match chars.next().expect("an escaped character") {
+                't' => '\t',
+                'r' => '\r',
+                'n' => '\n',
+                other => other,
+            });
+        }
+        excluded
+    }
+
+    #[test]
+    fn gemma4_argument_key_rule_is_narrowed_and_nothing_else_changes() {
+        let constrained =
+            constrain_gemma4_argument_keys(GEMMA4_GRAMMAR).expect("the key rule must be found");
+
+        let before: Vec<&str> = GEMMA4_GRAMMAR.lines().collect();
+        let after: Vec<&str> = constrained.lines().collect();
+        assert_eq!(before.len(), after.len());
+        for (b, a) in before.iter().zip(&after) {
+            if b.starts_with("gemma4-dict-key-name ") {
+                assert_eq!(
+                    *a,
+                    format!("gemma4-dict-key-name ::= {GEMMA4_KEY_NAME_CONSTRAINED}")
+                );
+            } else {
+                assert_eq!(a, b, "only the key-name rule may be rewritten");
+            }
+        }
+        assert!(
+            constrained.ends_with('\n'),
+            "the trailing newline is preserved"
+        );
+    }
+
+    #[test]
+    fn grammar_without_the_gemma4_key_rule_is_left_alone() {
+        // Another model family's grammar.
+        assert_eq!(
+            constrain_gemma4_argument_keys("root ::= \"{\" space \"}\"\n"),
+            None
+        );
+        // The rule exists but llama.cpp generates a different body for it: not
+        // a shape this rewrite can claim to understand.
+        assert_eq!(
+            constrain_gemma4_argument_keys("gemma4-dict-key-name ::= [a-z]+\n"),
+            None
+        );
+    }
+
+    /// The call a live turn produced, as it reached the tool:
+    /// `{"direction":false,"query=\"\",node_type=\"schema\",limit=50,sorting=[{\"field\"":null}`.
+    /// One key holds a whole kwargs-style argument list. The second key is an
+    /// answer written where the arguments belong.
+    #[test]
+    fn the_reported_malformed_keys_are_unreachable_under_the_narrowed_rule() {
+        let permissive = excluded_by(GEMMA4_KEY_NAME_PERMISSIVE);
+        let constrained = excluded_by(GEMMA4_KEY_NAME_CONSTRAINED);
+
+        for key in [
+            r#"query="",node_type="schema",limit=50,sorting=[{"field""#,
+            "I found a few schemas in your workspace. The available ones are 'plan', and 'spec'",
+            r#""name""#,
+            r#"<|"|>type<|"|>"#,
+        ] {
+            assert!(
+                !key.chars().any(|c| permissive.contains(&c)),
+                "llama.cpp's own rule accepts {key:?} as one key"
+            );
+            assert!(
+                key.chars().any(|c| constrained.contains(&c)),
+                "the narrowed rule must reject {key:?}"
+            );
+        }
+
+        // Every parameter name a tool declares, and a user-defined field name,
+        // stay writable.
+        for key in [
+            "query",
+            "node_type",
+            "field_values",
+            "due_date",
+            "priorité",
+            "story-points",
+        ] {
+            assert!(
+                !key.chars().any(|c| constrained.contains(&c)),
+                "{key:?} must remain a legal key"
+            );
+        }
+    }
+
+    #[test]
+    fn gemma4_generation_ends_at_the_tool_call_close_marker() {
+        assert!(ends_gemma4_tool_call(
+            CHAT_FORMAT_PEG_GEMMA4,
+            "<tool_call|>"
+        ));
+        // The marker's own opening counterpart and a string's quote token are
+        // part of a call still being written.
+        assert!(!ends_gemma4_tool_call(
+            CHAT_FORMAT_PEG_GEMMA4,
+            "<|tool_call>"
+        ));
+        assert!(!ends_gemma4_tool_call(CHAT_FORMAT_PEG_GEMMA4, "<|\"|>"));
+        // Another family's output may hold the same text as content.
+        assert!(!ends_gemma4_tool_call(0, "<tool_call|>"));
     }
 
     // --- Grammar trigger conversion: mirrors llama.cpp's common_sampler_init ---

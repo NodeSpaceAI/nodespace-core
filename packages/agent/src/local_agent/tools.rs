@@ -608,6 +608,30 @@ fn strip_node_uri(id: &str) -> &str {
     id.strip_prefix("nodespace://").unwrap_or(id)
 }
 
+/// One `search_nodes` result row, as the model sees it.
+fn search_result_summary(node: &Value) -> Value {
+    let content = node.get("content").and_then(|v| v.as_str()).unwrap_or("");
+    // A schema node carries no title: its content is the type's name. Without
+    // the fallback a type listing gives the model an id and nothing to call it.
+    let title = node
+        .get("title")
+        .and_then(|v| v.as_str())
+        .filter(|t| !t.is_empty())
+        .unwrap_or(content);
+    // `nodeType` is the wire spelling: `Node` is camelCase-serialized. A schema
+    // node has no such field, so a type row reports no type.
+    let node_type = node.get("nodeType").and_then(|v| v.as_str()).unwrap_or("");
+    json!({
+        "id": node_uri(node.get("id").and_then(|v| v.as_str()).unwrap_or("")),
+        "title": truncate(title, 100),
+        "type": node_type,
+        "snippet": truncate(content, BODY_TRUNCATE_SUMMARY),
+        // The flat, storage-keyed map (core fields folded back in) — the same
+        // bare keys the model writes with update_node.
+        "properties": nodespace_core::models::flat_properties_view(node),
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Tool definitions (JSON schemas)
 // ---------------------------------------------------------------------------
@@ -625,6 +649,9 @@ fn def_search_nodes() -> ToolDefinition {
             do not expect '*' to do a wildcard substring match, it means \"no keyword filter\" just like ''); \
             (3) filtering by typed properties with operators (status='in_dev', a date field before a given date) — \
             pass 'filters' for these. Combine as needed (e.g. node_type + a property filter). \
+            To answer which types or schemas exist, call this with node_type='schema': it returns every type, \
+            built-in and custom. The EXISTING SCHEMAS block is not that list — it holds only the custom types \
+            related to the current message. \
             A count of 0 means nothing in the workspace matches — it does not mean the query was wrong. \
             When a type-scoped search returns no matches, the result carries 'filterable_properties' — the fields that \
             type actually defines, with allowed values where they are constrained. Use it to check the filter you sent: \
@@ -2621,27 +2648,7 @@ impl GraphToolExecutor {
 
         // Truncate node data for token efficiency. Properties are always included
         // so the model can see and act on typed fields (status, amount, etc.).
-        Ok(output
-            .nodes
-            .iter()
-            .map(|v| {
-                json!({
-                    "id": node_uri(v.get("id").and_then(|v| v.as_str()).unwrap_or("")),
-                    "title": truncate(
-                        v.get("title").and_then(|v| v.as_str()).unwrap_or(""),
-                        100
-                    ),
-                    "type": v.get("node_type").or(v.get("type")).and_then(|v| v.as_str()).unwrap_or(""),
-                    "snippet": truncate(
-                        v.get("content").and_then(|v| v.as_str()).unwrap_or(""),
-                        BODY_TRUNCATE_SUMMARY
-                    ),
-                    // The flat, storage-keyed map (core fields folded back in) —
-                    // the same bare keys the model writes with update_node.
-                    "properties": nodespace_core::models::flat_properties_view(v),
-                })
-            })
-            .collect())
+        Ok(output.nodes.iter().map(search_result_summary).collect())
     }
 
     async fn exec_search_nodes(
@@ -7998,6 +8005,38 @@ mod tests {
     fn strip_node_uri_no_prefix() {
         let bare_id = "550e8400-e29b-41d4-a716-446655440000";
         assert_eq!(strip_node_uri(bare_id), bare_id);
+    }
+
+    // -- search_result_summary ------------------------------------------------
+
+    /// A node's type is serialized as `nodeType`, and that is the key a result
+    /// row reads it from.
+    #[test]
+    fn a_search_result_reports_the_nodes_type() {
+        let node = json!({
+            "id": "abc-123",
+            "nodeType": "task",
+            "title": "Renew the venue contract",
+            "content": "Renew the venue contract",
+            "properties": {"status": "open"},
+        });
+        let summary = search_result_summary(&node);
+        assert_eq!(summary["type"], "task");
+        assert_eq!(summary["title"], "Renew the venue contract");
+        assert_eq!(summary["id"], "nodespace://abc-123");
+    }
+
+    /// A schema node has no title and no type field: its content is the
+    /// type's name, and that is what a type listing calls it.
+    #[test]
+    fn a_schema_search_result_is_titled_by_its_content() {
+        let node = json!({"id": "person", "content": "Person", "title": ""});
+        let summary = search_result_summary(&node);
+        assert_eq!(summary["title"], "Person");
+        assert_eq!(summary["type"], "");
+
+        let untitled = json!({"id": "person", "content": "Person"});
+        assert_eq!(search_result_summary(&untitled)["title"], "Person");
     }
 
     // -- Parity test: def_search_semantic schema vs SearchSemanticParams fields --
