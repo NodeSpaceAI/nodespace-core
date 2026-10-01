@@ -1643,11 +1643,7 @@ impl NodeService {
     /// ADR-037: seed exactly one local PersonNode — the local user.
     /// Idempotent: skips when a person already exists, so an existing database
     /// is backfilled on next open too. Name/email stay absent until the user
-    /// fills them in (PersonNodeBehavior allows it). On Pro upgrade this node
-    /// is bound to a Supabase identity via a single
-    /// `auth_identities` row — not recreated.
-    ///
-    /// Note: `auth_status` lives on DatabaseSettingsNode, not here.
+    /// fills them in (PersonNodeBehavior allows it).
     async fn seed_local_person_if_needed(&self) -> Result<(), NodeServiceError> {
         if !self.query_nodes_by_type("person", None).await?.is_empty() {
             return Ok(());
@@ -1990,8 +1986,8 @@ impl NodeService {
     /// person with an outgoing `has_role` edge carrying `role: "owner"` to
     /// the DatabaseSettingsNode singleton (the owner edge
     /// `seed_database_settings_if_needed` seeds). The DatabaseSettingsNode
-    /// is documented to hold tenant *roles* (plural) for upcoming RBAC work,
-    /// so this filters on `role == "owner"` rather than taking the first
+    /// can hold more than one `has_role` edge, so this filters on
+    /// `role == "owner"` rather than taking the first
     /// `has_role` edge — once a second, non-owner role edge lands there,
     /// an unfiltered `.next()` would silently resolve the wrong person.
     /// If more than one edge is found with `role == "owner"` — which
@@ -9674,9 +9670,8 @@ mod tests {
         let seeded_owner_id = people[0].id.clone();
 
         // Add a SECOND has_role edge to the DatabaseSettingsNode singleton,
-        // from a different person, carrying a non-owner role (the shape the
-        // doc comment on `seed_database_settings_if_needed` describes for
-        // upcoming RBAC work: multiple tenant roles on one node). A naive
+        // from a different person, carrying a non-owner role alongside the
+        // owner's. A naive
         // "first has_role edge" resolution could silently return this person
         // instead of the actual owner, depending on traversal order.
         let member_id = service

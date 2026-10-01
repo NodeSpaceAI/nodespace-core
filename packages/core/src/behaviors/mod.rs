@@ -1731,8 +1731,9 @@ impl NodeBehavior for CollectionNodeBehavior {
 ///
 /// AI chat nodes store conversations (user messages, assistant responses, tool calls)
 /// as nested properties following the same pattern as play `rules[]`.
-/// Conversations are stored as nodes for Stamped ACL permissions, cloud sync,
-/// and development traceability. They are deliberately NOT embedded (see below).
+/// Conversations are stored as nodes, so they share the node model's identity,
+/// collection membership and development traceability. They are deliberately
+/// NOT embedded (see below).
 ///
 /// # Storage Architecture (ADR-028)
 ///
@@ -2263,10 +2264,10 @@ impl NodeBehavior for CustomNodeBehavior {
 
 /// Built-in behavior for person nodes
 ///
-/// Person nodes are pure identity — they carry `name` (optional) and `email`
-/// (optional, format-validated when present). Auth state (`auth_status`) lives
-/// on `DatabaseSettingsNode`; tenant role lives on the `has_role` edge
-/// (PersonNode → DatabaseSettingsNode). Neither is a PersonNode property.
+/// Person nodes are pure identity — `first_name` and `last_name` (optional)
+/// and `email` (optional, format-validated when present). A person's role in
+/// this database is not a PersonNode property: it lives on the `has_role` edge
+/// from the person to the `DatabaseSettingsNode` singleton.
 ///
 /// A person can carry child nodes (notes about them). It is not embedded, and
 /// neither are those notes: it is a record found by its title.

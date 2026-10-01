@@ -357,13 +357,11 @@ impl SqliteStore {
     /// 3. **Archive the loser** — `lifecycle_status = 'archived'`. NOT a
     ///    literal ADR-068 "deleted" tombstone: this codebase has no such
     ///    lifecycle value (`LIFECYCLE_STATUSES` is `["active", "archived"]`,
-    ///    enforced by `validate_lifecycle_status`), and ADR-042's "tombstone"
-    ///    turns out to be a cloud/sync-layer concept (`is_deleted`/
-    ///    `deleted_at` in the Postgres schema), not a local `lifecycle_status`
-    ///    value at all — so introducing a new local state would invent a
-    ///    fourth concept where the existing `archived` state already fully
-    ///    satisfies the requirement (excluded from every `active`-scoped
-    ///    detection query, nothing destroyed, fully reversible). NOT
+    ///    enforced by `validate_lifecycle_status`), and introducing a new
+    ///    local state would invent a third lifecycle value where the existing
+    ///    `archived` state already fully satisfies the requirement (excluded
+    ///    from every `active`-scoped detection query, nothing destroyed, fully
+    ///    reversible). NOT
     ///    `delete_subtree_atomic` — that cascades over `has_child`
     ///    descendants, which step 2 has already re-pointed away; any it
     ///    missed would be destroyed outright.

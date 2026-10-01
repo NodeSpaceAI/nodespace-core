@@ -1,8 +1,7 @@
 //! Local PersonNode seeding tests (ADR-037)
 //!
-//! ADR-037 mandates that every install — free included — seeds exactly one
-//! local PersonNode (the local user). On Pro upgrade this node is bound to a
-//! Supabase identity, not recreated. These tests verify:
+//! ADR-037 mandates that every install seeds exactly one local PersonNode (the
+//! local user). These tests verify:
 //! 1. Constructing a NodeService on a fresh database seeds exactly one person.
 //! 2. The seeded person carries no `person` properties until the user fills them in.
 //! 3. Re-opening the same database does NOT create a second person (idempotent).

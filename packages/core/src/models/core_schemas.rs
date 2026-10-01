@@ -539,31 +539,29 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             // This path and these values are a storage contract: access-control
             // layers outside core read them directly and treat an absent value
             // as `modify`.
-            fields: vec![
-                SchemaField {
-                    name: "restrictedToMembers".to_string(),
-                    friendly_name: "Restricted to members".to_string(),
-                    field_type: "boolean".to_string(),
-                    local_only: false,
-                    protection: SchemaProtectionLevel::Core,
-                    core_values: None,
-                    user_values: None,
-                    indexed: false,
-                    required: Some(false),
-                    extensible: None,
-                    default: Some(serde_json::json!(false)),
-                    description: Some(
-                        "When true, only person members may access this collection's \
-                         nodes (ADR-037 opt-in restriction). Default false = open."
-                            .to_string(),
-                    ),
-                    item_type: None,
-                    fields: None,
-                    item_fields: None,
-                    unique: None,
-                    unique_case_insensitive: None,
-                },
-            ],
+            fields: vec![SchemaField {
+                name: "restrictedToMembers".to_string(),
+                friendly_name: "Restricted to members".to_string(),
+                field_type: "boolean".to_string(),
+                local_only: false,
+                protection: SchemaProtectionLevel::Core,
+                core_values: None,
+                user_values: None,
+                indexed: false,
+                required: Some(false),
+                extensible: None,
+                default: Some(serde_json::json!(false)),
+                description: Some(
+                    "When true, only person members may access this collection's \
+                     nodes (ADR-037 opt-in restriction). Default false = open."
+                        .to_string(),
+                ),
+                item_type: None,
+                fields: None,
+                item_fields: None,
+                unique: None,
+                unique_case_insensitive: None,
+            }],
             relationships: vec![], // member_of is a native edge, not schema-defined
             title_template: None,
             properties_header_summary_template: None,
@@ -1283,7 +1281,10 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                     required: Some(false),
                     extensible: None,
                     default: None,
-                    description: Some("First name; optional — a person may exist before a name is set".to_string()),
+                    description: Some(
+                        "First name; optional — a person may exist before a name is set"
+                            .to_string(),
+                    ),
                     item_type: None,
                     fields: None,
                     item_fields: None,
@@ -1302,7 +1303,9 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                     required: Some(false),
                     extensible: None,
                     default: None,
-                    description: Some("Last name; optional — a person may exist before a name is set".to_string()),
+                    description: Some(
+                        "Last name; optional — a person may exist before a name is set".to_string(),
+                    ),
                     item_type: None,
                     fields: None,
                     item_fields: None,
@@ -1321,7 +1324,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                     required: Some(false),
                     extensible: None,
                     default: None,
-                    description: Some("Email address; optional at schema level, required in practice for invited teammates".to_string()),
+                    description: Some("Email address (optional)".to_string()),
                     item_type: None,
                     fields: None,
                     item_fields: None,
@@ -1477,7 +1480,9 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                     indexed: false,
                     required: Some(false),
                     extensible: None,
-                    default: Some(serde_json::json!(crate::models::DEFAULT_SKILL_MAX_ITERATIONS)),
+                    default: Some(serde_json::json!(
+                        crate::models::DEFAULT_SKILL_MAX_ITERATIONS
+                    )),
                     description: Some("Maximum ReAct loop iterations for this skill".to_string()),
                     item_type: None,
                     fields: None,
@@ -1804,6 +1809,20 @@ mod tests {
         assert_eq!(field.field_type, "boolean");
         assert_eq!(field.protection, SchemaProtectionLevel::Core);
         assert_eq!(field.default, Some(serde_json::json!(false)));
+    }
+
+    #[test]
+    fn test_person_email_field_is_optional() {
+        // The description is seeded into every new database and shown to users
+        // and agents, so it must describe the field alone.
+        let schemas = get_core_schemas();
+        let person = schemas.iter().find(|s| s.id == "person").unwrap();
+        let email = person.get_field("email").expect("person has email");
+        assert_eq!(email.required, Some(false));
+        assert_eq!(
+            email.description.as_deref(),
+            Some("Email address (optional)")
+        );
     }
 
     #[test]

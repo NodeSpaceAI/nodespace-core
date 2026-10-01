@@ -582,8 +582,8 @@ export const collectionNodePlugin: PluginDefinition = {
  * AI Chat Node Plugin
  *
  * AI chat conversations stored as first-class knowledge graph nodes.
- * Messages are nested properties (ADR-028), enabling semantic search,
- * Stamped ACL permissions, and cloud sync.
+ * Messages are nested properties (ADR-028), so a chat can be linked and
+ * grouped into collections like any other node. Chats are not embedded.
  */
 export const aiChatNodePlugin: PluginDefinition = {
   id: 'ai-chat',
