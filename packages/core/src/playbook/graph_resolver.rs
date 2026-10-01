@@ -911,6 +911,12 @@ pub(crate) fn get_node_property(node: &Node, key: &str) -> Option<serde_json::Va
 /// case. Buckets are searched nearest-scope-first, so an inherited field
 /// resolves from its declaring ancestor's bucket while a field outside the
 /// chain does not resolve at all.
+///
+/// A cleared field is stored as `null` and is returned as `Some(Null)`, not
+/// `None`. This reader also feeds action bindings, where a cleared field
+/// binds to `null`; `None` would turn that into a missing path, which fails
+/// the action. A condition never sees the `null`: its values come from
+/// `cel::scoped_node_value`, which leaves a cleared field out.
 fn get_node_property_at_scope(
     node: &Node,
     key: &str,
@@ -2300,6 +2306,133 @@ mod tests {
             match result.get(&key) {
                 Some(Value::String(s)) => assert_eq!(s.as_ref(), "in_progress"),
                 other => panic!("expected CEL String('in_progress'), got {:?}", other),
+            }
+        }
+
+        /// A cleared field (stored `null`) on a node reached through a
+        /// relationship reads exactly as one that was never set.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn cleared_field_through_a_dot_path_reads_as_absent() {
+            use crate::playbook::cel::{evaluate_conditions, CompiledCondition, ConditionResult};
+
+            let (svc, _tmp) = create_test_service().await;
+            create_schema(&svc, "gr_story_null", json!([])).await;
+            create_schema(
+                &svc,
+                "gr_task_null",
+                json!([{
+                    "name": "story",
+                    "targetType": "gr_story_null",
+                    "direction": "out",
+                    "cardinality": "one",
+                    "reverseName": "issues",
+                    "reverseCardinality": "many"
+                }]),
+            )
+            .await;
+
+            let pass = ConditionResult::Pass;
+            let fail = ConditionResult::Fail { condition_index: 0 };
+            let cases = [
+                (
+                    "cleared",
+                    "0b7c1a52-6a3e-4f0b-9d2b-5c1f6e1a0001",
+                    "0b7c1a52-6a3e-4f0b-9d2b-5c1f6e1a0002",
+                    json!({"status": "active", "priority": null}),
+                    false,
+                ),
+                (
+                    "never set",
+                    "0b7c1a52-6a3e-4f0b-9d2b-5c1f6e1a0003",
+                    "0b7c1a52-6a3e-4f0b-9d2b-5c1f6e1a0004",
+                    json!({"status": "active"}),
+                    false,
+                ),
+                (
+                    "set",
+                    "0b7c1a52-6a3e-4f0b-9d2b-5c1f6e1a0005",
+                    "0b7c1a52-6a3e-4f0b-9d2b-5c1f6e1a0006",
+                    json!({"status": "active", "priority": "high"}),
+                    true,
+                ),
+            ];
+
+            for (which, story_id, task_id, story_props, has_value) in cases {
+                svc.create_node(make_node(story_id, "gr_story_null", story_props.clone()))
+                    .await
+                    .unwrap();
+                // The task carries the same field, for the collection read
+                // from the story's side below.
+                let task = make_node(task_id, "gr_task_null", story_props);
+                svc.create_node(task.clone()).await.unwrap();
+                svc.create_relationship(task_id, "story", story_id, json!({}))
+                    .await
+                    .unwrap();
+
+                // The fixture must really store what the case is named for.
+                let stored = svc.get_node(story_id).await.unwrap().unwrap();
+                let stored_priority = stored.properties["gr_story_null"].get("priority");
+                match which {
+                    "cleared" => assert_eq!(stored_priority, Some(&json!(null))),
+                    "never set" => assert_eq!(stored_priority, None),
+                    _ => assert_eq!(stored_priority, Some(&json!("high"))),
+                }
+
+                let event = crate::db::events::DomainEvent::NodeCreated {
+                    node_type: "gr_task_null".to_string(),
+                    node_id: task_id.to_string(),
+                };
+                for (expr, without_value, with_value) in [
+                    ("has(node.story.priority)", &fail, &pass),
+                    ("has(node.story) && !has(node.story.priority)", &pass, &fail),
+                    // Without the `has(node.story)` guard nothing puts the
+                    // story itself in the context, so a field of it with no
+                    // value is a missing path and fails the condition.
+                    ("!has(node.story.priority)", &fail, &fail),
+                    ("node.story.priority == null", &fail, &fail),
+                    ("node.story.priority != null", &fail, &pass),
+                ] {
+                    let conditions = vec![CompiledCondition::compile(expr).unwrap()];
+                    let mut resolver = GraphResolver::new(Arc::clone(&svc));
+                    let result =
+                        evaluate_conditions(&conditions, &task, &event, Some(&mut resolver)).await;
+                    assert_eq!(
+                        &result,
+                        if has_value { with_value } else { without_value },
+                        "`{expr}` on a task whose story's priority is {which}"
+                    );
+                }
+
+                // A collection item is read the same way as a single node.
+                for (expr, without_value, with_value) in [
+                    ("node.issues.exists(i, has(i.priority))", &fail, &pass),
+                    ("node.issues.exists(i, !has(i.priority))", &pass, &fail),
+                ] {
+                    let conditions = vec![CompiledCondition::compile(expr).unwrap()];
+                    let mut resolver = GraphResolver::new(Arc::clone(&svc));
+                    let result =
+                        evaluate_conditions(&conditions, &stored, &event, Some(&mut resolver))
+                            .await;
+                    assert_eq!(
+                        &result,
+                        if has_value { with_value } else { without_value },
+                        "`{expr}` on a story whose task's priority is {which}"
+                    );
+                }
+
+                // An action binding is a different read: a cleared field
+                // binds to `null`, and only a never-set one is a missing path.
+                let mut resolver = GraphResolver::new(Arc::clone(&svc));
+                let resolved = resolver
+                    .resolve_path(&task, &["story".to_string(), "priority".to_string()])
+                    .await;
+                match which {
+                    "cleared" => {
+                        assert!(matches!(&resolved, ResolvedValue::Scalar(v) if v.is_null()))
+                    }
+                    "never set" => assert!(matches!(resolved, ResolvedValue::Missing)),
+                    _ => assert!(matches!(&resolved, ResolvedValue::Scalar(v) if v == "high")),
+                }
             }
         }
 
