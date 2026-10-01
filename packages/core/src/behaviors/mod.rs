@@ -2266,8 +2266,8 @@ impl NodeBehavior for CustomNodeBehavior {
 /// Built-in behavior for person nodes
 ///
 /// Person nodes are pure identity — `first_name` and `last_name` (optional)
-/// and `email` (optional, format-validated when present). A person's role in
-/// this database is not a PersonNode property: it lives on the `has_role` edge
+/// and `email` (optional, format-validated when present). Being this
+/// database's owner is not a PersonNode property: it is the `has_role` edge
 /// from the person to the `DatabaseSettingsNode` singleton.
 ///
 /// A person can carry child nodes (notes about them). It is not embedded, and

@@ -18,7 +18,7 @@
 //! - **horizontal-line** - Horizontal rule / thematic break
 //! - **table** - GFM markdown table
 //! - **person** - Identity primitive (name, email)
-//! - **database-settings** - Singleton anchor for database-level configuration and the owner role edge
+//! - **database-settings** - Singleton anchor for database-level configuration and the owner `has_role` edge
 //!
 //! ## Usage
 //!

@@ -1632,12 +1632,11 @@ impl NodeService {
     }
 
     /// ADR-037: seed the DatabaseSettingsNode singleton — the anchor for
-    /// database-level configuration — and one `has_role` owner edge from the local
-    /// PersonNode to it (role `owner`, status `active`). The singleton carries no
-    /// properties. Idempotent: skips when a
-    /// database-settings node already exists, so an existing database is
-    /// backfilled on next open too. Must run after the local person seed so the
-    /// owner edge always has a person to attach to.
+    /// database-level configuration — and one `has_role` edge from the local
+    /// PersonNode to it. The edge records whose database this is and carries no
+    /// properties (ADR-083 §2). Idempotent: skips when the settings node and
+    /// its owner edge already exist. Must run after the local person seed so
+    /// the owner edge always has a person to attach to.
     async fn seed_database_settings_if_needed(&self) -> Result<(), NodeServiceError> {
         // ADR-069 §1a/S5, closing F13: the idempotency guard checks the
         // owner EDGE, not merely the settings node's existence. The node and
@@ -1695,7 +1694,7 @@ impl NodeService {
             }
         };
 
-        // Attach the owner role edge from the local PersonNode. Seeding order
+        // Attach the owner edge from the local PersonNode. Seeding order
         // guarantees exactly one local person exists at this point.
         let local_person_id = self
             .query_nodes_by_type("person", None)
@@ -1712,7 +1711,7 @@ impl NodeService {
             &local_person_id,
             "has_role",
             &settings_id,
-            serde_json::json!({"role": "owner", "status": "active"}),
+            serde_json::json!({}),
         )
         .await?;
 
@@ -1724,68 +1723,34 @@ impl NodeService {
         Ok(())
     }
 
-    /// ADR-037: resolve the seeded local-user PersonNode — the
-    /// person with an outgoing `has_role` edge carrying `role: "owner"` to
-    /// the DatabaseSettingsNode singleton (the owner edge
-    /// `seed_database_settings_if_needed` seeds). The DatabaseSettingsNode
-    /// can hold more than one `has_role` edge, so this filters on
-    /// `role == "owner"` rather than taking the first `has_role` edge — once
-    /// a second, non-owner role edge lands there, an unfiltered `.next()`
-    /// would silently resolve the wrong person.
-    /// If more than one edge is found with `role == "owner"` — which
-    /// today's seeding path cannot produce — the first is used and a
-    /// `tracing::warn!` is emitted, so a future regression surfaces instead
-    /// of resolving silently to whichever edge SQL returns first.
-    /// Falls back to the first `person` node when no owner edge is found —
-    /// a database whose data predates ADR-037 seeding still resolves to *a*
-    /// local person rather than surfacing "no identity" on an otherwise
-    /// healthy install. That fallback is silent when there are zero
-    /// `has_role` edges at all (the legitimate pre-ADR-037 case), but emits a
-    /// `tracing::warn!` when one or more `has_role` edges exist without any
-    /// carrying `role == "owner"` — today's only seeding path always seeds
-    /// "owner", so a non-empty, non-matching edge set signals a
-    /// data-integrity anomaly rather than expected pre-seeding state.
-    /// Returns `None` only when there is no person node at all (should not
-    /// happen post-seed, but this must not panic on data that predates it).
+    /// ADR-037: resolve the seeded local-user PersonNode — the person whose
+    /// `has_role` edge points at the DatabaseSettingsNode singleton (the owner
+    /// edge `seed_database_settings_if_needed` seeds). The edge's existence is
+    /// the whole fact: it carries no properties (ADR-083 §2), and a database
+    /// has exactly one.
+    /// If more than one such edge is found — which the seeding path cannot
+    /// produce — the first is used and a `tracing::warn!` is emitted, so the
+    /// anomaly surfaces instead of resolving silently to whichever edge SQL
+    /// returns first.
+    /// Falls back to the first `person` node when no owner edge is found, so a
+    /// database whose edge was dropped still resolves to *a* local person
+    /// rather than surfacing "no identity" on an otherwise healthy install.
+    /// Returns `None` only when there is no person node at all.
     pub async fn get_local_person(&self) -> Result<Option<Node>, NodeServiceError> {
-        let owners = self
-            .get_related_nodes_with_edges(DATABASE_SETTINGS_NODE_ID, "has_role", "in")
-            .await?;
-        let has_role_edges_exist = !owners.is_empty();
-        let mut owner_edges = owners.into_iter().filter(|(_, edge_properties)| {
-            edge_properties
-                .get("role")
-                .and_then(|v| v.as_str())
-                .map(|role| role == "owner")
-                .unwrap_or(false)
-        });
-        let owner = owner_edges.next().map(|(node, _)| node);
-        if owner_edges.next().is_some() {
-            // Data-integrity anomaly: today's seeding path creates exactly one
-            // owner-role edge, so this should be unreachable. Warn rather than
-            // silently resolving to whichever edge SQL happened to return first.
+        let mut owners = self
+            .get_related_nodes(DATABASE_SETTINGS_NODE_ID, "has_role", "in")
+            .await?
+            .into_iter();
+        let owner = owners.next();
+        if owners.next().is_some() {
             tracing::warn!(
                 settings_node_id = DATABASE_SETTINGS_NODE_ID,
-                "multiple has_role edges with role \"owner\" found on DatabaseSettingsNode; \
+                "multiple has_role edges found on DatabaseSettingsNode; \
                  resolving to the first one returned"
             );
         }
         if let Some(owner) = owner {
             return Ok(Some(owner));
-        }
-        if has_role_edges_exist {
-            // Data-integrity anomaly: has_role edges exist on the
-            // DatabaseSettingsNode singleton but none carries role == "owner".
-            // Today's only seeding path (`seed_database_settings_if_needed`)
-            // always seeds "owner", so this should be unreachable — warn
-            // rather than silently falling back to "pick any person node",
-            // which would mask a real anomaly. Zero edges at all is the
-            // legitimate pre-ADR-037 fallback case and stays silent.
-            tracing::warn!(
-                settings_node_id = DATABASE_SETTINGS_NODE_ID,
-                "has_role edges found on DatabaseSettingsNode but none has role \"owner\"; \
-                 falling back to the first person node"
-            );
         }
         Ok(self
             .query_nodes_by_type("person", None)
@@ -8815,8 +8780,11 @@ mod tests {
             .await
             .unwrap()
             .expect("owner has_role edge exists");
-        assert_eq!(edge.properties["role"], "owner");
-        assert_eq!(edge.properties["status"], "active");
+        assert_eq!(
+            edge.properties,
+            serde_json::json!({}),
+            "the owner edge records whose database this is and carries no properties"
+        );
 
         // The owner edge is how the local user is found.
         let local = service
@@ -8985,7 +8953,7 @@ mod tests {
                 &new_owner_id,
                 "has_role",
                 DATABASE_SETTINGS_NODE_ID,
-                serde_json::json!({"role": "owner", "status": "active"}),
+                serde_json::json!({}),
             )
             .await
             .unwrap();
@@ -8997,51 +8965,8 @@ mod tests {
             .expect("a local person must resolve when an owner edge exists");
         assert_eq!(
             local.id, new_owner_id,
-            "must resolve whoever currently holds the has_role owner edge, \
+            "must resolve whoever currently holds the has_role edge, \
              not just the first person node"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_get_local_person_ignores_non_owner_has_role_edges() {
-        let (service, _temp) = create_test_service().await;
-
-        let people = service.query_nodes_by_type("person", None).await.unwrap();
-        assert_eq!(people.len(), 1);
-        let seeded_owner_id = people[0].id.clone();
-
-        // Add a SECOND has_role edge to the DatabaseSettingsNode singleton,
-        // from a different person, carrying a non-owner role alongside the
-        // owner's. A naive "first has_role edge" resolution could silently
-        // return this person instead of the actual owner, depending on
-        // traversal order.
-        let member_id = service
-            .create_node(Node::new(
-                "person".to_string(),
-                String::new(),
-                serde_json::json!({}),
-            ))
-            .await
-            .unwrap();
-        service
-            .create_relationship(
-                &member_id,
-                "has_role",
-                DATABASE_SETTINGS_NODE_ID,
-                serde_json::json!({"role": "member", "status": "active"}),
-            )
-            .await
-            .unwrap();
-
-        let local = service
-            .get_local_person()
-            .await
-            .unwrap()
-            .expect("a local person must resolve when an owner edge exists");
-        assert_eq!(
-            local.id, seeded_owner_id,
-            "must resolve the person holding the owner-role edge, not a \
-             differently-roled has_role edge on the same node"
         );
     }
 
@@ -9052,8 +8977,8 @@ mod tests {
         let people = service.query_nodes_by_type("person", None).await.unwrap();
         let seeded_id = people[0].id.clone();
 
-        // Simulate a database that predates the ADR-037 owner edge (or one
-        // where it was somehow dropped): remove the has_role edge entirely.
+        // Simulate a database whose owner edge was dropped: remove the
+        // has_role edge entirely.
         service
             .delete_relationship(&seeded_id, "has_role", DATABASE_SETTINGS_NODE_ID)
             .await
@@ -9115,40 +9040,57 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_get_local_person_warns_when_has_role_edges_exist_without_owner_role() {
+    async fn test_get_local_person_warns_when_more_than_one_has_role_edge_exists() {
         let (service, _temp) = create_test_service().await;
 
         let people = service.query_nodes_by_type("person", None).await.unwrap();
         let seeded_id = people[0].id.clone();
 
-        // Replace the seeded owner edge with a non-owner-role edge, so
-        // has_role edges exist on the singleton but none has role "owner" —
-        // the anomaly this warning exists to surface.
-        service
-            .delete_relationship(&seeded_id, "has_role", DATABASE_SETTINGS_NODE_ID)
+        // A second has_role edge onto the singleton, from another person. A
+        // database has one owner, so this is the anomaly the warning surfaces.
+        let other_id = service
+            .create_node(Node::new(
+                "person".to_string(),
+                String::new(),
+                serde_json::json!({}),
+            ))
             .await
             .unwrap();
         service
             .create_relationship(
-                &seeded_id,
+                &other_id,
                 "has_role",
                 DATABASE_SETTINGS_NODE_ID,
-                serde_json::json!({"role": "member", "status": "active"}),
+                serde_json::json!({}),
             )
             .await
             .unwrap();
 
         let (local, warned) = warn_fired_during(|| service.get_local_person()).await;
-        let local = local
-            .unwrap()
-            .expect("fallback must still resolve a local person");
-        assert_eq!(
-            local.id, seeded_id,
-            "behavior is unchanged: still falls back to the first person node"
+        let local = local.unwrap().expect("a local person must still resolve");
+        assert!(
+            local.id == seeded_id || local.id == other_id,
+            "must resolve one of the people holding a has_role edge"
         );
         assert!(
             warned,
-            "must warn when has_role edges exist but none has role \"owner\""
+            "must warn when more than one has_role edge points at the singleton"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_get_local_person_does_not_warn_for_the_seeded_owner_edge() {
+        let (service, _temp) = create_test_service().await;
+
+        let people = service.query_nodes_by_type("person", None).await.unwrap();
+        let seeded_id = people[0].id.clone();
+
+        let (local, warned) = warn_fired_during(|| service.get_local_person()).await;
+        let local = local.unwrap().expect("the seeded owner resolves");
+        assert_eq!(local.id, seeded_id);
+        assert!(
+            !warned,
+            "a property-less owner edge is the expected shape and must not warn"
         );
     }
 
@@ -9159,7 +9101,7 @@ mod tests {
         let people = service.query_nodes_by_type("person", None).await.unwrap();
         let seeded_id = people[0].id.clone();
 
-        // Legitimate pre-ADR-037 state: no has_role edge at all.
+        // No has_role edge at all.
         service
             .delete_relationship(&seeded_id, "has_role", DATABASE_SETTINGS_NODE_ID)
             .await
@@ -9170,10 +9112,7 @@ mod tests {
             .unwrap()
             .expect("fallback must still resolve a local person");
         assert_eq!(local.id, seeded_id);
-        assert!(
-            !warned,
-            "must not warn when there are zero has_role edges (expected pre-seeding state)"
-        );
+        assert!(!warned, "must not warn when there are zero has_role edges");
     }
 
     #[tokio::test]
