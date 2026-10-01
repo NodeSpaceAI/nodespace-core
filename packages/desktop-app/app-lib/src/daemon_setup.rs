@@ -726,7 +726,13 @@ async fn evict_if_other_product(
 async fn evict_other_product_daemon(app: &AppHandle, socket_path: &Path) -> bool {
     use tauri::Manager;
 
-    if crate::services::grpc_client::resolve_socket_path() != socket_path {
+    let dialed = crate::services::grpc_client::resolve_socket_path();
+    if dialed != socket_path {
+        tracing::info!(
+            dialed = %dialed.display(),
+            registered = %socket_path.display(),
+            "the app dials another daemon socket; skipping the check of which daemon is running"
+        );
         return false;
     }
     if check_daemon_socket(socket_path).await != DaemonStatus::Healthy {
