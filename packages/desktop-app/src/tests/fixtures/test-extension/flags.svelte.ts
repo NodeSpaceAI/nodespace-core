@@ -21,7 +21,9 @@ export const testExtensionFlags = $state({
   /** Shows the per-database row content. */
   databaseRow: false,
   /** Shows a row contribution whose component throws while rendering. */
-  databaseRowThrowing: false
+  databaseRowThrowing: false,
+  /** The collection ids the fixture's `collectionTreeRoots` returns. */
+  collectionTreeRoots: [] as string[]
 });
 
 /** How many times each fixture component has mounted, by component name. */
@@ -44,5 +46,6 @@ export function resetTestExtension(): void {
   testExtensionFlags.databaseActions = false;
   testExtensionFlags.databaseRow = false;
   testExtensionFlags.databaseRowThrowing = false;
+  testExtensionFlags.collectionTreeRoots = [];
   for (const name of Object.keys(testExtensionMounts)) delete testExtensionMounts[name];
 }

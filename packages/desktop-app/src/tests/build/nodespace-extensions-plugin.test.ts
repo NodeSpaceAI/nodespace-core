@@ -254,6 +254,9 @@ describe('nodespace extensions build entry', () => {
       expectTypeOf<api.SettingsSlotContributionFor<'database.row'>>().toEqualTypeOf<
         host.SettingsSlotContributionFor<'database.row'>
       >();
+      expectTypeOf<api.CollectionTreeRootsContribution>().toEqualTypeOf<
+        host.CollectionTreeRootsContribution
+      >();
     });
 
     it('registers the injected extensions synchronously in the root layout', () => {

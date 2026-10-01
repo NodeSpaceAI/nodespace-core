@@ -122,6 +122,9 @@ export function createTestExtension(
         load: () => import('./test-throwing-row.svelte')
       }
     ],
+    // Contributes `testExtensionFlags.collectionTreeRoots`, empty until a test sets it.
+    // Pass `{ collectionTreeRoots }` as an override for a contributor of your own.
+    collectionTreeRoots: () => testExtensionFlags.collectionTreeRoots,
     ...overrides
   };
 }
