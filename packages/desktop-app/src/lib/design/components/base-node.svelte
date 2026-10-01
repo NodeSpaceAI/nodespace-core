@@ -307,11 +307,9 @@
         return;
       }
 
-      // Query backend for mentionable nodes using dedicated mention autocomplete
-      // Backend applies SQL-level filtering for performance and scalability:
-      // - Excludes: date, schema node types
-      // - Text-based types (text, header, code-block, quote-block, ordered-list): only root nodes
-      // - Other types (task, query, etc.): included regardless of hierarchy
+      // Query backend for mentionable nodes using dedicated mention autocomplete.
+      // The backend's mention query decides which nodes are offered (titled,
+      // active, of a mentionable type) and filters in SQL.
       const backendResults: NodeData[] = await backendAdapter.mentionAutocomplete(query, 10);
 
       // Convert to NodeResult format
