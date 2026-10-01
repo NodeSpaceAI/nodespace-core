@@ -122,7 +122,7 @@ export interface TypeDeclaration {
 
 const printer = ts.createPrinter({ removeComments: true });
 
-/** Every top-level `interface` and `type` declaration in a module, by name. */
+/** Every top-level `interface` and `type` declaration in a module, by name; merged ones joined. */
 export function typeDeclarations(file: string, source?: string): Map<string, TypeDeclaration> {
   const sf = parseSource(file, source);
   const declarations = new Map<string, TypeDeclaration>();
@@ -139,7 +139,14 @@ export function typeDeclarations(file: string, source?: string): Map<string, Typ
       .replace(/^export\s+/, '')
       .replace(/\s+/g, ' ')
       .trim();
-    declarations.set(st.name.text, { text, refs });
+    // Merged declarations (`interface X` twice) count together, in source order.
+    const earlier = declarations.get(st.name.text);
+    if (earlier) {
+      for (const ref of earlier.refs) refs.add(ref);
+      declarations.set(st.name.text, { text: `${earlier.text} ${text}`, refs });
+    } else {
+      declarations.set(st.name.text, { text, refs });
+    }
   }
   return declarations;
 }

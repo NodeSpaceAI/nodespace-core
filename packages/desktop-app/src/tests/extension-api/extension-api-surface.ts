@@ -30,21 +30,24 @@ export const REGISTRY_FILE = path.join(LIB_ROOT, 'plugins/ui-extensions.ts');
  * Each entry of the host API, by name, and the file that implements it. The
  * alias makes every file in the host API's directory importable
  * (`@nodespace/extension-api/<name>`, with `index` the bare package), so every
- * file there is an entry; anything other than a `.ts` file is refused.
+ * file there is an entry; anything other than a `.ts` file is refused. Dotfiles
+ * (an editor's swap file, `.DS_Store`) are skipped.
  */
-export function hostApiEntries(): Record<string, string> {
+export function hostApiEntries(dir = HOST_API_DIR): Record<string, string> {
   const entries: Record<string, string> = {};
-  const dirents = fs.readdirSync(HOST_API_DIR, { withFileTypes: true });
+  const dirents = fs
+    .readdirSync(dir, { withFileTypes: true })
+    .filter((dirent) => !dirent.name.startsWith('.'));
   // Sorted, so a re-recorded snapshot is byte-identical whatever the filesystem's order.
   dirents.sort((a, b) => a.name.localeCompare(b.name));
   for (const dirent of dirents) {
     if (!dirent.isFile() || !dirent.name.endsWith('.ts')) {
       throw new Error(
-        `${path.relative(APP_ROOT, path.join(HOST_API_DIR, dirent.name))}: the host API directory ` +
+        `${path.relative(APP_ROOT, path.join(dir, dirent.name))}: the host API directory ` +
           'holds only .ts entries, each one importable as @nodespace/extension-api/<name>'
       );
     }
-    entries[dirent.name.slice(0, -'.ts'.length)] = path.join(HOST_API_DIR, dirent.name);
+    entries[dirent.name.slice(0, -'.ts'.length)] = path.join(dir, dirent.name);
   }
   return entries;
 }

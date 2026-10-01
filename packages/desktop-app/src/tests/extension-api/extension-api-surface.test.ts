@@ -224,6 +224,17 @@ describe('source parsing', () => {
     ]);
   });
 
+  it('treats every .ts file in the host API directory as an entry, skipping dotfiles', () => {
+    const apiDir = fs.mkdtempSync(path.join(dir, 'api-'));
+    fs.writeFileSync(path.join(apiDir, 'index.ts'), '');
+    fs.writeFileSync(path.join(apiDir, 'ui.ts'), '');
+    fs.writeFileSync(path.join(apiDir, '.DS_Store'), '');
+    expect(Object.keys(hostApiEntries(apiDir))).toEqual(['index', 'ui']);
+
+    fs.writeFileSync(path.join(apiDir, 'notes.md'), '');
+    expect(() => hostApiEntries(apiDir)).toThrow(/only \.ts entries/);
+  });
+
   it('lists a namespace re-export’s members', () => {
     const members = file(
       'const Root = 1;\nconst Title = 2;\nexport { Root, Title as DialogTitle };'
@@ -277,6 +288,12 @@ describe('source parsing', () => {
         file("const trimmed = 'x'.replace(/\\/*$/, '');\nexport interface Hidden { x: number }")
       );
       expect([...declarations.keys()]).toEqual(['Hidden']);
+    });
+
+    it('covers every block of a merged interface', () => {
+      expect(hashOf('interface X { a: 1 }\ninterface X { b: 2 }')).not.toBe(
+        hashOf('interface X { a: 3 }\ninterface X { b: 2 }')
+      );
     });
 
     it('ignores an import item that looks like a declaration', () => {
