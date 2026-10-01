@@ -1142,13 +1142,16 @@ impl SqliteStore {
         Ok(member_ids)
     }
 
-    pub async fn get_all_collection_names(&self) -> Result<Vec<String>> {
+    /// Every collection's name and description, sorted by name. The
+    /// description is `None` when the collection has none.
+    pub async fn get_all_collection_descriptions(&self) -> Result<Vec<(String, Option<String>)>> {
         let mut rows = self
             .read()
             .await?
             .query(
                 &format!(
-                    "SELECT content FROM node WHERE {} ORDER BY content ASC",
+                    "SELECT content, json_extract(properties, '$.collection.description') \
+                     FROM node WHERE {} ORDER BY content ASC",
                     crate::db::schema::is_a_sql(
                         "node_type",
                         &[crate::models::CoreNodeType::Collection]
@@ -1157,13 +1160,13 @@ impl SqliteStore {
                 (),
             )
             .await
-            .context("Failed to get all collection names")?;
+            .context("Failed to get all collection descriptions")?;
 
-        let mut names = Vec::new();
+        let mut collections = Vec::new();
         while let Some(row) = rows.next().await? {
-            names.push(row.get(0)?);
+            collections.push((row.get(0)?, row.get(1)?));
         }
-        Ok(names)
+        Ok(collections)
     }
 
     pub async fn get_all_collections_with_member_counts(

@@ -661,19 +661,17 @@ impl<'a> CollectionService<'a> {
             .map_err(|e| db_error(e, "Failed to get collection by name"))
     }
 
-    /// Get all collection names
+    /// Every collection's name and description, sorted by name.
     ///
-    /// Returns all collection names in the database, sorted alphabetically.
-    /// Useful for MCP handlers that need the names for filtering.
-    ///
-    /// # Returns
-    ///
-    /// Vec of collection names (e.g., ["architecture", "archived", "development"])
-    pub async fn get_all_collection_names(&self) -> Result<Vec<String>, NodeServiceError> {
+    /// The description is `None` when the collection has none. This is what
+    /// the agent's workspace context lists.
+    pub async fn get_all_collection_descriptions(
+        &self,
+    ) -> Result<Vec<(String, Option<String>)>, NodeServiceError> {
         self.store
-            .get_all_collection_names()
+            .get_all_collection_descriptions()
             .await
-            .map_err(|e| db_error(e, "Failed to get all collection names"))
+            .map_err(|e| db_error(e, "Failed to get all collection descriptions"))
     }
 
     /// Get all collections with their member counts and parent collection IDs in a single query
@@ -1159,8 +1157,13 @@ mod tests {
         );
 
         // A fresh install seeds no collection, so these three are all of them.
-        let mut names = svc.get_all_collection_names().await.unwrap();
-        names.sort();
+        let names: Vec<String> = svc
+            .get_all_collection_descriptions()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect();
         assert_eq!(
             names,
             ["Alternatives", "Architecture", "Decisions"],

@@ -6858,6 +6858,53 @@ mod tests {
                 stored.result["properties"]
             );
         }
+
+        /// A collection's description is a declared field, so the agent sets
+        /// it on create and changes it on update like any other field value,
+        /// and it lands in the collection bucket.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn create_and_update_set_a_collection_description() {
+            let (ns, _tmp) = make_test_service().await;
+            let executor = plain_executor(ns.clone());
+
+            let created = executor
+                .execute(
+                    "create_node",
+                    json!({
+                        "content": "Clients",
+                        "node_type": "collection",
+                        "field_values": { "description": "Accounts we bill" },
+                    }),
+                )
+                .await
+                .unwrap();
+            assert!(!created.is_error, "{created:?}");
+            let node_id = strip_node_uri(created.result["id"].as_str().expect("id")).to_string();
+
+            let stored = ns.get_node(&node_id).await.unwrap().unwrap();
+            assert_eq!(
+                stored.properties,
+                json!({ "collection": { "description": "Accounts we bill" } })
+            );
+
+            let updated = executor
+                .execute(
+                    "update_node",
+                    json!({
+                        "id": node_id,
+                        "field_values": { "description": "Accounts we bill, one page each" },
+                    }),
+                )
+                .await
+                .unwrap();
+            assert!(!updated.is_error, "{updated:?}");
+
+            let stored = ns.get_node(&node_id).await.unwrap().unwrap();
+            assert_eq!(
+                stored.properties,
+                json!({ "collection": { "description": "Accounts we bill, one page each" } })
+            );
+        }
     }
 
     mod update_node_noop_gate {

@@ -1,4 +1,6 @@
-COLLECTIONS: Engineering, Q3 Planning
+COLLECTIONS:
+- Engineering — Design notes, ADRs and tickets for the product team
+- Q3 Planning
 
 MENTIONED ENTITIES (already resolved — use these ids directly, do not ask for one):
 - "Northwind Trading" (company_sold_to) id=01J8ZQ3K7X2N4P6R8T0V2W4Y6A

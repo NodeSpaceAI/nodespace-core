@@ -39,7 +39,7 @@ use super::OpsError;
 /// Assembled workspace context from the database.
 #[derive(Default)]
 pub struct WorkspaceContext {
-    pub collections: Vec<String>,
+    pub collections: Vec<CollectionSummary>,
     pub active_playbooks: Vec<PlaybookInfo>,
     /// Schemas semantically relevant to the current query (may be empty),
     /// already described across their `extends` chains. Held as descriptors
@@ -114,6 +114,91 @@ pub enum EntityResolution {
 pub struct PlaybookInfo {
     pub name: String,
     pub description: String,
+}
+
+/// A collection, as the context lists it.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct CollectionSummary {
+    pub name: String,
+    /// What the collection is for. Empty when it has no description.
+    pub description: String,
+}
+
+impl CollectionSummary {
+    /// A collection with no description.
+    pub fn named(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            description: String::new(),
+        }
+    }
+}
+
+/// Longest description shown for one collection, in characters.
+///
+/// A description says what a collection is for, which a sentence covers. The
+/// cap keeps one long description from crowding out the rest of the list.
+const MAX_CHARS_PER_COLLECTION_DESCRIPTION: usize = 80;
+
+/// Share of the context budget that collection descriptions may take, as a
+/// divisor of `max_chars`.
+///
+/// The collections section is rendered first, so without a cap a workspace
+/// with many described collections would spend the budget the entity and
+/// schema tiers below it need. Collections past the cap are listed by name.
+const COLLECTION_DESCRIPTIONS_BUDGET_DIVISOR: usize = 4;
+
+/// A collection description as one line of at most
+/// [`MAX_CHARS_PER_COLLECTION_DESCRIPTION`] characters, ending in `…` when cut.
+fn collection_description_line(description: &str) -> String {
+    let one_line = description.split_whitespace().collect::<Vec<_>>().join(" ");
+    let kept = leading_chars(&one_line, MAX_CHARS_PER_COLLECTION_DESCRIPTION);
+    if kept.len() < one_line.len() {
+        format!("{}…", kept.trim_end())
+    } else {
+        one_line
+    }
+}
+
+/// The collections section of the context, or `None` when there is nothing to
+/// list or it does not fit in `max_chars`.
+///
+/// With no descriptions it is one line of names. Once any collection has a
+/// description it is one collection per line, `name — description`, so that a
+/// comma inside a description cannot read as the start of another name; a
+/// collection without a description stays a bare name.
+fn render_collections_section(collections: &[CollectionSummary], max_chars: usize) -> Option<String> {
+    if collections.is_empty() {
+        return None;
+    }
+
+    let names_only = || {
+        let names: Vec<&str> = collections.iter().map(|c| c.name.as_str()).collect();
+        format!("COLLECTIONS: {}\n", names.join(", "))
+    };
+
+    let mut descriptions_budget = max_chars / COLLECTION_DESCRIPTIONS_BUDGET_DIVISOR;
+    let mut any_described = false;
+    let mut listed = String::from("COLLECTIONS:\n");
+    for collection in collections {
+        let description = collection_description_line(&collection.description);
+        if description.is_empty() || description.len() > descriptions_budget {
+            listed.push_str(&format!("- {}\n", collection.name));
+        } else {
+            descriptions_budget -= description.len();
+            any_described = true;
+            listed.push_str(&format!("- {} — {}\n", collection.name, description));
+        }
+    }
+
+    // Descriptions give way before names do: a list too long to fit with them
+    // is still worth showing without.
+    let section = if any_described && listed.len() <= max_chars {
+        listed
+    } else {
+        names_only()
+    };
+    (section.len() <= max_chars).then_some(section)
 }
 
 // ---------------------------------------------------------------------------
@@ -629,12 +714,18 @@ pub async fn build_workspace_context(
     query: Option<&str>,
     entity_query: Option<&str>,
 ) -> Result<WorkspaceContext, OpsError> {
-    // Fetch collection names
+    // Fetch collection names and descriptions
     let collection_service = CollectionService::new(node_service.store(), node_service);
     let collections = collection_service
-        .get_all_collection_names()
+        .get_all_collection_descriptions()
         .await
-        .unwrap_or_default();
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(name, description)| CollectionSummary {
+            name,
+            description: description.unwrap_or_default(),
+        })
+        .collect();
 
     // Fetch active playbooks
     let playbook_nodes = node_service
@@ -819,11 +910,8 @@ impl WorkspaceContext {
         let mut out = String::new();
 
         // Collections section
-        if !self.collections.is_empty() {
-            let section = format!("COLLECTIONS: {}\n", self.collections.join(", "));
-            if out.len() + section.len() <= max_chars {
-                out.push_str(&section);
-            }
+        if let Some(section) = render_collections_section(&self.collections, max_chars) {
+            out.push_str(&section);
         }
 
         // Resolved entities section.
@@ -982,7 +1070,9 @@ mod tests {
 
     fn sample_context() -> WorkspaceContext {
         WorkspaceContext {
-            collections: vec!["Projects".into(), "Clients".into(), "Research".into()],
+            collections: ["Projects", "Clients", "Research"]
+                .map(CollectionSummary::named)
+                .to_vec(),
             active_playbooks: vec![PlaybookInfo {
                 name: "Task completion".into(),
                 description: "When task.status -> Done, evaluate project progress".into(),
@@ -1469,19 +1559,112 @@ mod tests {
 
     #[test]
     fn format_for_prompt_collections_only() {
-        let ctx = WorkspaceContext {
-            collections: vec!["Projects".into(), "Clients".into()],
-            active_playbooks: vec![],
-            relevant_schemas: vec![],
-            related_schemas: vec![],
-            semantic_schema_count: 0,
-            resolved_entities: EntityResolution::NotRun,
-        };
+        let ctx = collections_context(vec![
+            CollectionSummary::named("Projects"),
+            CollectionSummary::named("Clients"),
+        ]);
         let output = ctx.format_for_prompt(4000);
-        assert!(output.contains("COLLECTIONS:"));
-        assert!(output.contains("Projects"));
-        assert!(output.contains("Clients"));
-        assert!(!output.contains("ACTIVE PLAYBOOKS:"));
+        assert_eq!(output, "COLLECTIONS: Projects, Clients\n");
+    }
+
+    fn collections_context(collections: Vec<CollectionSummary>) -> WorkspaceContext {
+        WorkspaceContext {
+            collections,
+            ..Default::default()
+        }
+    }
+
+    fn described_collection(name: &str, description: &str) -> CollectionSummary {
+        CollectionSummary {
+            name: name.to_string(),
+            description: description.to_string(),
+        }
+    }
+
+    #[test]
+    fn a_described_collection_renders_its_description_after_its_name() {
+        let ctx = collections_context(vec![
+            described_collection("Clients", "Accounts we bill, one page per client"),
+            CollectionSummary::named("Research"),
+        ]);
+
+        assert_eq!(
+            ctx.format_for_prompt(4000),
+            "COLLECTIONS:\n- Clients — Accounts we bill, one page per client\n- Research\n",
+            "a collection without a description stays a bare name"
+        );
+    }
+
+    #[test]
+    fn a_long_collection_description_is_cut_to_one_short_line() {
+        let long = format!("Notes\nfrom   every {}", "meeting ".repeat(30));
+        let ctx = collections_context(vec![described_collection("Meetings", &long)]);
+
+        let output = ctx.format_for_prompt(4000);
+        let line = output.lines().nth(1).unwrap();
+        let description = line.strip_prefix("- Meetings — ").unwrap();
+
+        assert!(description.starts_with("Notes from every meeting"));
+        assert!(description.ends_with('…'));
+        assert_eq!(
+            description.chars().count(),
+            MAX_CHARS_PER_COLLECTION_DESCRIPTION + 1,
+            "the cap, plus the ellipsis"
+        );
+        assert_eq!(output.lines().count(), 2, "the description stays on one line");
+    }
+
+    #[test]
+    fn a_collection_description_is_cut_on_a_character_boundary() {
+        let ctx = collections_context(vec![described_collection("Café", &"é".repeat(200))]);
+
+        let output = ctx.format_for_prompt(4000);
+        let expected = format!(
+            "- Café — {}…",
+            "é".repeat(MAX_CHARS_PER_COLLECTION_DESCRIPTION)
+        );
+        assert_eq!(output.lines().nth(1), Some(expected.as_str()));
+    }
+
+    #[test]
+    fn collection_descriptions_stop_at_their_share_of_the_budget() {
+        let description = "d".repeat(MAX_CHARS_PER_COLLECTION_DESCRIPTION);
+        let collections: Vec<CollectionSummary> = (0..40)
+            .map(|i| described_collection(&format!("c{i:02}"), &description))
+            .collect();
+        let ctx = collections_context(collections);
+
+        let max_chars = 4000;
+        let output = ctx.format_for_prompt(max_chars);
+        let described = output.lines().filter(|l| l.contains(" — ")).count();
+
+        assert_eq!(
+            described,
+            max_chars / COLLECTION_DESCRIPTIONS_BUDGET_DIVISOR
+                / MAX_CHARS_PER_COLLECTION_DESCRIPTION
+        );
+        assert_eq!(
+            output.lines().count(),
+            41,
+            "every collection is still listed by name"
+        );
+        assert!(output.len() <= max_chars);
+    }
+
+    #[test]
+    fn collections_fall_back_to_names_when_the_described_list_does_not_fit() {
+        let ctx = collections_context(vec![
+            described_collection("Clients", "Bills"),
+            described_collection("Research", "Notes"),
+            CollectionSummary::named("Engineering"),
+        ]);
+
+        // Room for the names line (44 bytes) but not for the described list (68).
+        assert_eq!(
+            ctx.format_for_prompt(48),
+            "COLLECTIONS: Clients, Research, Engineering\n"
+        );
+        assert_eq!(ctx.format_for_prompt(20), "", "too small for the names too");
     }
 
     // -----------------------------------------------------------------------

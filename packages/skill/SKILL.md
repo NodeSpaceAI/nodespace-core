@@ -226,7 +226,7 @@ nodespace relationship create --from <ticket-id> --type belongs_to_sprint --to <
 
 ### Organize a node into a collection
 
-Collections are how NodeSpace tags and groups things — a flat label and a nested `:`-delimited path (`docs:rust`) are one mechanism at two depths, the same syntax `import` and `search` take. Crucially, **collection membership is an argument to the create call**, not a follow-up write: pass `--collection` and every missing segment is created for you. Never look a collection up first or ask the user to pre-create one.
+Collections are how NodeSpace tags and groups things — a flat label and a nested `:`-delimited path (`docs:rust`) are one mechanism at two depths. Crucially, **collection membership is an argument to the create call**, not a follow-up write: pass `--collection` and every missing segment is created for you. Never look a collection up first or ask the user to pre-create one.
 
 ```bash
 # One call: creates the node, creates `docs` and `rust`, files the node under `rust`
@@ -237,7 +237,9 @@ nodespace node create --type text --content "Retry budget" --collection docs:rus
 nodespace node update <node-id> --collection docs:rust
 ```
 
-Prefer a collection for any durable grouping: don't add a `tags`/`categories`/`topics`/`labels` field for something collections already model. Unlike an array value, a collection shows in the UI, is renamed once not per member, nests, and needs no schema change to join — `member_of` is structural, legal between any two nodes undeclared.
+Give a collection a `description` so agents know what belongs in it: `nodespace node update <id> --property description="…"`.
+
+Prefer a collection for any durable grouping: don't add a `tags`/`categories`/`topics`/`labels` field for something collections already model. Unlike an array value, a collection shows in the UI, is renamed once not per member, nests, and needs no schema change to join.
 
 ### Delete a node, or a whole node type
 

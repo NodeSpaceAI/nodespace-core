@@ -4,7 +4,9 @@ Call exactly one tool. Do not answer the user in prose when a tool applies.
 Current date: 2026-06-15
 Active model: gemma-4-E4B-it-Q4_K_M
 
-COLLECTIONS: Engineering, Q3 Planning
+COLLECTIONS:
+- Engineering — Design notes, ADRs and tickets for the product team
+- Q3 Planning
 
 MENTIONED ENTITIES (already resolved — use these ids directly, do not ask for one):
 - "Northwind Trading" (company_sold_to) id=01J8ZQ3K7X2N4P6R8T0V2W4Y6A

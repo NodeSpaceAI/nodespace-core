@@ -72,6 +72,15 @@ nodespace node create --type text --content "Meeting notes" --parent <parent-id>
 
 Only include properties the schema actually defines as required, plus any optional ones the user gave a value for. Don't invent fields.
 
+**Describing a collection:** a collection has one optional field, `description`, which says what the collection is for. Agents see it next to the collection's name when they decide where a node belongs. Set it on create, or later with `node update`:
+
+```bash
+nodespace node create --type collection --content "Clients" --property description="Accounts we bill, one page per client"
+nodespace node update <collection-id> --property description="Accounts we bill, one page per client"
+```
+
+A collection is identified by its name (case-insensitive): `node create --type collection` with a name that is taken fails with `Already exists`. Update the existing collection instead.
+
 **Success semantics:** once `node create` returns an ID, the node exists — confirm what was created to the user and stop. Don't immediately `node get` the same ID to verify; the create response is the confirmation.
 
 **If it has headings, it is a tree, not a node.** NodeSpace is one-node-per-block, with hierarchy as first-class edges — a document with sections (an ADR, a spec, a plan) decomposes into a root node plus one child per section, not one node whose `content` holds the whole document:

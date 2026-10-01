@@ -611,6 +611,23 @@ mod wire_contract {
         );
     }
 
+    /// The collection viewer's header reads `properties.description`: the
+    /// collection bucket's field, flattened for the wire like any other.
+    #[test]
+    fn collection_description_reaches_the_wire_from_its_bucket() {
+        let node = Node::new(
+            "collection".to_string(),
+            "Clients".to_string(),
+            serde_json::json!({ "collection": { "description": "Accounts we bill" } }),
+        );
+        let out = node_to_typed_value(node).unwrap();
+
+        assert_eq!(
+            out["properties"],
+            serde_json::json!({ "description": "Accounts we bill" })
+        );
+    }
+
     #[test]
     fn flat_properties_view_leaves_untyped_nodes_alone() {
         let node = Node::new(

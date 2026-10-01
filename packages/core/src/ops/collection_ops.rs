@@ -290,22 +290,28 @@ pub async fn get_collection_by_name(
     Ok(GetCollectionByNameOutput { collection })
 }
 
-pub async fn create_collection(
+/// The id a new collection named `name` takes, or `AlreadyExists` when a node
+/// already holds it.
+///
+/// The id is a pure hash of the normalized name (`deterministic_collection_id`),
+/// so a collection created here converges with the same-named collection
+/// created on another device or by import (`CollectionService::create_collection`
+/// derives the same id) instead of minting a random UUID that becomes a
+/// duplicate.
+///
+/// It is independent of lifecycle_status — any existing node at that id, active
+/// OR archived, already occupies the row the INSERT needs. So the check is by
+/// id, not by `CollectionService::get_collection_by_name` (which — correctly,
+/// for its own callers — only matches active collections): an archived
+/// collection would pass that check, then fail the INSERT with an opaque
+/// primary-key-constraint error, since `NodeService::create_node` has no
+/// get-or-create/upsert semantics for collections (unlike, e.g., the
+/// `database-settings` singleton).
+pub(crate) async fn new_collection_id(
     node_service: &Arc<NodeService>,
-    input: CreateCollectionInput,
-) -> Result<CreateCollectionOutput, OpsError> {
-    // The id this create will use is a pure hash of the normalized name
-    // (`deterministic_collection_id`), independent of lifecycle_status — so
-    // any existing node at that id, active OR archived, already occupies the
-    // row this INSERT needs. Check by id, not by
-    // `CollectionService::get_collection_by_name` (which — correctly, for its
-    // own callers — only matches `lifecycle_status = 'active'` collections):
-    // an archived collection would pass that check, then fail the INSERT
-    // below with an opaque primary-key-constraint error, since
-    // `NodeService::create_node` has no get-or-create/upsert semantics for
-    // the `collection` node type (unlike, e.g., the `database-settings`
-    // singleton).
-    let deterministic_id = deterministic_collection_id(&input.name);
+    name: &str,
+) -> Result<String, OpsError> {
+    let deterministic_id = deterministic_collection_id(name);
     if node_service
         .get_node(&deterministic_id)
         .await
@@ -313,21 +319,24 @@ pub async fn create_collection(
         .is_some()
     {
         return Err(OpsError::AlreadyExists {
-            id: input.name.clone(),
+            id: name.to_string(),
         });
     }
+    Ok(deterministic_id)
+}
+
+pub async fn create_collection(
+    node_service: &Arc<NodeService>,
+    input: CreateCollectionInput,
+) -> Result<CreateCollectionOutput, OpsError> {
+    let deterministic_id = new_collection_id(node_service, &input.name).await?;
 
     let properties = if input.description.is_empty() {
         serde_json::json!({})
     } else {
-        serde_json::json!({ "description": input.description })
+        serde_json::json!({ "collection": { "description": input.description } })
     };
 
-    // Deterministic id from the (globally-unique) name so a UI-created collection
-    // converges with the same-named collection created on another device or by import
-    // (`CollectionService::create_collection` derives the same id) instead of minting a
-    // random UUID that syncs up as a duplicate. The id-existence check above already
-    // rejects a local duplicate (including an archived one).
     let collection_id = node_service
         .create_node_with_parent(CreateNodeParams {
             id: Some(deterministic_id),
@@ -391,6 +400,7 @@ pub async fn rename_collection(
 mod tests {
     use super::*;
     use crate::db::SqliteStore;
+    use crate::ops::node_ops;
     use crate::services::NodeService;
     use std::sync::Arc;
     use tempfile::TempDir;
@@ -455,6 +465,204 @@ mod tests {
         assert_eq!(
             ui.collection_id,
             deterministic_collection_id("Architecture")
+        );
+    }
+
+    fn generic_create(name: &str, properties: serde_json::Value) -> node_ops::CreateNodeInput {
+        node_ops::CreateNodeInput {
+            id: None,
+            node_type: "collection".to_string(),
+            content: name.to_string(),
+            parent_id: None,
+            position: InsertPositionOwned::End,
+            properties,
+            collections: Vec::new(),
+            collection_ids: Vec::new(),
+            lifecycle_status: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn create_collection_stores_the_description_in_the_collection_bucket() {
+        let (svc, _tmp) = make_service().await;
+
+        let created = create_collection(
+            &svc,
+            CreateCollectionInput {
+                name: "Clients".to_string(),
+                description: "Accounts we bill".to_string(),
+            },
+        )
+        .await
+        .unwrap();
+
+        let node = svc.get_node(&created.collection_id).await.unwrap().unwrap();
+        assert_eq!(
+            node.properties,
+            serde_json::json!({ "collection": { "description": "Accounts we bill" } }),
+            "the description is in the collection bucket and nowhere else"
+        );
+    }
+
+    #[tokio::test]
+    async fn create_collection_without_a_description_stores_none() {
+        let (svc, _tmp) = make_service().await;
+
+        let created = create_collection(
+            &svc,
+            CreateCollectionInput {
+                name: "Clients".to_string(),
+                description: String::new(),
+            },
+        )
+        .await
+        .unwrap();
+
+        let node = svc.get_node(&created.collection_id).await.unwrap().unwrap();
+        assert_eq!(node.properties, serde_json::json!({ "collection": {} }));
+    }
+
+    /// The generic create is what the CLI's `node create --type collection`
+    /// and the agent's `create_node` call. It must make the same node the
+    /// collection op and an import make, not a second collection of that name
+    /// under a random id.
+    #[tokio::test]
+    async fn generic_create_of_a_collection_uses_the_deterministic_id() {
+        let (svc, _tmp) = make_service().await;
+
+        let created = node_ops::create_node(
+            &svc,
+            generic_create(
+                "Clients",
+                serde_json::json!({ "description": "Accounts we bill" }),
+            ),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(created.node_id, deterministic_collection_id("Clients"));
+        let node = svc.get_node(&created.node_id).await.unwrap().unwrap();
+        assert_eq!(
+            node.properties,
+            serde_json::json!({ "collection": { "description": "Accounts we bill" } })
+        );
+    }
+
+    #[tokio::test]
+    async fn generic_create_of_an_existing_collection_name_returns_already_exists() {
+        let (svc, _tmp) = make_service().await;
+
+        create_collection(
+            &svc,
+            CreateCollectionInput {
+                name: "Clients".to_string(),
+                description: String::new(),
+            },
+        )
+        .await
+        .unwrap();
+
+        // Names are compared case-insensitively, as the id is.
+        let err = node_ops::create_node(&svc, generic_create("clients", serde_json::json!({})))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, OpsError::AlreadyExists { ref id } if id == "clients"),
+            "expected AlreadyExists, got {:?}",
+            err
+        );
+    }
+
+    #[tokio::test]
+    async fn generic_update_sets_changes_and_clears_a_collection_description() {
+        let (svc, _tmp) = make_service().await;
+        let created =
+            node_ops::create_node(&svc, generic_create("Clients", serde_json::json!({})))
+                .await
+                .unwrap();
+
+        let update = |properties: serde_json::Value| node_ops::UpdateNodeInput {
+            node_id: created.node_id.clone(),
+            version: None,
+            node_type: None,
+            content: None,
+            properties: Some(properties),
+            add_to_collections: Vec::new(),
+            add_to_collection_ids: Vec::new(),
+            remove_from_collection_ids: Vec::new(),
+            lifecycle_status: None,
+        };
+        let stored = || async {
+            svc.get_node(&created.node_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .properties
+        };
+
+        node_ops::update_node(&svc, update(serde_json::json!({ "description": "Accounts" })))
+            .await
+            .unwrap();
+        assert_eq!(
+            stored().await,
+            serde_json::json!({ "collection": { "description": "Accounts" } })
+        );
+
+        node_ops::update_node(
+            &svc,
+            update(serde_json::json!({ "description": "Accounts we bill" })),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            stored().await,
+            serde_json::json!({ "collection": { "description": "Accounts we bill" } })
+        );
+
+        // The generic update clears a field by writing null, which reads as
+        // no description.
+        node_ops::update_node(&svc, update(serde_json::json!({ "description": null })))
+            .await
+            .unwrap();
+        assert_eq!(
+            stored().await,
+            serde_json::json!({ "collection": { "description": null } })
+        );
+        let listed = CollectionService::new(svc.store(), &svc)
+            .get_all_collection_descriptions()
+            .await
+            .unwrap();
+        assert_eq!(listed, [("Clients".to_string(), None)]);
+    }
+
+    #[tokio::test]
+    async fn collection_descriptions_are_listed_by_name() {
+        let (svc, _tmp) = make_service().await;
+        for (name, description) in [("Research", ""), ("Clients", "Accounts we bill")] {
+            create_collection(
+                &svc,
+                CreateCollectionInput {
+                    name: name.to_string(),
+                    description: description.to_string(),
+                },
+            )
+            .await
+            .unwrap();
+        }
+
+        let listed = CollectionService::new(svc.store(), &svc)
+            .get_all_collection_descriptions()
+            .await
+            .unwrap();
+        assert_eq!(
+            listed,
+            [
+                (
+                    "Clients".to_string(),
+                    Some("Accounts we bill".to_string())
+                ),
+                ("Research".to_string(), None),
+            ]
         );
     }
 
