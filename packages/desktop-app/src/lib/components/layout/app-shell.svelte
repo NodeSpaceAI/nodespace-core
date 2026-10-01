@@ -5,6 +5,7 @@
   import NavigationSidebar from './navigation-sidebar.svelte';
   import PaneManager from './pane-manager.svelte';
   import IncompatibleDatabaseBanner from './incompatible-database-banner.svelte';
+  import DatabaseRequiresExtension from '$lib/components/database-requires-extension.svelte';
   import StatusBar from '$lib/components/status-bar.svelte';
   import { statusBar } from '$lib/stores/status-bar.svelte';
   import ThemeProvider from '$lib/design/components/theme-provider.svelte';
@@ -63,6 +64,11 @@
   const daemonUnreachable = $derived($daemonStatus.unreachable);
   const daemonIncompatibleDatabase = $derived($daemonStatus.incompatibleDatabase);
 
+  // The refusal of the active database, while the daemon refuses to open it
+  // because it requires an extension this build does not support (ADR-083 §2).
+  // The refusal view replaces the workspace until another database is opened.
+  const activeRefusal = $derived(databaseStore.activeRefusal);
+
   // First-launch onboarding wizard.
   let showOnboarding = $state(false);
   // True when this is the backfill nudge (an already-onboarded
@@ -81,9 +87,12 @@
   // routed command, so issued any earlier it would be answered by the daemon
   // default rather than the restored database. A load discarded by a database
   // switch shows no notice — its count described no database in particular.
+  // A refused database has no journal to read, so the notice waits for the
+  // first database that opens.
   let conflictsNoticeStarted = false;
   $effect(() => {
     if (conflictsNoticeStarted || databaseStore.activeDatabaseId === null) return;
+    if (activeRefusal !== null) return;
     if (!(window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__) return;
     conflictsNoticeStarted = true;
     loadConflicts();
@@ -351,6 +360,13 @@
       // Poll for stale nodes count (embedding queue) every 5 seconds
       let lastStaleCount = 0;
       const updateStaleNodesCount = async () => {
+        // Every read of a refused database is refused; poll again once another
+        // opens, and drop the previous database's count meanwhile.
+        if (databaseStore.activeRefusal !== null) {
+          if (lastStaleCount > 0) statusBar.clearMessage();
+          lastStaleCount = 0;
+          return;
+        }
         try {
           const count = await invoke<number>('get_stale_root_count');
           if (count > 0) {
@@ -669,19 +685,28 @@
         role="application"
         aria-label="NodeSpace Application"
       >
-        <!-- Navigation Sidebar -->
-        <NavigationSidebar />
+        {#if activeRefusal !== null}
+          <!-- The active database requires an extension this build does not
+               support: its refusal replaces the sidebar and the workspace,
+               which have nothing to read. -->
+          <div class="database-refusal-wrapper">
+            <DatabaseRequiresExtension refusal={activeRefusal} />
+          </div>
+        {:else}
+          <!-- Navigation Sidebar -->
+          <NavigationSidebar />
 
-        <!-- Pane Manager - positioned to span both tabs and content grid areas -->
-        <div class="pane-manager-wrapper">
-          <!-- PaneManager now renders content directly via PaneContent components.
-               Mounted only once a database is selected: `databaseStore.load()`
-               points the routed clients at it before committing the selection,
-               so restored tabs never read from the daemon default first. -->
-          {#if databaseStore.activeDatabaseId !== null}
-            <PaneManager />
-          {/if}
-        </div>
+          <!-- Pane Manager - positioned to span both tabs and content grid areas -->
+          <div class="pane-manager-wrapper">
+            <!-- PaneManager now renders content directly via PaneContent components.
+                 Mounted only once a database is selected: `databaseStore.load()`
+                 points the routed clients at it before committing the selection,
+                 so restored tabs never read from the daemon default first. -->
+            {#if databaseStore.activeDatabaseId !== null}
+              <PaneManager />
+            {/if}
+          </div>
+        {/if}
 
         <!-- Generic overlay slot — extension-driven, floats top-right of the
              app-shell content. Core contributes nothing to it. -->
@@ -813,6 +838,14 @@
     min-height: 0;
     overflow: hidden; /* Ensure content doesn't overflow when status bar takes space */
     position: relative;
+  }
+
+  /* The refusal view spans the whole grid, in place of the sidebar and panes */
+  .database-refusal-wrapper {
+    grid-column: 1 / -1;
+    grid-row: 1 / -1;
+    min-height: 0;
+    overflow: hidden;
   }
 
   /* Responsive behavior for smaller screens */

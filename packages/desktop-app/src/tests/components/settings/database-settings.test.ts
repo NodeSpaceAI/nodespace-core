@@ -68,6 +68,31 @@ describe('DatabaseSettings', () => {
     expect(rowInfo!.querySelector('.mt-1\\.5')).toBeNull();
   });
 
+  it('marks a database the daemon refuses because it requires an extension', async () => {
+    const entry: DatabaseInfo = {
+      id: 'refused',
+      name: 'Refused',
+      path: '/tmp/refused.db',
+      isDefault: true,
+      status: 'requires_extension',
+      createdAt: '',
+      lastOpenedAt: null,
+      extensions: {}
+    };
+    vi.spyOn(databaseStore, 'load').mockResolvedValue();
+    const previous = databaseStore.databases;
+    databaseStore.databases = [entry];
+    try {
+      const { container, findByText } = render(DatabaseSettings);
+      await findByText('Refused');
+
+      expect(container.textContent).toContain("Needs an extension this app doesn't support");
+      expect(container.textContent).not.toContain('Unknown');
+    } finally {
+      databaseStore.databases = previous;
+    }
+  });
+
   it("renders nothing from a database's extension keys", async () => {
     const entry: DatabaseInfo = {
       id: 'work',

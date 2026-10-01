@@ -18,6 +18,7 @@ import {
 } from '$lib/stores/navigation.svelte';
 import { formatDateISO } from '$lib/utils/date-formatting';
 import { toError } from '$lib/types/errors';
+import { isRequiresExtension, type RequiresExtensionPayload } from '$lib/types/requires-extension';
 
 const log = createLogger('DatabaseStore');
 
@@ -43,6 +44,15 @@ export interface DatabaseInfo {
 interface DatabaseListing {
   databases: DatabaseInfo[];
   defaultDatabaseId: string;
+}
+
+/**
+ * A database the daemon refuses to open because it requires an extension this
+ * build does not support (ADR-083 §2), with the refusal the app shows for it.
+ */
+export interface DatabaseRefusal {
+  databaseId: string;
+  requiresExtension: RequiresExtensionPayload;
 }
 
 /**
@@ -116,6 +126,15 @@ class DatabaseStore {
   defaultDatabaseId = $state<string | null>(null);
   loading = $state(false);
   error = $state<string | null>(null);
+  /**
+   * The refusal of the selected database, while the daemon refuses to open it.
+   * Read before a selection commits when the listing marks the database
+   * `requires_extension`, otherwise right after it commits
+   * (`checkSelectedDatabase`), and again when a later listing marks it with
+   * no refusal recorded. Replaced by the next committed selection. Read it
+   * through `activeRefusal`.
+   */
+  refusal = $state<DatabaseRefusal | null>(null);
 
   /**
    * Monotonic token bumped on every `switchTo`. A switch awaits (flush, then the
@@ -138,6 +157,22 @@ class DatabaseStore {
   /** The database currently being viewed, or `null` if none is selected. */
   get activeDatabase(): DatabaseInfo | null {
     return this.databases.find((db) => db.id === this.activeDatabaseId) ?? null;
+  }
+
+  /**
+   * The refusal the app shows instead of the workspace, or `null` while the
+   * active database opens normally.
+   */
+  get activeRefusal(): RequiresExtensionPayload | null {
+    const refusal = this.refusal;
+    return refusal !== null && refusal.databaseId === this.activeDatabaseId
+      ? refusal.requiresExtension
+      : null;
+  }
+
+  /** Whether the latest listing marks `id` as a database the daemon refuses to open. */
+  private isListedRefused(id: string): boolean {
+    return this.databases.some((db) => db.id === id && db.status === 'requires_extension');
   }
 
   /**
@@ -206,20 +241,44 @@ class DatabaseStore {
         await invoke('set_active_database', { id: resolved });
         if (superseded()) return;
 
+        // A database the listing marks refused is read before the selection
+        // commits, for the refusal's text, so the workspace never mounts
+        // against it. Any other database commits at once and is checked
+        // after, so its open never delays the selection.
+        const refusal =
+          resolved !== null && this.isListedRefused(resolved) ? await this.readRefusal() : null;
+        if (superseded()) return;
+
         this.activeDatabaseId = resolved;
+        this.refusal =
+          resolved !== null && refusal !== null
+            ? { databaseId: resolved, requiresExtension: refusal }
+            : null;
         if (resolved !== null) this.pinWindowDatabase(resolved);
 
         if (resolved !== null && resolved !== this.defaultDatabaseId) {
           // The sidebar's boot-time loads went out before routing was set, so
-          // the daemon default answered them. Drop and reload them from the
-          // restored database. Workspace panes mount only once a database is
-          // selected, so restored tabs never read before this point.
-          this.evictAndReloadActiveDatabase();
+          // the daemon default answered them. Drop them, and reload from the
+          // restored database unless the daemon refuses it. Workspace panes
+          // mount only once a database is selected, so restored tabs never
+          // read before this point.
+          this.evictDatabaseCaches();
+          if (refusal === null) this.reloadDatabaseStores();
         }
 
         // The first resolution is a committed activation: tell extensions once
         // the restore above has finished evicting.
         if (resolved !== null) notifyDatabaseActivated(resolved);
+        if (resolved !== null && refusal === null) void this.checkSelectedDatabase(resolved);
+      } else if (
+        this.isListedRefused(this.activeDatabaseId) &&
+        this.activeRefusal === null &&
+        this.switchesInFlight === 0
+      ) {
+        // The listing marks the selected database refused, but no refusal was
+        // recorded (its read failed for another reason). With no switch in
+        // flight, routing still points at it.
+        await this.checkSelectedDatabase(this.activeDatabaseId);
       }
     } catch (err) {
       this.error = toError(err).message;
@@ -227,6 +286,54 @@ class DatabaseStore {
     } finally {
       this.loading = false;
     }
+  }
+
+  /**
+   * Read the routed database once, and return its refusal: the payload of the
+   * REQUIRES_EXTENSION error the daemon returns while it refuses to open a
+   * database that requires an extension this build does not support
+   * (ADR-083 §2). `null` when the read succeeds, or fails for any other reason.
+   *
+   * A routed command's error is the only place the refusal's message and
+   * download link reach the frontend: the listing marks a refused database but
+   * carries neither. Every routed command returns the same refusal, so this
+   * sends a cheap one, a conflict-journal read of at most one record. Callers
+   * send it while routing points at the database it should read.
+   */
+  private async readRefusal(): Promise<RequiresExtensionPayload | null> {
+    try {
+      await invoke('list_conflicts', { input: { status: null, kind: null, limit: 1 } });
+      return null;
+    } catch (err) {
+      if (isRequiresExtension(err)) return err.requiresExtension;
+      if (
+        typeof err === 'object' &&
+        err !== null &&
+        'code' in err &&
+        err.code === 'REQUIRES_EXTENSION'
+      ) {
+        // The daemon refuses the database, but with a payload this build
+        // cannot render, so the workspace shows and every read in it fails.
+        log.warn('Ignoring a REQUIRES_EXTENSION error with a malformed payload', err);
+      }
+      return null;
+    }
+  }
+
+  /**
+   * Read the selected database `id`, which routing points at, and record its
+   * refusal if the daemon refuses it. Sent right after a selection commits,
+   * for a database the listing did not mark (a listing older than the
+   * database), so a switch to a database that opens never waits for its
+   * open; and when a later listing marks the selected database with no
+   * refusal recorded. A result for a database no longer selected is dropped.
+   * Nothing is evicted: the refusal view replaces the workspace, and leaving
+   * it goes through `switchTo`, which evicts.
+   */
+  private async checkSelectedDatabase(id: string): Promise<void> {
+    const refusal = await this.readRefusal();
+    if (refusal === null || this.activeDatabaseId !== id) return;
+    this.refusal = { databaseId: id, requiresExtension: refusal };
   }
 
   /**
@@ -370,13 +477,21 @@ class DatabaseStore {
 
       await invoke('set_active_database', { id });
       if (seq !== this.switchSeq) return;
+      // As in `load()`: read a database the listing marks refused before
+      // committing, and check any other after.
+      const refusal = this.isListedRefused(id) ? await this.readRefusal() : null;
+      if (seq !== this.switchSeq) return;
       this.activeDatabaseId = id;
+      this.refusal = refusal === null ? null : { databaseId: id, requiresExtension: refusal };
       // Remember the selection so a webview reload / app restart restores it
       // instead of snapping back to the daemon's registry default.
       rememberActiveDatabaseId(id);
       this.pinWindowDatabase(id);
 
-      this.evictAndReloadActiveDatabase();
+      this.evictDatabaseCaches();
+      // A refused database has nothing to load: every read of it is refused,
+      // and the refusal view replaces the workspace that would show it.
+      if (refusal === null) this.reloadDatabaseStores();
 
       // Extensions clear their own per-database caches here: the previous
       // database's data is evicted, and the workspace reset below has not run.
@@ -398,6 +513,7 @@ class DatabaseStore {
         },
         true
       );
+      if (refusal === null) void this.checkSelectedDatabase(id);
     } catch (err) {
       this.error = toError(err).message;
       log.error('Failed to switch database', { id, error: err });
@@ -407,12 +523,17 @@ class DatabaseStore {
   }
 
   /**
-   * Evict every per-database cache and reload the database-scoped stores
-   * from the currently-routed database. Used by `switchTo`, and by `load()`
-   * when the restored database is not the daemon default (reads issued
-   * before routing was set were answered by the default).
+   * Evict the node caches and the per-database selection state, and
+   * invalidate every database-scoped load still in flight, so nothing from
+   * the previous database lands in a store afterwards. The sidebar stores'
+   * lists stay until `reloadDatabaseStores` replaces them. Used by
+   * `switchTo`, and by `load()` when the restored database is not the daemon
+   * default (reads issued before routing was set were answered by the
+   * default). A database the daemon refuses gets no reload: the refusal view
+   * replaces everything that shows those lists, and leaving it goes through
+   * `switchTo`, which reloads.
    */
-  private evictAndReloadActiveDatabase(): void {
+  private evictDatabaseCaches(): void {
     // Evict the previous database's cached data. `clearAll()` also bumps the
     // store's database epoch, which closes the in-flight-read window: a read
     // (e.g. loadChildren/getNode) dispatched against the previous database
@@ -423,17 +544,15 @@ class DatabaseStore {
     sharedNodeStore.clearAll();
     structureTree.clear();
 
-    // Reload the sidebar from the new database. The locally-created
-    // exemptions belong to the database being left — collection ids are
-    // derived from the name, so keeping them would wrongly un-hide a
-    // same-named empty collection in the new one.
+    // The locally-created exemptions belong to the database being left —
+    // collection ids are derived from the name, so keeping them would
+    // wrongly un-hide a same-named empty collection in the new one.
     collectionsData.forgetLocallyCreated();
     // The per-collection member-node cache is keyed by collection id, which
     // is name-derived and can collide across databases — without this, a
     // same-named collection in the new database would render the *previous*
     // database's cached member nodes as its own contents.
     collectionsData.invalidateAllMembers();
-    collectionsData.loadCollections();
     // Drop the sub-panel selection too: `collectionsState.selectedCollectionId`
     // / `subPanelOpen` are not evicted by anything above, so a panel left open
     // on a DB-A collection would otherwise keep rendering (now-stale) DB-A
@@ -441,21 +560,29 @@ class DatabaseStore {
     // share the id.
     collectionsState.reset();
     // As with collectionsData.forgetLocallyCreated() above: invalidate any
-    // in-flight loadSchemas before reloading, so its result can't land in
-    // a store that now represents a different database.
+    // in-flight loadSchemas, so its result can't land in a store that now
+    // represents a different database.
     schemasData.invalidateForDatabaseSwitch();
-    schemasData.loadSchemas();
     // Saved queries are per-database too.
     savedQueriesData.invalidateForDatabaseSwitch();
-    savedQueriesData.loadSavedQueries();
     // As with collectionsData.forgetLocallyCreated() above: invalidate any
-    // in-flight "+ New chat" create before reloading, so its result can't
-    // land in a store that now represents a different database.
+    // in-flight "+ New chat" create, so its result can't land in a store that
+    // now represents a different database.
     aiChatsData.invalidateForDatabaseSwitch();
-    aiChatsData.loadAiChats();
     // The conflict journal is per-database too (ADR-068): drop the previous
-    // database's records and any load still in flight against it, then reload.
+    // database's records and any load still in flight against it.
     conflictsStore.invalidateForDatabaseSwitch();
+  }
+
+  /**
+   * Reload the database-scoped stores from the currently-routed database,
+   * after `evictDatabaseCaches`.
+   */
+  private reloadDatabaseStores(): void {
+    collectionsData.loadCollections();
+    schemasData.loadSchemas();
+    savedQueriesData.loadSavedQueries();
+    aiChatsData.loadAiChats();
     void conflictsStore.load();
     // Re-sync the schema plugin registry (hasTitleTemplate/titleTemplate)
     // against the newly-active database's schemas — otherwise a custom type
