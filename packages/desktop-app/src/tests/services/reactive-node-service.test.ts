@@ -1515,9 +1515,9 @@ describe('ReactiveNodeService - Indent/Outdent Node', () => {
     expect(events.hierarchyChanged).toHaveBeenCalled();
   });
 
-  // C3b: container gate — synchronous UI guard
-  it('indentNode returns false when previous sibling cannot have children (non-container)', async () => {
-    // Replace 'parent' with a query node (non-container) so 'sibling' cannot indent under it
+  // The structural rules, asked before anything is sent
+  it('indentNode returns false when the previous sibling takes no children', async () => {
+    // Replace 'parent' with a query node, which takes no children, so 'sibling' cannot indent under it
     SharedNodeStore.resetInstance();
     _sharedNodeStore = SharedNodeStore.getInstance();
     service.destroy();
@@ -1551,7 +1551,7 @@ describe('ReactiveNodeService - Indent/Outdent Node', () => {
     expect(result).toBe(false);
   });
 
-  // C3b: rollback when daemon rejects with a container-violation error
+  // Rollback when the daemon refuses the move
   it('indentNode rolls back optimistic update when moveNode rejects with a non-ignorable error', async () => {
     const { backendAdapter } = await import('$lib/services/backend-adapter');
     const moveNodeMock = vi.mocked(backendAdapter.moveNode);
@@ -1559,7 +1559,7 @@ describe('ReactiveNodeService - Indent/Outdent Node', () => {
     // Capture depth before indent
     const depthBefore = service.getUIState('sibling')?.depth ?? 0;
 
-    // Simulate daemon rejecting with a validation error (e.g., NotAContainer → InvalidArgument)
+    // Simulate the daemon refusing the move
     moveNodeMock.mockRejectedValueOnce(
       new Error('Validation failed: Node cannot have children')
     );

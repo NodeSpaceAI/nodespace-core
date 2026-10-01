@@ -36,6 +36,7 @@ pub use time::{SystemTimeProvider, TimeProvider};
 
 // Export type-safe wrappers
 pub use embedding::{ChunkInfo, Embedding, EmbeddingConfig, EmbeddingSearchResult, NewEmbedding};
+pub use nodespace_types::{SchemaChildrenRule, SchemaParentRule};
 pub use nodespace_types::{SkillNode, DEFAULT_SKILL_MAX_ITERATIONS, SKILL_NODE_TYPE};
 pub use schema_node::SchemaNode;
 

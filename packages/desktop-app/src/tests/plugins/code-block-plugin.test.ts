@@ -122,18 +122,6 @@ describe('CodeBlockNode Plugin', () => {
     });
   });
 
-  describe('Configuration', () => {
-    it('should be configured as leaf node (no children)', () => {
-      const plugin = pluginRegistry.getPlugin('code-block');
-      expect(plugin?.config.canHaveChildren).toBe(false);
-    });
-
-    it('should be configured to allow being a child', () => {
-      const plugin = pluginRegistry.getPlugin('code-block');
-      expect(plugin?.config.canBeChild).toBe(true);
-    });
-  });
-
   describe('Auto-completion', () => {
     it('should have cleanContent set to false (keeps fence for auto-completion)', () => {
       const patterns = pluginRegistry.getAllPatternDetectionConfigs();

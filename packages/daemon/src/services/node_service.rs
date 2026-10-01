@@ -4426,7 +4426,7 @@ mod tests {
         // A collection refused before it was given an id has no node_id; the
         // payload carries an explicit null rather than dropping the field.
         let s = to_status(NodeServiceError::from(
-            TreeInvariantViolation::collection_not_root(None),
+            TreeInvariantViolation::must_be_root("collection", None),
         ));
         assert_eq!(s.code(), tonic::Code::FailedPrecondition);
         let header = s
@@ -4436,7 +4436,7 @@ mod tests {
             .to_bytes()
             .unwrap();
         let payload: serde_json::Value = serde_json::from_slice(&header).unwrap();
-        assert_eq!(payload["rule"], "collection_not_root");
+        assert_eq!(payload["rule"], "must_be_root");
         assert!(payload["node_id"].is_null());
         assert_eq!(payload["related_ids"], serde_json::json!([]));
     }
@@ -5163,12 +5163,6 @@ mod tests {
     fn error_mapping_initialization_error_returns_internal() {
         let s = to_status(NodeServiceError::initialization_error("db unavailable"));
         assert_eq!(s.code(), tonic::Code::Internal);
-    }
-
-    #[test]
-    fn error_mapping_not_a_container_returns_invalid_argument() {
-        let s = to_status(NodeServiceError::not_a_container("parent-id", "query"));
-        assert_eq!(s.code(), tonic::Code::InvalidArgument);
     }
 
     // -----------------------------------------------------------------------

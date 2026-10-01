@@ -54,22 +54,6 @@ struct PendingRelationshipDispatch {
 }
 
 impl NodeService {
-    /// Refuse a `has_child` edge onto a node whose type is always a root: a
-    /// collection (ADR-059 §2), a schema, or a subtype of either. Shared by the
-    /// relationship-create path and its `_in_tx` twin so both return the typed
-    /// refusal; the root-only triggers back it up on every write path.
-    fn refuse_parent_for_root_only_type(
-        target: &Node,
-        root_only: Option<crate::models::CoreNodeType>,
-    ) -> Result<(), NodeServiceError> {
-        match root_only {
-            Some(root_type) => {
-                Err(TreeInvariantViolation::not_root(root_type, Some(&target.id)).into())
-            }
-            None => Ok(()),
-        }
-    }
-
     /// Refuse any edge whose (stored) target is an `ai-chat` node, or a node
     /// of a type extending `ai-chat`.
     ///
@@ -897,12 +881,12 @@ impl NodeService {
                 .get_node(target_id)
                 .await?
                 .ok_or_else(|| NodeServiceError::node_not_found(target_id))?;
-            let root_only = self
-                .store
-                .root_only_type_of(&target.node_type)
+            // Both structural rules (ADR-089), as a typed refusal; the
+            // triggers back it up on every write path.
+            self.store
+                .assert_has_child_edges_allowed(&[(source_id, target.id.as_str())])
                 .await
                 .map_err(NodeServiceError::from_store)?;
-            Self::refuse_parent_for_root_only_type(&target, root_only)?;
         }
 
         // The outline is single-parent, and every read path assumes it:
@@ -1262,13 +1246,12 @@ impl NodeService {
                 let target = Self::get_node_in_tx_or_virtual_date(tx, target_id)
                     .await?
                     .ok_or_else(|| NodeServiceError::node_not_found(target_id))?;
-                let root_only = crate::db::SqliteStore::root_only_type_of_in_tx(
+                crate::db::SqliteStore::assert_has_child_edges_allowed_in_tx(
                     tx.store_tx(),
-                    &target.node_type,
+                    &[(source_id, target.id.as_str())],
                 )
                 .await
                 .map_err(NodeServiceError::from_store)?;
-                Self::refuse_parent_for_root_only_type(&target, root_only)?;
                 if let Some(existing) =
                     crate::db::SqliteStore::get_parent_id_in_tx(tx.store_tx(), target_id)
                         .await
@@ -1992,9 +1975,7 @@ impl NodeService {
             relationship_name,
         )
         .await
-        .map_err(|e| {
-            NodeServiceError::query_failed(format!("Failed to delete relationship: {}", e))
-        })?;
+        .map_err(|e| NodeServiceError::from_store(e.context("Failed to delete relationship")))?;
         if relationship_name == "has_child" && rel_id.is_some() {
             self.refresh_for_rootness_in_tx(tx, target_id, true, Some(source_id))
                 .await?;
@@ -2151,7 +2132,7 @@ impl NodeService {
             .delete_generic_relationship(source_id, target_id, relationship_name)
             .await
             .map_err(|e| {
-                NodeServiceError::query_failed(format!("Failed to delete relationship: {}", e))
+                NodeServiceError::from_store(e.context("Failed to delete relationship"))
             })?;
         if relationship_name == "has_child" && rel_id.is_some() {
             self.refresh_for_rootness(target_id, true, Some(source_id))

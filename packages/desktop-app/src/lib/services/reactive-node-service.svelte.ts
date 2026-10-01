@@ -17,12 +17,11 @@
  * - Real-time synchronization across multiple viewers
  */
 
-import { isA } from '$lib/types/core-node-types';
+import { canBeRoot, canHaveChild, isA } from '$lib/types/core-node-types';
 import { v4 as uuidv4 } from 'uuid';
 import { parseHeaderLevel } from './markdown-utils';
 import { SharedNodeStore } from './shared-node-store.svelte';
 import { focusManager } from './focus-manager.svelte';
-import { pluginRegistry } from '$lib/plugins/plugin-registry';
 import { createLogger } from '$lib/utils/logger';
 import type { Node, NodeUIState } from '$lib/types';
 import { createDefaultUIState } from '$lib/types';
@@ -474,6 +473,21 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     scheduleContentProcessing(nodeId, content);
   }
 
+  /**
+   * Whether the structural rules allow `nodeId` to become a `nodeType` where it sits: under the
+   * parent it has, and over the children it has. The database refuses a type change that breaks
+   * them, so the editor asks first and leaves the node as it is.
+   */
+  function canTakeType(nodeId: string, nodeType: string): boolean {
+    const parentId = structureTree.getParent(nodeId);
+    const parent = parentId ? sharedNodeStore.getNode(parentId) : undefined;
+    if (parent && !canHaveChild(parent.nodeType, nodeType)) return false;
+    if (!parentId && !canBeRoot(nodeType)) return false;
+    return sharedNodeStore
+      .getNodesForParent(nodeId)
+      .every((child) => canHaveChild(nodeType, child.nodeType));
+  }
+
   function updateNodeType(nodeId: string, nodeType: string): void {
     const node = sharedNodeStore.getNode(nodeId);
     if (!node) return;
@@ -703,9 +717,19 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
 
     // Find siblings that come after this node (they will become children)
     // Backend returns children already sorted via fractional ordering
-    const siblings = sharedNodeStore.getNodesForParent(oldParentId).map((n) => n.id);
-    const nodeIndex = siblings.indexOf(nodeId);
-    const siblingsBelow = nodeIndex >= 0 ? siblings.slice(nodeIndex + 1) : [];
+    const siblingNodes = sharedNodeStore.getNodesForParent(oldParentId);
+    const nodeIndex = siblingNodes.findIndex((n) => n.id === nodeId);
+    const nodesBelow = nodeIndex >= 0 ? siblingNodes.slice(nodeIndex + 1) : [];
+    const siblingsBelow = nodesBelow.map((n) => n.id);
+
+    // The structural rules must allow where the outdent leaves every node: this one under its
+    // new parent (or at the root), and each sibling below it as its child.
+    const newParent = newParentId ? sharedNodeStore.getNode(newParentId) : undefined;
+    if (newParent && !canHaveChild(newParent.nodeType, node.nodeType)) return null;
+    if (newParentId === null && !canBeRoot(node.nodeType)) return null;
+    if (!nodesBelow.every((sibling) => canHaveChild(node.nodeType, sibling.nodeType))) {
+      return null;
+    }
 
     const newDepth = newParentId ? (_uiState[newParentId]?.depth || 0) + 1 : 0;
 
@@ -915,9 +939,13 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
 
     const prevSiblingId = siblings[nodeIndex - 1];
     const prevSibling = sharedNodeStore.getNode(prevSiblingId);
-    if (!prevSibling || !pluginRegistry.canHaveChildren(prevSibling.nodeType)) {
-      return false; // Can't indent into node that can't have children
+    if (!prevSibling || !canHaveChild(prevSibling.nodeType, node.nodeType)) {
+      return false; // The structural rules don't allow this node under the previous sibling
     }
+    // An editor choice, not a structural rule: a chat may hold children, but the outline does
+    // not offer indenting a node under one while how the chat viewer shows non-message
+    // children is undecided.
+    if (isA(prevSibling.nodeType, 'ai-chat')) return false;
 
     const targetParentId = prevSiblingId;
     const targetParentUIState = _uiState[targetParentId];
@@ -1575,6 +1603,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     createPlaceholderNode,
     updateNodeContent,
     updateNodeType,
+    canTakeType,
     updateNodeMentions,
     updateNodeProperties,
     combineNodes,

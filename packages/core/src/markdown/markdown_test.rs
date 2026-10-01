@@ -1288,6 +1288,64 @@ Text under section 1
         // assert!(exported.contains("- Item 2"));
     }
 
+    /// Content indented below a numbered item imports: the type takes no
+    /// children, so the deeper lines follow the item as its siblings, and the
+    /// stored outline reads in the document's order.
+    #[tokio::test]
+    async fn test_content_nested_under_a_leaf_follows_it_in_reading_order() {
+        let (node_service, _temp_dir) = setup_test_service().await;
+
+        let markdown = "- Install\n  1. Download deps\n     - bun\n     - cargo\n  2. Build\n     continuation line\n- Run\n  - quickly";
+
+        let result = handle_create_nodes_from_markdown(
+            &node_service,
+            json!({
+                "markdown_content": markdown,
+                "sync_import": true,
+                "title": "# Setup"
+            }),
+        )
+        .await
+        .expect("a document with content under a leaf must import");
+        assert_eq!(result["success"], true);
+        let root_id = result["nodes"][0]["id"].as_str().unwrap().to_string();
+
+        // The stored outline, depth-first: (depth, type, content).
+        let mut outline: Vec<(usize, String, String)> = Vec::new();
+        let mut stack = vec![(root_id, 0usize)];
+        while let Some((id, depth)) = stack.pop() {
+            let node = node_service.get_node(&id).await.unwrap().unwrap();
+            let children = node_service.get_children(&id).await.unwrap();
+            if crate::models::CoreNodeType::from_id(&node.node_type)
+                .is_some_and(|core| core.structure().children == crate::models::ChildrenRule::None)
+            {
+                assert!(children.is_empty(), "{} has children", node.content);
+            }
+            outline.push((depth, node.node_type, node.content));
+            stack.extend(children.into_iter().rev().map(|c| (c.id, depth + 1)));
+        }
+        let read: Vec<(usize, &str)> = outline
+            .iter()
+            .map(|(depth, _, content)| (*depth, content.as_str()))
+            .collect();
+
+        assert_eq!(
+            read,
+            vec![
+                (0, "# Setup"),
+                (1, "Install"),
+                (1, "1. Download deps"),
+                (1, "bun"),
+                (1, "cargo"),
+                (1, "1. Build"),
+                (1, "continuation line"),
+                (1, "Run"),
+                (2, "quickly"),
+            ],
+            "each line follows the leaf it was indented under"
+        );
+    }
+
     #[tokio::test]
     async fn test_bullet_with_link() {
         let (node_service, _temp_dir) = setup_test_service().await;

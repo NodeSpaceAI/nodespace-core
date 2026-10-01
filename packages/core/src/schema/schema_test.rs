@@ -1523,17 +1523,6 @@ async fn test_update_schema_replaces_description_subtree() {
 }
 
 #[tokio::test]
-async fn test_schema_behavior_can_have_children_is_true() {
-    use crate::behaviors::{NodeBehavior, SchemaNodeBehavior};
-
-    let behavior = SchemaNodeBehavior;
-    assert!(
-        behavior.can_have_children(),
-        "SchemaNodeBehavior should allow children (description subtree)"
-    );
-}
-
-#[tokio::test]
 async fn test_schema_get_aggregated_content_returns_description_text() {
     use crate::behaviors::{NodeBehavior, SchemaNodeBehavior};
 
@@ -6843,7 +6832,7 @@ async fn delete_by_id(
 /// reaches the schemas through the `has_child` subtree rather than as the target.
 ///
 /// A schema is always a root — every write path refuses to give one a parent —
-/// so this can only be built by dropping the `schema_is_root_edge` trigger and
+/// so this can only be built by dropping the `structure_has_child_insert` trigger and
 /// inserting the edge raw. It stands in for a database where the invariant was
 /// somehow broken, which is what `delete_subtree_atomic`'s defensive scan over
 /// the whole subtree is for.
@@ -6863,9 +6852,9 @@ async fn nest_schemas_under_text(svc: &Arc<NodeService>, schema_ids: &[&str]) ->
         .await
         .expect("holder creation failed");
     let db = svc.store().write().await;
-    db.execute("DROP TRIGGER schema_is_root_edge", ())
+    db.execute("DROP TRIGGER structure_has_child_insert", ())
         .await
-        .expect("dropping the schema-is-root trigger failed");
+        .expect("dropping the structural-rule edge trigger failed");
     for (i, id) in schema_ids.iter().enumerate() {
         db.execute(
             "INSERT INTO relationship (id, in_node, out_node, relationship_type, properties, version, created_at, modified_at) \

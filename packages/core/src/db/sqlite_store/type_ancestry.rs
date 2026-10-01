@@ -119,25 +119,6 @@ impl SqliteStore {
             .await?
             .is_some_and(|core| core.is_a(base)))
     }
-
-    /// The root-only core type `node_type` is or extends, if any: a node of
-    /// such a type may never gain a `has_child` parent (ADR-089).
-    pub async fn root_only_type_of(&self, node_type: &str) -> Result<Option<CoreNodeType>> {
-        Ok(self
-            .core_type_of(node_type)
-            .await?
-            .and_then(root_only_ancestor))
-    }
-
-    /// `_in_tx` twin of [`Self::root_only_type_of`].
-    pub(crate) async fn root_only_type_of_in_tx(
-        tx: &Tx<'_>,
-        node_type: &str,
-    ) -> Result<Option<CoreNodeType>> {
-        Ok(Self::core_type_of_in_tx(tx, node_type)
-            .await?
-            .and_then(root_only_ancestor))
-    }
 }
 
 impl SqliteStore {
@@ -165,30 +146,6 @@ impl SqliteStore {
         Ok(rows.next().await?.is_some())
     }
 
-    /// Whether any node of `node_type`, or of a type extending it, has a
-    /// `has_child` parent: the check a type owes before it takes on a
-    /// root-only base (ADR-089, tightening a rule).
-    pub async fn has_parented_nodes_of_type(&self, node_type: &str) -> Result<bool> {
-        let mut rows = self
-            .read()
-            .await?
-            .query(
-                &format!(
-                    "SELECT 1 FROM node n \
-                     WHERE (n.node_type = ?1 \
-                            OR n.node_type IN (SELECT node_type FROM {TYPE_ANCESTRY_TABLE} \
-                                               WHERE ancestor = ?1)) \
-                       AND EXISTS (SELECT 1 FROM relationship r \
-                                   WHERE r.out_node = n.id AND r.relationship_type = 'has_child') \
-                     LIMIT 1"
-                ),
-                libsql::params![node_type],
-            )
-            .await
-            .context("Failed to check for parented nodes of a type")?;
-        Ok(rows.next().await?.is_some())
-    }
-
     /// Whether any node has exactly `node_type` as its type. Subtypes do not
     /// count: this asks about the type itself, for the check that an abstract
     /// type has no instances of its own.
@@ -204,14 +161,4 @@ impl SqliteStore {
             .context("Failed to check for nodes of a type")?;
         Ok(rows.next().await?.is_some())
     }
-}
-
-/// The root-only type in `core`'s chain that declares the rule, nearest first.
-pub(crate) fn root_only_ancestor(core: CoreNodeType) -> Option<CoreNodeType> {
-    core.chain().into_iter().find(|t| {
-        matches!(
-            t.info().structure.parent,
-            crate::models::ParentRule::MustBeRoot
-        )
-    })
 }

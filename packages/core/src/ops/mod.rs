@@ -125,13 +125,6 @@ impl From<NodeServiceError> for OpsError {
                 count,
                 max,
             },
-            NodeServiceError::NotAContainer {
-                parent_id,
-                node_type,
-            } => OpsError::ValidationFailed(format!(
-                "Node '{}' (type '{}') cannot have children",
-                parent_id, node_type
-            )),
             err @ NodeServiceError::UnknownNodeType { .. } => {
                 OpsError::InvalidParams(err.to_string())
             }

@@ -56,8 +56,20 @@ impl NodeService {
     /// come into being by being created as one. Retyping *out of* ai-chat, or
     /// between two chat types, is allowed: the node gains no inbound
     /// references, so the invariant still holds.
+    ///
+    /// **Into a type whose structural rules the node's place breaks**
+    /// (ADR-089): the new type's `parent` and `children` rules are checked
+    /// against the parent and children the node has, and theirs against the
+    /// new type.
+    ///
+    /// `tx` is the transaction the update runs in, when it runs in one: the
+    /// structural check then reads the node's parent and children on it, so
+    /// it sees a move or a create made earlier in the same transaction. That
+    /// matters most for a type that needs a parent, which no database rule
+    /// backs up.
     pub(crate) async fn ensure_retype_allowed(
         &self,
+        tx: Option<&NodeServiceTx<'_>>,
         existing: &Node,
         updated: &Node,
     ) -> Result<(), NodeServiceError> {
@@ -76,6 +88,48 @@ impl NodeService {
                 "Node '{}' cannot be converted to an ai-chat node; create a new ai-chat instead",
                 existing.id
             )));
+        }
+        match tx {
+            Some(tx) => {
+                crate::db::SqliteStore::assert_retype_keeps_structure_in_tx(
+                    tx.store_tx(),
+                    &existing.id,
+                    &updated.node_type,
+                )
+                .await
+            }
+            None => {
+                self.store
+                    .assert_retype_keeps_structure(&existing.id, &updated.node_type)
+                    .await
+            }
+        }
+        .map_err(NodeServiceError::from_store)
+    }
+
+    /// Refuse a generic update that changes a schema's structural rules
+    /// (ADR-089).
+    ///
+    /// `update_schema` is the one path that changes them: it checks that the
+    /// types a rule names exist, that the rule only tightens the base type's,
+    /// and that no existing node breaks it. The database copies whatever a
+    /// schema node declares into the rules it enforces, so a generic update
+    /// must not be a way around those checks.
+    pub(crate) fn ensure_schema_structure_unchanged(
+        existing: &Node,
+        updated: &Node,
+    ) -> Result<(), NodeServiceError> {
+        if !crate::models::CoreNodeType::Schema.is_exactly(&updated.node_type) {
+            return Ok(());
+        }
+        for rule in ["children", "parent"] {
+            if existing.properties.get(rule) != updated.properties.get(rule) {
+                return Err(NodeServiceError::invalid_update(format!(
+                    "The \"{rule}\" rule of schema '{}' can only be changed with update_schema, \
+                     which checks it against the type's base and its existing nodes.",
+                    existing.id
+                )));
+            }
         }
         Ok(())
     }
@@ -497,6 +551,18 @@ impl NodeService {
         }
 
         self.ensure_creatable(&node).await?;
+        // A type that needs a parent is refused here, before the row is
+        // written: the row lands before its parent edge, so no database rule
+        // can see that the edge never came (ADR-089).
+        if is_root {
+            crate::db::SqliteStore::assert_may_be_root_in_tx(
+                tx.store_tx(),
+                &node.node_type,
+                Some(node.id.as_str()).filter(|id| !id.is_empty()),
+            )
+            .await
+            .map_err(NodeServiceError::from_store)?;
+        }
         self.validate_templated_content(&node).await?;
 
         if !crate::models::CoreNodeType::Schema.is_exactly(&node.node_type) {
@@ -709,24 +775,18 @@ impl NodeService {
         self.ensure_known_node_type(&params.node_type).await?;
 
         // Refuse a parent for a type that is always a root — before step 2,
-        // so a rejected call leaves no auto-created date container behind.
+        // so a rejected call leaves no auto-created date container behind. A
+        // schema not yet given an id is named by the id it would get.
         if params.parent_id.is_some() {
-            let root_only = self
-                .store
-                .root_only_type_of(&params.node_type)
+            let node_id = params.id.clone().or_else(|| {
+                crate::models::CoreNodeType::Schema
+                    .is_exactly(&params.node_type)
+                    .then(|| normalize_schema_id(&params.content))
+            });
+            self.store
+                .assert_may_have_parent(&params.node_type, node_id.as_deref())
                 .await
                 .map_err(NodeServiceError::from_store)?;
-            if let Some(root_type) = root_only {
-                // A schema not yet given an id is named by the id it would get.
-                let node_id = match (&params.id, root_type) {
-                    (Some(id), _) => Some(id.clone()),
-                    (None, crate::models::CoreNodeType::Schema) => {
-                        Some(normalize_schema_id(&params.content))
-                    }
-                    (None, _) => None,
-                };
-                return Err(TreeInvariantViolation::not_root(root_type, node_id.as_deref()).into());
-            }
         }
 
         // Step 2: Auto-create date container if parent is a date ID
@@ -734,23 +794,23 @@ impl NodeService {
             self.ensure_date_exists(parent_id).await?;
         }
 
-        // Step 3: Validate parent exists and is a container (if provided)
+        // Step 3: The parent exists, and both structural rules allow the new
+        // node under it (ADR-089).
         if let Some(ref parent_id) = params.parent_id {
             let parent_node = self
                 .get_node(parent_id)
                 .await?
                 .ok_or_else(|| NodeServiceError::invalid_parent(parent_id.as_str()))?;
-
-            if !self
-                .behavior_for(&parent_node.node_type)
-                .await?
-                .can_have_children()
-            {
-                return Err(NodeServiceError::not_a_container(
-                    parent_id.as_str(),
-                    &parent_node.node_type,
-                ));
-            }
+            self.store
+                .assert_has_child_allowed(
+                    crate::db::Placed::existing(parent_id, &parent_node.node_type),
+                    crate::db::Placed {
+                        id: params.id.as_deref(),
+                        node_type: &params.node_type,
+                    },
+                )
+                .await
+                .map_err(NodeServiceError::from_store)?;
         }
 
         // Step 4: Validate sibling (if After) - treat as best-effort hint.
@@ -1133,7 +1193,9 @@ impl NodeService {
 
         // Step 1: Core behavior validation (PROTECTED)
         Self::ensure_schema_core_status_unchanged(&existing, &updated)?;
-        self.ensure_retype_allowed(&existing, &updated).await?;
+        Self::ensure_schema_structure_unchanged(&existing, &updated)?;
+        self.ensure_retype_allowed(None, &existing, &updated)
+            .await?;
         self.validate_behaviors(&updated).await?;
 
         // Step 1.5: Apply schema defaults and validate (if node type changed)
@@ -1227,6 +1289,8 @@ impl NodeService {
         let mut node_type_changed = false;
         let mut content_changed = false;
         let mut properties_changed = false;
+        // Optional schema-definition keys this write clears.
+        let mut cleared_keys: Vec<&'static str> = Vec::new();
 
         if let Some(node_type) = update.node_type {
             node_type_changed = updated.node_type != node_type;
@@ -1243,7 +1307,7 @@ impl NodeService {
         if let Some(properties) = update.properties {
             properties_changed = true;
             if crate::models::CoreNodeType::Schema.is_exactly(&updated.node_type) {
-                Self::deep_merge_namespaced_properties(&mut updated.properties, properties);
+                cleared_keys = Self::merge_schema_definition(&mut updated.properties, properties);
             } else {
                 let normalized_properties =
                     Self::normalize_flat_properties_to_namespace(&updated.node_type, &properties);
@@ -1255,7 +1319,8 @@ impl NodeService {
         }
 
         Self::ensure_schema_core_status_unchanged(&existing, &updated)?;
-        self.ensure_retype_allowed(&existing, &updated).await?;
+        self.ensure_retype_allowed(Some(tx), &existing, &updated)
+            .await?;
         self.validate_behaviors(&updated).await?;
 
         if !crate::models::CoreNodeType::Schema.is_exactly(&updated.node_type) {
@@ -1285,6 +1350,11 @@ impl NodeService {
         };
 
         crate::db::SqliteStore::update_node_in_tx(tx.store_tx(), id, node_update)
+            .await
+            .map_err(NodeServiceError::from_store)?;
+        // The store's update only adds and replaces keys, so the ones this
+        // write clears are removed from the row here.
+        crate::db::SqliteStore::remove_property_keys_in_tx(tx.store_tx(), id, &cleared_keys)
             .await
             .map_err(NodeServiceError::from_store)?;
 
@@ -1380,7 +1450,9 @@ impl NodeService {
         }
 
         Self::ensure_schema_core_status_unchanged(&existing, &updated)?;
-        self.ensure_retype_allowed(&existing, &updated).await?;
+        Self::ensure_schema_structure_unchanged(&existing, &updated)?;
+        self.ensure_retype_allowed(Some(tx), &existing, &updated)
+            .await?;
         self.validate_behaviors(&updated).await?;
 
         if !crate::models::CoreNodeType::Schema.is_exactly(&updated.node_type) {
@@ -1659,7 +1731,9 @@ impl NodeService {
 
         // Step 1: Core behavior validation (PROTECTED)
         Self::ensure_schema_core_status_unchanged(&existing, &updated)?;
-        self.ensure_retype_allowed(&existing, &updated).await?;
+        Self::ensure_schema_structure_unchanged(&existing, &updated)?;
+        self.ensure_retype_allowed(Some(tx), &existing, &updated)
+            .await?;
         self.validate_behaviors(&updated).await?;
 
         // Step 2: Schema validation (USER-EXTENSIBLE)
@@ -2499,6 +2573,44 @@ impl NodeService {
         }
 
         Ok(())
+    }
+
+    /// The schema properties that are stored only when they say something:
+    /// `abstract` when true, a structural rule when it is not `any`.
+    pub(crate) const OPTIONAL_SCHEMA_DEFINITION_KEYS: [&'static str; 3] =
+        ["abstract", "children", "parent"];
+
+    /// Merge a schema-definition write into a schema node's stored
+    /// properties.
+    ///
+    /// The definition writer owns [`Self::OPTIONAL_SCHEMA_DEFINITION_KEYS`]:
+    /// a value replaces the stored one whole, and `null` removes the key.
+    /// That is how a rule goes back to `any` and a type stops being
+    /// abstract; a plain merge could only ever add them, and would leave a
+    /// replaced rule carrying its old `types`. Every other key merges as
+    /// usual. Returns the keys the write removed from the stored ones.
+    pub(crate) fn merge_schema_definition(
+        existing: &mut serde_json::Value,
+        mut new: serde_json::Value,
+    ) -> Vec<&'static str> {
+        let mut cleared = Vec::new();
+        if let (Some(stored), Some(written)) = (existing.as_object_mut(), new.as_object_mut()) {
+            for key in Self::OPTIONAL_SCHEMA_DEFINITION_KEYS {
+                match written.remove(key) {
+                    Some(serde_json::Value::Null) => {
+                        if stored.remove(key).is_some() {
+                            cleared.push(key);
+                        }
+                    }
+                    Some(value) => {
+                        stored.insert(key.to_string(), value);
+                    }
+                    None => {}
+                }
+            }
+        }
+        Self::deep_merge_namespaced_properties(existing, new);
+        cleared
     }
 
     /// Deep-merge namespaced properties

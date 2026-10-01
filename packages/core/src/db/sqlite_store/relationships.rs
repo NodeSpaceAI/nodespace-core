@@ -247,8 +247,8 @@ fn root_only_membership_query(chunk: &[&str]) -> (String, Vec<libsql::Value>) {
 /// The root-only membership rule (ADR-059 §2) for one row of
 /// [`root_only_membership_query`], shared by both guard twins: a collection
 /// member may also have a `has_child` parent only when it is a person. There
-/// is no collection exemption — a collection is always a root (enforced by
-/// the root-only triggers), so it can never reach this with a parent.
+/// is no collection exemption — a collection is always a root (its
+/// `must_be_root` structural rule), so it can never reach this with a parent.
 fn check_root_only_member(
     id: String,
     node_type: String,
@@ -508,7 +508,8 @@ impl SqliteStore {
         let db = self.write().await;
 
         self.validate_no_cycle(parent_id, child_id).await?;
-        self.assert_may_gain_parent(&[child_id]).await?;
+        self.assert_may_gain_parent(&[(parent_id, child_id)])
+            .await?;
 
         let new_order = self
             .get_next_order_for_relationship(parent_id, "has_child", false)
@@ -528,8 +529,8 @@ impl SqliteStore {
     /// ADR-059 §2 — a content node may hold a `member_of` edge only when it is a
     /// **root** node (no `has_child` parent). Person nodes are exempt: a person's
     /// membership says who belongs to a collection, not where content is filed. A
-    /// collection needs no exemption: it is always a root (the `collection_is_root_*`
-    /// triggers). Enforced at the store's three `member_of` INSERT sites
+    /// collection needs no exemption: it is always a root (its `must_be_root`
+    /// structural rule). Enforced at the store's three `member_of` INSERT sites
     /// (`add_to_collection`, `bulk_add_to_collections`, and the generic
     /// `create_generic_relationship` when its `rel_type` is `member_of`), so every
     /// write path is covered without a per-path check: CLI, graph import, play
@@ -743,7 +744,7 @@ impl SqliteStore {
             "member_of" => Self::assert_root_only_membership_in_tx(tx, &[source_id]).await?,
             "has_child" => {
                 Self::validate_no_cycle_in_tx(tx, source_id, target_id).await?;
-                Self::assert_may_gain_parent_in_tx(tx, &[target_id]).await?;
+                Self::assert_may_gain_parent_in_tx(tx, &[(source_id, target_id)]).await?;
             }
             _ => {}
         }
@@ -786,6 +787,11 @@ impl SqliteStore {
         target_id: &str,
         rel_type: &str,
     ) -> Result<()> {
+        // Removing a parent edge leaves the child a root, which its type may
+        // not allow (ADR-089). No trigger sees a missing edge.
+        if rel_type == "has_child" {
+            Self::assert_node_may_be_root_in_tx(tx, target_id).await?;
+        }
         tx.conn()
             .execute(
                 "DELETE FROM relationship WHERE in_node = ?1 AND out_node = ?2 AND relationship_type = ?3",
@@ -1360,8 +1366,11 @@ impl SqliteStore {
         // re-enter it), so no other writer can invalidate it before the
         // INSERTs. See `assert_may_gain_parent`.
         let db = self.write().await;
-        let child_ids: Vec<&str> = edges.iter().map(|(_, child, _)| child.as_str()).collect();
-        self.assert_may_gain_parent(&child_ids).await?;
+        let pairs: Vec<(&str, &str)> = edges
+            .iter()
+            .map(|(parent, child, _)| (parent.as_str(), child.as_str()))
+            .collect();
+        self.assert_may_gain_parent(&pairs).await?;
 
         let now = Utc::now().to_rfc3339();
         let tx = db
@@ -1845,7 +1854,8 @@ impl SqliteStore {
             "member_of" => self.assert_root_only_membership(&[source_id]).await?,
             "has_child" => {
                 self.validate_no_cycle(source_id, target_id).await?;
-                self.assert_may_gain_parent(&[target_id]).await?;
+                self.assert_may_gain_parent(&[(source_id, target_id)])
+                    .await?;
             }
             _ => {}
         }
@@ -1923,7 +1933,13 @@ impl SqliteStore {
         target_id: &str,
         rel_type: &str,
     ) -> Result<()> {
-        self.write().await.execute(
+        // See the `_in_tx` twin. Read under the write guard, so no other
+        // writer changes the node's type before the delete.
+        let db = self.write().await;
+        if rel_type == "has_child" {
+            self.assert_node_may_be_root(target_id).await?;
+        }
+        db.execute(
             "DELETE FROM relationship WHERE in_node = ?1 AND out_node = ?2 AND relationship_type = ?3",
             libsql::params![source_id.to_string(), target_id.to_string(), rel_type.to_string()],
         ).await.context("Failed to delete relationship")?;

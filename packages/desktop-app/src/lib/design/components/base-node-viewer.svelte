@@ -7,7 +7,7 @@
 -->
 
 <script lang="ts">
-import { isA } from '$lib/types/core-node-types';
+import { canHaveChild, isA } from '$lib/types/core-node-types';
   import { onMount, onDestroy, getContext, tick } from 'svelte';
   import { htmlToMarkdown } from '$lib/utils/markdown.js';
   import BacklinksPanel from '$lib/design/components/backlinks-panel.svelte';
@@ -1004,6 +1004,28 @@ import { isA } from '$lib/types/core-node-types';
   }
 
   /**
+   * Whether the structural rules allow `node` to become a `newNodeType`: under its parent and
+   * over its children for a stored node, under the viewed node for the placeholder. The
+   * database refuses a type change that breaks them, so the node is left as it is instead.
+   */
+  function typeChangeAllowed(node: ViewerRenderNode, newNodeType: string): boolean {
+    let allowed: boolean;
+    if (sharedNodeStore.hasNode(node.id)) {
+      allowed = nodeManager.canTakeType(node.id, newNodeType);
+    } else {
+      const viewed = nodeId ? sharedNodeStore.getNode(nodeId) : undefined;
+      allowed = !viewed || canHaveChild(viewed.nodeType, newNodeType);
+    }
+    if (!allowed) {
+      log.debug('Type change refused by the structural rules:', {
+        nodeId: node.id,
+        newType: newNodeType
+      });
+    }
+    return allowed;
+  }
+
+  /**
    * Handle node type changes (pattern-detected conversions).
    * When the target is the viewer-local placeholder, promotes it to a real node of the
    * new type using the same tick-deferred, isPromoting-guarded path as contentChanged /
@@ -1014,6 +1036,8 @@ import { isA } from '$lib/types/core-node-types';
     let cleanedContent = detail.cleanedContent;
     // Use cursor position from event (captured by TextareaController)
     const cursorPosition = detail.cursorPosition ?? 0;
+
+    if (!typeChangeAllowed(node, newNodeType)) return;
 
     // Load component BEFORE updating node type (only if plugin has one)
     if (!nodeLoader.has(newNodeType) && pluginRegistry.hasNodeComponent(newNodeType)) {
@@ -1103,6 +1127,8 @@ import { isA } from '$lib/types/core-node-types';
     // Use cursor position from event (captured by TextareaController)
     const cursorPosition = detail.cursorPosition ?? 0;
     const newNodeType = detail.nodeType;
+
+    if (!typeChangeAllowed(node, newNodeType)) return;
 
     // Load component BEFORE updating node type (only if plugin has one)
     if (!nodeLoader.has(newNodeType) && pluginRegistry.hasNodeComponent(newNodeType)) {

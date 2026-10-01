@@ -25,8 +25,9 @@
  *     neither implies the other's absence).
  *   - `FailedPrecondition` + `x-tree-invariant-violation-bin` — a JSON payload
  *     `{ rule, node_id, related_ids, detail }` describing a write refused
- *     because it would break a tree invariant (`member_of_not_root`,
- *     `collection_not_root`, `schema_not_root`, `cycle`). Binary for the same
+ *     because it would break a tree invariant (`member_of_not_root`, `cycle`,
+ *     or a structural rule: `must_be_root`, `children_none`,
+ *     `child_not_allowed`, `parent_required`). Binary for the same
  *     reason, with the same gating on the metadata key.
  *
  * `status_to_command_error` (packages/desktop-app/app-lib/src/commands/nodes.rs)

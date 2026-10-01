@@ -172,8 +172,6 @@ export interface NodeTypeConfig {
    * Used by PatternRegistry and PatternSplitter for consistent pattern handling
    */
   patternTemplate?: PatternTemplate;
-  canHaveChildren?: boolean;
-  canBeChild?: boolean;
   defaultContent?: string;
 }
 

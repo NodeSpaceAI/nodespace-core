@@ -44,8 +44,6 @@ describe('PluginRegistry - Unified Plugin System', () => {
           contentTemplate: 'Test content'
         }
       ],
-      canHaveChildren: true,
-      canBeChild: true
     },
     viewer: {
       component: MockViewerComponent,
@@ -72,8 +70,6 @@ describe('PluginRegistry - Unified Plugin System', () => {
           priority: 2
         }
       ],
-      canHaveChildren: false,
-      canBeChild: true
     },
     viewer: {
       lazyLoad: () => mockLazyImport(),
@@ -130,8 +126,6 @@ describe('PluginRegistry - Unified Plugin System', () => {
         version: '1.0.0',
         config: {
           slashCommands: [],
-          canHaveChildren: false,
-          canBeChild: true
         },
         reference: {
           component: MockReferenceComponent,
@@ -161,8 +155,6 @@ describe('PluginRegistry - Unified Plugin System', () => {
               contentTemplate: 'Viewer content'
             }
           ],
-          canHaveChildren: true,
-          canBeChild: true
         },
         viewer: {
           component: MockViewerComponent,
@@ -367,8 +359,6 @@ describe('PluginRegistry - Unified Plugin System', () => {
               contentTemplate: 'Shortcut content'
             }
           ],
-          canHaveChildren: true,
-          canBeChild: true
         }
       };
 
@@ -439,8 +429,6 @@ describe('PluginRegistry - Unified Plugin System', () => {
         version: '1.0.0',
         config: {
           slashCommands: [],
-          canHaveChildren: true,
-          canBeChild: true
         },
         reference: {
           component: MockReferenceComponent,
@@ -480,8 +468,6 @@ describe('PluginRegistry - Unified Plugin System', () => {
               contentTemplate: 'No priority content'
             }
           ],
-          canHaveChildren: true,
-          canBeChild: true
         },
         viewer: {
           component: MockViewerComponent

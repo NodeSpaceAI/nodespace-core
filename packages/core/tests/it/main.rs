@@ -62,5 +62,6 @@ mod search_result_scaling_test;
 mod sibling_order_rebalance_test;
 mod skill_updater_test;
 mod store_concurrency_test;
+mod structural_rules_test;
 mod unique_field_extends_chain_test;
 mod update_node_transaction_test;

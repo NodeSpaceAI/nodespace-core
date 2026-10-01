@@ -144,10 +144,6 @@ pub enum ProcessingError {
 ///         Ok(())
 ///     }
 ///
-///     fn can_have_children(&self) -> bool {
-///         true
-///     }
-///
 ///     fn supports_markdown(&self) -> bool {
 ///         false
 ///     }
@@ -195,20 +191,6 @@ pub trait NodeBehavior: Send + Sync {
     /// assert!(behavior.validate(&node).is_ok());
     /// ```
     fn validate(&self, node: &Node) -> Result<(), NodeValidationError>;
-
-    /// Returns whether this node type can have children
-    ///
-    /// # Examples
-    ///
-    /// ```rust
-    /// # use nodespace_core::behaviors::{NodeBehavior, TextNodeBehavior, DateNodeBehavior};
-    /// let text_behavior = TextNodeBehavior;
-    /// assert!(text_behavior.can_have_children());
-    ///
-    /// let date_behavior = DateNodeBehavior;
-    /// assert!(date_behavior.can_have_children());
-    /// ```
-    fn can_have_children(&self) -> bool;
 
     /// Returns whether this node type supports markdown formatting
     ///
@@ -431,8 +413,14 @@ async fn aggregate_children_content(
         if let Some(contribution) = behavior.get_parent_contribution(&child) {
             parts.push(contribution);
         }
-        // Recurse into this child's own children (depth-first) before its siblings
-        if depth >= MAX_AGGREGATION_DEPTH || !behavior.can_have_children() {
+        // Recurse into this child's own children (depth-first) before its
+        // siblings, unless there is nothing below it to aggregate: its type
+        // takes no children (ADR-089), or its subtree is not embedded and its
+        // children are embedding roots of their own.
+        let ends_here = crate::models::CoreNodeType::nearest(&chain).is_some_and(|core| {
+            core.structure().children == crate::models::ChildrenRule::None || !core.embeds_subtree()
+        });
+        if depth >= MAX_AGGREGATION_DEPTH || ends_here {
             continue;
         }
         let grandchildren = match accessor.get_children(&child.id).await {
@@ -501,10 +489,6 @@ impl NodeBehavior for TextNodeBehavior {
         Ok(())
     }
 
-    fn can_have_children(&self) -> bool {
-        true
-    }
-
     fn supports_markdown(&self) -> bool {
         true
     }
@@ -554,10 +538,6 @@ impl NodeBehavior for HeaderNodeBehavior {
         // Similar to text nodes, headers can be created blank and filled in later
         // Frontend manages the UX of blank headers (e.g., showing placeholder text)
         Ok(())
-    }
-
-    fn can_have_children(&self) -> bool {
-        true
     }
 
     fn supports_markdown(&self) -> bool {
@@ -621,10 +601,6 @@ impl NodeBehavior for TaskNodeBehavior {
         // content is allowed. The behaviour also runs for every type that
         // extends `task`, so it never reads the node's own type.
         Ok(())
-    }
-
-    fn can_have_children(&self) -> bool {
-        true // Tasks can have subtasks
     }
 
     fn supports_markdown(&self) -> bool {
@@ -762,10 +738,6 @@ impl NodeBehavior for ProjectNodeBehavior {
         Ok(())
     }
 
-    fn can_have_children(&self) -> bool {
-        true // Projects contain tasks, milestones, and related work
-    }
-
     fn supports_markdown(&self) -> bool {
         true // Projects carry rich descriptions
     }
@@ -815,10 +787,6 @@ impl NodeBehavior for CodeBlockNodeBehavior {
         Ok(())
     }
 
-    fn can_have_children(&self) -> bool {
-        false // Code blocks are leaf nodes
-    }
-
     fn supports_markdown(&self) -> bool {
         false // Code blocks display raw text, no markdown formatting
     }
@@ -856,10 +824,6 @@ impl NodeBehavior for QuoteBlockNodeBehavior {
         // Users can create blank quote blocks and fill in quoted text later
         // Frontend manages the UX of blank quote blocks (e.g., showing placeholder text)
         Ok(())
-    }
-
-    fn can_have_children(&self) -> bool {
-        true // Quote blocks can have children
     }
 
     fn supports_markdown(&self) -> bool {
@@ -924,10 +888,6 @@ impl NodeBehavior for OrderedListNodeBehavior {
         Ok(())
     }
 
-    fn can_have_children(&self) -> bool {
-        false // Ordered lists are leaf nodes
-    }
-
     fn supports_markdown(&self) -> bool {
         true // Ordered lists support inline markdown formatting
     }
@@ -946,10 +906,6 @@ impl NodeBehavior for HorizontalLineNodeBehavior {
 
     fn validate(&self, _node: &Node) -> Result<(), NodeValidationError> {
         Ok(())
-    }
-
-    fn can_have_children(&self) -> bool {
-        false
     }
 
     fn supports_markdown(&self) -> bool {
@@ -978,10 +934,6 @@ impl NodeBehavior for TableNodeBehavior {
 
     fn validate(&self, _node: &Node) -> Result<(), NodeValidationError> {
         Ok(())
-    }
-
-    fn can_have_children(&self) -> bool {
-        false
     }
 
     fn supports_markdown(&self) -> bool {
@@ -1057,10 +1009,6 @@ impl NodeBehavior for DateNodeBehavior {
         // The ID is always in YYYY-MM-DD format, but content can be anything (e.g., "Custom Date Content").
 
         Ok(())
-    }
-
-    fn can_have_children(&self) -> bool {
-        true // Dates can contain events, tasks, etc.
     }
 
     fn supports_markdown(&self) -> bool {
@@ -1349,12 +1297,55 @@ impl SchemaNodeBehavior {
     }
 }
 
+impl SchemaNodeBehavior {
+    /// A schema's `children` or `parent` property, when present, must be a
+    /// rule of the declared shape, and a rule that takes a list must name at
+    /// least one type.
+    ///
+    /// This checks shape only, on every path that writes a schema node.
+    /// Whether the named types exist and whether the rule only tightens its
+    /// base are `create_schema`'s and `update_schema`'s checks: a rule that
+    /// names a missing type matches nothing, and enforcement adds a
+    /// subtype's rule to its base's, so neither can loosen what is enforced.
+    fn validate_structural_rule<R: serde::de::DeserializeOwned>(
+        node: &Node,
+        key: &str,
+    ) -> Result<(), NodeValidationError> {
+        let Some(value) = node.properties.get(key) else {
+            return Ok(());
+        };
+        serde_json::from_value::<R>(value.clone()).map_err(|e| {
+            NodeValidationError::InvalidProperties(format!(
+                "Schema '{}' declares a \"{key}\" rule that is not a structural rule: {e}",
+                node.id
+            ))
+        })?;
+        if value
+            .get("types")
+            .and_then(|types| types.as_array())
+            .is_some_and(|types| types.is_empty() || types.iter().any(|t| !t.is_string()))
+        {
+            return Err(NodeValidationError::InvalidProperties(format!(
+                "The \"{key}\" rule of schema '{}' must name at least one type",
+                node.id
+            )));
+        }
+        Ok(())
+    }
+}
+
 impl NodeBehavior for SchemaNodeBehavior {
     fn type_name(&self) -> &'static str {
         "schema"
     }
 
     fn validate(&self, node: &Node) -> Result<(), NodeValidationError> {
+        // A structural rule (ADR-089) the database cannot read is refused
+        // rather than read as `any`: the conversion below is lenient, and the
+        // rule triggers copy only the shapes they know.
+        Self::validate_structural_rule::<crate::models::SchemaChildrenRule>(node, "children")?;
+        Self::validate_structural_rule::<crate::models::SchemaParentRule>(node, "parent")?;
+
         // Convert to strongly-typed SchemaNode and validate
         // This provides type-safe validation with direct field access
         match SchemaNode::from_node(node.clone()) {
@@ -1383,10 +1374,6 @@ impl NodeBehavior for SchemaNodeBehavior {
                 Ok(())
             }
         }
-    }
-
-    fn can_have_children(&self) -> bool {
-        true // Description is stored as a child node subtree
     }
 
     fn supports_markdown(&self) -> bool {
@@ -1424,7 +1411,6 @@ impl NodeBehavior for SchemaNodeBehavior {
 ///
 /// # Characteristics
 ///
-/// - Can have children: false (query nodes are leaf nodes)
 /// - Supports markdown: false
 /// - Content: Plain text description of the query
 ///
@@ -1459,10 +1445,6 @@ impl NodeBehavior for QueryNodeBehavior {
         // extending `query` is held to the same field shapes.
         QueryFields::from_properties(&node.properties)?;
         Ok(())
-    }
-
-    fn can_have_children(&self) -> bool {
-        false // Query nodes are leaf nodes
     }
 
     fn supports_markdown(&self) -> bool {
@@ -1556,13 +1538,6 @@ impl NodeBehavior for CollectionNodeBehavior {
         Ok(())
     }
 
-    fn can_have_children(&self) -> bool {
-        // A collection may hold has_child children (text, say), but is itself
-        // always a root: collections nest through `member_of`, and the schema's
-        // `collection_is_root_*` triggers refuse a parent (ADR-059 §2).
-        true
-    }
-
     fn supports_markdown(&self) -> bool {
         false // Collection names are plain text
     }
@@ -1641,12 +1616,6 @@ impl NodeBehavior for AiChatNodeBehavior {
         Ok(())
     }
 
-    /// A chat may hold children: its messages, or any other node (ADR-088
-    /// §1). Every subtype inherits the rule.
-    fn can_have_children(&self) -> bool {
-        true
-    }
-
     fn supports_markdown(&self) -> bool {
         false // Chat content is rendered by the chat viewer, not the markdown pipeline
     }
@@ -1672,10 +1641,6 @@ impl NodeBehavior for AiChatNodeBehavior {
 /// be embedded by leaving a method out.
 macro_rules! inherit_ai_chat_rules {
     () => {
-        fn can_have_children(&self) -> bool {
-            AiChatNodeBehavior.can_have_children()
-        }
-
         fn supports_markdown(&self) -> bool {
             AiChatNodeBehavior.supports_markdown()
         }
@@ -1763,10 +1728,6 @@ impl NodeBehavior for AgentGuidanceNodeBehavior {
         Ok(())
     }
 
-    fn can_have_children(&self) -> bool {
-        true // Guidance body lives in child nodes
-    }
-
     fn supports_markdown(&self) -> bool {
         true // Child nodes will be markdown
     }
@@ -1799,10 +1760,6 @@ impl NodeBehavior for PlayNodeBehavior {
         Ok(())
     }
 
-    fn can_have_children(&self) -> bool {
-        true
-    }
-
     fn supports_markdown(&self) -> bool {
         false
     }
@@ -1830,10 +1787,6 @@ impl NodeBehavior for CheckboxNodeBehavior {
 
     fn validate(&self, _node: &Node) -> Result<(), NodeValidationError> {
         Ok(())
-    }
-
-    fn can_have_children(&self) -> bool {
-        true
     }
 
     fn supports_markdown(&self) -> bool {
@@ -1873,10 +1826,6 @@ impl NodeBehavior for SkillNodeBehavior {
         SkillNode::from_properties(&node.content, &node.properties)?;
 
         Ok(())
-    }
-
-    fn can_have_children(&self) -> bool {
-        true // Skills contain child prompt nodes with guidance
     }
 
     fn supports_markdown(&self) -> bool {
@@ -1970,10 +1919,6 @@ impl NodeBehavior for ToolNodeBehavior {
         }
 
         Ok(())
-    }
-
-    fn can_have_children(&self) -> bool {
-        false
     }
 
     fn supports_markdown(&self) -> bool {
@@ -2120,10 +2065,6 @@ impl NodeBehavior for CustomNodeBehavior {
         Ok(())
     }
 
-    fn can_have_children(&self) -> bool {
-        true // Custom types can have children by default
-    }
-
     fn supports_markdown(&self) -> bool {
         false // Custom types don't support markdown by default
     }
@@ -2159,10 +2100,6 @@ impl NodeBehavior for PersonNodeBehavior {
             }
         }
         Ok(())
-    }
-
-    fn can_have_children(&self) -> bool {
-        true
     }
 
     fn supports_markdown(&self) -> bool {
@@ -2216,10 +2153,6 @@ impl NodeBehavior for DatabaseSettingsNodeBehavior {
             }
         }
         Ok(())
-    }
-
-    fn can_have_children(&self) -> bool {
-        false // Configuration container; it holds no child content
     }
 
     fn supports_markdown(&self) -> bool {
@@ -2629,7 +2562,6 @@ mod tests {
         let behavior = TextNodeBehavior;
 
         assert_eq!(behavior.type_name(), "text");
-        assert!(behavior.can_have_children());
         assert!(behavior.supports_markdown());
     }
 
@@ -2781,7 +2713,6 @@ mod tests {
     fn test_horizontal_line_behavior_capabilities() {
         let behavior = HorizontalLineNodeBehavior;
         assert_eq!(behavior.type_name(), "horizontal-line");
-        assert!(!behavior.can_have_children());
         assert!(!behavior.supports_markdown());
     }
 
@@ -2813,7 +2744,6 @@ mod tests {
     fn test_table_behavior_capabilities() {
         let behavior = TableNodeBehavior;
         assert_eq!(behavior.type_name(), "table");
-        assert!(!behavior.can_have_children());
         assert!(!behavior.supports_markdown());
     }
 
@@ -2836,7 +2766,6 @@ mod tests {
     fn test_project_node_behavior_valid() {
         let behavior = ProjectNodeBehavior;
         assert_eq!(behavior.type_name(), "project");
-        assert!(behavior.can_have_children());
         assert!(behavior.supports_markdown());
 
         // Full project: name + all typed fields, valid date range.
@@ -3103,7 +3032,6 @@ mod tests {
         let behavior = TaskNodeBehavior;
 
         assert_eq!(behavior.type_name(), "task");
-        assert!(behavior.can_have_children());
         assert!(!behavior.supports_markdown());
     }
 
@@ -3190,7 +3118,6 @@ mod tests {
         let behavior = DateNodeBehavior;
 
         assert_eq!(behavior.type_name(), "date");
-        assert!(behavior.can_have_children());
         assert!(!behavior.supports_markdown());
     }
 
@@ -3334,9 +3261,6 @@ mod tests {
                         "a team's name starts with team-".to_string(),
                     ))
                 }
-            }
-            fn can_have_children(&self) -> bool {
-                true
             }
             fn supports_markdown(&self) -> bool {
                 false
@@ -3483,7 +3407,6 @@ mod tests {
         let behavior: Arc<dyn NodeBehavior> = Arc::new(TextNodeBehavior);
 
         assert_eq!(behavior.type_name(), "text");
-        assert!(behavior.can_have_children());
         assert!(behavior.supports_markdown());
 
         let node = Node::new("text".to_string(), "Test".to_string(), json!({}));
@@ -4532,7 +4455,6 @@ mod tests {
         let behavior = QueryNodeBehavior;
 
         assert_eq!(behavior.type_name(), "query");
-        assert!(!behavior.can_have_children()); // Query nodes are leaf nodes
         assert!(!behavior.supports_markdown());
     }
 
@@ -4607,7 +4529,6 @@ mod tests {
         let behavior = CollectionNodeBehavior;
 
         assert_eq!(behavior.type_name(), "collection");
-        assert!(behavior.can_have_children()); // Collections form hierarchies
         assert!(!behavior.supports_markdown()); // Collection names are plain text
     }
 
@@ -4723,7 +4644,6 @@ mod tests {
         for node_type in ["ai-chat", "ai-chat-native", "ai-chat-pty"] {
             let behavior = registry.get(node_type).expect("registered");
             assert_eq!(behavior.type_name(), node_type);
-            assert!(behavior.can_have_children());
             assert!(!behavior.supports_markdown());
         }
     }
@@ -5266,11 +5186,6 @@ mod tests {
     }
 
     #[test]
-    fn tool_node_does_not_have_children() {
-        assert!(!ToolNodeBehavior.can_have_children());
-    }
-
-    #[test]
     fn tool_node_parent_contribution_is_none() {
         let behavior = ToolNodeBehavior;
         let node = tool_node_with_props(json!({ "tool": { "handler": "search_nodes" } }));
@@ -5337,11 +5252,6 @@ mod tests {
         let behavior = PersonNodeBehavior;
         let node = person_node(json!({"person": {"email": ""}}));
         assert!(behavior.validate(&node).is_ok());
-    }
-
-    #[test]
-    fn person_can_have_children() {
-        assert!(PersonNodeBehavior.can_have_children());
     }
 
     #[test]
@@ -5428,7 +5338,6 @@ mod tests {
     fn database_settings_capabilities() {
         let behavior = DatabaseSettingsNodeBehavior;
         assert_eq!(behavior.type_name(), "database-settings");
-        assert!(!behavior.can_have_children());
         assert!(!behavior.supports_markdown());
     }
 
@@ -5561,6 +5470,97 @@ mod tests {
         assert_eq!(
             result, "A\n\nA1\n\nA2\n\nB\n\nB1",
             "aggregated content must read in document order (pre-order DFS), not breadth-first"
+        );
+    }
+
+    /// Aggregation stops at a chat: a chat's subtree is not embedded, and each
+    /// child of one is its own embedding root, so it must not also be folded
+    /// into the vector of the page the chat sits in. A subtype of a chat is
+    /// held to the same rule.
+    #[tokio::test]
+    async fn test_aggregate_children_content_stops_at_a_chat() {
+        struct ChainAccessor(MockNodeAccessor);
+
+        #[async_trait::async_trait]
+        impl crate::services::NodeAccessor for ChainAccessor {
+            async fn get_node(
+                &self,
+                id: &str,
+            ) -> Result<Option<Node>, crate::services::error::NodeServiceError> {
+                self.0.get_node(id).await
+            }
+
+            async fn get_children(
+                &self,
+                parent_id: &str,
+            ) -> Result<Vec<Node>, crate::services::error::NodeServiceError> {
+                self.0.get_children(parent_id).await
+            }
+
+            async fn get_nodes(
+                &self,
+                ids: &[&str],
+            ) -> Result<Vec<Node>, crate::services::error::NodeServiceError> {
+                self.0.get_nodes(ids).await
+            }
+
+            async fn access_boundaries_under(
+                &self,
+                root_id: &str,
+            ) -> Result<HashSet<String>, crate::services::error::NodeServiceError> {
+                self.0.access_boundaries_under(root_id).await
+            }
+
+            async fn type_chain(
+                &self,
+                node_type: &str,
+            ) -> Result<Vec<String>, crate::services::error::NodeServiceError> {
+                Ok(match node_type {
+                    "support-chat" => vec!["support-chat".to_string(), "ai-chat".to_string()],
+                    other => vec![other.to_string()],
+                })
+            }
+        }
+
+        let node = |id: &str, node_type: &str, content: &str| {
+            Node::new_with_id(
+                id.to_string(),
+                node_type.to_string(),
+                content.to_string(),
+                json!({}),
+            )
+        };
+        let root = node("root", "text", "Root");
+        let accessor = ChainAccessor(
+            MockNodeAccessor::new()
+                .with_children(
+                    "root",
+                    vec![
+                        node("before", "text", "Before"),
+                        node("chat", "ai-chat", "A chat"),
+                        node("support", "support-chat", "A support chat"),
+                        node("after", "text", "After"),
+                    ],
+                )
+                .with_children("chat", vec![node("kept", "text", "Kept in the chat")])
+                .with_children(
+                    "support",
+                    vec![node("kept2", "text", "Kept in the support chat")],
+                )
+                .with_children("after", vec![node("below", "text", "Below")]),
+        );
+
+        let result = aggregate_children_content(&root, &accessor, &NodeBehaviorRegistry::new())
+            .await
+            .expect("the page's own lines still aggregate");
+
+        assert!(
+            result.contains("Before") && result.contains("Below"),
+            "{result}"
+        );
+        assert!(
+            !result.contains("Kept in the"),
+            "a chat's children are their own embedding roots: {result}"
         );
     }
 }

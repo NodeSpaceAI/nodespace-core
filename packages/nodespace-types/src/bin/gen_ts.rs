@@ -120,6 +120,8 @@ fn declarations(cfg: &Config) -> Vec<Declared> {
         RelationshipDirection,
         RelationshipCardinality,
         SchemaRelationship,
+        SchemaChildrenRule,
+        SchemaParentRule,
         SchemaNode,
         // ai-chat
         AiChatCompletedWrite,
@@ -140,10 +142,20 @@ fn declarations(cfg: &Config) -> Vec<Declared> {
         ContentRole,
         IncompatibleDatabase,
         // generated registries
+        StructuralRules,
         CoreTypeEntry,
         StructuredShape,
         TypedCoreField,
     )
+}
+
+/// A type's two structural rules (ADR-089).
+#[derive(Serialize, TS)]
+struct StructuralRules {
+    /// Which children the type's nodes may have.
+    children: SchemaChildrenRule,
+    /// Where the type's nodes may sit in the `has_child` tree.
+    parent: SchemaParentRule,
 }
 
 /// A core type's registry entry, as the frontend reads it.
@@ -163,6 +175,8 @@ struct CoreTypeEntry {
     /// command. A type without one writes them as a `properties` patch keyed
     /// by storage name.
     typed_update: bool,
+    /// The structural rules the type itself declares, before inheritance.
+    structure: StructuralRules,
 }
 
 /// The JSON shape of a typed core field that is not a string.
@@ -230,6 +244,10 @@ fn core_node_types_file() -> File {
             is_abstract: core.is_abstract(),
             mentionable: core.participation().mentionable,
             typed_update: core.wire() == (WireShape::Typed { update: true }),
+            structure: StructuralRules {
+                children: core.declared_structure().children.into(),
+                parent: core.declared_structure().parent.into(),
+            },
         };
         writeln!(contents, "  {},", json(&entry)).unwrap();
     }

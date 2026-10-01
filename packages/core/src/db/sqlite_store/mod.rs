@@ -104,25 +104,34 @@ pub enum TreeInvariantRule {
     /// A node holding `member_of` would sit below a `has_child` parent — only
     /// root nodes may hold collection membership (ADR-059 §2).
     MemberOfNotRoot,
-    /// A node of a root-only type would gain a `has_child` parent. The type
-    /// is the root-only core type the node is or extends: a collection
-    /// (which nests through `member_of`, ADR-059 §2) or a schema.
-    NotRoot(crate::models::CoreNodeType),
+    /// A node whose type is always a root would gain a `has_child` parent
+    /// (ADR-089, `must_be_root`).
+    MustBeRoot,
+    /// A node whose type takes no children would gain one (ADR-089,
+    /// `children: none`).
+    ChildrenNone,
+    /// A node would gain a child of a type its own type refuses (ADR-089,
+    /// `any_except`).
+    ChildNotAllowed,
+    /// A node whose type needs a parent of a named type would have another
+    /// parent, or none (ADR-089, `must_have_parent_of`).
+    ParentRequired,
     /// The write would make a node its own `has_child` ancestor.
     Cycle,
 }
 
 impl TreeInvariantRule {
     /// The rule's stable wire name, carried to clients as structured data.
-    /// It also prefixes the refusal's message, matching the schema triggers'
-    /// `RAISE` text so every path that refuses a rule reads the same.
-    pub fn as_str(self) -> String {
+    /// It also prefixes the refusal's message, matching the structural
+    /// triggers' `RAISE` text so every path that refuses a rule reads the same.
+    pub fn as_str(self) -> &'static str {
         match self {
-            Self::MemberOfNotRoot => "member_of_not_root".to_string(),
-            Self::NotRoot(root_type) => {
-                format!("{}_not_root", root_type.as_str().replace('-', "_"))
-            }
-            Self::Cycle => "cycle".to_string(),
+            Self::MemberOfNotRoot => "member_of_not_root",
+            Self::MustBeRoot => "must_be_root",
+            Self::ChildrenNone => "children_none",
+            Self::ChildNotAllowed => "child_not_allowed",
+            Self::ParentRequired => "parent_required",
+            Self::Cycle => "cycle",
         }
     }
 }
@@ -149,35 +158,94 @@ pub struct TreeInvariantViolation {
 }
 
 impl TreeInvariantViolation {
-    /// Giving a node of a root-only type a parent. `root_type` is the
-    /// root-only core type the node is or extends; `node_id` is `None` only
-    /// for a node refused before it was given an id.
-    pub fn not_root(root_type: crate::models::CoreNodeType, node_id: Option<&str>) -> Self {
+    /// Giving a parent to a node whose type is always a root. `declared_by`
+    /// is the type that declares the rule: the node's own, or one it extends.
+    /// `node_id` is `None` only for a node refused before it was given an id.
+    pub fn must_be_root(declared_by: &str, node_id: Option<&str>) -> Self {
         let subject = match node_id {
-            Some(id) => format!("{} '{}'", root_type, id),
-            None => format!("a new {}", root_type),
+            Some(id) => format!("{} '{}'", declared_by, id),
+            None => format!("a new {}", declared_by),
         };
-        let reason = if root_type == crate::models::CoreNodeType::Collection {
+        let reason = if crate::models::CoreNodeType::Collection.is_exactly(declared_by) {
             "collections nest through member_of, not has_child (ADR-059 §2)".to_string()
         } else {
-            format!("a {} is always a root", root_type)
+            format!("a {} is always a root", declared_by)
         };
         Self {
-            rule: TreeInvariantRule::NotRoot(root_type),
+            rule: TreeInvariantRule::MustBeRoot,
             node_id: node_id.map(str::to_string),
             related_ids: Vec::new(),
             detail: format!("{} cannot have a parent; {}", subject, reason),
         }
     }
 
-    /// Giving a collection a parent.
-    pub fn collection_not_root(collection_id: Option<&str>) -> Self {
-        Self::not_root(crate::models::CoreNodeType::Collection, collection_id)
+    /// Giving a child to `parent`, whose type takes none. `declared_by` is
+    /// the type that declares the rule.
+    pub(crate) fn children_none(
+        declared_by: &str,
+        parent: structure::Placed<'_>,
+        child: structure::Placed<'_>,
+    ) -> Self {
+        Self {
+            rule: TreeInvariantRule::ChildrenNone,
+            node_id: parent.id.map(str::to_string),
+            related_ids: child.id.map(str::to_string).into_iter().collect(),
+            detail: format!(
+                "{} cannot have children; a {} is a leaf",
+                parent.describe(),
+                declared_by
+            ),
+        }
     }
 
-    /// Giving a schema node a parent.
-    pub fn schema_not_root(schema_id: &str) -> Self {
-        Self::not_root(crate::models::CoreNodeType::Schema, Some(schema_id))
+    /// Giving `parent` a child of a type its own type refuses.
+    pub(crate) fn child_not_allowed(
+        declared_by: &str,
+        parent: structure::Placed<'_>,
+        child: structure::Placed<'_>,
+    ) -> Self {
+        Self {
+            rule: TreeInvariantRule::ChildNotAllowed,
+            node_id: child.id.map(str::to_string),
+            related_ids: parent.id.map(str::to_string).into_iter().collect(),
+            detail: format!(
+                "{} cannot be a child of {}; a {} does not take a {} as a child",
+                child.describe(),
+                parent.describe(),
+                declared_by,
+                child.node_type
+            ),
+        }
+    }
+
+    /// Placing `child` under a parent its type does not allow, or under
+    /// none. `allowed` is the types its rule names.
+    pub(crate) fn parent_required(
+        declared_by: &str,
+        allowed: &[String],
+        parent: Option<structure::Placed<'_>>,
+        child: structure::Placed<'_>,
+    ) -> Self {
+        let placement = match parent {
+            Some(parent) => format!("cannot sit under {}", parent.describe()),
+            None => "cannot be a root".to_string(),
+        };
+        Self {
+            rule: TreeInvariantRule::ParentRequired,
+            node_id: child.id.map(str::to_string),
+            related_ids: parent
+                .and_then(|p| p.id)
+                .map(str::to_string)
+                .into_iter()
+                .collect(),
+            detail: format!(
+                "{} {}; a {} must have a parent of type: {}",
+                child.describe(),
+                placement,
+                declared_by,
+                allowed.join(", ")
+            ),
+        }
     }
 
     /// A member of `collection_ids` that has, or would gain, a parent.
@@ -750,6 +818,8 @@ pub(crate) use nodes::NodeMove;
 pub use nodes::{BulkNodeRow, ChildPlacement, ResolvedEntity};
 mod relationships;
 mod search;
+mod structure;
+pub(crate) use structure::Placed;
 pub(crate) mod tx;
 mod type_ancestry;
 
@@ -1610,10 +1680,7 @@ mod tests {
             .create_child_node_atomic(&root_id, "collection", "Interior", json!({}), None)
             .await
             .expect_err("a collection cannot be created under a parent");
-        assert_eq!(
-            tree_violation(&err).rule,
-            TreeInvariantRule::NotRoot(crate::models::CoreNodeType::Collection)
-        );
+        assert_eq!(tree_violation(&err).rule, TreeInvariantRule::MustBeRoot);
 
         // End-to-end: a task inside a filed project still works. The project
         // ROOT is filed into the collection; the task lives under it as an
@@ -2975,7 +3042,7 @@ mod tests {
         gauge.reset_peak();
         assert!(
             store
-                .assert_may_gain_parent(&[member.id.as_str()])
+                .assert_may_gain_parent(&[(parent.id.as_str(), member.id.as_str())])
                 .await
                 .is_err(),
             "fixture must trip the root-only membership guard, or the nested read is never reached"

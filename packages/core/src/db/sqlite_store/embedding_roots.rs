@@ -5,12 +5,16 @@
 //! `has_child` subtree. Two constraints keep every non-person node of that
 //! subtree out of any collection of its own (ADR-059 §2): only a root may
 //! hold a `member_of` edge (`assert_may_gain_parent` and the `member_of`
-//! insert guards), and a collection is always a root (the
-//! `collection_is_root_*` schema triggers).
+//! insert guards), and a collection is always a root (its `must_be_root`
+//! structural rule, ADR-089).
 //! A non-person descendant that holds a `member_of` edge therefore breaks §2,
 //! and finding one is a defect whatever any collection's properties say
 //! (ADR-083 §5). The descendant is kept out of the root's vector and becomes
 //! its own embedding root, so its content stays searchable.
+//!
+//! One more node is its own embedding root by design, not by defect: a child
+//! of a chat. A chat's subtree is not embedded (ADR-061 §4), so a node kept
+//! under one would otherwise be unsearchable (ADR-089 §4).
 use super::*;
 
 /// Upper bound on a `has_child` chain, as a backstop against a cyclic tree.
@@ -29,6 +33,18 @@ fn filed_descendant_sql(id_expr: &str) -> String {
             AND {not_a_person} \
             AND EXISTS (SELECT 1 FROM relationship cm \
                 WHERE cm.in_node = cn.id AND cm.relationship_type = 'member_of'))"
+    )
+}
+
+/// SQL for "the node `id_expr` is a child of a node whose subtree is not
+/// embedded": its `has_child` parent is a chat, or a subtype of one.
+fn unembedded_subtree_child_sql(id_expr: &str) -> String {
+    let parent_is_a_chat =
+        crate::db::schema::is_a_sql("pn.node_type", &[crate::models::CoreNodeType::AiChat]);
+    format!(
+        "EXISTS (SELECT 1 FROM relationship pr JOIN node pn ON pn.id = pr.in_node \
+            WHERE pr.out_node = {id_expr} AND pr.relationship_type = 'has_child' \
+              AND {parent_is_a_chat})"
     )
 }
 
@@ -71,9 +87,11 @@ impl SqliteStore {
         Ok(boundaries)
     }
 
-    /// Resolve the embedding root of `node_id`: its tree root, unless a filed
-    /// descendant (see [`Self::access_boundaries_under`]) sits between them, in
-    /// which case the nearest one at or above the node.
+    /// Resolve the embedding root of `node_id`: its tree root, unless a node
+    /// that is its own embedding root sits between them, in which case the
+    /// nearest one at or above the node. Two kinds of node are: a filed
+    /// descendant (see [`Self::access_boundaries_under`]), and a child of a
+    /// chat, whose subtree is not embedded.
     pub async fn embedding_root_id(&self, node_id: &str) -> Result<String> {
         // `chain[0]` is the node, the last element its tree root.
         let mut chain = vec![node_id.to_string()];
@@ -94,32 +112,33 @@ impl SqliteStore {
 
         let placeholders: Vec<String> = (1..=below_root.len()).map(|i| format!("?{}", i)).collect();
         let sql = format!(
-            "SELECT n.id FROM node n WHERE n.id IN ({}) AND {}",
+            "SELECT n.id FROM node n WHERE n.id IN ({}) AND ({} OR {})",
             placeholders.join(", "),
-            filed_descendant_sql("n.id")
+            filed_descendant_sql("n.id"),
+            unembedded_subtree_child_sql("n.id")
         );
         let params: Vec<libsql::Value> = below_root
             .iter()
             .map(|id| libsql::Value::Text(id.clone()))
             .collect();
-        let filed: HashSet<String> = {
+        let own_roots: HashSet<String> = {
             let mut rows = self
                 .read()
                 .await?
                 .query(&sql, params)
                 .await
-                .context("Failed to find filed descendants on parent chain")?;
+                .context("Failed to find embedding roots on parent chain")?;
             let mut ids = HashSet::new();
             while let Some(row) = rows.next().await? {
                 ids.insert(row.get(0)?);
             }
             ids
         };
-        // `below_root` runs from the node upward, so the first filed node is
-        // the nearest.
+        // `below_root` runs from the node upward, so the first match is the
+        // nearest.
         Ok(below_root
             .iter()
-            .find(|id| filed.contains(*id))
+            .find(|id| own_roots.contains(*id))
             .unwrap_or(tree_root)
             .clone())
     }

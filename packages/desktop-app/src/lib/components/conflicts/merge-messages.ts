@@ -50,17 +50,27 @@ export function describeMergeRefusal(
         `Move ${survivor} out of ${other}'s subtree first, or keep ${other} instead.`
       );
     }
-    case 'collection_not_root':
-      // Keeping the loser instead would fold a collection into a plain node,
-      // so the only advice is to lift the loser out of its parent.
+    case 'must_be_root':
+      // Keeping the loser instead would fold a top-level-only node into a
+      // plain one, so the only advice is to lift the loser out of its parent.
       return (
-        `Can't merge: ${survivor} is a collection, and collections can't sit under a parent. ` +
+        `Can't merge: ${survivor} is of a type that is always top-level and can't sit under a parent. ` +
         `Move ${loser} to the top level first, then merge.`
       );
-    case 'schema_not_root':
+    case 'children_none':
       return (
-        `Can't merge: ${survivor} is a type definition, and types can't sit under a parent. ` +
-        `Move ${loser} to the top level first, then merge.`
+        `Can't merge: ${survivor} is of a type that can't have children, and ${loser} has some. ` +
+        `Move ${loser}'s children elsewhere first, or keep ${loser} instead.`
+      );
+    case 'child_not_allowed':
+      return (
+        `Can't merge: the merged node would end up under a parent, or over a child, that its type doesn't allow. ` +
+        `Move ${loser} or its children elsewhere first, then merge.`
+      );
+    case 'parent_required':
+      return (
+        `Can't merge: the merged node, or one of ${loser}'s children, would lose the kind of parent its type needs. ` +
+        `Move it under a parent of the right type first, then merge.`
       );
   }
 }

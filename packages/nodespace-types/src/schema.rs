@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::core_type::CoreNodeType;
+use crate::core_type::{ChildrenRule, CoreNodeType, ParentRule};
 use crate::node::{Node, NodeEnvelope};
 
 fn default_schema_version() -> u32 {
@@ -409,6 +409,171 @@ pub struct SchemaRelationship {
     pub description: Option<String>,
 }
 
+/// Which children a type's nodes may have, as a schema declares it (ADR-089).
+///
+/// A named type covers its subtypes. A subtype inherits its base's rule and
+/// may only tighten it: `any` declares nothing, and an `any_except` list adds
+/// to the base's.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(tag = "rule", rename_all = "snake_case", deny_unknown_fields)]
+pub enum SchemaChildrenRule {
+    #[default]
+    Any,
+    None,
+    /// Any child except these types and their subtypes.
+    AnyExcept {
+        types: Vec<String>,
+    },
+}
+
+/// Where a type's nodes may sit in the `has_child` tree, as a schema declares
+/// it (ADR-089). A named type covers its subtypes.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(tag = "rule", rename_all = "snake_case", deny_unknown_fields)]
+pub enum SchemaParentRule {
+    #[default]
+    Any,
+    MustBeRoot,
+    /// Only under one of these types or their subtypes.
+    MustHaveParentOf {
+        types: Vec<String>,
+    },
+}
+
+impl SchemaChildrenRule {
+    pub fn is_any(&self) -> bool {
+        matches!(self, Self::Any)
+    }
+
+    /// The types the rule names.
+    pub fn named_types(&self) -> &[String] {
+        match self {
+            Self::AnyExcept { types } => types,
+            Self::Any | Self::None => &[],
+        }
+    }
+
+    /// Whether declaring this rule under a base whose rule in force is `base`
+    /// only tightens it. An `any_except` list adds to the base's, so the one
+    /// declaration that reads as a relaxation is a list under a base that
+    /// refuses every child.
+    pub fn tightens(&self, base: &Self) -> bool {
+        !matches!((base, self), (Self::None, Self::AnyExcept { .. }))
+    }
+
+    /// The rule in force for a type declaring this rule under a base whose
+    /// rule in force is `base`.
+    pub fn over(&self, base: &Self) -> Self {
+        match (base, self) {
+            (Self::None, _) | (_, Self::None) => Self::None,
+            (Self::Any, own) => own.clone(),
+            (base, Self::Any) => base.clone(),
+            (Self::AnyExcept { types: inherited }, Self::AnyExcept { types: own }) => {
+                let mut types = inherited.clone();
+                for t in own {
+                    if !types.contains(t) {
+                        types.push(t.clone());
+                    }
+                }
+                Self::AnyExcept { types }
+            }
+        }
+    }
+}
+
+impl SchemaParentRule {
+    pub fn is_any(&self) -> bool {
+        matches!(self, Self::Any)
+    }
+
+    /// The types the rule names.
+    pub fn named_types(&self) -> &[String] {
+        match self {
+            Self::MustHaveParentOf { types } => types,
+            Self::Any | Self::MustBeRoot => &[],
+        }
+    }
+
+    /// Whether declaring this rule under a base whose rule in force is `base`
+    /// only tightens it. A `must_have_parent_of` list may only narrow: each
+    /// type it names must be one the base names or a subtype of one, which
+    /// `is_a(type, base_type)` answers.
+    pub fn tightens(&self, base: &Self, is_a: impl Fn(&str, &str) -> bool) -> bool {
+        match (base, self) {
+            (_, Self::Any) | (Self::Any, _) => true,
+            (Self::MustBeRoot, Self::MustBeRoot) => true,
+            (
+                Self::MustHaveParentOf { types: allowed },
+                Self::MustHaveParentOf { types: named },
+            ) => named
+                .iter()
+                .all(|t| allowed.iter().any(|base| is_a(t, base))),
+            (Self::MustBeRoot, Self::MustHaveParentOf { .. })
+            | (Self::MustHaveParentOf { .. }, Self::MustBeRoot) => false,
+        }
+    }
+
+    /// The rule in force for a type declaring this rule under a base whose
+    /// rule in force is `base`: the nearest declaration, since a subtype's can
+    /// only be tighter.
+    pub fn over(&self, base: &Self) -> Self {
+        if self.is_any() {
+            base.clone()
+        } else {
+            self.clone()
+        }
+    }
+}
+
+fn type_ids(types: &[CoreNodeType]) -> Vec<String> {
+    types.iter().map(|t| t.as_str().to_string()).collect()
+}
+
+impl From<ChildrenRule> for SchemaChildrenRule {
+    fn from(rule: ChildrenRule) -> Self {
+        match rule {
+            ChildrenRule::Any => Self::Any,
+            ChildrenRule::None => Self::None,
+            ChildrenRule::AnyExcept(types) => Self::AnyExcept {
+                types: type_ids(types),
+            },
+        }
+    }
+}
+
+impl From<ParentRule> for SchemaParentRule {
+    fn from(rule: ParentRule) -> Self {
+        match rule {
+            ParentRule::Any => Self::Any,
+            ParentRule::MustBeRoot => Self::MustBeRoot,
+            ParentRule::MustHaveParentOf(types) => Self::MustHaveParentOf {
+                types: type_ids(types),
+            },
+        }
+    }
+}
+
+/// Reads one structural rule out of a schema node's stored properties. An
+/// absent key is `any`; an unreadable one is reported and read as `any`, as
+/// [`parse_fields`] does for an unreadable field list.
+fn parse_structural_rule<R: serde::de::DeserializeOwned + Default>(
+    properties: &serde_json::Value,
+    key: &str,
+    node_id: &str,
+) -> R {
+    match properties.get(key) {
+        None => R::default(),
+        Some(v) => serde_json::from_value(v.clone()).unwrap_or_else(|e| {
+            eprintln!(
+                "nodespace-types: SchemaNode::from_node: failed to parse `{key}` for schema node `{node_id}`: {e} — reading back as `any`."
+            );
+            R::default()
+        }),
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[cfg_attr(feature = "ts", ts(optional_fields))]
@@ -430,6 +595,16 @@ pub struct SchemaNode {
     /// resolve a user-defined subtype to the type whose rules it takes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extends: Option<String>,
+    /// Which children this type's nodes may have: the rule this type itself
+    /// declares, on top of what it inherits (ADR-089).
+    #[serde(default, skip_serializing_if = "SchemaChildrenRule::is_any")]
+    #[cfg_attr(feature = "ts", ts(optional = nullable))]
+    pub children: SchemaChildrenRule,
+    /// Where this type's nodes may sit in the tree: the rule this type itself
+    /// declares, on top of what it inherits (ADR-089).
+    #[serde(default, skip_serializing_if = "SchemaParentRule::is_any")]
+    #[cfg_attr(feature = "ts", ts(optional = nullable))]
+    pub parent: SchemaParentRule,
     #[serde(default = "default_schema_version")]
     pub schema_version: u32,
     #[serde(default)]
@@ -544,6 +719,9 @@ impl SchemaNode {
             .and_then(|v| v.as_str())
             .map(str::to_string);
 
+        let children = parse_structural_rule(&node.properties, "children", &node.id);
+        let parent = parse_structural_rule(&node.properties, "parent", &node.id);
+
         let schema_version = node
             .properties
             .get("schemaVersion")
@@ -589,6 +767,8 @@ impl SchemaNode {
             is_core,
             is_abstract,
             extends,
+            children,
+            parent,
             schema_version,
             description,
             fields,
@@ -637,6 +817,151 @@ mod tests {
         let wire = serde_json::to_value(&plain).unwrap();
         assert!(wire.get("abstract").is_none());
         assert!(wire.get("extends").is_none());
+    }
+
+    /// The structural rules a schema declares travel on the wire schema, and
+    /// `any` is not serialized.
+    #[test]
+    fn test_from_node_carries_the_structural_rules() {
+        let node = Node::new_with_id(
+            "message".to_string(),
+            "schema".to_string(),
+            "Message".to_string(),
+            json!({
+                "fields": [],
+                "children": { "rule": "none" },
+                "parent": { "rule": "must_have_parent_of", "types": ["thread"] },
+            }),
+        );
+        let schema = SchemaNode::from_node(node).unwrap();
+        assert_eq!(schema.children, SchemaChildrenRule::None);
+        assert_eq!(
+            schema.parent,
+            SchemaParentRule::MustHaveParentOf {
+                types: vec!["thread".to_string()]
+            }
+        );
+        let wire = serde_json::to_value(&schema).unwrap();
+        assert_eq!(wire["children"], json!({ "rule": "none" }));
+        assert_eq!(
+            wire["parent"],
+            json!({ "rule": "must_have_parent_of", "types": ["thread"] })
+        );
+
+        let plain = SchemaNode::from_node(Node::new_with_id(
+            "invoice".to_string(),
+            "schema".to_string(),
+            "Invoice".to_string(),
+            json!({ "fields": [] }),
+        ))
+        .unwrap();
+        assert!(plain.children.is_any() && plain.parent.is_any());
+        let wire = serde_json::to_value(&plain).unwrap();
+        assert!(wire.get("children").is_none());
+        assert!(wire.get("parent").is_none());
+    }
+
+    #[test]
+    fn test_a_structural_rule_rejects_an_unknown_shape() {
+        assert!(serde_json::from_value::<SchemaChildrenRule>(json!({ "rule": "some" })).is_err());
+        assert!(
+            serde_json::from_value::<SchemaChildrenRule>(json!({ "rule": "any_except" })).is_err()
+        );
+        assert!(serde_json::from_value::<SchemaParentRule>(json!({ "rule": "anywhere" })).is_err());
+        assert_eq!(
+            serde_json::from_value::<SchemaChildrenRule>(
+                json!({ "rule": "any_except", "types": ["collection"] })
+            )
+            .unwrap(),
+            SchemaChildrenRule::AnyExcept {
+                types: vec!["collection".to_string()]
+            }
+        );
+    }
+
+    fn except(types: &[&str]) -> SchemaChildrenRule {
+        SchemaChildrenRule::AnyExcept {
+            types: types.iter().map(|t| t.to_string()).collect(),
+        }
+    }
+
+    fn parent_of(types: &[&str]) -> SchemaParentRule {
+        SchemaParentRule::MustHaveParentOf {
+            types: types.iter().map(|t| t.to_string()).collect(),
+        }
+    }
+
+    /// `issue extends task`, for the tests below.
+    fn is_a(node_type: &str, base: &str) -> bool {
+        node_type == base || (node_type == "issue" && base == "task")
+    }
+
+    #[test]
+    fn test_a_subtype_rule_only_tightens() {
+        use SchemaChildrenRule as C;
+        use SchemaParentRule as P;
+
+        // `any` on a subtype declares nothing: it inherits.
+        assert!(C::Any.tightens(&C::None));
+        assert!(C::None.tightens(&C::Any));
+        assert!(except(&["task"]).tightens(&C::Any));
+        assert!(C::None.tightens(&except(&["task"])));
+        assert!(except(&["person"]).tightens(&except(&["task"])));
+        assert!(!except(&["task"]).tightens(&C::None));
+
+        assert!(P::Any.tightens(&P::MustBeRoot, is_a));
+        assert!(P::MustBeRoot.tightens(&P::Any, is_a));
+        assert!(parent_of(&["task"]).tightens(&P::Any, is_a));
+        assert!(P::MustBeRoot.tightens(&P::MustBeRoot, is_a));
+        assert!(!parent_of(&["task"]).tightens(&P::MustBeRoot, is_a));
+        assert!(!P::MustBeRoot.tightens(&parent_of(&["task"]), is_a));
+        // A list may narrow to a subtype of a type the base names, not widen.
+        assert!(parent_of(&["issue"]).tightens(&parent_of(&["task"]), is_a));
+        assert!(!parent_of(&["task"]).tightens(&parent_of(&["issue"]), is_a));
+        assert!(!parent_of(&["task", "person"]).tightens(&parent_of(&["task"]), is_a));
+    }
+
+    #[test]
+    fn test_the_rule_in_force_composes_down_the_chain() {
+        use SchemaChildrenRule as C;
+        use SchemaParentRule as P;
+
+        assert_eq!(C::Any.over(&C::None), C::None);
+        assert_eq!(C::None.over(&except(&["task"])), C::None);
+        assert_eq!(C::Any.over(&except(&["task"])), except(&["task"]));
+        assert_eq!(
+            except(&["person", "task"]).over(&except(&["task"])),
+            except(&["task", "person"])
+        );
+
+        assert_eq!(P::Any.over(&P::MustBeRoot), P::MustBeRoot);
+        assert_eq!(
+            parent_of(&["issue"]).over(&parent_of(&["task"])),
+            parent_of(&["issue"])
+        );
+    }
+
+    /// The registry's own subtypes obey the rule every schema is held to.
+    #[test]
+    fn test_no_core_subtype_relaxes_its_bases_structural_rules() {
+        let core_is_a =
+            |t: &str, base: &str| match (CoreNodeType::from_id(t), CoreNodeType::from_id(base)) {
+                (Some(t), Some(base)) => t.is_a(base),
+                _ => false,
+            };
+        for t in CoreNodeType::ALL {
+            let Some(parent) = t.parent() else { continue };
+            let base = parent.structure();
+            let own = t.declared_structure();
+            assert!(
+                SchemaChildrenRule::from(own.children).tightens(&base.children.into()),
+                "{t} relaxes the children rule of {parent}"
+            );
+            assert!(
+                SchemaParentRule::from(own.parent).tightens(&base.parent.into(), core_is_a),
+                "{t} relaxes the parent rule of {parent}"
+            );
+        }
     }
 
     #[test]
