@@ -23,6 +23,9 @@ vi.mock('@tauri-apps/api/core', () =>
 
 import * as tauriCommands from '$lib/services/tauri-commands';
 
+// Declare globals for eslint (these are available in Happy-DOM/browser environment)
+declare const Headers: typeof globalThis.Headers;
+
 interface WindowWithTauri extends Window {
   __TAURI__?: Record<string, unknown>;
   __TAURI_INTERNALS__?: Record<string, unknown>;
@@ -316,6 +319,7 @@ describe('Tauri System Commands - API Surface', () => {
       fetchMock = vi.fn().mockResolvedValue({
         ok: true,
         status: 200,
+        headers: new Headers(),
         json: () => Promise.resolve([])
       });
       vi.stubGlobal('fetch', fetchMock);
@@ -344,7 +348,12 @@ describe('Tauri System Commands - API Surface', () => {
     });
 
     it('chatModelList proxies to GET /api/agent/models with forceRefresh query param', async () => {
-      fetchMock.mockResolvedValue({ ok: true, status: 200, json: () => Promise.resolve([]) });
+      fetchMock.mockResolvedValue({
+        ok: true,
+        status: 200,
+        headers: new Headers(),
+        json: () => Promise.resolve([])
+      });
 
       const result = await tauriCommands.chatModelList(true);
 
@@ -358,6 +367,7 @@ describe('Tauri System Commands - API Surface', () => {
       fetchMock.mockResolvedValue({
         ok: true,
         status: 200,
+        headers: new Headers(),
         json: () => Promise.resolve({ modelId: 'model-y' })
       });
 
@@ -426,6 +436,7 @@ describe('Tauri System Commands - API Surface', () => {
       fetchMock.mockResolvedValue({
         ok: true,
         status: 200,
+        headers: new Headers(),
         json: () => Promise.resolve({ ramGb: 16 })
       });
 
@@ -497,37 +508,57 @@ describe('Tauri System Commands - API Surface', () => {
       vi.unstubAllGlobals();
     });
 
-    it('surfaces the proxy error body message when present', async () => {
+    /** A failed response whose body is not JSON. */
+    function nonJsonFailure(status: number, statusText: string) {
+      return {
+        ok: false,
+        status,
+        statusText,
+        json: () => Promise.reject(new SyntaxError('Unexpected token N in JSON'))
+      };
+    }
+
+    it("throws the proxy's message, code and status from a JSON error body", async () => {
       fetchMock.mockResolvedValue({
         ok: false,
         status: 500,
+        statusText: 'Internal Server Error',
         json: async () => ({ code: 'GRPC_ERROR', message: 'Out of memory' })
       });
-      await expect(tauriCommands.ensureModelReady('model-x')).rejects.toThrow('Out of memory');
+
+      await expect(tauriCommands.ensureModelReady('model-x')).rejects.toMatchObject({
+        name: 'BackendError',
+        message: 'Out of memory',
+        code: 'GRPC_ERROR',
+        status: 500
+      });
     });
 
-    it('proxyGet (via chatModelRecommended) throws a descriptive Error on a non-ok response', async () => {
-      fetchMock.mockResolvedValue({ ok: false, status: 503 });
+    it('proxyGet (via chatModelRecommended) throws the status on a non-JSON error body', async () => {
+      fetchMock.mockResolvedValue(nonJsonFailure(503, 'Service Unavailable'));
 
-      await expect(tauriCommands.chatModelRecommended()).rejects.toThrow(
-        'Proxy /api/agent/recommended-model failed: 503'
-      );
+      await expect(tauriCommands.chatModelRecommended()).rejects.toMatchObject({
+        message: 'HTTP 503: Service Unavailable',
+        status: 503
+      });
     });
 
-    it('proxyPost (via chatModelUnload) throws a descriptive Error on a non-ok response', async () => {
-      fetchMock.mockResolvedValue({ ok: false, status: 500 });
+    it('proxyPost (via chatModelUnload) throws the status on a non-JSON error body', async () => {
+      fetchMock.mockResolvedValue(nonJsonFailure(500, 'Internal Server Error'));
 
-      await expect(tauriCommands.chatModelUnload()).rejects.toThrow(
-        'Proxy /api/agent/models/unload failed: 500'
-      );
+      await expect(tauriCommands.chatModelUnload()).rejects.toMatchObject({
+        message: 'HTTP 500: Internal Server Error',
+        status: 500
+      });
     });
 
-    it('proxyDelete (via chatModelDelete) throws a descriptive Error on a non-ok response', async () => {
-      fetchMock.mockResolvedValue({ ok: false, status: 404 });
+    it('proxyDelete (via chatModelDelete) throws the status on a non-JSON error body', async () => {
+      fetchMock.mockResolvedValue(nonJsonFailure(404, 'Not Found'));
 
-      await expect(tauriCommands.chatModelDelete('missing-model')).rejects.toThrow(
-        'Proxy DELETE /api/agent/models/missing-model failed: 404'
-      );
+      await expect(tauriCommands.chatModelDelete('missing-model')).rejects.toMatchObject({
+        message: 'HTTP 404: Not Found',
+        status: 404
+      });
     });
 
     it('proxyPost returns undefined on a 204 response without calling .json()', async () => {
@@ -562,7 +593,7 @@ describe('Tauri System Commands - API Surface', () => {
 
     it('proxyPost parses the JSON body on a non-204 success response', async () => {
       const json = vi.fn().mockResolvedValue({ modelId: 'from-download' });
-      fetchMock.mockResolvedValue({ ok: true, status: 200, json });
+      fetchMock.mockResolvedValue({ ok: true, status: 200, headers: new Headers(), json });
 
       const result = await tauriCommands.chatModelDownload('model-x');
 

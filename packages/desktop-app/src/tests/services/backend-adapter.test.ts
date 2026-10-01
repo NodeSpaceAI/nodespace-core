@@ -1047,7 +1047,8 @@ describe('Backend Adapter - HttpAdapter (Browser Dev Mode)', () => {
     });
 
     it('should throw a BackendError carrying code and status for a coded error body', async () => {
-      const { getBackendAdapter, BackendError } = await import('$lib/services/backend-adapter');
+      const { getBackendAdapter } = await import('$lib/services/backend-adapter');
+      const { BackendError } = await import('$lib/services/http-response');
       const adapter = getBackendAdapter();
 
       mockFetch.mockResolvedValueOnce({
@@ -1144,7 +1145,8 @@ describe('Backend Adapter - HttpAdapter (Browser Dev Mode)', () => {
     });
 
     it('should throw a BackendError with status but no code for an uncoded error body', async () => {
-      const { getBackendAdapter, BackendError } = await import('$lib/services/backend-adapter');
+      const { getBackendAdapter } = await import('$lib/services/backend-adapter');
+      const { BackendError } = await import('$lib/services/http-response');
       const adapter = getBackendAdapter();
 
       mockFetch.mockResolvedValueOnce({
@@ -1169,7 +1171,8 @@ describe('Backend Adapter - HttpAdapter (Browser Dev Mode)', () => {
     });
 
     it('should throw a BackendError with a fallback message and no code for a non-JSON error body', async () => {
-      const { getBackendAdapter, BackendError } = await import('$lib/services/backend-adapter');
+      const { getBackendAdapter } = await import('$lib/services/backend-adapter');
+      const { BackendError } = await import('$lib/services/http-response');
       const adapter = getBackendAdapter();
 
       mockFetch.mockResolvedValueOnce({

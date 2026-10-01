@@ -15,7 +15,7 @@
 import type { Node, CollectionNode } from '$lib/types';
 import { createLogger } from '$lib/utils/logger';
 import { invoke } from '@tauri-apps/api/core';
-import { handleResponse } from './backend-adapter';
+import { handleResponse } from './http-response';
 
 const log = createLogger('CollectionService');
 
@@ -283,6 +283,7 @@ class HttpCollectionService implements CollectionServiceInterface {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(change)
     });
+    // The proxy answers with the updated node, which no caller needs.
     await handleResponse<unknown>(response);
   }
 

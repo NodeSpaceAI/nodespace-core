@@ -430,7 +430,7 @@ describe('HttpCollectionService', () => {
       );
 
       const svc = await loadHttpService();
-      const { BackendError } = await import('$lib/services/backend-adapter');
+      const { BackendError } = await import('$lib/services/http-response');
 
       const thrown = await send(svc).then(
         () => undefined,
@@ -452,7 +452,7 @@ describe('HttpCollectionService', () => {
       vi.stubGlobal('fetch', vi.fn().mockResolvedValue(nonJsonErrorResponse(502, 'Bad Gateway')));
 
       const svc = await loadHttpService();
-      const { BackendError } = await import('$lib/services/backend-adapter');
+      const { BackendError } = await import('$lib/services/http-response');
 
       const thrown = await send(svc).then(
         () => undefined,
