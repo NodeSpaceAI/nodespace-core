@@ -125,7 +125,7 @@ pub const AI_CHAT_PRIVACY_PLAY_ID: &str = "play-core-ai-chat-privacy";
 /// The rule is `invariant`, not `reactive` (ADR-060 §1). A chat must never be
 /// observable without its restriction: a post-commit reactive rule leaves a
 /// window between commit and effect, and a failed action would leave a
-/// permanently tenant-open chat plus a log node. Neither is acceptable for a
+/// permanently unrestricted chat plus a log node. Neither is acceptable for a
 /// privacy default, so this runs synchronously inside the creating
 /// transaction, fail-closed, instead.
 ///
@@ -176,10 +176,10 @@ fn ai_chat_privacy_play() -> Node {
         json!({
             "rules": rules,
             "description": "Every new AI chat is added to this install's private \
-                            AI-chat collection at creation, so it starts private to \
-                            you. Disabling this makes every future chat visible to \
-                            the whole tenant by default; existing chats keep \
-                            whatever membership they already have.",
+                            AI-chat collection when it is created, so it starts \
+                            private to you. Disabling this leaves future chats out \
+                            of that collection; existing chats keep whatever \
+                            membership they already have.",
             "_seed": { "default_rules": rules },
         }),
     )
@@ -325,5 +325,101 @@ mod tests {
     #[test]
     fn the_ai_chat_privacy_play_id_is_stable() {
         assert_eq!(ai_chat_privacy_play().id, AI_CHAT_PRIVACY_PLAY_ID);
+    }
+
+    /// The description shows in the Playbooks UI. It says what disabling the
+    /// Play does on this install and names no sharing model. The needle is
+    /// built from fragments so this test does not itself carry the word.
+    #[test]
+    fn the_ai_chat_privacy_play_description_names_no_sharing_model() {
+        let play = ai_chat_privacy_play();
+        let description = play.properties["description"]
+            .as_str()
+            .expect("the Play description must be a string")
+            .to_lowercase();
+        let sharing_term = ["ten", "ant"].concat();
+        assert!(
+            !description.contains(&sharing_term),
+            "the description must not name {sharing_term:?}: {description:?}"
+        );
+        assert!(
+            !description.contains("workspace"),
+            "the description must not name a workspace: {description:?}"
+        );
+        assert!(
+            description.contains("disabling this"),
+            "the description must say what disabling the Play does: {description:?}"
+        );
+    }
+
+    mod integration {
+        use super::*;
+        use crate::db::SqliteStore;
+        use crate::models::NodeUpdate;
+        use std::sync::Arc;
+        use tempfile::TempDir;
+
+        async fn create_test_service() -> (Arc<NodeService>, TempDir) {
+            let temp_dir = TempDir::new().unwrap();
+            let db_path = temp_dir.path().join("test.db");
+            let mut store: Arc<SqliteStore> = Arc::new(SqliteStore::new(db_path).await.unwrap());
+            let node_service = Arc::new(NodeService::new(&mut store).await.unwrap());
+            (node_service, temp_dir)
+        }
+
+        /// A persisted Play keeps its properties under the `play` namespace.
+        async fn stored_description(service: &NodeService) -> String {
+            service
+                .get_node(AI_CHAT_PRIVACY_PLAY_ID)
+                .await
+                .unwrap()
+                .expect("the privacy Play must be seeded")
+                .properties["play"]["description"]
+                .as_str()
+                .expect("the Play description must be a string")
+                .to_string()
+        }
+
+        /// A fresh database is seeded with the shipped description.
+        #[tokio::test]
+        async fn a_fresh_database_carries_the_shipped_description() {
+            let (service, _temp) = create_test_service().await;
+
+            let shipped = ai_chat_privacy_play().properties["description"]
+                .as_str()
+                .unwrap()
+                .to_string();
+            assert_eq!(stored_description(&service).await, shipped);
+        }
+
+        /// Seeding never overwrites an existing Play node, so a database that
+        /// already holds the Play keeps whatever text it has.
+        #[tokio::test]
+        async fn re_seeding_keeps_an_existing_plays_description() {
+            let (service, _temp) = create_test_service().await;
+
+            let existing = service
+                .get_node(AI_CHAT_PRIVACY_PLAY_ID)
+                .await
+                .unwrap()
+                .unwrap();
+            service
+                .update_node(
+                    AI_CHAT_PRIVACY_PLAY_ID,
+                    existing.version,
+                    NodeUpdate::default().with_properties(json!({
+                        "description": "A description from an earlier release."
+                    })),
+                )
+                .await
+                .unwrap();
+
+            seed_core_plays_if_needed(&service).await.unwrap();
+
+            assert_eq!(
+                stored_description(&service).await,
+                "A description from an earlier release."
+            );
+        }
     }
 }
