@@ -1587,8 +1587,9 @@ mod tests {
             "the root-only rule must not touch non-member_of generic edges"
         );
 
-        // Person-node membership is EXEMPT (grantee membership, ADR-037 §4) — even
-        // when the person node is interior.
+        // Person-node membership is EXEMPT — it makes the person a member of the
+        // collection rather than filing the person as content — even when the
+        // person node is interior.
         let interior_person = store
             .create_child_node_atomic(&root_id, "person", "", json!({}), None)
             .await?;

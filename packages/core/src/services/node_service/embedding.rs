@@ -18,9 +18,9 @@ impl NodeService {
     /// descendants. A child has no meaning outside its root, so it never
     /// carries an embedding of its own — including a child of a
     /// non-embeddable root such as a `date` page or a `task`. The one
-    /// exception is a descendant whose access differs from its root's
-    /// (ADR-059 §7): it is cut out of the root's vector and is its own
-    /// embedding root. See [`crate::db::SqliteStore::embedding_root_id`].
+    /// exception is a non-person descendant holding a `member_of` edge
+    /// (ADR-059 §7, ADR-083 §5): it is cut out of the root's vector and is its
+    /// own embedding root. See [`crate::db::SqliteStore::embedding_root_id`].
     pub async fn get_embedding_root_id(&self, node_id: &str) -> Result<String, NodeServiceError> {
         self.store
             .embedding_root_id(node_id)

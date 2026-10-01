@@ -4105,7 +4105,15 @@ mod tests {
         let person = create(next_id(), "person", Some(r.clone()), json!({})).await;
         file(person.clone(), c1.clone()).await;
         assert!(boundaries(r.clone()).await.is_empty(), "(d)");
-        assert_eq!(root_of(person).await, r, "(d)");
+        assert_eq!(root_of(person.clone()).await, r, "(d)");
+
+        // (d') The walk continues through a filed person: a filed node below it
+        // is still a boundary of the root above, and its own root.
+        let note = create(next_id(), "text", Some(person.clone()), json!({})).await;
+        file(note.clone(), c2.clone()).await;
+        assert_eq!(boundaries(r.clone()).await, set(&[&note]), "(d')");
+        assert_eq!(root_of(note.clone()).await, note, "(d')");
+        assert_eq!(root_of(person).await, r, "(d')");
     }
 
     /// A schema added to `get_core_schemas()` after a database's first run

@@ -2,10 +2,11 @@
 //! (ADR-059 §6/§7).
 //!
 //! An embedding root is normally a tree root: its vector aggregates its whole
-//! `has_child` subtree. Two constraints keep every node of that subtree out of
-//! any collection of its own (ADR-059 §2): only a root may hold a `member_of`
-//! edge (`assert_may_gain_parent` and the `member_of` insert guards), and a
-//! collection is always a root (the `collection_is_root_*` schema triggers).
+//! `has_child` subtree. Two constraints keep every non-person node of that
+//! subtree out of any collection of its own (ADR-059 §2): only a root may
+//! hold a `member_of` edge (`assert_may_gain_parent` and the `member_of`
+//! insert guards), and a collection is always a root (the
+//! `collection_is_root_*` schema triggers).
 //! A non-person descendant that holds a `member_of` edge therefore breaks §2,
 //! and finding one is a defect whatever any collection's properties say
 //! (ADR-083 §5). The descendant is kept out of the root's vector and becomes
