@@ -1099,16 +1099,28 @@ fn written_out_type_listing(types: &[(String, String)]) -> String {
 /// The types a reply was listing when it was suppressed for an ungrounded id,
 /// or `None` when the reply was not a listing of types.
 ///
-/// One slip among twenty-odd links — a space inside an id — reads as an
-/// invented node, and the reply is suppressed whole. When the turn ran a
-/// complete type listing ([`complete_type_listing`]), wrote nothing, and the
-/// suppressed text links at least [`TYPE_LISTING_MIN_LINKED`] of the types the
-/// search returned, the reply was that list with a slip in it, and the list
-/// can be written out from the result instead. Read off the suppressed text
-/// because that is the only evidence of what the reply was: a turn that ran
-/// the same search on its way to something else gets the usual replacement.
+/// One slip among twenty-odd links — a space inside an id, so
+/// `nodespace://code block` reads as the node `nodespace://code` — looks like
+/// an invented node, and the reply is suppressed whole. The reply was a list of
+/// types with a slip in it, and the list can be written out from the search
+/// result instead, when all of these hold:
+///
+/// - the turn ran a complete type listing ([`complete_type_listing`]) and
+///   wrote nothing — after a write the replacement reports the write;
+/// - the suppressed text links at least [`TYPE_LISTING_MIN_LINKED`] of the
+///   types the search returned;
+/// - every ungrounded id in it is the cut-short form of a listed type's id.
+///
+/// The last is what tells a slip from an invention. An id made up for a record
+/// the turn never created (`nodespace://4f2a-9c1e`) is not the start of any
+/// type's id, and a reply carrying one keeps the request to confirm however
+/// many types it links beside it: the user has to be told nothing was set up.
+///
+/// All of it is read off the suppressed text, the only evidence of what the
+/// reply was.
 fn suppressed_type_listing(
     suppressed: &str,
+    ungrounded: &[String],
     executions: &[ToolExecutionRecord],
 ) -> Option<Vec<(String, String)>> {
     if executions
@@ -1123,7 +1135,16 @@ fn suppressed_type_listing(
         .iter()
         .filter(|(uri, _)| linked.contains(uri.as_str()))
         .count();
-    (named >= TYPE_LISTING_MIN_LINKED).then_some(types)
+    if named < TYPE_LISTING_MIN_LINKED {
+        return None;
+    }
+    let cut_short_type_id = |id: &String| {
+        id.len() > "nodespace://".len()
+            && types
+                .iter()
+                .any(|(uri, _)| uri.len() > id.len() && uri.starts_with(id.as_str()))
+    };
+    ungrounded.iter().all(cut_short_type_id).then_some(types)
 }
 
 /// Complete a reply that lists some of the workspace's types and not the rest.
@@ -3334,16 +3355,19 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                         normalized
                     } else {
                         let (preview, preview_truncated) = char_preview(&normalized, 120);
+                        let slipped_listing =
+                            suppressed_type_listing(&normalized, &bad_ids, &all_tool_executions);
                         tracing::warn!(
                             session_id = %session.id,
                             model = %session.model_id.as_deref().unwrap_or("unknown"),
                             iteration = iteration,
                             fabricated_ids = %bad_ids.join(", "),
+                            type_listing_written_out = slipped_listing.is_some(),
                             response_preview = %preview,
                             response_preview_truncated = preview_truncated,
                             "Fabricated id: model referenced a nodespace:// id no tool call this turn produced — replacing response"
                         );
-                        match suppressed_type_listing(&normalized, &all_tool_executions) {
+                        match slipped_listing {
                             Some(types) => written_out_type_listing(&types),
                             None => suppressed_response_replacement(&all_tool_executions),
                         }
@@ -9936,7 +9960,7 @@ mod tests {
     #[tokio::test]
     async fn a_type_listing_lost_to_one_bad_link_is_written_out() {
         let slipped = "The types are [plan](nodespace://plan), [spec](nodespace://spec) \
-                       and [Code Block](nodespace://code block).";
+                       and [Project](nodespace://proj ect).";
         let (reply, _) = run_type_listing_turn(UNFILTERED_TYPE_LISTING, slipped).await;
         assert_eq!(reply, EVERY_TYPE_LISTED);
     }
@@ -9960,10 +9984,75 @@ mod tests {
             "I set that up as [Sponsor](nodespace://4f2a-9c1e).",
             // One listed type linked beside the invented id.
             "It extends [Task](nodespace://task): see nodespace://4f2a-9c1e.",
+            // Two listed types linked, but the bad id is an invented record,
+            // not a listed type's id cut short: the user must still be told
+            // nothing was set up.
+            "I created [Sponsor](nodespace://4f2a-9c1e) next to [Task](nodespace://task) \
+             and [Person](nodespace://person).",
         ] {
             let (reply, _) = run_type_listing_turn(UNFILTERED_TYPE_LISTING, not_a_listing).await;
             assert_eq!(reply, CONFIRMATION_REQUEST, "for {not_a_listing:?}");
         }
+    }
+
+    /// Each condition on its own: the slipped reply is a listing only on a turn
+    /// that wrote nothing, that links two listed types, and whose every bad id
+    /// is a listed type's id cut short.
+    #[test]
+    fn a_suppressed_reply_is_a_slipped_listing_only_when_every_condition_holds() {
+        let record =
+            |name: &str, args: serde_json::Value, result: serde_json::Value| ToolExecutionRecord {
+                tool_call_id: "tc".into(),
+                name: name.into(),
+                args,
+                result,
+                is_error: false,
+                duration_ms: 0,
+            };
+        let listing = || {
+            record(
+                "search_nodes",
+                json!({"node_type": "schema", "query": "*"}),
+                type_listing_result(),
+            )
+        };
+        let slipped = "The types are [plan](nodespace://plan), [spec](nodespace://spec) \
+                       and [Project](nodespace://proj ect).";
+        let cut_short = vec!["nodespace://proj".to_string()];
+
+        let types = suppressed_type_listing(slipped, &cut_short, &[listing()])
+            .expect("a listing with one id cut short is a slipped listing");
+        assert_eq!(types.len(), 5);
+
+        // The turn also wrote: the replacement has to report the write.
+        let wrote = [
+            listing(),
+            record(
+                "create_node",
+                json!({"node_type": "plan", "content": "Q4"}),
+                json!({"id": "nodespace://abc", "property_count": 1}),
+            ),
+        ];
+        assert!(suppressed_type_listing(slipped, &cut_short, &wrote).is_none());
+
+        // The bad id is not the start of any listed type's id.
+        let invented = vec!["nodespace://4f2a-9c1e".to_string()];
+        assert!(suppressed_type_listing(slipped, &invented, &[listing()]).is_none());
+        // Nor is the bare scheme, which every id starts with.
+        let bare = vec!["nodespace://".to_string()];
+        assert!(suppressed_type_listing(slipped, &bare, &[listing()]).is_none());
+
+        // Only one listed type linked.
+        let one_link = "See [plan](nodespace://plan) and [Project](nodespace://proj ect).";
+        assert!(suppressed_type_listing(one_link, &cut_short, &[listing()]).is_none());
+
+        // No complete type listing in the turn.
+        let narrowed = [record(
+            "search_nodes",
+            json!({"node_type": "schema", "query": "pl"}),
+            type_listing_result(),
+        )];
+        assert!(suppressed_type_listing(slipped, &cut_short, &narrowed).is_none());
     }
 
     /// A tool call narrated as text is suppressed too, and its replacement must

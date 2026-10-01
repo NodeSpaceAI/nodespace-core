@@ -483,11 +483,13 @@ async function compareToBaseline(
  * So a setup turn that failed its assertion leaves the group scoreable only
  * when both hold:
  *
- * - The turn did nothing: no tool call, no clarifying question, no failed
- *   send. Only that is the correct no-op. A turn that asked a question leaves
- *   the next prompt to be read as its answer, and one that called some other
- *   tool changed the workspace the scenarios assume; the state check cannot
- *   see either.
+ * - The turn did nothing: no tool call, no Stage-1 clarification, no failed
+ *   send. Only that can be the correct no-op. A clarification leaves the next
+ *   prompt to be read as its answer, and any tool call, a read included, means
+ *   the turn went somewhere other than where the setup points; the state check
+ *   sees neither, so both block. A reply that asks a question in its own words
+ *   is not detected: on the record it is the same as "that type already
+ *   exists", a reply with no tool call that routed as a query.
  * - The fixture shows the state present. A fixture with no way to check keeps
  *   the turn's own verdict: unknown is treated as missing.
  *
@@ -1190,7 +1192,7 @@ function runRep(fixture: EvalFixture, env: EvalEnv): ScenarioResult[] {
           ? fixture.graph.scoreOutcome(scenario, diff, [scored])
           : trajectory;
 
-      results.push({
+      const recorded: ScenarioResult = {
         id: scenario.id,
         scenario: scenario.scenario,
         prompt: scenario.prompt,
@@ -1201,7 +1203,8 @@ function runRep(fixture: EvalFixture, env: EvalEnv): ScenarioResult[] {
         graphDiff: diff,
         trajectory: fixture.graph ? trajectory : undefined,
         excludedAsSetup: scenario.setup === true ? true : undefined,
-      });
+      };
+      results.push(recorded);
 
       const marker = markerFor({
         excludedAsSetup: scenario.setup === true,
@@ -1231,7 +1234,7 @@ function runRep(fixture: EvalFixture, env: EvalEnv): ScenarioResult[] {
         } else {
           // Recorded on the setup turn's own result, so the results file shows
           // which groups were scored on state that was already there.
-          results[results.length - 1].setupStateAlreadyPresent = true;
+          recorded.setupStateAlreadyPresent = true;
           console.error(
             `[${fixture.name}]     ↳ the turn did nothing and the state this setup ` +
               `establishes is already present, so later scenarios in this group are scored`,

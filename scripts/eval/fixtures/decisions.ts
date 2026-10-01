@@ -907,9 +907,13 @@ const fixture: EvalFixture = {
     } | null;
     try {
       schemas = runNs(env, ["schema", "list"]) as typeof schemas;
-    } catch {
+    } catch (err) {
       // The check could not be made, which is not the same as the state being
-      // there: unknown blocks the group.
+      // there: unknown blocks the group. Logged so a daemon failure can be
+      // told apart from a setup that established nothing.
+      console.error(
+        `[decisions]     setup state check failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
       return undefined;
     }
     const customTypeIds = (schemas?.nodes ?? [])
