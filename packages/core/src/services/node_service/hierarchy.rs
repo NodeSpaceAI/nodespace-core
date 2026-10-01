@@ -305,27 +305,21 @@ impl NodeService {
     }
 
     /// Hierarchy rules every move must satisfy, shared by `move_node` and
-    /// `move_node_unchecked` so the two variants differ only in OCC:
-    /// date containers never move, the new parent must exist and be a
-    /// container type, and the move must not create a cycle.
+    /// `move_node_unchecked` so the two variants differ only in OCC: the new
+    /// parent must exist, both structural rules must allow the node there
+    /// (ADR-089), and the move must not create a cycle.
     async fn validate_move(
         &self,
         node: &Node,
         new_parent: Option<&str>,
     ) -> Result<(), NodeServiceError> {
-        // Date nodes are top-level containers and cannot be moved
-        if self
-            .type_is_a(&node.node_type, crate::models::CoreNodeType::Date)
-            .await?
-        {
-            return Err(NodeServiceError::hierarchy_violation(format!(
-                "Date node '{}' cannot be moved (it's a top-level container)",
-                node.id
-            )));
-        }
-
         let Some(parent_id) = new_parent else {
-            return Ok(());
+            // To the root: refused for a type that needs a parent.
+            return self
+                .store
+                .assert_may_be_root(&node.node_type, Some(&node.id))
+                .await
+                .map_err(NodeServiceError::from_store);
         };
 
         let parent_node = self
@@ -333,17 +327,13 @@ impl NodeService {
             .await?
             .ok_or_else(|| NodeServiceError::invalid_parent(parent_id))?;
 
-        // Enforce container rule: reject moves into non-container node types
-        if !self
-            .behavior_for(&parent_node.node_type)
-            .await?
-            .can_have_children()
-        {
-            return Err(NodeServiceError::not_a_container(
-                parent_id,
-                &parent_node.node_type,
-            ));
-        }
+        self.store
+            .assert_has_child_allowed(
+                crate::db::Placed::existing(parent_id, &parent_node.node_type),
+                crate::db::Placed::existing(&node.id, &node.node_type),
+            )
+            .await
+            .map_err(NodeServiceError::from_store)?;
 
         // Check for circular reference - parent_id cannot be a descendant of node_id
         if self.is_descendant(&node.id, parent_id).await? {
@@ -379,9 +369,10 @@ impl NodeService {
     ///
     /// Returns error if:
     /// - Node doesn't exist
-    /// - New parent doesn't exist or is not a container type
+    /// - New parent doesn't exist
+    /// - A structural rule of either type refuses the node under that parent,
+    ///   or at the root (ADR-089)
     /// - Move would create circular reference
-    /// - Node is a date container (cannot be moved)
     ///
     /// # Examples
     ///
@@ -437,9 +428,10 @@ impl NodeService {
     /// Returns error if:
     /// - Node doesn't exist
     /// - Version doesn't match (concurrent modification detected)
-    /// - New parent doesn't exist or is not a container type
+    /// - New parent doesn't exist
+    /// - A structural rule of either type refuses the node under that parent,
+    ///   or at the root (ADR-089)
     /// - Move would create circular reference
-    /// - Node is a date container (cannot be moved)
     ///
     /// # Examples
     ///
@@ -750,22 +742,11 @@ impl NodeService {
             return Ok(Vec::new());
         }
 
-        // Verify new parent exists and can hold children.
+        // Verify new parent exists.
         let parent_node = self
             .get_node(new_parent_id)
             .await?
             .ok_or_else(|| NodeServiceError::invalid_parent(new_parent_id))?;
-
-        if !self
-            .behavior_for(&parent_node.node_type)
-            .await?
-            .can_have_children()
-        {
-            return Err(NodeServiceError::not_a_container(
-                new_parent_id,
-                &parent_node.node_type,
-            ));
-        }
 
         // Pre-validation: fetch all children, check versions, apply move_node guards.
         // Version conflicts return immediately before any write touches the DB.
@@ -785,16 +766,15 @@ impl NodeService {
                 ));
             }
 
-            // Date nodes are top-level containers and cannot be moved.
-            if self
-                .type_is_a(&node.node_type, crate::models::CoreNodeType::Date)
-                .await?
-            {
-                return Err(NodeServiceError::hierarchy_violation(format!(
-                    "Date node '{}' cannot be moved (it's a top-level container)",
-                    node_id
-                )));
-            }
+            // Both structural rules must allow the child under the new parent
+            // (ADR-089).
+            self.store
+                .assert_has_child_allowed(
+                    crate::db::Placed::existing(new_parent_id, &parent_node.node_type),
+                    crate::db::Placed::existing(node_id, &node.node_type),
+                )
+                .await
+                .map_err(NodeServiceError::from_store)?;
 
             // Root nodes have no has_child edge to replace, so the in-transaction
             // swap would fail with a generic store error. Reject them here so

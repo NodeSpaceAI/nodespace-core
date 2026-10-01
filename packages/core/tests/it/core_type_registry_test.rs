@@ -199,7 +199,7 @@ async fn a_subtype_of_collection_is_root_only_and_keeps_the_collections_rules() 
         .expect_err("a team is a collection, and a collection is a root");
     match refused {
         NodeServiceError::TreeInvariantViolation(v) => {
-            assert_eq!(v.rule, TreeInvariantRule::NotRoot(CoreNodeType::Collection));
+            assert_eq!(v.rule, TreeInvariantRule::MustBeRoot);
         }
         other => panic!("expected a tree invariant violation, got {other:?}"),
     }
@@ -209,7 +209,7 @@ async fn a_subtype_of_collection_is_root_only_and_keeps_the_collections_rules() 
         svc.create_relationship(&page, "has_child", &team, json!({}))
             .await,
     );
-    assert!(error.contains("collection_not_root"), "{error}");
+    assert!(error.contains("must_be_root"), "{error}");
 
     // Retyped into while it has a parent.
     let line = create_under(&svc, &page, "text", "A line").await.unwrap();
@@ -222,7 +222,7 @@ async fn a_subtype_of_collection_is_root_only_and_keeps_the_collections_rules() 
         )
         .await,
     );
-    assert!(error.contains("collection_not_root"), "{error}");
+    assert!(error.contains("must_be_root"), "{error}");
 
     // The collection's naming rule.
     let error = message(create(&svc, "team", "a:b", json!({})).await);
@@ -868,7 +868,7 @@ async fn a_type_with_parented_nodes_cannot_take_a_root_only_base() {
     .await
     .expect_err("a nested folder would become a collection with a parent")
     .to_string();
-    assert!(error.contains("always a root"), "{error}");
+    assert!(error.contains("has a parent"), "{error}");
     assert_eq!(
         svc.store().type_chain("folder").await.unwrap(),
         vec!["folder"]

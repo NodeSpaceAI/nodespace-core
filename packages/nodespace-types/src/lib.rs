@@ -72,7 +72,8 @@ pub use query::{
 };
 pub use schema::{
     derive_friendly_name, EdgeField, EnumValue, RelationshipCardinality, RelationshipDirection,
-    SchemaField, SchemaFieldType, SchemaNode, SchemaProtectionLevel, SchemaRelationship,
+    SchemaChildrenRule, SchemaField, SchemaFieldType, SchemaNode, SchemaParentRule,
+    SchemaProtectionLevel, SchemaRelationship,
 };
 pub use skill::{SkillNode, DEFAULT_SKILL_MAX_ITERATIONS, SKILL_NODE_TYPE};
 pub use task::{TaskNode, TaskNodeUpdate, TaskStatus};

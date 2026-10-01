@@ -77,8 +77,6 @@ describe('Schema Plugin Loader - createPluginFromSchema()', () => {
         // Entity types are not slash-creatable — no slash command is generated for
         // user-defined schema types. Instances are created via the sidenav's type view.
         slashCommands: [],
-        canHaveChildren: true,
-        canBeChild: true
       }
     });
   });
@@ -447,7 +445,7 @@ describe('Schema Plugin Loader - resyncSchemaPluginsForDatabaseSwitch()', () => 
       name: 'Task',
       description: 'Core task type',
       version: '1.0.0',
-      config: { slashCommands: [], canHaveChildren: true, canBeChild: true }
+      config: { slashCommands: [] }
     });
     expect(pluginRegistry.hasPlugin('task')).toBe(true);
 

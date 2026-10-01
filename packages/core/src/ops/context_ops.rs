@@ -1352,6 +1352,8 @@ mod tests {
             modified_at: chrono::Utc::now(),
             is_core: false,
             is_abstract: false,
+            children: Default::default(),
+            parent: Default::default(),
             schema_version: 1,
             fields: fields
                 .iter()

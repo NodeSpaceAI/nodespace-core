@@ -113,13 +113,17 @@ pub struct StructuralRules {
 }
 
 impl StructuralRules {
-    const ANY: Self = Self {
+    pub const ANY: Self = Self {
         children: ChildrenRule::Any,
         parent: ParentRule::Any,
     };
     const ROOT_ONLY: Self = Self {
         children: ChildrenRule::Any,
         parent: ParentRule::MustBeRoot,
+    };
+    const LEAF: Self = Self {
+        children: ChildrenRule::None,
+        parent: ParentRule::Any,
     };
 }
 
@@ -241,6 +245,20 @@ impl CoreNodeType {
                 wire,
             }
         }
+        /// A type whose nodes take no children.
+        const fn leaf(info: CoreTypeInfo) -> CoreTypeInfo {
+            CoreTypeInfo {
+                structure: StructuralRules::LEAF,
+                ..info
+            }
+        }
+        /// A type whose nodes are always roots.
+        const fn root_only(info: CoreTypeInfo) -> CoreTypeInfo {
+            CoreTypeInfo {
+                structure: StructuralRules::ROOT_ONLY,
+                ..info
+            }
+        }
         const EMBEDDED: ParticipationRules = ParticipationRules::EMBEDDED;
         const NOT_EMBEDDED: ParticipationRules = ParticipationRules::NOT_EMBEDDED;
         const TYPED: WireShape = WireShape::Typed { update: true };
@@ -248,7 +266,13 @@ impl CoreNodeType {
         match self {
             Self::Text => entry("text", Primitive, Body, EMBEDDED, WireShape::Envelope),
             Self::Header => entry("header", Primitive, Body, EMBEDDED, WireShape::Envelope),
-            Self::CodeBlock => entry("code-block", Primitive, Body, EMBEDDED, WireShape::Envelope),
+            Self::CodeBlock => leaf(entry(
+                "code-block",
+                Primitive,
+                Body,
+                EMBEDDED,
+                WireShape::Envelope,
+            )),
             Self::QuoteBlock => entry(
                 "quote-block",
                 Primitive,
@@ -256,23 +280,37 @@ impl CoreNodeType {
                 EMBEDDED,
                 WireShape::Envelope,
             ),
-            Self::OrderedList => entry(
+            Self::OrderedList => leaf(entry(
                 "ordered-list",
                 Primitive,
                 Body,
                 EMBEDDED,
                 WireShape::Envelope,
-            ),
+            )),
             Self::Checkbox => entry("checkbox", Primitive, Body, EMBEDDED, WireShape::Envelope),
-            Self::HorizontalLine => entry(
+            Self::HorizontalLine => leaf(entry(
                 "horizontal-line",
                 Primitive,
                 Body,
                 NOT_EMBEDDED,
                 WireShape::Envelope,
-            ),
-            Self::Table => entry("table", Primitive, Body, EMBEDDED, WireShape::Envelope),
-            Self::Date => entry("date", Primitive, Name, NOT_EMBEDDED, WireShape::Envelope),
+            )),
+            Self::Table => leaf(entry(
+                "table",
+                Primitive,
+                Body,
+                EMBEDDED,
+                WireShape::Envelope,
+            )),
+            // A date page is always top-level; it joins collections through
+            // `member_of`.
+            Self::Date => root_only(entry(
+                "date",
+                Primitive,
+                Name,
+                NOT_EMBEDDED,
+                WireShape::Envelope,
+            )),
             Self::AgentGuidance => entry(
                 "agent-guidance",
                 Primitive,
@@ -289,36 +327,40 @@ impl CoreNodeType {
                 title_template: Some("{first_name} {last_name}"),
                 ..entry("person", Flat, Ignored, NOT_EMBEDDED, TYPED)
             },
+            // Collections nest through `member_of`, never `has_child`.
             Self::Collection => CoreTypeInfo {
-                structure: StructuralRules::ROOT_ONLY,
                 always_titled: true,
-                ..entry(
+                ..root_only(entry(
                     "collection",
                     Flat,
                     Name,
                     NOT_EMBEDDED.not_mentionable(),
                     WireShape::Generic,
-                )
+                ))
             },
             Self::Skill => entry("skill", Flat, Name, EMBEDDED, WireShape::Generic),
-            Self::DatabaseSettings => entry(
+            Self::DatabaseSettings => leaf(entry(
                 "database-settings",
                 Flat,
                 Name,
                 NOT_EMBEDDED,
                 WireShape::Generic,
-            ),
-            Self::Query => entry("query", Structured, DescriptionLine, NOT_EMBEDDED, TYPED),
-            Self::Schema => CoreTypeInfo {
-                structure: StructuralRules::ROOT_ONLY,
-                ..entry(
-                    "schema",
-                    Structured,
-                    Name,
-                    EMBEDDED.not_mentionable(),
-                    WireShape::Typed { update: false },
-                )
-            },
+            )),
+            Self::Query => leaf(entry(
+                "query",
+                Structured,
+                DescriptionLine,
+                NOT_EMBEDDED,
+                TYPED,
+            )),
+            // A schema's children are its description subtree.
+            Self::Schema => root_only(entry(
+                "schema",
+                Structured,
+                Name,
+                EMBEDDED.not_mentionable(),
+                WireShape::Typed { update: false },
+            )),
             Self::Play => entry("play", Structured, Name, NOT_EMBEDDED, WireShape::Generic),
             // The chat family (ADR-088). The base is never instantiated; its
             // rules are the floor both subtypes inherit.
@@ -354,7 +396,13 @@ impl CoreNodeType {
                     WireShape::Typed { update: false },
                 )
             },
-            Self::Tool => entry("tool", Structured, Name, EMBEDDED, WireShape::Generic),
+            Self::Tool => leaf(entry(
+                "tool",
+                Structured,
+                Name,
+                EMBEDDED,
+                WireShape::Generic,
+            )),
         }
     }
 
@@ -432,8 +480,14 @@ impl CoreNodeType {
         self.info().content_role
     }
 
-    /// The structural rules in force for this type: its own, or the nearest
-    /// ancestor's that declares a tighter one.
+    /// The structural rules this type itself declares, before inheritance.
+    pub const fn declared_structure(self) -> StructuralRules {
+        self.info().structure
+    }
+
+    /// The structural rules in force for this type: its ancestors' rules with
+    /// its own on top. A subtype only tightens, so the nearest declaration of
+    /// each rule is the one in force.
     pub fn structure(self) -> StructuralRules {
         let mut rules = StructuralRules::ANY;
         for ancestor in self.chain().into_iter().rev() {
@@ -462,6 +516,15 @@ impl CoreNodeType {
         rules
     }
 
+    /// Whether a node of this type is embedded together with its subtree.
+    ///
+    /// A chat's subtree is not (ADR-061 §4): each child of a chat is its own
+    /// embedding root, so a node kept under a chat stays searchable
+    /// (ADR-089 §4).
+    pub fn embeds_subtree(self) -> bool {
+        !self.is_a(Self::AiChat)
+    }
+
     /// Whether the type is titled by its content at any depth.
     pub fn always_titled(self) -> bool {
         self.chain().into_iter().any(|t| t.info().always_titled)
@@ -476,14 +539,6 @@ impl CoreNodeType {
 
     pub const fn wire(self) -> WireShape {
         self.info().wire
-    }
-
-    /// The core types that must be roots, with every core subtype of one.
-    pub fn root_only() -> Vec<Self> {
-        Self::ALL
-            .into_iter()
-            .filter(|t| t.structure().parent == ParentRule::MustBeRoot)
-            .collect()
     }
 
     /// The core types the `@` mention picker leaves out.
@@ -616,10 +671,40 @@ mod tests {
 
     #[test]
     fn root_only_and_mention_rules_match_the_declared_types() {
+        let with_parent_rule = |rule: ParentRule| -> Vec<CoreNodeType> {
+            CoreNodeType::ALL
+                .into_iter()
+                .filter(|t| t.structure().parent == rule)
+                .collect()
+        };
+        let with_children_rule = |rule: ChildrenRule| -> Vec<CoreNodeType> {
+            CoreNodeType::ALL
+                .into_iter()
+                .filter(|t| t.structure().children == rule)
+                .collect()
+        };
         assert_eq!(
-            CoreNodeType::root_only(),
-            vec![CoreNodeType::Collection, CoreNodeType::Schema]
+            with_parent_rule(ParentRule::MustBeRoot),
+            vec![
+                CoreNodeType::Date,
+                CoreNodeType::Collection,
+                CoreNodeType::Schema
+            ]
         );
+        assert_eq!(
+            with_children_rule(ChildrenRule::None),
+            vec![
+                CoreNodeType::CodeBlock,
+                CoreNodeType::OrderedList,
+                CoreNodeType::HorizontalLine,
+                CoreNodeType::Table,
+                CoreNodeType::DatabaseSettings,
+                CoreNodeType::Query,
+                CoreNodeType::Tool
+            ]
+        );
+        // A chat holds its messages and may hold other nodes too.
+        assert_eq!(CoreNodeType::AiChat.structure(), StructuralRules::ANY);
         assert_eq!(
             CoreNodeType::not_mentionable(),
             vec![

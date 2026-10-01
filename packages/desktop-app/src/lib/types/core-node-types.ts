@@ -5,6 +5,11 @@
  * (`./generated`, `packages/nodespace-types/src/core_type.rs`), so the two
  * cannot list different types.
  *
+ * Each entry carries the type's structural rules (ADR-089): which children its
+ * nodes may have, and where they may sit in the tree. The database enforces
+ * them on every write; the editor asks `canHaveChild` / `canBeRoot` so it does
+ * not offer an indent, outdent or type change the database would refuse.
+ *
  * This module is the one place that spells a core type id out as a literal in
  * a comparison. Everywhere else asks a question of it:
  * - `isA(nodeType, 'task')` — "does a task's rule apply to this node?". True for
@@ -17,10 +22,16 @@
  */
 
 import { CORE_NODE_TYPES } from './generated';
-import type { CoreNodeType, CoreTypeEntry } from './generated';
+import type {
+  CoreNodeType,
+  CoreTypeEntry,
+  SchemaChildrenRule,
+  SchemaParentRule,
+  StructuralRules
+} from './generated';
 
 export { CORE_NODE_TYPES };
-export type { CoreTypeEntry };
+export type { CoreTypeEntry, StructuralRules };
 
 /** The stored `node_type` of a type NodeSpace itself ships. */
 export type CoreNodeTypeId = CoreNodeType;
@@ -29,19 +40,29 @@ const CORE_ENTRIES: ReadonlyMap<string, CoreTypeEntry> = new Map(
   CORE_NODE_TYPES.map((t) => [t.id, t])
 );
 
-/** Look up a user-defined type's `extends` target, or `undefined` when it has none. */
-type ExtendsResolver = (nodeType: string) => string | undefined;
+/** What a user-defined type's schema declares about its place in the type system. */
+export interface TypeDeclaration {
+  /** The type it `extends`, when it is a subtype. */
+  extends?: string;
+  /** Its own `children` rule; absent is `any`. */
+  children?: SchemaChildrenRule;
+  /** Its own `parent` rule; absent is `any`. */
+  parent?: SchemaParentRule;
+}
 
-let resolveExtends: ExtendsResolver = () => undefined;
+/** Look up a user-defined type's declaration, or `undefined` for a type with no schema. */
+type TypeResolver = (nodeType: string) => TypeDeclaration | undefined;
+
+let resolveType: TypeResolver = () => undefined;
 
 /**
- * Set where user-defined types' `extends` targets come from: the loaded
- * schemas. Called once by the schema store, which holds them; the resolver
- * reads reactive state, so a derived value that asks `isA` re-evaluates when
- * the schemas load or change.
+ * Set where user-defined types' declarations come from: the loaded schemas.
+ * Called once by the schema store, which holds them; the resolver reads
+ * reactive state, so a derived value that asks `isA` or `canHaveChild`
+ * re-evaluates when the schemas load or change.
  */
-export function setExtendsResolver(resolver: ExtendsResolver): void {
-  resolveExtends = resolver;
+export function setTypeResolver(resolver: TypeResolver): void {
+  resolveType = resolver;
 }
 
 /** Whether `id` is exactly a type NodeSpace itself ships. */
@@ -61,7 +82,7 @@ export function typeChain(nodeType: string): string[] {
   while (current !== undefined && !chain.includes(current)) {
     chain.push(current);
     const core = CORE_ENTRIES.get(current);
-    current = core ? (core.parent ?? undefined) : resolveExtends(current);
+    current = core ? (core.parent ?? undefined) : resolveType(current)?.extends;
   }
   return chain;
 }
@@ -90,4 +111,60 @@ export function isA(nodeType: string | null | undefined, base: string): boolean 
  */
 export function isExactly(nodeType: string | null | undefined, id: string): boolean {
   return nodeType === id;
+}
+
+const ANY: StructuralRules = { children: { rule: 'any' }, parent: { rule: 'any' } };
+
+/** The structural rules a type itself declares: the registry's for a core type. */
+function declaredStructure(nodeType: string): StructuralRules {
+  const core = CORE_ENTRIES.get(nodeType);
+  if (core) return core.structure;
+  const declared = resolveType(nodeType);
+  return {
+    children: declared?.children ?? ANY.children,
+    parent: declared?.parent ?? ANY.parent
+  };
+}
+
+/**
+ * The structural rules in force for a type: its own on top of everything its
+ * `extends` chain declares. A subtype only tightens, so `none` wins over a
+ * list, the `any_except` lists of the chain add up, and the nearest `parent`
+ * declaration is the one in force.
+ */
+export function structuralRules(nodeType: string): StructuralRules {
+  let children: SchemaChildrenRule = ANY.children;
+  let parent: SchemaParentRule = ANY.parent;
+  // Furthest ancestor first, so each nearer declaration lands on top.
+  for (const type of typeChain(nodeType).reverse()) {
+    const own = declaredStructure(type);
+    if (own.children.rule === 'none' || children.rule === 'none') {
+      children = { rule: 'none' };
+    } else if (own.children.rule === 'any_except') {
+      const inherited = children.rule === 'any_except' ? children.types : [];
+      children = { rule: 'any_except', types: [...new Set([...inherited, ...own.children.types])] };
+    }
+    if (own.parent.rule !== 'any') parent = own.parent;
+  }
+  return { children, parent };
+}
+
+/**
+ * Whether both structural rules allow a node of `childType` under a node of
+ * `parentType`: the child's `parent` rule and the parent's `children` rule.
+ */
+export function canHaveChild(parentType: string, childType: string): boolean {
+  const { parent } = structuralRules(childType);
+  if (parent.rule === 'must_be_root') return false;
+  if (parent.rule === 'must_have_parent_of' && !parent.types.some((t) => isA(parentType, t))) {
+    return false;
+  }
+  const { children } = structuralRules(parentType);
+  if (children.rule === 'none') return false;
+  return children.rule !== 'any_except' || !children.types.some((t) => isA(childType, t));
+}
+
+/** Whether a node of `nodeType` may sit at the root: its type needs no parent. */
+export function canBeRoot(nodeType: string): boolean {
+  return structuralRules(nodeType).parent.rule !== 'must_have_parent_of';
 }

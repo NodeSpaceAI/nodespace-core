@@ -62,8 +62,6 @@ describe('PluginRegistry - Core Functionality', () => {
               contentTemplate: 'test content'
             }
           ],
-          canHaveChildren: true,
-          canBeChild: true
         },
         viewer: {
           component: MockViewerComponent,
@@ -693,80 +691,6 @@ describe('PluginRegistry - Core Functionality', () => {
     });
   });
 
-  describe('canHaveChildren', () => {
-    it('should return false for plugins with canHaveChildren: false', () => {
-      const plugin: PluginDefinition = {
-        id: 'code-block',
-        name: 'Code Block',
-        description: 'Code block node',
-        version: '1.0.0',
-        config: {
-          slashCommands: [],
-          canHaveChildren: false
-        }
-      };
-
-      registry.register(plugin);
-
-      expect(registry.canHaveChildren('code-block')).toBe(false);
-    });
-
-    it('should return true for plugins with canHaveChildren: true', () => {
-      const plugin: PluginDefinition = {
-        id: 'text',
-        name: 'Text Node',
-        description: 'Text node',
-        version: '1.0.0',
-        config: {
-          slashCommands: [],
-          canHaveChildren: true
-        }
-      };
-
-      registry.register(plugin);
-
-      expect(registry.canHaveChildren('text')).toBe(true);
-    });
-
-    it('should return true by default when canHaveChildren is not specified', () => {
-      const plugin: PluginDefinition = {
-        id: 'default-node',
-        name: 'Default Node',
-        description: 'Node without canHaveChildren specified',
-        version: '1.0.0',
-        config: {
-          slashCommands: []
-        }
-      };
-
-      registry.register(plugin);
-
-      expect(registry.canHaveChildren('default-node')).toBe(true);
-    });
-
-    it('should return true for unknown/unregistered plugins', () => {
-      expect(registry.canHaveChildren('unknown-plugin')).toBe(true);
-    });
-
-    it('should return true for disabled plugins', () => {
-      const plugin: PluginDefinition = {
-        id: 'disabled-plugin',
-        name: 'Disabled Plugin',
-        description: 'A disabled plugin',
-        version: '1.0.0',
-        config: {
-          slashCommands: [],
-          canHaveChildren: false
-        }
-      };
-
-      registry.register(plugin);
-      registry.setEnabled('disabled-plugin', false);
-
-      expect(registry.canHaveChildren('disabled-plugin')).toBe(true);
-    });
-  });
-
   describe('Query Node Plugin', () => {
     it('should register query plugin correctly', () => {
       const plugin: PluginDefinition = {
@@ -784,8 +708,6 @@ describe('PluginRegistry - Core Functionality', () => {
               nodeType: 'query'
             }
           ],
-          canHaveChildren: false, // Query nodes are leaf nodes
-          canBeChild: true
         },
         node: {
           lazyLoad: vi.fn().mockResolvedValue({ default: MockViewerComponent })
@@ -799,7 +721,6 @@ describe('PluginRegistry - Core Functionality', () => {
       registry.register(plugin);
 
       expect(registry.hasPlugin('query')).toBe(true);
-      expect(registry.canHaveChildren('query')).toBe(false);
       expect(registry.getAllSlashCommands()).toHaveLength(1); // Has /query command
       expect(registry.getReferenceComponent('query')).toBe(MockReferenceComponent);
 

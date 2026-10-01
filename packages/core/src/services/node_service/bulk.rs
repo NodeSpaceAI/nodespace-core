@@ -147,6 +147,16 @@ impl NodeService {
         > = std::collections::HashMap::new();
         let mut type_chains = std::collections::HashMap::new();
         for node in &mut nodes {
+            // Every node of this batch is created a root, so a type that
+            // needs a parent is refused (ADR-089). Asked once per distinct
+            // type: `type_chains` gains the type in step 1.
+            if !type_chains.contains_key(&node.node_type) {
+                self.store
+                    .assert_may_be_root(&node.node_type, Some(&node.id))
+                    .await
+                    .map_err(NodeServiceError::from_store)?;
+            }
+
             // Step 1: Type, id and behavior validation
             self.ensure_creatable_in_batch(node, &mut type_chains)
                 .await?;
@@ -918,7 +928,8 @@ impl NodeService {
             // an unextended type `rebucket_and_validate` is a no-op reshuffle,
             // so this changes nothing for the common case.
             Self::ensure_schema_core_status_unchanged(existing, &updated)?;
-            self.ensure_retype_allowed(existing, &updated).await?;
+            Self::ensure_schema_structure_unchanged(existing, &updated)?;
+            self.ensure_retype_allowed(None, existing, &updated).await?;
             let chain = self.type_chain(&updated.node_type).await?;
             self.behaviors
                 .validate_node(&updated, &chain)

@@ -28,20 +28,6 @@ describe('OrderedListNode Plugin', () => {
     });
   });
 
-  describe('Plugin Configuration', () => {
-    it('should have correct canHaveChildren setting (leaf nodes only)', () => {
-      const plugin = pluginRegistry.getPlugin('ordered-list');
-
-      expect(plugin?.config.canHaveChildren).toBe(false);
-    });
-
-    it('should allow being a child node', () => {
-      const plugin = pluginRegistry.getPlugin('ordered-list');
-
-      expect(plugin?.config.canBeChild).toBe(true);
-    });
-  });
-
   describe('Slash Command', () => {
     it('should register slash command', () => {
       const commands = pluginRegistry.getAllSlashCommands();

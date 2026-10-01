@@ -2416,15 +2416,6 @@ impl NodeService {
         Ok(())
     }
 
-    /// The behaviour that decides a type's embedding and content rules: the
-    /// nearest one registered in its chain, else the schema-defined fallback.
-    pub(crate) async fn behavior_for(
-        &self,
-        node_type: &str,
-    ) -> Result<Arc<dyn crate::behaviors::NodeBehavior>, NodeServiceError> {
-        Ok(self.behaviors.resolve(&self.type_chain(node_type).await?))
-    }
-
     /// Check if a node type is embeddable according to its behavior
     ///
     /// Uses `NodeBehavior::get_embeddable_content()` on a probe node to determine
@@ -2960,6 +2951,104 @@ mod tests {
         let mut store = Arc::new(SqliteStore::new(db_path).await.unwrap());
         let service = NodeService::new(&mut store).await.unwrap();
         (service, temp_dir)
+    }
+
+    /// A retype inside a transaction is checked against what that transaction
+    /// has written. A type that needs a parent has no database rule behind
+    /// it, so a check that read committed state would pass a node the
+    /// transaction had just moved to the root, and refuse one it had just
+    /// placed under a qualifying parent.
+    #[tokio::test]
+    async fn a_retype_in_a_transaction_sees_the_transactions_own_moves() {
+        let (service, _temp) = create_test_service().await;
+        let shared = Arc::new(service.clone());
+        for schema in [
+            json!({ "name": "Thread", "fields": [] }),
+            json!({
+                "name": "Reply",
+                "fields": [],
+                "parent": { "rule": "must_have_parent_of", "types": ["thread"] }
+            }),
+        ] {
+            crate::schema::handle_create_schema(&shared, schema)
+                .await
+                .unwrap();
+        }
+        let text = |content: &str| Node::new("text".to_string(), content.to_string(), json!({}));
+        let thread = service
+            .create_node(Node::new(
+                "thread".to_string(),
+                "General".to_string(),
+                json!({}),
+            ))
+            .await
+            .unwrap();
+        let under_thread = service.create_node(text("under the thread")).await.unwrap();
+        service
+            .move_node_unchecked(
+                &under_thread,
+                Some(&thread),
+                crate::services::InsertPosition::End,
+            )
+            .await
+            .unwrap();
+        let at_root = service.create_node(text("at the root")).await.unwrap();
+
+        let retype_after_move = |node_id: String, new_parent: Option<String>| {
+            let service = service.clone();
+            async move {
+                let in_tx = service.clone();
+                service
+                    .with_transaction(move |tx| {
+                        Box::pin(async move {
+                            SqliteStore::move_node_in_tx(
+                                tx.store_tx(),
+                                &node_id,
+                                new_parent.as_deref(),
+                                None,
+                            )
+                            .await
+                            .map_err(NodeServiceError::from_store)?;
+                            in_tx
+                                .update_node_in_tx(
+                                    tx,
+                                    &node_id,
+                                    NodeUpdate::new().with_node_type("reply".to_string()),
+                                )
+                                .await
+                                .map(|_| ())
+                        })
+                    })
+                    .await
+            }
+        };
+
+        // Moved to the root, then retyped: committed state still shows the
+        // thread above it.
+        let refused = retype_after_move(under_thread.clone(), None).await;
+        assert!(
+            matches!(&refused, Err(NodeServiceError::TreeInvariantViolation(v))
+                if v.rule == crate::db::TreeInvariantRule::ParentRequired),
+            "{refused:?}"
+        );
+        assert_eq!(
+            service
+                .get_parent(&under_thread)
+                .await
+                .unwrap()
+                .map(|p| p.id),
+            Some(thread.clone()),
+            "the refused transaction rolled its move back"
+        );
+
+        // Moved under a thread, then retyped: committed state shows a root.
+        retype_after_move(at_root.clone(), Some(thread.clone()))
+            .await
+            .expect("a reply under a thread is allowed");
+        assert_eq!(
+            service.get_node(&at_root).await.unwrap().unwrap().node_type,
+            "reply"
+        );
     }
 
     /// @mention autocomplete offers date pages (a date link is a real mention)
@@ -3741,7 +3830,7 @@ mod tests {
             matches!(
                 e,
                 NodeServiceError::TreeInvariantViolation(v)
-                    if v.rule == crate::db::TreeInvariantRule::NotRoot(crate::models::CoreNodeType::Collection)
+                    if v.rule == crate::db::TreeInvariantRule::MustBeRoot
             )
         };
 
@@ -3778,7 +3867,7 @@ mod tests {
             )
             .await
             .expect_err("the schema refuses a collection child edge");
-        assert!(err.to_string().contains("collection_not_root"), "{err}");
+        assert!(err.to_string().contains("must_be_root"), "{err}");
 
         // A child cannot become a collection.
         svc.create_node_with_parent(params(TEXT_CHILD, "text", Some(TEXT_ROOT)))
@@ -3789,10 +3878,7 @@ mod tests {
             .switch_node_type_atomic(TEXT_CHILD, "collection", json!({}), None)
             .await
             .expect_err("a child cannot become a collection");
-        assert!(
-            format!("{err:#}").contains("collection_not_root"),
-            "{err:#}"
-        );
+        assert!(format!("{err:#}").contains("must_be_root"), "{err:#}");
 
         // Nothing above left a parent on a collection.
         assert!(svc.store().get_parent_id(COLL).await.unwrap().is_none());
@@ -3830,7 +3916,7 @@ mod tests {
             matches!(
                 e,
                 NodeServiceError::TreeInvariantViolation(v)
-                    if v.rule == crate::db::TreeInvariantRule::NotRoot(crate::models::CoreNodeType::Schema)
+                    if v.rule == crate::db::TreeInvariantRule::MustBeRoot
             )
         };
 
@@ -3878,11 +3964,9 @@ mod tests {
         let violation = err
             .downcast_ref::<crate::db::TreeInvariantViolation>()
             .unwrap_or_else(|| panic!("expected a typed refusal, got {err:#}"));
-        assert_eq!(
-            violation.rule,
-            crate::db::TreeInvariantRule::NotRoot(crate::models::CoreNodeType::Schema)
-        );
-        assert_eq!(violation.node_id.as_deref(), Some("my_widget"));
+        assert_eq!(violation.rule, crate::db::TreeInvariantRule::MustBeRoot);
+        // Refused before the node was given an id.
+        assert!(violation.node_id.is_none());
 
         // Moved under a parent.
         let err = svc
@@ -3914,7 +3998,7 @@ mod tests {
             )
             .await
             .expect_err("the DB schema refuses a schema child edge");
-        assert!(err.to_string().contains("schema_not_root"), "{err}");
+        assert!(err.to_string().contains("must_be_root"), "{err}");
 
         // A child cannot become a schema.
         svc.create_node_with_parent(CreateNodeParams {
@@ -3938,7 +4022,7 @@ mod tests {
             )
             .await
             .expect_err("a child cannot become a schema");
-        assert!(err.to_string().contains("schema_not_root"), "{err}");
+        assert!(err.to_string().contains("must_be_root"), "{err}");
 
         // Merged with a child: the root schema survivor would take the
         // loser's parent.
@@ -5687,8 +5771,8 @@ mod tests {
             .await;
 
         assert!(
-            matches!(result, Err(NodeServiceError::NotAContainer { .. })),
-            "move_node should reject a non-container parent; got: {:?}",
+            matches!(&result, Err(NodeServiceError::TreeInvariantViolation(v)) if v.rule == crate::db::TreeInvariantRule::ChildrenNone),
+            "move_node should reject a parent that takes no children; got: {:?}",
             result
         );
     }
@@ -6586,8 +6670,8 @@ mod tests {
             .await;
 
         assert!(
-            matches!(result, Err(NodeServiceError::NotAContainer { .. })),
-            "create_node_with_parent should reject a non-container parent; got: {:?}",
+            matches!(&result, Err(NodeServiceError::TreeInvariantViolation(v)) if v.rule == crate::db::TreeInvariantRule::ChildrenNone),
+            "create_node_with_parent should reject a parent that takes no children; got: {:?}",
             result
         );
     }
@@ -7080,8 +7164,8 @@ mod tests {
 
         assert!(result.is_err());
         assert!(
-            matches!(result.unwrap_err(), NodeServiceError::NotAContainer { .. }),
-            "expected NotAContainer error"
+            matches!(result.unwrap_err(), NodeServiceError::TreeInvariantViolation(v) if v.rule == crate::db::TreeInvariantRule::ChildrenNone),
+            "expected a children_none refusal"
         );
     }
 
@@ -7105,8 +7189,8 @@ mod tests {
             .await;
 
         assert!(
-            matches!(result, Err(NodeServiceError::NotAContainer { .. })),
-            "expected NotAContainer error, got {result:?}"
+            matches!(&result, Err(NodeServiceError::TreeInvariantViolation(v)) if v.rule == crate::db::TreeInvariantRule::ChildrenNone),
+            "expected a children_none refusal, got {result:?}"
         );
         assert!(
             service.get_parent(&child_id).await.unwrap().is_none(),

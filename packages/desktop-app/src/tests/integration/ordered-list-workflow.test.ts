@@ -188,17 +188,6 @@ describe('OrderedListNode Workflow', () => {
   });
 
   describe('CSS Counter Numbering', () => {
-    it('should reset counter at viewer level', () => {
-      // CSS counter reset is defined in base-node-viewer.svelte
-      // counter-reset: ordered-list-counter at .base-node-viewer level
-      // This ensures each document/viewer starts numbering from 1
-
-      // Verification: Plugin should be leaf node (no children)
-      // so counter increments straightforwardly
-      const plugin = pluginRegistry.getPlugin('ordered-list');
-      expect(plugin?.config.canHaveChildren).toBe(false);
-    });
-
     it('should increment counter for each sequential ordered-list node', () => {
       // CSS counters work like: counter-increment: ordered-list-counter
       // First node: 1, Second node: 2, etc.
@@ -206,16 +195,6 @@ describe('OrderedListNode Workflow', () => {
 
       const plugin = pluginRegistry.getPlugin('ordered-list');
       expect(plugin?.id).toBe('ordered-list');
-    });
-
-    it('should reset counter when sequence broken by non-list node', () => {
-      // CSS rule: .base-node-viewer > *:not(.ordered-list-node-wrapper) resets counter
-      // So if a text/header/etc. node appears, counter resets
-      // Next ordered-list starts at 1 again
-
-      // Verify plugin has correct leaf node configuration
-      const plugin = pluginRegistry.getPlugin('ordered-list');
-      expect(plugin?.config.canHaveChildren).toBe(false);
     });
 
     it('should display auto-numbered items (1., 2., 3...) in view mode', () => {
@@ -237,15 +216,6 @@ describe('OrderedListNode Workflow', () => {
       // canRevert: true means cleanContent: false (content preserved)
       // Round-trip consistency: Save "1. Item" → Load → Show as "1. Item" in edit
       expect(plugin?.pattern?.canRevert).toBe(true);
-    });
-
-    it('should support multiline with proper prefix handling', () => {
-      // Unlike single-line task nodes, ordered list items are single-line
-      // This is handled in OrderedListNode's editableConfig: allowMultiline: false
-
-      // Verify plugin is properly registered
-      const plugin = pluginRegistry.getPlugin('ordered-list');
-      expect(plugin?.config.canHaveChildren).toBe(false);
     });
 
     it('should strip prefix in display but keep in storage', () => {
@@ -275,14 +245,6 @@ describe('OrderedListNode Workflow', () => {
       // If pattern no longer matches (no "1. " at start), should convert to text
       // Component strips the prefix when converting
       expect(plugin?.pattern?.detect).toEqual(/^1\.\s/);
-    });
-
-    it('should not merge into ordered lists from other node types', () => {
-      const plugin = pluginRegistry.getPlugin('ordered-list');
-
-      // allowMergeInto is handled in component's editableConfig: allowMergeInto: false
-      // This prevents breaking ordered list structure with mid-list deletions
-      expect(plugin?.config.canHaveChildren).toBe(false);
     });
   });
 

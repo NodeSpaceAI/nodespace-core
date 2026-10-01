@@ -1,5 +1,6 @@
 // Generated from `packages/nodespace-types` by `bun run gen:types`. Do not edit.
 import type { CoreNodeType } from './core-node-type';
+import type { StructuralRules } from './structural-rules';
 
 /**
  * A core type's registry entry, as the frontend reads it.
@@ -27,4 +28,8 @@ export type CoreTypeEntry = {
    * by storage name.
    */
   typedUpdate: boolean;
+  /**
+   * The structural rules the type itself declares, before inheritance.
+   */
+  structure: StructuralRules;
 };

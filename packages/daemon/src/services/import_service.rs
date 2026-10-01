@@ -1434,9 +1434,12 @@ async fn import_markdown_content(
     };
 
     // Parsing is CPU-bound and scales with file size; keep it off the async
-    // workers shared with other RPCs.
+    // workers shared with other RPCs. The parser is given the root, as on
+    // every other import path, so it places top-level nodes under it itself
+    // and one document parses the same way whichever path imports it.
+    let parse_root = root_id.to_string();
     let prepared_nodes = tokio::task::spawn_blocking(move || {
-        prepare_nodes_from_markdown(&content_for_children, None)
+        prepare_nodes_from_markdown(&content_for_children, Some(parse_root))
     })
     .await
     .map_err(|e| format!("Failed to parse markdown: parser aborted ({e})"))?
@@ -1509,12 +1512,11 @@ async fn import_markdown_content(
         )> = prepared_nodes
             .iter()
             .map(|n| {
-                let parent = n.parent_id.clone().or_else(|| Some(root_id.to_string()));
                 (
                     n.id.clone(),
                     n.node_type.clone(),
                     n.content.clone(),
-                    parent,
+                    n.parent_id.clone(),
                     n.order,
                     n.properties.clone(),
                 )
@@ -1733,6 +1735,46 @@ mod tests {
             .iter()
             .find(|r| r.file_path.ends_with(&note_name(i)))
             .unwrap_or_else(|| panic!("no result for note {i}"))
+    }
+
+    /// A single-file import stores a list-led document in reading order. A
+    /// numbered item takes no children, so the lines indented below it follow
+    /// it as siblings under the same parent, here the document root: the
+    /// file's body opens with the list, with no heading or paragraph above it.
+    #[tokio::test]
+    async fn single_file_import_keeps_content_under_a_numbered_item_in_reading_order() {
+        let (ns, _dir) = new_service_and_dir().await;
+        let root_id = deterministic_root_id("setup.md");
+        let content =
+            "# Setup\n- Install\n  1. Download deps\n     - bun\n     - cargo\n  2. Build\n     continuation line\n- Run\n  - quickly";
+
+        import_markdown_content(&ns, &root_id, "# Setup", content, false, false)
+            .await
+            .expect("the document imports");
+
+        let mut outline: Vec<(usize, String)> = Vec::new();
+        let mut stack = vec![(root_id, 0usize)];
+        while let Some((id, depth)) = stack.pop() {
+            let node = ns.get_node(&id).await.unwrap().unwrap();
+            let children = ns.get_children(&id).await.unwrap();
+            outline.push((depth, node.content));
+            stack.extend(children.into_iter().rev().map(|c| (c.id, depth + 1)));
+        }
+        let read: Vec<(usize, &str)> = outline.iter().map(|(d, c)| (*d, c.as_str())).collect();
+        assert_eq!(
+            read,
+            vec![
+                (0, "# Setup"),
+                (1, "Install"),
+                (1, "1. Download deps"),
+                (1, "bun"),
+                (1, "cargo"),
+                (1, "1. Build"),
+                (1, "continuation line"),
+                (1, "Run"),
+                (2, "quickly"),
+            ]
+        );
     }
 
     /// A failed insert in a later chunk makes the import an explicit partial

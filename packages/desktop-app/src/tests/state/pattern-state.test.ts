@@ -18,8 +18,6 @@ const mockHeaderPlugin: PluginDefinition = {
   version: '1.0.0',
   config: {
     slashCommands: [],
-    canHaveChildren: true,
-    canBeChild: true
   },
   pattern: {
     detect: /^#\s/,
@@ -38,8 +36,6 @@ const mockQuotePlugin: PluginDefinition = {
   version: '1.0.0',
   config: {
     slashCommands: [],
-    canHaveChildren: true,
-    canBeChild: true
   },
   pattern: {
     detect: /^>\s/,
@@ -58,8 +54,6 @@ const mockOrderedListPlugin: PluginDefinition = {
   version: '1.0.0',
   config: {
     slashCommands: [],
-    canHaveChildren: false,
-    canBeChild: true
   },
   pattern: {
     detect: /^1\.\s/,
@@ -78,8 +72,6 @@ const mockTaskPlugin: PluginDefinition = {
   version: '1.0.0',
   config: {
     slashCommands: [],
-    canHaveChildren: true,
-    canBeChild: true
   },
   pattern: {
     detect: /^[-*+]?\s*\[\s*[xX\s]\s*\]\s/,

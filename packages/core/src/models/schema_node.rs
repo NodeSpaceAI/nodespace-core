@@ -29,7 +29,7 @@
 //! ```
 
 use crate::models::schema::{EnumValue, SchemaField, SchemaProtectionLevel, SchemaRelationship};
-use crate::models::{Node, ValidationError};
+use crate::models::{Node, SchemaChildrenRule, SchemaParentRule, ValidationError};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -80,6 +80,16 @@ pub struct SchemaNode {
         skip_serializing_if = "std::ops::Not::not"
     )]
     pub is_abstract: bool,
+
+    /// Which children this type's nodes may have: the rule the type itself
+    /// declares, on top of what it inherits (ADR-089).
+    #[serde(default, skip_serializing_if = "SchemaChildrenRule::is_any")]
+    pub children: SchemaChildrenRule,
+
+    /// Where this type's nodes may sit in the `has_child` tree: the rule the
+    /// type itself declares, on top of what it inherits (ADR-089).
+    #[serde(default, skip_serializing_if = "SchemaParentRule::is_any")]
+    pub parent: SchemaParentRule,
 
     /// Schema version number (increments on schema changes)
     #[serde(default = "default_schema_version")]
@@ -155,6 +165,9 @@ impl SchemaNode {
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
+        let children = Self::structural_rule(&node, "children");
+        let parent = Self::structural_rule(&node, "parent");
+
         let schema_version = node
             .properties
             .get("schemaVersion")
@@ -205,6 +218,8 @@ impl SchemaNode {
             modified_at: node.modified_at,
             is_core,
             is_abstract,
+            children,
+            parent,
             schema_version,
             fields,
             // Declarations are relationship-table rows; the store's schema
@@ -213,6 +228,25 @@ impl SchemaNode {
             title_template,
             properties_header_summary_template,
         })
+    }
+
+    /// One structural rule out of a schema node's stored properties. An
+    /// absent key is `any`. An unreadable one is logged and read as `any`:
+    /// the database's own copy of the rule, not this parse, is what refuses
+    /// a write.
+    fn structural_rule<R: serde::de::DeserializeOwned + Default>(node: &Node, key: &str) -> R {
+        match node.properties.get(key) {
+            None => R::default(),
+            Some(v) => serde_json::from_value(v.clone()).unwrap_or_else(|e| {
+                tracing::warn!(
+                    schema_id = %node.id,
+                    rule = key,
+                    error = %e,
+                    "Failed to parse a schema's structural rule; reading it as `any`"
+                );
+                R::default()
+            }),
+        }
     }
 
     /// Convert to the universal Node STORAGE shape.
@@ -232,6 +266,14 @@ impl SchemaNode {
 
         if self.is_abstract {
             properties["abstract"] = serde_json::Value::Bool(true);
+        }
+
+        // `any` declares nothing, so it is not stored.
+        if !self.children.is_any() {
+            properties["children"] = serde_json::json!(self.children);
+        }
+        if !self.parent.is_any() {
+            properties["parent"] = serde_json::json!(self.parent);
         }
 
         if let Some(template) = self.title_template {

@@ -37,8 +37,6 @@ export const textNodePlugin: PluginDefinition = {
         nodeType: 'text' // Explicit nodeType for proper visual updates
       }
     ],
-    canHaveChildren: true,
-    canBeChild: true
   },
   // No viewer - text nodes use BaseNodeViewer (default)
   node: {
@@ -96,8 +94,6 @@ export const headerNodePlugin: PluginDefinition = {
         nodeType: 'header'
       }
     ],
-    canHaveChildren: true,
-    canBeChild: true
   },
   node: {
     lazyLoad: () => import('../design/components/header-node.svelte'),
@@ -126,8 +122,6 @@ export const taskNodePlugin: PluginDefinition = {
         nodeType: 'task' // Set node type to 'task' when selected
       }
     ],
-    canHaveChildren: true,
-    canBeChild: true
   },
   node: {
     lazyLoad: () => import('../design/components/task-node.svelte'),
@@ -220,8 +214,6 @@ export const checkboxNodePlugin: PluginDefinition = {
         desiredCursorPosition: 6 // Position cursor after "- [ ] "
       }
     ],
-    canHaveChildren: true,
-    canBeChild: true
   },
   node: {
     lazyLoad: () => import('../design/components/checkbox-node.svelte'),
@@ -241,8 +233,6 @@ export const dateNodePlugin: PluginDefinition = {
   version: '1.0.0',
   config: {
     slashCommands: [], // No slash commands - date nodes exist implicitly
-    canHaveChildren: true,
-    canBeChild: true
   },
   node: {
     lazyLoad: () => import('../design/components/date-node.svelte'),
@@ -293,8 +283,6 @@ export const codeBlockNodePlugin: PluginDefinition = {
         desiredCursorPosition: 4 // Position cursor after "```\n" (on the empty line)
       }
     ],
-    canHaveChildren: false, // Code blocks are leaf nodes
-    canBeChild: true
   },
   node: {
     lazyLoad: () => import('../design/components/code-block-node.svelte'),
@@ -336,8 +324,6 @@ export const quoteBlockNodePlugin: PluginDefinition = {
         desiredCursorPosition: 2 // Position cursor after "> " prefix
       }
     ],
-    canHaveChildren: true, // Quote blocks can have children
-    canBeChild: true
   },
   node: {
     lazyLoad: () => import('../design/components/quote-block-node.svelte'),
@@ -379,8 +365,6 @@ export const orderedListNodePlugin: PluginDefinition = {
         desiredCursorPosition: 3 // Position cursor after "1. " prefix
       }
     ],
-    canHaveChildren: false, // Simple flat lists only (no nesting)
-    canBeChild: true
   },
   node: {
     lazyLoad: () => import('../design/components/ordered-list-node.svelte'),
@@ -416,8 +400,6 @@ export const horizontalLineNodePlugin: PluginDefinition = {
         nodeType: 'horizontal-line'
       }
     ],
-    canHaveChildren: false,
-    canBeChild: true
   },
   node: {
     lazyLoad: () => import('../design/components/horizontal-line-node.svelte'),
@@ -456,8 +438,6 @@ export const tableNodePlugin: PluginDefinition = {
         desiredCursorPosition: 2
       }
     ],
-    canHaveChildren: false,
-    canBeChild: true
   },
   node: {
     lazyLoad: () => import('../design/components/table-node.svelte'),
@@ -482,8 +462,6 @@ export const queryNodePlugin: PluginDefinition = {
     // viewer, and reference registrations below are intentionally retained so
     // existing and AI/MCP-created query nodes are unaffected.
     slashCommands: [],
-    canHaveChildren: false, // Query nodes are leaf nodes
-    canBeChild: true
   },
   node: {
     lazyLoad: () => import('../design/components/query-node.svelte'),
@@ -520,8 +498,6 @@ export const collectionNodePlugin: PluginDefinition = {
     // No slash commands - collections are created via MCP tools
     // This is intentional: collections are organizational metadata, not content
     slashCommands: [],
-    canHaveChildren: true, // Collections can have sub-collections (DAG structure)
-    canBeChild: true // Collections can be nested under other nodes
   },
   // CollectionNodeViewer for collection-specific UI
   viewer: {
@@ -558,11 +534,6 @@ const aiChatPluginConfig = {
     // No slash command — entity types are not slash-creatable. AI chats are created
     // via the sidebar's dedicated "AI Chats" section ("+ New chat").
     slashCommands: [],
-    // An editor choice, not the structural rule: a chat may hold children,
-    // but the outline does not offer indenting a node under one while how the
-    // chat viewer shows non-message children is undecided.
-    canHaveChildren: false,
-    canBeChild: true
   },
   reference: {
     component: BaseNodeReference as NodeReferenceComponent,
@@ -609,8 +580,6 @@ export const personNodePlugin: PluginDefinition = {
     // created via the sidenav's type view (SIDENAV_CORE_TYPES → create instance).
     slashCommands: [],
     // Child nodes are notes about the person.
-    canHaveChildren: true,
-    canBeChild: true
   },
   // person is a static core plugin (not schema-plugin-loader-driven), so its
   // title_template-derived flags are declared here rather than read off the

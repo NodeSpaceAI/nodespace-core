@@ -56,7 +56,7 @@ fn enum_values<T: Copy>(
 pub fn get_core_schemas() -> Vec<SchemaNode> {
     let now = Utc::now();
 
-    vec![
+    let mut schemas = vec![
         // Task schema with status, priority, dates, and assignee
         SchemaNode {
             id: "task".to_string(),
@@ -66,6 +66,8 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             modified_at: now,
             is_core: true,
             is_abstract: false,
+            children: Default::default(),
+            parent: Default::default(),
             schema_version: 1,
             fields: vec![
                 SchemaField {
@@ -289,6 +291,8 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             modified_at: now,
             is_core: true,
             is_abstract: false,
+            children: Default::default(),
+            parent: Default::default(),
             schema_version: 1,
             fields: vec![
                 SchemaField {
@@ -428,6 +432,8 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             modified_at: now,
             is_core: true,
             is_abstract: false,
+            children: Default::default(),
+            parent: Default::default(),
             schema_version: 1,
             fields: vec![],
             relationships: vec![],
@@ -443,6 +449,8 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             modified_at: now,
             is_core: true,
             is_abstract: false,
+            children: Default::default(),
+            parent: Default::default(),
             schema_version: 1,
             fields: vec![],
             relationships: vec![],
@@ -458,6 +466,8 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             modified_at: now,
             is_core: true,
             is_abstract: false,
+            children: Default::default(),
+            parent: Default::default(),
             schema_version: 1,
             fields: vec![],
             relationships: vec![],
@@ -473,6 +483,8 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             modified_at: now,
             is_core: true,
             is_abstract: false,
+            children: Default::default(),
+            parent: Default::default(),
             schema_version: 1,
             fields: vec![],
             relationships: vec![],
@@ -488,6 +500,8 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             modified_at: now,
             is_core: true,
             is_abstract: false,
+            children: Default::default(),
+            parent: Default::default(),
             schema_version: 1,
             fields: vec![],
             relationships: vec![],
@@ -503,6 +517,8 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             modified_at: now,
             is_core: true,
             is_abstract: false,
+            children: Default::default(),
+            parent: Default::default(),
             schema_version: 1,
             fields: vec![],
             relationships: vec![],
@@ -518,6 +534,8 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             modified_at: now,
             is_core: true,
             is_abstract: false,
+            children: Default::default(),
+            parent: Default::default(),
             schema_version: 1,
             fields: vec![],
             relationships: vec![],
@@ -533,6 +551,8 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             modified_at: now,
             is_core: true,
             is_abstract: false,
+            children: Default::default(),
+            parent: Default::default(),
             schema_version: 1,
             fields: vec![],
             relationships: vec![],
@@ -548,6 +568,8 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             modified_at: now,
             is_core: true,
             is_abstract: false,
+            children: Default::default(),
+            parent: Default::default(),
             schema_version: 1,
             fields: vec![SchemaField {
                 name: "description".to_string(),
@@ -581,6 +603,8 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             modified_at: now,
             is_core: true,
             is_abstract: false,
+            children: Default::default(),
+            parent: Default::default(),
             schema_version: 1,
             fields: vec![],
             relationships: vec![],
@@ -597,6 +621,8 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             modified_at: now,
             is_core: true,
             is_abstract: true,
+            children: Default::default(),
+            parent: Default::default(),
             schema_version: 1,
             fields: vec![
                 SchemaField {
@@ -690,6 +716,8 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             modified_at: now,
             is_core: true,
             is_abstract: false,
+            children: Default::default(),
+            parent: Default::default(),
             schema_version: 1,
             fields: vec![
                 SchemaField {
@@ -784,6 +812,8 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             modified_at: now,
             is_core: true,
             is_abstract: false,
+            children: Default::default(),
+            parent: Default::default(),
             schema_version: 1,
             fields: vec![
                 SchemaField {
@@ -876,6 +906,8 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             modified_at: now,
             is_core: true,
             is_abstract: false,
+            children: Default::default(),
+            parent: Default::default(),
             schema_version: 1,
             fields: vec![
                 SchemaField {
@@ -1075,6 +1107,8 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             modified_at: now,
             is_core: true,
             is_abstract: false,
+            children: Default::default(),
+            parent: Default::default(),
             schema_version: 1,
             fields: vec![
                 SchemaField {
@@ -1199,6 +1233,8 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             modified_at: now,
             is_core: true,
             is_abstract: false,
+            children: Default::default(),
+            parent: Default::default(),
             schema_version: 1,
             fields: vec![],
             relationships: vec![],
@@ -1214,6 +1250,8 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             modified_at: now,
             is_core: true,
             is_abstract: false,
+            children: Default::default(),
+            parent: Default::default(),
             schema_version: 1,
             fields: vec![
                 SchemaField {
@@ -1351,6 +1389,8 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             modified_at: now,
             is_core: true,
             is_abstract: false,
+            children: Default::default(),
+            parent: Default::default(),
             schema_version: 1,
             fields: vec![
                 SchemaField {
@@ -1415,6 +1455,8 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             modified_at: now,
             is_core: true,
             is_abstract: false,
+            children: Default::default(),
+            parent: Default::default(),
             schema_version: 1,
             fields: vec![SchemaField {
                 name: REQUIRED_EXTENSIONS_FIELD.to_string(),
@@ -1456,6 +1498,8 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             modified_at: now,
             is_core: true,
             is_abstract: false,
+            children: Default::default(),
+            parent: Default::default(),
             schema_version: 1,
             fields: vec![
                 SchemaField {
@@ -1568,7 +1612,19 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             title_template: None,
             properties_header_summary_template: None,
         },
-    ]
+    ];
+
+    // A core type's structural rules are the registry's (ADR-089): each
+    // schema declares the rules its own type declares, so a client reading
+    // the schemas sees what the database enforces.
+    for schema in &mut schemas {
+        if let Some(core) = crate::models::CoreNodeType::from_id(&schema.id) {
+            let declared = core.declared_structure();
+            schema.children = declared.children.into();
+            schema.parent = declared.parent.into();
+        }
+    }
+    schemas
 }
 
 #[cfg(test)]
@@ -1733,6 +1789,36 @@ mod tests {
                 "{core}: title template"
             );
         }
+    }
+
+    /// Each seeded schema declares the structural rules the registry holds
+    /// for its type, and survives the trip through storage.
+    #[test]
+    fn seeded_schemas_declare_the_registrys_structural_rules() {
+        use crate::models::{SchemaChildrenRule, SchemaParentRule};
+        for core in CoreNodeType::ALL {
+            let Some(schema) = core_schema(core) else {
+                continue;
+            };
+            let declared = core.declared_structure();
+            assert_eq!(
+                schema.children,
+                SchemaChildrenRule::from(declared.children),
+                "{core}: children rule"
+            );
+            assert_eq!(
+                schema.parent,
+                SchemaParentRule::from(declared.parent),
+                "{core}: parent rule"
+            );
+            let stored = SchemaNode::from_node(schema.clone().into_node()).unwrap();
+            assert_eq!(stored.children, schema.children, "{core}: stored children");
+            assert_eq!(stored.parent, schema.parent, "{core}: stored parent");
+        }
+        let collection = core_schema(CoreNodeType::Collection).unwrap();
+        assert_eq!(collection.parent, SchemaParentRule::MustBeRoot);
+        let query = core_schema(CoreNodeType::Query).unwrap();
+        assert_eq!(query.children, SchemaChildrenRule::None);
     }
 
     /// Core field names are snake_case, apart from the namespaced ones, and

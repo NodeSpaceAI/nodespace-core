@@ -15,7 +15,7 @@ import { backendAdapter } from '$lib/services/backend-adapter';
 import { createLogger } from '$lib/utils/logger';
 import { onDaemonReconnect } from '$lib/services/daemon-status';
 import type { SchemaNode } from '$lib/types/schema-node';
-import { setExtendsResolver } from '$lib/types/core-node-types';
+import { setTypeResolver } from '$lib/types/core-node-types';
 
 const log = createLogger('SchemasStore');
 
@@ -91,7 +91,7 @@ export const schemasStore = new SchemasStore();
 // The loaded schemas are where a user-defined type's `extends` target is known.
 // Reading `schemas` inside the resolver makes a derived value that asks `isA`
 // re-evaluate when the schemas load or change.
-setExtendsResolver((nodeType) => schemasStore.schemas.find((s) => s.id === nodeType)?.extends);
+setTypeResolver((nodeType) => schemasStore.schemas.find((s) => s.id === nodeType));
 
 /** Load all schemas from the backend and update the store. */
 export const loadSchemas = (): Promise<void> => schemasStore.loadSchemas();

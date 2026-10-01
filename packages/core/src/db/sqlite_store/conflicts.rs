@@ -681,15 +681,20 @@ impl SqliteStore {
             }
             _ => false,
         };
-        let has_parent_after = survivor_parent.is_some() || takes_loser_parent;
+        let parent_after = match (&survivor_parent, &loser_parent) {
+            (Some(parent), _) => Some(parent.as_str()),
+            (None, Some(parent)) if takes_loser_parent => Some(parent.as_str()),
+            _ => None,
+        };
+        // The structural rules (ADR-089) must hold where the merge leaves
+        // the survivor: under the parent it ends up with, and over the
+        // loser's children it takes on.
+        if let Some(parent_after) = parent_after {
+            Self::assert_has_child_edges_allowed_in_tx(tx, &[(parent_after, survivor_id)]).await?;
+        }
+        Self::assert_may_adopt_children_in_tx(tx, survivor_id, loser_id).await?;
 
-        if has_parent_after {
-            if let Some(root_type) = Self::root_only_type_of_in_tx(tx, &survivor.node_type).await? {
-                return Err(anyhow::Error::new(super::TreeInvariantViolation::not_root(
-                    root_type,
-                    Some(survivor_id),
-                )));
-            }
+        if parent_after.is_some() {
             // A person's membership says who belongs to a collection, not
             // where content is filed, so a person (or a subtype of one) may
             // hold it below a parent.

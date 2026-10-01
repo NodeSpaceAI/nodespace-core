@@ -215,17 +215,27 @@ export function isPlayRuleRejected(error: unknown): error is PlayRuleRejectedCom
   return typeof cd.message === 'string';
 }
 
-/** The tree invariant a refused write would have broken. */
+/**
+ * The tree invariant a refused write would have broken. Four are the
+ * structural rules a type declares: `must_be_root` (its nodes never have a
+ * parent), `children_none` (they take no children), `child_not_allowed` (they
+ * take no child of that type) and `parent_required` (they sit only under a
+ * parent of a named type).
+ */
 export type TreeInvariantRule =
   | 'member_of_not_root'
-  | 'collection_not_root'
-  | 'schema_not_root'
+  | 'must_be_root'
+  | 'children_none'
+  | 'child_not_allowed'
+  | 'parent_required'
   | 'cycle';
 
 const TREE_INVARIANT_RULES: readonly string[] = [
   'member_of_not_root',
-  'collection_not_root',
-  'schema_not_root',
+  'must_be_root',
+  'children_none',
+  'child_not_allowed',
+  'parent_required',
   'cycle'
 ] satisfies readonly TreeInvariantRule[];
 
@@ -240,7 +250,7 @@ export interface TreeInvariantViolationData {
   rule: TreeInvariantRule;
 
   /** The node the write would have left in violation; null only for a
-   *  collection refused before it was given an id */
+   *  node refused before it was given an id */
   node_id: string | null;
 
   /** Other nodes involved: for member_of_not_root on a move or merge, the

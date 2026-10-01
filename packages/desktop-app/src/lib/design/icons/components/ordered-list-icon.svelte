@@ -82,7 +82,7 @@
     --ordered-list-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' height='16px' viewBox='0 0 24 24' width='16px' fill='%23252523'%3E%3Cpath d='M0 0h24v24H0V0z' fill='none'/%3E%3Cpath d='M5 17h2v.5H6v1h1v.5H5v1h3v-4H5v1zm1-9h1V4H5v1h1v3zm-1 3h1.8L5 13.1v.9h3v-1H6.2L8 10.9V10H5v1zm5-6v1h8V5h-8zm0 14h8v-1h-8v1zm0-6h8v-1h-8v1z'/%3E%3C/svg%3E");
   }
 
-  /* Parent node ring - NOT used for ordered-list since canHaveChildren: false */
+  /* Parent node ring - NOT used for ordered-list, which takes no children */
   .node-ring {
     width: 20px;
     height: 20px;

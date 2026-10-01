@@ -76,16 +76,4 @@ describe('QuoteBlockNode Plugin', () => {
       expect(quoteCommand?.nodeType).toBe('quote-block');
     });
   });
-
-  describe('Configuration', () => {
-    it('should be configured to allow children', () => {
-      const plugin = pluginRegistry.getPlugin('quote-block');
-      expect(plugin?.config.canHaveChildren).toBe(true);
-    });
-
-    it('should be configured to allow being a child', () => {
-      const plugin = pluginRegistry.getPlugin('quote-block');
-      expect(plugin?.config.canBeChild).toBe(true);
-    });
-  });
 });

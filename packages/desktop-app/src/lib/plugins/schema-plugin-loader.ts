@@ -139,8 +139,6 @@ export function createPluginFromSchema(schema: SchemaNode): PluginDefinition {
       // slash-creatable. User-defined types are created via the sidenav's type view
       // (customSchemas → handleSchemaClick → create instance).
       slashCommands: [],
-      canHaveChildren: true,
-      canBeChild: true
     },
     // Carried at the plugin level (not on a slash command, since there isn't one) so
     // row-rendering surfaces can still tell this type's `title` apart from `content` via

@@ -1,6 +1,8 @@
 // Generated from `packages/nodespace-types` by `bun run gen:types`. Do not edit.
 import type { NodeReference } from './node-reference';
+import type { SchemaChildrenRule } from './schema-children-rule';
 import type { SchemaField } from './schema-field';
+import type { SchemaParentRule } from './schema-parent-rule';
 import type { SchemaRelationship } from './schema-relationship';
 
 export type SchemaNode = {
@@ -16,6 +18,16 @@ export type SchemaNode = {
    * resolve a user-defined subtype to the type whose rules it takes.
    */
   extends?: string;
+  /**
+   * Which children this type's nodes may have: the rule this type itself
+   * declares, on top of what it inherits (ADR-089).
+   */
+  children?: SchemaChildrenRule;
+  /**
+   * Where this type's nodes may sit in the tree: the rule this type itself
+   * declares, on top of what it inherits (ADR-089).
+   */
+  parent?: SchemaParentRule;
   schemaVersion: number;
   description: string;
   fields: Array<SchemaField>;

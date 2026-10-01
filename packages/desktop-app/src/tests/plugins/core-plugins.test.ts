@@ -107,8 +107,6 @@ describe('Core Plugins Integration', () => {
       // Entity types are not slash-creatable — chats are created via the
       // sidebar's dedicated "AI Chats" section ("+ New chat").
       expect(plugin.config.slashCommands).toHaveLength(0);
-      expect(plugin.config.canHaveChildren).toBe(false);
-      expect(plugin.config.canBeChild).toBe(true);
       // The conversation lives outside .content — must be protected from a
       // start-of-node Backspace deleting the whole node, and from absorbing a
       // Backspace-merge from the node below.
@@ -322,8 +320,6 @@ describe('Core Plugins Integration', () => {
               contentTemplate: ''
             }
           ],
-          canHaveChildren: true,
-          canBeChild: true
         },
         viewer: {
           lazyLoad: () => Promise.resolve({ default: vi.fn() as unknown as NodeViewerComponent })
@@ -576,44 +572,6 @@ describe('Core Plugins Integration', () => {
 
       for (const referenceType of expectedReferenceTypes) {
         expect(registry.hasReferenceComponent(referenceType)).toBe(true);
-      }
-    });
-  });
-
-  // C3b parity test: frontend canHaveChildren flags must match Rust can_have_children()
-  // This locks the single-source contract so the two copies cannot silently diverge.
-  // Ground truth is packages/core/src/behaviors/mod.rs — update both if a type changes.
-  describe('Container rule parity (C3b)', () => {
-    const RUST_CAN_HAVE_CHILDREN: Record<string, boolean> = {
-      // Containers (Rust returns true)
-      text: true,
-      header: true,
-      task: true,
-      checkbox: true, // no Rust behavior → CustomNodeBehavior default = true
-      date: true,
-      'quote-block': true,
-      collection: true,
-      person: true, // child nodes are notes about the person
-
-      // Leaf nodes (Rust returns false)
-      'code-block': false,
-      'ordered-list': false,
-      'horizontal-line': false,
-      table: false,
-      query: false,
-      'ai-chat-native': false,
-      'ai-chat-pty': false
-    };
-
-    it('every registered core plugin canHaveChildren matches Rust can_have_children()', () => {
-      registerCorePlugins(registry);
-
-      for (const [nodeType, rustValue] of Object.entries(RUST_CAN_HAVE_CHILDREN)) {
-        const frontendValue = registry.canHaveChildren(nodeType);
-        expect(
-          frontendValue,
-          `canHaveChildren parity failed for '${nodeType}': frontend=${frontendValue} rust=${rustValue}`
-        ).toBe(rustValue);
       }
     });
   });

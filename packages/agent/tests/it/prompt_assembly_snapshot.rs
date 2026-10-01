@@ -220,6 +220,8 @@ fn fixture_schema_ticket() -> nodespace_core::models::SchemaNode {
         modified_at: now,
         is_core: false,
         is_abstract: false,
+        children: Default::default(),
+        parent: Default::default(),
         schema_version: 1,
         fields: vec![
             schema_field("title", "text", true),
@@ -255,6 +257,8 @@ fn fixture_schema_adr() -> nodespace_core::models::SchemaNode {
         modified_at: now,
         is_core: false,
         is_abstract: false,
+        children: Default::default(),
+        parent: Default::default(),
         schema_version: 1,
         fields: vec![
             schema_field("title", "text", true),
@@ -279,6 +283,8 @@ fn fixture_schema_release() -> nodespace_core::models::SchemaNode {
         modified_at: now,
         is_core: false,
         is_abstract: false,
+        children: Default::default(),
+        parent: Default::default(),
         schema_version: 1,
         fields: Vec::new(),
         relationships: Vec::new(),

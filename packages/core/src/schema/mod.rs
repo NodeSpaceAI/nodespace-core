@@ -1050,64 +1050,236 @@ async fn load_parent_map(
         .map_err(|e| MarkdownError::internal_error(format!("Failed to load extends edges: {e}")))
 }
 
+/// Write a schema's structural rules into its stored properties. `any`
+/// declares nothing, so it is not stored.
+fn store_structural_rules(
+    properties: &mut serde_json::Value,
+    children: &crate::models::SchemaChildrenRule,
+    parent: &crate::models::SchemaParentRule,
+) {
+    if !children.is_any() {
+        properties["children"] = serde_json::json!(children);
+    }
+    if !parent.is_any() {
+        properties["parent"] = serde_json::json!(parent);
+    }
+}
+
+/// Validate the structural rules a schema is about to declare (ADR-089):
+/// every type they name exists, and under `base` (the type the schema
+/// extends, if any) they only tighten what the base already has in force.
+///
+/// Returns the rules that would then be in force for the schema's own nodes.
+async fn validate_structural_rules(
+    node_service: &Arc<NodeService>,
+    schema_id: &str,
+    base: Option<&str>,
+    children: &crate::models::SchemaChildrenRule,
+    parent: &crate::models::SchemaParentRule,
+) -> Result<
+    (
+        crate::models::SchemaChildrenRule,
+        crate::models::SchemaParentRule,
+    ),
+    MarkdownError,
+> {
+    let store = node_service.store();
+    let internal = |what: &str, e: anyhow::Error| {
+        MarkdownError::internal_error(format!("Failed to resolve {what}: {e}"))
+    };
+
+    // Each named type's chain: it proves the type exists, and answers
+    // whether a narrowed list stays inside the base's.
+    let mut chains: std::collections::HashMap<&str, Vec<String>> = std::collections::HashMap::new();
+    for named in children.named_types().iter().chain(parent.named_types()) {
+        if named.trim().is_empty() {
+            return Err(MarkdownError::invalid_params(
+                "A structural rule's \"types\" must name schema ids, e.g. \"types\": [\"task\"]."
+                    .to_string(),
+            ));
+        }
+        // A rule may name the type that declares it.
+        let chain = if named == schema_id {
+            vec![named.clone()]
+        } else {
+            let known = crate::models::CoreNodeType::from_id(named).is_some()
+                || node_service
+                    .get_schema_node(named)
+                    .await
+                    .map_err(|e| {
+                        MarkdownError::internal_error(format!(
+                            "Failed to look up type '{named}': {e}"
+                        ))
+                    })?
+                    .is_some();
+            if !known {
+                return Err(MarkdownError::invalid_params(format!(
+                    "'{schema_id}' names '{named}' in a structural rule, but no such type \
+                     exists. Create it first, or name an existing type."
+                )));
+            }
+            store
+                .type_chain(named)
+                .await
+                .map_err(|e| internal(&format!("the type chain of '{named}'"), e))?
+        };
+        chains.insert(named.as_str(), chain);
+    }
+    let lists_nothing = [
+        (
+            "children",
+            matches!(children, crate::models::SchemaChildrenRule::AnyExcept { types } if types.is_empty()),
+        ),
+        (
+            "parent",
+            matches!(parent, crate::models::SchemaParentRule::MustHaveParentOf { types } if types.is_empty()),
+        ),
+    ];
+    if let Some((rule, _)) = lists_nothing.iter().find(|(_, empty)| *empty) {
+        return Err(MarkdownError::invalid_params(format!(
+            "The \"{rule}\" rule of '{schema_id}' names no types. List at least one, or \
+             use a rule that takes none."
+        )));
+    }
+
+    let (base_children, base_parent) = match base {
+        Some(base) => store
+            .structural_rules_in_force(base)
+            .await
+            .map_err(|e| internal(&format!("the structural rules of '{base}'"), e))?,
+        None => Default::default(),
+    };
+    let base_name = base.unwrap_or_default();
+    if !children.tightens(&base_children) {
+        return Err(MarkdownError::invalid_params(format!(
+            "'{schema_id}' cannot declare that \"children\" rule: '{base_name}', which it \
+             extends, takes no children, and a subtype may only tighten its base's rules."
+        )));
+    }
+    let is_a = |named: &str, allowed: &str| {
+        chains
+            .get(named)
+            .is_some_and(|chain| chain.iter().any(|t| t == allowed))
+    };
+    if !parent.tightens(&base_parent, is_a) {
+        return Err(MarkdownError::invalid_params(format!(
+            "'{schema_id}' cannot declare that \"parent\" rule: it would relax the rule of \
+             '{base_name}', which it extends ({}). A subtype may only tighten its base's rules.",
+            serde_json::json!(base_parent)
+        )));
+    }
+    Ok((children.over(&base_children), parent.over(&base_parent)))
+}
+
 /// Refuse a change to a schema's place in the type system that the type's
 /// existing state does not allow. Run in `update_schema`'s Phase 0, against
 /// the schema as it stood before the call, because Phase 1 commits renames
 /// (and migrates node data) before anything later can refuse.
 ///
-/// - **A core type's parent and abstract flag are the registry's.** Every
-///   rule resolved in Rust answers from the registry, so changing either here
-///   would leave the ancestry table and the stored flag saying something the
-///   registry does not.
-/// - **Taking on a root-only base** tightens the rule for every node the type
-///   already has (ADR-089): refused while one of them has a parent, rather
-///   than leave a node the rule would never have admitted.
+/// - **A core type's parent, abstract flag and structural rules are the
+///   registry's.** Every rule resolved in Rust answers from the registry, so
+///   changing one here would leave the derived tables and the stored schema
+///   saying something the registry does not.
+/// - **Structural rules only tighten** (ADR-089). A new `children` or
+///   `parent` rule, or a new base, is refused when the type's own rules would
+///   relax the base's, when a type extending this one would then relax this
+///   one's, or while a node of the type sits where the type's new rules in
+///   force would not have admitted it. That last check covers the rules the
+///   type itself declares or inherits. A new base also changes what the type
+///   *is* for another type's rule (an `any_except` list that names the new
+///   base, a `must_have_parent_of` list that named the old one); nodes already
+///   placed are not searched for those, and are refused on their next move
+///   instead, as ADR-089 accepts for existing trees.
 /// - **Becoming abstract** is refused while a node has the type as its own:
 ///   such a node would hold a type that cannot be instantiated.
 ///
-/// The two instance checks read outside the transaction that later writes the
+/// The instance checks read outside the transaction that later writes the
 /// schema, so a node created between the check and the write is not seen. The
-/// database triggers still refuse a parent for a root-only node from then on.
+/// database triggers still refuse every later edge the rules do not allow.
 async fn validate_type_system_changes(
     node_service: &Arc<NodeService>,
     schema: &crate::models::SchemaNode,
     params: &UpdateSchemaParams,
 ) -> Result<(), MarkdownError> {
-    if schema.is_core && (params.extends.is_some() || params.is_abstract.is_some()) {
+    let changes_structure =
+        params.extends.is_some() || params.children.is_some() || params.parent.is_some();
+    if schema.is_core && (changes_structure || params.is_abstract.is_some()) {
         return Err(MarkdownError::invalid_params(format!(
-            "'{}' is a core type; what it extends and whether it is abstract cannot be changed.",
+            "'{}' is a core type; what it extends, whether it is abstract and its structural \
+             rules cannot be changed.",
             schema.id
         )));
     }
 
-    if let Some(new_parent) = params.extends.as_deref().map(str::trim) {
-        let root_only = node_service
-            .store()
-            .root_only_type_of(new_parent)
-            .await
-            .map_err(|e| {
-                MarkdownError::internal_error(format!(
-                    "Failed to resolve the type chain of '{new_parent}': {e}"
-                ))
-            })?;
-        if let Some(root_type) = root_only {
-            let has_parented = node_service
-                .store()
-                .has_parented_nodes_of_type(&schema.id)
+    if changes_structure {
+        let declared_base = crate::schema::extends_chain::declared_parent(schema);
+        let base = params
+            .extends
+            .as_deref()
+            .map(str::trim)
+            .or(declared_base.as_deref());
+        let children = params.children.as_ref().unwrap_or(&schema.children);
+        let parent = params.parent.as_ref().unwrap_or(&schema.parent);
+        let (children_in_force, parent_in_force) =
+            validate_structural_rules(node_service, &schema.id, base, children, parent).await?;
+
+        let store = node_service.store();
+        let internal = |what: String, e: anyhow::Error| {
+            MarkdownError::internal_error(format!("Failed to {what}: {e}"))
+        };
+
+        // A type extending this one keeps its own declaration: it must still
+        // only tighten the rule this type will now have in force.
+        let parent_map = load_parent_map(node_service).await?;
+        for subtype in parent_map.keys() {
+            let chain = store
+                .type_chain(subtype)
                 .await
-                .map_err(|e| {
-                    MarkdownError::internal_error(format!(
-                        "Failed to check the nodes of '{}': {e}",
-                        schema.id
-                    ))
-                })?;
-            if has_parented {
+                .map_err(|e| internal(format!("resolve the type chain of '{subtype}'"), e))?;
+            if subtype == &schema.id || !chain.contains(&schema.id) {
+                continue;
+            }
+            let Some(sub_schema) = node_service.get_schema_node(subtype).await.map_err(|e| {
+                MarkdownError::internal_error(format!("Failed to get schema '{subtype}': {e}"))
+            })?
+            else {
+                continue;
+            };
+            let mut named_chains: std::collections::HashMap<&str, Vec<String>> =
+                std::collections::HashMap::new();
+            for named in sub_schema.parent.named_types() {
+                let chain = store
+                    .type_chain(named)
+                    .await
+                    .map_err(|e| internal(format!("resolve the type chain of '{named}'"), e))?;
+                named_chains.insert(named.as_str(), chain);
+            }
+            let is_a = |named: &str, allowed: &str| {
+                named_chains
+                    .get(named)
+                    .is_some_and(|chain| chain.iter().any(|t| t == allowed))
+            };
+            if !sub_schema.children.tightens(&children_in_force)
+                || !sub_schema.parent.tightens(&parent_in_force, is_a)
+            {
                 return Err(MarkdownError::invalid_params(format!(
-                    "'{}' cannot extend '{}': a {} is always a root, and nodes of type '{}' \
-                     have parents. Move them to the root first.",
-                    schema.id, new_parent, root_type, schema.id
+                    "'{}' cannot take those structural rules: '{}', which extends it, declares \
+                     a rule they would make a relaxation. Change '{}' first.",
+                    schema.id, subtype, subtype
                 )));
             }
+        }
+
+        let breaking = store
+            .node_breaking_rules(&schema.id, &children_in_force, &parent_in_force)
+            .await
+            .map_err(|e| internal(format!("check the nodes of '{}'", schema.id), e))?;
+        if let Some((node_id, what)) = breaking {
+            return Err(MarkdownError::invalid_params(format!(
+                "'{}' cannot take those structural rules: node '{}' {}. Move or retype the \
+                 nodes that break them first.",
+                schema.id, node_id, what
+            )));
         }
     }
 
@@ -1827,6 +1999,17 @@ pub struct CreateSchemaParams {
     /// into it. Only its subtypes are instantiated.
     #[serde(default, rename = "abstract")]
     pub is_abstract: bool,
+    /// Which children this type's nodes may have (ADR-089): `{"rule": "any"}`
+    /// (the default), `{"rule": "none"}`, or
+    /// `{"rule": "any_except", "types": [...]}`. A named type covers its
+    /// subtypes. A subtype inherits its base's rule and may only tighten it.
+    #[serde(default)]
+    pub children: crate::models::SchemaChildrenRule,
+    /// Where this type's nodes may sit in the tree (ADR-089):
+    /// `{"rule": "any"}` (the default), `{"rule": "must_be_root"}`, or
+    /// `{"rule": "must_have_parent_of", "types": [...]}`.
+    #[serde(default)]
+    pub parent: crate::models::SchemaParentRule,
     /// Optional relationship definitions
     #[serde(default)]
     pub relationships: Option<Vec<crate::models::schema::SchemaRelationship>>,
@@ -1997,6 +2180,14 @@ pub async fn handle_create_schema(
         validate_no_field_redeclaration(node_service, parent_id, &stored_fields).await?;
         validate_no_relationship_redeclaration(node_service, parent_id, &relationships).await?;
     }
+    validate_structural_rules(
+        node_service,
+        &schema_id,
+        extends_parent,
+        &params.children,
+        &params.parent,
+    )
+    .await?;
 
     // The new schema cannot be looked up yet, so its chain is itself plus
     // the declared parent's.
@@ -2092,6 +2283,7 @@ pub async fn handle_create_schema(
     if params.is_abstract {
         properties["abstract"] = serde_json::Value::Bool(true);
     }
+    store_structural_rules(&mut properties, &params.children, &params.parent);
     if let Some(ref template) = params.title_template {
         properties["titleTemplate"] = serde_json::Value::String(template.clone());
     }
@@ -2369,6 +2561,15 @@ pub struct UpdateSchemaParams {
     /// abstract: no node may have an abstract type (ADR-086 §6).
     #[serde(default, rename = "abstract")]
     pub is_abstract: Option<bool>,
+    /// Replace the type's `children` rule (ADR-089); absent leaves it
+    /// unchanged. Refused when it relaxes the base type's rule, or when a
+    /// node of the type already breaks the new one.
+    #[serde(default)]
+    pub children: Option<crate::models::SchemaChildrenRule>,
+    /// Replace the type's `parent` rule (ADR-089); absent leaves it
+    /// unchanged. Refused like `children`.
+    #[serde(default)]
+    pub parent: Option<crate::models::SchemaParentRule>,
     /// Set or update the title template. Pass `null` (absent) to leave unchanged.
     /// Use `{field_name}` tokens referencing fields defined in the schema.
     /// Example: `"{first_name} {last_name}"`
@@ -3219,6 +3420,8 @@ pub async fn handle_update_schema(
     // Whether the flag may change was settled in Phase 0
     // (`validate_type_system_changes`).
     let is_abstract = params.is_abstract.unwrap_or(schema.is_abstract);
+    let children = params.children.unwrap_or(schema.children);
+    let parent = params.parent.unwrap_or(schema.parent);
 
     // Build updated properties (description is stored as a child subtree and
     // relationship declarations as relationship-table rows — neither lives in
@@ -3231,6 +3434,7 @@ pub async fn handle_update_schema(
     if is_abstract {
         properties["abstract"] = serde_json::Value::Bool(true);
     }
+    store_structural_rules(&mut properties, &children, &parent);
     if let Some(ref template) = title_template {
         properties["titleTemplate"] = serde_json::Value::String(template.clone());
     }
@@ -3412,6 +3616,15 @@ pub async fn handle_update_schema(
                         .await?;
                 }
 
+                // The definition is written whole. An optional key it no
+                // longer carries (a rule back at `any`, a type no longer
+                // abstract) is sent as `null`, which removes the stored one.
+                let mut properties = properties;
+                for key in NodeService::OPTIONAL_SCHEMA_DEFINITION_KEYS {
+                    if properties.get(key).is_none() {
+                        properties[key] = serde_json::Value::Null;
+                    }
+                }
                 let update = NodeUpdate {
                     properties: Some(properties),
                     ..Default::default()

@@ -51,27 +51,40 @@ describe('describeMergeRefusal', () => {
     expect(text).toContain('Move "Survivor" out of "Loser"\'s subtree first, or keep "Loser" instead.');
   });
 
-  it('tells the user to lift the loser out for collection_not_root', () => {
+  it('tells the user to lift the loser out for must_be_root', () => {
     const text = describeMergeRefusal(
-      { rule: 'collection_not_root', node_id: 's', related_ids: [], detail: '' },
+      { rule: 'must_be_root', node_id: 's', related_ids: [], detail: '' },
       's',
       'l',
       labelOf
     );
-    expect(text).toContain('"Survivor" is a collection');
+    expect(text).toContain('"Survivor" is of a type that is always top-level');
     expect(text).toContain('Move "Loser" to the top level first, then merge.');
     expect(text).not.toContain('keep');
   });
 
-  it('tells the user to lift the loser out for schema_not_root', () => {
+  it("names the loser's children for children_none", () => {
     const text = describeMergeRefusal(
-      { rule: 'schema_not_root', node_id: 's', related_ids: [], detail: '' },
+      { rule: 'children_none', node_id: 's', related_ids: ['c'], detail: '' },
       's',
       'l',
       labelOf
     );
-    expect(text).toContain('"Survivor" is a type definition');
-    expect(text).toContain('Move "Loser" to the top level first, then merge.');
+    expect(text).toContain('"Survivor" is of a type that can\'t have children');
+    expect(text).toContain('or keep "Loser" instead.');
+  });
+
+  it('explains the two rules that name types', () => {
+    for (const rule of ['child_not_allowed', 'parent_required'] as const) {
+      const text = describeMergeRefusal(
+        { rule, node_id: 's', related_ids: [], detail: '' },
+        's',
+        'l',
+        labelOf
+      );
+      expect(text, rule).toContain("Can't merge:");
+      expect(text, rule).toContain('"Loser"');
+    }
   });
 });
 

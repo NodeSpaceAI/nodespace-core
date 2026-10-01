@@ -134,13 +134,6 @@ pub enum NodeServiceError {
         message: String,
     },
 
-    /// Node cannot be a parent because its type does not allow children
-    #[error("Node '{parent_id}' (type '{node_type}') cannot have children")]
-    NotAContainer {
-        parent_id: String,
-        node_type: String,
-    },
-
     /// `node_type` is neither a registered core type nor an existing schema id
     #[error(
         "Unknown node_type '{node_type}': no such core type or schema. Create the schema first with create_schema, or use an existing type id."
@@ -339,14 +332,6 @@ impl NodeServiceError {
         }
     }
 
-    /// Create a not-a-container error
-    pub fn not_a_container(parent_id: impl Into<String>, node_type: impl Into<String>) -> Self {
-        Self::NotAContainer {
-            parent_id: parent_id.into(),
-            node_type: node_type.into(),
-        }
-    }
-
     /// Create an unknown-node-type error
     pub fn unknown_node_type(node_type: impl Into<String>) -> Self {
         Self::UnknownNodeType {
@@ -526,15 +511,6 @@ mod tests {
             NodeServiceError::CollectionDepthExceeded { .. }
         ));
         assert!(msg.contains("maximum depth of 5"));
-    }
-
-    #[test]
-    fn test_not_a_container_error() {
-        let err = NodeServiceError::not_a_container("parent-id", "query");
-        let msg = err.to_string();
-        assert!(matches!(err, NodeServiceError::NotAContainer { .. }));
-        assert!(msg.contains("parent-id"));
-        assert!(msg.contains("query"));
     }
 
     #[test]

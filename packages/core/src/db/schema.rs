@@ -193,10 +193,116 @@ CREATE TABLE IF NOT EXISTS type_ancestry (
 
 -- "Every type that is, or extends, X": the lookup a base-type rule makes.
 CREATE INDEX IF NOT EXISTS idx_type_ancestry_ancestor ON type_ancestry (ancestor, node_type);
+
+-- The structural rules each type declares (ADR-089): which children its nodes
+-- may have, and where they may sit in the `has_child` tree. One row per
+-- declared rule, and one per named type for the two rules that take a list:
+--
+--   children_none    its nodes take no children
+--   children_except  its nodes take no child of type `target`
+--   must_be_root     its nodes never have a parent
+--   parent_of        its nodes sit only under a node of type `target`
+--
+-- A type with no row for a rule declares `any`. A row binds the declaring type
+-- and every type extending it, and a `target` covers its own subtypes: both
+-- are resolved by joining `type_ancestry`.
+--
+-- Like `type_ancestry` it is derived data. A core type's rows come from the
+-- registry. Every other type's are kept in step with its schema node by the
+-- structural-rule triggers, inside the statement that writes the schema.
+CREATE TABLE IF NOT EXISTS structural_rule (
+    node_type TEXT NOT NULL,
+    rule      TEXT NOT NULL CHECK (rule IN ('children_none', 'children_except', 'must_be_root', 'parent_of')),
+    target    TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (node_type, rule, target)
+) STRICT, WITHOUT ROWID;
 "#;
 
 /// The name of the table holding every type's resolved `extends` chain.
 pub const TYPE_ANCESTRY_TABLE: &str = "type_ancestry";
+
+/// The name of the table holding every type's declared structural rules.
+pub const STRUCTURAL_RULE_TABLE: &str = "structural_rule";
+
+/// The `rule` values of [`STRUCTURAL_RULE_TABLE`].
+pub mod structural_rule {
+    /// The type's nodes take no children.
+    pub const CHILDREN_NONE: &str = "children_none";
+    /// The type's nodes take no child of the row's `target` type.
+    pub const CHILDREN_EXCEPT: &str = "children_except";
+    /// The type's nodes never have a parent.
+    pub const MUST_BE_ROOT: &str = "must_be_root";
+    /// The type's nodes sit only under a node of the row's `target` type.
+    pub const PARENT_OF: &str = "parent_of";
+}
+
+/// The four checks a `has_child` edge must pass (ADR-089), for a parent of
+/// type `parent_type` and a child of type `child_type` (both SQL expressions).
+///
+/// Each entry is `(rule, sql)`: the SQL yields a `(rule, declared_by)` row for
+/// every type whose declaration of that rule the edge would break, where
+/// `declared_by` is the type whose schema declares it. No row means the rule
+/// allows the edge. The triggers and the store's readable pre-check both run
+/// these, so the two cannot disagree about what a rule refuses.
+///
+/// Every check resolves a type through `type_ancestry`, so a rule declared on
+/// a base type binds its subtypes and a named type covers its own.
+pub fn has_child_checks(parent_type: &str, child_type: &str) -> [(&'static str, String); 4] {
+    use structural_rule::{CHILDREN_EXCEPT, CHILDREN_NONE, MUST_BE_ROOT, PARENT_OF};
+    let rules = STRUCTURAL_RULE_TABLE;
+    let ancestry = TYPE_ANCESTRY_TABLE;
+    let declared = |rule: &str, by: &str| {
+        format!(
+            "SELECT s.rule AS rule, s.node_type AS declared_by \
+               FROM {ancestry} a JOIN {rules} s ON s.node_type = a.ancestor \
+              WHERE a.node_type = {by} AND s.rule = '{rule}'"
+        )
+    };
+    [
+        (MUST_BE_ROOT, declared(MUST_BE_ROOT, child_type)),
+        (CHILDREN_NONE, declared(CHILDREN_NONE, parent_type)),
+        (
+            CHILDREN_EXCEPT,
+            format!(
+                "{} AND s.target IN (SELECT ancestor FROM {ancestry} WHERE node_type = {child_type})",
+                declared(CHILDREN_EXCEPT, parent_type)
+            ),
+        ),
+        (PARENT_OF, missing_parent_sql(child_type, Some(parent_type))),
+    ]
+}
+
+/// Every rule a `has_child` edge would break, as one query: the union of
+/// [`has_child_checks`].
+pub fn has_child_violations_sql(parent_type: &str, child_type: &str) -> String {
+    has_child_checks(parent_type, child_type)
+        .map(|(_, sql)| sql)
+        .join(" UNION ALL ")
+}
+
+/// SQL that finds the `parent_of` rule a node of type `child_type` breaks
+/// when its parent has type `parent_type`, or when it has no parent at all
+/// (`None`): one `(rule, declared_by)` row per type in the child's chain
+/// whose list names no type the parent is.
+pub fn missing_parent_sql(child_type: &str, parent_type: Option<&str>) -> String {
+    use structural_rule::PARENT_OF;
+    let rules = STRUCTURAL_RULE_TABLE;
+    let ancestry = TYPE_ANCESTRY_TABLE;
+    let unsatisfied = match parent_type {
+        Some(parent_type) => format!(
+            " AND NOT EXISTS (SELECT 1 FROM {rules} t \
+                               WHERE t.node_type = s.node_type AND t.rule = '{PARENT_OF}' \
+                                 AND t.target IN (SELECT ancestor FROM {ancestry} \
+                                                   WHERE node_type = {parent_type}))"
+        ),
+        None => String::new(),
+    };
+    format!(
+        "SELECT DISTINCT s.rule AS rule, s.node_type AS declared_by \
+           FROM {ancestry} a JOIN {rules} s ON s.node_type = a.ancestor \
+          WHERE a.node_type = {child_type} AND s.rule = '{PARENT_OF}'{unsatisfied}"
+    )
+}
 
 /// A SQL predicate that is true when `column` holds one of `bases` or a type
 /// extending one of them, resolved through the ancestry table.
@@ -394,57 +500,7 @@ async fn create_schema_objects(conn: &libsql::Connection) -> Result<()> {
 
     create_type_ancestry_objects(conn).await?;
 
-    // Some types are always roots: the registry marks them `MustBeRoot`
-    // (ADR-089). A collection nests through `member_of`, never `has_child`
-    // (ADR-059 §2), and a schema's subtree delete cascades its descendants
-    // without the schema delete guard, so a nested schema would be removed
-    // unchecked. Such a node may still HAVE `has_child` children; it may not
-    // BE one.
-    //
-    // Enforced here rather than at each Rust insert site because `has_child`
-    // edges are written from a dozen places (create, append, move, bulk
-    // hierarchy attach, seeding, generic relationship create) and a node can
-    // take a root-only type by a type switch. Foreign keys are immediate, so a
-    // child's node row always exists by the time its edge is inserted.
-    //
-    // Both triggers resolve the node's type through `type_ancestry`, so the
-    // rule holds for every subtype of a root-only type, not only for the type
-    // the registry names.
-    for core in crate::models::CoreNodeType::root_only() {
-        let id = core.as_str();
-        let name = id.replace('-', "_");
-        conn.execute(
-            &format!(
-                r#"CREATE TRIGGER IF NOT EXISTS {name}_is_root_edge BEFORE INSERT ON relationship
-                WHEN new.relationship_type = 'has_child'
-                  AND EXISTS (SELECT 1 FROM node n
-                              JOIN {TYPE_ANCESTRY_TABLE} a ON a.node_type = n.node_type
-                              WHERE n.id = new.out_node AND a.ancestor = '{id}')
-                BEGIN
-                    SELECT RAISE(ABORT, '{name}_not_root: a {id} is always a root and cannot have a parent');
-                END"#
-            ),
-            (),
-        )
-        .await
-        .with_context(|| format!("Failed to create {id}-is-root edge trigger"))?;
-
-        conn.execute(
-            &format!(
-                r#"CREATE TRIGGER IF NOT EXISTS {name}_is_root_type BEFORE UPDATE OF node_type ON node
-                WHEN EXISTS (SELECT 1 FROM {TYPE_ANCESTRY_TABLE} a
-                             WHERE a.node_type = new.node_type AND a.ancestor = '{id}')
-                  AND EXISTS (SELECT 1 FROM relationship
-                              WHERE out_node = new.id AND relationship_type = 'has_child')
-                BEGIN
-                    SELECT RAISE(ABORT, '{name}_not_root: a node with a parent cannot become a {id}, which is always a root');
-                END"#
-            ),
-            (),
-        )
-        .await
-        .with_context(|| format!("Failed to create {id}-is-root type trigger"))?;
-    }
+    create_structural_rule_objects(conn).await?;
 
     // Whether a row is a core schema is fixed when it is created. The core
     // schema delete refusal reads `isCore` from the row, so an update that
@@ -615,6 +671,175 @@ async fn create_type_ancestry_objects(conn: &libsql::Connection) -> Result<()> {
         conn.execute(&trigger, ())
             .await
             .with_context(|| format!("Failed to create type-ancestry trigger: {trigger}"))?;
+    }
+    Ok(())
+}
+
+/// The rows and triggers behind the structural rules (ADR-089): what a type's
+/// nodes may have as children, and where they may sit in the `has_child` tree.
+///
+/// Enforced here rather than at each Rust insert site because `has_child`
+/// edges are written from a dozen places (create, append, move, bulk hierarchy
+/// attach, seeding, generic relationship create) and a node can take a type
+/// with tighter rules by a type switch. Foreign keys are immediate, so both
+/// node rows exist by the time their edge is inserted.
+///
+/// A trigger cannot see an edge that is never written, so one rule is not
+/// enforced here: a node whose type needs a parent, created or left without
+/// one. The store's create and move paths refuse that before they write
+/// (`SqliteStore::assert_may_be_root`).
+async fn create_structural_rule_objects(conn: &libsql::Connection) -> Result<()> {
+    use crate::models::{ChildrenRule, CoreNodeType, ParentRule};
+    use structural_rule::{CHILDREN_EXCEPT, CHILDREN_NONE, MUST_BE_ROOT, PARENT_OF};
+
+    // The core types' rules come from the registry, like their chains: they
+    // hold from the first statement on a new database, and `schema`, which has
+    // no schema node of its own, gets its row nowhere else.
+    for core in CoreNodeType::ALL {
+        let declared = core.declared_structure();
+        let mut rows: Vec<(&str, &str)> = Vec::new();
+        match declared.children {
+            ChildrenRule::Any => {}
+            ChildrenRule::None => rows.push((CHILDREN_NONE, "")),
+            ChildrenRule::AnyExcept(types) => {
+                rows.extend(types.iter().map(|t| (CHILDREN_EXCEPT, t.as_str())));
+            }
+        }
+        match declared.parent {
+            ParentRule::Any => {}
+            ParentRule::MustBeRoot => rows.push((MUST_BE_ROOT, "")),
+            ParentRule::MustHaveParentOf(types) => {
+                rows.extend(types.iter().map(|t| (PARENT_OF, t.as_str())));
+            }
+        }
+        for (rule, target) in rows {
+            conn.execute(
+                &format!(
+                    "INSERT OR IGNORE INTO {STRUCTURAL_RULE_TABLE} (node_type, rule, target) \
+                     VALUES (?1, ?2, ?3)"
+                ),
+                libsql::params![core.as_str(), rule, target],
+            )
+            .await
+            .with_context(|| format!("Failed to seed the structural rules of '{core}'"))?;
+        }
+    }
+
+    let new_is_schema = is_exactly_sql("new.node_type", CoreNodeType::Schema);
+    let old_is_schema = is_exactly_sql("old.node_type", CoreNodeType::Schema);
+    // A core type's rules are the registry's, whatever its schema node says.
+    let core_ids = sql_type_list(&CoreNodeType::ALL);
+    let new_is_not_core = format!("new.id NOT IN ({core_ids})");
+    let old_is_not_core = format!("old.id NOT IN ({core_ids})");
+
+    // The schema node `new`'s `children` and `parent` properties, as rule
+    // rows. A `json_each` over a path that is absent yields no rows.
+    let declare = format!(
+        "INSERT OR IGNORE INTO {STRUCTURAL_RULE_TABLE} (node_type, rule, target) \
+           SELECT new.id, '{CHILDREN_NONE}', '' \
+            WHERE {new_is_schema} AND json_extract(new.properties, '$.children.rule') = 'none'; \
+         INSERT OR IGNORE INTO {STRUCTURAL_RULE_TABLE} (node_type, rule, target) \
+           SELECT new.id, '{CHILDREN_EXCEPT}', j.value \
+             FROM json_each(new.properties, '$.children.types') j \
+            WHERE {new_is_schema} \
+              AND json_extract(new.properties, '$.children.rule') = 'any_except'; \
+         INSERT OR IGNORE INTO {STRUCTURAL_RULE_TABLE} (node_type, rule, target) \
+           SELECT new.id, '{MUST_BE_ROOT}', '' \
+            WHERE {new_is_schema} \
+              AND json_extract(new.properties, '$.parent.rule') = 'must_be_root'; \
+         INSERT OR IGNORE INTO {STRUCTURAL_RULE_TABLE} (node_type, rule, target) \
+           SELECT new.id, '{PARENT_OF}', j.value \
+             FROM json_each(new.properties, '$.parent.types') j \
+            WHERE {new_is_schema} \
+              AND json_extract(new.properties, '$.parent.rule') = 'must_have_parent_of';"
+    );
+    let undeclare = format!("DELETE FROM {STRUCTURAL_RULE_TABLE} WHERE node_type = old.id;");
+
+    // One `RAISE` per rule: its message is a literal, and it leads with the
+    // rule's name, as `TreeInvariantRule::as_str` does for the Rust guards.
+    let message = |rule: &str| match rule {
+        MUST_BE_ROOT => {
+            "must_be_root: a node of this type is always a root and cannot have a parent"
+        }
+        CHILDREN_NONE => "children_none: a node of this type cannot have children",
+        CHILDREN_EXCEPT => {
+            "child_not_allowed: a node of this type cannot have a child of that type"
+        }
+        _ => "parent_required: a node of this type cannot sit under a parent of that type",
+    };
+    let raise = |rule: &str, broken: String| {
+        format!("SELECT RAISE(ABORT, '{}') WHERE {broken};", message(rule))
+    };
+
+    // The `has_child` edge `new` must break no rule of either end's type.
+    let refuse_edge = has_child_checks(
+        "(SELECT node_type FROM node WHERE id = new.in_node)",
+        "(SELECT node_type FROM node WHERE id = new.out_node)",
+    )
+    .map(|(rule, check)| raise(rule, format!("EXISTS ({check})")))
+    .join(" ");
+
+    // The node `new` takes a type: its rules must hold against the parent it
+    // has and each child it has, and theirs against it.
+    let as_child = has_child_checks("pn.node_type", "new.node_type");
+    let as_parent = has_child_checks("new.node_type", "cn.node_type");
+    let refuse_retype = as_child
+        .into_iter()
+        .zip(as_parent)
+        .map(|((rule, under_parent), (_, over_child))| {
+            raise(
+                rule,
+                format!(
+                    "EXISTS (SELECT 1 FROM relationship up JOIN node pn ON pn.id = up.in_node \
+                              WHERE up.out_node = new.id AND up.relationship_type = 'has_child' \
+                                AND EXISTS ({under_parent})) \
+                     OR EXISTS (SELECT 1 FROM relationship down \
+                                  JOIN node cn ON cn.id = down.out_node \
+                                 WHERE down.in_node = new.id \
+                                   AND down.relationship_type = 'has_child' \
+                                   AND EXISTS ({over_child}))"
+                ),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    let triggers = [
+        format!(
+            "CREATE TRIGGER IF NOT EXISTS structural_rule_schema_insert AFTER INSERT ON node \
+             WHEN {new_is_schema} AND {new_is_not_core} BEGIN {declare} END"
+        ),
+        format!(
+            "CREATE TRIGGER IF NOT EXISTS structural_rule_schema_delete AFTER DELETE ON node \
+             WHEN {old_is_schema} AND {old_is_not_core} BEGIN {undeclare} END"
+        ),
+        // A schema whose declaration changed, or a node retyped into or out
+        // of `schema`: its rows are rewritten from what it now declares.
+        format!(
+            "CREATE TRIGGER IF NOT EXISTS structural_rule_schema_update \
+             AFTER UPDATE OF node_type, properties ON node \
+             WHEN ({old_is_schema} OR {new_is_schema}) AND {old_is_not_core} \
+             BEGIN {undeclare} {declare} END"
+        ),
+        format!(
+            "CREATE TRIGGER IF NOT EXISTS structure_has_child_insert BEFORE INSERT ON relationship \
+             WHEN new.relationship_type = 'has_child' BEGIN {refuse_edge} END"
+        ),
+        // An edge re-pointed in place, or turned into a `has_child` edge.
+        format!(
+            "CREATE TRIGGER IF NOT EXISTS structure_has_child_update \
+             BEFORE UPDATE OF in_node, out_node, relationship_type ON relationship \
+             WHEN new.relationship_type = 'has_child' BEGIN {refuse_edge} END"
+        ),
+        format!(
+            "CREATE TRIGGER IF NOT EXISTS structure_node_retype BEFORE UPDATE OF node_type ON node \
+             WHEN new.node_type IS NOT old.node_type BEGIN {refuse_retype} END"
+        ),
+    ];
+    for trigger in triggers {
+        conn.execute(&trigger, ())
+            .await
+            .with_context(|| format!("Failed to create structural-rule trigger: {trigger}"))?;
     }
     Ok(())
 }
@@ -1021,6 +1246,7 @@ mod tests {
                 "embedding",
                 "node",
                 "relationship",
+                "structural_rule",
                 "type_ancestry"
             ]
         );
@@ -1279,16 +1505,311 @@ mod tests {
         let err = add_child(&conn, "page", "core-team")
             .await
             .expect_err("a team is a collection, and a collection is a root");
-        assert!(err.to_string().contains("collection_not_root"), "{err}");
+        assert!(err.to_string().contains("must_be_root"), "{err}");
 
         add_child(&conn, "page", "note").await.unwrap();
         let err = conn
             .execute("UPDATE node SET node_type = 'team' WHERE id = 'note'", ())
             .await
             .expect_err("a node with a parent cannot become a team");
-        assert!(err.to_string().contains("collection_not_root"), "{err}");
+        assert!(err.to_string().contains("must_be_root"), "{err}");
 
         // A team may still hold children of its own.
         add_child(&conn, "core-team", "page").await.unwrap();
+    }
+
+    /// A schema node declaring `properties`, as a user-defined type does.
+    async fn add_schema_declaring(conn: &libsql::Connection, id: &str, properties: &str) {
+        conn.execute(
+            "INSERT INTO node (id, node_type, properties, created_at, modified_at) \
+             VALUES (?1, 'schema', ?2, 't', 't')",
+            libsql::params![id, properties],
+        )
+        .await
+        .unwrap();
+    }
+
+    async fn rules(conn: &libsql::Connection, node_type: &str) -> Vec<(String, String)> {
+        let mut rows = conn
+            .query(
+                "SELECT rule, target FROM structural_rule WHERE node_type = ?1 ORDER BY rule, target",
+                libsql::params![node_type],
+            )
+            .await
+            .unwrap();
+        let mut out = Vec::new();
+        while let Some(row) = rows.next().await.unwrap() {
+            out.push((row.get(0).unwrap(), row.get(1).unwrap()));
+        }
+        out
+    }
+
+    fn rule_rows(rows: &[(&str, &str)]) -> Vec<(String, String)> {
+        rows.iter()
+            .map(|(rule, target)| (rule.to_string(), target.to_string()))
+            .collect()
+    }
+
+    /// The core types' rules are in the table from the first statement, with
+    /// no schema node seeded: they come from the registry.
+    #[tokio::test]
+    async fn the_registrys_structural_rules_are_seeded() {
+        let (conn, _dir) = fresh().await;
+        for root_only in ["collection", "schema", "date"] {
+            assert_eq!(
+                rules(&conn, root_only).await,
+                rule_rows(&[("must_be_root", "")]),
+                "{root_only}"
+            );
+        }
+        for leaf in [
+            "code-block",
+            "ordered-list",
+            "horizontal-line",
+            "table",
+            "query",
+            "tool",
+            "database-settings",
+        ] {
+            assert_eq!(
+                rules(&conn, leaf).await,
+                rule_rows(&[("children_none", "")]),
+                "{leaf}"
+            );
+        }
+        for open in ["text", "task", "ai-chat"] {
+            assert!(rules(&conn, open).await.is_empty(), "{open}");
+        }
+    }
+
+    /// A schema's declared rules are rows from the statement that writes the
+    /// schema, follow an update of the declaration, and go with the schema.
+    #[tokio::test]
+    async fn a_schemas_declared_rules_follow_the_schema_node() {
+        let (conn, _dir) = fresh().await;
+        add_schema_declaring(
+            &conn,
+            "reply",
+            r#"{"children":{"rule":"none"},"parent":{"rule":"must_have_parent_of","types":["thread","task"]}}"#,
+        )
+        .await;
+        assert_eq!(
+            rules(&conn, "reply").await,
+            rule_rows(&[
+                ("children_none", ""),
+                ("parent_of", "task"),
+                ("parent_of", "thread")
+            ])
+        );
+
+        conn.execute(
+            r#"UPDATE node SET properties = '{"children":{"rule":"any_except","types":["collection"]},"parent":{"rule":"must_be_root"}}' WHERE id = 'reply'"#,
+            (),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            rules(&conn, "reply").await,
+            rule_rows(&[("children_except", "collection"), ("must_be_root", "")])
+        );
+
+        conn.execute("DELETE FROM node WHERE id = 'reply'", ())
+            .await
+            .unwrap();
+        assert!(rules(&conn, "reply").await.is_empty());
+    }
+
+    /// A core type's rules are the registry's: a schema node of its id that
+    /// declares something else, or goes away, changes nothing.
+    #[tokio::test]
+    async fn a_core_types_rules_ignore_its_schema_node() {
+        let (conn, _dir) = fresh().await;
+        add_schema_declaring(&conn, "query", r#"{"children":{"rule":"any"}}"#).await;
+        add_schema_declaring(&conn, "text", r#"{"children":{"rule":"none"}}"#).await;
+        assert_eq!(
+            rules(&conn, "query").await,
+            rule_rows(&[("children_none", "")])
+        );
+        assert!(rules(&conn, "text").await.is_empty());
+
+        conn.execute("UPDATE node SET properties = '{}' WHERE id = 'query'", ())
+            .await
+            .unwrap();
+        conn.execute("DELETE FROM node WHERE id = 'query'", ())
+            .await
+            .unwrap();
+        assert_eq!(
+            rules(&conn, "query").await,
+            rule_rows(&[("children_none", "")])
+        );
+    }
+
+    /// `children: none` refuses every child, for the type and its subtypes,
+    /// on an edge insert and on a retype of a node that has children.
+    #[tokio::test]
+    async fn a_childless_type_refuses_children() {
+        let (conn, _dir) = fresh().await;
+        add_schema(&conn, "query").await;
+        add_schema(&conn, "saved-search").await;
+        extend(&conn, "saved-search", "query").await;
+
+        add_node(&conn, "note", "text").await;
+        add_node(&conn, "other", "text").await;
+        for (id, node_type) in [("q", "query"), ("s", "saved-search")] {
+            add_node(&conn, id, node_type).await;
+            let err = add_child(&conn, id, "note")
+                .await
+                .expect_err("a query takes no children");
+            assert!(err.to_string().contains("children_none"), "{err}");
+        }
+
+        add_child(&conn, "note", "other").await.unwrap();
+        let err = conn
+            .execute(
+                "UPDATE node SET node_type = 'saved-search' WHERE id = 'note'",
+                (),
+            )
+            .await
+            .expect_err("a node with children cannot become a query");
+        assert!(err.to_string().contains("children_none"), "{err}");
+
+        // A leaf may itself be a child.
+        add_child(&conn, "other", "q").await.unwrap();
+    }
+
+    /// `any_except` refuses the named types and their subtypes, and nothing
+    /// else, on an insert and on a retype of the child.
+    #[tokio::test]
+    async fn any_except_refuses_the_named_types_and_their_subtypes() {
+        let (conn, _dir) = fresh().await;
+        add_schema(&conn, "task").await;
+        add_schema(&conn, "issue").await;
+        extend(&conn, "issue", "task").await;
+        add_schema_declaring(
+            &conn,
+            "journal",
+            r#"{"children":{"rule":"any_except","types":["task"]}}"#,
+        )
+        .await;
+
+        add_node(&conn, "j", "journal").await;
+        add_node(&conn, "note", "text").await;
+        add_node(&conn, "t", "task").await;
+        add_node(&conn, "i", "issue").await;
+
+        for refused in ["t", "i"] {
+            let err = add_child(&conn, "j", refused)
+                .await
+                .expect_err("a journal takes no task");
+            assert!(err.to_string().contains("child_not_allowed"), "{err}");
+        }
+        add_child(&conn, "j", "note").await.unwrap();
+
+        let err = conn
+            .execute("UPDATE node SET node_type = 'issue' WHERE id = 'note'", ())
+            .await
+            .expect_err("a journal's child cannot become a task");
+        assert!(err.to_string().contains("child_not_allowed"), "{err}");
+    }
+
+    /// `must_have_parent_of` accepts only the named types and their subtypes
+    /// as a parent, on an insert, on a re-pointed edge, and when the parent or
+    /// the child is retyped.
+    #[tokio::test]
+    async fn must_have_parent_of_accepts_only_the_named_parents() {
+        let (conn, _dir) = fresh().await;
+        add_schema(&conn, "thread").await;
+        add_schema(&conn, "support-thread").await;
+        extend(&conn, "support-thread", "thread").await;
+        add_schema_declaring(
+            &conn,
+            "reply",
+            r#"{"parent":{"rule":"must_have_parent_of","types":["thread"]}}"#,
+        )
+        .await;
+
+        add_node(&conn, "page", "text").await;
+        add_node(&conn, "th", "thread").await;
+        add_node(&conn, "sth", "support-thread").await;
+        add_node(&conn, "r1", "reply").await;
+        add_node(&conn, "r2", "reply").await;
+        add_node(&conn, "note", "text").await;
+
+        let err = add_child(&conn, "page", "r1")
+            .await
+            .expect_err("a reply sits only under a thread");
+        assert!(err.to_string().contains("parent_required"), "{err}");
+        add_child(&conn, "th", "r1").await.unwrap();
+        add_child(&conn, "sth", "r2").await.unwrap();
+
+        let err = conn
+            .execute(
+                "UPDATE relationship SET in_node = 'page' WHERE out_node = 'r1'",
+                (),
+            )
+            .await
+            .expect_err("a reply cannot be re-pointed under a page");
+        assert!(err.to_string().contains("parent_required"), "{err}");
+
+        let err = conn
+            .execute("UPDATE node SET node_type = 'text' WHERE id = 'th'", ())
+            .await
+            .expect_err("a thread holding replies cannot stop being a thread");
+        assert!(err.to_string().contains("parent_required"), "{err}");
+
+        add_child(&conn, "page", "note").await.unwrap();
+        let err = conn
+            .execute("UPDATE node SET node_type = 'reply' WHERE id = 'note'", ())
+            .await
+            .expect_err("a page's child cannot become a reply");
+        assert!(err.to_string().contains("parent_required"), "{err}");
+    }
+
+    /// The hand-written per-type root triggers are gone: one set of generic
+    /// triggers enforces every declared rule.
+    #[tokio::test]
+    async fn the_per_type_root_triggers_are_replaced_by_the_structural_ones() {
+        let (conn, _dir) = fresh().await;
+        let mut rows = conn
+            .query(
+                "SELECT name FROM sqlite_master WHERE type = 'trigger' \
+                   AND (name LIKE '%is_root%' OR name LIKE 'structure_%') ORDER BY name",
+                (),
+            )
+            .await
+            .unwrap();
+        let mut names: Vec<String> = Vec::new();
+        while let Some(row) = rows.next().await.unwrap() {
+            names.push(row.get(0).unwrap());
+        }
+        assert_eq!(
+            names,
+            vec![
+                "structure_has_child_insert",
+                "structure_has_child_update",
+                "structure_node_retype"
+            ]
+        );
+    }
+
+    /// A retype that changes nothing structural goes through, and other edge
+    /// types are not the rules' business.
+    #[tokio::test]
+    async fn the_rules_leave_other_writes_alone() {
+        let (conn, _dir) = fresh().await;
+        add_node(&conn, "page", "text").await;
+        add_node(&conn, "note", "text").await;
+        add_node(&conn, "q", "query").await;
+        add_child(&conn, "page", "note").await.unwrap();
+        conn.execute("UPDATE node SET node_type = 'task' WHERE id = 'note'", ())
+            .await
+            .unwrap();
+        conn.execute(
+            "INSERT INTO relationship (in_node, out_node, relationship_type, created_at, modified_at) \
+             VALUES ('q', 'page', 'mentions', 't', 't')",
+            (),
+        )
+        .await
+        .unwrap();
     }
 }

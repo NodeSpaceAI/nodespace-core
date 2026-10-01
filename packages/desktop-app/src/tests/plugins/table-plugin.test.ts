@@ -76,16 +76,6 @@ describe('Table Plugin', () => {
   });
 
   describe('Configuration', () => {
-    it('should be configured as leaf node (no children)', () => {
-      const plugin = pluginRegistry.getPlugin('table');
-      expect(plugin?.config.canHaveChildren).toBe(false);
-    });
-
-    it('should be configured to allow being a child', () => {
-      const plugin = pluginRegistry.getPlugin('table');
-      expect(plugin?.config.canBeChild).toBe(true);
-    });
-
     it('should not accept content merges', () => {
       const plugin = pluginRegistry.getPlugin('table');
       expect(plugin?.acceptsContentMerge).toBe(false);

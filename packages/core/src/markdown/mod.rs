@@ -701,6 +701,7 @@ pub fn prepare_nodes_from_markdown(
         // Generate UUID and calculate order
         let node_id = uuid::Uuid::new_v4().to_string();
         let order = context.next_order(&parent_id);
+        let leaf_parent_id = parent_id.clone();
 
         // Build properties
         let final_properties = properties.unwrap_or_else(|| {
@@ -746,8 +747,18 @@ pub fn prepare_nodes_from_markdown(
             last_content_node = Some(node_id.clone());
         }
 
+        // A type that takes no children (ADR-089) cannot parent the lines
+        // indented below it. They go under the leaf's own parent instead, so
+        // they follow the leaf as its siblings and the document keeps its
+        // reading order.
+        let takes_children = crate::models::CoreNodeType::from_id(node_type)
+            .is_none_or(|core| core.structure().children != crate::models::ChildrenRule::None);
         if heading_level.is_none() && (indent_level > 0 || is_bullet) {
-            indent_stack.push((node_id, indent_level));
+            if takes_children {
+                indent_stack.push((node_id, indent_level));
+            } else if let Some(leaf_parent) = leaf_parent_id {
+                indent_stack.push((leaf_parent, indent_level));
+            }
         }
 
         i += 1;
