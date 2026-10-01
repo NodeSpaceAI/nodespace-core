@@ -1,14 +1,16 @@
-// Covers the offline, deterministic parts of scripts/publish-skill-repo.ts:
-// version normalization and file rendering. pushSkillUpdate (the
-// GitHub-talking function) is intentionally not exercised here -- this suite
-// runs as part of `bun run test:scripts` / `test:all` (the merge gate),
-// which must stay fast and deterministic, not depend on network or a real
+// Covers scripts/publish-skill-repo.ts: version normalization, file
+// rendering, and `--push`. This suite runs as part of `bun run test:scripts` /
+// `test:all` (the merge gate), which must stay fast and deterministic, so
+// `--push` runs against a local bare repository standing in for SKILL_REPO
+// (scripts/fake-external-repo.ts), never the network or a real
 // SKILL_REPO_TOKEN.
 import { describe, expect, test } from "bun:test";
+import { $ } from "bun";
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { SHARED_SKILL_FRONTMATTER } from "../packages/skill/src/agents";
+import { createFakeRemote } from "./fake-external-repo";
 import {
   extractSkillMeta,
   normalizeVersion,
@@ -16,6 +18,7 @@ import {
   renderMarketplaceFile,
   renderPublishFiles,
   sharedShimPaths,
+  SKILL_PUBLISH_DIR,
   SKILL_REPO,
 } from "./publish-skill-repo";
 
@@ -312,5 +315,39 @@ describe("renderMarketplaceFile", () => {
   test("plugin repository points at the published skill repo", () => {
     const plugin = JSON.parse(renderMarketplaceFile("v0.2.2").content).plugins[0];
     expect(plugin.repository).toBe(`https://github.com/${SKILL_REPO}`);
+  });
+});
+
+describe("--push", () => {
+  // The public repo after a release that published a reference
+  // packages/skill has since dropped: the next publish must delete it, and
+  // must not touch the repo's own files outside SKILL_PUBLISH_DIR.
+  test("removes a published file packages/skill no longer has, rewrites every rendered file, and keeps the repo's own files", async () => {
+    const stale = `${SKILL_PUBLISH_DIR}/references/removed-guidance.md`;
+    const remote = await createFakeRemote(SKILL_REPO, "test-token", {
+      "README.md": "hand-written readme\n",
+      ".claude-plugin/marketplace.json": "{}\n",
+      [`${SKILL_PUBLISH_DIR}/SKILL.md`]: "previous release\n",
+      [stale]: "guidance packages/skill no longer has\n",
+    });
+    try {
+      const script = join(REPO_ROOT, "scripts", "publish-skill-repo.ts");
+      const result = await $`${process.execPath} ${script} v0.2.2 --push`
+        .env({ ...process.env, ...remote.env, SKILL_REPO_TOKEN: "test-token" })
+        .quiet()
+        .nothrow();
+      expect(result.exitCode, result.stderr.toString()).toBe(0);
+
+      const rendered = [...renderPublishFiles("v0.2.2"), renderMarketplaceFile("v0.2.2")];
+      const tree = await remote.tree();
+      expect(tree).not.toContain(stale);
+      expect(tree).toEqual(["README.md", ...rendered.map((f) => f.relPath)].sort());
+      expect(await remote.show("README.md")).toBe("hand-written readme\n");
+      for (const file of rendered) {
+        expect(await remote.show(file.relPath), file.relPath).toBe(file.content);
+      }
+    } finally {
+      remote.cleanup();
+    }
   });
 });
