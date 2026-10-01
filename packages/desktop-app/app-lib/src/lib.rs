@@ -102,7 +102,12 @@ fn frontend_log(line: String) {
 /// post-startup reachability check, and only when the socket is reachable and
 /// the daemon answered. A reachable socket alone only proves something accepts
 /// connections.
-pub const DATA_PLANE_READY_EVENT: &str = "daemon:data-plane-ready";
+///
+/// Core-internal: this event is not part of the versioned extension API
+/// (ADR-082 §3.5, §8), so core may rename or drop it. Extensions react to the
+/// daemon becoming healthy through the host API's `onDaemonReconnect`, which
+/// also fires on the first healthy status of the session.
+pub(crate) const DATA_PLANE_READY_EVENT: &str = "daemon:data-plane-ready";
 
 /// Report the current daemon health to the frontend.
 ///

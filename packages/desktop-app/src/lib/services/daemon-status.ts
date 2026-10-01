@@ -42,6 +42,11 @@ const log = createLogger('DaemonStatus');
  * real gRPC round trip. A reachable socket alone only proves something accepts
  * connections. Mirrors the Rust `DATA_PLANE_READY_EVENT` constant in the
  * desktop app library.
+ *
+ * Core-internal: this event is not part of the versioned extension API
+ * (ADR-082 §3.5, §8) and is not re-exported from `$lib/extension-api`, so core
+ * may rename or drop it. Extensions use `onDaemonReconnect`, which also fires
+ * on the first healthy status of the session.
  */
 export const DATA_PLANE_READY_EVENT = 'daemon:data-plane-ready';
 
