@@ -932,9 +932,9 @@ mod tests {
             .await
             .unwrap();
             svc.create_node(node(
-                "proj-archived",
+                "proj-completed",
                 "rf_project",
-                json!({"status": "archived"}),
+                json!({"status": "completed"}),
             ))
             .await
             .unwrap();
@@ -947,7 +947,7 @@ mod tests {
             svc.create_relationship("task-a", "project", "proj-active", json!({}))
                 .await
                 .unwrap();
-            svc.create_relationship("task-b", "project", "proj-archived", json!({}))
+            svc.create_relationship("task-b", "project", "proj-completed", json!({}))
                 .await
                 .unwrap();
 

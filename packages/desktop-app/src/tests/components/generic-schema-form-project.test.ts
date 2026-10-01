@@ -75,7 +75,6 @@ const PROJECT_SCHEMA: SchemaNode = {
         { value: 'planning', label: 'Planning' },
         { value: 'active', label: 'Active' },
         { value: 'completed', label: 'Completed' },
-        { value: 'archived', label: 'Archived' },
         { value: 'cancelled', label: 'Cancelled' }
       ],
       // protection: Core + extensible: true, matching core_schemas.rs exactly — this

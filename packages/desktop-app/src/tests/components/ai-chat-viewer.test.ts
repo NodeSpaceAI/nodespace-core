@@ -6,7 +6,7 @@
  * - Write buffering with debounced flush
  * - Tool result archival (result nulled, result_summary kept)
  * - Soft 500-message cap detection
- * - Archived conversation read-only detection
+ * - Provider and model defaults
  * - Message extraction for display format
  *
  * Follows the project pattern of testing extracted logic functions directly
@@ -514,20 +514,9 @@ describe('AiChatNodeViewer Logic', () => {
   });
 
   // ---------------------------------------------------------------------------
-  // 4. Archived Conversation Read-Only
+  // 4. Provider and Model Defaults
   // ---------------------------------------------------------------------------
-  describe('Archived conversation read-only', () => {
-    it('disables input when sessionStatus is archived', () => {
-      const sessionStatus = 'archived';
-      const isArchived = sessionStatus === 'archived';
-      expect(isArchived).toBe(true);
-    });
-
-    it('shows input when sessionStatus is active', () => {
-      const sessionStatus = 'active';
-      expect(sessionStatus).not.toBe('archived');
-    });
-
+  describe('Provider and model defaults', () => {
     it('reads provider and model from node properties with defaults', () => {
       // Simulate the derived state logic from the component
       const nodeProperties: Record<string, unknown> = {};
