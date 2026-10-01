@@ -1,10 +1,11 @@
-//! Shared gRPC router factory for community and Pro daemons (ADR-043).
+//! Shared gRPC router factory (ADR-043), one of core's daemon extension points
+//! (ADR-082).
 //!
 //! `build_base_router` is the single source of truth for which services belong
-//! in a NodeSpace daemon. The Pro daemon (`nodespaced-pro` in `nodespace-sync`)
-//! calls this and chains `.add_service(CloudSyncServiceServer::new(...))` on
-//! top. Adding a field to `BaseServices` causes a compile error in
-//! `nodespaced-pro` until it provides the new implementation.
+//! in a NodeSpace daemon. `nodespaced` calls it, and any other daemon built on
+//! this crate calls it and chains its own services on top. Adding a field to
+//! `BaseServices` is a compile error for every caller until it supplies the
+//! implementation, so no daemon silently falls behind the base set.
 
 use nodespace_proto::with_message_limits;
 use tonic::service::Routes;
@@ -20,9 +21,8 @@ use crate::{
 
 /// All base service implementations required by a NodeSpace daemon.
 ///
-/// Both the community daemon (`nodespaced`) and the Pro daemon
-/// (`nodespaced-pro`) construct this struct and pass it to
-/// [`build_base_router`]. Pro-specific services are added after.
+/// Every daemon built on this crate constructs this and passes it to
+/// [`build_base_router`]; extra services are added after.
 pub struct BaseServices {
     pub node_service: NodeServiceImpl,
     pub agent_session: AgentSessionHandler,
@@ -36,11 +36,11 @@ pub struct BaseServices {
     pub database: DatabaseServiceImpl,
 }
 
-/// Build the base tonic router with all community services registered.
+/// Build the base tonic router with all base services registered.
 ///
 /// Accepts a `Server<L>` (already configured with any transport layers such as
 /// `TrayMetricsLayer`) so callers can inject middleware before services are
-/// registered. The returned `Router` can be extended with Pro-tier services:
+/// registered. The returned `Router` can be extended with more services:
 ///
 /// ```rust,ignore
 /// // No middleware:
@@ -52,10 +52,10 @@ pub struct BaseServices {
 ///     base_services,
 /// );
 ///
-/// // Pro extension — wrap the added stub in `with_message_limits!` too, or it
+/// // Extra service — wrap the added stub in `with_message_limits!` too, or it
 /// // keeps tonic's 4 MiB decode default while every base service does not:
 /// let router = build_base_router(Server::builder(), base_services)
-///     .add_service(with_message_limits!(CloudSyncServiceServer::new(cloud_sync)));
+///     .add_service(with_message_limits!(ExtraServiceServer::new(extra)));
 /// ```
 pub fn build_base_router<L>(
     mut server: Server<L>,

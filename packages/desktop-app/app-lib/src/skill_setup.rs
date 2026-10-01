@@ -915,13 +915,11 @@ fn run_skill_installer_subcommand(
 /// the next one).
 ///
 /// Deliberately does NOT test this via a mutated process-global `$PATH`:
-/// `cargo test` runs the whole suite in one process, so a test that
-/// temporarily narrows `$PATH` (even restored afterward) can race any other
-/// test concurrently resolving a bare command name — nodespace-sync hit
-/// exactly this class of bug with a mutated `umask` and lost a third of its
-/// pre-push runs to it. Passing absolute paths as the "runtime" strings
-/// sidesteps `$PATH` resolution entirely, so the test stays deterministic
-/// under parallel execution.
+/// `cargo test` runs the whole suite in one process, so a test that changes a
+/// process-global setting (`$PATH`, `umask`), even if restored afterward, can
+/// race any other test in the process that reads it concurrently. Passing
+/// absolute paths as the "runtime" strings sidesteps `$PATH` resolution
+/// entirely, so the test stays deterministic under parallel execution.
 fn run_installer_with_runtimes(
     installer_path: &Path,
     subcommand: &str,

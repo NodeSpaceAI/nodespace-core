@@ -43,8 +43,9 @@ use tracing::{debug, error, info, warn};
 use crate::services::GrpcClient;
 use crate::window_routing::emit_routed;
 
-/// `""` is the daemon's convention for "not database-scoped" (a Pro daemon
-/// with no registry — see `NodeIdPayload::database_id`'s doc comment).
+/// `""` is the daemon's convention for "not database-scoped" (an event from an
+/// impl not opened through the registry — see the `NodeEvent.database_id`
+/// comment in `node_service.proto`).
 /// `emit_routed` already treats an empty id as "no id", but callers here work
 /// with owned `String`s pulled out of a payload, so this makes the intent
 /// explicit at each call site rather than repeating the `is_empty()` check.
@@ -191,11 +192,11 @@ async fn stream_once<R: Runtime>(app: &AppHandle<R>, grpc_client: &GrpcClient) -
 
 /// Translate a proto `NodeEvent` into the corresponding Tauri event.
 fn forward<R: Runtime>(app: &AppHandle<R>, event: nodespace_proto::nodespace::NodeEvent) {
-    // The database this event originated from (ADR-053). Empty when the daemon
-    // serves a single unregistered database (Pro daemon) — the frontend guard
-    // treats an empty id as "always applies". Computed once here (rather than
-    // at each emit call site below) since it's the same routing target for
-    // every variant of this one event.
+    // The database this event originated from (ADR-053). Empty when the serving
+    // impl was not opened through the registry — the frontend guard treats an
+    // empty id as "always applies". Computed once here (rather than at each
+    // emit call site below) since it's the same routing target for every
+    // variant of this one event.
     let database_id = event.database_id;
     let target = non_empty(&database_id).map(str::to_string);
     let Some(kind) = event.event else {
@@ -238,8 +239,9 @@ fn forward<R: Runtime>(app: &AppHandle<R>, event: nodespace_proto::nodespace::No
             };
             emit_routed(app, "node:deleted", &payload, target.as_deref());
         }
-        // Relationship variants — so cloud-sync / cross-window hierarchy
-        // changes reach the frontend's reactiveStructureTree.
+        // Relationship variants — so hierarchy changes made by any other writer
+        // (another window, the CLI, an agent, a writer inside the daemon) reach
+        // the frontend's reactiveStructureTree.
         // `properties` arrives JSON-encoded on the wire (proto schema is
         // stable); re-parse it here before emitting so the frontend gets a
         // real object (the `has_child` listener reads `properties.order`).

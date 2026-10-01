@@ -2,14 +2,13 @@
 //!
 //! `delete_subtree_atomic` hard-deletes a `has_child` subtree unconditionally — that's correct
 //! for OCC (a concurrent edit to a descendant must not abort the delete) but says nothing about
-//! whether the actor may *read* every descendant being destroyed. Community installs have no
-//! access-control concept (single local user, no tenant), so the gate is a no-op there. A synced
-//! Pro daemon (`nodespaced-pro`, built in the sibling `nodespace-sync` repo) supplies a real
-//! implementation backed by the tenant's access predicate.
+//! whether the actor may *read* every descendant being destroyed. Core has no actor or access
+//! model of its own, so its default gate allows everything. A host that enforces access
+//! elsewhere injects its own gate through `NodeService::set_subtree_access_gate`, an extension
+//! point (ADR-082).
 //!
-//! The gate's authority is the Pro tenant schema (Postgres RLS), not this trait — this is
-//! advisory/UX plumbing that surfaces the refusal before committing a local delete a synced
-//! peer would otherwise reject. See ADR-041 and `architecture/tenant-isolation-rls.md` (P7).
+//! The gate is advisory: the host's own enforcement stays the authority, and the gate only lets
+//! the host refuse a local delete before it commits instead of after.
 
 use async_trait::async_trait;
 
@@ -36,11 +35,10 @@ pub trait SubtreeAccessGate: Send + Sync {
     async fn check_subtree_access(&self, node_ids: &[String]) -> SubtreeAccessDecision;
 }
 
-/// Default gate for community (non-Pro) installs: always allows.
+/// Core's default gate: always allows.
 ///
-/// A local-only database has no tenant, no restricted collections, and no concept of "actor" —
-/// there is nothing to check access against, so this preserves today's unconditional-cascade
-/// behavior exactly.
+/// Core has no actor whose read access differs from the local user's, so there is nothing to
+/// check access against. This preserves the unconditional-cascade behavior exactly.
 pub struct AlwaysAllowGate;
 
 #[async_trait]
@@ -51,16 +49,15 @@ impl SubtreeAccessGate for AlwaysAllowGate {
 }
 
 impl super::NodeService {
-    /// Inject the real subtree access gate. Called by a Pro daemon once its tenant
-    /// connection is established. Silently ignored if called more than once (mirrors
-    /// `set_embedding_waker`). Works on `Arc<NodeService>`/any clone since the `OnceLock`
-    /// is shared via `Arc`.
+    /// Inject the real subtree access gate. A host calls this once its gate is ready.
+    /// Silently ignored if called more than once (mirrors `set_embedding_waker`). Works on
+    /// `Arc<NodeService>`/any clone since the `OnceLock` is shared via `Arc`.
     pub fn set_subtree_access_gate(&self, gate: std::sync::Arc<dyn SubtreeAccessGate>) {
         let _ = self.subtree_access_gate.set(gate);
     }
 
-    /// The active gate: the injected Pro gate if one has been set, otherwise
-    /// [`AlwaysAllowGate`] (community default).
+    /// The active gate: the injected gate if one has been set, otherwise [`AlwaysAllowGate`]
+    /// (core's default).
     pub(crate) fn subtree_access_gate(&self) -> &dyn SubtreeAccessGate {
         // Safe to hand out a `&'static` reference to a stack-local `static` only because
         // AlwaysAllowGate is a zero-sized unit struct with no fields to ever go stale — if it

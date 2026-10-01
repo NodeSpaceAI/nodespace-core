@@ -59,21 +59,21 @@ pub struct SharedContext {
     /// database's backlog. Shared by every database's `EmbeddingProcessor`.
     pub scheduler: Arc<EmbeddingScheduler>,
     /// Builds the pre-delete subtree access gate (ADR-041) for a database as it
-    /// is opened. Empty in community builds, where every database keeps
-    /// `NodeService`'s always-allow default.
+    /// is opened. Empty by default, so every database keeps `NodeService`'s
+    /// always-allow gate; a host that enforces access fills it in (ADR-082).
     ///
     /// A factory rather than a single gate because a gate is bound to the one
     /// database it guards: `NodeService::set_subtree_access_gate` ignores a
     /// second call, so sharing one instance across databases would pin the first
     /// database's identity and then answer every other database against the
-    /// wrong tenant — worse than not gating them at all.
+    /// wrong database's access rules — worse than not gating them at all.
     ///
-    /// `OnceLock` because the Pro daemon cannot build this until after its cloud
-    /// service exists, which in turn needs the `DatabaseManager` that holds this
-    /// context. Startup therefore hands over the context first and fills the
-    /// factory in immediately after; databases opened on demand (always later
-    /// than that) see it. The boot database, opened before the hand-over, is
-    /// gated explicitly by the Pro daemon instead.
+    /// `OnceLock` because a host may only be able to build the factory after the
+    /// `DatabaseManager` that holds this context exists. Startup therefore hands
+    /// over the context first and fills the factory in immediately after;
+    /// databases opened on demand (always later than that) see it. The boot
+    /// database, opened before the hand-over, is gated explicitly by the host
+    /// instead.
     pub subtree_gate_factory: Arc<OnceLock<SubtreeGateFactory>>,
     /// The daemon's single chat engine and model catalog, shared by every
     /// database's `LocalAgentServiceImpl`.
@@ -274,10 +274,10 @@ pub async fn build_database_services(
 
     seed_agent_nodes(&mut node_service).await;
 
-    // ADR-041: gate this database's cascade deletes against its OWN tenant. Every
-    // database gets a gate built for its own id, because a request routed here by
-    // `x-ns-database-id` would otherwise reach a service still carrying the
-    // always-allow default. Absent in community builds.
+    // ADR-041: gate this database's cascade deletes against its own access rules.
+    // Every database gets a gate built for its own id, because a request routed
+    // here by `x-ns-database-id` would otherwise reach a service still carrying
+    // the always-allow default. Absent unless a host installed a gate factory.
     if let Some(build_gate) = shared.subtree_gate_factory.get() {
         node_service.set_subtree_access_gate(build_gate(database_id));
     }

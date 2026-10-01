@@ -49,7 +49,7 @@ service NodeService {
   // whose `field` matches `value` for `node_type`, or an empty NodeResponse
   // (empty node_id, no node_data) when the field isn't flagged unique, the value
   // is empty, or there is no conflict. Never rejects — callers use it to offer an
-  // adopt-existing suggestion (core#1734).
+  // adopt-existing suggestion.
   rpc FindDuplicate(FindDuplicateRequest) returns (NodeResponse);
   rpc MentionAutocomplete(MentionAutocompleteRequest) returns (NodeListResponse);
 
@@ -79,7 +79,7 @@ service NodeService {
   // DatabaseSettingsNode singleton (falling back to the first person node on
   // a database that predates that edge); the response's `node` is unset only
   // when no person node exists at all. SetLocalPersonIdentity writes into
-  // that SAME node — never a newly created one (core#2388).
+  // that SAME node — never a newly created one.
   rpc GetLocalPerson(Empty) returns (OptionalNodeResponse);
   rpc SetLocalPersonIdentity(SetLocalPersonIdentityRequest) returns (NodeResponse);
 
@@ -135,13 +135,13 @@ service NodeService {
   // Typed relationships (distinct from mentions)
   rpc CreateRelationship(CreateRelationshipRequest) returns (CreateRelationshipResponse);
   // Remove a typed relationship edge. Idempotent; rejects removing the last edge
-  // of a `required` relationship (issue #1918).
+  // of a `required` relationship.
   rpc DeleteRelationship(DeleteRelationshipRequest) returns (DeleteRelationshipResponse);
   // Replace the edge attributes on an existing typed relationship edge (edit its
-  // `edge_fields` values; issue #1918).
+  // `edge_fields` values).
   rpc UpdateRelationshipProperties(UpdateRelationshipPropertiesRequest) returns (UpdateRelationshipPropertiesResponse);
   rpc GetRelatedNodes(GetRelatedNodesRequest) returns (GetRelatedNodesResponse);
-  // Relationship viewer (issue #1918): list a node's schema-declared typed
+  // Relationship viewer: list a node's schema-declared typed
   // relationships, grouped by name across BOTH directions, with edge properties.
   rpc GetNodeRelationships(GetNodeRelationshipsRequest) returns (GetNodeRelationshipsResponse);
 
@@ -564,19 +564,20 @@ message NodeEvent {
     NodeData created = 1;
     NodeData updated = 2;
     NodeDeleted deleted = 3;
-    // Relationship events (added so cross-window / cloud-sync hierarchy
-    // changes reach the frontend's structureTree — without these, a
-    // pulled child node arrives but never attaches to its parent's
-    // children list and the outliner can't render it. Mirrors the
-    // in-process DomainEventForwarder's `relationship:*` Tauri events.)
+    // Relationship events, so hierarchy changes made by another writer
+    // (another window, the CLI, an agent, a writer inside the daemon) reach
+    // the frontend's structureTree — without these, a node created by another
+    // writer arrives but never attaches to its parent's children list and
+    // the outliner can't render it. The desktop watcher forwards them as the
+    // `relationship:*` Tauri events.
     RelationshipPayload relationship_created = 4;
     RelationshipPayload relationship_updated = 5;
     RelationshipDeletedPayload relationship_deleted = 6;
   }
   // ADR-053: the registered database this event came from, so a client watching
   // a specific database can attribute events when the daemon serves several.
-  // Empty when the daemon serves a single unregistered database (Pro daemon) or
-  // in tests that construct the service directly.
+  // Empty when the serving impl was not opened through the registry (a
+  // single-database host, or a test that constructs the service directly).
   string database_id = 7;
 }
 

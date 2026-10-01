@@ -3,11 +3,11 @@
 //!
 //! [`DbManagerLayer`] injects the process-global [`DatabaseManager`] into every
 //! request's extensions so the per-database gRPC handlers can resolve the
-//! `x-ns-database-id` routing header and dispatch to the right database. The
-//! layer is installed only by the community/core serve loops; the Pro daemon
-//! (`nodespaced-pro`) does not install it, so its handlers find no manager in
-//! the extensions and fall back to the default database — behavior identical to
-//! before this stage.
+//! `x-ns-database-id` routing header and dispatch to the right database.
+//! `nodespaced`'s serve loops install the layer. A host that serves a single
+//! database may leave it out: its handlers then find no manager in the
+//! extensions and serve their own single-database service set, which is also
+//! how directly-constructed test impls behave.
 //!
 //! The layer is a thin synchronous injector: it only clones an `Arc` into the
 //! request extensions. The (async) resolve-and-open work happens inside the
@@ -40,11 +40,11 @@ pub use nodespace_proto::DATABASE_ID_HEADER;
 ///
 /// Returns `Ok(None)` when no manager was injected AND no routing header is
 /// present — the caller then serves its own single-database service set, which
-/// is how the Pro daemon and directly-constructed test impls behave. A request
-/// that names a database on a daemon without routing installed is rejected
-/// (`UNIMPLEMENTED`) rather than silently served from the active database:
-/// answering with another database's data is a wrong-database read the caller
-/// cannot detect.
+/// is how a host without the layer, and directly-constructed test impls,
+/// behave. A request that names a database on a daemon without routing
+/// installed is rejected (`UNIMPLEMENTED`) rather than silently served from the
+/// active database: answering with another database's data is a wrong-database
+/// read the caller cannot detect.
 pub(crate) async fn routed_database_services<T>(
     request: &tonic::Request<T>,
 ) -> Result<Option<Arc<DatabaseServices>>, Status> {
@@ -91,8 +91,8 @@ pub(crate) async fn route_or_self<S: Clone, T>(
 }
 
 /// `tower::Layer` that inserts the shared [`Arc<DatabaseManager>`] into each
-/// request's extensions. See the module docs for why this is core-only and
-/// behavior-preserving for the Pro daemon.
+/// request's extensions. See the module docs for what happens when a host
+/// leaves the layer out.
 #[derive(Clone)]
 pub struct DbManagerLayer {
     manager: Arc<DatabaseManager>,

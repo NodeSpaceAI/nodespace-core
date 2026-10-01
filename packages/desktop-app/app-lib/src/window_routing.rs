@@ -84,11 +84,10 @@ impl WindowDatabaseRegistry {
 /// - `database_id` present and non-empty: every currently-open window pinned
 ///   to that id. Normally 0 or 1, but nothing here assumes uniqueness.
 /// - `database_id` absent (or empty — the daemon's convention for an event
-///   that is not database-scoped, e.g. a Pro daemon with no registry): the
-///   focused window if one is both focused and still open; otherwise the
-///   lexicographically-first open label, for a deterministic answer instead
-///   of whatever a `HashMap`'s iteration order happens to produce. Empty when
-///   no window is open at all.
+///   that is not database-scoped): the focused window if one is both focused
+///   and still open; otherwise the lexicographically-first open label, for a
+///   deterministic answer instead of whatever a `HashMap`'s iteration order
+///   happens to produce. Empty when no window is open at all.
 pub fn resolve_targets(
     pins: &HashMap<String, String>,
     open_labels: &[String],
