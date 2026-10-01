@@ -1987,9 +1987,9 @@ impl NodeService {
     /// the DatabaseSettingsNode singleton (the owner edge
     /// `seed_database_settings_if_needed` seeds). The DatabaseSettingsNode
     /// can hold more than one `has_role` edge, so this filters on
-    /// `role == "owner"` rather than taking the first
-    /// `has_role` edge — once a second, non-owner role edge lands there,
-    /// an unfiltered `.next()` would silently resolve the wrong person.
+    /// `role == "owner"` rather than taking the first `has_role` edge — once
+    /// a second, non-owner role edge lands there, an unfiltered `.next()`
+    /// would silently resolve the wrong person.
     /// If more than one edge is found with `role == "owner"` — which
     /// today's seeding path cannot produce — the first is used and a
     /// `tracing::warn!` is emitted, so a future regression surfaces instead
@@ -9671,9 +9671,9 @@ mod tests {
 
         // Add a SECOND has_role edge to the DatabaseSettingsNode singleton,
         // from a different person, carrying a non-owner role alongside the
-        // owner's. A naive
-        // "first has_role edge" resolution could silently return this person
-        // instead of the actual owner, depending on traversal order.
+        // owner's. A naive "first has_role edge" resolution could silently
+        // return this person instead of the actual owner, depending on
+        // traversal order.
         let member_id = service
             .create_node(Node::new(
                 "person".to_string(),

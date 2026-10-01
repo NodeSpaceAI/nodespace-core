@@ -361,10 +361,9 @@ impl SqliteStore {
     ///    local state would invent a third lifecycle value where the existing
     ///    `archived` state already fully satisfies the requirement (excluded
     ///    from every `active`-scoped detection query, nothing destroyed, fully
-    ///    reversible). NOT
-    ///    `delete_subtree_atomic` — that cascades over `has_child`
-    ///    descendants, which step 2 has already re-pointed away; any it
-    ///    missed would be destroyed outright.
+    ///    reversible). NOT `delete_subtree_atomic` — that cascades over
+    ///    `has_child` descendants, which step 2 has already re-pointed away;
+    ///    any it missed would be destroyed outright.
     /// 4. Caller closes the conflict record (if any) via
     ///    [`Self::resolve_conflict_in_tx`] with a `Resolution::Merge`.
     ///

@@ -13,8 +13,8 @@
 use super::*;
 use std::collections::BTreeSet;
 
-/// Upper bound on the upward access walk: a backstop against a `member_of`
-/// cycle.
+/// Upper bound on the upward access walk's depth, a backstop against a
+/// pathologically deep `member_of` chain (the walk's `seen` set stops cycles).
 const MAX_ACCESS_WALK_DEPTH: usize = 64;
 
 /// Upper bound on a `has_child` chain, as a backstop against a cyclic tree.
