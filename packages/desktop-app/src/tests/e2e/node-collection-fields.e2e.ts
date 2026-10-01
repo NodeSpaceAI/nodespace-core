@@ -1,6 +1,6 @@
 /**
- * E2E: collection membership set on a node create or update, via
- * dev-proxy → nodespaced → SQLite.
+ * E2E: collection membership set on a node create or update, or by the
+ * add-by-path route, via dev-proxy → nodespaced → SQLite.
  *
  * The adapter's `createNode` and `updateNode` carry no collection fields, so
  * these tests send the requests themselves: what is under test is the proxy's
@@ -23,6 +23,7 @@ afterAll(async () => {
 interface CollectionSummary {
   id: string;
   content: string;
+  parentCollectionIds: string[];
 }
 
 interface ErrorBody {
@@ -46,10 +47,18 @@ function postNode(id: string, body: Record<string, unknown>): Promise<Response> 
   return send('POST', '/api/nodes', { id, nodeType: 'text', content: 'created', ...body });
 }
 
-async function collectionIdByName(name: string): Promise<string | undefined> {
+function addToCollectionPath(id: string, body: Record<string, unknown>): Promise<Response> {
+  return send('POST', `/api/nodes/${encodeURIComponent(id)}/collections`, body);
+}
+
+async function collectionByName(name: string): Promise<CollectionSummary | undefined> {
   const res = await fetch(`${h.baseUrl}/api/collections`);
   const collections = (await res.json()) as CollectionSummary[];
-  return collections.find((c) => c.content === name)?.id;
+  return collections.find((c) => c.content === name);
+}
+
+async function collectionIdByName(name: string): Promise<string | undefined> {
+  return (await collectionByName(name))?.id;
 }
 
 async function memberIds(collectionId: string): Promise<string[]> {
@@ -204,5 +213,63 @@ describe('Node create collection membership (HTTP → gRPC → SQLite)', () => {
 
     await expectNotAStringList(res, 'collections');
     expect(await h.adapter.getNode(nodeId)).toBeNull();
+  });
+});
+
+describe('Add a node to a collection path (HTTP → gRPC → SQLite)', () => {
+  it('creates the missing segments and returns the leaf collection id', async () => {
+    const nodeId = await createTextNode('joins the leaf');
+    const parentName = `path-parent-${crypto.randomUUID()}`;
+    const leafName = `path-leaf-${crypto.randomUUID()}`;
+
+    const res = await addToCollectionPath(nodeId, {
+      collectionPath: `${parentName}:${leafName}`
+    });
+    expect(res.status).toBe(200);
+    const returnedId = (await res.json()) as string;
+
+    const parent = await collectionByName(parentName);
+    const leaf = await collectionByName(leafName);
+    expect(parent).toBeDefined();
+    expect(leaf).toBeDefined();
+    expect(returnedId).toBe(leaf!.id);
+    expect(leaf!.parentCollectionIds).toContain(parent!.id);
+    expect(await memberIds(returnedId)).toContain(nodeId);
+    expect(await memberIds(parent!.id)).not.toContain(nodeId);
+  });
+
+  it('returns the existing leaf when the path already exists', async () => {
+    const name = `path-existing-${crypto.randomUUID()}`;
+    const { collectionId, seedId } = await seedCollection(name);
+    const nodeId = await createTextNode('joins an existing collection');
+
+    const res = await addToCollectionPath(nodeId, { collectionPath: name });
+    expect(res.status).toBe(200);
+
+    expect(await res.json()).toBe(collectionId);
+    const members = await memberIds(collectionId);
+    expect(members).toContain(nodeId);
+    expect(members).toContain(seedId);
+  });
+
+  it('fails for a node that does not exist', async () => {
+    const name = `path-missing-node-${crypto.randomUUID()}`;
+
+    const res = await addToCollectionPath(crypto.randomUUID(), { collectionPath: name });
+
+    expect(res.status).toBe(404);
+    const body = (await res.json()) as ErrorBody;
+    expect(body.code).toBe('NOT_FOUND');
+  });
+
+  it('rejects a collection path that is not a string', async () => {
+    const nodeId = await createTextNode('sends a list');
+
+    const res = await addToCollectionPath(nodeId, { collectionPath: ['not-a-string'] });
+
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as ErrorBody;
+    expect(body.code).toBe('INVALID_ARGUMENT');
+    expect(body.message).toBe('collectionPath must be a string');
   });
 });
