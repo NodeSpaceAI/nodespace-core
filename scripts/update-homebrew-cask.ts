@@ -178,20 +178,83 @@ const LIVECHECK_BLOCK = `
     strategy :github_latest
   end`;
 
+// The refusal text for a NodeSpace product other than the free one already
+// sitting at `#{appdir}/NodeSpace.app`. It is the same wording the .pkg's
+// pre-install check prints, so a user meets one message whichever installer
+// they use. It reaches the cask as two shell assignments (the second appends
+// to the first) so no line of the rendered cask outgrows `brew style`'s
+// length limit; keep it free of `"`, `\`, `$` and backticks.
+const OTHER_PRODUCT_MESSAGE_HEAD =
+  "NodeSpace Pro is installed. To switch back to the free NodeSpace, uninstall Pro first";
+const OTHER_PRODUCT_MESSAGE_TAIL = "(NodeSpace → Uninstall NodeSpace Pro…). Your databases stay on this Mac.";
+
+// The check, as POSIX sh. `$1` is the app bundle. It reads only static data --
+// the `NodeSpaceProduct` key in the bundle's Info.plist, or, for a bundle built
+// before that key existed, whether the other product's daemon sits beside the
+// CLI -- and never runs anything inside the bundle. It sits in an interpolating
+// Ruby heredoc and is a `run` argument, so it must contain no `#`, no
+// backslash and no `{{`: Homebrew expands `{{token}}` in every such argument.
+//
+// This generator is one of the three places that may name the other product's
+// daemon, and only in that fallback.
+const OTHER_PRODUCT_CHECK_SCRIPT = [
+  'plist="$1/Contents/Info.plist"',
+  'product=$(/usr/bin/plutil -extract NodeSpaceProduct raw -o - "$plist" 2>/dev/null)',
+  'if [ -z "$product" ]; then',
+  '  if [ -e "$1/Contents/MacOS/nodespaced-pro" ]; then product=pro; else product=community; fi',
+  "fi",
+  'if [ "$product" != community ]; then',
+  `  msg="${OTHER_PRODUCT_MESSAGE_HEAD}"`,
+  `  msg="$msg ${OTHER_PRODUCT_MESSAGE_TAIL}"`,
+  '  echo "$msg" >&2',
+  "  exit 1",
+  "fi",
+];
+
+// One install-steps stanza that runs the check when an app is already at
+// `#{appdir}` (so `--appdir` is respected). Homebrew has no "abort with this
+// message" step, so the check is a `run` step whose script exits non-zero; the
+// message reaches the user in the error's output. `print_stderr: false` keeps
+// it from also being printed live.
+const otherProductCheckStanza = (stanza: string) => `  ${stanza} do
+    if_path_exists "NodeSpace.app", base: :appdir do
+      run "/bin/sh", args: ["-c", <<~SH, "sh", "{{appdir}}/NodeSpace.app"], print_stderr: false
+${OTHER_PRODUCT_CHECK_SCRIPT.map((line) => `        ${line}`).join("\n")}
+      SH
+    end
+  end`;
+
+// Homebrew runs the new version's `preflight_steps` only after it has moved the
+// old app aside on `brew reinstall` and `brew upgrade`, so a Pro app that
+// replaced a cask-installed one would already be gone, backed up and then
+// purged, by the time it ran. The installed version's `uninstall_preflight_steps`
+// runs before that, so the same check is repeated there: it protects
+// reinstalls and upgrades from any version that already carries it. A plain
+// `brew uninstall --cask` refuses in the same situation, which is what it
+// should do rather than delete the other product's app.
 const CASK_FOOTER = (binaryPath: string) => `
   app "NodeSpace.app"
   binary "#{appdir}/NodeSpace.app/${binaryPath}"
 
-  # \`~/.nodespace/models\` is deliberately NOT listed here -- it can hold
-  # 100GB+ of downloaded model weights, and trashing that on every zap
-  # would be a hostile surprise for a directory the user may reasonably
-  # expect to survive an uninstall/reinstall cycle.
+  # Refuses to install over another NodeSpace product, reading only static
+  # data from the app already in place.
+${otherProductCheckStanza("preflight_steps")}
+
+  # The same check before an uninstall, which is how a reinstall or upgrade
+  # sees the app: Homebrew removes the old app before the new version's
+  # preflight_steps would run.
+${otherProductCheckStanza("uninstall_preflight_steps")}
+
+  # Neither \`~/.nodespace/models\` nor \`~/.nodespace/database\` is listed here.
+  # Models can hold 100GB+ of downloaded weights, and databases hold the user's
+  # own data and may be in use by another NodeSpace product on this Mac, so
+  # trashing either on every zap would be a hostile surprise for directories
+  # the user may reasonably expect to survive an uninstall/reinstall cycle.
   zap trash: [
     "~/.nodespace/bin",
     "~/.nodespace/logs",
-    "~/.nodespace/database",
-    "~/Library/LaunchAgents/app.nodespace.daemon.plist",
     "~/Library/LaunchAgents/app.nodespace.daemon.dev.plist",
+    "~/Library/LaunchAgents/app.nodespace.daemon.plist",
   ]
 end
 `;
@@ -220,11 +283,11 @@ ${ARCH_NOTE}
 ${NAME_BLOCK}
 ${LIVECHECK_BLOCK}
 
+  # arm64-only by design -- see the platform-support note above the \`url\` line.
+  depends_on arch:  :arm64
   # release.yml builds with MACOSX_DEPLOYMENT_TARGET=14.0 (Metal GPU
   # embeddings require Sonoma+).
   depends_on macos: :${MIN_MACOS}
-  # arm64-only by design -- see the platform-support note above the \`url\` line.
-  depends_on arch:  :arm64
 ${CASK_FOOTER(CASK_BINARY_PATH)}`;
 }
 
