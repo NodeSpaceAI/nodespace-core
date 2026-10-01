@@ -427,7 +427,7 @@ interface BackendErrorBody {
 }
 
 /**
- * Typed error thrown by `HttpAdapter.handleResponse` for a failed request.
+ * Typed error thrown by `handleResponse` for a failed request.
  *
  * Unlike a bare `Error(message)`, this preserves the wire-level detail a
  * caller needs to classify the failure: the backend's structured error
@@ -452,6 +452,44 @@ export class BackendError extends Error {
   }
 }
 
+/**
+ * Read a dev-proxy response: the parsed body on success, a `BackendError` on
+ * failure. Every browser-mode service calls this, so a failed request carries
+ * the proxy's `message` and `code` whichever service sent it.
+ */
+export async function handleResponse<T>(response: Response): Promise<T> {
+  if (!response.ok) {
+    const fallbackMessage = `HTTP ${response.status}: ${response.statusText}`;
+
+    // This try only guards the JSON parse itself — a genuinely malformed
+    // (non-JSON) error body takes the SyntaxError branch below. A
+    // well-formed body, whatever its content, falls through to error
+    // construction OUTSIDE the try so it can't be caught by its own catch.
+    let errorData: BackendErrorBody | undefined;
+    try {
+      errorData = await response.json();
+    } catch (parseError) {
+      if (parseError instanceof SyntaxError) {
+        throw new BackendError(fallbackMessage, undefined, response.status);
+      }
+      throw parseError;
+    }
+
+    throw new BackendError(
+      errorData?.message || fallbackMessage,
+      errorData?.code,
+      response.status,
+      errorData?.conflictData
+    );
+  }
+
+  if (response.status === 204 || response.headers.get('content-length') === '0') {
+    return undefined as T;
+  }
+
+  return await response.json();
+}
+
 export class HttpAdapter implements BackendAdapter {
   private readonly baseUrl: string;
 
@@ -465,39 +503,6 @@ export class HttpAdapter implements BackendAdapter {
       // No X-Client-Id header needed
       // dev-proxy represents all browser clients as single logical client
     };
-  }
-
-  private async handleResponse<T>(response: Response): Promise<T> {
-    if (!response.ok) {
-      const fallbackMessage = `HTTP ${response.status}: ${response.statusText}`;
-
-      // This try only guards the JSON parse itself — a genuinely malformed
-      // (non-JSON) error body takes the SyntaxError branch below. A
-      // well-formed body, whatever its content, falls through to error
-      // construction OUTSIDE the try so it can't be caught by its own catch.
-      let errorData: BackendErrorBody | undefined;
-      try {
-        errorData = await response.json();
-      } catch (parseError) {
-        if (parseError instanceof SyntaxError) {
-          throw new BackendError(fallbackMessage, undefined, response.status);
-        }
-        throw parseError;
-      }
-
-      throw new BackendError(
-        errorData?.message || fallbackMessage,
-        errorData?.code,
-        response.status,
-        errorData?.conflictData
-      );
-    }
-
-    if (response.status === 204 || response.headers.get('content-length') === '0') {
-      return undefined as T;
-    }
-
-    return await response.json();
   }
 
   async createNode(input: CreateNodeInput | Node): Promise<CreatedNode> {
@@ -516,13 +521,13 @@ export class HttpAdapter implements BackendAdapter {
       body: JSON.stringify(requestBody)
     });
 
-    return await this.handleResponse<CreatedNode>(response);
+    return await handleResponse<CreatedNode>(response);
   }
 
   async getNode(id: string): Promise<Node | null> {
     const response = await fetch(`${this.baseUrl}${HTTP_ROUTES.getNode(id)}`);
     if (response.status === 404) return null;
-    return await this.handleResponse<Node>(response);
+    return await handleResponse<Node>(response);
   }
 
   async updateNode(id: string, version: number, update: UpdateNodeInput): Promise<Node> {
@@ -531,7 +536,7 @@ export class HttpAdapter implements BackendAdapter {
       headers: this.getHeaders(),
       body: JSON.stringify({ ...update, version })
     });
-    return await this.handleResponse<Node>(response);
+    return await handleResponse<Node>(response);
   }
 
   async updateTaskNode(id: string, version: number, update: TaskNodeUpdate): Promise<TaskNode> {
@@ -540,7 +545,7 @@ export class HttpAdapter implements BackendAdapter {
       headers: this.getHeaders(),
       body: JSON.stringify({ ...update, version })
     });
-    return await this.handleResponse<TaskNode>(response);
+    return await handleResponse<TaskNode>(response);
   }
 
   async updatePersonNode(id: string, version: number, update: PersonNodeUpdate): Promise<PersonNode> {
@@ -549,7 +554,7 @@ export class HttpAdapter implements BackendAdapter {
       headers: this.getHeaders(),
       body: JSON.stringify({ ...update, version })
     });
-    return await this.handleResponse<PersonNode>(response);
+    return await handleResponse<PersonNode>(response);
   }
 
   async updateProjectNode(
@@ -562,7 +567,7 @@ export class HttpAdapter implements BackendAdapter {
       headers: this.getHeaders(),
       body: JSON.stringify({ ...update, version })
     });
-    return await this.handleResponse<ProjectNode>(response);
+    return await handleResponse<ProjectNode>(response);
   }
 
   async updateQueryNode(id: string, version: number, update: QueryNodeUpdate): Promise<QueryNode> {
@@ -571,7 +576,7 @@ export class HttpAdapter implements BackendAdapter {
       headers: this.getHeaders(),
       body: JSON.stringify({ ...update, version })
     });
-    return await this.handleResponse<QueryNode>(response);
+    return await handleResponse<QueryNode>(response);
   }
 
   async deleteNode(id: string, version: number): Promise<DeleteResult> {
@@ -580,12 +585,12 @@ export class HttpAdapter implements BackendAdapter {
       headers: this.getHeaders(),
       body: JSON.stringify({ version })
     });
-    return await this.handleResponse<DeleteResult>(response);
+    return await handleResponse<DeleteResult>(response);
   }
 
   async getChildren(parentId: string): Promise<Node[]> {
     const response = await fetch(`${this.baseUrl}${HTTP_ROUTES.getChildren(parentId)}`);
-    return await this.handleResponse<Node[]>(response);
+    return await handleResponse<Node[]>(response);
   }
 
   async getDescendants(rootNodeId: string): Promise<Node[]> {
@@ -598,7 +603,7 @@ export class HttpAdapter implements BackendAdapter {
 
   async getChildrenTree(parentId: string): Promise<NodeWithChildren | null> {
     const response = await fetch(`${this.baseUrl}${HTTP_ROUTES.getChildrenTree(parentId)}`);
-    const result = await this.handleResponse<NodeWithChildren | Record<string, never>>(response);
+    const result = await handleResponse<NodeWithChildren | Record<string, never>>(response);
     return normalizeChildrenTree(result);
   }
 
@@ -608,7 +613,7 @@ export class HttpAdapter implements BackendAdapter {
       headers: this.getHeaders(),
       body: JSON.stringify({ version, parentId: newParentId, insertPosition })
     });
-    return this.handleResponse<MovedNode>(response);
+    return handleResponse<MovedNode>(response);
   }
 
   async moveChildrenToParent(newParentId: string, children: Array<{ id: string; version: number }>): Promise<MovedChildren> {
@@ -617,7 +622,7 @@ export class HttpAdapter implements BackendAdapter {
       headers: this.getHeaders(),
       body: JSON.stringify({ children: children.map(c => ({ nodeId: c.id, version: c.version })) })
     });
-    return this.handleResponse<MovedChildren>(response);
+    return handleResponse<MovedChildren>(response);
   }
 
   async createMention(mentioningNodeId: string, mentionedNodeId: string): Promise<void> {
@@ -626,7 +631,7 @@ export class HttpAdapter implements BackendAdapter {
       headers: this.getHeaders(),
       body: JSON.stringify({ sourceId: mentioningNodeId, targetId: mentionedNodeId })
     });
-    await this.handleResponse<void>(response);
+    await handleResponse<void>(response);
   }
 
   async deleteMention(mentioningNodeId: string, mentionedNodeId: string): Promise<void> {
@@ -635,22 +640,22 @@ export class HttpAdapter implements BackendAdapter {
       headers: this.getHeaders(),
       body: JSON.stringify({ sourceId: mentioningNodeId, targetId: mentionedNodeId })
     });
-    await this.handleResponse<void>(response);
+    await handleResponse<void>(response);
   }
 
   async getOutgoingMentions(nodeId: string): Promise<string[]> {
     const response = await fetch(`${this.baseUrl}${HTTP_ROUTES.getOutgoingMentions(nodeId)}`);
-    return await this.handleResponse<string[]>(response);
+    return await handleResponse<string[]>(response);
   }
 
   async getIncomingMentions(nodeId: string): Promise<string[]> {
     const response = await fetch(`${this.baseUrl}${HTTP_ROUTES.getIncomingMentions(nodeId)}`);
-    return await this.handleResponse<string[]>(response);
+    return await handleResponse<string[]>(response);
   }
 
   async getMentioningContainers(nodeId: string): Promise<NodeReference[]> {
     const response = await fetch(`${this.baseUrl}${HTTP_ROUTES.getMentioningContainers(nodeId)}`);
-    return await this.handleResponse<NodeReference[]>(response);
+    return await handleResponse<NodeReference[]>(response);
   }
 
   async queryNodes(query: NodeQuery): Promise<Node[]> {
@@ -659,7 +664,7 @@ export class HttpAdapter implements BackendAdapter {
       headers: this.getHeaders(),
       body: JSON.stringify(query)
     });
-    return await this.handleResponse<Node[]>(response);
+    return await handleResponse<Node[]>(response);
   }
 
   async executeQuery(input: ExecuteQueryInput): Promise<Node[]> {
@@ -668,7 +673,7 @@ export class HttpAdapter implements BackendAdapter {
       headers: this.getHeaders(),
       body: JSON.stringify(buildExecuteQueryWire(input))
     });
-    return await this.handleResponse<Node[]>(response);
+    return await handleResponse<Node[]>(response);
   }
 
   async countQuery(input: ExecuteQueryInput): Promise<number> {
@@ -677,7 +682,7 @@ export class HttpAdapter implements BackendAdapter {
       headers: this.getHeaders(),
       body: JSON.stringify(buildExecuteQueryWire(input))
     });
-    return await this.handleResponse<number>(response);
+    return await handleResponse<number>(response);
   }
 
   async mentionAutocomplete(query: string, limit?: number): Promise<Node[]> {
@@ -686,7 +691,7 @@ export class HttpAdapter implements BackendAdapter {
       headers: this.getHeaders(),
       body: JSON.stringify({ query, limit })
     });
-    return await this.handleResponse<Node[]>(response);
+    return await handleResponse<Node[]>(response);
   }
 
   async findDuplicateFor(
@@ -700,7 +705,7 @@ export class HttpAdapter implements BackendAdapter {
       headers: this.getHeaders(),
       body: JSON.stringify({ nodeType, field, value, excludeId })
     });
-    return await this.handleResponse<Node | null>(response);
+    return await handleResponse<Node | null>(response);
   }
 
   async createContainerNode(input: CreateContainerInput): Promise<string> {
@@ -718,12 +723,12 @@ export class HttpAdapter implements BackendAdapter {
 
   async getAllSchemas(): Promise<SchemaNode[]> {
     const response = await fetch(`${this.baseUrl}${HTTP_ROUTES.getAllSchemas()}`);
-    return this.handleResponse<SchemaNode[]>(response);
+    return handleResponse<SchemaNode[]>(response);
   }
 
   async getSchema(schemaId: string): Promise<SchemaNode> {
     const response = await fetch(`${this.baseUrl}${HTTP_ROUTES.getSchema(schemaId)}`);
-    return this.handleResponse<SchemaNode>(response);
+    return handleResponse<SchemaNode>(response);
   }
 
   async searchNodesByTitle(nodeType: string | null, titleContains: string, limit?: number): Promise<Node[]> {
@@ -732,7 +737,7 @@ export class HttpAdapter implements BackendAdapter {
 
   async getNodeRelationships(nodeId: string): Promise<RawNodeRelationships> {
     const response = await fetch(`${this.baseUrl}${HTTP_ROUTES.getNodeRelationships(nodeId)}`);
-    return this.handleResponse<RawNodeRelationships>(response);
+    return handleResponse<RawNodeRelationships>(response);
   }
 
   async createRelationship(
@@ -746,7 +751,7 @@ export class HttpAdapter implements BackendAdapter {
       headers: this.getHeaders(),
       body: JSON.stringify({ sourceId, relationshipName, targetId, edgeData: edgeData ?? null })
     });
-    return this.handleResponse<CreateRelationshipResult>(response);
+    return handleResponse<CreateRelationshipResult>(response);
   }
 
   async deleteRelationship(sourceId: string, relationshipName: string, targetId: string): Promise<void> {
@@ -755,7 +760,7 @@ export class HttpAdapter implements BackendAdapter {
       headers: this.getHeaders(),
       body: JSON.stringify({ sourceId, relationshipName, targetId })
     });
-    await this.handleResponse<void>(response);
+    await handleResponse<void>(response);
   }
 
   async updateRelationshipProperties(
@@ -769,12 +774,12 @@ export class HttpAdapter implements BackendAdapter {
       headers: this.getHeaders(),
       body: JSON.stringify({ sourceId, relationshipName, targetId, properties })
     });
-    await this.handleResponse<void>(response);
+    await handleResponse<void>(response);
   }
 
   async getDaemonVersion(): Promise<string> {
     const response = await fetch(`${this.baseUrl}${HTTP_ROUTES.getDaemonVersion()}`);
-    return this.handleResponse<string>(response);
+    return handleResponse<string>(response);
   }
 }
 

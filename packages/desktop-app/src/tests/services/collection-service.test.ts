@@ -15,6 +15,9 @@ vi.mock('@tauri-apps/api/core', () => mockTauriCore());
 
 import { collectionService } from '$lib/services/collection-service';
 
+// Declare globals for eslint (these are available in Happy-DOM/browser environment)
+declare const Headers: typeof globalThis.Headers;
+
 describe('Collection Service', () => {
   describe('MockCollectionService methods', () => {
     // The module-level `collectionService` singleton resolves to MockCollectionService
@@ -129,6 +132,7 @@ describe('getCollectionService dispatcher', () => {
       vi.fn().mockResolvedValue({
         ok: true,
         status: 200,
+        headers: new Headers(),
         json: () => Promise.resolve([])
       })
     );
@@ -312,17 +316,51 @@ describe('HttpCollectionService', () => {
     return svc;
   }
 
+  /** A successful dev-proxy response carrying `body` as JSON. */
+  function okResponse(body: unknown) {
+    return {
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      headers: new Headers(),
+      json: () => Promise.resolve(body)
+    };
+  }
+
+  /** A failed response with the dev-proxy's `{ code, message, details }` body. */
+  function proxyErrorResponse(status: number, statusText: string, code: string, message: string) {
+    return {
+      ok: false,
+      status,
+      statusText,
+      headers: new Headers(),
+      json: () => Promise.resolve({ code, message, details: message })
+    };
+  }
+
+  /** A failed response whose body is not JSON, as when the proxy itself is not the one answering. */
+  function nonJsonErrorResponse(status: number, statusText: string) {
+    return {
+      ok: false,
+      status,
+      statusText,
+      headers: new Headers(),
+      json: () => Promise.reject(new SyntaxError('Unexpected token < in JSON'))
+    };
+  }
+
+  /** The request each method that reaches the dev-proxy sends. */
+  const requests: Array<[string, (svc: Awaited<ReturnType<typeof loadHttpService>>) => Promise<unknown>]> = [
+    ['getAllCollections', (svc) => svc.getAllCollections()],
+    ['getCollectionMembers', (svc) => svc.getCollectionMembers('c1')],
+    ['getCollectionMembersRecursive', (svc) => svc.getCollectionMembersRecursive('c1')],
+    ['addNodeToCollection', (svc) => svc.addNodeToCollection('n1', 'c1')],
+    ['removeNodeFromCollection', (svc) => svc.removeNodeFromCollection('n1', 'c1')]
+  ];
+
   it('getAllCollections fetches from the dev-proxy and returns parsed JSON', async () => {
     const collections = [{ id: 'c1' }];
-    vi.stubGlobal(
-      'fetch',
-      vi.fn().mockResolvedValue({
-        ok: true,
-        status: 200,
-        statusText: 'OK',
-        json: () => Promise.resolve(collections)
-      })
-    );
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(okResponse(collections)));
 
     const svc = await loadHttpService();
     const result = await svc.getAllCollections();
@@ -331,35 +369,9 @@ describe('HttpCollectionService', () => {
     expect(result).toEqual(collections);
   });
 
-  it('getAllCollections throws a descriptive error on a non-ok response', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn().mockResolvedValue({
-        ok: false,
-        status: 500,
-        statusText: 'Internal Server Error',
-        json: () => Promise.resolve(null)
-      })
-    );
-
-    const svc = await loadHttpService();
-
-    await expect(svc.getAllCollections()).rejects.toThrow(
-      'Failed to fetch collections: Internal Server Error'
-    );
-  });
-
   it('getCollectionMembers fetches from the dev-proxy with the encoded collectionId', async () => {
     const members = [{ id: 'n1', name: 'Node 1', nodeType: 'text' }];
-    vi.stubGlobal(
-      'fetch',
-      vi.fn().mockResolvedValue({
-        ok: true,
-        status: 200,
-        statusText: 'OK',
-        json: () => Promise.resolve(members)
-      })
-    );
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(okResponse(members)));
 
     const svc = await loadHttpService();
     const result = await svc.getCollectionMembers('c 1');
@@ -368,35 +380,9 @@ describe('HttpCollectionService', () => {
     expect(result).toEqual(members);
   });
 
-  it('getCollectionMembers throws a descriptive error on a non-ok response', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn().mockResolvedValue({
-        ok: false,
-        status: 404,
-        statusText: 'Not Found',
-        json: () => Promise.resolve(null)
-      })
-    );
-
-    const svc = await loadHttpService();
-
-    await expect(svc.getCollectionMembers('missing')).rejects.toThrow(
-      'Failed to fetch collection members: Not Found'
-    );
-  });
-
   it('getCollectionMembersRecursive delegates to getCollectionMembers', async () => {
     const members = [{ id: 'n1', name: 'Node 1', nodeType: 'text' }];
-    vi.stubGlobal(
-      'fetch',
-      vi.fn().mockResolvedValue({
-        ok: true,
-        status: 200,
-        statusText: 'OK',
-        json: () => Promise.resolve(members)
-      })
-    );
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(okResponse(members)));
 
     const svc = await loadHttpService();
     const result = await svc.getCollectionMembersRecursive('c1');
@@ -406,10 +392,10 @@ describe('HttpCollectionService', () => {
   });
 
   it('addNodeToCollection sends the collection id on a node update', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, status: 200, statusText: 'OK' }));
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(okResponse({ id: 'n 1' })));
 
     const svc = await loadHttpService();
-    await svc.addNodeToCollection('n 1', 'c1');
+    await expect(svc.addNodeToCollection('n 1', 'c1')).resolves.toBeUndefined();
 
     expect(fetch).toHaveBeenCalledWith('http://localhost:3001/api/nodes/n%201', {
       method: 'PATCH',
@@ -419,10 +405,10 @@ describe('HttpCollectionService', () => {
   });
 
   it('removeNodeFromCollection sends the collection id on a node update', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, status: 200, statusText: 'OK' }));
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(okResponse({ id: 'n1' })));
 
     const svc = await loadHttpService();
-    await svc.removeNodeFromCollection('n1', 'c1');
+    await expect(svc.removeNodeFromCollection('n1', 'c1')).resolves.toBeUndefined();
 
     expect(fetch).toHaveBeenCalledWith('http://localhost:3001/api/nodes/n1', {
       method: 'PATCH',
@@ -431,20 +417,75 @@ describe('HttpCollectionService', () => {
     });
   });
 
-  it('a membership change throws a descriptive error on a non-ok response', async () => {
+  it.each(requests)(
+    "%s throws the proxy's message, code and status on a JSON error body",
+    async (_name, send) => {
+      vi.stubGlobal(
+        'fetch',
+        vi
+          .fn()
+          .mockResolvedValue(
+            proxyErrorResponse(400, 'Bad Request', 'INVALID_ARGUMENT', 'c1 is not a collection')
+          )
+      );
+
+      const svc = await loadHttpService();
+      const { BackendError } = await import('$lib/services/backend-adapter');
+
+      const thrown = await send(svc).then(
+        () => undefined,
+        (err: unknown) => err
+      );
+
+      expect(thrown).toBeInstanceOf(BackendError);
+      expect(thrown).toMatchObject({
+        message: 'c1 is not a collection',
+        code: 'INVALID_ARGUMENT',
+        status: 400
+      });
+    }
+  );
+
+  it.each(requests)(
+    '%s throws the status and status text when the error body is not JSON',
+    async (_name, send) => {
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue(nonJsonErrorResponse(502, 'Bad Gateway')));
+
+      const svc = await loadHttpService();
+      const { BackendError } = await import('$lib/services/backend-adapter');
+
+      const thrown = await send(svc).then(
+        () => undefined,
+        (err: unknown) => err
+      );
+
+      expect(thrown).toBeInstanceOf(BackendError);
+      expect(thrown).toMatchObject({ message: 'HTTP 502: Bad Gateway', status: 502 });
+      expect((thrown as { code?: string }).code).toBeUndefined();
+    }
+  );
+
+  it("a refusal's conflictData is carried on the error", async () => {
+    const conflictData = { inaccessibleCount: 2 };
     vi.stubGlobal(
       'fetch',
-      vi.fn().mockResolvedValue({ ok: false, status: 404, statusText: 'Not Found' })
+      vi.fn().mockResolvedValue({
+        ok: false,
+        status: 403,
+        statusText: 'Forbidden',
+        headers: new Headers(),
+        json: () =>
+          Promise.resolve({ code: 'SUBTREE_ACCESS_DENIED', message: 'refused', conflictData })
+      })
     );
 
     const svc = await loadHttpService();
 
-    await expect(svc.addNodeToCollection('n1', 'c1')).rejects.toThrow(
-      'Failed to add node to collection: Not Found'
-    );
-    await expect(svc.removeNodeFromCollection('n1', 'c1')).rejects.toThrow(
-      'Failed to remove node from collection: Not Found'
-    );
+    await expect(svc.addNodeToCollection('n1', 'c1')).rejects.toMatchObject({
+      code: 'SUBTREE_ACCESS_DENIED',
+      status: 403,
+      conflictData
+    });
   });
 
   it('addNodeToCollectionPath posts the path and returns the leaf collection id', async () => {
