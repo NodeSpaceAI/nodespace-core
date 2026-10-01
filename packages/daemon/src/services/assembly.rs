@@ -368,8 +368,10 @@ pub async fn build_shared_services() -> Result<(SharedServices, Option<tokio::ta
 /// `EmbeddingProcessor` and populates `embedding_state` once the shared model is
 /// ready.
 ///
-/// Refuses, with [`DatabaseRequiresExtensions`], a database that requires an
-/// extension this daemon does not support, before anything is written.
+/// Refuses a database before anything is written: with
+/// [`DatabaseRequiresExtensions`] when it requires an extension this daemon
+/// does not support, and with [`RequiredExtensionsUnreadable`] when what it
+/// requires cannot be read.
 pub async fn build_database_services(
     db_path: &std::path::Path,
     shared: &SharedContext,
@@ -597,15 +599,14 @@ pub async fn build_database_services(
 /// through the manager (ADR-053), and the handlers that do not route — the
 /// daemon's version and memory, PTY sessions, the shared model catalog — serve
 /// process-global state, which this set shares with every other. So when the
-/// default database is refused because it requires an extension this daemon
-/// does not support (ADR-083 §2), the daemon builds its router from this set
-/// and keeps serving the other databases. Requests for the default receive the
-/// refusal.
+/// required-extensions guard refuses the default database (ADR-083 §2), the
+/// daemon builds its router from this set and keeps serving the other
+/// databases. Requests for the default receive the refusal.
 ///
 /// The set's own node service runs over a private in-memory database and no
 /// background work is started for it: no Play engine, conflict sweep,
 /// embedding wiring or ai-chat watcher. Nothing is written to disk.
-pub async fn build_unrouted_services(shared: &SharedContext) -> Result<DatabaseServices> {
+async fn build_unrouted_services(shared: &SharedContext) -> Result<DatabaseServices> {
     // A shared-cache in-memory database, named uniquely so two sets in one
     // process never share it: the store opens a writer and pooled readers, and
     // a plain `:memory:` gives each connection its own empty database.

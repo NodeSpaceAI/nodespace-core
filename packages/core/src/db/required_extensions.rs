@@ -150,15 +150,20 @@ fn wal_path(db_path: &Path) -> std::path::PathBuf {
 }
 
 /// A `file:` URI with an empty authority for `db_path`, with the query `query`.
+/// The path is made absolute first: in a URI with an authority a relative path
+/// would read as the authority, and SQLite refuses any authority but an empty
+/// one or `localhost`.
 fn read_only_uri(db_path: &Path, query: &str) -> Result<String> {
-    let Some(path) = db_path.to_str() else {
+    let absolute = std::path::absolute(db_path)
+        .with_context(|| format!("Failed to resolve {}", db_path.display()))?;
+    let Some(path) = absolute.to_str() else {
         bail!("database path is not valid UTF-8: {}", db_path.display());
     };
     Ok(format!("file://{}?{query}", uri_path(path, cfg!(windows))))
 }
 
-/// The path part of a `file:` URI with an empty authority, so it always begins
-/// with `/`. Percent-encodes the three characters a URI path cannot hold
+/// The path part of a `file:` URI with an empty authority, for an absolute
+/// path, so it always begins with `/`. Percent-encodes the three characters a URI path cannot hold
 /// literally (`%`, `?`, `#`). A Windows path drops a `\\?\` verbatim prefix and
 /// has its separators turned into `/`: a drive path gains a leading `/`
 /// (`/C:/…`), and a UNC path keeps its leading `//` (`//server/share/…`),
@@ -194,6 +199,7 @@ fn uri_path(path: &str, windows: bool) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     #[test]
     fn a_list_of_strings_parses_in_order_without_duplicates() {
@@ -218,6 +224,35 @@ mod tests {
             read_only_uri(Path::new("/tmp/a b/50%?#.db"), "immutable=1").unwrap(),
             "file:///tmp/a b/50%25%3F%23.db?immutable=1"
         );
+    }
+
+    /// A relative path is resolved against the working directory before it
+    /// goes into the URI, where it would otherwise read as the authority.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_relative_path_is_read_from_the_working_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = closed_database(
+            dir.path(),
+            "database-settings",
+            r#"{"database-settings": {"required_extensions": ["pro"]}}"#,
+        )
+        .await;
+        let cwd = std::env::current_dir().unwrap();
+        let ups = "../".repeat(cwd.components().count() - 1);
+        let relative = PathBuf::from(format!(
+            "{ups}{}",
+            path.strip_prefix("/").unwrap().display()
+        ));
+        assert!(relative.is_relative());
+
+        assert_eq!(
+            read_required_extensions(&relative).await.unwrap(),
+            vec!["pro".to_string()]
+        );
+        assert!(read_only_uri(&relative, "immutable=1")
+            .unwrap()
+            .starts_with("file:///"));
     }
 
     #[test]

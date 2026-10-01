@@ -327,9 +327,30 @@ async fn an_unreadable_database_is_refused_and_does_not_stop_the_daemon() {
     std::fs::create_dir_all(&db_dir).unwrap();
     let path = db_dir.join("unreadable.sqlite");
     std::fs::write(&path, vec![0x42u8; 8192]).unwrap();
-    let mgr = manager(dir.path(), &[]).await;
+    let mgr = Arc::new(manager(dir.path(), &[]).await);
     let id = mgr.register(path.clone()).await.unwrap().id;
     let before = contents(&db_dir);
+
+    // A routed request reports why, since the daemon keeps running with the
+    // database closed.
+    let mut request = tonic::Request::new(());
+    request.extensions_mut().insert(mgr.clone());
+    request.metadata_mut().insert(
+        crate::DATABASE_ID_HEADER,
+        tonic::metadata::MetadataValue::try_from(id.as_str()).unwrap(),
+    );
+    let status = crate::db_routing::routed_database_services(&request)
+        .await
+        .err()
+        .expect("the routed request is refused");
+    assert_eq!(status.code(), tonic::Code::Internal);
+    assert!(
+        status
+            .message()
+            .contains("could not read the required extensions"),
+        "{}",
+        status.message()
+    );
 
     let err = mgr
         .get_or_open(&id)

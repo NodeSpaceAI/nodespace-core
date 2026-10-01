@@ -70,11 +70,17 @@ pub(crate) async fn routed_database_services<T>(
     // A database that requires an extension this daemon does not support is
     // refused with its own status (FAILED_PRECONDITION plus the
     // `x-requires-extension-bin` payload, ADR-083 §2) rather than an opaque
-    // INTERNAL, so every client can show the same refusal.
+    // INTERNAL, so every client can show the same refusal. One whose
+    // requirements cannot be read reports its whole cause chain: the daemon
+    // keeps running with it closed, so the client is where the reason has to
+    // show.
     let services = manager.get_or_open(&id).await.map_err(|e| {
-        match crate::services::DatabaseRequiresExtensions::find_in(&e) {
-            Some(refusal) => refusal.to_status(),
-            None => Status::internal(e.to_string()),
+        if let Some(refusal) = crate::services::DatabaseRequiresExtensions::find_in(&e) {
+            refusal.to_status()
+        } else if crate::services::RequiredExtensionsUnreadable::find_in(&e).is_some() {
+            Status::internal(format!("{e:#}"))
+        } else {
+            Status::internal(e.to_string())
         }
     })?;
     Ok(Some(services))

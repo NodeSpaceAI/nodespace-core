@@ -87,10 +87,11 @@ fn spawn_tray_database_sync(controller: tray::TrayController, manager: Arc<Datab
 /// requests that name the default id explicitly — the file is never opened
 /// twice.
 ///
-/// A default that requires an extension this daemon does not support stays
-/// closed, and the returned set is an unrouted one instead (ADR-083 §2): the
-/// daemon logs the refusal and keeps serving the other databases, while
-/// requests for the default receive the refusal.
+/// A default the required-extensions guard refuses, because it requires an
+/// extension this daemon does not support or because what it requires cannot
+/// be read, stays closed, and the returned set is an unrouted one instead
+/// (ADR-083 §2): the daemon logs the refusal and keeps serving the other
+/// databases, while requests for the default receive the refusal.
 ///
 /// `registry_path` and `marker` are the registry file and the
 /// incompatible-database marker; the serve loops pass the standard ones.
