@@ -2231,7 +2231,7 @@ mod tests {
         assert_eq!(names, ["description"]);
 
         let description = collection.get_field("description").unwrap();
-        assert_eq!(description.field_type, "text");
+        assert_eq!(description.field_type, crate::models::SchemaFieldType::Text);
         assert_eq!(description.required, Some(false));
         assert_eq!(description.default, None);
     }
